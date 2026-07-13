@@ -1,6 +1,6 @@
-import { AppIcon, type AppIconName } from "../shared/AppIcon";
 import { Button } from "../../components/ui/button";
 import { cn } from "../../lib/utils";
+import { AppIcon, type AppIconName } from "../shared/AppIcon";
 
 const activeToggleClassName =
   "border-primary/35 bg-primary/10 text-primary hover:border-primary/45 hover:bg-primary/14";
@@ -68,9 +68,7 @@ export function StatusChangeToggleButton({
           </span>
         </span>
         {description ? (
-          <span className="block text-xs leading-[1.1rem] text-current/68">
-            {description}
-          </span>
+          <span className="block text-xs leading-[1.1rem] text-current/68">{description}</span>
         ) : null}
       </span>
       <span className="sr-only">{stateLabel}</span>
@@ -85,10 +83,7 @@ export function StatusChangeToggleButton({
 
   if (!interactive) {
     return (
-      <div
-        data-state={pressed ? "on" : "off"}
-        className={cn(baseClassName, "cursor-default")}
-      >
+      <div data-state={pressed ? "on" : "off"} className={cn(baseClassName, "cursor-default")}>
         {content}
       </div>
     );

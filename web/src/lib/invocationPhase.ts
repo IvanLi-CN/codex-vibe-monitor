@@ -1,5 +1,5 @@
-import type { ApiInvocation, InvocationLivePhase, InvocationPhaseCounts } from "./api";
 import type { TranslationKey } from "../i18n";
+import type { ApiInvocation, InvocationLivePhase, InvocationPhaseCounts } from "./api";
 import { resolveInvocationDisplayStatus } from "./invocationStatus";
 
 type InvocationPhaseSource = Pick<
@@ -52,10 +52,7 @@ export function resolveInvocationLivePhase(
   const explicitPhase = normalizePhase(record.livePhase);
   if (explicitPhase) return explicitPhase;
   if (normalizedStatus === "pending") return "queued";
-  if (
-    hasFiniteTiming(record.tUpstreamTtfbMs) ||
-    hasFiniteTiming(record.tUpstreamStreamMs)
-  ) {
+  if (hasFiniteTiming(record.tUpstreamTtfbMs) || hasFiniteTiming(record.tUpstreamStreamMs)) {
     return "responding";
   }
   if (
@@ -69,9 +66,7 @@ export function resolveInvocationLivePhase(
   return "queued";
 }
 
-export function getInvocationPhaseDisplay(
-  phase: InvocationLivePhase,
-): InvocationPhaseDisplay {
+export function getInvocationPhaseDisplay(phase: InvocationLivePhase): InvocationPhaseDisplay {
   if (phase === "responding") {
     return {
       phase,
@@ -103,9 +98,7 @@ export function normalizeInvocationPhaseCounts(
   };
 }
 
-export function sumInvocationPhaseCounts(
-  counts: InvocationPhaseCounts | null | undefined,
-): number {
+export function sumInvocationPhaseCounts(counts: InvocationPhaseCounts | null | undefined): number {
   const normalized = normalizeInvocationPhaseCounts(counts);
   return normalized.queued + normalized.requesting + normalized.responding;
 }

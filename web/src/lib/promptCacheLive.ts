@@ -3,19 +3,19 @@ import type {
   PromptCacheConversation,
   PromptCacheConversationInvocationPreview,
   PromptCacheConversationRequestPoint,
-  PromptCacheConversationsResponse,
   PromptCacheConversationSelection,
+  PromptCacheConversationsResponse,
   PromptCacheConversationUpstreamAccount,
 } from "./api";
+import {
+  resolveConversationRequestPointOutcome,
+  resolvePromptCacheInvocationOutcome,
+} from "./conversationRequestPoint";
 import { invocationStableKey } from "./invocation";
 import {
   choosePreferredInvocationRecord,
   mergeInvocationRecordCollections,
 } from "./invocationLiveMerge";
-import {
-  resolveConversationRequestPointOutcome,
-  resolvePromptCacheInvocationOutcome,
-} from "./conversationRequestPoint";
 
 const PROMPT_CACHE_COUNT_MODE_WINDOW_HOURS = 24;
 const PROMPT_CACHE_ACTIVITY_MODE_LIMIT = 50;
@@ -75,9 +75,7 @@ function parseOccurredAtEpoch(raw: string | null | undefined) {
   return Number.isNaN(epoch) ? null : epoch;
 }
 
-function parsePromptCacheSelectionWindowMs(
-  selection: PromptCacheConversationSelection,
-) {
+function parsePromptCacheSelectionWindowMs(selection: PromptCacheConversationSelection) {
   if (selection.mode === "count") {
     return PROMPT_CACHE_COUNT_MODE_WINDOW_HOURS * 3_600_000;
   }
@@ -115,9 +113,7 @@ function recordMatchesPromptCacheSelection(
 export function getPromptCacheConversationVisibleLimit(
   selection: PromptCacheConversationSelection,
 ) {
-  return selection.mode === "count"
-    ? selection.limit
-    : PROMPT_CACHE_ACTIVITY_MODE_LIMIT;
+  return selection.mode === "count" ? selection.limit : PROMPT_CACHE_ACTIVITY_MODE_LIMIT;
 }
 
 function comparePromptCacheConversationOrder(
@@ -130,25 +126,18 @@ function comparePromptCacheConversationOrder(
     "createdAt" | "lastActivityAt" | "promptCacheKey" | "recentInvocations"
   >,
 ) {
-  const leftEpoch =
-    parseOccurredAtEpoch(left.createdAt) ?? Number.MIN_SAFE_INTEGER;
-  const rightEpoch =
-    parseOccurredAtEpoch(right.createdAt) ?? Number.MIN_SAFE_INTEGER;
+  const leftEpoch = parseOccurredAtEpoch(left.createdAt) ?? Number.MIN_SAFE_INTEGER;
+  const rightEpoch = parseOccurredAtEpoch(right.createdAt) ?? Number.MIN_SAFE_INTEGER;
   if (leftEpoch !== rightEpoch) return rightEpoch - leftEpoch;
   return right.promptCacheKey.localeCompare(left.promptCacheKey);
 }
 
-function promptCacheSelectionUsesWorkingSetAnchor(
-  selection: PromptCacheConversationSelection,
-) {
+function promptCacheSelectionUsesWorkingSetAnchor(selection: PromptCacheConversationSelection) {
   return selection.mode === "activityWindow" && "activityMinutes" in selection;
 }
 
 function getPromptCacheConversationWorkingSetAnchorEpoch(
-  conversation: Pick<
-    PromptCacheConversation,
-    "lastActivityAt" | "recentInvocations"
-  >,
+  conversation: Pick<PromptCacheConversation, "lastActivityAt" | "recentInvocations">,
   selection: PromptCacheConversationSelection,
   now: number,
 ) {
@@ -158,11 +147,7 @@ function getPromptCacheConversationWorkingSetAnchorEpoch(
   for (const preview of conversation.recentInvocations) {
     const previewEpoch = parseOccurredAtEpoch(preview.occurredAt);
     if (previewEpoch == null) continue;
-    if (
-      promptCacheInvocationIsPending(
-        buildInvocationFromPromptCachePreview(preview),
-      )
-    ) {
+    if (promptCacheInvocationIsPending(buildInvocationFromPromptCachePreview(preview))) {
       latestPendingEpoch = Math.max(latestPendingEpoch, previewEpoch);
       continue;
     }
@@ -173,9 +158,7 @@ function getPromptCacheConversationWorkingSetAnchorEpoch(
 
   if (latestTerminalEpoch > Number.MIN_SAFE_INTEGER) return latestTerminalEpoch;
   if (latestPendingEpoch > Number.MIN_SAFE_INTEGER) return latestPendingEpoch;
-  return (
-    parseOccurredAtEpoch(conversation.lastActivityAt) ?? Number.MIN_SAFE_INTEGER
-  );
+  return parseOccurredAtEpoch(conversation.lastActivityAt) ?? Number.MIN_SAFE_INTEGER;
 }
 
 function comparePromptCacheConversationVisibleSetOrder(
@@ -190,18 +173,9 @@ function comparePromptCacheConversationVisibleSetOrder(
   selection: PromptCacheConversationSelection,
   now: number,
 ) {
-  const leftAnchorEpoch = getPromptCacheConversationWorkingSetAnchorEpoch(
-    left,
-    selection,
-    now,
-  );
-  const rightAnchorEpoch = getPromptCacheConversationWorkingSetAnchorEpoch(
-    right,
-    selection,
-    now,
-  );
-  if (leftAnchorEpoch !== rightAnchorEpoch)
-    return rightAnchorEpoch - leftAnchorEpoch;
+  const leftAnchorEpoch = getPromptCacheConversationWorkingSetAnchorEpoch(left, selection, now);
+  const rightAnchorEpoch = getPromptCacheConversationWorkingSetAnchorEpoch(right, selection, now);
+  if (leftAnchorEpoch !== rightAnchorEpoch) return rightAnchorEpoch - leftAnchorEpoch;
 
   return comparePromptCacheConversationOrder(left, right);
 }
@@ -211,8 +185,7 @@ function trimAndOrderPromptCacheConversations(
   selection: PromptCacheConversationSelection,
   now: number,
 ) {
-  const maxVisibleConversations =
-    getPromptCacheConversationVisibleLimit(selection);
+  const maxVisibleConversations = getPromptCacheConversationVisibleLimit(selection);
   if (!promptCacheSelectionUsesWorkingSetAnchor(selection)) {
     return [...conversations]
       .sort((left, right) => comparePromptCacheConversationOrder(left, right))
@@ -221,24 +194,15 @@ function trimAndOrderPromptCacheConversations(
 
   const nextVisibleConversations = [...conversations]
     .sort((left, right) =>
-      comparePromptCacheConversationVisibleSetOrder(
-        left,
-        right,
-        selection,
-        now,
-      ),
+      comparePromptCacheConversationVisibleSetOrder(left, right, selection, now),
     )
     .slice(0, maxVisibleConversations);
 
-  nextVisibleConversations.sort((left, right) =>
-    comparePromptCacheConversationOrder(left, right),
-  );
+  nextVisibleConversations.sort((left, right) => comparePromptCacheConversationOrder(left, right));
   return nextVisibleConversations;
 }
 
-function normalizeFailureClass(
-  value: ApiInvocation["failureClass"] | null | undefined,
-) {
+function normalizeFailureClass(value: ApiInvocation["failureClass"] | null | undefined) {
   const normalized = value?.trim().toLowerCase();
   return normalized === "none" ||
     normalized === "service_failure" ||
@@ -323,18 +287,13 @@ export function buildPromptCachePreviewFromInvocation(
     requestModel: record.requestModel?.trim() || null,
     responseModel: record.responseModel?.trim() || null,
     totalTokens:
-      typeof record.totalTokens === "number" &&
-      Number.isFinite(record.totalTokens)
+      typeof record.totalTokens === "number" && Number.isFinite(record.totalTokens)
         ? record.totalTokens
         : 0,
-    cost:
-      typeof record.cost === "number" && Number.isFinite(record.cost)
-        ? record.cost
-        : null,
+    cost: typeof record.cost === "number" && Number.isFinite(record.cost) ? record.cost : null,
     proxyDisplayName: record.proxyDisplayName?.trim() || null,
     upstreamAccountId:
-      typeof record.upstreamAccountId === "number" &&
-      Number.isFinite(record.upstreamAccountId)
+      typeof record.upstreamAccountId === "number" && Number.isFinite(record.upstreamAccountId)
         ? record.upstreamAccountId
         : null,
     upstreamAccountName: record.upstreamAccountName?.trim() || null,
@@ -374,8 +333,7 @@ function buildPromptCacheRequestPointFromInvocation(
   record: ApiInvocation,
 ): PromptCacheConversationRequestPoint {
   const requestTokens =
-    typeof record.totalTokens === "number" &&
-    Number.isFinite(record.totalTokens)
+    typeof record.totalTokens === "number" && Number.isFinite(record.totalTokens)
       ? Math.max(0, record.totalTokens)
       : 0;
   return {
@@ -410,15 +368,12 @@ function mergePromptCacheRequestPoints(
       return [
         {
           ...point,
-          _epoch:
-            parseOccurredAtEpoch(record.occurredAt) ?? Number.MIN_SAFE_INTEGER,
+          _epoch: parseOccurredAtEpoch(record.occurredAt) ?? Number.MIN_SAFE_INTEGER,
           _order: basePoints.length + index,
         },
       ];
     }),
-  ].sort(
-    (left, right) => left._epoch - right._epoch || left._order - right._order,
-  );
+  ].sort((left, right) => left._epoch - right._epoch || left._order - right._order);
 
   let cumulativeTokens = 0;
   return combined.map((point) => {
@@ -439,60 +394,37 @@ function promptCacheInvocationIsPending(record: ApiInvocation) {
   return normalizedStatus === "running" || normalizedStatus === "pending";
 }
 
-function authoritativePreviewLacksLiveExtras(
-  authoritative: ApiInvocation,
-  live: ApiInvocation,
-) {
+function authoritativePreviewLacksLiveExtras(authoritative: ApiInvocation, live: ApiInvocation) {
   const hasString = (value: string | null | undefined) =>
     typeof value === "string" && value.trim().length > 0;
   const hasNumber = (value: number | null | undefined) =>
     typeof value === "number" && Number.isFinite(value);
 
   if (!hasString(authoritative.source) && hasString(live.source)) return true;
-  if (!hasNumber(authoritative.inputTokens) && hasNumber(live.inputTokens))
-    return true;
-  if (!hasNumber(authoritative.outputTokens) && hasNumber(live.outputTokens))
-    return true;
-  if (
-    !hasNumber(authoritative.cacheInputTokens) &&
-    hasNumber(live.cacheInputTokens)
-  ) {
+  if (!hasNumber(authoritative.inputTokens) && hasNumber(live.inputTokens)) return true;
+  if (!hasNumber(authoritative.outputTokens) && hasNumber(live.outputTokens)) return true;
+  if (!hasNumber(authoritative.cacheInputTokens) && hasNumber(live.cacheInputTokens)) {
     return true;
   }
-  if (
-    !hasNumber(authoritative.reasoningTokens) &&
-    hasNumber(live.reasoningTokens)
-  ) {
+  if (!hasNumber(authoritative.reasoningTokens) && hasNumber(live.reasoningTokens)) {
     return true;
   }
-  if (
-    !hasString(authoritative.reasoningEffort) &&
-    hasString(live.reasoningEffort)
-  ) {
+  if (!hasString(authoritative.reasoningEffort) && hasString(live.reasoningEffort)) {
     return true;
   }
   if (!hasString(authoritative.errorMessage) && hasString(live.errorMessage)) {
     return true;
   }
-  if (
-    !hasNumber(authoritative.downstreamStatusCode) &&
-    hasNumber(live.downstreamStatusCode)
-  ) {
+  if (!hasNumber(authoritative.downstreamStatusCode) && hasNumber(live.downstreamStatusCode)) {
     return true;
   }
-  if (
-    !hasString(authoritative.downstreamErrorMessage) &&
-    hasString(live.downstreamErrorMessage)
-  ) {
+  if (!hasString(authoritative.downstreamErrorMessage) && hasString(live.downstreamErrorMessage)) {
     return true;
   }
   if (!hasString(authoritative.failureKind) && hasString(live.failureKind)) {
     return true;
   }
-  if (
-    authoritative.isActionable == null &&
-    typeof live.isActionable === "boolean"
-  ) {
+  if (authoritative.isActionable == null && typeof live.isActionable === "boolean") {
     return true;
   }
   if (
@@ -501,19 +433,13 @@ function authoritativePreviewLacksLiveExtras(
   ) {
     return true;
   }
-  if (
-    !hasString(authoritative.requestedServiceTier) &&
-    hasString(live.requestedServiceTier)
-  ) {
+  if (!hasString(authoritative.requestedServiceTier) && hasString(live.requestedServiceTier)) {
     return true;
   }
   if (!hasString(authoritative.serviceTier) && hasString(live.serviceTier)) {
     return true;
   }
-  if (
-    !hasString(authoritative.billingServiceTier) &&
-    hasString(live.billingServiceTier)
-  ) {
+  if (!hasString(authoritative.billingServiceTier) && hasString(live.billingServiceTier)) {
     return true;
   }
   if (
@@ -522,35 +448,22 @@ function authoritativePreviewLacksLiveExtras(
   ) {
     return true;
   }
-  if (!hasNumber(authoritative.tReqReadMs) && hasNumber(live.tReqReadMs))
-    return true;
-  if (!hasNumber(authoritative.tReqParseMs) && hasNumber(live.tReqParseMs))
-    return true;
-  if (
-    !hasNumber(authoritative.tUpstreamConnectMs) &&
-    hasNumber(live.tUpstreamConnectMs)
-  ) {
+  if (!hasNumber(authoritative.tReqReadMs) && hasNumber(live.tReqReadMs)) return true;
+  if (!hasNumber(authoritative.tReqParseMs) && hasNumber(live.tReqParseMs)) return true;
+  if (!hasNumber(authoritative.tUpstreamConnectMs) && hasNumber(live.tUpstreamConnectMs)) {
     return true;
   }
-  if (
-    !hasNumber(authoritative.tUpstreamTtfbMs) &&
-    hasNumber(live.tUpstreamTtfbMs)
-  ) {
+  if (!hasNumber(authoritative.tUpstreamTtfbMs) && hasNumber(live.tUpstreamTtfbMs)) {
     return true;
   }
-  if (
-    !hasNumber(authoritative.tUpstreamStreamMs) &&
-    hasNumber(live.tUpstreamStreamMs)
-  ) {
+  if (!hasNumber(authoritative.tUpstreamStreamMs) && hasNumber(live.tUpstreamStreamMs)) {
     return true;
   }
   if (!hasNumber(authoritative.tRespParseMs) && hasNumber(live.tRespParseMs)) {
     return true;
   }
-  if (!hasNumber(authoritative.tPersistMs) && hasNumber(live.tPersistMs))
-    return true;
-  if (!hasNumber(authoritative.tTotalMs) && hasNumber(live.tTotalMs))
-    return true;
+  if (!hasNumber(authoritative.tPersistMs) && hasNumber(live.tPersistMs)) return true;
+  if (!hasNumber(authoritative.tTotalMs) && hasNumber(live.tTotalMs)) return true;
   return false;
 }
 
@@ -561,8 +474,7 @@ function buildOptimisticUpstreamAccounts(
 
   for (const record of records) {
     const upstreamAccountId =
-      typeof record.upstreamAccountId === "number" &&
-      Number.isFinite(record.upstreamAccountId)
+      typeof record.upstreamAccountId === "number" && Number.isFinite(record.upstreamAccountId)
         ? record.upstreamAccountId
         : null;
     const upstreamAccountName = record.upstreamAccountName?.trim() || null;
@@ -573,14 +485,11 @@ function buildOptimisticUpstreamAccounts(
           ? `name:${upstreamAccountName}`
           : "unknown";
     const totalTokens =
-      typeof record.totalTokens === "number" &&
-      Number.isFinite(record.totalTokens)
+      typeof record.totalTokens === "number" && Number.isFinite(record.totalTokens)
         ? Math.max(0, record.totalTokens)
         : 0;
     const totalCost =
-      typeof record.cost === "number" && Number.isFinite(record.cost)
-        ? record.cost
-        : 0;
+      typeof record.cost === "number" && Number.isFinite(record.cost) ? record.cost : 0;
 
     const existing = grouped.get(groupKey);
     if (existing) {
@@ -606,8 +515,7 @@ function buildOptimisticUpstreamAccounts(
   return Array.from(grouped.values())
     .sort((left, right) => {
       const lastActivityCompare =
-        (parseOccurredAtEpoch(right.lastActivityAt) ??
-          Number.MIN_SAFE_INTEGER) -
+        (parseOccurredAtEpoch(right.lastActivityAt) ?? Number.MIN_SAFE_INTEGER) -
         (parseOccurredAtEpoch(left.lastActivityAt) ?? Number.MIN_SAFE_INTEGER);
       if (lastActivityCompare !== 0) return lastActivityCompare;
       return (right.totalTokens ?? 0) - (left.totalTokens ?? 0);
@@ -629,9 +537,7 @@ function buildOptimisticConversation(
     );
   const lastActivityAt = uniqueRecords
     .map((record) => record.occurredAt)
-    .reduce((latest, occurredAt) =>
-      latest == null || occurredAt > latest ? occurredAt : latest,
-    );
+    .reduce((latest, occurredAt) => (latest == null || occurredAt > latest ? occurredAt : latest));
 
   return {
     promptCacheKey,
@@ -642,26 +548,20 @@ function buildOptimisticConversation(
     requestCount: uniqueRecords.length,
     totalTokens: uniqueRecords.reduce((sum, record) => {
       const totalTokens =
-        typeof record.totalTokens === "number" &&
-        Number.isFinite(record.totalTokens)
+        typeof record.totalTokens === "number" && Number.isFinite(record.totalTokens)
           ? Math.max(0, record.totalTokens)
           : 0;
       return sum + totalTokens;
     }, 0),
     totalCost: uniqueRecords.reduce((sum, record) => {
       const cost =
-        typeof record.cost === "number" && Number.isFinite(record.cost)
-          ? record.cost
-          : 0;
+        typeof record.cost === "number" && Number.isFinite(record.cost) ? record.cost : 0;
       return sum + cost;
     }, 0),
-    createdAt:
-      createdAtOverride?.trim() || derivedCreatedAt || new Date().toISOString(),
+    createdAt: createdAtOverride?.trim() || derivedCreatedAt || new Date().toISOString(),
     lastActivityAt: lastActivityAt ?? new Date().toISOString(),
     upstreamAccounts: buildOptimisticUpstreamAccounts(uniqueRecords),
-    recentInvocations: previewRecords.map(
-      buildPromptCachePreviewFromInvocation,
-    ),
+    recentInvocations: previewRecords.map(buildPromptCachePreviewFromInvocation),
     last24hRequests: mergePromptCacheRequestPoints([], uniqueRecords),
   };
 }
@@ -701,8 +601,7 @@ export function mergePromptCacheConversationHistory(
           return rightLastActivityEpoch - leftLastActivityEpoch;
         }
 
-        const leftCreatedAtEpoch =
-          parseOccurredAtEpoch(left.createdAt) ?? Number.MIN_SAFE_INTEGER;
+        const leftCreatedAtEpoch = parseOccurredAtEpoch(left.createdAt) ?? Number.MIN_SAFE_INTEGER;
         const rightCreatedAtEpoch =
           parseOccurredAtEpoch(right.createdAt) ?? Number.MIN_SAFE_INTEGER;
         if (leftCreatedAtEpoch !== rightCreatedAtEpoch) {
@@ -779,14 +678,9 @@ export function reconcilePromptCacheLiveRecordMap(
     if (recordEpoch !== previewTailEpoch) {
       return recordEpoch < previewTailEpoch;
     }
-    const recordId =
-      typeof record.id === "number" && Number.isFinite(record.id)
-        ? record.id
-        : null;
+    const recordId = typeof record.id === "number" && Number.isFinite(record.id) ? record.id : null;
     const previewTailId =
-      typeof previewTail.id === "number" && Number.isFinite(previewTail.id)
-        ? previewTail.id
-        : null;
+      typeof previewTail.id === "number" && Number.isFinite(previewTail.id) ? previewTail.id : null;
     if (recordId == null || previewTailId == null) return false;
     if (recordId <= 0) return false;
     return recordId <= previewTailId;
@@ -794,12 +688,9 @@ export function reconcilePromptCacheLiveRecordMap(
 
   const next: Record<string, ApiInvocation[]> = {};
   for (const [promptCacheKey, records] of Object.entries(current)) {
-    const conversation = stats.conversations.find(
-      (item) => item.promptCacheKey === promptCacheKey,
-    );
+    const conversation = stats.conversations.find((item) => item.promptCacheKey === promptCacheKey);
     if (!conversation) {
-      const latestObservedAt =
-        options.liveRecordObservedAtByKey?.[promptCacheKey];
+      const latestObservedAt = options.liveRecordObservedAtByKey?.[promptCacheKey];
       const responsePredatesLatestLiveRecord =
         typeof latestObservedAt === "number" &&
         Number.isFinite(latestObservedAt) &&
@@ -827,18 +718,12 @@ export function reconcilePromptCacheLiveRecordMap(
       );
     }
     const remaining = records.filter((record) => {
-      const authoritative = authoritativePreviewByKey.get(
-        invocationStableKey(record),
-      );
+      const authoritative = authoritativePreviewByKey.get(invocationStableKey(record));
       if (!authoritative) {
         if (promptCacheInvocationIsPending(record)) return true;
-        return !fallsOutsideAuthoritativePreviewWindow(
-          record,
-          conversation.recentInvocations,
-        );
+        return !fallsOutsideAuthoritativePreviewWindow(record, conversation.recentInvocations);
       }
-      if (authoritativePreviewLacksLiveExtras(authoritative, record))
-        return true;
+      if (authoritativePreviewLacksLiveExtras(authoritative, record)) return true;
       return choosePreferredInvocationRecord(authoritative, record) === record;
     });
     if (remaining.length > 0) {
@@ -858,9 +743,7 @@ export function mergePromptCacheConversationsResponse(
   if (!base) return null;
 
   const nextConversations = base.conversations.map((conversation) => {
-    const liveRecords = (
-      liveRecordsByKey[conversation.promptCacheKey] ?? []
-    ).filter((record) =>
+    const liveRecords = (liveRecordsByKey[conversation.promptCacheKey] ?? []).filter((record) =>
       recordMatchesPromptCacheSelection(record, selection, now),
     );
     if (liveRecords.length === 0) {
@@ -875,11 +758,9 @@ export function mergePromptCacheConversationsResponse(
       authoritativePreviewRecords,
     ).slice(0, PROMPT_CACHE_PREVIEW_LIMIT);
     const latestActivityEpoch = Math.max(
-      parseOccurredAtEpoch(conversation.lastActivityAt) ??
-        Number.MIN_SAFE_INTEGER,
+      parseOccurredAtEpoch(conversation.lastActivityAt) ?? Number.MIN_SAFE_INTEGER,
       ...liveRecords.map(
-        (record) =>
-          parseOccurredAtEpoch(record.occurredAt) ?? Number.MIN_SAFE_INTEGER,
+        (record) => parseOccurredAtEpoch(record.occurredAt) ?? Number.MIN_SAFE_INTEGER,
       ),
     );
 
@@ -889,9 +770,7 @@ export function mergePromptCacheConversationsResponse(
         latestActivityEpoch > Number.MIN_SAFE_INTEGER
           ? new Date(latestActivityEpoch).toISOString()
           : conversation.lastActivityAt,
-      recentInvocations: mergedPreviewRecords.map(
-        buildPromptCachePreviewFromInvocation,
-      ),
+      recentInvocations: mergedPreviewRecords.map(buildPromptCachePreviewFromInvocation),
       last24hRequests: mergePromptCacheRequestPoints(
         conversation.last24hRequests,
         liveRecords,
@@ -900,11 +779,8 @@ export function mergePromptCacheConversationsResponse(
     };
   });
 
-  const knownKeys = new Set(
-    nextConversations.map((item) => item.promptCacheKey),
-  );
-  const maxVisibleConversations =
-    getPromptCacheConversationVisibleLimit(selection);
+  const knownKeys = new Set(nextConversations.map((item) => item.promptCacheKey));
+  const maxVisibleConversations = getPromptCacheConversationVisibleLimit(selection);
   for (const [promptCacheKey, records] of Object.entries(liveRecordsByKey)) {
     if (knownKeys.has(promptCacheKey)) continue;
     const filteredRecords = records.filter((record) =>
@@ -912,27 +788,16 @@ export function mergePromptCacheConversationsResponse(
     );
     if (filteredRecords.length === 0) continue;
     const knownConversation = knownConversationHistoryByKey[promptCacheKey];
-    if (
-      !knownConversation?.createdAt &&
-      nextConversations.length >= maxVisibleConversations
-    ) {
+    if (!knownConversation?.createdAt && nextConversations.length >= maxVisibleConversations) {
       continue;
     }
     nextConversations.push(
-      buildOptimisticConversation(
-        promptCacheKey,
-        filteredRecords,
-        knownConversation?.createdAt,
-      ),
+      buildOptimisticConversation(promptCacheKey, filteredRecords, knownConversation?.createdAt),
     );
   }
 
   return {
     ...base,
-    conversations: trimAndOrderPromptCacheConversations(
-      nextConversations,
-      selection,
-      now,
-    ),
+    conversations: trimAndOrderPromptCacheConversations(nextConversations, selection, now),
   };
 }

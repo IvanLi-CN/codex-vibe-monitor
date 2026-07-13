@@ -518,17 +518,11 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 final_error.upstream_request_id = None;
             } else if terminal_failure_kind
                 == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
+                || !matches!(
+                    final_error.status,
+                    StatusCode::TOO_MANY_REQUESTS | StatusCode::PAYLOAD_TOO_LARGE
+                )
             {
-                final_error.status = StatusCode::BAD_GATEWAY;
-                final_error.message = terminal_message;
-                final_error.failure_kind = terminal_failure_kind;
-                final_error.upstream_error_code = None;
-                final_error.upstream_error_message = None;
-                final_error.upstream_request_id = None;
-            } else if !matches!(
-                final_error.status,
-                StatusCode::TOO_MANY_REQUESTS | StatusCode::PAYLOAD_TOO_LARGE
-            ) {
                 final_error.status = StatusCode::BAD_GATEWAY;
                 final_error.message = terminal_message;
                 final_error.failure_kind = terminal_failure_kind;
@@ -568,22 +562,12 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
             // upstream failure, only responses-family failover keeps the bounded wait so a
             // recovered alternate can still take over; non-responses routes preserve the last
             // upstream failure instead of re-entering the generic no-account wait loop.
-            let wait_for_no_available = if attempt_count == 0 {
-                true
-            } else if uses_timeout_route_failover {
-                !timeout_route_failover_pending
-            } else if sticky_owner_terminal_error_preservation_is_active(
-                preserve_sticky_owner_terminal_error,
-                last_error.as_ref(),
-            ) {
-                false
-            } else {
-                false
-            };
+            let wait_for_no_available = attempt_count == 0
+                || (uses_timeout_route_failover && !timeout_route_failover_pending);
             let total_timeout_deadline = responses_total_timeout_started_at
                 .zip(responses_total_timeout)
                 .map(|(started_at, total_timeout)| started_at + total_timeout)
-                .or_else(|| {
+                .or({
                     if attempt_count == 0 {
                         pre_attempt_total_timeout_deadline
                     } else {
@@ -1945,7 +1929,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     .get(header::CONTENT_ENCODING)
                                     .and_then(|value| value.to_str().ok())
                                     .map(|value| parse_content_encodings(Some(value)))
-                                    .map_or(true, |encodings| {
+                                    .is_none_or(|encodings| {
                                         encodings.iter().all(|encoding| encoding == "identity")
                                     }) =>
                         {

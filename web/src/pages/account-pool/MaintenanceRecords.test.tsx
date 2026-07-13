@@ -26,10 +26,7 @@ vi.mock("../../hooks/useUpstreamAccounts", () => ({
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
-const inputValueSetter = Object.getOwnPropertyDescriptor(
-  HTMLInputElement.prototype,
-  "value",
-)?.set;
+const inputValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
 
 function buildResponse(accountDisplayName: string) {
   return {
@@ -96,9 +93,7 @@ describe("MaintenanceRecordsPage", () => {
   });
 
   it("keeps stale rows visible and marks the table body while refetching", async () => {
-    let resolveInitial:
-      | ((value: ReturnType<typeof buildResponse>) => void)
-      | null = null;
+    let resolveInitial: ((value: ReturnType<typeof buildResponse>) => void) | null = null;
     const initialRequest = new Promise<ReturnType<typeof buildResponse>>((resolve) => {
       resolveInitial = resolve;
     });
@@ -125,7 +120,7 @@ describe("MaintenanceRecordsPage", () => {
 
     await act(async () => {
       inputValueSetter?.call(accountInput, "new filter");
-      accountInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      accountInput?.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await flushAsync();
 
@@ -151,7 +146,7 @@ describe("MaintenanceRecordsPage", () => {
 
     await act(async () => {
       inputValueSetter?.call(accountInput, "new filter");
-      accountInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      accountInput?.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await flushAsync();
 

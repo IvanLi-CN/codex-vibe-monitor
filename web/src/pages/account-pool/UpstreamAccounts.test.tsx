@@ -1,48 +1,34 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment, @typescript-eslint/no-unused-vars */
 // @ts-nocheck
-import ts from "typescript";
-import suite1 from "./UpstreamAccounts.roster-freshness.txt?raw";
-import suite2 from "./UpstreamAccounts.duplicates.txt?raw";
-import suite3 from "./UpstreamAccounts.sync-state-isolation.txt?raw";
-import suite4 from "./UpstreamAccounts.oauth-recovery.txt?raw";
-import suite5 from "./UpstreamAccounts.api-key-details.txt?raw";
-import suite6 from "./UpstreamAccounts.delete-confirmation.txt?raw";
-import suite7 from "./UpstreamAccounts.edit-drafts.txt?raw";
 
 /** @vitest-environment jsdom */
 import * as React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
-import {
   createMemoryRouter,
-  MemoryRouter,
-  RouterProvider,
-  Route,
-  Routes,
   type InitialEntry,
+  MemoryRouter,
+  Route,
+  RouterProvider,
+  Routes,
 } from "react-router-dom";
+import ts from "typescript";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SystemNotificationProvider } from "../../components/ui/system-notifications";
-import { I18nProvider } from "../../i18n";
-import { ThemeProvider } from "../../theme/context";
 import { COMPACT_VIEWPORT_MEDIA_QUERY } from "../../hooks/useCompactViewport";
-import UpstreamAccountsPage, {
-  SharedUpstreamAccountDetailDrawer,
-} from "./UpstreamAccounts";
-import type {
-  BroadcastPayload,
-  EffectiveRoutingRule,
-  TagSummary,
-} from "../../lib/api";
+import { I18nProvider } from "../../i18n";
+import type { BroadcastPayload, EffectiveRoutingRule, TagSummary } from "../../lib/api";
 import { ApiRequestError } from "../../lib/api";
+import { ThemeProvider } from "../../theme/context";
+import UpstreamAccountsPage, { SharedUpstreamAccountDetailDrawer } from "./UpstreamAccounts";
+import suite5 from "./UpstreamAccounts.api-key-details.txt?raw";
+import suite6 from "./UpstreamAccounts.delete-confirmation.txt?raw";
+import suite2 from "./UpstreamAccounts.duplicates.txt?raw";
+import suite7 from "./UpstreamAccounts.edit-drafts.txt?raw";
+import suite4 from "./UpstreamAccounts.oauth-recovery.txt?raw";
+import suite1 from "./UpstreamAccounts.roster-freshness.txt?raw";
+import suite3 from "./UpstreamAccounts.sync-state-isolation.txt?raw";
 
 type UpstreamAccountsHookValue = ReturnType<
   typeof import("../../hooks/useUpstreamAccounts").useUpstreamAccounts
@@ -82,10 +68,7 @@ const storage = new Map<string, string>();
 let compactViewportMatches = false;
 
 vi.mock("react-router-dom", async () => {
-  const actual =
-    await vi.importActual<typeof import("react-router-dom")>(
-      "react-router-dom",
-    );
+  const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
   return {
     ...actual,
     useNavigate: () => navigateMock,
@@ -109,8 +92,7 @@ vi.mock("../../hooks/usePoolTags", () => ({
 }));
 
 vi.mock("../../lib/api", async () => {
-  const actual =
-    await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
+  const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
   return {
     ...actual,
     createBulkUpstreamAccountSyncJobEventSource:
@@ -163,9 +145,7 @@ vi.mock("@tanstack/react-virtual", () => ({
     estimateSize: (index: number) => number;
     scrollMargin?: number;
   }) => {
-    const sizes = Array.from({ length: count }, (_, index) =>
-      estimateSize(index),
-    );
+    const sizes = Array.from({ length: count }, (_, index) => estimateSize(index));
     const indexes =
       virtualizerMocks.visibleIndexes ??
       Array.from({ length: Math.min(count, 4) }, (_, index) => index);
@@ -178,15 +158,11 @@ vi.mock("@tanstack/react-virtual", () => ({
           index,
           start:
             scrollMargin +
-            sizes
-              .slice(0, index)
-              .reduce((sum, candidateSize) => sum + candidateSize, 0),
+            sizes.slice(0, index).reduce((sum, candidateSize) => sum + candidateSize, 0),
           size,
           end:
             scrollMargin +
-            sizes
-              .slice(0, index + 1)
-              .reduce((sum, candidateSize) => sum + candidateSize, 0),
+            sizes.slice(0, index + 1).reduce((sum, candidateSize) => sum + candidateSize, 0),
         };
       });
     return {
@@ -206,9 +182,7 @@ vi.mock("@tanstack/react-virtual", () => ({
     estimateSize: (index: number) => number;
     scrollMargin?: number;
   }) => {
-    const sizes = Array.from({ length: count }, (_, index) =>
-      estimateSize(index),
-    );
+    const sizes = Array.from({ length: count }, (_, index) => estimateSize(index));
     const indexes =
       virtualizerMocks.visibleIndexes ??
       Array.from({ length: Math.min(count, 4) }, (_, index) => index);
@@ -221,15 +195,11 @@ vi.mock("@tanstack/react-virtual", () => ({
           index,
           start:
             scrollMargin +
-            sizes
-              .slice(0, index)
-              .reduce((sum, candidateSize) => sum + candidateSize, 0),
+            sizes.slice(0, index).reduce((sum, candidateSize) => sum + candidateSize, 0),
           size,
           end:
             scrollMargin +
-            sizes
-              .slice(0, index + 1)
-              .reduce((sum, candidateSize) => sum + candidateSize, 0),
+            sizes.slice(0, index + 1).reduce((sum, candidateSize) => sum + candidateSize, 0),
         };
       });
     return {
@@ -250,10 +220,7 @@ class MockBulkSyncEventSource implements EventTarget {
   readyState = 1;
   onerror: ((this: EventSource, ev: Event) => unknown) | null = null;
 
-  addEventListener(
-    type: string,
-    listener: EventListenerOrEventListenerObject | null,
-  ) {
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
     if (!listener) return;
     const handler =
       typeof listener === "function"
@@ -264,10 +231,7 @@ class MockBulkSyncEventSource implements EventTarget {
     this.listeners.set(type, current);
   }
 
-  removeEventListener(
-    type: string,
-    listener: EventListenerOrEventListenerObject | null,
-  ) {
+  removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
     if (!listener) return;
     const current = this.listeners.get(type);
     if (!current) return;
@@ -347,8 +311,7 @@ beforeAll(() => {
     configurable: true,
     writable: true,
     value: vi.fn().mockImplementation((query: string) => ({
-      matches:
-        query === COMPACT_VIEWPORT_MEDIA_QUERY ? compactViewportMatches : false,
+      matches: query === COMPACT_VIEWPORT_MEDIA_QUERY ? compactViewportMatches : false,
       media: query,
       onchange: null,
       addListener: vi.fn(),
@@ -380,17 +343,11 @@ beforeAll(() => {
 describe("UpstreamAccountsPage detail route tab query", () => {
   it("opens the shared drawer on the routing tab when the query requests routing", async () => {
     mockAccountsPage();
-    render(
-      "/account-pool/upstream-accounts?upstreamAccountId=5&upstreamAccountTab=routing",
-    );
+    render("/account-pool/upstream-accounts?upstreamAccountId=5&upstreamAccountTab=routing");
     await flushAsync();
 
-    expect(document.body.textContent ?? "").toMatch(
-      /最终生效规则|Effective routing rule/,
-    );
-    expect(document.body.textContent ?? "").toMatch(
-      /字段来源明细|Field source breakdown/,
-    );
+    expect(document.body.textContent ?? "").toMatch(/最终生效规则|Effective routing rule/);
+    expect(document.body.textContent ?? "").toMatch(/字段来源明细|Field source breakdown/);
   });
 
   it("defaults to the overview tab when only the account id is present", async () => {
@@ -398,9 +355,9 @@ describe("UpstreamAccountsPage detail route tab query", () => {
     render("/account-pool/upstream-accounts?upstreamAccountId=5");
     await flushAsync();
 
-    const overviewTab = Array.from(
-      document.body.querySelectorAll('button[role="tab"]'),
-    ).find((candidate) => /概览|overview/i.test(candidate.textContent ?? ""));
+    const overviewTab = Array.from(document.body.querySelectorAll('button[role="tab"]')).find(
+      (candidate) => /概览|overview/i.test(candidate.textContent ?? ""),
+    );
     if (!(overviewTab instanceof HTMLButtonElement)) {
       throw new Error("missing overview tab");
     }
@@ -418,22 +375,16 @@ beforeEach(() => {
   vi.mocked(window.localStorage.getItem).mockImplementation(
     (key: string) => storage.get(key) ?? null,
   );
-  vi.mocked(window.localStorage.setItem).mockImplementation(
-    (key: string, value: string) => {
-      storage.set(key, value);
-    },
-  );
-  vi.mocked(window.localStorage.removeItem).mockImplementation(
-    (key: string) => {
-      storage.delete(key);
-    },
-  );
+  vi.mocked(window.localStorage.setItem).mockImplementation((key: string, value: string) => {
+    storage.set(key, value);
+  });
+  vi.mocked(window.localStorage.removeItem).mockImplementation((key: string) => {
+    storage.delete(key);
+  });
   apiMocks.createBulkUpstreamAccountSyncJobEventSource.mockReset();
-  apiMocks.createBulkUpstreamAccountSyncJobEventSource.mockImplementation(
-    () => {
-      throw new Error("unexpected bulk sync event source");
-    },
-  );
+  apiMocks.createBulkUpstreamAccountSyncJobEventSource.mockImplementation(() => {
+    throw new Error("unexpected bulk sync event source");
+  });
   apiMocks.fetchUpstreamAccountActionEvents.mockReset();
   apiMocks.fetchUpstreamAccountActionEvents.mockResolvedValue({
     items: [],
@@ -524,22 +475,18 @@ afterEach(() => {
   sseMocks.onOpen = null;
 });
 
-function render(
-  initialEntry: InitialEntry = "/account-pool/upstream-accounts",
-) {
+function render(initialEntry: InitialEntry = "/account-pool/upstream-accounts") {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
   rerender(initialEntry);
 }
 
-function renderFlatForLegacySuites(
-  initialEntry: InitialEntry = "/account-pool/upstream-accounts",
-) {
+function renderFlatForLegacySuites(initialEntry: InitialEntry = "/account-pool/upstream-accounts") {
   render(initialEntry);
-  const flatToggle = Array.from(
-    host?.querySelectorAll('button[role="tab"]') ?? [],
-  ).find((candidate) => /flat|平铺/i.test(candidate.textContent ?? ""));
+  const flatToggle = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+    (candidate) => /flat|平铺/i.test(candidate.textContent ?? ""),
+  );
   if (flatToggle instanceof HTMLButtonElement) {
     act(() => {
       flatToggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -547,19 +494,14 @@ function renderFlatForLegacySuites(
   }
 }
 
-function rerender(
-  initialEntry: InitialEntry = "/account-pool/upstream-accounts",
-) {
+function rerender(initialEntry: InitialEntry = "/account-pool/upstream-accounts") {
   act(() => {
     root?.render(
       <I18nProvider>
         <SystemNotificationProvider>
           <MemoryRouter initialEntries={[initialEntry]}>
             <Routes>
-              <Route
-                path="/account-pool/upstream-accounts"
-                element={<UpstreamAccountsPage />}
-              />
+              <Route path="/account-pool/upstream-accounts" element={<UpstreamAccountsPage />} />
             </Routes>
           </MemoryRouter>
         </SystemNotificationProvider>
@@ -568,9 +510,7 @@ function rerender(
   });
 }
 
-function remount(
-  initialEntry: InitialEntry = "/account-pool/upstream-accounts",
-) {
+function remount(initialEntry: InitialEntry = "/account-pool/upstream-accounts") {
   act(() => {
     root?.unmount();
   });
@@ -600,11 +540,8 @@ function expectRosterHookQuery(expected: Record<string, unknown> | null) {
 }
 
 function findButton(pattern: RegExp) {
-  return Array.from(document.body.querySelectorAll("button")).find(
-    (candidate) =>
-      pattern.test(
-        candidate.textContent || candidate.getAttribute("aria-label") || "",
-      ),
+  return Array.from(document.body.querySelectorAll("button")).find((candidate) =>
+    pattern.test(candidate.textContent || candidate.getAttribute("aria-label") || ""),
   ) as HTMLButtonElement | undefined;
 }
 
@@ -618,8 +555,8 @@ function findExactTextElements(text: string, root: ParentNode = document.body) {
 }
 
 function findFixedContainerByText(pattern: RegExp) {
-  return Array.from(document.body.querySelectorAll(".fixed")).find(
-    (candidate) => pattern.test(candidate.textContent || ""),
+  return Array.from(document.body.querySelectorAll(".fixed")).find((candidate) =>
+    pattern.test(candidate.textContent || ""),
   ) as HTMLElement | undefined;
 }
 
@@ -656,9 +593,7 @@ function setCompactViewportMatch(matches: boolean) {
 
 function setInputValue(selector: string, value: string) {
   const input = document.body.querySelector(selector);
-  if (!(
-    input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement
-  )) {
+  if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) {
     throw new Error(`missing input: ${selector}`);
   }
   const prototype =
@@ -674,10 +609,7 @@ function setInputValue(selector: string, value: string) {
   });
 }
 
-function setFieldValue(
-  input: HTMLInputElement | HTMLTextAreaElement,
-  value: string,
-) {
+function setFieldValue(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
   const prototype =
     input instanceof HTMLTextAreaElement
       ? HTMLTextAreaElement.prototype
@@ -709,8 +641,8 @@ function setComboboxValue(nameSelector: string, value: string) {
   }
   setFieldValue(searchInput, value);
 
-  const option = Array.from(document.body.querySelectorAll("[cmdk-item]")).find(
-    (candidate) => (candidate.textContent || "").includes(value),
+  const option = Array.from(document.body.querySelectorAll("[cmdk-item]")).find((candidate) =>
+    (candidate.textContent || "").includes(value),
   );
   if (!(option instanceof HTMLElement)) {
     throw new Error(`missing combobox option: ${value}`);
@@ -725,14 +657,10 @@ function clickButton(matcher: RegExp) {
     (candidate) =>
       candidate instanceof HTMLButtonElement &&
       matcher.test(
-        candidate.textContent ||
-          candidate.getAttribute("aria-label") ||
-          candidate.title ||
-          "",
+        candidate.textContent || candidate.getAttribute("aria-label") || candidate.title || "",
       ),
   );
-  if (!(button instanceof HTMLButtonElement))
-    throw new Error(`missing button: ${matcher}`);
+  if (!(button instanceof HTMLButtonElement)) throw new Error(`missing button: ${matcher}`);
   pressButton(button);
   return button;
 }
@@ -741,9 +669,7 @@ function clickTab(matcher: RegExp) {
   const tab = Array.from(document.body.querySelectorAll('[role="tab"]')).find(
     (candidate) =>
       candidate instanceof HTMLButtonElement &&
-      matcher.test(
-        candidate.textContent || candidate.getAttribute("aria-label") || "",
-      ),
+      matcher.test(candidate.textContent || candidate.getAttribute("aria-label") || ""),
   );
   if (!(tab instanceof HTMLButtonElement)) {
     throw new Error(`missing tab: ${matcher}`);
@@ -754,8 +680,7 @@ function clickTab(matcher: RegExp) {
 
 function clickDrawerBackdrop() {
   const overlay =
-    document.body.querySelector(".drawer-shell")?.parentElement
-      ?.previousElementSibling;
+    document.body.querySelector(".drawer-shell")?.parentElement?.previousElementSibling;
   if (!(overlay instanceof HTMLElement)) {
     throw new Error("missing drawer backdrop");
   }
@@ -788,9 +713,7 @@ function clickFirstRosterRow() {
 }
 
 function clickCheckboxByLabel(matcher: RegExp) {
-  const checkbox = Array.from(
-    document.body.querySelectorAll('input[type="checkbox"]'),
-  ).find(
+  const checkbox = Array.from(document.body.querySelectorAll('input[type="checkbox"]')).find(
     (candidate) =>
       candidate instanceof HTMLInputElement &&
       matcher.test(candidate.getAttribute("aria-label") || ""),
@@ -805,14 +728,10 @@ function clickCheckboxByLabel(matcher: RegExp) {
 }
 
 function clickCombobox(matcher: RegExp) {
-  const trigger = Array.from(
-    document.body.querySelectorAll('button[role="combobox"]'),
-  ).find(
+  const trigger = Array.from(document.body.querySelectorAll('button[role="combobox"]')).find(
     (candidate) =>
       candidate instanceof HTMLButtonElement &&
-      matcher.test(
-        candidate.getAttribute("aria-label") || candidate.textContent || "",
-      ),
+      matcher.test(candidate.getAttribute("aria-label") || candidate.textContent || ""),
   );
   if (!(trigger instanceof HTMLButtonElement)) {
     throw new Error(`missing combobox: ${matcher}`);
@@ -823,9 +742,7 @@ function clickCombobox(matcher: RegExp) {
 
 function clickCommandItem(matcher: RegExp) {
   const item = Array.from(document.body.querySelectorAll("[cmdk-item]")).find(
-    (candidate) =>
-      candidate instanceof HTMLElement &&
-      matcher.test(candidate.textContent || ""),
+    (candidate) => candidate instanceof HTMLElement && matcher.test(candidate.textContent || ""),
   );
   if (!(item instanceof HTMLElement)) {
     throw new Error(`missing command item: ${matcher}`);
@@ -837,20 +754,14 @@ function clickCommandItem(matcher: RegExp) {
 }
 
 function renderedInvocationAccountNames() {
-  return Array.from(
-    document.body.querySelectorAll('[data-testid="invocation-account-name"]'),
-  )
+  return Array.from(document.body.querySelectorAll('[data-testid="invocation-account-name"]'))
     .map((candidate) => candidate.textContent?.trim() ?? "")
     .filter((value) => value.length > 0);
 }
 
 function clickSelectOption(matcher: RegExp) {
-  const option = Array.from(
-    document.body.querySelectorAll('[role="option"]'),
-  ).find(
-    (candidate) =>
-      candidate instanceof HTMLElement &&
-      matcher.test(candidate.textContent || ""),
+  const option = Array.from(document.body.querySelectorAll('[role="option"]')).find(
+    (candidate) => candidate instanceof HTMLElement && matcher.test(candidate.textContent || ""),
   );
   if (!(option instanceof HTMLElement)) {
     throw new Error(`missing select option: ${matcher}`);
@@ -1138,8 +1049,7 @@ function mockAccountsPage(options?: {
     ]
   ).map((group) => ({
     ...group,
-    accountCount:
-      typeof group.accountCount === "number" ? group.accountCount : 0,
+    accountCount: typeof group.accountCount === "number" ? group.accountCount : 0,
     boundProxyKeys: Array.isArray(group.boundProxyKeys)
       ? group.boundProxyKeys.map((value) => String(value))
       : [],
@@ -1147,62 +1057,43 @@ function mockAccountsPage(options?: {
     singleAccountRotationEnabled: group.singleAccountRotationEnabled === true,
     upstream429RetryEnabled: group.upstream429RetryEnabled === true,
     upstream429MaxRetries:
-      typeof group.upstream429MaxRetries === "number"
-        ? group.upstream429MaxRetries
-        : 0,
-    concurrencyLimit:
-      typeof group.concurrencyLimit === "number" ? group.concurrencyLimit : 0,
+      typeof group.upstream429MaxRetries === "number" ? group.upstream429MaxRetries : 0,
+    concurrencyLimit: typeof group.concurrencyLimit === "number" ? group.concurrencyLimit : 0,
   }));
   const saveGroupNote: ReturnType<typeof vi.fn> =
     options?.saveGroupNote ??
-    vi
-      .fn()
-      .mockImplementation(
-        async (groupName: string, payload: Record<string, unknown>) => {
-          const normalizedGroupName = groupName.trim();
-          const nextSummary = {
-            groupName: normalizedGroupName,
-            accountCount:
-              groups.find((group) => group.groupName === normalizedGroupName)
-                ?.accountCount ?? 0,
-            note:
-              typeof payload.note === "string" && payload.note.trim().length > 0
-                ? payload.note
-                : null,
-            boundProxyKeys: Array.isArray(payload.boundProxyKeys)
-              ? payload.boundProxyKeys.map((value) => String(value))
-              : [],
-            nodeShuntEnabled: payload.nodeShuntEnabled === true,
-            singleAccountRotationEnabled:
-              payload.singleAccountRotationEnabled === true,
-            upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
-            upstream429MaxRetries:
-              typeof payload.upstream429MaxRetries === "number"
-                ? payload.upstream429MaxRetries
-                : 0,
-            concurrencyLimit:
-              typeof payload.concurrencyLimit === "number"
-                ? payload.concurrencyLimit
-                : 0,
-          };
-          const existingIndex = groups.findIndex(
-            (group) => group.groupName === normalizedGroupName,
-          );
-          if (existingIndex >= 0) {
-            groups.splice(existingIndex, 1, nextSummary);
-          } else {
-            groups.push(nextSummary);
-          }
-          return nextSummary;
-        },
-      );
+    vi.fn().mockImplementation(async (groupName: string, payload: Record<string, unknown>) => {
+      const normalizedGroupName = groupName.trim();
+      const nextSummary = {
+        groupName: normalizedGroupName,
+        accountCount:
+          groups.find((group) => group.groupName === normalizedGroupName)?.accountCount ?? 0,
+        note:
+          typeof payload.note === "string" && payload.note.trim().length > 0 ? payload.note : null,
+        boundProxyKeys: Array.isArray(payload.boundProxyKeys)
+          ? payload.boundProxyKeys.map((value) => String(value))
+          : [],
+        nodeShuntEnabled: payload.nodeShuntEnabled === true,
+        singleAccountRotationEnabled: payload.singleAccountRotationEnabled === true,
+        upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
+        upstream429MaxRetries:
+          typeof payload.upstream429MaxRetries === "number" ? payload.upstream429MaxRetries : 0,
+        concurrencyLimit:
+          typeof payload.concurrencyLimit === "number" ? payload.concurrencyLimit : 0,
+      };
+      const existingIndex = groups.findIndex((group) => group.groupName === normalizedGroupName);
+      if (existingIndex >= 0) {
+        groups.splice(existingIndex, 1, nextSummary);
+      } else {
+        groups.push(nextSummary);
+      }
+      return nextSummary;
+    });
   const deleteGroupNote: ReturnType<typeof vi.fn> =
     options?.deleteGroupNote ??
     vi.fn().mockImplementation(async (groupName: string) => {
       const normalizedGroupName = groupName.trim();
-      const existingIndex = groups.findIndex(
-        (group) => group.groupName === normalizedGroupName,
-      );
+      const existingIndex = groups.findIndex((group) => group.groupName === normalizedGroupName);
       if (existingIndex >= 0) {
         groups.splice(existingIndex, 1);
       }
@@ -1625,14 +1516,8 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     expect(tabs[2]?.textContent ?? "").toMatch(/flat|平铺/i);
     expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
     expectRosterHookQuery({ includeAll: true });
-    expect(
-      host?.querySelector('[data-testid="upstream-accounts-grouped-roster"]'),
-    ).toBeTruthy();
-    expect(
-      host?.querySelector(
-        '[data-testid="upstream-accounts-pagination-footer"]',
-      ),
-    ).toBeNull();
+    expect(host?.querySelector('[data-testid="upstream-accounts-grouped-roster"]')).toBeTruthy();
+    expect(host?.querySelector('[data-testid="upstream-accounts-pagination-footer"]')).toBeNull();
   });
 
   it("switches to grouped view and hides the pagination footer", async () => {
@@ -1642,9 +1527,9 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       await Promise.resolve();
     });
 
-    const groupedToggle = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ""));
+    const groupedToggle = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (candidate) => /grouped|分组/i.test(candidate.textContent ?? ""),
+    );
     expect(groupedToggle).toBeTruthy();
 
     act(() => {
@@ -1657,18 +1542,11 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     expect(groupedRoster).toBeTruthy();
     expect(groupedRoster?.className ?? "").not.toContain("overflow-auto");
     expect(
-      Array.from(host?.querySelectorAll('input[type="checkbox"]') ?? []).find(
-        (candidate) =>
-          /select filtered accounts|选择筛选结果/i.test(
-            candidate.getAttribute("aria-label") ?? "",
-          ),
+      Array.from(host?.querySelectorAll('input[type="checkbox"]') ?? []).find((candidate) =>
+        /select filtered accounts|选择筛选结果/i.test(candidate.getAttribute("aria-label") ?? ""),
       ),
     ).toBeTruthy();
-    expect(
-      host?.querySelector(
-        '[data-testid="upstream-accounts-pagination-footer"]',
-      ),
-    ).toBeNull();
+    expect(host?.querySelector('[data-testid="upstream-accounts-pagination-footer"]')).toBeNull();
   });
 
   it("switches to grid view without bulk selection controls", async () => {
@@ -1678,9 +1556,9 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       await Promise.resolve();
     });
 
-    const gridToggle = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) => /grid|网格/i.test(candidate.textContent ?? ""));
+    const gridToggle = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (candidate) => /grid|网格/i.test(candidate.textContent ?? ""),
+    );
     expect(gridToggle).toBeTruthy();
 
     act(() => {
@@ -1694,21 +1572,12 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     expect(gridToggle?.getAttribute("aria-selected")).toBe("true");
     expect(groupedRoster?.className ?? "").not.toContain("overflow-auto");
     expect(
-      Array.from(host?.querySelectorAll('input[type="checkbox"]') ?? []).find(
-        (candidate) =>
-          /select filtered accounts|选择筛选结果/i.test(
-            candidate.getAttribute("aria-label") ?? "",
-          ),
+      Array.from(host?.querySelectorAll('input[type="checkbox"]') ?? []).find((candidate) =>
+        /select filtered accounts|选择筛选结果/i.test(candidate.getAttribute("aria-label") ?? ""),
       ),
     ).toBeFalsy();
-    expect(groupedRoster?.textContent ?? "").toMatch(
-      /Working 2|工作中 2|工作 2/i,
-    );
-    expect(
-      host?.querySelector(
-        '[data-testid="upstream-accounts-pagination-footer"]',
-      ),
-    ).toBeNull();
+    expect(groupedRoster?.textContent ?? "").toMatch(/Working 2|工作中 2|工作 2/i);
+    expect(host?.querySelector('[data-testid="upstream-accounts-pagination-footer"]')).toBeNull();
   });
 
   it("blocks grouped roster interactions while the include-all query is still switching", async () => {
@@ -1728,27 +1597,20 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       await Promise.resolve();
     });
 
-    const groupedToggle = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ""));
+    const groupedToggle = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (candidate) => /grouped|分组/i.test(candidate.textContent ?? ""),
+    );
     expect(groupedToggle).toBeTruthy();
 
     act(() => {
       groupedToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
+    expect(host?.querySelector('[data-testid="upstream-accounts-grouped-loading"]')).toBeTruthy();
+    expect(host?.querySelector('[data-testid="upstream-accounts-grouped-roster"]')).toBeNull();
     expect(
-      host?.querySelector('[data-testid="upstream-accounts-grouped-loading"]'),
-    ).toBeTruthy();
-    expect(
-      host?.querySelector('[data-testid="upstream-accounts-grouped-roster"]'),
-    ).toBeNull();
-    expect(
-      Array.from(host?.querySelectorAll('input[type="checkbox"]') ?? []).find(
-        (candidate) =>
-          /select filtered accounts|选择筛选结果/i.test(
-            candidate.getAttribute("aria-label") ?? "",
-          ),
+      Array.from(host?.querySelectorAll('input[type="checkbox"]') ?? []).find((candidate) =>
+        /select filtered accounts|选择筛选结果/i.test(candidate.getAttribute("aria-label") ?? ""),
       ),
     ).toBeFalsy();
   });
@@ -1770,22 +1632,16 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       await Promise.resolve();
     });
 
-    const flatToggle = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) => /flat|平铺/i.test(candidate.textContent ?? ""));
+    const flatToggle = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (candidate) => /flat|平铺/i.test(candidate.textContent ?? ""),
+    );
     expect(flatToggle).toBeTruthy();
     act(() => {
       flatToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(
-      host?.querySelector('[data-testid="upstream-accounts-table-loading"]'),
-    ).toBeTruthy();
-    expect(
-      host?.querySelector(
-        '[data-testid="upstream-accounts-pagination-footer"]',
-      ),
-    ).toBeTruthy();
+    expect(host?.querySelector('[data-testid="upstream-accounts-table-loading"]')).toBeTruthy();
+    expect(host?.querySelector('[data-testid="upstream-accounts-pagination-footer"]')).toBeTruthy();
     expect(host?.textContent ?? "").not.toContain("Existing OAuth");
     expect(host?.textContent ?? "").not.toContain("Another OAuth");
   });
@@ -1859,10 +1715,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       apiKeyConfigured: false,
       maskedApiKey: null,
     };
-    const sharedBase: Omit<
-      UpstreamAccountsHookValue,
-      "page" | "pageSize" | "listState"
-    > = {
+    const sharedBase: Omit<UpstreamAccountsHookValue, "page" | "pageSize" | "listState"> = {
       items,
       hasUngroupedAccounts: true,
       writesEnabled: true,
@@ -1947,14 +1800,12 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       await Promise.resolve();
     });
 
-    const initialFlatToggle = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) => /flat|平铺/i.test(candidate.textContent ?? ""));
+    const initialFlatToggle = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (candidate) => /flat|平铺/i.test(candidate.textContent ?? ""),
+    );
     expect(initialFlatToggle).toBeTruthy();
     act(() => {
-      initialFlatToggle?.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
+      initialFlatToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     const nextButton = findButton(/next|下一页/i);
@@ -1965,12 +1816,12 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
 
     expectRosterHookQuery({ page: 2, pageSize: 20 });
 
-    const groupedToggle = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ""));
-    const flatToggle = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) => /flat|平铺/i.test(candidate.textContent ?? ""));
+    const groupedToggle = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (candidate) => /grouped|分组/i.test(candidate.textContent ?? ""),
+    );
+    const flatToggle = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (candidate) => /flat|平铺/i.test(candidate.textContent ?? ""),
+    );
     expect(groupedToggle).toBeTruthy();
     expect(flatToggle).toBeTruthy();
 
@@ -2007,18 +1858,16 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       await Promise.resolve();
     });
 
-    const groupedToggle = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ""));
+    const groupedToggle = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (candidate) => /grouped|分组/i.test(candidate.textContent ?? ""),
+    );
     expect(groupedToggle).toBeTruthy();
 
     act(() => {
       groupedToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    const settingsButton = Array.from(
-      host?.querySelectorAll("button") ?? [],
-    ).find((candidate) =>
+    const settingsButton = Array.from(host?.querySelectorAll("button") ?? []).find((candidate) =>
       /edit group settings|编辑分组设置/i.test(
         candidate.getAttribute("aria-label") ?? candidate.textContent ?? "",
       ),
@@ -2033,9 +1882,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       await Promise.resolve();
     });
 
-    const dialogs = Array.from(
-      host?.ownerDocument.querySelectorAll('[role="dialog"]') ?? [],
-    );
+    const dialogs = Array.from(host?.ownerDocument.querySelectorAll('[role="dialog"]') ?? []);
     const groupSettingsDialog = dialogs.find((candidate) =>
       /group settings|分组设置/i.test(candidate.textContent ?? ""),
     );
@@ -2066,18 +1913,16 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       await Promise.resolve();
     });
 
-    const groupedToggle = Array.from(
-      host?.querySelectorAll('button[role="tab"]') ?? [],
-    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ""));
+    const groupedToggle = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (candidate) => /grouped|分组/i.test(candidate.textContent ?? ""),
+    );
     expect(groupedToggle).toBeTruthy();
 
     act(() => {
       groupedToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    const settingsButton = Array.from(
-      host?.querySelectorAll("button") ?? [],
-    ).find((candidate) =>
+    const settingsButton = Array.from(host?.querySelectorAll("button") ?? []).find((candidate) =>
       /edit group settings|编辑分组设置/i.test(
         candidate.getAttribute("aria-label") ?? candidate.textContent ?? "",
       ),
@@ -2092,9 +1937,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       await Promise.resolve();
     });
 
-    const dialogs = Array.from(
-      host?.ownerDocument.querySelectorAll('[role="dialog"]') ?? [],
-    );
+    const dialogs = Array.from(host?.ownerDocument.querySelectorAll('[role="dialog"]') ?? []);
     const groupSettingsDialog = dialogs.find((candidate) =>
       /group settings|分组设置/i.test(candidate.textContent ?? ""),
     );
@@ -2104,9 +1947,9 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       "creates its shared settings in advance",
     );
 
-    const saveButton = Array.from(
-      groupSettingsDialog?.querySelectorAll("button") ?? [],
-    ).find((candidate) => /save|保存/i.test(candidate.textContent ?? ""));
+    const saveButton = Array.from(groupSettingsDialog?.querySelectorAll("button") ?? []).find(
+      (candidate) => /save|保存/i.test(candidate.textContent ?? ""),
+    );
     expect(saveButton).toBeTruthy();
 
     act(() => {
@@ -2225,11 +2068,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
         <I18nProvider>
           <SystemNotificationProvider>
             <MemoryRouter>
-              <SharedUpstreamAccountDetailDrawer
-                open
-                accountId={5}
-                onClose={vi.fn()}
-              />
+              <SharedUpstreamAccountDetailDrawer open accountId={5} onClose={vi.fn()} />
             </MemoryRouter>
           </SystemNotificationProvider>
         </I18nProvider>,
@@ -2240,15 +2079,11 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     await flushAsync();
 
     expect(hookMocks.useUpstreamAccounts.mock.calls[0]?.[0]).toBeNull();
-    expect(
-      hookMocks.useUpstreamStickyConversations.mock.calls.at(-1)?.[1],
-    ).toEqual({
+    expect(hookMocks.useUpstreamStickyConversations.mock.calls.at(-1)?.[1]).toEqual({
       mode: "count",
       limit: 50,
     });
-    expect(
-      hookMocks.useUpstreamStickyConversations.mock.calls.at(-1)?.[2],
-    ).toBe(false);
+    expect(hookMocks.useUpstreamStickyConversations.mock.calls.at(-1)?.[2]).toBe(false);
 
     act(() => {
       root?.render(
@@ -2323,9 +2158,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     clickButton(/^delete$|^删除$/i);
     await flushAsync();
 
-    const confirmDialog = document.body.querySelector(
-      '.dialog-surface[role="alertdialog"]',
-    );
+    const confirmDialog = document.body.querySelector('.dialog-surface[role="alertdialog"]');
     expect(confirmDialog).not.toBeNull();
     expect(confirmDialog?.textContent ?? "").toMatch(/Existing OAuth/);
   });
@@ -2560,8 +2393,8 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       );
     });
 
-    const invokeButton = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("invk_action_001"),
+    const invokeButton = Array.from(document.body.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("invk_action_001"),
     );
     expect(invokeButton).toBeTruthy();
     act(() => {
@@ -2574,23 +2407,20 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       upstreamAccountId: 5,
       pageSize: 50,
     });
-    const recordsTab = Array.from(
-      document.body.querySelectorAll('button[role="tab"]'),
-    ).find((button) => /调用记录|records/i.test(button.textContent ?? ""));
+    const recordsTab = Array.from(document.body.querySelectorAll('button[role="tab"]')).find(
+      (button) => /调用记录|records/i.test(button.textContent ?? ""),
+    );
     expect(recordsTab?.getAttribute("aria-selected")).toBe("true");
     await waitForAssertion(() => {
-      expect(
-        document.body.querySelector('[data-testid="invocation-id"]')
-          ?.textContent,
-      ).toBe("invk_action_001");
+      expect(document.body.querySelector('[data-testid="invocation-id"]')?.textContent).toBe(
+        "invk_action_001",
+      );
     });
     expect(virtualizerMocks.scrollToIndex).toHaveBeenCalledWith(0, {
       align: "center",
     });
     expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalled();
-    expect(document.body.textContent).toMatch(
-      /Return to latest records|返回最新记录/,
-    );
+    expect(document.body.textContent).toMatch(/Return to latest records|返回最新记录/);
   });
 
   it.skip("keeps the legacy records tab open and focuses a not-found locator alert", async () => {
@@ -2621,8 +2451,8 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       );
     });
 
-    const invokeButton = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("invk_action_001"),
+    const invokeButton = Array.from(document.body.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("invk_action_001"),
     );
     act(() => {
       invokeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -2639,9 +2469,9 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     await waitForAssertion(() => {
       expect(alert).toBe(document.activeElement);
     });
-    const recordsTab = Array.from(
-      document.body.querySelectorAll('button[role="tab"]'),
-    ).find((button) => /调用记录|records/i.test(button.textContent ?? ""));
+    const recordsTab = Array.from(document.body.querySelectorAll('button[role="tab"]')).find(
+      (button) => /调用记录|records/i.test(button.textContent ?? ""),
+    );
     expect(recordsTab?.getAttribute("aria-selected")).toBe("true");
   });
 
@@ -2697,9 +2527,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
     });
     await waitForAssertion(() => {
-      expect(document.body.textContent).toContain(
-        "initial records fetch failed",
-      );
+      expect(document.body.textContent).toContain("initial records fetch failed");
     });
 
     act(() => {
@@ -2710,16 +2538,12 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     await waitForAssertion(() => {
       expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
     });
-    expect(document.body.textContent).not.toContain(
-      "initial records fetch failed",
-    );
+    expect(document.body.textContent).not.toContain("initial records fetch failed");
 
     await waitForAssertion(() => {
       expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
     });
-    expect(document.body.textContent).not.toContain(
-      "initial records fetch failed",
-    );
+    expect(document.body.textContent).not.toContain("initial records fetch failed");
   });
 
   it.skip("shows account activity and the legacy final-invocation infinite table", async () => {
@@ -2778,9 +2602,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
 
     await waitForAssertion(() => {
       expect(
-        document.body.querySelector(
-          '[data-testid="upstream-account-records-activity-overview"]',
-        ),
+        document.body.querySelector('[data-testid="upstream-account-records-activity-overview"]'),
       ).toBeTruthy();
     });
     expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(0);
@@ -2791,9 +2613,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
     });
     expect(
-      document.body.querySelector(
-        '[data-testid="upstream-account-records-activity-overview"]',
-      ),
+      document.body.querySelector('[data-testid="upstream-account-records-activity-overview"]'),
     ).toBeNull();
     expect(document.body.textContent).not.toMatch(/记录数量|Rows/);
     expect(document.body.textContent).not.toMatch(
@@ -2833,9 +2653,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       sortOrder: "desc",
     });
     expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
-    expect(document.body.textContent).toMatch(
-      /Loading more records|正在加载更多记录/,
-    );
+    expect(document.body.textContent).toMatch(/Loading more records|正在加载更多记录/);
 
     act(() => {
       secondFetch.resolve({
@@ -2943,9 +2761,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     });
     expect(renderedInvocationAccountNames()).toHaveLength(0);
     expect(
-      document.body.querySelector(
-        '[aria-label="正在加载记录"], [aria-label="Loading records"]',
-      ),
+      document.body.querySelector('[aria-label="正在加载记录"], [aria-label="Loading records"]'),
     ).toBeTruthy();
 
     act(() => {

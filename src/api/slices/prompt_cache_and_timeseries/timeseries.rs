@@ -1,13 +1,8 @@
 use super::prompt_cache_and_timeseries_shared as prompt_shared;
 use super::*;
 use anyhow::anyhow;
-use chrono::LocalResult;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use sqlx::FromRow;
 use std::collections::HashMap;
-use tokio::sync::{broadcast, watch};
-use tracing::{debug, warn};
+use tracing::debug;
 
 pub(crate) async fn fetch_timeseries(
     State(state): State<Arc<AppState>>,
@@ -1149,47 +1144,47 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
         bucket_cursor = next_reporting_bucket_epoch(bucket_cursor, bucket_seconds, reporting_tz)?;
     }
 
-    let (snapshot_id, hourly_rows, exact_records, archive_overlap_ids) = if range_plan
-        .full_hour_range
-        .is_some()
-    {
-        let mut tx = state.pool.begin().await?;
-        let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
-        let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
-        let (hourly_cursor, hourly_end_epoch) = range_plan
-            .full_hour_range
-            .expect("full_hour_range is present when hourly rollups are enabled");
-        let hourly_rows = query_invocation_hourly_rollup_range_tx(
-            tx.as_mut(),
-            hourly_cursor,
-            hourly_end_epoch,
-            source_scope,
-        )
-        .await?;
-        let mut exact_records =
-            query_invocation_exact_records_tx(tx.as_mut(), &range_plan, source_scope, snapshot_id)
-                .await?;
-        let tail_records = query_invocation_full_hour_tail_records_tx(
-            tx.as_mut(),
-            &range_plan,
-            source_scope,
-            rollup_live_cursor,
-            snapshot_id,
-        )
-        .await?;
-        let archive_overlap_ids = tail_records
-            .iter()
-            .map(|record| record.id)
-            .collect::<HashSet<_>>();
-        exact_records.extend(tail_records);
-        (snapshot_id, hourly_rows, exact_records, archive_overlap_ids)
-    } else {
-        let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
-        let exact_records =
-            query_invocation_exact_records(&state.pool, &range_plan, source_scope, snapshot_id)
-                .await?;
-        (snapshot_id, Vec::new(), exact_records, HashSet::new())
-    };
+    let (snapshot_id, hourly_rows, exact_records, archive_overlap_ids) =
+        if let Some((hourly_cursor, hourly_end_epoch)) = range_plan.full_hour_range {
+            let mut tx = state.pool.begin().await?;
+            let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
+            let rollup_live_cursor =
+                load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
+            let hourly_rows = query_invocation_hourly_rollup_range_tx(
+                tx.as_mut(),
+                hourly_cursor,
+                hourly_end_epoch,
+                source_scope,
+            )
+            .await?;
+            let mut exact_records = query_invocation_exact_records_tx(
+                tx.as_mut(),
+                &range_plan,
+                source_scope,
+                snapshot_id,
+            )
+            .await?;
+            let tail_records = query_invocation_full_hour_tail_records_tx(
+                tx.as_mut(),
+                &range_plan,
+                source_scope,
+                rollup_live_cursor,
+                snapshot_id,
+            )
+            .await?;
+            let archive_overlap_ids = tail_records
+                .iter()
+                .map(|record| record.id)
+                .collect::<HashSet<_>>();
+            exact_records.extend(tail_records);
+            (snapshot_id, hourly_rows, exact_records, archive_overlap_ids)
+        } else {
+            let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
+            let exact_records =
+                query_invocation_exact_records(&state.pool, &range_plan, source_scope, snapshot_id)
+                    .await?;
+            (snapshot_id, Vec::new(), exact_records, HashSet::new())
+        };
     let archived_hourly_rows = if let Some((range_start_epoch, range_end_epoch)) =
         range_plan.full_hour_range
     {
@@ -1360,15 +1355,17 @@ mod tests {
 
     #[test]
     fn timeseries_point_clears_latency_when_bucket_has_no_calls() {
-        let mut aggregate = BucketAggregate::default();
-        aggregate.first_byte_sample_count = 1;
-        aggregate.first_byte_ttfb_sum_ms = 750.0;
+        let mut aggregate = BucketAggregate {
+            first_byte_sample_count: 1,
+            first_byte_ttfb_sum_ms: 750.0,
+            first_response_byte_total_sample_count: 1,
+            first_response_byte_total_sum_ms: 18_225.02,
+            total_latency_sample_count: 1,
+            total_latency_sum_ms: 24_000.0,
+            ..Default::default()
+        };
         aggregate.first_byte_ttfb_values.push(750.0);
-        aggregate.first_response_byte_total_sample_count = 1;
-        aggregate.first_response_byte_total_sum_ms = 18_225.02;
         aggregate.first_response_byte_total_values.push(18_225.02);
-        aggregate.total_latency_sample_count = 1;
-        aggregate.total_latency_sum_ms = 24_000.0;
 
         let point = timeseries_point_from_aggregate(
             Utc.timestamp_opt(1_775_608_200, 0)
@@ -1392,12 +1389,14 @@ mod tests {
 
     #[test]
     fn timeseries_point_keeps_rollup_backed_total_latency_average() {
-        let mut aggregate = BucketAggregate::default();
-        aggregate.total_count = 4;
-        aggregate.success_count = 3;
-        aggregate.failure_count = 1;
-        aggregate.total_latency_sample_count = 2;
-        aggregate.total_latency_sum_ms = 1_800.0;
+        let aggregate = BucketAggregate {
+            total_count: 4,
+            success_count: 3,
+            failure_count: 1,
+            total_latency_sample_count: 2,
+            total_latency_sum_ms: 1_800.0,
+            ..Default::default()
+        };
 
         let point = timeseries_point_from_aggregate(
             Utc.timestamp_opt(1_775_608_200, 0)
@@ -1415,11 +1414,13 @@ mod tests {
 
     #[test]
     fn timeseries_point_exports_in_flight_phase_counts_and_compat_total() {
-        let mut aggregate = BucketAggregate::default();
-        aggregate.total_count = 5;
-        aggregate.success_count = 1;
-        aggregate.failure_count = 1;
-        aggregate.in_flight_count = 3;
+        let mut aggregate = BucketAggregate {
+            total_count: 5,
+            success_count: 1,
+            failure_count: 1,
+            in_flight_count: 3,
+            ..Default::default()
+        };
         aggregate.in_flight_phase_counts.queued = 1;
         aggregate.in_flight_phase_counts.requesting = 1;
         aggregate.in_flight_phase_counts.responding = 1;

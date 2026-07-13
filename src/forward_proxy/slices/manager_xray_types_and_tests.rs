@@ -1311,7 +1311,7 @@ mod tests {
         );
 
         assert_eq!(
-            manager.current_bound_group_binding_key("latam", &[node.key.clone()]),
+            manager.current_bound_group_binding_key("latam", std::slice::from_ref(&node.key)),
             Some(node.key),
         );
     }
@@ -1393,11 +1393,12 @@ mod tests {
         .await
         .expect("persist failed refresh");
 
-        let metadata = load_forward_proxy_metadata_history(&pool, &[selected_proxy.key.clone()])
-            .await
-            .expect("load metadata")
-            .remove(&selected_proxy.key)
-            .expect("metadata row");
+        let metadata =
+            load_forward_proxy_metadata_history(&pool, std::slice::from_ref(&selected_proxy.key))
+                .await
+                .expect("load metadata")
+                .remove(&selected_proxy.key)
+                .expect("metadata row");
         assert_eq!(metadata.egress_ip.as_deref(), Some("203.0.113.24"));
         assert_eq!(metadata.egress_ip_provider.as_deref(), Some("ipify"));
         assert_eq!(

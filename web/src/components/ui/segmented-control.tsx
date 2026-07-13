@@ -1,37 +1,40 @@
-import * as React from 'react'
-import { Slot } from '@radix-ui/react-slot'
-import { cn } from '../../lib/utils'
-import { segmentedControlItemVariants, type SegmentedControlItemSize } from './segmented-control.variants'
+import { Slot } from "@radix-ui/react-slot";
+import * as React from "react";
+import { cn } from "../../lib/utils";
+import {
+  type SegmentedControlItemSize,
+  segmentedControlItemVariants,
+} from "./segmented-control.variants";
 
-const SegmentedControlSizeContext = React.createContext<SegmentedControlItemSize>('default')
+const SegmentedControlSizeContext = React.createContext<SegmentedControlItemSize>("default");
 
 export interface SegmentedControlProps extends React.HTMLAttributes<HTMLDivElement> {
-  size?: SegmentedControlItemSize
+  size?: SegmentedControlItemSize;
 }
 
 const SegmentedControl = React.forwardRef<HTMLDivElement, SegmentedControlProps>(
-  ({ className, size = 'default', ...props }, ref) => (
+  ({ className, size = "default", ...props }, ref) => (
     <SegmentedControlSizeContext.Provider value={size}>
-      <div ref={ref} className={cn('segmented-control', className)} {...props} />
+      <div ref={ref} className={cn("segmented-control", className)} {...props} />
     </SegmentedControlSizeContext.Provider>
   ),
-)
-SegmentedControl.displayName = 'SegmentedControl'
+);
+SegmentedControl.displayName = "SegmentedControl";
 
 export interface SegmentedControlItemProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement>,
-    Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'size'> {
-  active?: boolean
-  size?: SegmentedControlItemSize
-  asChild?: boolean
+    Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "size"> {
+  active?: boolean;
+  size?: SegmentedControlItemSize;
+  asChild?: boolean;
 }
 
 const SegmentedControlItem = React.forwardRef<HTMLButtonElement, SegmentedControlItemProps>(
   ({ active = false, asChild = false, className, size, type, ...props }, ref) => {
-    const Comp = asChild ? Slot : 'button'
-    const inheritedSize = React.useContext(SegmentedControlSizeContext)
-    const resolvedSize = size ?? inheritedSize
-    const nextProps = asChild ? props : { type: type ?? 'button', ...props }
+    const Comp = asChild ? Slot : "button";
+    const inheritedSize = React.useContext(SegmentedControlSizeContext);
+    const resolvedSize = size ?? inheritedSize;
+    const nextProps = asChild ? props : { type: type ?? "button", ...props };
 
     return (
       <Comp
@@ -40,9 +43,9 @@ const SegmentedControlItem = React.forwardRef<HTMLButtonElement, SegmentedContro
         className={cn(segmentedControlItemVariants({ size: resolvedSize, active }), className)}
         {...nextProps}
       />
-    )
+    );
   },
-)
-SegmentedControlItem.displayName = 'SegmentedControlItem'
+);
+SegmentedControlItem.displayName = "SegmentedControlItem";
 
-export { SegmentedControl, SegmentedControlItem }
+export { SegmentedControl, SegmentedControlItem };

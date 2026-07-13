@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import * as React from "react";
+import type * as React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -13,10 +13,7 @@ import { GroupAccountRoutingRuleDialog } from "./GroupAccountRoutingRuleDialog";
 class MockPointerEvent extends MouseEvent {
   pointerType: string;
 
-  constructor(
-    type: string,
-    init: MouseEventInit & { pointerType?: string } = {},
-  ) {
+  constructor(type: string, init: MouseEventInit & { pointerType?: string } = {}) {
     super(type, init);
     this.pointerType = init.pointerType ?? "mouse";
   }
@@ -100,8 +97,7 @@ const labels = {
   imageToolRewriteHint:
     "Keep original follows the account's own image capability. Fill when missing only injects image tools when image intent is confirmed; force add always injects; force remove always strips it.",
   concurrencyLimit: "Concurrency limit",
-  concurrencyHint:
-    "Use 1-30 to cap fresh assignments. The last slider step means unlimited.",
+  concurrencyHint: "Use 1-30 to cap fresh assignments. The last slider step means unlimited.",
   currentValue: "Current",
   unlimited: "Unlimited",
   availableModels: "Available models",
@@ -134,8 +130,7 @@ const labels = {
   statusChangeReasonToggleEnabled: "On",
   statusChangeReasonToggleDisabled: "Off",
   upstream429Retry: "Upstream 429 retry",
-  upstream429RetryHint:
-    "Retry the same upstream account before cooldown and failover.",
+  upstream429RetryHint: "Retry the same upstream account before cooldown and failover.",
   upstream429RetryToggle: "Retry after upstream 429",
   upstream429RetryCount: "Retry count",
   upstream429RetryCountOnce: "1 retry",
@@ -180,7 +175,7 @@ describe("GroupAccountRoutingRuleDialog", () => {
     expect(submit).toBeInstanceOf(HTMLButtonElement);
 
     act(() => {
-      submit!.click();
+      submit?.click();
     });
 
     expect(onSubmit).toHaveBeenCalledWith(
@@ -225,7 +220,7 @@ describe("GroupAccountRoutingRuleDialog", () => {
     ).find((button) => button.textContent?.trim() === "0");
     expect(zeroRetry).toBeInstanceOf(HTMLButtonElement);
     act(() => {
-      zeroRetry!.click();
+      zeroRetry?.click();
     });
 
     const submit = Array.from(document.querySelectorAll("button")).find(
@@ -233,7 +228,7 @@ describe("GroupAccountRoutingRuleDialog", () => {
     );
     expect(submit).toBeInstanceOf(HTMLButtonElement);
     act(() => {
-      submit!.click();
+      submit?.click();
     });
 
     expect(onSubmit).toHaveBeenCalledWith(
@@ -264,7 +259,7 @@ describe("GroupAccountRoutingRuleDialog", () => {
     );
     expect(removeButton).toBeInstanceOf(HTMLButtonElement);
     act(() => {
-      removeButton!.click();
+      removeButton?.click();
     });
 
     const submit = Array.from(document.querySelectorAll("button")).find(
@@ -272,7 +267,7 @@ describe("GroupAccountRoutingRuleDialog", () => {
     );
     expect(submit).toBeInstanceOf(HTMLButtonElement);
     act(() => {
-      submit!.click();
+      submit?.click();
     });
 
     expect(onSubmit).toHaveBeenCalledWith(
@@ -301,14 +296,11 @@ describe("GroupAccountRoutingRuleDialog", () => {
 
     const input = document.querySelector('input[name="availableModelInput"]');
     expect(input).toBeInstanceOf(HTMLInputElement);
-    const valueSetter = Object.getOwnPropertyDescriptor(
-      HTMLInputElement.prototype,
-      "value",
-    )?.set;
+    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
     expect(valueSetter).toBeTypeOf("function");
     act(() => {
-      valueSetter!.call(input, "gpt-5.5");
-      input!.dispatchEvent(new Event("input", { bubbles: true }));
+      valueSetter?.call(input, "gpt-5.5");
+      input?.dispatchEvent(new Event("input", { bubbles: true }));
     });
 
     const addButton = Array.from(document.querySelectorAll("button")).find(
@@ -316,7 +308,7 @@ describe("GroupAccountRoutingRuleDialog", () => {
     );
     expect(addButton).toBeInstanceOf(HTMLButtonElement);
     act(() => {
-      addButton!.click();
+      addButton?.click();
     });
 
     const removeButton = Array.from(document.querySelectorAll("button")).find(
@@ -324,7 +316,7 @@ describe("GroupAccountRoutingRuleDialog", () => {
     );
     expect(removeButton).toBeInstanceOf(HTMLButtonElement);
     act(() => {
-      removeButton!.click();
+      removeButton?.click();
     });
 
     const submit = Array.from(document.querySelectorAll("button")).find(
@@ -332,7 +324,7 @@ describe("GroupAccountRoutingRuleDialog", () => {
     );
     expect(submit).toBeInstanceOf(HTMLButtonElement);
     act(() => {
-      submit!.click();
+      submit?.click();
     });
 
     expect(onSubmit).toHaveBeenCalledWith(
@@ -361,16 +353,12 @@ describe("GroupAccountRoutingRuleDialog", () => {
       />,
     );
 
-    const cutOutSwitch = Array.from(
-      document.querySelectorAll('button[role="switch"]'),
-    ).find((button) =>
-      button.closest("div")?.textContent?.includes("Block cut out"),
+    const cutOutSwitch = Array.from(document.querySelectorAll('button[role="switch"]')).find(
+      (button) => button.closest("div")?.textContent?.includes("Block cut out"),
     );
     expect(cutOutSwitch).toBeInstanceOf(HTMLButtonElement);
     act(() => {
-      cutOutSwitch!.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
+      cutOutSwitch?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     const submit = Array.from(document.querySelectorAll("button")).find(
@@ -378,7 +366,7 @@ describe("GroupAccountRoutingRuleDialog", () => {
     );
     expect(submit).toBeInstanceOf(HTMLButtonElement);
     act(() => {
-      submit!.click();
+      submit?.click();
     });
 
     expect(onSubmit).toHaveBeenCalledWith(
@@ -413,7 +401,7 @@ describe("GroupAccountRoutingRuleDialog", () => {
     );
     expect(authToggle).toBeInstanceOf(HTMLButtonElement);
     act(() => {
-      authToggle!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      authToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     const submit = Array.from(document.querySelectorAll("button")).find(
@@ -421,7 +409,7 @@ describe("GroupAccountRoutingRuleDialog", () => {
     );
     expect(submit).toBeInstanceOf(HTMLButtonElement);
     act(() => {
-      submit!.click();
+      submit?.click();
     });
 
     expect(onSubmit).toHaveBeenCalledWith(

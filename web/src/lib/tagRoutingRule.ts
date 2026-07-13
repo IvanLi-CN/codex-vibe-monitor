@@ -1,15 +1,6 @@
-import type {
-  TagFastModeRewriteMode,
-  TagPriorityTier,
-  TagRoutingRule,
-} from "./api";
+import type { TagFastModeRewriteMode, TagPriorityTier, TagRoutingRule } from "./api";
 
-export type RoutingRuleBadgeVariant =
-  | "default"
-  | "info"
-  | "accent"
-  | "secondary"
-  | "warning";
+export type RoutingRuleBadgeVariant = "default" | "info" | "accent" | "secondary" | "warning";
 
 type PriorityTierLabels = {
   priorityPrimary: string;
@@ -25,9 +16,7 @@ type FastModeRewriteLabels = {
   fastModeForceRemove: string;
 };
 
-export function priorityTierBadgeVariant(
-  priorityTier?: TagPriorityTier,
-): RoutingRuleBadgeVariant {
+export function priorityTierBadgeVariant(priorityTier?: TagPriorityTier): RoutingRuleBadgeVariant {
   if (priorityTier === "primary") return "default";
   if (priorityTier === "no_new") return "warning";
   if (priorityTier === "fallback") return "warning";

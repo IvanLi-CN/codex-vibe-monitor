@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AppIcon } from "../shared/AppIcon";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
@@ -21,9 +20,6 @@ import {
 import { Input } from "../../components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
 import { Switch } from "../../components/ui/switch";
-import { PolicyInlineOptionGroup } from "./PolicyInlineOptionGroup";
-import { StatusChangeToggleButton } from "./StatusChangeToggleButton";
-import { statusChangeReasonIconName } from "./statusChangeReasonIcons";
 import type {
   EffectiveRoutingRule,
   EffectiveRoutingRuleSource,
@@ -35,33 +31,34 @@ import type {
   UpdateGroupAccountRoutingRulePayload,
 } from "../../lib/api";
 import {
+  apiConcurrencyLimitToSliderValue,
   CONCURRENCY_LIMIT_MAX,
   CONCURRENCY_LIMIT_MIN,
   CONCURRENCY_LIMIT_UNLIMITED_SLIDER_VALUE,
-  apiConcurrencyLimitToSliderValue,
   formatConcurrencyLimitValue,
   sliderConcurrencyLimitToApiValue,
 } from "../../lib/concurrencyLimit";
 import {
-  fastModeRewriteBadgeLabel,
-  priorityTierBadgeLabel,
-} from "../../lib/tagRoutingRule";
-import {
   ROUTING_TIMEOUT_FIELD_ORDER,
   type RoutingTimeoutFieldKey,
 } from "../../lib/poolRoutingTimeouts";
+import { fastModeRewriteBadgeLabel, priorityTierBadgeLabel } from "../../lib/tagRoutingRule";
 import {
-  STATUS_CHANGE_REASON_CODES,
   countEnabledStatusChangeReasons,
   resolveStatusChangeReasonFieldSources,
   resolveStatusChangeReasons,
-  statusChangeReasonFieldKey,
-  statusChangeReasonFromFieldKey,
+  STATUS_CHANGE_REASON_CODES,
   type StatusChangeReasonCode,
   type StatusChangeReasonFieldKey,
   type StatusChangeReasonFieldSources,
+  statusChangeReasonFieldKey,
+  statusChangeReasonFromFieldKey,
 } from "../../lib/upstreamAccountStatusChangeReasons";
 import { cn } from "../../lib/utils";
+import { AppIcon } from "../shared/AppIcon";
+import { PolicyInlineOptionGroup } from "./PolicyInlineOptionGroup";
+import { StatusChangeToggleButton } from "./StatusChangeToggleButton";
+import { statusChangeReasonIconName } from "./statusChangeReasonIcons";
 
 type StatusChangeEditablePolicyField = StatusChangeReasonFieldKey;
 
@@ -84,9 +81,7 @@ type EditablePolicyField =
 
 type FieldSourceMap = NonNullable<EffectiveRoutingRule["fieldSources"]>;
 
-const editableFieldSourceKeys: Array<
-  [EditablePolicyField, keyof FieldSourceMap]
-> = [
+const editableFieldSourceKeys: Array<[EditablePolicyField, keyof FieldSourceMap]> = [
   ["allowCutOut", "allowCutOut"],
   ["allowCutIn", "allowCutIn"],
   ["priorityTier", "priorityTier"],
@@ -247,8 +242,7 @@ function defaultRule(rule?: EffectiveRoutingRule | null): EffectiveRoutingRule {
       availableModels: [],
       systemDeniedModels: [],
       statusChangeReasons: resolveStatusChangeReasons(null),
-      statusChangeReasonFieldSources:
-        resolveStatusChangeReasonFieldSources(null),
+      statusChangeReasonFieldSources: resolveStatusChangeReasonFieldSources(null),
       fieldSources: defaultFieldSources,
       timeouts: {
         responsesFirstByteTimeoutSecs: 120,
@@ -266,10 +260,7 @@ function defaultRule(rule?: EffectiveRoutingRule | null): EffectiveRoutingRule {
   );
 }
 
-function sourceLabel(
-  source: string,
-  labels: EffectiveRoutingRuleCardProps["labels"],
-): string {
+function sourceLabel(source: string, labels: EffectiveRoutingRuleCardProps["labels"]): string {
   switch (source) {
     case "root":
       return labels.sourceRoot ?? "Root default";
@@ -300,9 +291,7 @@ function sourceVariant(source: string) {
 
 type BadgeVariant = React.ComponentProps<typeof Badge>["variant"];
 
-function statusChangeDisabledValue(
-  labels: EffectiveRoutingRuleCardProps["labels"],
-) {
+function statusChangeDisabledValue(labels: EffectiveRoutingRuleCardProps["labels"]) {
   return labels.statusChangeReasonDisabledValue ?? "Evidence only";
 }
 
@@ -327,19 +316,12 @@ function valueVariant(
     return "info";
   }
   if (field === "fastModeRewriteMode") {
-    if (
-      value === labels.fastModeForceAdd ||
-      value === labels.fastModeForceRemove
-    )
-      return "default";
+    if (value === labels.fastModeForceAdd || value === labels.fastModeForceRemove) return "default";
     if (value === labels.fastModeFillMissing) return "info";
     return "secondary";
   }
   if (field === "imageToolRewriteMode") {
-    if (
-      value === labels.imageToolForceAdd ||
-      value === labels.imageToolForceRemove
-    )
+    if (value === labels.imageToolForceAdd || value === labels.imageToolForceRemove)
       return "default";
     if (value === labels.imageToolFillMissing) return "info";
     return "secondary";
@@ -354,12 +336,10 @@ function valueVariant(
   }
   if (field === "availableModels") {
     if (
-      value ===
-        (labels.availableModelsInherited ?? "Inherited / unrestricted") ||
+      value === (labels.availableModelsInherited ?? "Inherited / unrestricted") ||
       value === (labels.availableModelsNoneAllowed ?? "No models allowed")
     ) {
-      return value ===
-        (labels.availableModelsNoneAllowed ?? "No models allowed")
+      return value === (labels.availableModelsNoneAllowed ?? "No models allowed")
         ? "warning"
         : "success";
     }
@@ -439,9 +419,7 @@ function ProxyBindingChips({
           )}
         >
           <span className="max-w-56 truncate font-medium">{item.label}</span>
-          {item.status ? (
-            <span className="shrink-0 text-current/70">{item.status}</span>
-          ) : null}
+          {item.status ? <span className="shrink-0 text-current/70">{item.status}</span> : null}
           {item.accountOverride && onRemove ? (
             <button
               type="button"
@@ -482,11 +460,7 @@ function ProxyBindingMultiSelectTrigger({
       aria-label={labels.field}
       aria-disabled={disabled ? "true" : undefined}
       tabIndex={disabled ? -1 : 0}
-      title={
-        items.length > 0
-          ? items.map((item) => item.label).join(", ")
-          : labels.empty
-      }
+      title={items.length > 0 ? items.map((item) => item.label).join(", ") : labels.empty}
       className={cn(
         "flex min-h-11 w-full items-center gap-3 rounded-xl border border-base-300 bg-base-100 px-3 py-2.5 text-left shadow-sm transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100",
@@ -510,25 +484,14 @@ function ProxyBindingMultiSelectTrigger({
         aria-hidden
       />
       <span className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-        <ProxyBindingChips
-          items={items}
-          labels={labels}
-          disabled={disabled}
-          onRemove={onRemove}
-        />
+        <ProxyBindingChips items={items} labels={labels} disabled={disabled} onRemove={onRemove} />
       </span>
-      <AppIcon
-        name="chevron-down"
-        className="h-4 w-4 shrink-0 text-base-content/45"
-        aria-hidden
-      />
+      <AppIcon name="chevron-down" className="h-4 w-4 shrink-0 text-base-content/45" aria-hidden />
     </div>
   );
 }
 
-function accountOverrideFields(
-  fieldSources: FieldSourceMap,
-): EditablePolicyField[] {
+function accountOverrideFields(fieldSources: FieldSourceMap): EditablePolicyField[] {
   return editableFieldSourceKeys
     .filter(([, sourceKey]) => fieldSources[sourceKey] === "account")
     .map(([field]) => field);
@@ -537,15 +500,12 @@ function accountOverrideFields(
 function accountStatusChangeOverrideFields(
   reasonSources: StatusChangeReasonFieldSources,
 ): EditablePolicyField[] {
-  return STATUS_CHANGE_REASON_CODES.filter(
-    (reason) => reasonSources[reason] === "account",
-  ).map((reason) => statusChangeReasonFieldKey(reason));
+  return STATUS_CHANGE_REASON_CODES.filter((reason) => reasonSources[reason] === "account").map(
+    (reason) => statusChangeReasonFieldKey(reason),
+  );
 }
 
-const timeoutFieldToInlineField: Record<
-  RoutingTimeoutFieldKey,
-  EditablePolicyField
-> = {
+const timeoutFieldToInlineField: Record<RoutingTimeoutFieldKey, EditablePolicyField> = {
   responsesFirstByteTimeoutSecs: "timeoutResponsesFirstByte",
   compactFirstByteTimeoutSecs: "timeoutCompactFirstByte",
   responsesStreamTimeoutSecs: "timeoutResponsesStream",
@@ -555,9 +515,9 @@ const timeoutFieldToInlineField: Record<
 function accountTimeoutOverrideFields(
   timeoutSources: EffectiveRoutingTimeoutFieldSources,
 ): EditablePolicyField[] {
-  return ROUTING_TIMEOUT_FIELD_ORDER.filter(
-    (key) => timeoutSources[key] === "account",
-  ).map((key) => timeoutFieldToInlineField[key]);
+  return ROUTING_TIMEOUT_FIELD_ORDER.filter((key) => timeoutSources[key] === "account").map(
+    (key) => timeoutFieldToInlineField[key],
+  );
 }
 
 function normalizeModelIds(values: string[]) {
@@ -618,10 +578,7 @@ export function EffectiveRoutingRuleCard({
     [resolvedRule.statusChangeReasons],
   );
   const statusChangeReasonSources = useMemo(
-    () =>
-      resolveStatusChangeReasonFieldSources(
-        resolvedRule.statusChangeReasonFieldSources,
-      ),
+    () => resolveStatusChangeReasonFieldSources(resolvedRule.statusChangeReasonFieldSources),
     [resolvedRule.statusChangeReasonFieldSources],
   );
   const defaultExpandedFields = isEditable
@@ -629,14 +586,11 @@ export function EffectiveRoutingRuleCard({
         ...accountOverrideFields(fieldSources),
         ...accountStatusChangeOverrideFields(statusChangeReasonSources),
         ...accountTimeoutOverrideFields(timeoutSources),
-        ...(proxyBindings?.source === "account"
-          ? (["proxyBindings"] as const)
-          : []),
+        ...(proxyBindings?.source === "account" ? (["proxyBindings"] as const) : []),
       ]
     : [];
-  const [expandedFields, setExpandedFields] = useState<EditablePolicyField[]>(
-    defaultExpandedFields,
-  );
+  const [expandedFields, setExpandedFields] =
+    useState<EditablePolicyField[]>(defaultExpandedFields);
   const [availableModelInput, setAvailableModelInput] = useState("");
   const userTouchedExpansionRef = useRef(false);
   const previousIdentityKeyRef = useRef(identityKey);
@@ -658,9 +612,7 @@ export function EffectiveRoutingRuleCard({
       ...accountOverrideFields(fieldSources),
       ...accountStatusChangeOverrideFields(statusChangeReasonSources),
       ...accountTimeoutOverrideFields(timeoutSources),
-      ...(proxyBindings?.source === "account"
-        ? (["proxyBindings"] as const)
-        : []),
+      ...(proxyBindings?.source === "account" ? (["proxyBindings"] as const) : []),
     ];
     setExpandedFields((current) => {
       if (userTouchedExpansionRef.current) return current;
@@ -668,12 +620,8 @@ export function EffectiveRoutingRuleCard({
         current.some((field) =>
           field === "proxyBindings"
             ? proxyBindings?.source === "account"
-            : fieldToSource(
-                field,
-                fieldSources,
-                timeoutSources,
-                statusChangeReasonSources,
-              ) === "account",
+            : fieldToSource(field, fieldSources, timeoutSources, statusChangeReasonSources) ===
+              "account",
         )
       )
         return current;
@@ -697,8 +645,7 @@ export function EffectiveRoutingRuleCard({
     [editablePolicy?.availableModelOptions, resolvedRule.availableModels],
   );
 
-  const isBusy = (field: EditablePolicyField) =>
-    editablePolicy?.busyField === field;
+  const isBusy = (field: EditablePolicyField) => editablePolicy?.busyField === field;
   const changeField = (
     field: EditablePolicyField,
     payload: UpdateGroupAccountRoutingRulePayload,
@@ -719,26 +666,17 @@ export function EffectiveRoutingRuleCard({
   ) => {
     userTouchedExpansionRef.current = true;
     const active =
-      fieldToSource(
-        field,
-        fieldSources,
-        timeoutSources,
-        statusChangeReasonSources,
-      ) === "account";
+      fieldToSource(field, fieldSources, timeoutSources, statusChangeReasonSources) === "account";
     if (active) {
       clearField(field, clearPayload);
       return;
     }
     setExpandedFields((current) =>
-      current.includes(field)
-        ? current.filter((value) => value !== field)
-        : [...current, field],
+      current.includes(field) ? current.filter((value) => value !== field) : [...current, field],
     );
   };
 
-  const availableModelsValue = normalizeModelIds(
-    resolvedRule.availableModels ?? [],
-  );
+  const availableModelsValue = normalizeModelIds(resolvedRule.availableModels ?? []);
   const updateAvailableModels = (nextModels: string[]) => {
     changeField("availableModels", {
       availableModels: normalizeModelIds(nextModels),
@@ -752,10 +690,7 @@ export function EffectiveRoutingRuleCard({
   };
   const upstream429RetryCount =
     resolvedRule.upstream429RetryEnabled === true
-      ? Math.min(
-          5,
-          Math.max(0, Math.trunc(resolvedRule.upstream429MaxRetries ?? 0)),
-        )
+      ? Math.min(5, Math.max(0, Math.trunc(resolvedRule.upstream429MaxRetries ?? 0)))
       : 0;
   const inlineTimeoutBusy = ROUTING_TIMEOUT_FIELD_ORDER.some(
     (key) => editablePolicy?.busyField === timeoutFieldToInlineField[key],
@@ -765,16 +700,12 @@ export function EffectiveRoutingRuleCard({
     const source = timeoutSources[key];
     const label =
       key === "responsesFirstByteTimeoutSecs"
-        ? (labels.timeoutResponsesFirstByte ??
-          "Standard response first byte timeout")
+        ? (labels.timeoutResponsesFirstByte ?? "Standard response first byte timeout")
         : key === "compactFirstByteTimeoutSecs"
-          ? (labels.timeoutCompactFirstByte ??
-            "Compact response first byte timeout")
+          ? (labels.timeoutCompactFirstByte ?? "Compact response first byte timeout")
           : key === "responsesStreamTimeoutSecs"
-            ? (labels.timeoutResponsesStream ??
-              "Standard stream completion timeout")
-            : (labels.timeoutCompactStream ??
-              "Compact stream completion timeout");
+            ? (labels.timeoutResponsesStream ?? "Standard stream completion timeout")
+            : (labels.timeoutCompactStream ?? "Compact stream completion timeout");
     return {
       key,
       field,
@@ -807,9 +738,7 @@ export function EffectiveRoutingRuleCard({
             { value: "fallback", label: labels.priorityFallback },
             { value: "no_new", label: labels.priorityNoNew ?? "No new" },
           ]}
-          onChange={(value) =>
-            changeField("priorityTier", { priorityTier: value })
-          }
+          onChange={(value) => changeField("priorityTier", { priorityTier: value })}
         />
       ),
     },
@@ -823,9 +752,7 @@ export function EffectiveRoutingRuleCard({
         <Switch
           checked={resolvedRule.allowCutOut}
           disabled={isBusy("allowCutOut")}
-          onCheckedChange={(checked) =>
-            changeField("allowCutOut", { allowCutOut: checked })
-          }
+          onCheckedChange={(checked) => changeField("allowCutOut", { allowCutOut: checked })}
           aria-label={labels.cutOutLabel ?? "Cut out"}
         />
       ),
@@ -840,9 +767,7 @@ export function EffectiveRoutingRuleCard({
         <Switch
           checked={resolvedRule.allowCutIn}
           disabled={isBusy("allowCutIn")}
-          onCheckedChange={(checked) =>
-            changeField("allowCutIn", { allowCutIn: checked })
-          }
+          onCheckedChange={(checked) => changeField("allowCutIn", { allowCutIn: checked })}
           aria-label={labels.cutInLabel ?? "Cut in"}
         />
       ),
@@ -850,10 +775,7 @@ export function EffectiveRoutingRuleCard({
     {
       field: "fastModeRewriteMode" as const,
       label: labels.fieldFastMode ?? "FAST mode",
-      value: fastModeRewriteBadgeLabel(
-        resolvedRule.fastModeRewriteMode,
-        labels,
-      ),
+      value: fastModeRewriteBadgeLabel(resolvedRule.fastModeRewriteMode, labels),
       source: fieldSources.fastModeRewriteMode,
       clearPayload: { fastModeRewriteMode: null },
       editor: (
@@ -867,9 +789,7 @@ export function EffectiveRoutingRuleCard({
             { value: "force_add", label: labels.fastModeForceAdd },
             { value: "force_remove", label: labels.fastModeForceRemove },
           ]}
-          onChange={(value) =>
-            changeField("fastModeRewriteMode", { fastModeRewriteMode: value })
-          }
+          onChange={(value) => changeField("fastModeRewriteMode", { fastModeRewriteMode: value })}
         />
       ),
     },
@@ -897,9 +817,7 @@ export function EffectiveRoutingRuleCard({
             { value: "force_add", label: labels.imageToolForceAdd },
             { value: "force_remove", label: labels.imageToolForceRemove },
           ]}
-          onChange={(value) =>
-            changeField("imageToolRewriteMode", { imageToolRewriteMode: value })
-          }
+          onChange={(value) => changeField("imageToolRewriteMode", { imageToolRewriteMode: value })}
         />
       ),
     },
@@ -918,9 +836,7 @@ export function EffectiveRoutingRuleCard({
           disabled={isBusy("concurrencyLimit")}
           currentLabel={labels.currentValue ?? "Current"}
           unlimitedLabel={labels.concurrencyUnlimited ?? "Unlimited"}
-          onChange={(value) =>
-            changeField("concurrencyLimit", { concurrencyLimit: value })
-          }
+          onChange={(value) => changeField("concurrencyLimit", { concurrencyLimit: value })}
         />
       ),
     },
@@ -959,8 +875,7 @@ export function EffectiveRoutingRuleCard({
             ? (labels.availableModelsNoneAllowed ?? "No models allowed")
             : (labels.availableModelsInherited ?? "Inherited / unrestricted"),
       source: fieldSources.availableModels ?? "root",
-      valueBadges:
-        availableModelsValue.length > 0 ? availableModelsValue : null,
+      valueBadges: availableModelsValue.length > 0 ? availableModelsValue : null,
       clearPayload: { availableModels: null },
       editor: (
         <AvailableModelsEditor
@@ -986,14 +901,12 @@ export function EffectiveRoutingRuleCard({
       field: null,
       label: labels.fieldSystemDeniedModels ?? "System denied models",
       value:
-        resolvedRule.systemDeniedModels &&
-        resolvedRule.systemDeniedModels.length > 0
+        resolvedRule.systemDeniedModels && resolvedRule.systemDeniedModels.length > 0
           ? resolvedRule.systemDeniedModels.join(", ")
           : (labels.systemDeniedModelsEmpty ?? "None"),
       source: fieldSources.systemDeniedModels ?? "root",
       valueBadges:
-        resolvedRule.systemDeniedModels &&
-        resolvedRule.systemDeniedModels.length > 0
+        resolvedRule.systemDeniedModels && resolvedRule.systemDeniedModels.length > 0
           ? resolvedRule.systemDeniedModels
           : null,
     },
@@ -1013,28 +926,20 @@ export function EffectiveRoutingRuleCard({
       } satisfies UpdateGroupAccountRoutingRulePayload,
     };
   });
-  const totalEnabledStatusChangeReasons =
-    countEnabledStatusChangeReasons(statusChangeReasons);
-  const statusChangeReasonAccountOverrideReasons =
-    STATUS_CHANGE_REASON_CODES.filter(
-      (reason) => statusChangeReasonSources[reason] === "account",
-    );
-  const statusChangeReasonHasAccountOverrides =
-    statusChangeReasonAccountOverrideReasons.length > 0;
+  const totalEnabledStatusChangeReasons = countEnabledStatusChangeReasons(statusChangeReasons);
+  const statusChangeReasonAccountOverrideReasons = STATUS_CHANGE_REASON_CODES.filter(
+    (reason) => statusChangeReasonSources[reason] === "account",
+  );
+  const statusChangeReasonHasAccountOverrides = statusChangeReasonAccountOverrideReasons.length > 0;
   const statusChangeReasonResetBusy = isBusy("statusChangeReasons");
-  const statusChangeReasonResetPayload =
-    statusChangeReasonHasAccountOverrides
-      ? ({
-          statusChangeReasons: Object.fromEntries(
-            statusChangeReasonAccountOverrideReasons.map((reason) => [
-              reason,
-              null,
-            ]),
-          ),
-        } satisfies UpdateGroupAccountRoutingRulePayload)
-      : null;
-  const statusChangeReasonSectionError =
-    editablePolicy?.errorByField?.statusChangeReasons ?? null;
+  const statusChangeReasonResetPayload = statusChangeReasonHasAccountOverrides
+    ? ({
+        statusChangeReasons: Object.fromEntries(
+          statusChangeReasonAccountOverrideReasons.map((reason) => [reason, null]),
+        ),
+      } satisfies UpdateGroupAccountRoutingRulePayload)
+    : null;
+  const statusChangeReasonSectionError = editablePolicy?.errorByField?.statusChangeReasons ?? null;
   const proxyBindingsSource = proxyBindings?.source ?? "group";
   const proxyBindingsActiveOverride = proxyBindingsSource === "account";
   const proxyBindingsExpanded = expandedFields.includes("proxyBindings");
@@ -1043,9 +948,7 @@ export function EffectiveRoutingRuleCard({
     userTouchedExpansionRef.current = true;
     if (proxyBindingsActiveOverride) {
       proxyBindings.onClear?.();
-      setExpandedFields((current) =>
-        current.filter((value) => value !== "proxyBindings"),
-      );
+      setExpandedFields((current) => current.filter((value) => value !== "proxyBindings"));
       return;
     }
     proxyBindings.onEdit?.();
@@ -1059,42 +962,22 @@ export function EffectiveRoutingRuleCard({
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
-          <p className="metric-label">
-            {labels.sourceBreakdownTitle ?? "Field source breakdown"}
-          </p>
+          <p className="metric-label">{labels.sourceBreakdownTitle ?? "Field source breakdown"}</p>
           <div className="mt-3 overflow-hidden rounded-xl border border-base-300/70">
             {fieldRows.map((row) => {
               const editable = row.field != null && editablePolicy != null;
-              const activeOverride =
-                row.field != null && row.source === "account";
-              const expanded =
-                row.field != null && expandedFields.includes(row.field);
-              const error =
-                row.field != null
-                  ? editablePolicy?.errorByField?.[row.field]
-                  : null;
+              const activeOverride = row.field != null && row.source === "account";
+              const expanded = row.field != null && expandedFields.includes(row.field);
+              const error = row.field != null ? editablePolicy?.errorByField?.[row.field] : null;
               const busy = row.field != null && isBusy(row.field);
               return (
-                <div
-                  key={row.label}
-                  className="border-b border-base-300/60 last:border-b-0"
-                >
+                <div key={row.label} className="border-b border-base-300/60 last:border-b-0">
                   <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-3">
-                    <span className="font-medium text-base-content/80">
-                      {row.label}
-                    </span>
+                    <span className="font-medium text-base-content/80">{row.label}</span>
                     {row.valueBadges ? (
-                      <ValueBadgeList
-                        field={row.field}
-                        values={row.valueBadges}
-                        labels={labels}
-                      />
+                      <ValueBadgeList field={row.field} values={row.valueBadges} labels={labels} />
                     ) : (
-                      <ValueBadge
-                        field={row.field}
-                        value={row.value}
-                        labels={labels}
-                      />
+                      <ValueBadge field={row.field} value={row.value} labels={labels} />
                     )}
                     <Badge
                       className="w-fit sm:justify-self-end"
@@ -1106,9 +989,7 @@ export function EffectiveRoutingRuleCard({
                       <Button
                         type="button"
                         size="icon"
-                        variant={
-                          activeOverride || expanded ? "default" : "ghost"
-                        }
+                        variant={activeOverride || expanded ? "default" : "ghost"}
                         className={cn(
                           "h-8 w-8 justify-self-start rounded-full sm:justify-self-end",
                           activeOverride || expanded
@@ -1118,9 +999,7 @@ export function EffectiveRoutingRuleCard({
                         disabled={busy}
                         aria-pressed={activeOverride || expanded}
                         aria-label={`${activeOverride ? (labels.overrideClear ?? "Clear override") : (labels.overrideEdit ?? "Edit override")}: ${row.label}`}
-                        onClick={() =>
-                          toggleExpanded(row.field, row.clearPayload)
-                        }
+                        onClick={() => toggleExpanded(row.field, row.clearPayload)}
                       >
                         <AppIcon
                           name={
@@ -1141,12 +1020,8 @@ export function EffectiveRoutingRuleCard({
                   {expanded && row.field ? (
                     <div className="border-t border-base-300/50 bg-base-100/55 px-3 py-3">
                       <div className="grid grid-cols-1 gap-y-2 sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-x-3">
-                        <p className="text-sm font-semibold text-base-content">
-                          {row.label}
-                        </p>
-                        <div className="min-w-0 sm:col-span-3">
-                          {row.editor}
-                        </div>
+                        <p className="text-sm font-semibold text-base-content">{row.label}</p>
+                        <div className="min-w-0 sm:col-span-3">{row.editor}</div>
                         {busy ? (
                           <p className="text-xs text-base-content/60 sm:col-start-2 sm:col-span-3">
                             {labels.overrideSaving ?? "Saving..."}
@@ -1160,9 +1035,7 @@ export function EffectiveRoutingRuleCard({
                       </div>
                     </div>
                   ) : error ? (
-                    <p className="px-3 pb-2 text-xs font-medium text-error">
-                      {error}
-                    </p>
+                    <p className="px-3 pb-2 text-xs font-medium text-error">{error}</p>
                   ) : null}
                 </div>
               );
@@ -1190,9 +1063,7 @@ export function EffectiveRoutingRuleCard({
                     variant={proxyBindingsActiveOverride ? "default" : "ghost"}
                     className={cn(
                       "h-8 w-8 justify-self-start rounded-full sm:justify-self-end",
-                      proxyBindingsActiveOverride
-                        ? "text-primary-content"
-                        : "text-base-content/65",
+                      proxyBindingsActiveOverride ? "text-primary-content" : "text-base-content/65",
                     )}
                     disabled={proxyBindings.busy || proxyBindings.disabled}
                     aria-pressed={proxyBindingsActiveOverride}
@@ -1207,10 +1078,7 @@ export function EffectiveRoutingRuleCard({
                             ? "check-decagram-outline"
                             : "pencil-outline"
                       }
-                      className={cn(
-                        "h-4 w-4",
-                        proxyBindings.busy ? "animate-spin" : "",
-                      )}
+                      className={cn("h-4 w-4", proxyBindings.busy ? "animate-spin" : "")}
                       aria-hidden
                     />
                   </Button>
@@ -1225,9 +1093,7 @@ export function EffectiveRoutingRuleCard({
                         <ProxyBindingMultiSelectTrigger
                           items={proxyBindings.items}
                           labels={proxyBindings.labels}
-                          disabled={
-                            proxyBindings.busy || proxyBindings.disabled
-                          }
+                          disabled={proxyBindings.busy || proxyBindings.disabled}
                           onOpen={proxyBindings.onEdit}
                           onRemove={proxyBindings.onRemove}
                         />
@@ -1244,9 +1110,7 @@ export function EffectiveRoutingRuleCard({
         </div>
 
         <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
-          <p className="metric-label">
-            {labels.timeoutSectionTitle ?? "Request path timeouts"}
-          </p>
+          <p className="metric-label">{labels.timeoutSectionTitle ?? "Request path timeouts"}</p>
           <div className="mt-3 overflow-hidden rounded-xl border border-base-300/70">
             {timeoutRows.map((row) => {
               const activeOverride = row.source === "account";
@@ -1254,29 +1118,17 @@ export function EffectiveRoutingRuleCard({
               const busy = isBusy(row.field);
               const error = editablePolicy?.errorByField?.[row.field] ?? null;
               return (
-                <div
-                  key={row.key}
-                  className="border-b border-base-300/60 last:border-b-0"
-                >
+                <div key={row.key} className="border-b border-base-300/60 last:border-b-0">
                   <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[minmax(0,1fr)_5rem_11rem_2rem] sm:items-center sm:gap-3">
-                    <span className="min-w-0 font-medium text-base-content/80">
-                      {row.label}
-                    </span>
-                    <ValueBadge
-                      field={row.field}
-                      value={row.value}
-                      labels={labels}
-                    />
+                    <span className="min-w-0 font-medium text-base-content/80">{row.label}</span>
+                    <ValueBadge field={row.field} value={row.value} labels={labels} />
                     <div className="min-w-0 flex flex-wrap items-center gap-2">
                       <span className="text-xs text-base-content/65">
                         {activeOverride
                           ? (labels.timeoutOverrideValue ?? "Account override")
                           : (labels.timeoutInheritedValue ?? "Inherited")}
                       </span>
-                      <Badge
-                        className="w-fit"
-                        variant={sourceVariant(row.source)}
-                      >
+                      <Badge className="w-fit" variant={sourceVariant(row.source)}>
                         {sourceLabel(row.source, labels)}
                       </Badge>
                     </div>
@@ -1284,9 +1136,7 @@ export function EffectiveRoutingRuleCard({
                       <Button
                         type="button"
                         size="icon"
-                        variant={
-                          activeOverride || expanded ? "default" : "ghost"
-                        }
+                        variant={activeOverride || expanded ? "default" : "ghost"}
                         className={cn(
                           "h-8 w-8 justify-self-start rounded-full sm:justify-self-end",
                           activeOverride || expanded
@@ -1296,9 +1146,7 @@ export function EffectiveRoutingRuleCard({
                         disabled={busy}
                         aria-pressed={activeOverride || expanded}
                         aria-label={`${activeOverride ? (labels.overrideClear ?? "Clear override") : (labels.overrideEdit ?? "Edit override")}: ${row.label}`}
-                        onClick={() =>
-                          toggleExpanded(row.field, row.clearPayload)
-                        }
+                        onClick={() => toggleExpanded(row.field, row.clearPayload)}
                       >
                         <AppIcon
                           name={
@@ -1331,9 +1179,7 @@ export function EffectiveRoutingRuleCard({
                             defaultValue={String(timeoutValues[row.key])}
                             disabled={busy}
                             className="h-11 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono"
-                            onBlur={(
-                              event: React.FocusEvent<HTMLInputElement>,
-                            ) => {
+                            onBlur={(event: React.FocusEvent<HTMLInputElement>) => {
                               const parsed = event.currentTarget.value.trim();
                               if (!parsed || !editablePolicy) return;
                               void editablePolicy.onChange(row.field, {
@@ -1357,9 +1203,7 @@ export function EffectiveRoutingRuleCard({
                       </div>
                     </div>
                   ) : error ? (
-                    <p className="px-3 pb-2 text-xs font-medium text-error">
-                      {error}
-                    </p>
+                    <p className="px-3 pb-2 text-xs font-medium text-error">{error}</p>
                   ) : null}
                 </div>
               );
@@ -1376,8 +1220,7 @@ export function EffectiveRoutingRuleCard({
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="metric-label">
-                {labels.statusChangeReasonSectionTitle ??
-                  "Status change trigger reasons"}
+                {labels.statusChangeReasonSectionTitle ?? "Status change trigger reasons"}
               </p>
               {labels.statusChangeReasonSectionHint ? (
                 <p className="mt-1 text-xs leading-5 text-base-content/65">
@@ -1393,23 +1236,15 @@ export function EffectiveRoutingRuleCard({
                   className="h-8 rounded-full border border-base-300/80 bg-base-100/92 px-3 text-xs font-semibold text-base-content/72 shadow-none hover:bg-base-100 hover:text-base-content"
                   disabled={statusChangeReasonResetBusy}
                   aria-label={
-                    labels.statusChangeReasonResetAction ??
-                    "Reset status change trigger reasons"
+                    labels.statusChangeReasonResetAction ?? "Reset status change trigger reasons"
                   }
                   onClick={() => {
                     if (!statusChangeReasonResetPayload) return;
-                    changeField(
-                      "statusChangeReasons",
-                      statusChangeReasonResetPayload,
-                    );
+                    changeField("statusChangeReasons", statusChangeReasonResetPayload);
                   }}
                 >
                   {statusChangeReasonResetBusy ? (
-                    <AppIcon
-                      name="loading"
-                      className="mr-1 h-3.5 w-3.5 animate-spin"
-                      aria-hidden
-                    />
+                    <AppIcon name="loading" className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden />
                   ) : null}
                   {labels.statusChangeReasonResetAction ?? "Reset"}
                 </Button>
@@ -1418,8 +1253,7 @@ export function EffectiveRoutingRuleCard({
                 {labels.statusChangeReasonSummary?.(
                   totalEnabledStatusChangeReasons,
                   STATUS_CHANGE_REASON_CODES.length,
-                ) ??
-                  `${totalEnabledStatusChangeReasons}/${STATUS_CHANGE_REASON_CODES.length}`}
+                ) ?? `${totalEnabledStatusChangeReasons}/${STATUS_CHANGE_REASON_CODES.length}`}
               </Badge>
             </div>
           </div>
@@ -1454,17 +1288,13 @@ export function EffectiveRoutingRuleCard({
                       {labels.overrideSaving ?? "Saving..."}
                     </p>
                   ) : null}
-                  {error ? (
-                    <p className="text-xs font-medium text-error">{error}</p>
-                  ) : null}
+                  {error ? <p className="text-xs font-medium text-error">{error}</p> : null}
                 </div>
               );
             })}
           </div>
           {statusChangeReasonSectionError ? (
-            <p className="mt-3 text-xs font-medium text-error">
-              {statusChangeReasonSectionError}
-            </p>
+            <p className="mt-3 text-xs font-medium text-error">{statusChangeReasonSectionError}</p>
           ) : null}
         </div>
 
@@ -1472,9 +1302,7 @@ export function EffectiveRoutingRuleCard({
           <p className="metric-label">{labels.sourceTags}</p>
           <div className="mt-3 flex flex-wrap gap-2">
             {resolvedRule.sourceTagNames.length === 0 ? (
-              <span className="text-sm text-base-content/60">
-                {labels.noTags}
-              </span>
+              <span className="text-sm text-base-content/60">{labels.noTags}</span>
             ) : (
               resolvedRule.sourceTagNames.map((name) => (
                 <Badge key={name} variant="secondary">
@@ -1567,9 +1395,7 @@ function ConcurrencyInlineEditor({
         disabled={disabled}
         aria-label={currentLabel}
         aria-valuetext={displayValue}
-        onChange={(event) =>
-          onChange(sliderConcurrencyLimitToApiValue(Number(event.target.value)))
-        }
+        onChange={(event) => onChange(sliderConcurrencyLimitToApiValue(Number(event.target.value)))}
         className="h-2 w-full cursor-pointer appearance-none rounded-full bg-base-300 accent-primary disabled:cursor-not-allowed disabled:opacity-60"
       />
       <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/45">
@@ -1588,12 +1414,7 @@ interface RetryInlineEditorProps {
   onChange: (count: number) => void;
 }
 
-function RetryInlineEditor({
-  retries,
-  disabled,
-  labels,
-  onChange,
-}: RetryInlineEditorProps) {
+function RetryInlineEditor({ retries, disabled, labels, onChange }: RetryInlineEditorProps) {
   const value = Math.min(5, Math.max(0, Math.trunc(retries)));
   return (
     <PolicyInlineOptionGroup<number>
@@ -1637,18 +1458,13 @@ function AvailableModelsEditor({
   const [open, setOpen] = useState(false);
   const selectedValueSet = useMemo(() => new Set(value), [value]);
   const availableOptions = useMemo(
-    () =>
-      options.filter(
-        (option, index) => option.trim() && options.indexOf(option) === index,
-      ),
+    () => options.filter((option, index) => option.trim() && options.indexOf(option) === index),
     [options],
   );
   const filteredOptions = useMemo(() => {
     if (!trimmedInput) return availableOptions;
     const query = trimmedInput.toLocaleLowerCase();
-    return availableOptions.filter((option) =>
-      option.toLocaleLowerCase().includes(query),
-    );
+    return availableOptions.filter((option) => option.toLocaleLowerCase().includes(query));
   }, [availableOptions, trimmedInput]);
 
   const commitCustomValue = () => {
@@ -1708,9 +1524,7 @@ function AvailableModelsEditor({
                   </Badge>
                 ))
               ) : (
-                <span className="text-sm text-base-content/55">
-                  {emptyValueLabel}
-                </span>
+                <span className="text-sm text-base-content/55">{emptyValueLabel}</span>
               )}
             </span>
             <AppIcon
@@ -1720,17 +1534,12 @@ function AvailableModelsEditor({
             />
           </button>
         </PopoverTrigger>
-        <PopoverContent
-          align="start"
-          className="w-[var(--radix-popover-trigger-width)] p-0"
-        >
+        <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
           <Command shouldFilter={false}>
             <CommandInput
               value={inputValue}
               placeholder={
-                labels.availableModelsPlaceholder ??
-                labels.availableModelsAddCustom ??
-                "Add model"
+                labels.availableModelsPlaceholder ?? labels.availableModelsAddCustom ?? "Add model"
               }
               onValueChange={onInputChange}
             />
@@ -1738,10 +1547,7 @@ function AvailableModelsEditor({
               {canAdd ? (
                 <>
                   <CommandGroup>
-                    <CommandItem
-                      value={trimmedInput}
-                      onSelect={commitCustomValue}
-                    >
+                    <CommandItem value={trimmedInput} onSelect={commitCustomValue}>
                       <AppIcon
                         name="plus-circle-outline"
                         className="mr-2 h-4 w-4 text-primary"
@@ -1754,9 +1560,7 @@ function AvailableModelsEditor({
                 </>
               ) : null}
               {filteredOptions.length === 0 ? (
-                <CommandEmpty>
-                  {labels.availableModelsEmpty ?? "No matching models"}
-                </CommandEmpty>
+                <CommandEmpty>{labels.availableModelsEmpty ?? "No matching models"}</CommandEmpty>
               ) : (
                 <CommandGroup>
                   {filteredOptions.map((model) => {
@@ -1768,9 +1572,7 @@ function AvailableModelsEditor({
                         disabled={disabled}
                         onSelect={() =>
                           onChange(
-                            active
-                              ? value.filter((item) => item !== model)
-                              : [...value, model],
+                            active ? value.filter((item) => item !== model) : [...value, model],
                           )
                         }
                       >

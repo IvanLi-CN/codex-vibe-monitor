@@ -198,10 +198,12 @@ async fn startup_persistent_prep_skips_mutations_for_dry_run_commands() {
     .await
     .expect("insert pending manifest batch");
 
-    let mut cli = CliArgs::default();
-    cli.command = Some(CliCommand::Maintenance(MaintenanceCliArgs {
-        command: MaintenanceCommand::RawCompression(MaintenanceDryRunArgs { dry_run: true }),
-    }));
+    let cli = CliArgs {
+        command: Some(CliCommand::Maintenance(MaintenanceCliArgs {
+            command: MaintenanceCommand::RawCompression(MaintenanceDryRunArgs { dry_run: true }),
+        })),
+        ..Default::default()
+    };
 
     let summary = run_startup_persistent_prep(&pool, &config, &cli)
         .await

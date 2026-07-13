@@ -1,5 +1,5 @@
-import type { ApiInvocation } from "./api";
 import type { TranslationKey } from "../i18n";
+import type { ApiInvocation } from "./api";
 
 const DEFAULT_FALLBACK = "—";
 const PRIORITY_SERVICE_TIER = "priority";
@@ -11,12 +11,7 @@ const RUNNING_STATUSES = new Set(["running", "pending"]);
 
 export type ProxyWeightDeltaDirection = "up" | "down" | "flat" | "missing";
 export type FastIndicatorState = "effective" | "requested_only" | "none";
-export type InvocationEndpointKind =
-  | "responses"
-  | "chat"
-  | "compact"
-  | "remote_v2"
-  | "raw";
+export type InvocationEndpointKind = "responses" | "chat" | "compact" | "remote_v2" | "raw";
 export type InvocationCompactionKind = "compact" | "remote_v2";
 export type InvocationImageIntent = "yes" | "direct_image" | "no" | "unknown";
 export type InvocationImageBadgeVariant = "success" | "info";
@@ -56,15 +51,8 @@ export interface InvocationModelDisplay {
   hasMismatch: boolean;
 }
 
-function normalizeImageIntent(
-  value: string | null | undefined,
-): InvocationImageIntent | null {
-  if (
-    value === "yes" ||
-    value === "direct_image" ||
-    value === "no" ||
-    value === "unknown"
-  ) {
+function normalizeImageIntent(value: string | null | undefined): InvocationImageIntent | null {
+  if (value === "yes" || value === "direct_image" || value === "no" || value === "unknown") {
     return value;
   }
   return null;
@@ -82,9 +70,7 @@ function normalizeInvocationStatus(value: string | null | undefined) {
   return value.trim().toLowerCase();
 }
 
-function normalizeInvocationTimingStage(
-  value: number | null | undefined,
-): number | null {
+function normalizeInvocationTimingStage(value: number | null | undefined): number | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
     return null;
   }
@@ -104,9 +90,7 @@ function datedModelAliasBase(model: string): string | null {
   return base ? base : null;
 }
 
-export function normalizeModelComparisonKey(
-  value: string | null | undefined,
-): string | null {
+export function normalizeModelComparisonKey(value: string | null | undefined): string | null {
   const normalized = normalizeModelValue(value);
   if (!normalized) return null;
   const aliasBase = datedModelAliasBase(normalized) ?? normalized;
@@ -143,9 +127,7 @@ export function resolveInvocationModelDisplay(
   };
 }
 
-export function normalizeServiceTier(
-  value: string | null | undefined,
-): string | null {
+export function normalizeServiceTier(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
   return normalized.length > 0 ? normalized : null;
@@ -158,9 +140,7 @@ export function formatServiceTier(
   return normalizeServiceTier(value) ?? fallback;
 }
 
-export function isPriorityServiceTier(
-  value: string | null | undefined,
-): boolean {
+export function isPriorityServiceTier(value: string | null | undefined): boolean {
   return normalizeServiceTier(value) === PRIORITY_SERVICE_TIER;
 }
 
@@ -183,16 +163,12 @@ export function formatProxyWeightDelta(
   }
   const normalized = Object.is(value, -0) ? 0 : value;
   const rounded = Number(normalized.toFixed(2));
-  if (rounded > 0)
-    return { direction: "up", value: Math.abs(rounded).toFixed(2) };
-  if (rounded < 0)
-    return { direction: "down", value: Math.abs(rounded).toFixed(2) };
+  if (rounded > 0) return { direction: "up", value: Math.abs(rounded).toFixed(2) };
+  if (rounded < 0) return { direction: "down", value: Math.abs(rounded).toFixed(2) };
   return { direction: "flat", value: Math.abs(rounded).toFixed(2) };
 }
 
-export function normalizeRouteMode(
-  value: string | null | undefined,
-): string | null {
+export function normalizeRouteMode(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
   return normalized.length > 0 ? normalized : null;
@@ -215,9 +191,7 @@ export function isInvocationPoolAccountRoutingInProgress(
   }
   const name = upstreamAccountName?.trim();
   if (name) return true;
-  return (
-    typeof upstreamAccountId === "number" && Number.isFinite(upstreamAccountId)
-  );
+  return typeof upstreamAccountId === "number" && Number.isFinite(upstreamAccountId);
 }
 
 export function resolveInvocationAccountLabel(
@@ -236,10 +210,7 @@ export function resolveInvocationAccountLabel(
 
   const name = upstreamAccountName?.trim();
   if (name) return name;
-  if (
-    typeof upstreamAccountId === "number" &&
-    Number.isFinite(upstreamAccountId)
-  ) {
+  if (typeof upstreamAccountId === "number" && Number.isFinite(upstreamAccountId)) {
     return `账号 #${Math.trunc(upstreamAccountId)}`;
   }
   const normalizedStatus = status?.trim().toLowerCase();
@@ -251,9 +222,7 @@ export function resolveInvocationAccountLabel(
   if (
     normalizedFailureKind === "pool_no_available_account" ||
     (normalizedFailureKind === "pool_routing_blocked" &&
-      !normalizedErrorMessage.includes(
-        "sticky conversation cannot cut out of the current account",
-      ))
+      !normalizedErrorMessage.includes("sticky conversation cannot cut out of the current account"))
   ) {
     return poolAccountUnavailableLabel;
   }
@@ -273,10 +242,7 @@ export function resolveInvocationEndpointDisplay(
   record:
     | Pick<
         ApiInvocation,
-        | "endpoint"
-        | "status"
-        | "compactionRequestKind"
-        | "compactionResponseKind"
+        "endpoint" | "status" | "compactionRequestKind" | "compactionResponseKind"
       >
     | string
     | null
@@ -290,9 +256,7 @@ export function resolveInvocationEndpointDisplay(
         ? record.endpoint.trim()
         : "";
   const status =
-    typeof record === "string" || record == null
-      ? ""
-      : normalizeInvocationStatus(record.status);
+    typeof record === "string" || record == null ? "" : normalizeInvocationStatus(record.status);
   const compactionRequestKind =
     typeof record === "string" || record == null
       ? null
@@ -346,11 +310,7 @@ export function resolveInvocationEndpointDisplay(
 }
 
 export function resolveInvocationImageIntentDisplay(
-  record:
-    | Pick<ApiInvocation, "imageIntent">
-    | ApiInvocation["imageIntent"]
-    | null
-    | undefined,
+  record: Pick<ApiInvocation, "imageIntent"> | ApiInvocation["imageIntent"] | null | undefined,
 ): InvocationImageIntentDisplay {
   const imageIntent =
     typeof record === "string" || record == null
@@ -428,7 +388,6 @@ export function invocationStableKey(
 export function invocationStableDomKey(
   record: Pick<ApiInvocation, "invokeId" | "occurredAt"> | string,
 ): string {
-  const stableKey =
-    typeof record === "string" ? record : invocationStableKey(record);
+  const stableKey = typeof record === "string" ? record : invocationStableKey(record);
   return stableKey.replace(/[^A-Za-z0-9_-]/g, "_");
 }

@@ -1,28 +1,11 @@
-/* eslint-disable @typescript-eslint/ban-ts-comment, @typescript-eslint/no-unused-vars */
 // @ts-nocheck
-import ts from "typescript";
-import suite1 from "./UpstreamAccountCreate.batch-oauth-a.txt?raw";
-import suite2 from "./UpstreamAccountCreate.batch-oauth-b.txt?raw";
-import suite3 from "./UpstreamAccountCreate.display-name-a.txt?raw";
-import suite4 from "./UpstreamAccountCreate.display-name-b.txt?raw";
-import suite5 from "./UpstreamAccountCreate.oauth-mailbox.txt?raw";
-import suite6 from "./UpstreamAccountCreate.api-key.txt?raw";
-import suite7 from "./UpstreamAccountCreate.imported-oauth.txt?raw";
-import suite8 from "./UpstreamAccountCreate.relink-detail.txt?raw";
 
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import {
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import ts from "typescript";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SystemNotificationProvider } from "../../components/ui/system-notifications";
 import { I18nProvider } from "../../i18n";
 import type {
@@ -35,6 +18,14 @@ import {
   UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY,
 } from "../../lib/upstreamAccountGroups";
 import UpstreamAccountCreatePage from "./UpstreamAccountCreate";
+import suite6 from "./UpstreamAccountCreate.api-key.txt?raw";
+import suite1 from "./UpstreamAccountCreate.batch-oauth-a.txt?raw";
+import suite2 from "./UpstreamAccountCreate.batch-oauth-b.txt?raw";
+import suite3 from "./UpstreamAccountCreate.display-name-a.txt?raw";
+import suite4 from "./UpstreamAccountCreate.display-name-b.txt?raw";
+import suite7 from "./UpstreamAccountCreate.imported-oauth.txt?raw";
+import suite5 from "./UpstreamAccountCreate.oauth-mailbox.txt?raw";
+import suite8 from "./UpstreamAccountCreate.relink-detail.txt?raw";
 import {
   convertImportedWebSessionDocumentLocally,
   validateImportedOauthCredentialLocally,
@@ -56,10 +47,7 @@ const apiMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("react-router-dom", async () => {
-  const actual =
-    await vi.importActual<typeof import("react-router-dom")>(
-      "react-router-dom",
-    );
+  const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
   return {
     ...actual,
     useNavigate: () => navigateMock,
@@ -80,13 +68,11 @@ vi.mock("../../hooks/usePoolTags", () => ({
 
 vi.mock("../../lib/upstreamAccountsEvents", () => ({
   UPSTREAM_ACCOUNTS_CHANGED_EVENT: "upstream-accounts:changed",
-  emitUpstreamAccountsChanged:
-    upstreamAccountsEventMocks.emitUpstreamAccountsChanged,
+  emitUpstreamAccountsChanged: upstreamAccountsEventMocks.emitUpstreamAccountsChanged,
 }));
 
 vi.mock("../../lib/api", async () => {
-  const actual =
-    await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
+  const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
   return {
     ...actual,
     fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
@@ -100,10 +86,7 @@ class MockValidationEventSource implements EventTarget {
   private listeners = new Map<string, Set<EventListener>>();
   readyState = 1;
 
-  addEventListener(
-    type: string,
-    listener: EventListenerOrEventListenerObject | null,
-  ) {
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
     if (!listener) return;
     const handler =
       typeof listener === "function"
@@ -114,10 +97,7 @@ class MockValidationEventSource implements EventTarget {
     this.listeners.set(type, current);
   }
 
-  removeEventListener(
-    type: string,
-    listener: EventListenerOrEventListenerObject | null,
-  ) {
+  removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
     if (!listener) return;
     const current = this.listeners.get(type);
     if (!current) return;
@@ -186,11 +166,7 @@ function buildImportedOauthValidationCounts(rows: Array<{ status: string }>) {
     }
   });
   counts.checked =
-    counts.duplicateInInput +
-    counts.ok +
-    counts.okExhausted +
-    counts.invalid +
-    counts.error;
+    counts.duplicateInInput + counts.ok + counts.okExhausted + counts.invalid + counts.error;
   return counts;
 }
 
@@ -287,9 +263,7 @@ beforeAll(() => {
   Object.defineProperty(window, "localStorage", {
     configurable: true,
     value: {
-      getItem: vi.fn((key: string) =>
-        key === "codex-vibe-monitor.locale" ? "en" : null,
-      ),
+      getItem: vi.fn((key: string) => (key === "codex-vibe-monitor.locale" ? "en" : null)),
       setItem: vi.fn(),
       removeItem: vi.fn(),
     },
@@ -336,18 +310,14 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function render(
-  initialEntry: RenderEntry = "/account-pool/upstream-accounts/new",
-) {
+function render(initialEntry: RenderEntry = "/account-pool/upstream-accounts/new") {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
   rerender(initialEntry);
 }
 
-function rerender(
-  initialEntry: RenderEntry = "/account-pool/upstream-accounts/new",
-) {
+function rerender(initialEntry: RenderEntry = "/account-pool/upstream-accounts/new") {
   const normalizedEntry =
     typeof initialEntry === "string"
       ? (() => {
@@ -366,15 +336,11 @@ function rerender(
       ? (normalizedEntry.state as Record<string, unknown>)
       : {};
   const baseDraft =
-    baseState.draft &&
-    typeof baseState.draft === "object" &&
-    !Array.isArray(baseState.draft)
+    baseState.draft && typeof baseState.draft === "object" && !Array.isArray(baseState.draft)
       ? (baseState.draft as Record<string, unknown>)
       : {};
   const oauthDraft =
-    baseDraft.oauth &&
-    typeof baseDraft.oauth === "object" &&
-    !Array.isArray(baseDraft.oauth)
+    baseDraft.oauth && typeof baseDraft.oauth === "object" && !Array.isArray(baseDraft.oauth)
       ? (baseDraft.oauth as Record<string, unknown>)
       : {};
   const batchOauthDraft =
@@ -384,15 +350,11 @@ function rerender(
       ? (baseDraft.batchOauth as Record<string, unknown>)
       : {};
   const importDraft =
-    baseDraft.import &&
-    typeof baseDraft.import === "object" &&
-    !Array.isArray(baseDraft.import)
+    baseDraft.import && typeof baseDraft.import === "object" && !Array.isArray(baseDraft.import)
       ? (baseDraft.import as Record<string, unknown>)
       : {};
   const apiKeyDraft =
-    baseDraft.apiKey &&
-    typeof baseDraft.apiKey === "object" &&
-    !Array.isArray(baseDraft.apiKey)
+    baseDraft.apiKey && typeof baseDraft.apiKey === "object" && !Array.isArray(baseDraft.apiKey)
       ? (baseDraft.apiKey as Record<string, unknown>)
       : {};
   const entryWithDefaults = {
@@ -496,8 +458,7 @@ async function pasteIntoField(input: HTMLTextAreaElement, text: string) {
     Object.defineProperty(event, "clipboardData", {
       configurable: true,
       value: {
-        getData: (type: string) =>
-          type === "text/plain" || type === "text" ? text : "",
+        getData: (type: string) => (type === "text/plain" || type === "text" ? text : ""),
       },
     });
     input.dispatchEvent(event);
@@ -508,9 +469,7 @@ async function pasteIntoField(input: HTMLTextAreaElement, text: string) {
 
 function setInputValue(selector: string, value: string) {
   const input = host?.querySelector(selector);
-  if (
-    !(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)
-  ) {
+  if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) {
     throw new Error(`missing input: ${selector}`);
   }
   const prototype =
@@ -529,10 +488,7 @@ function setInputValue(selector: string, value: string) {
   return input;
 }
 
-function setFieldValue(
-  input: HTMLInputElement | HTMLTextAreaElement,
-  value: string,
-) {
+function setFieldValue(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
   const prototype =
     input instanceof HTMLTextAreaElement
       ? HTMLTextAreaElement.prototype
@@ -551,9 +507,7 @@ function setFieldValue(
 
 function setBodyInputValue(selector: string, value: string) {
   const input = document.body.querySelector(selector);
-  if (
-    !(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)
-  ) {
+  if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) {
     throw new Error(`missing body input: ${selector}`);
   }
   return setFieldValue(input, value);
@@ -564,11 +518,7 @@ function clickButton(matcher: RegExp) {
     (candidate) =>
       candidate instanceof HTMLButtonElement &&
       matcher.test(
-        [
-          candidate.textContent,
-          candidate.getAttribute("aria-label"),
-          candidate.title,
-        ]
+        [candidate.textContent, candidate.getAttribute("aria-label"), candidate.title]
           .filter(Boolean)
           .join(" "),
       ),
@@ -587,11 +537,7 @@ function clickBodyButton(matcher: RegExp) {
     (candidate) =>
       candidate instanceof HTMLButtonElement &&
       matcher.test(
-        [
-          candidate.textContent,
-          candidate.getAttribute("aria-label"),
-          candidate.title,
-        ]
+        [candidate.textContent, candidate.getAttribute("aria-label"), candidate.title]
           .filter(Boolean)
           .join(" "),
       ),
@@ -610,11 +556,7 @@ function findButton(matcher: RegExp) {
     (candidate) =>
       candidate instanceof HTMLButtonElement &&
       matcher.test(
-        [
-          candidate.textContent,
-          candidate.getAttribute("aria-label"),
-          candidate.title,
-        ]
+        [candidate.textContent, candidate.getAttribute("aria-label"), candidate.title]
           .filter(Boolean)
           .join(" "),
       ),
@@ -626,11 +568,7 @@ function findBodyButton(matcher: RegExp) {
     (candidate) =>
       candidate instanceof HTMLButtonElement &&
       matcher.test(
-        [
-          candidate.textContent,
-          candidate.getAttribute("aria-label"),
-          candidate.title,
-        ]
+        [candidate.textContent, candidate.getAttribute("aria-label"), candidate.title]
           .filter(Boolean)
           .join(" "),
       ),
@@ -663,10 +601,7 @@ function setComboboxValue(nameSelector: string, value: string) {
   if (!(searchInput instanceof HTMLInputElement)) {
     throw new Error(`missing command input: ${nameSelector}`);
   }
-  const setter = Object.getOwnPropertyDescriptor(
-    HTMLInputElement.prototype,
-    "value",
-  )?.set;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
   if (!setter) {
     throw new Error(`missing native setter for combobox: ${nameSelector}`);
   }
@@ -676,8 +611,8 @@ function setComboboxValue(nameSelector: string, value: string) {
     searchInput.dispatchEvent(new Event("change", { bubbles: true }));
   });
 
-  const option = Array.from(document.body.querySelectorAll("[cmdk-item]")).find(
-    (candidate) => (candidate.textContent || "").includes(value),
+  const option = Array.from(document.body.querySelectorAll("[cmdk-item]")).find((candidate) =>
+    (candidate.textContent || "").includes(value),
   );
   if (!(option instanceof HTMLElement)) {
     throw new Error(`missing combobox option: ${value}`);
@@ -698,9 +633,7 @@ function mockUpstreamAccounts(
       allowCutIn: true,
     },
   });
-  const buildSavedAccountDetail = (
-    overrides: Record<string, unknown> = {},
-  ) => ({
+  const buildSavedAccountDetail = (overrides: Record<string, unknown> = {}) => ({
     id: 41,
     kind: "oauth_codex",
     provider: "codex",
@@ -757,71 +690,54 @@ function mockUpstreamAccounts(
     duplicateInfo: null,
     history: [],
   });
-  const groups = (
-    Array.isArray(overrides.groups) ? overrides.groups : TEST_GROUP_SUMMARIES
-  ).map((group) => ({
-    ...group,
-    accountCount:
-      typeof group.accountCount === "number" ? group.accountCount : 0,
-    boundProxyKeys: Array.isArray(group.boundProxyKeys)
-      ? [...group.boundProxyKeys]
-      : [...TEST_REQUIRED_BOUND_PROXY_KEYS],
-  }));
+  const groups = (Array.isArray(overrides.groups) ? overrides.groups : TEST_GROUP_SUMMARIES).map(
+    (group) => ({
+      ...group,
+      accountCount: typeof group.accountCount === "number" ? group.accountCount : 0,
+      boundProxyKeys: Array.isArray(group.boundProxyKeys)
+        ? [...group.boundProxyKeys]
+        : [...TEST_REQUIRED_BOUND_PROXY_KEYS],
+    }),
+  );
   const saveGroupNote: ReturnType<typeof vi.fn> =
     overrides.saveGroupNote ??
-    vi.fn().mockImplementation(
-      async (groupName: string, payload: Record<string, unknown>) => {
-        const normalizedGroupName = groupName.trim();
-        const nextSummary = {
-          groupName: normalizedGroupName,
-          accountCount:
-            groups.find((group) => group.groupName === normalizedGroupName)
-              ?.accountCount ?? 0,
-          note:
-            typeof payload.note === "string" && payload.note.trim().length > 0
-              ? payload.note
-              : null,
-          boundProxyKeys: Array.isArray(payload.boundProxyKeys)
-            ? payload.boundProxyKeys.map((value) => String(value))
-            : [],
-          nodeShuntEnabled: payload.nodeShuntEnabled === true,
-          singleAccountRotationEnabled:
-            payload.singleAccountRotationEnabled === true,
-          upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
-          upstream429MaxRetries:
-            typeof payload.upstream429MaxRetries === "number"
-              ? payload.upstream429MaxRetries
-              : 0,
-          concurrencyLimit:
-            typeof payload.concurrencyLimit === "number"
-              ? payload.concurrencyLimit
-              : 0,
-        };
-        const existingIndex = groups.findIndex(
-          (group) => group.groupName === normalizedGroupName,
-        );
-        if (existingIndex >= 0) {
-          groups.splice(existingIndex, 1, nextSummary);
-        } else {
-          groups.push(nextSummary);
-        }
-        return nextSummary;
-      },
-    );
+    vi.fn().mockImplementation(async (groupName: string, payload: Record<string, unknown>) => {
+      const normalizedGroupName = groupName.trim();
+      const nextSummary = {
+        groupName: normalizedGroupName,
+        accountCount:
+          groups.find((group) => group.groupName === normalizedGroupName)?.accountCount ?? 0,
+        note:
+          typeof payload.note === "string" && payload.note.trim().length > 0 ? payload.note : null,
+        boundProxyKeys: Array.isArray(payload.boundProxyKeys)
+          ? payload.boundProxyKeys.map((value) => String(value))
+          : [],
+        nodeShuntEnabled: payload.nodeShuntEnabled === true,
+        singleAccountRotationEnabled: payload.singleAccountRotationEnabled === true,
+        upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
+        upstream429MaxRetries:
+          typeof payload.upstream429MaxRetries === "number" ? payload.upstream429MaxRetries : 0,
+        concurrencyLimit:
+          typeof payload.concurrencyLimit === "number" ? payload.concurrencyLimit : 0,
+      };
+      const existingIndex = groups.findIndex((group) => group.groupName === normalizedGroupName);
+      if (existingIndex >= 0) {
+        groups.splice(existingIndex, 1, nextSummary);
+      } else {
+        groups.push(nextSummary);
+      }
+      return nextSummary;
+    });
   const deleteGroupNote: ReturnType<typeof vi.fn> =
     overrides.deleteGroupNote ??
     vi.fn().mockImplementation(async (groupName: string) => {
       const normalizedGroupName = groupName.trim();
-      const existingIndex = groups.findIndex(
-        (group) => group.groupName === normalizedGroupName,
-      );
+      const existingIndex = groups.findIndex((group) => group.groupName === normalizedGroupName);
       if (existingIndex >= 0) {
         groups.splice(existingIndex, 1);
       }
     });
-  const resolvedGroups = Array.isArray(overrides.groups)
-    ? overrides.groups
-    : groups;
+  const resolvedGroups = Array.isArray(overrides.groups) ? overrides.groups : groups;
   const hookState = {
     items: [
       {
@@ -867,12 +783,8 @@ function mockUpstreamAccounts(
       accountId: null,
       error: null,
     }),
-    completeOauthLogin: vi
-      .fn()
-      .mockResolvedValue({ id: 41, displayName: "Row One" }),
-    confirmOauthOverwrite: vi
-      .fn()
-      .mockResolvedValue({ id: 41, displayName: "Row One" }),
+    completeOauthLogin: vi.fn().mockResolvedValue({ id: 41, displayName: "Row One" }),
+    confirmOauthOverwrite: vi.fn().mockResolvedValue({ id: 41, displayName: "Row One" }),
     beginOauthMailboxSession: vi.fn().mockResolvedValue({
       supported: true,
       sessionId: "mailbox-1",
@@ -918,24 +830,17 @@ function mockUpstreamAccounts(
     }),
     saveAccount: vi
       .fn()
-      .mockImplementation(
-        async (accountId: number, payload: Record<string, unknown>) =>
-          buildSavedAccountDetail({
-            id: accountId,
-            displayName:
-              typeof payload.displayName === "string"
-                ? payload.displayName
-                : "Row One",
-            groupName:
-              typeof payload.groupName === "string"
-                ? payload.groupName
-                : "prod",
-            note: typeof payload.note === "string" ? payload.note : null,
-            isMother: payload.isMother === true,
-            tags: Array.isArray(payload.tagIds)
-              ? payload.tagIds.map((tagId) => buildTagSummary(Number(tagId)))
-              : [],
-          }),
+      .mockImplementation(async (accountId: number, payload: Record<string, unknown>) =>
+        buildSavedAccountDetail({
+          id: accountId,
+          displayName: typeof payload.displayName === "string" ? payload.displayName : "Row One",
+          groupName: typeof payload.groupName === "string" ? payload.groupName : "prod",
+          note: typeof payload.note === "string" ? payload.note : null,
+          isMother: payload.isMother === true,
+          tags: Array.isArray(payload.tagIds)
+            ? payload.tagIds.map((tagId) => buildTagSummary(Number(tagId)))
+            : [],
+        }),
       ),
     ...overrides,
     groups: resolvedGroups,
@@ -964,9 +869,7 @@ function mockUpstreamAccounts(
 
 function blurField(selector: string) {
   const input = host?.querySelector(selector);
-  if (
-    !(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)
-  ) {
+  if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) {
     throw new Error(`missing input for blur: ${selector}`);
   }
   act(() => {
@@ -1068,9 +971,24 @@ Object.assign(scope, {
   buildCompletedBatchOauthRow,
 });
 Object.defineProperties(scope, {
-  host: { get: () => host, set: (value) => { host = value as typeof host; } },
-  root: { get: () => root, set: (value) => { root = value as typeof root; } },
-  dateNowSpy: { get: () => dateNowSpy, set: (value) => { dateNowSpy = value as typeof dateNowSpy; } },
+  host: {
+    get: () => host,
+    set: (value) => {
+      host = value as typeof host;
+    },
+  },
+  root: {
+    get: () => root,
+    set: (value) => {
+      root = value as typeof root;
+    },
+  },
+  dateNowSpy: {
+    get: () => dateNowSpy,
+    set: (value) => {
+      dateNowSpy = value as typeof dateNowSpy;
+    },
+  },
 });
 const evalChunk = (chunk: string) => {
   const { outputText } = ts.transpileModule(chunk, {
@@ -1097,9 +1015,7 @@ function clickCreateTab(matcher: RegExp) {
   const tab = Array.from(document.body.querySelectorAll('[role="tab"]')).find(
     (candidate) =>
       candidate instanceof HTMLButtonElement &&
-      matcher.test(
-        candidate.textContent || candidate.getAttribute("aria-label") || "",
-      ),
+      matcher.test(candidate.textContent || candidate.getAttribute("aria-label") || ""),
   );
   if (!(tab instanceof HTMLButtonElement)) {
     throw new Error(`missing create tab: ${matcher}`);
@@ -1131,10 +1047,7 @@ function clickGroupSettingsButtonForInput(selector: string) {
     (candidate) =>
       candidate instanceof HTMLButtonElement &&
       /edit group settings|编辑分组设置/i.test(
-        candidate.getAttribute("aria-label") ??
-          candidate.textContent ??
-          candidate.title ??
-          "",
+        candidate.getAttribute("aria-label") ?? candidate.textContent ?? candidate.title ?? "",
       ),
   );
   if (!(button instanceof HTMLButtonElement)) {
@@ -1190,10 +1103,7 @@ describe("imported OAuth local validation", () => {
       };
       if (typeValue !== undefined) payload.type = typeValue;
 
-      const result = validateImportedOauthCredentialLocally(
-        JSON.stringify(payload),
-        t,
-      );
+      const result = validateImportedOauthCredentialLocally(JSON.stringify(payload), t);
 
       expect(result.ok).toBe(true);
     }
@@ -1233,8 +1143,7 @@ describe("imported OAuth local validation", () => {
         sessionToken: "session-token",
         expires: "2026-08-06T14:29:36.155Z",
       }),
-      (key, values) =>
-        values?.fieldName ? `${values.fieldName} cannot be empty` : key,
+      (key, values) => (values?.fieldName ? `${values.fieldName} cannot be empty` : key),
     );
 
     expect(result.ok).toBe(true);
@@ -1273,15 +1182,11 @@ describe("imported OAuth local validation", () => {
           ],
         },
       }),
-      (key, values) =>
-        values?.fieldName ? `${values.fieldName} cannot be empty` : key,
+      (key, values) => (values?.fieldName ? `${values.fieldName} cannot be empty` : key),
     );
 
     expect(result.ok).toBe(true);
-    expect(result.items.map((item) => item.matchKey)).toEqual([
-      "account:acct_a",
-      "account:acct_b",
-    ]);
+    expect(result.items.map((item) => item.matchKey)).toEqual(["account:acct_a", "account:acct_b"]);
   });
 });
 
@@ -1426,8 +1331,8 @@ describe("UpstreamAccountCreatePage group memory", () => {
     });
     await flushAsync();
 
-    const betaOption = Array.from(document.body.querySelectorAll("[cmdk-item]")).find(
-      (candidate) => candidate.textContent?.includes("beta"),
+    const betaOption = Array.from(document.body.querySelectorAll("[cmdk-item]")).find((candidate) =>
+      candidate.textContent?.includes("beta"),
     );
     if (!(betaOption instanceof HTMLElement)) {
       throw new Error("missing beta group option");

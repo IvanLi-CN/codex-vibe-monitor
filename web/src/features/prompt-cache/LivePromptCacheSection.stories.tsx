@@ -1,13 +1,9 @@
-import { useMemo, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { useMemo, useState } from "react";
 import { expect, userEvent, within } from "storybook/test";
-import { useTranslation, I18nProvider } from "../../i18n";
-import { AppIcon } from "../shared/AppIcon";
-import {
-  PromptCacheConversationTable,
-} from "./PromptCacheConversationTable";
 import { Button } from "../../components/ui/button";
 import { SelectField } from "../../components/ui/select-field";
+import { I18nProvider, useTranslation } from "../../i18n";
 import type {
   ApiInvocation,
   PromptCacheConversation,
@@ -15,34 +11,35 @@ import type {
   PromptCacheConversationSelection,
   PromptCacheConversationsResponse,
 } from "../../lib/api";
+import { AppIcon } from "../shared/AppIcon";
+import { PromptCacheConversationTable } from "./PromptCacheConversationTable";
 
-type StoryPromptCacheConversationPreview =
-  PromptCacheConversationInvocationPreview &
-    Partial<
-      Pick<
-        ApiInvocation,
-        | "source"
-        | "inputTokens"
-        | "outputTokens"
-        | "cacheInputTokens"
-        | "reasoningTokens"
-        | "reasoningEffort"
-        | "errorMessage"
-        | "failureKind"
-        | "isActionable"
-        | "responseContentEncoding"
-        | "requestedServiceTier"
-        | "serviceTier"
-        | "tReqReadMs"
-        | "tReqParseMs"
-        | "tUpstreamConnectMs"
-        | "tUpstreamTtfbMs"
-        | "tUpstreamStreamMs"
-        | "tRespParseMs"
-        | "tPersistMs"
-        | "tTotalMs"
-      >
-    >;
+type StoryPromptCacheConversationPreview = PromptCacheConversationInvocationPreview &
+  Partial<
+    Pick<
+      ApiInvocation,
+      | "source"
+      | "inputTokens"
+      | "outputTokens"
+      | "cacheInputTokens"
+      | "reasoningTokens"
+      | "reasoningEffort"
+      | "errorMessage"
+      | "failureKind"
+      | "isActionable"
+      | "responseContentEncoding"
+      | "requestedServiceTier"
+      | "serviceTier"
+      | "tReqReadMs"
+      | "tReqParseMs"
+      | "tUpstreamConnectMs"
+      | "tUpstreamTtfbMs"
+      | "tUpstreamStreamMs"
+      | "tRespParseMs"
+      | "tPersistMs"
+      | "tTotalMs"
+    >
+  >;
 
 type PromptCacheSelectionOption =
   | {
@@ -110,14 +107,10 @@ const SELECTION_OPTIONS: PromptCacheSelectionOption[] = [
 ];
 
 function isoAt(hoursAgo: number, minutesAgo = 0) {
-  return new Date(
-    Date.now() - hoursAgo * 3_600_000 - minutesAgo * 60_000,
-  ).toISOString();
+  return new Date(Date.now() - hoursAgo * 3_600_000 - minutesAgo * 60_000).toISOString();
 }
 
-function applyCumulativeTokens<
-  TPoint extends { requestTokens: number },
->(points: TPoint[]) {
+function applyCumulativeTokens<TPoint extends { requestTokens: number }>(points: TPoint[]) {
   let cumulative = 0;
   return points.map((point) => {
     cumulative += point.requestTokens;
@@ -144,11 +137,8 @@ function buildTimelinePoints({
   return applyCumulativeTokens(
     Array.from({ length: pointCount }, (_, index) => {
       const ratio = pointCount === 1 ? 1 : index / (pointCount - 1);
-      const shaped = Math.pow(ratio, 0.82);
-      const hoursAgo = Math.max(
-        lastActivityHoursAgo,
-        createdHoursAgo - span * shaped,
-      );
+      const shaped = ratio ** 0.82;
+      const hoursAgo = Math.max(lastActivityHoursAgo, createdHoursAgo - span * shaped);
       const requestTokens = 520 + seed * 82 + index * 210;
       const hasFailure = pointCount >= 4 && index === pointCount - 2 && seed % 5 === 2;
       return {
@@ -213,12 +203,10 @@ function buildRecentInvocations(
   seed: number,
   lastActivityAt: string,
   totalTokens: number,
-) : StoryPromptCacheConversationPreview[] {
+): StoryPromptCacheConversationPreview[] {
   return Array.from({ length: 3 }, (_, index) => {
     const offsetMinutes = index * 18;
-    const occurredAt = new Date(
-      Date.parse(lastActivityAt) - offsetMinutes * 60_000,
-    ).toISOString();
+    const occurredAt = new Date(Date.parse(lastActivityAt) - offsetMinutes * 60_000).toISOString();
     const tokens = Math.max(120, Math.round(totalTokens / (6 + index)));
     const inputTokens = Math.max(80, tokens - (640 + index * 40));
     const outputTokens = Math.max(32, tokens - inputTokens);
@@ -242,14 +230,10 @@ function buildRecentInvocations(
       reasoningEffort: isFailure ? undefined : index === 0 ? "high" : "medium",
       totalTokens: tokens,
       cost: Number((tokens / 42000).toFixed(4)),
-      errorMessage: isFailure
-        ? "upstream gateway closed before first byte"
-        : undefined,
+      errorMessage: isFailure ? "upstream gateway closed before first byte" : undefined,
       failureKind: isFailure ? "upstream_timeout" : undefined,
       isActionable: isFailure ? true : undefined,
-      proxyDisplayName: ["tokyo-edge-01", "osaka-edge-02", "singapore-edge-03"][
-        (seed + index) % 3
-      ],
+      proxyDisplayName: ["tokyo-edge-01", "osaka-edge-02", "singapore-edge-03"][(seed + index) % 3],
       upstreamAccountId: 100 + seed,
       upstreamAccountName: `growth.${(seed % 7) + 2}vv${seed % 10}@relay.example`,
       endpoint: index === 1 ? "/v1/chat/completions" : "/v1/responses",
@@ -273,17 +257,14 @@ function buildPromptCacheKey(seed: number, variant: "count" | "window") {
   const groupTwo = (0x8100 + seed).toString(16).padStart(4, "0");
   const groupThree = (0x7100 + ((seed * 13) % 256)).toString(16).padStart(4, "0");
   const groupFour = (0xb100 + ((seed * 17) % 256)).toString(16).padStart(4, "0");
-  const tail = `${(seed * 97 + 0x9f0000).toString(16).slice(-6)}a${(
-    seed * 29 + 0x4f000
-  )
+  const tail = `${(seed * 97 + 0x9f0000).toString(16).slice(-6)}a${(seed * 29 + 0x4f000)
     .toString(16)
     .slice(-5)}`;
   return `${prefix}-${groupTwo}-${groupThree}-${groupFour}-${tail}`;
 }
 
 function buildDenseConversation(seed: number, variant: "count" | "window") {
-  const createdHoursAgo =
-    variant === "count" ? 18 + seed * 1.35 : 5.2 - seed * 0.32;
+  const createdHoursAgo = variant === "count" ? 18 + seed * 1.35 : 5.2 - seed * 0.32;
   const lastActivityHoursAgo =
     variant === "count"
       ? Math.max(0.15, 0.45 + (seed % 5) * 0.4)
@@ -326,12 +307,9 @@ function buildDenseConversation(seed: number, variant: "count" | "window") {
   } satisfies PromptCacheConversation;
 }
 
-function sortConversationsByCreatedAtDesc(
-  conversations: PromptCacheConversation[],
-) {
+function sortConversationsByCreatedAtDesc(conversations: PromptCacheConversation[]) {
   return [...conversations].sort((left, right) => {
-    const createdAtDelta =
-      Date.parse(right.createdAt) - Date.parse(left.createdAt);
+    const createdAtDelta = Date.parse(right.createdAt) - Date.parse(left.createdAt);
     if (createdAtDelta !== 0) return createdAtDelta;
     return right.promptCacheKey.localeCompare(left.promptCacheKey);
   });
@@ -348,9 +326,7 @@ const COUNT_MODE_STATS: PromptCacheConversationsResponse = {
     filteredCount: 25,
   },
   conversations: sortConversationsByCreatedAtDesc(
-    Array.from({ length: 16 }, (_, index) =>
-      buildDenseConversation(index, "count"),
-    ),
+    Array.from({ length: 16 }, (_, index) => buildDenseConversation(index, "count")),
   ),
 };
 
@@ -423,9 +399,7 @@ function buildActivityWindowStats(hours: number): PromptCacheConversationsRespon
     selectedLimit: null,
     selectedActivityHours: hours,
     implicitFilter:
-      hours === 3
-        ? { kind: "cappedTo50", filteredCount: 7 }
-        : { kind: null, filteredCount: 0 },
+      hours === 3 ? { kind: "cappedTo50", filteredCount: 7 } : { kind: null, filteredCount: 0 },
     conversations: sortConversationsByCreatedAtDesc(conversations),
   };
 }
@@ -456,20 +430,14 @@ function StorySurface({ children }: { children: React.ReactNode }) {
 function LivePromptCacheSectionStory() {
   const { t } = useTranslation();
   const [selectionValue, setSelectionValue] = useState("activityWindow:24");
-  const [expandedPromptCacheKeys, setExpandedPromptCacheKeys] = useState<
-    string[]
-  >([]);
+  const [expandedPromptCacheKeys, setExpandedPromptCacheKeys] = useState<string[]>([]);
 
   const activeOption = useMemo(
     () =>
-      SELECTION_OPTIONS.find((option) => option.value === selectionValue) ??
-      SELECTION_OPTIONS[0],
+      SELECTION_OPTIONS.find((option) => option.value === selectionValue) ?? SELECTION_OPTIONS[0],
     [selectionValue],
   );
-  const stats = useMemo(
-    () => resolveStats(activeOption.selection),
-    [activeOption.selection],
-  );
+  const stats = useMemo(() => resolveStats(activeOption.selection), [activeOption.selection]);
   const visiblePromptCacheKeys = useMemo(
     () => stats.conversations.map((conversation) => conversation.promptCacheKey),
     [stats],
@@ -484,13 +452,9 @@ function LivePromptCacheSectionStory() {
     setExpandedPromptCacheKeys((current) => {
       if (
         visiblePromptCacheKeys.length > 0 &&
-        visiblePromptCacheKeys.every((promptCacheKey) =>
-          current.includes(promptCacheKey),
-        )
+        visiblePromptCacheKeys.every((promptCacheKey) => current.includes(promptCacheKey))
       ) {
-        return current.filter(
-          (promptCacheKey) => !visiblePromptCacheKeys.includes(promptCacheKey),
-        );
+        return current.filter((promptCacheKey) => !visiblePromptCacheKeys.includes(promptCacheKey));
       }
       return visiblePromptCacheKeys;
     });
@@ -502,9 +466,7 @@ function LivePromptCacheSectionStory() {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="section-heading">
             <h2 className="section-title">{t("live.conversations.title")}</h2>
-            <p className="section-description">
-              {t("live.conversations.description")}
-            </p>
+            <p className="section-description">{t("live.conversations.description")}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -600,18 +562,12 @@ export const InteractiveFilters: Story = {
     await expect(expandAllIcon).toHaveAttribute("data-icon-name", "chevron-down");
 
     await userEvent.click(trigger);
-    await userEvent.click(
-      await documentScope.findByRole("option", { name: /近 3 小时活动/i }),
-    );
+    await userEvent.click(await documentScope.findByRole("option", { name: /近 3 小时活动/i }));
     await expect(trigger.textContent ?? "").toContain("近 3 小时活动");
-    await expect(
-      canvas.getByText(/有 7 个对话命中活动时间窗/i),
-    ).toBeInTheDocument();
+    await expect(canvas.getByText(/有 7 个对话命中活动时间窗/i)).toBeInTheDocument();
 
     await userEvent.click(trigger);
-    await userEvent.click(
-      await documentScope.findByRole("option", { name: /20 个对话/i }),
-    );
+    await userEvent.click(await documentScope.findByRole("option", { name: /20 个对话/i }));
     await expect(trigger.textContent ?? "").toContain("20 个对话");
     await expect(
       canvas.getByText(/有 25 个更新创建的对话因未在近 24 小时活动而未显示/i),

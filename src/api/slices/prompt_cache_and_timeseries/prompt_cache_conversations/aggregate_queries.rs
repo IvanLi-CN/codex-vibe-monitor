@@ -1,11 +1,5 @@
 use super::*;
-use anyhow::anyhow;
-use chrono::LocalResult;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sqlx::FromRow;
-use tokio::sync::{broadcast, watch};
-use tracing::{debug, warn};
 
 pub(crate) fn append_working_set_freshness_filter<'a>(
     query: &mut QueryBuilder<'a, Sqlite>,

@@ -1,26 +1,7 @@
 use super::*;
 
-use crate::oauth_bridge::oauth_codex_upstream_base_url;
-use aes_gcm::{
-    Aes256Gcm,
-    aead::{Aead, KeyInit},
-};
-use axum::{
-    extract::{OriginalUri, Path as AxumPath, Query},
-    http::{Uri, header},
-    response::Html,
-};
-use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD};
 use futures_util::FutureExt;
-#[cfg(test)]
-use rand::Rng;
-use rand::{RngCore, rngs::OsRng};
-use sqlx::Transaction;
-use std::{
-    any::Any,
-    collections::{BTreeMap, BTreeSet},
-    panic::AssertUnwindSafe,
-};
+use std::{any::Any, collections::BTreeMap, panic::AssertUnwindSafe};
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET: &str =
     "UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET";
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID: &str = "UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID";
@@ -1056,17 +1037,13 @@ pub(crate) enum DuplicateReason {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub(crate) enum TagPriorityTier {
     NoNew,
     Fallback,
+    #[default]
     Normal,
     Primary,
-}
-
-impl Default for TagPriorityTier {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 impl TagPriorityTier {

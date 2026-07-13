@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  fetchPromptCacheConversations,
   type ApiInvocation,
+  fetchPromptCacheConversations,
   type PromptCacheConversationSelection,
   type PromptCacheConversationsResponse,
 } from "../lib/api";
@@ -19,14 +19,8 @@ export const PROMPT_CACHE_SSE_REFRESH_THROTTLE_MS = 5_000;
 export const PROMPT_CACHE_POLLING_REFRESH_INTERVAL_MS = 60_000;
 export const PROMPT_CACHE_OPEN_RESYNC_COOLDOWN_MS = 3_000;
 
-export function getPromptCacheSseRefreshDelay(
-  lastRefreshAt: number,
-  now: number,
-) {
-  return Math.max(
-    0,
-    PROMPT_CACHE_SSE_REFRESH_THROTTLE_MS - (now - lastRefreshAt),
-  );
+export function getPromptCacheSseRefreshDelay(lastRefreshAt: number, now: number) {
+  return Math.max(0, PROMPT_CACHE_SSE_REFRESH_THROTTLE_MS - (now - lastRefreshAt));
 }
 
 export function shouldTriggerPromptCacheOpenResync(
@@ -64,24 +58,18 @@ function isSameSelection(
   );
 }
 
-export function usePromptCacheConversations(
-  selection: PromptCacheConversationSelection,
-) {
+export function usePromptCacheConversations(selection: PromptCacheConversationSelection) {
   const [authoritativeStats, setAuthoritativeStats] =
     useState<PromptCacheConversationsResponse | null>(null);
-  const [knownConversationHistoryByKey, setKnownConversationHistoryByKey] = useState<
-    PromptCacheConversationHistoryByKey
-  >({});
-  const [liveRecordsByKey, setLiveRecordsByKey] = useState<
-    Record<string, ApiInvocation[]>
-  >({});
+  const [knownConversationHistoryByKey, setKnownConversationHistoryByKey] =
+    useState<PromptCacheConversationHistoryByKey>({});
+  const [liveRecordsByKey, setLiveRecordsByKey] = useState<Record<string, ApiInvocation[]>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const selectionRef = useRef(selection);
   const hasHydratedRef = useRef(false);
   const authoritativeStatsRef = useRef<PromptCacheConversationsResponse | null>(null);
-  const knownConversationHistoryRef =
-    useRef<PromptCacheConversationHistoryByKey>({});
+  const knownConversationHistoryRef = useRef<PromptCacheConversationHistoryByKey>({});
   const liveRecordsByKeyRef = useRef<Record<string, ApiInvocation[]>>({});
   const inFlightRef = useRef(false);
   const pendingLoadRef = useRef<LoadOptions | null>(null);
@@ -136,10 +124,7 @@ export function usePromptCacheConversations(
     const shouldShowLoading = !(silent && hasHydratedRef.current);
     if (shouldShowLoading) setIsLoading(true);
     try {
-      const response = await fetchPromptCacheConversations(
-        requestedSelection,
-        controller.signal,
-      );
+      const response = await fetchPromptCacheConversations(requestedSelection, controller.signal);
       if (requestSeq !== requestSeqRef.current) return;
       if (!isSameSelection(selectionRef.current, requestedSelection)) return;
       const nextLiveRecordsByKey = reconcilePromptCacheLiveRecordMap(
@@ -185,8 +170,7 @@ export function usePromptCacheConversations(
       if (requestSeq === requestSeqRef.current) {
         abortControllerRef.current = null;
       }
-      if (requestSeq === requestSeqRef.current && shouldShowLoading)
-        setIsLoading(false);
+      if (requestSeq === requestSeqRef.current && shouldShowLoading) setIsLoading(false);
       if (requestSeq === requestSeqRef.current) {
         inFlightRef.current = false;
       }
@@ -211,24 +195,25 @@ export function usePromptCacheConversations(
     [runLoad],
   );
 
-  const triggerSseRefresh = useCallback((force = false) => {
-    const now = Date.now();
-    const delay = force
-      ? 0
-      : getPromptCacheSseRefreshDelay(lastRefreshAtRef.current, now);
-    const run = () => {
-      refreshTimerRef.current = null;
-      lastRefreshAtRef.current = Date.now();
-      void load({ silent: true });
-    };
-    if (delay === 0) {
-      clearPendingRefreshTimer();
-      run();
-      return;
-    }
-    if (refreshTimerRef.current) return;
-    refreshTimerRef.current = setTimeout(run, delay);
-  }, [clearPendingRefreshTimer, load]);
+  const triggerSseRefresh = useCallback(
+    (force = false) => {
+      const now = Date.now();
+      const delay = force ? 0 : getPromptCacheSseRefreshDelay(lastRefreshAtRef.current, now);
+      const run = () => {
+        refreshTimerRef.current = null;
+        lastRefreshAtRef.current = Date.now();
+        void load({ silent: true });
+      };
+      if (delay === 0) {
+        clearPendingRefreshTimer();
+        run();
+        return;
+      }
+      if (refreshTimerRef.current) return;
+      refreshTimerRef.current = setTimeout(run, delay);
+    },
+    [clearPendingRefreshTimer, load],
+  );
 
   const triggerOpenResync = useCallback(
     (force = false) => {
@@ -237,14 +222,7 @@ export function usePromptCacheConversations(
         return;
       }
       const now = Date.now();
-      if (
-        !shouldTriggerPromptCacheOpenResync(
-          lastOpenResyncAtRef.current,
-          now,
-          force,
-        )
-      )
-        return;
+      if (!shouldTriggerPromptCacheOpenResync(lastOpenResyncAtRef.current, now, force)) return;
       lastOpenResyncAtRef.current = now;
       void load({ silent: true });
     },
@@ -269,10 +247,9 @@ export function usePromptCacheConversations(
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type !== "records") return;
       const stats = authoritativeStatsRef.current;
-      const visibleLimit = getPromptCacheConversationVisibleLimit(
-        selectionRef.current,
-      );
-      const shouldForceResync = stats != null &&
+      const visibleLimit = getPromptCacheConversationVisibleLimit(selectionRef.current);
+      const shouldForceResync =
+        stats != null &&
         stats.conversations.length >= visibleLimit &&
         payload.records.some((record) => {
           const promptCacheKey = record.promptCacheKey?.trim();
@@ -290,8 +267,7 @@ export function usePromptCacheConversations(
       for (const record of payload.records) {
         const promptCacheKey = record.promptCacheKey?.trim();
         if (!promptCacheKey) continue;
-        const currentObservedAt =
-          liveRecordObservedAtByKeyRef.current[promptCacheKey] ?? 0;
+        const currentObservedAt = liveRecordObservedAtByKeyRef.current[promptCacheKey] ?? 0;
         if (observedAt > currentObservedAt) {
           liveRecordObservedAtByKeyRef.current[promptCacheKey] = observedAt;
         }

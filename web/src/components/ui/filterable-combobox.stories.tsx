@@ -1,18 +1,18 @@
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { useState } from 'react'
-import { FilterableCombobox } from './filterable-combobox'
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { useState } from "react";
+import { FilterableCombobox } from "./filterable-combobox";
 
-const noop = () => {}
+const noop = () => {};
 
 const inputClassName =
-  'h-9 w-full rounded-md border border-base-300/80 bg-base-100 px-3 text-sm text-base-content shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100 disabled:cursor-not-allowed disabled:opacity-60'
+  "h-9 w-full rounded-md border border-base-300/80 bg-base-100 px-3 text-sm text-base-content shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100 disabled:cursor-not-allowed disabled:opacity-60";
 
 function StorySurface({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
       <div className="mx-auto w-full max-w-md">{children}</div>
     </div>
-  )
+  );
 }
 
 function ControlledCombobox({
@@ -22,13 +22,13 @@ function ControlledCombobox({
   emptyText,
   disabled,
 }: {
-  label: string
-  options: string[]
-  placeholder?: string
-  emptyText?: string
-  disabled?: boolean
+  label: string;
+  options: string[];
+  placeholder?: string;
+  emptyText?: string;
+  disabled?: boolean;
 }) {
-  const [value, setValue] = useState('')
+  const [value, setValue] = useState("");
   return (
     <StorySurface>
       <div className="space-y-4">
@@ -44,26 +44,26 @@ function ControlledCombobox({
           inputClassName={inputClassName}
         />
         <div className="rounded-xl border border-base-300/70 bg-base-100/45 px-4 py-3 text-sm text-base-content/70">
-          Current value: <span className="font-mono text-base-content">{value || '—'}</span>
+          Current value: <span className="font-mono text-base-content">{value || "—"}</span>
         </div>
       </div>
     </StorySurface>
-  )
+  );
 }
 
 const meta = {
-  title: 'UI/FilterableCombobox',
+  title: "UI/FilterableCombobox",
   component: FilterableCombobox,
-} satisfies Meta<typeof FilterableCombobox>
+} satisfies Meta<typeof FilterableCombobox>;
 
-export default meta
+export default meta;
 
-type Story = StoryObj<typeof meta>
+type Story = StoryObj<typeof meta>;
 
 export const Basic: Story = {
   args: {
-    label: 'Combobox',
-    value: '',
+    label: "Combobox",
+    value: "",
     onValueChange: noop,
     options: [],
   },
@@ -72,22 +72,15 @@ export const Basic: Story = {
       label="Model"
       placeholder="Any"
       emptyText="No matches"
-      options={[
-        'gpt-4o',
-        'gpt-4o-mini',
-        'o1',
-        'o3-mini',
-        'claude-3.7-sonnet',
-        'qwen2.5-72b',
-      ]}
+      options={["gpt-4o", "gpt-4o-mini", "o1", "o3-mini", "claude-3.7-sonnet", "qwen2.5-72b"]}
     />
   ),
-}
+};
 
 export const ManyOptions: Story = {
   args: {
-    label: 'Combobox',
-    value: '',
+    label: "Combobox",
+    value: "",
     onValueChange: noop,
     options: [],
   },
@@ -97,27 +90,27 @@ export const ManyOptions: Story = {
       placeholder="Any"
       emptyText="No matches"
       options={[
-        '/v1/chat/completions',
-        '/v1/responses',
-        '/v1/embeddings',
-        '/v1/audio/transcriptions',
-        '/v1/images/generations',
-        '/v1/moderations',
-        '/v1/batches',
-        '/v1/files',
-        '/v1/assistants',
-        '/v1/vector_stores',
-        '/v1/fine_tuning/jobs',
-        '/v1/models',
+        "/v1/chat/completions",
+        "/v1/responses",
+        "/v1/embeddings",
+        "/v1/audio/transcriptions",
+        "/v1/images/generations",
+        "/v1/moderations",
+        "/v1/batches",
+        "/v1/files",
+        "/v1/assistants",
+        "/v1/vector_stores",
+        "/v1/fine_tuning/jobs",
+        "/v1/models",
       ]}
     />
   ),
-}
+};
 
 export const Disabled: Story = {
   args: {
-    label: 'Combobox',
-    value: '',
+    label: "Combobox",
+    value: "",
     onValueChange: noop,
     options: [],
   },
@@ -127,7 +120,7 @@ export const Disabled: Story = {
       placeholder="Any"
       emptyText="No matches"
       disabled
-      options={['proxy-a', 'proxy-b', 'proxy-c']}
+      options={["proxy-a", "proxy-b", "proxy-c"]}
     />
   ),
-}
+};

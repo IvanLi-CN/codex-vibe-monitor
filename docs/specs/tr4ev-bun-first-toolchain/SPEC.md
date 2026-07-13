@@ -58,7 +58,7 @@
 - 对开发/交付接口做以下收敛：
   - 安装命令：`bun install` / `cd web && bun install`
   - 前端脚本：`bun run dev|build|test|build-storybook`
-  - hooks 内可执行文件：`bun eslint`、`bun tsc`、`bun dprint`、`bun commitlint`
+  - hooks 内可执行文件：`bun biome`、`bun tsc`、`bun dprint`、`bun commitlint`
   - CI 安装器：`oven-sh/setup-bun@v2`
   - Docker web builder：官方 `oven/bun` 镜像 + `bun install --frozen-lockfile` + `bun run build`
 - 当前 workflow / build toolchain 基线固定为：

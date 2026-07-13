@@ -644,17 +644,17 @@ pub(crate) fn parse_mailbox_code(detail: &KaisouMailMessageDetail) -> Option<Par
 
     let subject_text = normalize_mailbox_text(subject);
     let subject_has_brand = mailbox_text_has_brand(&subject_text);
-    if subject_has_brand {
-        if let Some(value) = extract_mailbox_code_candidate(&subject_text, subject_has_brand) {
-            return Some(ParsedMailboxCode {
-                value,
-                source: "subject".to_string(),
-                updated_at: detail
-                    .received_at
-                    .clone()
-                    .unwrap_or_else(|| format_utc_iso(Utc::now())),
-            });
-        }
+    if subject_has_brand
+        && let Some(value) = extract_mailbox_code_candidate(&subject_text, subject_has_brand)
+    {
+        return Some(ParsedMailboxCode {
+            value,
+            source: "subject".to_string(),
+            updated_at: detail
+                .received_at
+                .clone()
+                .unwrap_or_else(|| format_utc_iso(Utc::now())),
+        });
     }
 
     for (source, raw) in [
@@ -1313,10 +1313,10 @@ pub(crate) fn collect_normalized_upstream_account_filters(
         }
     }
 
-    if normalized.is_empty() {
-        if let Some(legacy_value) = legacy_value {
-            normalized.push(legacy_value);
-        }
+    if normalized.is_empty()
+        && let Some(legacy_value) = legacy_value
+    {
+        normalized.push(legacy_value);
     }
 
     normalized

@@ -1,66 +1,67 @@
-import { useLayoutEffect, useRef, type ReactNode } from 'react'
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, userEvent, within } from 'storybook/test'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { AppLayout } from './AppLayout'
-import { I18nProvider } from '../../i18n'
-import AccountPoolLayout from '../../pages/account-pool/AccountPoolLayout'
-import SystemLayout from '../../pages/system/SystemLayout'
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { expect, userEvent, within } from "storybook/test";
+import { I18nProvider } from "../../i18n";
+import AccountPoolLayout from "../../pages/account-pool/AccountPoolLayout";
+import SystemLayout from "../../pages/system/SystemLayout";
+import { AppLayout } from "./AppLayout";
 
 class MockEventSource implements EventTarget {
-  static CONNECTING = 0
-  static OPEN = 1
-  static CLOSED = 2
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSED = 2;
 
-  readonly url: string
-  readonly withCredentials = false
-  readyState = MockEventSource.CONNECTING
-  onerror: ((this: EventSource, ev: Event) => unknown) | null = null
-  onmessage: ((this: EventSource, ev: MessageEvent<string>) => unknown) | null = null
-  onopen: ((this: EventSource, ev: Event) => unknown) | null = null
+  readonly url: string;
+  readonly withCredentials = false;
+  readyState = MockEventSource.CONNECTING;
+  onerror: ((this: EventSource, ev: Event) => unknown) | null = null;
+  onmessage: ((this: EventSource, ev: MessageEvent<string>) => unknown) | null = null;
+  onopen: ((this: EventSource, ev: Event) => unknown) | null = null;
 
-  #listeners = new Map<string, Set<EventListenerOrEventListenerObject>>()
+  #listeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
 
   constructor(url: string | URL) {
-    this.url = typeof url === 'string' ? url : url.toString()
+    this.url = typeof url === "string" ? url : url.toString();
     window.setTimeout(() => {
-      if (this.readyState === MockEventSource.CLOSED) return
-      this.readyState = MockEventSource.OPEN
-      this.#emit('open', new Event('open'))
-    }, 40)
+      if (this.readyState === MockEventSource.CLOSED) return;
+      this.readyState = MockEventSource.OPEN;
+      this.#emit("open", new Event("open"));
+    }, 40);
   }
 
   addEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
-    if (!listener) return
-    const bucket = this.#listeners.get(type) ?? new Set<EventListenerOrEventListenerObject>()
-    bucket.add(listener)
-    this.#listeners.set(type, bucket)
+    if (!listener) return;
+    const bucket = this.#listeners.get(type) ?? new Set<EventListenerOrEventListenerObject>();
+    bucket.add(listener);
+    this.#listeners.set(type, bucket);
   }
 
   removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
-    if (!listener) return
-    this.#listeners.get(type)?.delete(listener)
+    if (!listener) return;
+    this.#listeners.get(type)?.delete(listener);
   }
 
   dispatchEvent(event: Event) {
-    this.#emit(event.type, event)
-    return true
+    this.#emit(event.type, event);
+    return true;
   }
 
   close() {
-    this.readyState = MockEventSource.CLOSED
+    this.readyState = MockEventSource.CLOSED;
   }
 
   #emit(type: string, event: Event) {
-    if (type === 'open') this.onopen?.call(this as unknown as EventSource, event)
-    if (type === 'error') this.onerror?.call(this as unknown as EventSource, event)
-    if (type === 'message') this.onmessage?.call(this as unknown as EventSource, event as MessageEvent<string>)
+    if (type === "open") this.onopen?.call(this as unknown as EventSource, event);
+    if (type === "error") this.onerror?.call(this as unknown as EventSource, event);
+    if (type === "message")
+      this.onmessage?.call(this as unknown as EventSource, event as MessageEvent<string>);
 
     for (const listener of this.#listeners.get(type) ?? []) {
-      if (typeof listener === 'function') {
-        listener(event)
+      if (typeof listener === "function") {
+        listener(event);
       } else {
-        listener.handleEvent(event)
+        listener.handleEvent(event);
       }
     }
   }
@@ -81,68 +82,75 @@ function MockPage({ title, description }: { title: string; description: string }
           <div className="rounded-2xl border border-base-300 bg-base-100/90 p-4">
             <p className="text-sm font-medium text-base-content">Live SSE</p>
             <p className="mt-2 text-3xl font-semibold text-primary">Connected</p>
-            <p className="mt-1 text-sm text-base-content/70">Header pulse, footer version, and nav all render together.</p>
+            <p className="mt-1 text-sm text-base-content/70">
+              Header pulse, footer version, and nav all render together.
+            </p>
           </div>
           <div className="rounded-2xl border border-base-300 bg-base-100/90 p-4">
             <p className="text-sm font-medium text-base-content">Backend version</p>
             <p className="mt-2 text-3xl font-semibold text-primary">v0.2.0</p>
-            <p className="mt-1 text-sm text-base-content/70">Version endpoint is mocked for Storybook isolation.</p>
+            <p className="mt-1 text-sm text-base-content/70">
+              Version endpoint is mocked for Storybook isolation.
+            </p>
           </div>
           <div className="rounded-2xl border border-base-300 bg-base-100/90 p-4">
             <p className="text-sm font-medium text-base-content">Navigation</p>
             <p className="mt-2 text-3xl font-semibold text-primary">5 tabs</p>
-            <p className="mt-1 text-sm text-base-content/70">Dashboard, stats, live, records, account pool, and system now share one shell.</p>
+            <p className="mt-1 text-sm text-base-content/70">
+              Dashboard, stats, live, records, account pool, and system now share one shell.
+            </p>
           </div>
         </div>
       </div>
     </section>
-  )
+  );
 }
 
 function StorybookAppShellMock({ children }: { children: ReactNode }) {
-  const originalFetchRef = useRef<typeof window.fetch | null>(null)
-  const originalEventSourceRef = useRef<typeof window.EventSource | null>(null)
+  const originalFetchRef = useRef<typeof window.fetch | null>(null);
+  const originalEventSourceRef = useRef<typeof window.EventSource | null>(null);
 
   useLayoutEffect(() => {
-    originalFetchRef.current = window.fetch.bind(window)
-    originalEventSourceRef.current = window.EventSource
+    originalFetchRef.current = window.fetch.bind(window);
+    originalEventSourceRef.current = window.EventSource;
 
     window.fetch = async (input, init) => {
-      const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-      const parsedUrl = new URL(inputUrl, window.location.origin)
-      if (parsedUrl.pathname === '/api/version') {
-        return new Response(JSON.stringify({ backend: 'v0.2.0' }), {
+      const inputUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const parsedUrl = new URL(inputUrl, window.location.origin);
+      if (parsedUrl.pathname === "/api/version") {
+        return new Response(JSON.stringify({ backend: "v0.2.0" }), {
           status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })
+          headers: { "Content-Type": "application/json" },
+        });
       }
-      return (originalFetchRef.current ?? fetch)(input as RequestInfo | URL, init)
-    }
+      return (originalFetchRef.current ?? fetch)(input as RequestInfo | URL, init);
+    };
 
-    window.EventSource = MockEventSource as unknown as typeof EventSource
+    window.EventSource = MockEventSource as unknown as typeof EventSource;
 
     return () => {
       if (originalFetchRef.current) {
-        window.fetch = originalFetchRef.current
+        window.fetch = originalFetchRef.current;
       }
       if (originalEventSourceRef.current) {
-        window.EventSource = originalEventSourceRef.current
+        window.EventSource = originalEventSourceRef.current;
       }
-    }
-  }, [])
+    };
+  }, []);
 
-  return <>{children}</>
+  return <>{children}</>;
 }
 
 const meta = {
-  title: 'Shell/Layout/App Layout',
+  title: "Shell/Layout/App Layout",
   component: AppLayout,
-  tags: ['autodocs'],
+  tags: ["autodocs"],
   decorators: [
     (Story) => (
       <I18nProvider>
         <StorybookAppShellMock>
-          <MemoryRouter initialEntries={['/account-pool/upstream-accounts']}>
+          <MemoryRouter initialEntries={["/account-pool/upstream-accounts"]}>
             <Routes>
               <Route path="/" element={<Story />}>
                 <Route
@@ -247,54 +255,57 @@ const meta = {
     ),
   ],
   parameters: {
-    layout: 'fullscreen',
-    viewport: { defaultViewport: 'desktop1660' },
+    layout: "fullscreen",
+    viewport: { defaultViewport: "desktop1660" },
   },
-} satisfies Meta<typeof AppLayout>
+} satisfies Meta<typeof AppLayout>;
 
-export default meta
+export default meta;
 
-type Story = StoryObj<typeof meta>
+type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await expect(canvas.getByTestId('app-header-inner')).toBeVisible()
-    await expect(canvas.getByTestId('app-main')).toBeVisible()
-    await expect(canvas.getByTestId('app-footer-inner')).toBeVisible()
-    await expect(canvas.getByRole('link', { name: '号池' })).toHaveAttribute('aria-current', 'page')
-    await expect(canvas.queryByRole('button', { name: /打开导航菜单/i })).not.toBeInTheDocument()
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId("app-header-inner")).toBeVisible();
+    await expect(canvas.getByTestId("app-main")).toBeVisible();
+    await expect(canvas.getByTestId("app-footer-inner")).toBeVisible();
+    await expect(canvas.getByRole("link", { name: "号池" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    await expect(canvas.queryByRole("button", { name: /打开导航菜单/i })).not.toBeInTheDocument();
   },
-}
+};
 
 export const MobileNavigationMenu: Story = {
   parameters: {
-    viewport: { defaultViewport: 'mobile390' },
+    viewport: { defaultViewport: "mobile390" },
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await userEvent.click(canvas.getByRole('button', { name: /打开导航菜单/i }))
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: /打开导航菜单/i }));
 
-    const documentScope = within(canvasElement.ownerDocument.body)
-    await expect(documentScope.getByRole('link', { name: '维护记录' })).toBeVisible()
-    await expect(documentScope.getByRole('link', { name: '状态' })).toBeVisible()
+    const documentScope = within(canvasElement.ownerDocument.body);
+    await expect(documentScope.getByRole("link", { name: "维护记录" })).toBeVisible();
+    await expect(documentScope.getByRole("link", { name: "状态" })).toBeVisible();
 
-    await userEvent.click(documentScope.getByRole('link', { name: '维护记录' }))
-    await expect(canvas.getByRole('heading', { name: 'Maintenance timeline' })).toBeVisible()
+    await userEvent.click(documentScope.getByRole("link", { name: "维护记录" }));
+    await expect(canvas.getByRole("heading", { name: "Maintenance timeline" })).toBeVisible();
   },
-}
+};
 
 export const TabletNavigationMenu: Story = {
   parameters: {
-    viewport: { defaultViewport: 'tablet768' },
+    viewport: { defaultViewport: "tablet768" },
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await userEvent.click(canvas.getByRole('button', { name: /打开导航菜单/i }))
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: /打开导航菜单/i }));
 
-    const documentScope = within(canvasElement.ownerDocument.body)
-    await expect(documentScope.getByRole('link', { name: '设置' })).toBeVisible()
-    await userEvent.click(documentScope.getByRole('link', { name: '设置' }))
-    await expect(canvas.getByRole('heading', { name: 'System settings' })).toBeVisible()
+    const documentScope = within(canvasElement.ownerDocument.body);
+    await expect(documentScope.getByRole("link", { name: "设置" })).toBeVisible();
+    await userEvent.click(documentScope.getByRole("link", { name: "设置" }));
+    await expect(canvas.getByRole("heading", { name: "System settings" })).toBeVisible();
   },
-}
+};

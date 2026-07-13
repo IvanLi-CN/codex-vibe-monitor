@@ -1081,7 +1081,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let handshake_timeout =
         proxy_upstream_send_timeout_for_capture_target(&runtime_timeouts, Some(capture_target));
     let first_byte_timeout =
-        pool_upstream_first_chunk_timeout(&runtime_timeouts, &original_uri, &Method::POST);
+        pool_upstream_first_chunk_timeout(&runtime_timeouts, original_uri, &Method::POST);
     let stream_timeout = proxy_capture_target_stream_timeout(&runtime_timeouts, capture_target);
     let (
         selected_proxy,
@@ -1107,7 +1107,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             state.clone(),
             proxy_request_id,
             Method::POST,
-            &original_uri,
+            original_uri,
             &upstream_headers,
             Some(upstream_body_snapshot),
             handshake_timeout,
@@ -2185,11 +2185,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     upstream_read_error_kind = Some(proxy_stream_upstream_read_error_kind(&err));
                     last_upstream_chunk_gap_ms = last_upstream_chunk_received_at
                         .map(|instant| instant.elapsed().as_millis() as u64);
-                    if !downstream_closed {
-                        if tx.send(Err(io::Error::other(msg))).await.is_err() {
-                            downstream_closed = true;
-                            downstream_write_error_kind = Some("receiver_dropped");
-                        }
+                    if !downstream_closed && tx.send(Err(io::Error::other(msg))).await.is_err() {
+                        downstream_closed = true;
+                        downstream_write_error_kind = Some("receiver_dropped");
                     }
                     break;
                 }
@@ -2792,7 +2790,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 .map(|_| pending_pool_attempt_summary.pool_distinct_account_count),
             pool_attempt_terminal_reason: pool_account_for_task
                 .as_ref()
-                .and_then(|_| pending_pool_attempt_terminal_reason.as_deref()),
+                .and(pending_pool_attempt_terminal_reason.as_deref()),
         });
 
         let record = ProxyCaptureRecord {
@@ -2871,61 +2869,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 format!("failed to build proxy response: {err}"),
             )
         })
-}
-
-#[cfg(test)]
-mod dispatch_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn wait_for_downstream_body_terminal_until_times_out_when_body_stays_open() {
-        let (_tx, mut rx) = watch::channel(DownstreamBodyTerminalState::Open);
-        let mut downstream_closed = false;
-        let mut downstream_write_error_kind = None;
-        let mut last_upstream_chunk_gap_ms = None;
-
-        tokio::time::timeout(
-            Duration::from_millis(200),
-            wait_for_downstream_body_terminal_until(
-                &mut rx,
-                Instant::now() + Duration::from_millis(25),
-                &mut downstream_closed,
-                &mut downstream_write_error_kind,
-                None,
-                &mut last_upstream_chunk_gap_ms,
-            ),
-        )
-        .await
-        .expect("body-terminal wait should not hang forever");
-        assert!(!downstream_closed);
-        assert!(downstream_write_error_kind.is_none());
-        assert!(last_upstream_chunk_gap_ms.is_none());
-    }
-
-    #[tokio::test]
-    async fn wait_for_downstream_body_terminal_until_marks_dropped_before_deadline() {
-        let (tx, mut rx) = watch::channel(DownstreamBodyTerminalState::Open);
-        let mut downstream_closed = false;
-        let mut downstream_write_error_kind = None;
-        let mut last_upstream_chunk_gap_ms = None;
-        let send_drop = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            let _ = tx.send(DownstreamBodyTerminalState::Dropped);
-        });
-
-        wait_for_downstream_body_terminal_until(
-            &mut rx,
-            Instant::now() + Duration::from_millis(200),
-            &mut downstream_closed,
-            &mut downstream_write_error_kind,
-            Some(Instant::now()),
-            &mut last_upstream_chunk_gap_ms,
-        )
-        .await;
-        send_drop.await.expect("join drop sender");
-        assert!(downstream_closed);
-        assert_eq!(downstream_write_error_kind, Some("body_dropped"));
-    }
 }
 
 pub(crate) async fn read_request_body_with_limit(
@@ -3271,5 +3214,60 @@ pub(crate) fn resolve_compaction_response_kind_for_payload(
         Some(CompactionKind::Compact)
     } else {
         parsed_kind
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn wait_for_downstream_body_terminal_until_times_out_when_body_stays_open() {
+        let (_tx, mut rx) = watch::channel(DownstreamBodyTerminalState::Open);
+        let mut downstream_closed = false;
+        let mut downstream_write_error_kind = None;
+        let mut last_upstream_chunk_gap_ms = None;
+
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            wait_for_downstream_body_terminal_until(
+                &mut rx,
+                Instant::now() + Duration::from_millis(25),
+                &mut downstream_closed,
+                &mut downstream_write_error_kind,
+                None,
+                &mut last_upstream_chunk_gap_ms,
+            ),
+        )
+        .await
+        .expect("body-terminal wait should not hang forever");
+        assert!(!downstream_closed);
+        assert!(downstream_write_error_kind.is_none());
+        assert!(last_upstream_chunk_gap_ms.is_none());
+    }
+
+    #[tokio::test]
+    async fn wait_for_downstream_body_terminal_until_marks_dropped_before_deadline() {
+        let (tx, mut rx) = watch::channel(DownstreamBodyTerminalState::Open);
+        let mut downstream_closed = false;
+        let mut downstream_write_error_kind = None;
+        let mut last_upstream_chunk_gap_ms = None;
+        let send_drop = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let _ = tx.send(DownstreamBodyTerminalState::Dropped);
+        });
+
+        wait_for_downstream_body_terminal_until(
+            &mut rx,
+            Instant::now() + Duration::from_millis(200),
+            &mut downstream_closed,
+            &mut downstream_write_error_kind,
+            Some(Instant::now()),
+            &mut last_upstream_chunk_gap_ms,
+        )
+        .await;
+        send_drop.await.expect("join drop sender");
+        assert!(downstream_closed);
+        assert_eq!(downstream_write_error_kind, Some("body_dropped"));
     }
 }

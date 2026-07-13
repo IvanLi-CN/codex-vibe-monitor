@@ -43,13 +43,7 @@ export function buildAccountPoolGroupSummaries(options: {
   ungroupedLabel: string;
   groupedPlanLabel: (planType?: string | null) => string | null;
 }): AccountPoolGroupSummaryData[] {
-  const {
-    items,
-    groups,
-    forwardProxyNodes,
-    ungroupedLabel,
-    groupedPlanLabel,
-  } = options;
+  const { items, groups, forwardProxyNodes, ungroupedLabel, groupedPlanLabel } = options;
 
   const normalizedGroupEntries = groups.map((group, index) => ({
     group,
@@ -66,10 +60,7 @@ export function buildAccountPoolGroupSummaries(options: {
     } => entry.normalizedGroupName != null,
   );
   const forwardProxyNodeLabelMap = new Map(
-    forwardProxyNodes.map((node) => [
-      node.key,
-      node.displayName?.trim() || node.key,
-    ] as const),
+    forwardProxyNodes.map((node) => [node.key, node.displayName?.trim() || node.key] as const),
   );
   const groupSummaryMap = new Map(
     namedGroupEntries.map((entry) => [entry.normalizedGroupName, entry.group] as const),
@@ -83,7 +74,7 @@ export function buildAccountPoolGroupSummaries(options: {
     const normalizedGroupName = normalizeAccountPoolGroupName(item.groupName);
     const groupKey = normalizedGroupName ?? "__ungrouped__";
     const groupSummary = normalizedGroupName
-      ? groupSummaryMap.get(normalizedGroupName) ?? null
+      ? (groupSummaryMap.get(normalizedGroupName) ?? null)
       : null;
     const current = grouped.get(groupKey) ?? {
       id: groupKey,
@@ -98,8 +89,7 @@ export function buildAccountPoolGroupSummaries(options: {
         ) ?? [],
       concurrencyLimit: groupSummary?.concurrencyLimit ?? null,
       nodeShuntEnabled: groupSummary?.nodeShuntEnabled ?? false,
-      singleAccountRotationEnabled:
-        groupSummary?.singleAccountRotationEnabled ?? false,
+      singleAccountRotationEnabled: groupSummary?.singleAccountRotationEnabled ?? false,
       upstream429RetryEnabled: groupSummary?.upstream429RetryEnabled ?? false,
       upstream429MaxRetries: groupSummary?.upstream429MaxRetries ?? 0,
       routingRule: groupSummary?.routingRule,
@@ -141,7 +131,7 @@ export function buildAccountPoolGroupSummaries(options: {
       planCounts: orderedKeys
         .map((key) => ({
           key,
-          label: key === "api" ? "API" : groupedPlanLabel(key) ?? key,
+          label: key === "api" ? "API" : (groupedPlanLabel(key) ?? key),
           count: counts.get(key) ?? 0,
         }))
         .filter((plan) => plan.count > 0),
@@ -157,9 +147,7 @@ export function buildAccountPoolGroupSummaries(options: {
       right.groupName == null
         ? Number.MAX_SAFE_INTEGER
         : (groupOrder.get(right.groupName) ?? Number.MAX_SAFE_INTEGER - 1);
-    return (
-      leftOrder - rightOrder || left.displayName.localeCompare(right.displayName)
-    );
+    return leftOrder - rightOrder || left.displayName.localeCompare(right.displayName);
   });
 
   return result;

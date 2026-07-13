@@ -1,6 +1,6 @@
 use super::*;
 
-trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
+pub(crate) trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
 
 impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
 
@@ -786,18 +786,17 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                     "failed to record websocket pool route transport failure"
                 );
             }
-            if should_mark_ws_unsupported {
-                if let Err(err) =
+            if should_mark_ws_unsupported
+                && let Err(err) =
                     ensure_account_has_websocket_unsupported_tag(&state.pool, account.account_id)
                         .await
-                {
-                    warn!(
-                        invoke_id = %trace.invoke_id,
-                        account_id = account.account_id,
-                        error = %err,
-                        "failed to mark upstream account as websocket unsupported"
-                    );
-                }
+            {
+                warn!(
+                    invoke_id = %trace.invoke_id,
+                    account_id = account.account_id,
+                    error = %err,
+                    "failed to mark upstream account as websocket unsupported"
+                );
             }
             reservation_guard.release();
             return Err(WsAttemptFailure {
@@ -1029,17 +1028,14 @@ pub(crate) async fn proxy_websocket_tunnel(
                 drain_upstream_after_downstream_close = true;
                 break;
             }
-            match axum_to_tungstenite_message(message) {
-                Some(message) => {
-                    if let Err(err) = upstream_tx.send(message).await {
-                        let message =
-                            format!("failed to forward downstream websocket frame upstream: {err}");
-                        upstream_route_failure = Some(message.clone());
-                        failure = Some(message);
-                        break;
-                    }
-                }
-                None => {}
+            if let Some(message) = axum_to_tungstenite_message(message)
+                && let Err(err) = upstream_tx.send(message).await
+            {
+                let message =
+                    format!("failed to forward downstream websocket frame upstream: {err}");
+                upstream_route_failure = Some(message.clone());
+                failure = Some(message);
+                break;
             }
             if close_seen {
                 break;
@@ -1093,17 +1089,13 @@ pub(crate) async fn proxy_websocket_tunnel(
                             drain_upstream_after_downstream_close = true;
                             break;
                         }
-                        match axum_to_tungstenite_message(message) {
-                            Some(message) => {
-                                if let Err(err) = upstream_tx.send(message).await {
-                                    let message = format!("failed to forward downstream websocket frame upstream: {err}");
-                                    upstream_route_failure = Some(message.clone());
-                                    failure = Some(message);
-                                    break;
-                                }
+                        if let Some(message) = axum_to_tungstenite_message(message)
+                            && let Err(err) = upstream_tx.send(message).await {
+                                let message = format!("failed to forward downstream websocket frame upstream: {err}");
+                                upstream_route_failure = Some(message.clone());
+                                failure = Some(message);
+                                break;
                             }
-                            None => {}
-                        }
                         if close_seen {
                             break;
                         }
@@ -2093,21 +2085,19 @@ pub(crate) async fn persist_ws_usage_event(
     if is_completed_terminal_event
         && let Some(prompt_cache_key) = websocket_effective_prompt_cache_key(prompt_cache_key)
         && (request_contains_encrypted_content || event.contains_encrypted_content)
-    {
-        if confirm_prompt_cache_encrypted_session_owner_success_if_enabled(
+        && confirm_prompt_cache_encrypted_session_owner_success_if_enabled(
             state,
             prompt_cache_key,
             account.account_id,
         )
         .await?
-        {
-            promote_prompt_cache_group_binding_to_upstream_account(
-                &state.pool,
-                prompt_cache_key,
-                account.account_id,
-            )
-            .await?;
-        }
+    {
+        promote_prompt_cache_group_binding_to_upstream_account(
+            &state.pool,
+            prompt_cache_key,
+            account.account_id,
+        )
+        .await?;
     }
     persist_and_broadcast_proxy_capture_terminal_record(
         state,
@@ -2675,7 +2665,7 @@ pub(crate) fn axum_to_tungstenite_message(message: AxumWsMessage) -> Option<Tung
         AxumWsMessage::Pong(value) => Some(TungsteniteMessage::Pong(value.into())),
         AxumWsMessage::Close(frame) => Some(TungsteniteMessage::Close(frame.map(|frame| {
             tungstenite::protocol::CloseFrame {
-                code: tungstenite::protocol::frame::coding::CloseCode::from(u16::from(frame.code)),
+                code: tungstenite::protocol::frame::coding::CloseCode::from(frame.code),
                 reason: frame.reason.to_string().into(),
             }
         }))),
@@ -2690,7 +2680,7 @@ pub(crate) fn tungstenite_to_axum_message(message: TungsteniteMessage) -> Option
         TungsteniteMessage::Pong(value) => Some(AxumWsMessage::Pong(value.to_vec())),
         TungsteniteMessage::Close(frame) => Some(AxumWsMessage::Close(frame.map(|frame| {
             axum::extract::ws::CloseFrame {
-                code: u16::from(frame.code).into(),
+                code: u16::from(frame.code),
                 reason: frame.reason.to_string().into(),
             }
         }))),

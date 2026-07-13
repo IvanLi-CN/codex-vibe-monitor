@@ -3,12 +3,12 @@ import type {
   ApiInvocation,
   PromptCacheConversation,
   PromptCacheConversationInvocationPreview,
-  PromptCacheConversationsResponse,
   PromptCacheConversationRequestPoint,
+  PromptCacheConversationsResponse,
 } from "./api";
 import {
-  buildPromptCachePreviewFromInvocation,
   buildInvocationFromPromptCachePreview,
+  buildPromptCachePreviewFromInvocation,
   mergePromptCacheConversationHistory,
   mergePromptCacheConversationsResponse,
   type PromptCacheConversationHistoryByKey,
@@ -263,9 +263,7 @@ describe("mergePromptCacheConversationsResponse", () => {
     const base = createResponse(
       Array.from({ length: 50 }, (_, index) =>
         createConversation(`pck-visible-${index}`, {
-          createdAt: new Date(
-            Date.parse("2026-03-10T00:00:00Z") + index * 60_000,
-          ).toISOString(),
+          createdAt: new Date(Date.parse("2026-03-10T00:00:00Z") + index * 60_000).toISOString(),
           lastActivityAt: new Date(
             Date.parse("2026-03-10T02:05:00Z") + index * 20_000,
           ).toISOString(),
@@ -307,12 +305,8 @@ describe("mergePromptCacheConversationsResponse", () => {
     );
 
     expect(merged?.conversations).toHaveLength(50);
-    expect(merged?.conversations.map((item) => item.promptCacheKey)).toContain(
-      "pck-reactivated",
-    );
-    expect(
-      merged?.conversations.map((item) => item.promptCacheKey),
-    ).not.toContain("pck-visible-0");
+    expect(merged?.conversations.map((item) => item.promptCacheKey)).toContain("pck-reactivated");
+    expect(merged?.conversations.map((item) => item.promptCacheKey)).not.toContain("pck-visible-0");
   });
 
   it("dedupes last24h request points when the same invocation is already present after resync", () => {
@@ -325,9 +319,7 @@ describe("mergePromptCacheConversationsResponse", () => {
     });
     const base = createResponse([
       createConversation("pck-live", {
-        recentInvocations: [
-          buildPromptCachePreviewFromInvocation(authoritativeRecord),
-        ],
+        recentInvocations: [buildPromptCachePreviewFromInvocation(authoritativeRecord)],
         last24hRequests: [
           createRequestPoint({
             occurredAt: "2026-03-10T02:30:00Z",
@@ -367,9 +359,7 @@ describe("mergePromptCacheConversationsResponse", () => {
     const merged = mergePromptCacheConversationsResponse(
       createResponse([
         createConversation("pck-live-points", {
-          recentInvocations: [
-            buildPromptCachePreviewFromInvocation(authoritativeRecord),
-          ],
+          recentInvocations: [buildPromptCachePreviewFromInvocation(authoritativeRecord)],
           last24hRequests: [
             createRequestPoint({
               occurredAt: "2026-03-10T02:30:00Z",
@@ -512,13 +502,10 @@ describe("mergePromptCacheConversationsResponse", () => {
       Date.parse("2026-03-10T03:00:00Z"),
     );
 
-    expect(merged?.conversations.map((item) => item.promptCacheKey)).toContain(
-      "pck-running-old",
-    );
+    expect(merged?.conversations.map((item) => item.promptCacheKey)).toContain("pck-running-old");
     expect(
-      merged?.conversations.find(
-        (item) => item.promptCacheKey === "pck-running-old",
-      )?.recentInvocations[0]?.status,
+      merged?.conversations.find((item) => item.promptCacheKey === "pck-running-old")
+        ?.recentInvocations[0]?.status,
     ).toBe("running");
   });
 
@@ -650,15 +637,9 @@ describe("mergePromptCacheConversationsResponse", () => {
     );
 
     expect(merged?.conversations).toHaveLength(50);
-    expect(merged?.conversations.map((item) => item.promptCacheKey)).toContain(
-      "pck-old-running",
-    );
-    expect(
-      merged?.conversations.map((item) => item.promptCacheKey),
-    ).not.toContain("pck-base-00");
-    expect(merged?.conversations.at(-1)?.promptCacheKey).toBe(
-      "pck-old-running",
-    );
+    expect(merged?.conversations.map((item) => item.promptCacheKey)).toContain("pck-old-running");
+    expect(merged?.conversations.map((item) => item.promptCacheKey)).not.toContain("pck-base-00");
+    expect(merged?.conversations.at(-1)?.promptCacheKey).toBe("pck-old-running");
   });
 
   it("breaks capped working-set ties by createdAt descending after the shared anchor", () => {
@@ -738,12 +719,8 @@ describe("mergePromptCacheConversationsResponse", () => {
     );
 
     expect(merged?.conversations).toHaveLength(50);
-    expect(merged?.conversations.map((item) => item.promptCacheKey)).toContain(
-      "pck-tie-newer",
-    );
-    expect(
-      merged?.conversations.map((item) => item.promptCacheKey),
-    ).not.toContain("pck-tie-older");
+    expect(merged?.conversations.map((item) => item.promptCacheKey)).toContain("pck-tie-newer");
+    expect(merged?.conversations.map((item) => item.promptCacheKey)).not.toContain("pck-tie-older");
   });
 });
 
@@ -799,9 +776,7 @@ describe("mergePromptCacheConversationHistory", () => {
     };
 
     for (let index = 0; index < 128; index += 1) {
-      const createdAt = new Date(
-        Date.parse("2026-03-10T00:00:00Z") + index * 60_000,
-      ).toISOString();
+      const createdAt = new Date(Date.parse("2026-03-10T00:00:00Z") + index * 60_000).toISOString();
       const lastActivityAt = new Date(
         Date.parse("2026-03-10T00:00:30Z") + index * 60_000,
       ).toISOString();
@@ -838,10 +813,7 @@ describe("reconcilePromptCacheLiveRecordMap", () => {
 
     const reconciled = reconcilePromptCacheLiveRecordMap(
       { "pck-hidden-completed": [completedRecord] },
-      createResponse([
-        createConversation("pck-visible-a"),
-        createConversation("pck-visible-b"),
-      ]),
+      createResponse([createConversation("pck-visible-a"), createConversation("pck-visible-b")]),
       {
         requestStartedAtMs: 100,
         liveRecordObservedAtByKey: { "pck-hidden-completed": 101 },
@@ -866,10 +838,7 @@ describe("reconcilePromptCacheLiveRecordMap", () => {
           }),
         ],
       },
-      createResponse([
-        createConversation("pck-visible-a"),
-        createConversation("pck-visible-b"),
-      ]),
+      createResponse([createConversation("pck-visible-a"), createConversation("pck-visible-b")]),
     );
 
     expect(reconciled).toEqual({});
@@ -886,10 +855,7 @@ describe("reconcilePromptCacheLiveRecordMap", () => {
 
     const reconciled = reconcilePromptCacheLiveRecordMap(
       { "pck-hidden-running": [liveRecord] },
-      createResponse([
-        createConversation("pck-visible-a"),
-        createConversation("pck-visible-b"),
-      ]),
+      createResponse([createConversation("pck-visible-a"), createConversation("pck-visible-b")]),
     );
 
     expect(reconciled).toEqual({

@@ -1,8 +1,8 @@
 import { useMemo } from "react";
-import { AppIcon } from "../shared/AppIcon";
-import { ForwardProxyRequestTrendChart } from "./ForwardProxyRequestTrendChart";
 import type { ForwardProxyBindingNode } from "../../lib/api";
 import { cn } from "../../lib/utils";
+import { AppIcon } from "../shared/AppIcon";
+import { ForwardProxyRequestTrendChart } from "./ForwardProxyRequestTrendChart";
 import {
   canonicalizeForwardProxyBindingKeys,
   normalizeForwardProxyBindingKeys,
@@ -27,10 +27,7 @@ export type ForwardProxyBindingSelectorLabels = {
   chartLocaleTag?: string;
 };
 
-function toggleForwardProxyBindingKey(
-  keys: string[],
-  target: string,
-): string[] {
+function toggleForwardProxyBindingKey(keys: string[], target: string): string[] {
   if (keys.includes(target)) {
     return keys.filter((key) => key !== target);
   }
@@ -72,10 +69,7 @@ function ProxyOptionTrafficChart({
   interactionHint: string;
   localeTag: string;
 }) {
-  const buckets = useMemo(
-    () => (Array.isArray(node.last24h) ? node.last24h : []),
-    [node.last24h],
-  );
+  const buckets = useMemo(() => (Array.isArray(node.last24h) ? node.last24h : []), [node.last24h]);
   const totals = useMemo(() => sumProxyTraffic(node), [node]);
   const windowBadgeLabel = useMemo(() => {
     if (/24/.test(label)) return "24H";
@@ -86,6 +80,7 @@ function ProxyOptionTrafficChart({
     <div className="flex w-full flex-col justify-center gap-0.5 sm:min-w-[15.5rem] sm:max-w-[15.5rem] sm:self-center">
       <div className="flex h-4 items-center justify-between gap-2">
         <span
+          role="img"
           className="inline-flex h-4 min-w-[2.25rem] shrink-0 items-center justify-center rounded-md border border-base-300/80 bg-base-100/75 px-1.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-base-content/55 whitespace-nowrap"
           title={label}
           aria-label={label}
@@ -94,6 +89,7 @@ function ProxyOptionTrafficChart({
         </span>
         <div className="flex items-center gap-1.5 text-[10px] font-semibold leading-none tabular-nums">
           <span
+            role="img"
             className="inline-flex items-center gap-1 text-success"
             aria-label={`${successLabel} ${totals.success}`}
             title={`${successLabel} ${totals.success}`}
@@ -102,6 +98,7 @@ function ProxyOptionTrafficChart({
             <span>{totals.success}</span>
           </span>
           <span
+            role="img"
             className="inline-flex items-center gap-1 text-error"
             aria-label={`${failureLabel} ${totals.failure}`}
             title={`${failureLabel} ${totals.failure}`}
@@ -153,12 +150,7 @@ export function ForwardProxyBindingSelector({
   selectedKeys: string[];
   availableProxyNodes?: ForwardProxyBindingNode[];
   disabled?: boolean;
-  catalogKind?:
-    | "ready-empty"
-    | "ready-with-data"
-    | "loading"
-    | "missing"
-    | "deferred";
+  catalogKind?: "ready-empty" | "ready-with-data" | "loading" | "missing" | "deferred";
   catalogFreshness?: "fresh" | "stale" | "missing" | "deferred";
   labels?: ForwardProxyBindingSelectorLabels;
   onChange?: (value: string[]) => void;
@@ -176,8 +168,7 @@ export function ForwardProxyBindingSelector({
     [availableProxyNodes, selectedKeys],
   );
   const options = useMemo(
-    () =>
-      resolveForwardProxyBindingOptions(canonicalSelectedKeys, availableProxyNodes),
+    () => resolveForwardProxyBindingOptions(canonicalSelectedKeys, availableProxyNodes),
     [availableProxyNodes, canonicalSelectedKeys],
   );
   const chartScaleMax = useMemo(
@@ -253,31 +244,20 @@ export function ForwardProxyBindingSelector({
                   disabled={optionDisabled}
                   onClick={() => {
                     if (!onChange) return;
-                    onChange(
-                      toggleForwardProxyBindingKey(
-                        canonicalSelectedKeys,
-                        node.key,
-                      ),
-                    );
+                    onChange(toggleForwardProxyBindingKey(canonicalSelectedKeys, node.key));
                   }}
                   className={cn(
                     "grid gap-2 rounded-xl border px-3 py-2 text-left transition-colors sm:grid-cols-[minmax(0,1fr)_15.5rem] sm:items-center sm:gap-3",
                     selected
                       ? "border-primary/45 bg-primary/10"
                       : "border-base-300/80 bg-base-100/75",
-                    optionDisabled
-                      ? "cursor-not-allowed opacity-60"
-                      : "hover:border-primary/40",
+                    optionDisabled ? "cursor-not-allowed opacity-60" : "hover:border-primary/40",
                   )}
                 >
                   <div className="flex min-w-0 flex-1 items-center gap-3">
                     <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-base-300/80 bg-base-100">
                       {selected ? (
-                        <AppIcon
-                          name="check"
-                          className="h-3.5 w-3.5 text-primary"
-                          aria-hidden
-                        />
+                        <AppIcon name="check" className="h-3.5 w-3.5 text-primary" aria-hidden />
                       ) : null}
                     </div>
                     <div className="min-w-0 flex-1">

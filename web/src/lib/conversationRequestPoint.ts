@@ -1,16 +1,9 @@
-import type {
-  ApiInvocation,
-  ConversationRequestOutcome,
-  ConversationRequestPoint,
-} from "./api";
+import type { ApiInvocation, ConversationRequestOutcome, ConversationRequestPoint } from "./api";
 
 function normalizeOutcome(
   value: ConversationRequestOutcome | null | undefined,
 ): ConversationRequestOutcome | null {
-  return value === "success" ||
-    value === "failure" ||
-    value === "neutral" ||
-    value === "in_flight"
+  return value === "success" || value === "failure" || value === "neutral" || value === "in_flight"
     ? value
     : null;
 }
@@ -52,11 +45,7 @@ export function resolveConversationRequestPointOutcome(
 export function resolvePromptCacheInvocationOutcome(
   record: Pick<
     ApiInvocation,
-    | "status"
-    | "failureClass"
-    | "failureKind"
-    | "errorMessage"
-    | "downstreamErrorMessage"
+    "status" | "failureClass" | "failureKind" | "errorMessage" | "downstreamErrorMessage"
   >,
 ): ConversationRequestOutcome {
   const status = normalizeStatus(record.status);
@@ -80,11 +69,7 @@ export function resolvePromptCacheInvocationOutcome(
     return "in_flight";
   }
 
-  if (
-    status === "success" ||
-    status === "completed" ||
-    status === "http_200"
-  ) {
+  if (status === "success" || status === "completed" || status === "http_200") {
     return "success";
   }
 

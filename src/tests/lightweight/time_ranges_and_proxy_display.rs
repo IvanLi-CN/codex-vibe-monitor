@@ -1,48 +1,30 @@
 use super::*;
-use aes_gcm::{
-    Aes256Gcm,
-    aead::{Aead, KeyInit},
-};
 use axum::{
     Json, Router,
     body::{Body, Bytes, to_bytes},
-    extract::{Query, State},
-    http::{HeaderName, HeaderValue, Method, StatusCode, Uri, header as http_header},
-    response::{IntoResponse, Response},
-    routing::{any, get, post},
+    extract::State,
+    http::{HeaderValue, Method, StatusCode, Uri, header as http_header},
+    response::Response,
+    routing::{any, post},
 };
 use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use brotli::CompressorWriter;
 use chrono::Timelike;
-use flate2::{
-    Compression,
-    write::{DeflateEncoder, GzEncoder, ZlibEncoder},
-};
-use rand::{RngCore, rngs::OsRng};
 use reqwest::Url;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
-use sqlx::error::{DatabaseError, ErrorKind};
-use sqlx::{Connection, SqliteConnection, SqlitePool, sqlite::SqlitePoolOptions};
 use std::{
-    borrow::Cow,
-    collections::{HashMap, HashSet},
     convert::Infallible,
     env,
     ffi::OsString,
     fs,
-    io::Write,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex as StdMutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex as AsyncMutex, Notify, Semaphore, broadcast};
-use tokio::task::JoinHandle;
+use tokio::sync::{Mutex as AsyncMutex, Notify};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) static APP_CONFIG_ENV_LOCK: once_cell::sync::Lazy<AsyncMutex<()>> =
@@ -929,9 +911,12 @@ async fn forward_proxy_binding_nodes_restore_display_name_for_missing_bound_keys
     .await
     .expect("persist forward proxy metadata history");
 
-    let nodes = build_forward_proxy_binding_nodes_response(state.as_ref(), &[proxy_key.clone()])
-        .await
-        .expect("build binding nodes response");
+    let nodes = build_forward_proxy_binding_nodes_response(
+        state.as_ref(),
+        std::slice::from_ref(&proxy_key),
+    )
+    .await
+    .expect("build binding nodes response");
 
     assert!(
         nodes
@@ -1084,10 +1069,12 @@ async fn forward_proxy_binding_nodes_reuse_legacy_pool_attempt_stats_for_stable_
         .await;
     }
 
-    let nodes =
-        build_forward_proxy_binding_nodes_response(state.as_ref(), &[stable_proxy_key.clone()])
-            .await
-            .expect("build binding nodes response");
+    let nodes = build_forward_proxy_binding_nodes_response(
+        state.as_ref(),
+        std::slice::from_ref(&stable_proxy_key),
+    )
+    .await
+    .expect("build binding nodes response");
     let node = nodes
         .into_iter()
         .find(|item| item.key == stable_proxy_key)
@@ -1278,10 +1265,12 @@ async fn forward_proxy_binding_nodes_map_historical_runtime_keys_to_current_logi
             .expect("binding parts from current proxy url"),
     )[0]
     .clone();
-    let nodes =
-        build_forward_proxy_binding_nodes_response(state.as_ref(), &[legacy_proxy_key.clone()])
-            .await
-            .expect("build binding nodes response");
+    let nodes = build_forward_proxy_binding_nodes_response(
+        state.as_ref(),
+        std::slice::from_ref(&legacy_proxy_key),
+    )
+    .await
+    .expect("build binding nodes response");
     let current_node = nodes
         .iter()
         .find(|item| item.key == binding_key)

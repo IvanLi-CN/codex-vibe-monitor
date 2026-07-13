@@ -34,10 +34,7 @@ function renderTimeline(focusedAttemptId: number | null = null) {
     root?.render(
       <MemoryRouter>
         <I18nProvider>
-          <UpstreamAccountAttemptTimeline
-            accountId={101}
-            focusedAttemptId={focusedAttemptId}
-          />
+          <UpstreamAccountAttemptTimeline accountId={101} focusedAttemptId={focusedAttemptId} />
         </I18nProvider>
       </MemoryRouter>,
     );
@@ -131,40 +128,30 @@ describe("UpstreamAccountAttemptTimeline", () => {
     expect(table).not.toBeNull();
     expect(table?.textContent).toMatch(/上游 HTTP 500|upstream http 500/i);
     expect(table?.textContent).toContain("JP Edge 01");
-    expect(table?.querySelector("th")?.parentElement?.textContent).not.toMatch(
-      /端点|endpoint/i,
-    );
+    expect(table?.querySelector("th")?.parentElement?.textContent).not.toMatch(/端点|endpoint/i);
     const mobileTable = host?.querySelector<HTMLTableElement>(
       '[data-testid="upstream-account-call-records-mobile-table"]',
     );
-    expect(mobileTable?.querySelector("a")?.className).toContain(
-      "whitespace-nowrap",
-    );
-    expect(mobileTable?.querySelector("a")?.className).not.toContain(
-      "truncate",
-    );
+    expect(mobileTable?.querySelector("a")?.className).toContain("whitespace-nowrap");
+    expect(mobileTable?.querySelector("a")?.className).not.toContain("truncate");
 
     const disclosure = host?.querySelector<HTMLDetailsElement>(
       '[data-testid="account-attempt-evidence-1"]',
     );
     expect(disclosure).not.toBeNull();
     expect(disclosure?.closest("td")?.colSpan).toBe(7);
-    expect(disclosure?.querySelector("summary")?.className).toContain(
-      "min-h-11",
-    );
+    expect(disclosure?.querySelector("summary")?.className).toContain("min-h-11");
     act(() => {
-      disclosure?.querySelector("summary")?.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
+      disclosure
+        ?.querySelector("summary")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(disclosure?.open).toBe(true);
     expect(disclosure?.textContent).toContain("req_upstream_123");
     expect(disclosure?.textContent).toContain("route-tokyo-primary");
     expect(disclosure?.textContent).toMatch(/下游 HTTP|downstream http/i);
     expect(disclosure?.textContent).toContain("502");
-    expect(disclosure?.textContent).toMatch(
-      /upstream returned an oversized diagnostic payload/i,
-    );
+    expect(disclosure?.textContent).toMatch(/upstream returned an oversized diagnostic payload/i);
   });
 
   it("shows the pending attempt phase without adding another permanent column", async () => {
@@ -199,9 +186,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
       '[data-testid="upstream-account-call-records-table"]',
     );
     expect(table?.textContent).toMatch(/等待首字节|waiting for first byte/i);
-    expect(table?.querySelector("th")?.parentElement?.textContent).not.toMatch(
-      /阶段|phase/i,
-    );
+    expect(table?.querySelector("th")?.parentElement?.textContent).not.toMatch(/阶段|phase/i);
   });
 
   it("opens the exact attempt diagnostics when event navigation focuses it", async () => {

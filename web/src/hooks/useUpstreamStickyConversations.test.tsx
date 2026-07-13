@@ -7,10 +7,10 @@ import type {
   UpstreamStickyConversationsResponse,
 } from "../lib/api";
 import {
-  UPSTREAM_STICKY_OPEN_RESYNC_COOLDOWN_MS,
-  UPSTREAM_STICKY_SSE_REFRESH_THROTTLE_MS,
   getUpstreamStickySseRefreshDelay,
   shouldTriggerUpstreamStickyOpenResync,
+  UPSTREAM_STICKY_OPEN_RESYNC_COOLDOWN_MS,
+  UPSTREAM_STICKY_SSE_REFRESH_THROTTLE_MS,
   useUpstreamStickyConversations,
 } from "./useUpstreamStickyConversations";
 
@@ -26,8 +26,7 @@ const apiMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/api", async () => {
-  const actual =
-    await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return {
     ...actual,
     fetchUpstreamStickyConversations: apiMocks.fetchUpstreamStickyConversations,
@@ -90,9 +89,7 @@ function text(testId: string) {
   return element.textContent ?? "";
 }
 
-function createResponse(
-  stickyKey: string,
-): UpstreamStickyConversationsResponse {
+function createResponse(stickyKey: string): UpstreamStickyConversationsResponse {
   return {
     rangeStart: "2026-03-10T00:00:00Z",
     rangeEnd: "2026-03-11T00:00:00Z",
@@ -137,17 +134,11 @@ function Probe({
   selection: StickyKeyConversationSelection;
   enabled?: boolean;
 }) {
-  const { stats, isLoading, error } = useUpstreamStickyConversations(
-    accountId,
-    selection,
-    enabled,
-  );
+  const { stats, isLoading, error } = useUpstreamStickyConversations(accountId, selection, enabled);
 
   return (
     <div>
-      <div data-testid="sticky-key">
-        {stats?.conversations[0]?.stickyKey ?? ""}
-      </div>
+      <div data-testid="sticky-key">{stats?.conversations[0]?.stickyKey ?? ""}</div>
       <div data-testid="loading">{isLoading ? "true" : "false"}</div>
       <div data-testid="error">{error ?? ""}</div>
     </div>
@@ -205,30 +196,16 @@ describe("useUpstreamStickyConversations sync guards", () => {
   });
 
   it("does not load until enabled and then hydrates the current account", async () => {
-    apiMocks.fetchUpstreamStickyConversations.mockResolvedValue(
-      createResponse("sticky-routing"),
-    );
+    apiMocks.fetchUpstreamStickyConversations.mockResolvedValue(createResponse("sticky-routing"));
 
-    render(
-      <Probe
-        accountId={101}
-        selection={{ mode: "count", limit: 20 }}
-        enabled={false}
-      />,
-    );
+    render(<Probe accountId={101} selection={{ mode: "count", limit: 20 }} enabled={false} />);
     await flushAsync();
 
     expect(apiMocks.fetchUpstreamStickyConversations).not.toHaveBeenCalled();
     expect(text("loading")).toBe("false");
     expect(text("sticky-key")).toBe("");
 
-    rerender(
-      <Probe
-        accountId={101}
-        selection={{ mode: "count", limit: 20 }}
-        enabled
-      />,
-    );
+    rerender(<Probe accountId={101} selection={{ mode: "count", limit: 20 }} enabled />);
     await flushAsync();
 
     expect(apiMocks.fetchUpstreamStickyConversations).toHaveBeenCalledTimes(1);

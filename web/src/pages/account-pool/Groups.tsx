@@ -1,20 +1,20 @@
 import { useCallback, useMemo } from "react";
 import { Link } from "react-router-dom";
-import { AppIcon } from "../../features/shared/AppIcon";
-import { ListBodyState } from "../../features/shared/ListBodyState";
+import { Alert } from "../../components/ui/alert";
+import { Button } from "../../components/ui/button";
 import {
   AccountPoolGroupSummary,
   type AccountPoolGroupSummaryLabels,
 } from "../../features/account-pool/AccountPoolGroupSummary";
-import { Alert } from "../../components/ui/alert";
-import { Button } from "../../components/ui/button";
-import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
+import { AppIcon } from "../../features/shared/AppIcon";
+import { ListBodyState } from "../../features/shared/ListBodyState";
 import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
+import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
 import { useTranslation } from "../../i18n";
 import {
+  type AccountPoolGroupSummaryData,
   buildAccountPoolGroupSummaries,
   normalizeAccountPoolGroupName,
-  type AccountPoolGroupSummaryData,
 } from "../../lib/accountPoolGroups";
 import { useUpstreamAccountGroupSettingsDialog } from "./useUpstreamAccountGroupSettingsDialog";
 
@@ -88,23 +88,19 @@ export default function GroupsPage() {
     () => groupSummaries.filter((group) => group.groupName != null),
     [groupSummaries],
   );
-  const ungroupedGroup =
-    groupSummaries.find((group) => group.groupName == null) ?? null;
+  const ungroupedGroup = groupSummaries.find((group) => group.groupName == null) ?? null;
 
   const groupSummaryLabels = useMemo<AccountPoolGroupSummaryLabels>(
     () => ({
-      count: (count) =>
-        t("accountPool.upstreamAccounts.grouped.accountCount", { count }),
-      concurrency: (value) =>
-        t("accountPool.upstreamAccounts.grouped.concurrency", { value }),
+      count: (count) => t("accountPool.upstreamAccounts.grouped.accountCount", { count }),
+      concurrency: (value) => t("accountPool.upstreamAccounts.grouped.concurrency", { value }),
       exclusiveNode: t("accountPool.upstreamAccounts.grouped.exclusiveNode"),
       noteLabel: t("accountPool.groups.noteLabel"),
       noteEmpty: t("accountPool.groups.noteEmpty"),
       proxiesLabel: t("accountPool.upstreamAccounts.grouped.proxiesLabel"),
       proxiesEmpty: t("accountPool.upstreamAccounts.grouped.proxiesEmpty"),
       settingsLabel: t("accountPool.upstreamAccounts.groupNotes.actions.edit"),
-      upstream429Enabled: (count) =>
-        t("accountPool.groups.upstream429Enabled", { count }),
+      upstream429Enabled: (count) => t("accountPool.groups.upstream429Enabled", { count }),
       upstream429Disabled: t("accountPool.groups.upstream429Disabled"),
       policyPriorityPrimary: t("accountPool.policyBadges.primary"),
       policyPriorityFallback: t("accountPool.policyBadges.fallback"),
@@ -114,50 +110,44 @@ export default function GroupsPage() {
       policyForbidCutOut: t("accountPool.policyBadges.forbidCutOut"),
       policyForbidCutIn: t("accountPool.policyBadges.forbidCutIn"),
       policyForbidNewConversation: t("accountPool.policyBadges.forbidNew"),
-      policyConcurrency: (count) =>
-        t("accountPool.policyBadges.concurrency", { count }),
+      policyConcurrency: (count) => t("accountPool.policyBadges.concurrency", { count }),
       policyRetry: (count) => t("accountPool.policyBadges.retry", { count }),
     }),
     [t],
   );
 
-  const {
-    openEditor: openGroupSettingsEditor,
-    dialog: groupSettingsDialog,
-  } = useUpstreamAccountGroupSettingsDialog({
-    writesEnabled,
-    availableModelOptions,
-    resolveGroupState: useCallback(
-      (groupName) => {
-        const normalizedGroupName = normalizeAccountPoolGroupName(groupName);
-        if (!normalizedGroupName) return null;
-        const group =
-          groupSummaries.find(
-            (candidate) => candidate.groupName === normalizedGroupName,
-          ) ?? null;
-        return {
-          groupName: normalizedGroupName,
-          note: group?.note ?? "",
-          existing: group != null,
-          concurrencyLimit: group?.concurrencyLimit ?? 0,
-          boundProxyKeys: group?.boundProxyKeys ?? [],
-          nodeShuntEnabled: group?.nodeShuntEnabled ?? false,
-          singleAccountRotationEnabled:
-            group?.singleAccountRotationEnabled ?? false,
-          upstream429RetryEnabled: group?.upstream429RetryEnabled ?? false,
-          upstream429MaxRetries: group?.upstream429MaxRetries ?? 0,
-          routingRule: group?.routingRule,
-        };
-      },
-      [groupSummaries],
-    ),
-    saveGroupSettings: useCallback(
-      async (groupName, payload) => {
-        await saveGroupNote(groupName, payload);
-      },
-      [saveGroupNote],
-    ),
-  });
+  const { openEditor: openGroupSettingsEditor, dialog: groupSettingsDialog } =
+    useUpstreamAccountGroupSettingsDialog({
+      writesEnabled,
+      availableModelOptions,
+      resolveGroupState: useCallback(
+        (groupName) => {
+          const normalizedGroupName = normalizeAccountPoolGroupName(groupName);
+          if (!normalizedGroupName) return null;
+          const group =
+            groupSummaries.find((candidate) => candidate.groupName === normalizedGroupName) ?? null;
+          return {
+            groupName: normalizedGroupName,
+            note: group?.note ?? "",
+            existing: group != null,
+            concurrencyLimit: group?.concurrencyLimit ?? 0,
+            boundProxyKeys: group?.boundProxyKeys ?? [],
+            nodeShuntEnabled: group?.nodeShuntEnabled ?? false,
+            singleAccountRotationEnabled: group?.singleAccountRotationEnabled ?? false,
+            upstream429RetryEnabled: group?.upstream429RetryEnabled ?? false,
+            upstream429MaxRetries: group?.upstream429MaxRetries ?? 0,
+            routingRule: group?.routingRule,
+          };
+        },
+        [groupSummaries],
+      ),
+      saveGroupSettings: useCallback(
+        async (groupName, payload) => {
+          await saveGroupNote(groupName, payload);
+        },
+        [saveGroupNote],
+      ),
+    });
 
   const showEmptyState = !isLoading && !listError && groupSummaries.length === 0;
 
@@ -165,14 +155,9 @@ export default function GroupsPage() {
     (group: AccountPoolGroupSummaryData, options?: { ungrouped?: boolean }) => {
       const isUngrouped = options?.ungrouped === true;
       return (
-        <article
+        <li
           key={group.id}
-          role="listitem"
-          data-testid={
-            isUngrouped
-              ? "account-pool-group-row-ungrouped"
-              : "account-pool-group-row"
-          }
+          data-testid={isUngrouped ? "account-pool-group-row-ungrouped" : "account-pool-group-row"}
           className={isUngrouped ? "bg-base-100/48" : "bg-base-100/72"}
         >
           <div className="grid gap-4 px-4 py-4 sm:px-5 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
@@ -193,11 +178,7 @@ export default function GroupsPage() {
                     openGroupSettingsEditor(group.groupName);
                   }}
                 >
-                  <AppIcon
-                    name="file-document-edit-outline"
-                    className="mr-2 h-4 w-4"
-                    aria-hidden
-                  />
+                  <AppIcon name="file-document-edit-outline" className="mr-2 h-4 w-4" aria-hidden />
                   {t("accountPool.groups.editGroup")}
                 </Button>
               ) : null}
@@ -208,17 +189,13 @@ export default function GroupsPage() {
                     presetGroupFilter: buildPresetGroupFilter(group.groupName),
                   }}
                 >
-                  <AppIcon
-                    name="account-details-outline"
-                    className="mr-2 h-4 w-4"
-                    aria-hidden
-                  />
+                  <AppIcon name="account-details-outline" className="mr-2 h-4 w-4" aria-hidden />
                   {t("accountPool.groups.viewAccounts")}
                 </Link>
               </Button>
             </div>
           </div>
-        </article>
+        </li>
       );
     },
     [groupSummaryLabels, openGroupSettingsEditor, t, writesEnabled],
@@ -231,9 +208,7 @@ export default function GroupsPage() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="section-heading">
               <h2 className="section-title">{t("accountPool.groups.title")}</h2>
-              <p className="section-description">
-                {t("accountPool.groups.description")}
-              </p>
+              <p className="section-description">{t("accountPool.groups.description")}</p>
             </div>
             <div className="flex flex-wrap items-center gap-2 text-sm text-base-content/60">
               <span>
@@ -260,11 +235,7 @@ export default function GroupsPage() {
               />
               <div className="flex flex-1 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <span>{listError}</span>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => void refresh()}
-                >
+                <Button type="button" variant="secondary" onClick={() => void refresh()}>
                   <AppIcon name="refresh" className="mr-2 h-4 w-4" aria-hidden />
                   {t("accountPool.groups.retry")}
                 </Button>
@@ -296,11 +267,7 @@ export default function GroupsPage() {
               className="flex min-h-[14rem] flex-col items-center justify-center rounded-[1.4rem] border border-dashed border-base-300/80 bg-base-100/45 px-6 py-10 text-center"
             >
               <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-                <AppIcon
-                  name="badge-account-horizontal-outline"
-                  className="h-7 w-7"
-                  aria-hidden
-                />
+                <AppIcon name="badge-account-horizontal-outline" className="h-7 w-7" aria-hidden />
               </div>
               <p className="text-lg font-semibold text-base-content">
                 {t("accountPool.groups.emptyTitle")}
@@ -319,15 +286,14 @@ export default function GroupsPage() {
 
           {groupSummaries.length > 0 ? (
             <div className="overflow-hidden rounded-[1.35rem] border border-base-300/80 bg-base-100/72">
-              <div
+              <ul
                 data-testid="account-pool-groups-list"
-                role="list"
                 aria-label={t("accountPool.groups.title")}
                 className="divide-y divide-base-300/70"
               >
                 {namedGroups.map((group) => renderGroupRow(group))}
                 {ungroupedGroup ? renderGroupRow(ungroupedGroup, { ungrouped: true }) : null}
-              </div>
+              </ul>
             </div>
           ) : null}
         </div>

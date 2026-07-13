@@ -113,9 +113,7 @@ function buildMinuteWindowFromConversations(
   });
 }
 
-const minuteWindow = buildMinuteWindowFromConversations(
-  realisticShortConversations,
-);
+const minuteWindow = buildMinuteWindowFromConversations(realisticShortConversations);
 
 const hourWindow = buildWindow({
   rangeStart: "2026-02-06T00:00:00Z",
@@ -164,7 +162,13 @@ const hourWindow = buildWindow({
       return {
         bucketStart: new Date(Date.UTC(2026, 2, 6, hour)).toISOString(),
         bucketEnd: new Date(Date.UTC(2026, 2, 6, hour + 1)).toISOString(),
-        parallelCount: businessHour ? 3 + ((index + 1) % 4) : eveningTail ? 2 : index % 5 === 0 ? 1 : 0,
+        parallelCount: businessHour
+          ? 3 + ((index + 1) % 4)
+          : eveningTail
+            ? 2
+            : index % 5 === 0
+              ? 1
+              : 0,
       };
     }),
   ],
@@ -251,9 +255,7 @@ export const Populated: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      canvas.getByTestId("parallel-work-card-current"),
-    ).toBeInTheDocument();
+    await expect(canvas.getByTestId("parallel-work-card-current")).toBeInTheDocument();
     await expect(canvas.queryByTestId("parallel-work-window-toggle")).toBeNull();
     const gantt = await canvas.findByTestId("parallel-work-conversation-gantt");
     const bar = gantt.querySelector('[data-testid="parallel-work-conversation-bar"]');
@@ -265,12 +267,8 @@ export const Populated: Story = {
       clientX: rect.left + rect.width / 2,
       clientY: rect.top + rect.height / 2,
     });
-    await expect(
-      within(document.body).getByRole("tooltip"),
-    ).toBeInTheDocument();
-    await expect(
-      within(document.body).getByText(/Parallel work/i),
-    ).toBeInTheDocument();
+    await expect(within(document.body).getByRole("tooltip")).toBeInTheDocument();
+    await expect(within(document.body).getByText(/Parallel work/i)).toBeInTheDocument();
   },
 };
 
@@ -305,9 +303,7 @@ export const EvidenceShortPeriodConversationGantt: Story = {
     const canvas = within(canvasElement);
     const gantt = await canvas.findByTestId("parallel-work-conversation-gantt");
     await expect(gantt).toHaveAttribute("data-chart-mode", "conversation-gantt");
-    await expect(
-      canvas.queryByTestId("parallel-work-interaction-overlay"),
-    ).toBeNull();
+    await expect(canvas.queryByTestId("parallel-work-interaction-overlay")).toBeNull();
     const bars = canvas.getAllByTestId("parallel-work-conversation-bar");
     await expect(bars.length).toBeGreaterThanOrEqual(20);
   },
@@ -324,12 +320,8 @@ export const CurrentHourRange: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      canvas.getByTestId("parallel-work-card-current"),
-    ).toBeInTheDocument();
-    await expect(
-      canvas.queryByTestId("parallel-work-conversation-gantt"),
-    ).toBeNull();
+    await expect(canvas.getByTestId("parallel-work-card-current")).toBeInTheDocument();
+    await expect(canvas.queryByTestId("parallel-work-conversation-gantt")).toBeNull();
   },
 };
 
@@ -346,16 +338,10 @@ export const EvidenceLongPeriodRechartsTrend: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      canvas.queryByTestId("parallel-work-conversation-gantt"),
-    ).toBeNull();
-    const chart = canvasElement.querySelector(
-      '[data-chart-kind="parallel-work-sparkline"]',
-    );
+    await expect(canvas.queryByTestId("parallel-work-conversation-gantt")).toBeNull();
+    const chart = canvasElement.querySelector('[data-chart-kind="parallel-work-sparkline"]');
     await expect(chart).toHaveAttribute("data-chart-mode", "recharts-area");
-    await expect(
-      canvas.getByTestId("parallel-work-interaction-overlay"),
-    ).toBeInTheDocument();
+    await expect(canvas.getByTestId("parallel-work-interaction-overlay")).toBeInTheDocument();
   },
 };
 
@@ -379,8 +365,7 @@ export const LoadError: Story = {
   args: {
     stats: null,
     isLoading: false,
-    error:
-      "Request failed: 400 unsupported timeZone for historical parallel-work rollups",
+    error: "Request failed: 400 unsupported timeZone for historical parallel-work rollups",
   },
 };
 
@@ -392,21 +377,9 @@ export const Gallery: Story = {
   },
   render: () => (
     <div className="space-y-6">
-      <ParallelWorkStatsSection
-        stats={populatedStats}
-        isLoading={false}
-        error={null}
-      />
-      <ParallelWorkStatsSection
-        stats={hourCurrentStats}
-        isLoading={false}
-        error={null}
-      />
-      <ParallelWorkStatsSection
-        stats={emptyCurrentStats}
-        isLoading={false}
-        error={null}
-      />
+      <ParallelWorkStatsSection stats={populatedStats} isLoading={false} error={null} />
+      <ParallelWorkStatsSection stats={hourCurrentStats} isLoading={false} error={null} />
+      <ParallelWorkStatsSection stats={emptyCurrentStats} isLoading={false} error={null} />
       <ParallelWorkStatsSection stats={null} isLoading={true} error={null} />
       <ParallelWorkStatsSection
         stats={null}

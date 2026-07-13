@@ -298,13 +298,12 @@ pub(crate) fn apply_routing_policy_override(
         rule.field_sources.image_tool_rewrite_mode = source.to_string();
         rule.image_tool_rewrite_mode = image_tool_rewrite_mode;
     }
-    if let Some(concurrency_limit) = concurrency_limit {
-        if let Ok(concurrency_limit) =
+    if let Some(concurrency_limit) = concurrency_limit
+        && let Ok(concurrency_limit) =
             normalize_concurrency_limit(Some(concurrency_limit), "concurrencyLimit")
-        {
-            rule.field_sources.concurrency_limit = source.to_string();
-            rule.concurrency_limit = concurrency_limit;
-        }
+    {
+        rule.field_sources.concurrency_limit = source.to_string();
+        rule.concurrency_limit = concurrency_limit;
     }
     if let Some(upstream_429_retry_enabled) = upstream_429_retry_enabled {
         rule.field_sources.upstream_429_retry = source.to_string();
@@ -1450,119 +1449,6 @@ pub(crate) async fn record_account_maintenance_deferred(
     .await
 }
 
-#[cfg(test)]
-mod account_action_event_tests {
-    use super::*;
-    use sqlx::Row;
-
-    async fn test_pool() -> Pool<Sqlite> {
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .expect("open in-memory sqlite");
-        ensure_upstream_accounts_schema(&pool)
-            .await
-            .expect("ensure upstream account schema");
-        pool
-    }
-
-    async fn insert_test_account(pool: &Pool<Sqlite>) -> i64 {
-        let now = format_utc_iso(Utc::now());
-        sqlx::query(
-            r#"
-            INSERT INTO pool_upstream_accounts (
-                kind, provider, display_name, group_name, status, enabled, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6)
-            "#,
-        )
-        .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
-        .bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
-        .bind("Fixture Account")
-        .bind("production")
-        .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
-        .bind(&now)
-        .execute(pool)
-        .await
-        .expect("insert test account")
-        .last_insert_rowid()
-    }
-
-    #[tokio::test]
-    async fn record_action_persists_snapshot_result_and_proxy_fields() {
-        let pool = test_pool().await;
-        let account_id = insert_test_account(&pool).await;
-        let occurred_at = format_utc_iso(Utc::now());
-
-        let proxy_snapshot = AccountMaintenanceProxySnapshot {
-            proxy_key: "jp-edge-01".to_string(),
-            proxy_display_name: "JP Edge 01".to_string(),
-            proxy_egress_ip: Some("203.0.113.10".to_string()),
-        };
-        record_upstream_account_action_with_proxy_snapshot(
-            &pool,
-            account_id,
-            UpstreamAccountActionPayload {
-                action: UPSTREAM_ACCOUNT_ACTION_SYNC_DEFERRED,
-                source: UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
-                reason_code: Some(UPSTREAM_ACCOUNT_ACTION_REASON_EGRESS_THROTTLED),
-                reason_message: Some(
-                    "maintenance egress via JP Edge 01 is throttled for another 520 seconds",
-                ),
-                http_status: None,
-                failure_kind: None,
-                invoke_id: None,
-                sticky_key: None,
-                occurred_at: &occurred_at,
-            },
-            Some(&proxy_snapshot),
-        )
-        .await
-        .expect("record action");
-
-        let row = sqlx::query(
-            r#"
-            SELECT account_display_name, account_group_name, forward_proxy_key,
-                   forward_proxy_display_name, forward_proxy_egress_ip, result,
-                   result_description
-            FROM pool_upstream_account_events
-            WHERE account_id = ?1
-            "#,
-        )
-        .bind(account_id)
-        .fetch_one(&pool)
-        .await
-        .expect("load event");
-
-        assert_eq!(
-            row.try_get::<String, _>("account_display_name").unwrap(),
-            "Fixture Account"
-        );
-        assert_eq!(
-            row.try_get::<String, _>("account_group_name").unwrap(),
-            "production"
-        );
-        assert_eq!(
-            row.try_get::<String, _>("forward_proxy_key").unwrap(),
-            "jp-edge-01"
-        );
-        assert_eq!(
-            row.try_get::<String, _>("forward_proxy_display_name")
-                .unwrap(),
-            "JP Edge 01"
-        );
-        assert_eq!(
-            row.try_get::<String, _>("forward_proxy_egress_ip").unwrap(),
-            "203.0.113.10"
-        );
-        assert_eq!(row.try_get::<String, _>("result").unwrap(), "deferred");
-        assert_eq!(
-            row.try_get::<String, _>("result_description").unwrap(),
-            "maintenance egress via JP Edge 01 is throttled for another 520 seconds"
-        );
-    }
-}
-
 pub(crate) fn message_mentions_http_status(message: &str, status: StatusCode) -> bool {
     let code = status.as_u16();
     let code_text = code.to_string();
@@ -2122,11 +2008,11 @@ pub(crate) async fn record_suppressed_sync_status_change_with_proxy_snapshot(
     proxy_snapshot: Option<&AccountMaintenanceProxySnapshot>,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
-    let restored_status = restored_status
-        .trim()
-        .is_empty()
-        .then_some(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
-        .unwrap_or(restored_status);
+    let restored_status = if restored_status.trim().is_empty() {
+        UPSTREAM_ACCOUNT_STATUS_ACTIVE
+    } else {
+        restored_status
+    };
     sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
@@ -2487,4 +2373,117 @@ pub(crate) async fn record_classified_account_sync_failure_with_proxy_snapshot(
         proxy_snapshot,
     )
     .await
+}
+
+#[cfg(test)]
+mod account_action_event_tests {
+    use super::*;
+    use sqlx::Row;
+
+    async fn test_pool() -> Pool<Sqlite> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite");
+        ensure_upstream_accounts_schema(&pool)
+            .await
+            .expect("ensure upstream account schema");
+        pool
+    }
+
+    async fn insert_test_account(pool: &Pool<Sqlite>) -> i64 {
+        let now = format_utc_iso(Utc::now());
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_accounts (
+                kind, provider, display_name, group_name, status, enabled, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6)
+            "#,
+        )
+        .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+        .bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
+        .bind("Fixture Account")
+        .bind("production")
+        .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+        .bind(&now)
+        .execute(pool)
+        .await
+        .expect("insert test account")
+        .last_insert_rowid()
+    }
+
+    #[tokio::test]
+    async fn record_action_persists_snapshot_result_and_proxy_fields() {
+        let pool = test_pool().await;
+        let account_id = insert_test_account(&pool).await;
+        let occurred_at = format_utc_iso(Utc::now());
+
+        let proxy_snapshot = AccountMaintenanceProxySnapshot {
+            proxy_key: "jp-edge-01".to_string(),
+            proxy_display_name: "JP Edge 01".to_string(),
+            proxy_egress_ip: Some("203.0.113.10".to_string()),
+        };
+        record_upstream_account_action_with_proxy_snapshot(
+            &pool,
+            account_id,
+            UpstreamAccountActionPayload {
+                action: UPSTREAM_ACCOUNT_ACTION_SYNC_DEFERRED,
+                source: UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+                reason_code: Some(UPSTREAM_ACCOUNT_ACTION_REASON_EGRESS_THROTTLED),
+                reason_message: Some(
+                    "maintenance egress via JP Edge 01 is throttled for another 520 seconds",
+                ),
+                http_status: None,
+                failure_kind: None,
+                invoke_id: None,
+                sticky_key: None,
+                occurred_at: &occurred_at,
+            },
+            Some(&proxy_snapshot),
+        )
+        .await
+        .expect("record action");
+
+        let row = sqlx::query(
+            r#"
+            SELECT account_display_name, account_group_name, forward_proxy_key,
+                   forward_proxy_display_name, forward_proxy_egress_ip, result,
+                   result_description
+            FROM pool_upstream_account_events
+            WHERE account_id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load event");
+
+        assert_eq!(
+            row.try_get::<String, _>("account_display_name").unwrap(),
+            "Fixture Account"
+        );
+        assert_eq!(
+            row.try_get::<String, _>("account_group_name").unwrap(),
+            "production"
+        );
+        assert_eq!(
+            row.try_get::<String, _>("forward_proxy_key").unwrap(),
+            "jp-edge-01"
+        );
+        assert_eq!(
+            row.try_get::<String, _>("forward_proxy_display_name")
+                .unwrap(),
+            "JP Edge 01"
+        );
+        assert_eq!(
+            row.try_get::<String, _>("forward_proxy_egress_ip").unwrap(),
+            "203.0.113.10"
+        );
+        assert_eq!(row.try_get::<String, _>("result").unwrap(), "deferred");
+        assert_eq!(
+            row.try_get::<String, _>("result_description").unwrap(),
+            "maintenance egress via JP Edge 01 is throttled for another 520 seconds"
+        );
+    }
 }

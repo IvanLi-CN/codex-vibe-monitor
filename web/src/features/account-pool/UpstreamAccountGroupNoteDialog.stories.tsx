@@ -1,13 +1,8 @@
-import { useEffect, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { useEffect, useState } from "react";
 import { expect, userEvent, within } from "storybook/test";
 import type { ForwardProxyBindingNode } from "../../lib/api";
 import { apiConcurrencyLimitToSliderValue } from "../../lib/concurrencyLimit";
-import { UpstreamAccountGroupNoteDialog } from "./UpstreamAccountGroupNoteDialog";
-import {
-  GroupAccountRoutingRuleEditor,
-  type GroupAccountRoutingRuleLabels,
-} from "./GroupAccountRoutingRuleDialog";
 import { buildDefaultStatusChangeReasons } from "../../lib/upstreamAccountStatusChangeReasons";
 import {
   PARITY_DIRECT_KEY,
@@ -16,6 +11,11 @@ import {
   parityBindingNodes,
   parityGroupDialogNote,
 } from "../forward-proxy/storybookForwardProxyNodeHealth";
+import {
+  GroupAccountRoutingRuleEditor,
+  type GroupAccountRoutingRuleLabels,
+} from "./GroupAccountRoutingRuleDialog";
+import { UpstreamAccountGroupNoteDialog } from "./UpstreamAccountGroupNoteDialog";
 
 type DialogHarnessProps = {
   groupName: string;
@@ -51,9 +51,7 @@ function buildRequestBuckets(
       Math.round(baseline + Math.sin((index + seed) / 2.4) * (baseline * 0.35)),
     );
     const failureCount =
-      index % failuresEvery === 0
-        ? Math.max(0, Math.round(1 + ((seed + index) % 3)))
-        : 0;
+      index % failuresEvery === 0 ? Math.max(0, Math.round(1 + ((seed + index) % 3))) : 0;
     return {
       bucketStart,
       bucketEnd,
@@ -230,17 +228,14 @@ function DialogHarness({
     apiConcurrencyLimitToSliderValue(args.concurrencyLimit ?? 0),
   );
   const [boundProxyKeys, setBoundProxyKeys] = useState(initialBoundProxyKeys);
-  const [nodeShuntEnabled, setNodeShuntEnabled] = useState(
-    initialNodeShuntEnabled,
+  const [nodeShuntEnabled, setNodeShuntEnabled] = useState(initialNodeShuntEnabled);
+  const [singleAccountRotationEnabled, setSingleAccountRotationEnabled] = useState(
+    initialSingleAccountRotationEnabled,
   );
-  const [singleAccountRotationEnabled, setSingleAccountRotationEnabled] =
-    useState(initialSingleAccountRotationEnabled);
   const [upstream429RetryEnabled, setUpstream429RetryEnabled] = useState(
     initialUpstream429RetryEnabled,
   );
-  const [upstream429MaxRetries, setUpstream429MaxRetries] = useState(
-    initialUpstream429MaxRetries,
-  );
+  const [upstream429MaxRetries, setUpstream429MaxRetries] = useState(initialUpstream429MaxRetries);
   const routingPolicyLabels: GroupAccountRoutingRuleLabels = {
     allowCutOut: "Cut out is not blocked",
     allowCutIn: "Cut in is not blocked",
@@ -264,8 +259,7 @@ function DialogHarness({
     imageToolRewriteHint:
       "Keep original follows the account's own image capability. Fill when missing only injects image tools when image intent is confirmed; force add always injects; force remove always strips it.",
     concurrencyLimit: "Policy concurrency limit",
-    concurrencyHint:
-      "This route-policy limit overrides root defaults for matching group members.",
+    concurrencyHint: "This route-policy limit overrides root defaults for matching group members.",
     currentValue: "Current",
     unlimited: "Unlimited",
     upstream429Retry: "Policy upstream 429 retry",
@@ -315,12 +309,10 @@ function DialogHarness({
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-base-content/45">
             Shared Group Settings
           </p>
-          <h1 className="text-2xl font-semibold">
-            Upstream account group settings dialog
-          </h1>
+          <h1 className="text-2xl font-semibold">Upstream account group settings dialog</h1>
           <p className="max-w-2xl text-sm leading-6 text-base-content/70">
-            This story focuses on the shared group note editor plus hard binding
-            for forward proxy nodes.
+            This story focuses on the shared group note editor plus hard binding for forward proxy
+            nodes.
           </p>
         </div>
         <UpstreamAccountGroupNoteDialog
@@ -338,9 +330,7 @@ function DialogHarness({
           onConcurrencyLimitChange={setConcurrencyLimit}
           onBoundProxyKeysChange={setBoundProxyKeys}
           onNodeShuntEnabledChange={setNodeShuntEnabled}
-          onSingleAccountRotationEnabledChange={
-            setSingleAccountRotationEnabled
-          }
+          onSingleAccountRotationEnabledChange={setSingleAccountRotationEnabled}
           onUpstream429RetryEnabledChange={(value) => {
             setUpstream429RetryEnabled(value);
             if (value && upstream429MaxRetries <= 0) {
@@ -425,11 +415,7 @@ function DialogHarness({
                   compactStreamTimeoutSecs: "root",
                 }}
                 labels={routingPolicyLabels}
-                availableModelOptions={[
-                  "gpt-5.5",
-                  "gpt-5.5-pro",
-                  "gpt-5.4",
-                ]}
+                availableModelOptions={["gpt-5.5", "gpt-5.5-pro", "gpt-5.4"]}
               />
             ) : undefined
           }
@@ -505,9 +491,10 @@ export const Upstream429RetryEnabled: Story = {
     const retryGroup = canvas.getByRole("radiogroup", {
       name: /Upstream 429 retry/i,
     });
-    await expect(
-      within(retryGroup).getByRole("radio", { name: "3" }),
-    ).toHaveAttribute("aria-checked", "true");
+    await expect(within(retryGroup).getByRole("radio", { name: "3" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
   },
 };
 
@@ -520,17 +507,13 @@ export const SingleAccountRotationEnabled: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await openStoryTab(/routing settings/i);
-    await expect(
-      canvas.getByText(/Single-account rotation load/i),
-    ).toBeInTheDocument();
+    await expect(canvas.getByText(/Single-account rotation load/i)).toBeInTheDocument();
     await expect(
       canvas.getByRole("switch", {
         name: /Keep conversations on one account until final 429/i,
       }),
     ).toHaveAttribute("aria-checked", "true");
-    await expect(
-      canvas.getByText(/After upstream 429 retry is exhausted/i),
-    ).toBeInTheDocument();
+    await expect(canvas.getByText(/After upstream 429 retry is exhausted/i)).toBeInTheDocument();
   },
 };
 
@@ -576,49 +559,36 @@ export const Upstream429RetryDisabled: Story = {
     const retryGroup = canvas.getByRole("radiogroup", {
       name: /Upstream 429 retry/i,
     });
-    await expect(
-      within(retryGroup).getByRole("radio", { name: "0" }),
-    ).toHaveAttribute("aria-checked", "true");
+    await expect(within(retryGroup).getByRole("radio", { name: "0" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
   },
 };
 
 export const HardBoundMultipleNodes: Story = {
   args: {
-    boundProxyKeys: [
-      directBindingKey,
-      "fpn_5a7b0c1d2e3f4a10",
-      "fpn_8b9c0d1e2f3a4b20",
-    ],
+    boundProxyKeys: [directBindingKey, "fpn_5a7b0c1d2e3f4a10", "fpn_8b9c0d1e2f3a4b20"],
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await openStoryTab(/proxy nodes/i);
-    const chart = await canvas.findByLabelText(
-      /JP Edge 01 Last 24h request volume chart/i,
-    );
+    const chart = await canvas.findByLabelText(/JP Edge 01 Last 24h request volume chart/i);
     const firstBar = chart.querySelector('[data-inline-chart-index="0"]');
     if (!(firstBar instanceof HTMLElement)) {
       throw new Error("missing first request trend bar");
     }
     await userEvent.hover(firstBar);
-    await expect(
-      within(document.body).getByRole("tooltip"),
-    ).toBeInTheDocument();
-    await expect(
-      within(document.body).getByText(/Success/i),
-    ).toBeInTheDocument();
-    await expect(
-      within(document.body).getByText(/Failure/i),
-    ).toBeInTheDocument();
-    await expect(
-      within(document.body).getByText(/Total requests/i),
-    ).toBeInTheDocument();
+    await expect(within(document.body).getByRole("tooltip")).toBeInTheDocument();
+    await expect(within(document.body).getByText(/Success/i)).toBeInTheDocument();
+    await expect(within(document.body).getByText(/Failure/i)).toBeInTheDocument();
+    await expect(within(document.body).getByText(/Total requests/i)).toBeInTheDocument();
     await expect(canvas.getByText(/^Direct$/i)).toBeInTheDocument();
     await expect(canvas.getByText(/^DIRECT$/i)).toBeInTheDocument();
     await expect(canvas.queryByText(/ss:\/\//i)).not.toBeInTheDocument();
-    await expect(
-      canvas.getByTestId("proxy-binding-options-scroll-region").className,
-    ).toContain("overflow-y-auto");
+    await expect(canvas.getByTestId("proxy-binding-options-scroll-region").className).toContain(
+      "overflow-y-auto",
+    );
   },
 };
 
@@ -626,11 +596,7 @@ export const GlobalNodeHealthParity: Story = {
   args: {
     groupName: "prod",
     note: parityGroupDialogNote,
-    boundProxyKeys: [
-      directBindingKey,
-      PARITY_JP_EDGE_KEY,
-      PARITY_US_EDGE_KEY,
-    ],
+    boundProxyKeys: [directBindingKey, PARITY_JP_EDGE_KEY, PARITY_US_EDGE_KEY],
     availableProxyNodes: parityBindingNodes,
   },
   play: async ({ canvasElement }) => {
@@ -657,10 +623,7 @@ export const MissingOrUnavailableBindings: Story = {
     groupName: "overflow",
     note: "Legacy overflow group with one restored stale binding and one currently unavailable node.",
     boundProxyKeys: ["fpn_0d1e2f3a4b5c6d30", "fpn_deadbeefcafebabe"],
-    availableProxyNodes: [
-      ...defaultForwardProxyNodes,
-      unicodeForwardProxyNodes[1],
-    ],
+    availableProxyNodes: [...defaultForwardProxyNodes, unicodeForwardProxyNodes[1]],
   },
 };
 
@@ -676,9 +639,7 @@ export const LoadingProxyCatalog: Story = {
     const canvas = within(canvasElement);
     await openStoryTab(/proxy nodes/i);
     await expect(canvas.getByText(/Loading proxy nodes/i)).toBeInTheDocument();
-    await expect(
-      canvas.queryByText(/No proxy nodes available/i),
-    ).not.toBeInTheDocument();
+    await expect(canvas.queryByText(/No proxy nodes available/i)).not.toBeInTheDocument();
   },
 };
 
@@ -689,9 +650,9 @@ export const SettingsSaveSyncRefresh: Story = {
       const [catalogKind, setCatalogKind] = useState<
         "ready-empty" | "ready-with-data" | "loading" | "missing" | "deferred"
       >("missing");
-      const [freshness, setFreshness] = useState<
-        "fresh" | "stale" | "missing" | "deferred"
-      >("stale");
+      const [freshness, setFreshness] = useState<"fresh" | "stale" | "missing" | "deferred">(
+        "stale",
+      );
 
       useEffect(() => {
         const timer = window.setTimeout(() => {
@@ -723,9 +684,7 @@ export const SettingsSaveSyncRefresh: Story = {
     const canvas = within(canvasElement);
     await openStoryTab(/proxy nodes/i);
     await expect(canvas.getByText(/Loading proxy nodes/i)).toBeInTheDocument();
-    await expect(
-      canvas.queryByText(/No proxy nodes available/i),
-    ).not.toBeInTheDocument();
+    await expect(canvas.queryByText(/No proxy nodes available/i)).not.toBeInTheDocument();
     await expect(await canvas.findByText(/JP Edge 01/i)).toBeInTheDocument();
   },
 };
@@ -747,9 +706,7 @@ export const UnavailableOnlyBindingsBlockSave: Story = {
         /select at least one available proxy node or clear bindings before saving\./i,
       ),
     ).toBeInTheDocument();
-    await expect(
-      canvas.getByRole("button", { name: /save group settings/i }),
-    ).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: /save group settings/i })).toBeDisabled();
     await expect(canvas.getByText(/^Unavailable$/i)).toBeInTheDocument();
   },
 };
@@ -779,9 +736,7 @@ export const LegacyAliasBindingsRemainSaveable: Story = {
         /select at least one available proxy node or clear bindings before saving\./i,
       ),
     ).not.toBeInTheDocument();
-    await expect(
-      canvas.getByRole("button", { name: /save group settings/i }),
-    ).toBeEnabled();
+    await expect(canvas.getByRole("button", { name: /save group settings/i })).toBeEnabled();
   },
 };
 
@@ -805,9 +760,7 @@ export const PersistedEmptyGroup: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      canvas.getByRole("button", { name: /delete group/i }),
-    ).toBeEnabled();
+    await expect(canvas.getByRole("button", { name: /delete group/i })).toBeEnabled();
     await expect(canvas.getByText(/save group settings/i)).toBeInTheDocument();
   },
 };
@@ -823,12 +776,11 @@ export const DeleteBlockedWithMembers: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const documentScope = within(document.body);
-    await userEvent.click(
-      canvas.getByRole("button", { name: /delete group/i }),
+    await userEvent.click(canvas.getByRole("button", { name: /delete group/i }));
+    await expect(canvas.getByRole("button", { name: /delete group/i })).toHaveAttribute(
+      "aria-disabled",
+      "true",
     );
-    await expect(
-      canvas.getByRole("button", { name: /delete group/i }),
-    ).toHaveAttribute("aria-disabled", "true");
     await expect(
       documentScope.getByText(
         /move the remaining 4 account\(s\) out before deleting this group\./i,

@@ -568,11 +568,7 @@ impl ProxyUpstreamResponseBody {
         self,
     ) -> Pin<Box<dyn futures_util::Stream<Item = Result<Bytes, io::Error>> + Send>> {
         match self {
-            Self::Reqwest(response) => Box::pin(
-                response
-                    .bytes_stream()
-                    .map_err(|err| io::Error::new(io::ErrorKind::Other, err)),
-            ),
+            Self::Reqwest(response) => Box::pin(response.bytes_stream().map_err(io::Error::other)),
             Self::Axum(response) => Box::pin(
                 response
                     .into_body()
@@ -1974,9 +1970,7 @@ impl PoolReplayBodySnapshot {
                 let stream = stream::unfold(
                     Some((temp_file, expected_size, None::<tokio::fs::File>)),
                     |state| async move {
-                        let Some((temp_file, remaining, file)) = state else {
-                            return None;
-                        };
+                        let (temp_file, remaining, file) = state?;
                         if remaining == 0 {
                             return None;
                         }
@@ -2176,10 +2170,9 @@ pub(crate) fn rewrite_openai_responses_image_tools(
             if let Some(tools) = obj.get_mut("tools").and_then(Value::as_array_mut) {
                 let original_len = tools.len();
                 tools.retain(|tool| {
-                    !tool
-                        .get("type")
+                    tool.get("type")
                         .and_then(Value::as_str)
-                        .is_some_and(|tool_type| tool_type.trim() == "image_generation")
+                        .is_none_or(|tool_type| tool_type.trim() != "image_generation")
                 });
                 modified |= tools.len() != original_len;
             }

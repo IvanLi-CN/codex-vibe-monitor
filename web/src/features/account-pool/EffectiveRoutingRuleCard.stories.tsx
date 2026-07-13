@@ -1,8 +1,7 @@
-import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { useState } from "react";
 import { expect, userEvent } from "storybook/test";
-import type { UpdateGroupAccountRoutingRulePayload } from "../../lib/api";
-import type { EffectiveRoutingRule } from "../../lib/api";
+import type { EffectiveRoutingRule, UpdateGroupAccountRoutingRulePayload } from "../../lib/api";
 import {
   buildDefaultStatusChangeReasonFieldSources,
   buildDefaultStatusChangeReasons,
@@ -66,8 +65,7 @@ const labels = {
       upstream_server_overloaded: "Upstream overloaded",
       upstream_http_5xx: "Upstream 5xx",
     })[reason],
-  statusChangeReasonSummary: (enabled: number, total: number) =>
-    `${enabled}/${total} enabled`,
+  statusChangeReasonSummary: (enabled: number, total: number) => `${enabled}/${total} enabled`,
   statusChangeReasonEnabledValue: "Triggers status change",
   statusChangeReasonDisabledValue: "Evidence only",
   statusChangeReasonToggleEnabled: "On",
@@ -220,8 +218,7 @@ const multipleAccountOverridesRule: EffectiveRoutingRule = {
     allowCutIn: "account",
     priorityTier: "account",
     fastModeRewriteMode: "account",
-    imageToolRewriteMode:
-      strictRule.fieldSources?.imageToolRewriteMode ?? "root",
+    imageToolRewriteMode: strictRule.fieldSources?.imageToolRewriteMode ?? "root",
     concurrencyLimit: "account",
     upstream429Retry: "account",
     availableModels: strictRule.fieldSources?.availableModels ?? "root",
@@ -280,16 +277,14 @@ export const StrictMergedRule: Story = {
     rule: strictRule,
   },
   play: async ({ canvasElement }) => {
-    const warningValues = Array.from(
-      canvasElement.querySelectorAll('[class*="bg-warning"]'),
-    ).map((node) => node.textContent);
+    const warningValues = Array.from(canvasElement.querySelectorAll('[class*="bg-warning"]')).map(
+      (node) => node.textContent,
+    );
 
     expect(warningValues).toContain("No new");
     expect(warningValues).toContain("Cut-out blocked");
     expect(warningValues).not.toContain("New conversations blocked");
-    expect(
-      (canvasElement.textContent ?? "").match(/Cut-out blocked/g),
-    ).toHaveLength(1);
+    expect((canvasElement.textContent ?? "").match(/Cut-out blocked/g)).toHaveLength(1);
 
     const forceRemoveBadge = Array.from(
       canvasElement.querySelectorAll('[class*="bg-primary"]'),
@@ -363,33 +358,27 @@ function applyPatchToRule(
     statusChangeReasonFieldSources,
   };
   const nextSources = fieldSources;
-  const sourceFor = (value: unknown): "root" | "account" =>
-    value === null ? "root" : "account";
+  const sourceFor = (value: unknown): "root" | "account" => (value === null ? "root" : "account");
   if ("allowCutOut" in patch) {
-    if (typeof patch.allowCutOut === "boolean")
-      next.allowCutOut = patch.allowCutOut;
+    if (typeof patch.allowCutOut === "boolean") next.allowCutOut = patch.allowCutOut;
     nextSources.allowCutOut = sourceFor(patch.allowCutOut);
   }
   if ("allowCutIn" in patch) {
-    if (typeof patch.allowCutIn === "boolean")
-      next.allowCutIn = patch.allowCutIn;
+    if (typeof patch.allowCutIn === "boolean") next.allowCutIn = patch.allowCutIn;
     nextSources.allowCutIn = sourceFor(patch.allowCutIn);
   }
   if ("priorityTier" in patch) {
-    if (patch.priorityTier !== null)
-      next.priorityTier = patch.priorityTier ?? next.priorityTier;
+    if (patch.priorityTier !== null) next.priorityTier = patch.priorityTier ?? next.priorityTier;
     nextSources.priorityTier = sourceFor(patch.priorityTier);
   }
   if ("fastModeRewriteMode" in patch) {
     if (patch.fastModeRewriteMode !== null)
-      next.fastModeRewriteMode =
-        patch.fastModeRewriteMode ?? next.fastModeRewriteMode;
+      next.fastModeRewriteMode = patch.fastModeRewriteMode ?? next.fastModeRewriteMode;
     nextSources.fastModeRewriteMode = sourceFor(patch.fastModeRewriteMode);
   }
   if ("imageToolRewriteMode" in patch) {
     if (patch.imageToolRewriteMode !== null)
-      next.imageToolRewriteMode =
-        patch.imageToolRewriteMode ?? next.imageToolRewriteMode;
+      next.imageToolRewriteMode = patch.imageToolRewriteMode ?? next.imageToolRewriteMode;
     nextSources.imageToolRewriteMode = sourceFor(patch.imageToolRewriteMode);
   }
   if ("concurrencyLimit" in patch) {
@@ -398,14 +387,8 @@ function applyPatchToRule(
     nextSources.concurrencyLimit = sourceFor(patch.concurrencyLimit);
   }
   if ("upstream429RetryEnabled" in patch || "upstream429MaxRetries" in patch) {
-    const hasEnabled = Object.prototype.hasOwnProperty.call(
-      patch,
-      "upstream429RetryEnabled",
-    );
-    const hasRetries = Object.prototype.hasOwnProperty.call(
-      patch,
-      "upstream429MaxRetries",
-    );
+    const hasEnabled = Object.hasOwn(patch, "upstream429RetryEnabled");
+    const hasRetries = Object.hasOwn(patch, "upstream429MaxRetries");
     const enabledValue = patch.upstream429RetryEnabled;
     const retryValue = patch.upstream429MaxRetries;
     if (enabledValue === null || retryValue === null) {
@@ -433,12 +416,10 @@ function applyPatchToRule(
     for (const [reason, value] of Object.entries(patch.statusChangeReasons)) {
       if (value === null) {
         next.statusChangeReasons![reason as StatusChangeReasonCode] = true;
-        next.statusChangeReasonFieldSources![reason as StatusChangeReasonCode] =
-          "root";
+        next.statusChangeReasonFieldSources![reason as StatusChangeReasonCode] = "root";
       } else if (typeof value === "boolean") {
         next.statusChangeReasons![reason as StatusChangeReasonCode] = value;
-        next.statusChangeReasonFieldSources![reason as StatusChangeReasonCode] =
-          "account";
+        next.statusChangeReasonFieldSources![reason as StatusChangeReasonCode] = "account";
       }
     }
   }
@@ -446,31 +427,32 @@ function applyPatchToRule(
     const nextTimeoutSources = {
       responsesFirstByteTimeoutSecs:
         next.timeoutFieldSources?.responsesFirstByteTimeoutSecs ?? "root",
-      compactFirstByteTimeoutSecs:
-        next.timeoutFieldSources?.compactFirstByteTimeoutSecs ?? "root",
-      responsesStreamTimeoutSecs:
-        next.timeoutFieldSources?.responsesStreamTimeoutSecs ?? "root",
-      compactStreamTimeoutSecs:
-        next.timeoutFieldSources?.compactStreamTimeoutSecs ?? "root",
+      compactFirstByteTimeoutSecs: next.timeoutFieldSources?.compactFirstByteTimeoutSecs ?? "root",
+      responsesStreamTimeoutSecs: next.timeoutFieldSources?.responsesStreamTimeoutSecs ?? "root",
+      compactStreamTimeoutSecs: next.timeoutFieldSources?.compactStreamTimeoutSecs ?? "root",
     };
     const nextTimeoutValues = {
       responsesFirstByteTimeoutSecs:
         next.timeouts?.responsesFirstByteTimeoutSecs ??
-        relaxedRule.timeouts!.responsesFirstByteTimeoutSecs,
+        relaxedRule.timeouts?.responsesFirstByteTimeoutSecs ??
+        0,
       compactFirstByteTimeoutSecs:
         next.timeouts?.compactFirstByteTimeoutSecs ??
-        relaxedRule.timeouts!.compactFirstByteTimeoutSecs,
+        relaxedRule.timeouts?.compactFirstByteTimeoutSecs ??
+        0,
       responsesStreamTimeoutSecs:
         next.timeouts?.responsesStreamTimeoutSecs ??
-        relaxedRule.timeouts!.responsesStreamTimeoutSecs,
+        relaxedRule.timeouts?.responsesStreamTimeoutSecs ??
+        0,
       compactStreamTimeoutSecs:
         next.timeouts?.compactStreamTimeoutSecs ??
-        relaxedRule.timeouts!.compactStreamTimeoutSecs,
+        relaxedRule.timeouts?.compactStreamTimeoutSecs ??
+        0,
     };
     for (const [key, value] of Object.entries(patch.timeouts)) {
       const timeoutKey = key as keyof typeof nextTimeoutValues;
       if (value === null) {
-        nextTimeoutValues[timeoutKey] = relaxedRule.timeouts![timeoutKey];
+        nextTimeoutValues[timeoutKey] = relaxedRule.timeouts?.[timeoutKey] ?? 0;
         nextTimeoutSources[timeoutKey] = "root";
       } else if (typeof value === "number") {
         nextTimeoutValues[timeoutKey] = value;
@@ -501,8 +483,7 @@ function EditableRoutingRuleDemo({
         busyField,
         errorByField,
         availableModelOptions: editableOptions,
-        onChange: (_field, payload) =>
-          setRule((current) => applyPatchToRule(current, payload)),
+        onChange: (_field, payload) => setRule((current) => applyPatchToRule(current, payload)),
       }}
     />
   );
@@ -521,9 +502,7 @@ export const EditableInherited: Story = {
     await userEvent.click(timeoutButton);
 
     expect(
-      canvasElement.querySelector<HTMLInputElement>(
-        'input[name="responsesFirstByteTimeoutSecs"]',
-      ),
+      canvasElement.querySelector<HTMLInputElement>('input[name="responsesFirstByteTimeoutSecs"]'),
     ).not.toBeNull();
   },
 };
@@ -531,18 +510,12 @@ export const EditableInherited: Story = {
 export const EditableAccountOverrides: Story = {
   render: () => <EditableRoutingRuleDemo initialRule={strictRule} />,
   play: async ({ canvasElement }) => {
-    const rows = Array.from(
-      canvasElement.querySelectorAll("div.border-b.border-base-300\\/60"),
-    );
+    const rows = Array.from(canvasElement.querySelectorAll("div.border-b.border-base-300\\/60"));
 
     function assertExpandedRowAligned(labelText: string, valueText: string) {
       const row = rows.find((candidate) => {
         const text = candidate.textContent || "";
-        return (
-          text.includes(labelText) &&
-          text.includes(valueText) &&
-          text.includes("Account")
-        );
+        return text.includes(labelText) && text.includes(valueText) && text.includes("Account");
       });
       if (!row) {
         throw new Error(`missing expanded row for ${labelText}`);
@@ -582,15 +555,11 @@ export const EditableAccountOverrides: Story = {
 };
 
 export const EditableMultipleAccountOverrides: Story = {
-  render: () => (
-    <EditableRoutingRuleDemo initialRule={multipleAccountOverridesRule} />
-  ),
+  render: () => <EditableRoutingRuleDemo initialRule={multipleAccountOverridesRule} />,
 };
 
 export const EditableTimeoutOverrides: Story = {
-  render: () => (
-    <EditableRoutingRuleDemo initialRule={multipleAccountOverridesRule} />
-  ),
+  render: () => <EditableRoutingRuleDemo initialRule={multipleAccountOverridesRule} />,
   parameters: {
     docs: {
       description: {
@@ -623,10 +592,8 @@ export const EditableDenyAllModels: Story = {
           allowCutOut: strictRule.fieldSources?.allowCutOut ?? "root",
           allowCutIn: strictRule.fieldSources?.allowCutIn ?? "root",
           priorityTier: strictRule.fieldSources?.priorityTier ?? "root",
-          fastModeRewriteMode:
-            strictRule.fieldSources?.fastModeRewriteMode ?? "root",
-          imageToolRewriteMode:
-            strictRule.fieldSources?.imageToolRewriteMode ?? "root",
+          fastModeRewriteMode: strictRule.fieldSources?.fastModeRewriteMode ?? "root",
+          imageToolRewriteMode: strictRule.fieldSources?.imageToolRewriteMode ?? "root",
           concurrencyLimit: strictRule.fieldSources?.concurrencyLimit ?? "root",
           upstream429Retry: strictRule.fieldSources?.upstream429Retry ?? "root",
           ...strictRule.fieldSources,

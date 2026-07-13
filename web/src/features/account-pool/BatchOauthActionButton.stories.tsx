@@ -67,9 +67,7 @@ export const Generate: Story = {
 
     await userEvent.hover(button);
     await new Promise((resolve) => window.setTimeout(resolve, 330));
-    await expect(
-      within(document.body).getByText(/generate oauth url/i),
-    ).toBeInTheDocument();
+    await expect(within(document.body).getByText(/generate oauth url/i)).toBeInTheDocument();
   },
 };
 
@@ -90,9 +88,7 @@ export const CopyPopover: Story = {
     );
 
     const popover = within(document.body);
-    await expect(
-      popover.getByText(/current link expires in 14:59/i),
-    ).toBeInTheDocument();
+    await expect(popover.getByText(/current link expires in 14:59/i)).toBeInTheDocument();
     await expect(
       popover.getByRole("button", { name: /regenerate oauth url/i }),
     ).toBeInTheDocument();

@@ -1,18 +1,15 @@
-/* eslint-disable react-hooks/exhaustive-deps */
+// biome-ignore-all lint/correctness/useExhaustiveDependencies: action callbacks intentionally use current refs for pending OAuth state
 import { useCallback } from "react";
-import type {
-  LoginSessionStatusResponse,
-  UpstreamAccountDetail,
-} from "../../lib/api";
+import type { LoginSessionStatusResponse, UpstreamAccountDetail } from "../../lib/api";
+import { writeApiKeyLastGroupName } from "../../lib/upstreamAccountGroups";
+import type { UpstreamAccountCreateControllerContext } from "./UpstreamAccountCreate.controller-context";
 import {
+  type BatchOauthRow,
   normalizeEmailKey,
   resolveBatchOauthMailboxAddress,
   resolveDisplayNameAfterEmailChange,
   shouldPromptOauthEmailChoice,
-  type BatchOauthRow,
 } from "./UpstreamAccountCreate.shared";
-import type { UpstreamAccountCreateControllerContext } from "./UpstreamAccountCreate.controller-context";
-import { writeApiKeyLastGroupName } from "../../lib/upstreamAccountGroups";
 
 export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateControllerContext) {
   const {
@@ -112,23 +109,18 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     shouldRetryPendingOauthSessionSync,
     singleOauthSessionSnapshot,
     t,
-    updateBatchRow
+    updateBatchRow,
   } = ctx;
 
   const clearOauthMailboxSession = useCallback(
-    (
-      sessionToRemoveId?: string | null,
-      options?: { deleteRemote?: boolean },
-    ) => {
+    (sessionToRemoveId?: string | null, options?: { deleteRemote?: boolean }) => {
       setOauthMailboxSession(null);
       setOauthMailboxStatus(null);
       setOauthMailboxError(null);
       setOauthMailboxTone("idle");
       setOauthMailboxCodeTone("idle");
       if (sessionToRemoveId && options?.deleteRemote !== false) {
-        void removeOauthMailboxSession(sessionToRemoveId).catch(
-          () => undefined,
-        );
+        void removeOauthMailboxSession(sessionToRemoveId).catch(() => undefined);
       }
     },
     [removeOauthMailboxSession],
@@ -183,15 +175,12 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       const currentResolution = oauthEmailResolution;
       if (!currentResolution) return;
       const nextEmail =
-        choice === "verified"
-          ? currentResolution.verifiedEmail
-          : currentResolution.chosenEmail;
+        choice === "verified" ? currentResolution.verifiedEmail : currentResolution.chosenEmail;
       setActionError(null);
       setBusyAction("oauth-email-choice");
       try {
         const detail =
-          normalizeEmailKey(currentResolution.detail.email) ===
-          normalizeEmailKey(nextEmail)
+          normalizeEmailKey(currentResolution.detail.email) === normalizeEmailKey(nextEmail)
             ? currentResolution.detail
             : await saveAccount(currentResolution.detail.id, {
                 email: nextEmail.trim() ? nextEmail : null,
@@ -227,11 +216,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         setOauthMailboxInput(response.emailAddress);
         setOauthEmail(response.emailAddress);
         setOauthDisplayName((current: string) =>
-          resolveDisplayNameAfterEmailChange(
-            current,
-            oauthEmail,
-            response.emailAddress,
-          ),
+          resolveDisplayNameAfterEmailChange(current, oauthEmail, response.emailAddress),
         );
         setOauthMailboxStatus(null);
         setOauthMailboxTone("idle");
@@ -242,11 +227,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       setOauthMailboxInput(response.emailAddress);
       setOauthEmail(response.emailAddress);
       setOauthDisplayName((current: string) =>
-        resolveDisplayNameAfterEmailChange(
-          current,
-          oauthEmail,
-          response.emailAddress,
-        ),
+        resolveDisplayNameAfterEmailChange(current, oauthEmail, response.emailAddress),
       );
       setOauthMailboxStatus(null);
       setOauthMailboxError(null);
@@ -254,9 +235,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       setOauthMailboxCodeTone("idle");
       invalidateRelinkPendingOauthSession();
       if (previousSessionId && previousSessionId !== response.sessionId) {
-        void removeOauthMailboxSession(previousSessionId).catch(
-          () => undefined,
-        );
+        void removeOauthMailboxSession(previousSessionId).catch(() => undefined);
       }
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
@@ -285,17 +264,12 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     setActionError(null);
     setOauthMailboxError(null);
     try {
-      const response =
-        await beginOauthMailboxSessionForAddress(normalizedAddress);
+      const response = await beginOauthMailboxSessionForAddress(normalizedAddress);
       setOauthMailboxSession(response);
       setOauthMailboxInput(response.emailAddress);
       setOauthEmail(response.emailAddress);
       setOauthDisplayName((current: string) =>
-        resolveDisplayNameAfterEmailChange(
-          current,
-          oauthEmail,
-          response.emailAddress,
-        ),
+        resolveDisplayNameAfterEmailChange(current, oauthEmail, response.emailAddress),
       );
       setOauthMailboxStatus(null);
       setOauthMailboxTone("idle");
@@ -309,12 +283,9 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       }
       if (
         previousSessionId &&
-        (!isSupportedMailboxSession(response) ||
-          previousSessionId !== response.sessionId)
+        (!isSupportedMailboxSession(response) || previousSessionId !== response.sessionId)
       ) {
-        void removeOauthMailboxSession(previousSessionId).catch(
-          () => undefined,
-        );
+        void removeOauthMailboxSession(previousSessionId).catch(() => undefined);
       }
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
@@ -356,8 +327,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       setActionError(
         relinkDetailLoading
           ? t("accountPool.upstreamAccounts.createPage.relinkLoading")
-          : relinkDetailError ??
-              t("accountPool.upstreamAccounts.createPage.relinkLoadFailed"),
+          : (relinkDetailError ?? t("accountPool.upstreamAccounts.createPage.relinkLoadFailed")),
       );
       return;
     }
@@ -383,8 +353,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
           resolveGroupSingleAccountRotationEnabledForName(oauthGroupName),
         note: oauthNote,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName),
-        groupConcurrencyLimit:
-          resolvePendingGroupConcurrencyLimitForName(oauthGroupName),
+        groupConcurrencyLimit: resolvePendingGroupConcurrencyLimitForName(oauthGroupName),
         includeGroupNote: Boolean(
           normalizedGroupName && !isExistingGroup(groups, normalizedGroupName),
         ),
@@ -402,8 +371,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
           resolveGroupSingleAccountRotationEnabledForName(oauthGroupName),
         note: oauthNote.trim() || undefined,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName) || undefined,
-        concurrencyLimit:
-          resolvePendingGroupConcurrencyLimitForName(oauthGroupName),
+        concurrencyLimit: resolvePendingGroupConcurrencyLimitForName(oauthGroupName),
         accountId: relinkAccountId ?? undefined,
         tagIds: oauthTagIds,
         isMother: oauthIsMother,
@@ -437,10 +405,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     setActionError(null);
     let authUrlToCopy = session.authUrl;
     try {
-      await flushPendingOauthSessionSync(
-        session.loginId,
-        singleOauthSessionSnapshot,
-      );
+      await flushPendingOauthSessionSync(session.loginId, singleOauthSessionSnapshot);
       const latestSession = await getLoginSession(session.loginId);
       applyPendingOauthSessionStatus(session.loginId, latestSession);
       if (latestSession.status !== "pending" || !latestSession.authUrl) {
@@ -472,10 +437,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     setActionError(null);
     setBusyAction("oauth-complete");
     try {
-      await flushPendingOauthSessionSync(
-        session.loginId,
-        singleOauthSessionSnapshot,
-      );
+      await flushPendingOauthSessionSync(session.loginId, singleOauthSessionSnapshot);
       const detail = await completeOauthLogin(session.loginId, {
         callbackUrl: oauthCallbackUrl.trim(),
         mailboxSessionId: activeOauthMailboxSession?.sessionId,
@@ -504,9 +466,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         setActionError(null);
         emitUpstreamAccountsChanged();
         try {
-          const detail = await fetchUpstreamAccountDetail(
-            latestSession.accountId,
-          );
+          const detail = await fetchUpstreamAccountDetail(latestSession.accountId);
           notifyMotherChange(detail);
           maybePromptSingleOauthEmailResolution(detail);
         } catch {
@@ -520,10 +480,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         }
         return;
       }
-      if (
-        latestSession?.status === "failed" ||
-        latestSession?.status === "expired"
-      ) {
+      if (latestSession?.status === "failed" || latestSession?.status === "expired") {
         setOauthCallbackUrl("");
         setOauthCompletedDetail(null);
         setSessionHint(latestSession.error ?? message);
@@ -531,11 +488,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       }
       if (latestSession?.status === "needs_identity_confirmation") {
         setActionError(null);
-        setSessionHint(
-          t(
-            "accountPool.upstreamAccounts.batchOauth.identityConfirmation.required",
-          ),
-        );
+        setSessionHint(t("accountPool.upstreamAccounts.batchOauth.identityConfirmation.required"));
         return;
       }
       setActionError(message);
@@ -578,10 +531,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         latestSession = null;
       }
       setSession((current: LoginSessionStatusResponse | null) => latestSession ?? current);
-      if (
-        latestSession?.status === "failed" ||
-        latestSession?.status === "expired"
-      ) {
+      if (latestSession?.status === "failed" || latestSession?.status === "expired") {
         setSessionHint(latestSession.error ?? message);
         setOauthCallbackUrl("");
       }
@@ -609,9 +559,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         updateBatchRow(rowId, (current: BatchOauthRow) => ({
           ...current,
           mailboxBusyAction: null,
-          mailboxError: t(
-            "accountPool.upstreamAccounts.oauth.mailboxUnsupportedNotReadable",
-          ),
+          mailboxError: t("accountPool.upstreamAccounts.oauth.mailboxUnsupportedNotReadable"),
           actionError: null,
         }));
         return;
@@ -636,9 +584,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         actionError: null,
       }));
       if (previousSessionId && previousSessionId !== response.sessionId) {
-        void removeOauthMailboxSession(previousSessionId).catch(
-          () => undefined,
-        );
+        void removeOauthMailboxSession(previousSessionId).catch(() => undefined);
       }
     } catch (err) {
       updateBatchRow(rowId, (current: BatchOauthRow) => ({
@@ -660,8 +606,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       ) {
         return current;
       }
-      const baseValue =
-        current.mailboxInput || current.mailboxSession?.emailAddress || "";
+      const baseValue = current.mailboxInput || current.mailboxSession?.emailAddress || "";
       return {
         ...current,
         mailboxEditorOpen: true,
@@ -672,10 +617,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     });
   };
 
-  const handleBatchMailboxEditorValueChange = (
-    rowId: string,
-    value: string,
-  ) => {
+  const handleBatchMailboxEditorValueChange = (rowId: string, value: string) => {
     updateBatchRow(rowId, (current: BatchOauthRow) => ({
       ...current,
       mailboxEditorValue: value,
@@ -687,8 +629,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     updateBatchRow(rowId, (current: BatchOauthRow) => ({
       ...current,
       mailboxEditorOpen: false,
-      mailboxEditorValue:
-        current.mailboxInput || current.mailboxSession?.emailAddress || "",
+      mailboxEditorValue: current.mailboxInput || current.mailboxSession?.emailAddress || "",
       mailboxEditorError: null,
     }));
   };
@@ -701,9 +642,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     if (!isProbablyValidEmailAddress(normalizedAddress)) {
       updateBatchRow(rowId, (current: BatchOauthRow) => ({
         ...current,
-        mailboxEditorError: t(
-          "accountPool.upstreamAccounts.batchOauth.validation.mailboxFormat",
-        ),
+        mailboxEditorError: t("accountPool.upstreamAccounts.batchOauth.validation.mailboxFormat"),
       }));
       return;
     }
@@ -718,8 +657,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
 
     const previousSessionId = row.mailboxSession?.sessionId ?? null;
     try {
-      const response =
-        await beginOauthMailboxSessionForAddress(normalizedAddress);
+      const response = await beginOauthMailboxSessionForAddress(normalizedAddress);
       const unsupportedError = isSupportedMailboxSession(response)
         ? null
         : resolveMailboxIssue(response, null, null, null, t);
@@ -747,12 +685,9 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
 
       if (
         previousSessionId &&
-        (!isSupportedMailboxSession(response) ||
-          previousSessionId !== response.sessionId)
+        (!isSupportedMailboxSession(response) || previousSessionId !== response.sessionId)
       ) {
-        void removeOauthMailboxSession(previousSessionId).catch(
-          () => undefined,
-        );
+        void removeOauthMailboxSession(previousSessionId).catch(() => undefined);
       }
     } catch (err) {
       updateBatchRow(rowId, (current: BatchOauthRow) => ({
@@ -820,9 +755,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     if (!canApplyBatchOauthCopyFeedback(rowId, loginId)) {
       return null;
     }
-    const fallbackHint = t(
-      "accountPool.upstreamAccounts.batchOauth.copyInlineFallback",
-    );
+    const fallbackHint = t("accountPool.upstreamAccounts.batchOauth.copyInlineFallback");
     setBatchManualCopyRowId((current: string | null) => {
       if (!canApplyBatchOauthCopyFeedback(rowId, loginId)) {
         return current;
@@ -863,16 +796,15 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         groupName: groupProxyState.normalizedGroupName,
         groupBoundProxyKeys: groupProxyState.boundProxyKeys,
         groupNodeShuntEnabled: groupProxyState.nodeShuntEnabled,
-        groupSingleAccountRotationEnabled:
-          resolveGroupSingleAccountRotationEnabledForName(row.groupName),
-        note: row.note,
-        groupNote: resolvePendingGroupNoteForName(row.groupName),
-        groupConcurrencyLimit: resolvePendingGroupConcurrencyLimitForName(
+        groupSingleAccountRotationEnabled: resolveGroupSingleAccountRotationEnabledForName(
           row.groupName,
         ),
+        note: row.note,
+        groupNote: resolvePendingGroupNoteForName(row.groupName),
+        groupConcurrencyLimit: resolvePendingGroupConcurrencyLimitForName(row.groupName),
         includeGroupNote: Boolean(
           groupProxyState.normalizedGroupName &&
-          !isExistingGroup(groups, groupProxyState.normalizedGroupName),
+            !isExistingGroup(groups, groupProxyState.normalizedGroupName),
         ),
         tagIds: batchTagIds,
         isMother: row.isMother,
@@ -884,14 +816,13 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         groupName: groupProxyState.normalizedGroupName || undefined,
         groupBoundProxyKeys: groupProxyState.boundProxyKeys,
         groupNodeShuntEnabled: groupProxyState.nodeShuntEnabled,
-        groupSingleAccountRotationEnabled:
-          resolveGroupSingleAccountRotationEnabledForName(row.groupName),
+        groupSingleAccountRotationEnabled: resolveGroupSingleAccountRotationEnabledForName(
+          row.groupName,
+        ),
         note: row.note.trim() || undefined,
         tagIds: batchTagIds,
         groupNote: resolvePendingGroupNoteForName(row.groupName) || undefined,
-        concurrencyLimit: resolvePendingGroupConcurrencyLimitForName(
-          row.groupName,
-        ),
+        concurrencyLimit: resolvePendingGroupConcurrencyLimitForName(row.groupName),
         isMother: row.isMother,
         mailboxSessionId: row.mailboxSession?.sessionId,
         mailboxAddress: row.mailboxSession?.emailAddress,
@@ -942,13 +873,8 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
                 actionError: copyFeedback.actionError,
               }),
         }));
-      } else if (
-        batchSessionFeedbackStateByRowRef.current[rowId]?.loginId ===
-        response.loginId
-      ) {
-        setBatchManualCopyRowId((current: string | null) =>
-          current === rowId ? null : current,
-        );
+      } else if (batchSessionFeedbackStateByRowRef.current[rowId]?.loginId === response.loginId) {
+        setBatchManualCopyRowId((current: string | null) => (current === rowId ? null : current));
       }
     } catch (err) {
       updateBatchRow(rowId, (current: BatchOauthRow) => ({
@@ -977,9 +903,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       const latestSession = await getLoginSession(row.session.loginId);
       applyPendingOauthSessionStatus(row.session.loginId, latestSession);
       if (latestSession.status !== "pending" || !latestSession.authUrl) {
-        setBatchManualCopyRowId((current: string | null) =>
-          current === rowId ? null : current,
-        );
+        setBatchManualCopyRowId((current: string | null) => (current === rowId ? null : current));
         return;
       }
       authUrlToCopy = latestSession.authUrl;
@@ -1033,8 +957,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       });
       notifyMotherChange(detail);
       updateBatchRow(rowId, (current: BatchOauthRow) => {
-        const baseSession = (current.session ??
-          row.session) as LoginSessionStatusResponse;
+        const baseSession = (current.session ?? row.session) as LoginSessionStatusResponse;
         return {
           ...current,
           busyAction: null,
@@ -1077,10 +1000,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
           pendingSharedTagIds: null,
           sharedTagSyncAttempts: 0,
           isMother: detail.isMother === true,
-          emailResolution: shouldPromptOauthEmailChoice(
-            detail.verifiedEmail,
-            detail.email,
-          )
+          emailResolution: shouldPromptOauthEmailChoice(detail.verifiedEmail, detail.email)
             ? {
                 accountId: detail.id,
                 verifiedEmail: detail.verifiedEmail?.trim() ?? "",
@@ -1102,13 +1022,10 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       if (latestSession?.status === "completed" && latestSession.accountId) {
         emitUpstreamAccountsChanged();
         try {
-          const detail = await fetchUpstreamAccountDetail(
-            latestSession.accountId,
-          );
+          const detail = await fetchUpstreamAccountDetail(latestSession.accountId);
           notifyMotherChange(detail);
           updateBatchRow(rowId, (current: BatchOauthRow) => {
-            const baseSession = (current.session ??
-              row.session) as LoginSessionStatusResponse;
+            const baseSession = (current.session ?? row.session) as LoginSessionStatusResponse;
             return {
               ...current,
               busyAction: null,
@@ -1126,15 +1043,9 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
               email: detail.email ?? current.email,
               verifiedEmail: detail.verifiedEmail ?? null,
               planType: detail.planType ?? null,
-              sessionHint: t(
-                "accountPool.upstreamAccounts.batchOauth.completed",
-                {
-                  name:
-                    detail.displayName ||
-                    current.displayName ||
-                    `#${detail.id}`,
-                },
-              ),
+              sessionHint: t("accountPool.upstreamAccounts.batchOauth.completed", {
+                name: detail.displayName || current.displayName || `#${detail.id}`,
+              }),
               duplicateWarning: detail.duplicateInfo
                 ? {
                     accountId: detail.id,
@@ -1158,10 +1069,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
               pendingSharedTagIds: null,
               sharedTagSyncAttempts: 0,
               isMother: detail.isMother === true,
-              emailResolution: shouldPromptOauthEmailChoice(
-                detail.verifiedEmail,
-                detail.email,
-              )
+              emailResolution: shouldPromptOauthEmailChoice(detail.verifiedEmail, detail.email)
                 ? {
                     accountId: detail.id,
                     verifiedEmail: detail.verifiedEmail?.trim() ?? "",
@@ -1174,8 +1082,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
           });
         } catch {
           updateBatchRow(rowId, (current: BatchOauthRow) => {
-            const baseSession = (current.session ??
-              row.session) as LoginSessionStatusResponse;
+            const baseSession = (current.session ?? row.session) as LoginSessionStatusResponse;
             return {
               ...current,
               busyAction: null,
@@ -1192,9 +1099,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
               sessionHint: null,
               duplicateWarning: current.duplicateWarning,
               needsRefresh: true,
-              actionError: t(
-                "accountPool.upstreamAccounts.batchOauth.completedNeedsRefresh",
-              ),
+              actionError: t("accountPool.upstreamAccounts.batchOauth.completedNeedsRefresh"),
             };
           });
         }
@@ -1206,9 +1111,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
           busyAction: null,
           session: latestSession,
           callbackUrl: "",
-          sessionHint: t(
-            "accountPool.upstreamAccounts.batchOauth.identityConfirmation.required",
-          ),
+          sessionHint: t("accountPool.upstreamAccounts.batchOauth.identityConfirmation.required"),
           duplicateWarning: current.duplicateWarning,
           needsRefresh: false,
           actionError: null,
@@ -1221,18 +1124,15 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         busyAction: null,
         session: latestSession ?? current.session,
         callbackUrl:
-          latestSession?.status === "failed" ||
-          latestSession?.status === "expired"
+          latestSession?.status === "failed" || latestSession?.status === "expired"
             ? ""
             : current.callbackUrl,
         sessionHint:
-          latestSession?.status === "failed" ||
-          latestSession?.status === "expired"
+          latestSession?.status === "failed" || latestSession?.status === "expired"
             ? (latestSession.error ?? current.sessionHint)
             : current.sessionHint,
         duplicateWarning:
-          latestSession?.status === "failed" ||
-          latestSession?.status === "expired"
+          latestSession?.status === "failed" || latestSession?.status === "expired"
             ? null
             : current.duplicateWarning,
         needsRefresh: false,
@@ -1243,8 +1143,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
 
   const handleBatchConfirmOauthIdentityOverwrite = async (rowId: string) => {
     const row = batchRows.find((item: BatchOauthRow) => item.id === rowId);
-    if (!row?.session || row.session.status !== "needs_identity_confirmation")
-      return;
+    if (!row?.session || row.session.status !== "needs_identity_confirmation") return;
 
     updateBatchRow(rowId, (current: BatchOauthRow) => ({
       ...current,
@@ -1256,8 +1155,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       const detail = await confirmOauthOverwrite(row.session.loginId);
       notifyMotherChange(detail);
       updateBatchRow(rowId, (current: BatchOauthRow) => {
-        const baseSession = (current.session ??
-          row.session) as LoginSessionStatusResponse;
+        const baseSession = (current.session ?? row.session) as LoginSessionStatusResponse;
         return {
           ...current,
           busyAction: null,
@@ -1301,10 +1199,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
           pendingSharedTagIds: null,
           sharedTagSyncAttempts: 0,
           isMother: detail.isMother === true,
-          emailResolution: shouldPromptOauthEmailChoice(
-            detail.verifiedEmail,
-            detail.email,
-          )
+          emailResolution: shouldPromptOauthEmailChoice(detail.verifiedEmail, detail.email)
             ? {
                 accountId: detail.id,
                 verifiedEmail: detail.verifiedEmail?.trim() ?? "",
@@ -1331,10 +1226,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     const row = batchRows.find((item: BatchOauthRow) => item.id === rowId);
     const resolution = row?.emailResolution;
     if (!row || !resolution) return;
-    const nextEmail =
-      choice === "verified"
-        ? resolution.verifiedEmail
-        : resolution.chosenEmail;
+    const nextEmail = choice === "verified" ? resolution.verifiedEmail : resolution.chosenEmail;
     const needsSave = normalizeEmailKey(row.email) !== normalizeEmailKey(nextEmail);
     updateBatchRow(rowId, (current: BatchOauthRow) => ({
       ...current,
@@ -1414,8 +1306,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
           resolveGroupSingleAccountRotationEnabledForName(apiKeyGroupName),
         note: apiKeyNote.trim() || undefined,
         groupNote: resolvePendingGroupNoteForName(apiKeyGroupName) || undefined,
-        concurrencyLimit:
-          resolvePendingGroupConcurrencyLimitForName(apiKeyGroupName),
+        concurrencyLimit: resolvePendingGroupConcurrencyLimitForName(apiKeyGroupName),
         apiKey: apiKeyValue.trim(),
         upstreamBaseUrl: apiKeyUpstreamBaseUrl.trim() || undefined,
         isMother: apiKeyIsMother,
@@ -1439,7 +1330,6 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       setBusyAction(null);
     }
   };
-
 
   return {
     clearOauthMailboxSession,
@@ -1467,6 +1357,6 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     handleBatchCompleteOauth,
     handleBatchConfirmOauthIdentityOverwrite,
     handleResolveBatchOauthEmailChoice,
-    handleCreateApiKey
+    handleCreateApiKey,
   };
 }

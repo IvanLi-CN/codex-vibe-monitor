@@ -90,10 +90,10 @@ impl DbPressureGate {
         let gate = Self::new(background_slots, pressure_cooldown);
         #[cfg(test)]
         {
-            return Self {
+            Self {
                 bypass_for_test_global: true,
                 ..gate
-            };
+            }
         }
         #[cfg(not(test))]
         {

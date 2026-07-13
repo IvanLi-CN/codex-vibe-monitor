@@ -235,11 +235,9 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     clickButton(/Edit group settings|Edit group note/i);
     await flushAsync();
-    const updatedGroupNoteField =
-      document.body.querySelector("textarea") ??
-      (() => {
-        throw new Error("missing group note textarea");
-      })();
+    const updatedGroupNoteField = Array.from(document.body.querySelectorAll('[role="dialog"]'))
+      .at(-1)
+      ?.querySelector("textarea");
     if (!(updatedGroupNoteField instanceof HTMLTextAreaElement)) {
       throw new Error("missing group note textarea");
     }

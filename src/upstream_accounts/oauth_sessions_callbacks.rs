@@ -752,15 +752,14 @@ pub(crate) async fn update_oauth_login_session(
             "This login session belongs to an existing account and cannot be edited.".to_string(),
         ));
     }
-    if session.status == LOGIN_SESSION_STATUS_PENDING {
-        if let Some(requested_base_updated_at) = requested_base_updated_at.as_deref() {
-            if requested_base_updated_at != session.updated_at {
-                tx.commit().await.map_err(internal_error_tuple)?;
-                return Ok(Json(login_session_to_response_with_sync_applied(
-                    &session, false,
-                )));
-            }
-        }
+    if session.status == LOGIN_SESSION_STATUS_PENDING
+        && let Some(requested_base_updated_at) = requested_base_updated_at.as_deref()
+        && requested_base_updated_at != session.updated_at
+    {
+        tx.commit().await.map_err(internal_error_tuple)?;
+        return Ok(Json(login_session_to_response_with_sync_applied(
+            &session, false,
+        )));
     }
 
     let UpdateOauthLoginSessionRequest {

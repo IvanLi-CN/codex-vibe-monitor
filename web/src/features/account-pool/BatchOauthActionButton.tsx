@@ -1,30 +1,25 @@
 import {
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   useEffect,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
 } from "react";
-import { AppIcon } from "../shared/AppIcon";
-import { Button } from "../../components/ui/button";
 import { BubblePopoverContent } from "../../components/ui/bubble-popover";
+import { Button } from "../../components/ui/button";
 import { Popover, PopoverAnchor } from "../../components/ui/popover";
 import { Spinner } from "../../components/ui/spinner";
 import { cn } from "../../lib/utils";
+import { AppIcon } from "../shared/AppIcon";
 
 const PASSIVE_POPOVER_OPEN_DELAY_MS = 320;
 const LONG_PRESS_DELAY_MS = 420;
 const HOVER_CLOSE_DELAY_MS = 140;
 
-function selectManualCopyText(target: HTMLDivElement | null) {
+function selectManualCopyText(target: HTMLTextAreaElement | null) {
   if (!target) return;
   target.focus();
-  const selection = target.ownerDocument.getSelection?.();
-  if (!selection) return;
-  const range = target.ownerDocument.createRange();
-  range.selectNodeContents(target);
-  selection.removeAllRanges();
-  selection.addRange(range);
+  target.select();
 }
 
 export interface BatchOauthActionButtonProps {
@@ -71,7 +66,7 @@ export function BatchOauthActionButton({
   const focusPopoverTimerRef = useRef<number | null>(null);
   const passiveOpenTimerRef = useRef<number | null>(null);
   const hoverCloseTimerRef = useRef<number | null>(null);
-  const manualCopyValueRef = useRef<HTMLDivElement | null>(null);
+  const manualCopyValueRef = useRef<HTMLTextAreaElement | null>(null);
   const popoverContentRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const focusPopoverRequestedRef = useRef(false);
@@ -145,10 +140,10 @@ export function BatchOauthActionButton({
       if (!container) return false;
       const firstFocusable = container.querySelector<HTMLElement>(
         [
-          'button:not([disabled])',
-          'a[href]',
-          'input:not([disabled])',
-          'textarea:not([disabled])',
+          "button:not([disabled])",
+          "a[href]",
+          "input:not([disabled])",
+          "textarea:not([disabled])",
           '[role="textbox"][tabindex]',
           '[tabindex]:not([tabindex="-1"])',
         ].join(", "),
@@ -247,9 +242,7 @@ export function BatchOauthActionButton({
     onRegenerate();
   };
 
-  const handleTriggerKeyDown = (
-    event: ReactKeyboardEvent<HTMLButtonElement>,
-  ) => {
+  const handleTriggerKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
     if (disabled) return;
     if (
       event.key === "ArrowDown" ||
@@ -295,11 +288,7 @@ export function BatchOauthActionButton({
           }}
           onFocus={schedulePassivePopoverOpen}
           onBlur={(event) => {
-            if (
-              popoverContentRef.current?.contains(
-                event.relatedTarget as Node | null,
-              )
-            ) {
+            if (popoverContentRef.current?.contains(event.relatedTarget as Node | null)) {
               return;
             }
             if (!pinnedOpen && !manualCopyValue) {
@@ -370,19 +359,13 @@ export function BatchOauthActionButton({
       >
         <div className="space-y-3">
           <div className="space-y-1">
-            <p className="text-sm font-semibold text-base-content">
-              {popoverTitle}
-            </p>
-            <p className="text-sm leading-5 text-base-content/65">
-              {popoverDescription}
-            </p>
+            <p className="text-sm font-semibold text-base-content">{popoverTitle}</p>
+            <p className="text-sm leading-5 text-base-content/65">{popoverDescription}</p>
           </div>
           {remainingLabel || expiresAtLabel ? (
             <div className="grid gap-2 rounded-2xl border border-base-300/70 bg-base-200/45 px-3 py-2">
               {remainingLabel ? (
-                <p className="text-xs font-medium text-base-content/78">
-                  {remainingLabel}
-                </p>
+                <p className="text-xs font-medium text-base-content/78">{remainingLabel}</p>
               ) : null}
               {expiresAtLabel ? (
                 <p className="text-xs text-base-content/62">{expiresAtLabel}</p>
@@ -392,29 +375,23 @@ export function BatchOauthActionButton({
           {manualCopyValue ? (
             <div className="space-y-2">
               <div className="space-y-1">
-                <p className="text-sm font-semibold text-base-content">
-                  {manualCopyTitle}
-                </p>
-                <p className="text-sm text-base-content/65">
-                  {manualCopyDescription}
-                </p>
+                <p className="text-sm font-semibold text-base-content">{manualCopyTitle}</p>
+                <p className="text-sm text-base-content/65">{manualCopyDescription}</p>
               </div>
-              <div
+              <textarea
                 ref={manualCopyValueRef}
-                role="textbox"
-                aria-readonly="true"
-                tabIndex={0}
+                aria-label={manualCopyTitle}
+                readOnly
+                value={manualCopyValue}
                 translate="no"
                 spellCheck={false}
                 data-lpignore="true"
                 data-1p-ignore="true"
                 data-form-type="other"
-                className="max-h-28 overflow-auto rounded-xl border border-base-300 bg-base-100 px-3 py-2 font-mono text-xs text-base-content shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-warning/40"
+                className="max-h-28 w-full resize-none overflow-auto rounded-xl border border-base-300 bg-base-100 px-3 py-2 font-mono text-xs text-base-content shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-warning/40"
                 onFocus={(event) => selectManualCopyText(event.currentTarget)}
                 onClick={(event) => selectManualCopyText(event.currentTarget)}
-              >
-                <span className="break-all">{manualCopyValue}</span>
-              </div>
+              />
             </div>
           ) : null}
           {mode === "copy" ? (
@@ -428,11 +405,7 @@ export function BatchOauthActionButton({
                 disabled={regenerateDisabled}
                 onClick={handleRegenerate}
               >
-                <AppIcon
-                  name="refresh"
-                  className="mr-1.5 h-3.5 w-3.5"
-                  aria-hidden
-                />
+                <AppIcon name="refresh" className="mr-1.5 h-3.5 w-3.5" aria-hidden />
                 {regenerateAriaLabel}
               </Button>
             </div>

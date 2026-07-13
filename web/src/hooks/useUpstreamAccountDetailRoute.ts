@@ -7,11 +7,13 @@ const PROMPT_CACHE_CONVERSATION_KEY_PARAM = "promptCacheConversationKey";
 const PROMPT_CACHE_CONVERSATION_TAB_PARAM = "promptCacheConversationTab";
 
 export type UpstreamAccountDetailRouteTab =
-  "overview" | "records" | "edit" | "routing" | "healthEvents";
+  | "overview"
+  | "records"
+  | "edit"
+  | "routing"
+  | "healthEvents";
 
-function parseUpstreamAccountTab(
-  raw: string | null,
-): UpstreamAccountDetailRouteTab {
+function parseUpstreamAccountTab(raw: string | null): UpstreamAccountDetailRouteTab {
   if (raw === "records") return "records";
   if (raw === "edit") return "edit";
   if (raw === "routing") return "routing";
@@ -47,21 +49,24 @@ export function useUpstreamAccountDetailRoute() {
         clearPromptCacheConversation?: boolean;
       },
     ) => {
-      setSearchParams((currentSearchParams) => {
-        const next = new URLSearchParams(currentSearchParams);
-        if (options?.clearPromptCacheConversation) {
-          next.delete(PROMPT_CACHE_CONVERSATION_KEY_PARAM);
-          next.delete(PROMPT_CACHE_CONVERSATION_TAB_PARAM);
-        }
-        next.set(UPSTREAM_ACCOUNT_ID_PARAM, String(Math.trunc(accountId)));
-        const tab = options?.tab ?? "overview";
-        if (tab !== "overview") {
-          next.set(UPSTREAM_ACCOUNT_TAB_PARAM, tab);
-        } else {
-          next.delete(UPSTREAM_ACCOUNT_TAB_PARAM);
-        }
-        return next;
-      }, { replace: options?.replace ?? false });
+      setSearchParams(
+        (currentSearchParams) => {
+          const next = new URLSearchParams(currentSearchParams);
+          if (options?.clearPromptCacheConversation) {
+            next.delete(PROMPT_CACHE_CONVERSATION_KEY_PARAM);
+            next.delete(PROMPT_CACHE_CONVERSATION_TAB_PARAM);
+          }
+          next.set(UPSTREAM_ACCOUNT_ID_PARAM, String(Math.trunc(accountId)));
+          const tab = options?.tab ?? "overview";
+          if (tab !== "overview") {
+            next.set(UPSTREAM_ACCOUNT_TAB_PARAM, tab);
+          } else {
+            next.delete(UPSTREAM_ACCOUNT_TAB_PARAM);
+          }
+          return next;
+        },
+        { replace: options?.replace ?? false },
+      );
     },
     [setSearchParams],
   );
@@ -74,12 +79,15 @@ export function useUpstreamAccountDetailRoute() {
       ) {
         return;
       }
-      setSearchParams((currentSearchParams) => {
-        const next = new URLSearchParams(currentSearchParams);
-        next.delete(UPSTREAM_ACCOUNT_ID_PARAM);
-        next.delete(UPSTREAM_ACCOUNT_TAB_PARAM);
-        return next;
-      }, { replace: options?.replace ?? false });
+      setSearchParams(
+        (currentSearchParams) => {
+          const next = new URLSearchParams(currentSearchParams);
+          next.delete(UPSTREAM_ACCOUNT_ID_PARAM);
+          next.delete(UPSTREAM_ACCOUNT_TAB_PARAM);
+          return next;
+        },
+        { replace: options?.replace ?? false },
+      );
     },
     [searchParams, setSearchParams],
   );

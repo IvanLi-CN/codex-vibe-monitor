@@ -1,11 +1,5 @@
 use super::*;
-use anyhow::anyhow;
-use chrono::LocalResult;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use sqlx::FromRow;
-use tokio::sync::{broadcast, watch};
-use tracing::{debug, warn};
+use tokio::sync::watch;
 
 pub(crate) async fn fetch_prompt_cache_conversations_cached(
     state: &AppState,
@@ -110,17 +104,18 @@ pub(crate) async fn fetch_prompt_cache_conversations_cached(
             None => None,
         };
         if let Some(in_flight) = in_flight {
-            if let Ok(response) = &result {
-                if !stale_result && cache.generation == build_generation {
-                    cache.entries.insert(
-                        selection,
-                        PromptCacheConversationsCacheEntry {
-                            cached_at: Instant::now(),
-                            generation: build_generation,
-                            response: response.clone(),
-                        },
-                    );
-                }
+            if let Ok(response) = &result
+                && !stale_result
+                && cache.generation == build_generation
+            {
+                cache.entries.insert(
+                    selection,
+                    PromptCacheConversationsCacheEntry {
+                        cached_at: Instant::now(),
+                        generation: build_generation,
+                        response: response.clone(),
+                    },
+                );
             }
             let _ = in_flight.signal.send(true);
         }

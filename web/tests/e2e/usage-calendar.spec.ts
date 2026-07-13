@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { expect, test } from "@playwright/test";
 
 const VIEWPORTS = [
   { width: 375, height: 900 },
@@ -8,24 +8,26 @@ const VIEWPORTS = [
   { width: 1660, height: 900 },
   // Regression for shrink-on-large screens (reported at ~1873px)
   { width: 1873, height: 900 },
-]
+];
 
-test.describe('UsageCalendar responsive layout', () => {
+test.describe("UsageCalendar responsive layout", () => {
   for (const viewport of VIEWPORTS) {
     test(`maintains card fit at ${viewport.width}px`, async ({ page }) => {
-      await page.setViewportSize(viewport)
-      await page.goto('/dashboard')
-      await page.getByRole('tab', { name: /历史|history/i }).click()
+      await page.setViewportSize(viewport);
+      await page.goto("/dashboard");
+      await page.getByRole("tab", { name: /历史|history/i }).click();
 
-      const card = page.getByTestId('usage-calendar-card')
-      await card.waitFor({ state: 'visible' })
-      const wrapper = page.getByTestId('usage-calendar-wrapper')
-      await wrapper.waitFor({ state: 'visible' })
-      await page.waitForTimeout(250)
+      const card = page.getByTestId("usage-calendar-card");
+      await card.waitFor({ state: "visible" });
+      const wrapper = page.getByTestId("usage-calendar-wrapper");
+      await wrapper.waitFor({ state: "visible" });
+      await page.waitForTimeout(250);
 
       const layout = await card.evaluate((node) => {
-        const rect = node.getBoundingClientRect()
-        const inner = node.querySelector('[data-testid="usage-calendar-wrapper"]') as HTMLElement | null
+        const rect = node.getBoundingClientRect();
+        const inner = node.querySelector(
+          '[data-testid="usage-calendar-wrapper"]',
+        ) as HTMLElement | null;
         if (!inner) {
           return {
             cardWidth: rect.width,
@@ -33,187 +35,209 @@ test.describe('UsageCalendar responsive layout', () => {
             hasWrapper: false,
             scrollWidth: rect.width,
             clientWidth: rect.width,
-          }
+          };
         }
-        const innerRect = inner.getBoundingClientRect()
-        const { scrollWidth, clientWidth } = inner
+        const innerRect = inner.getBoundingClientRect();
+        const { scrollWidth, clientWidth } = inner;
         return {
           cardWidth: rect.width,
           wrapperWidth: innerRect.width,
           hasWrapper: true,
           scrollWidth,
           clientWidth,
-        }
-      })
+        };
+      });
 
       test.info().annotations.push({
-        type: 'layout-metrics',
+        type: "layout-metrics",
         description: JSON.stringify({ viewport, layout }),
-      })
+      });
 
-      expect(layout.hasWrapper).toBeTruthy()
-      expect(layout.scrollWidth - layout.clientWidth).toBeLessThanOrEqual(80)
+      expect(layout.hasWrapper).toBeTruthy();
+      expect(layout.scrollWidth - layout.clientWidth).toBeLessThanOrEqual(80);
       if (viewport.width >= 1280) {
-        expect(layout.cardWidth - layout.wrapperWidth).toBeLessThanOrEqual(96)
+        expect(layout.cardWidth - layout.wrapperWidth).toBeLessThanOrEqual(96);
       }
-    })
+    });
   }
-  
-  test('does not jitter width at 1873px', async ({ page }) => {
-    await page.setViewportSize({ width: 1873, height: 900 })
-    await page.goto('/dashboard')
-    await page.getByRole('tab', { name: /历史|history/i }).click()
-    const wrapper = page.getByTestId('usage-calendar-wrapper')
-    await wrapper.waitFor({ state: 'visible' })
+
+  test("does not jitter width at 1873px", async ({ page }) => {
+    await page.setViewportSize({ width: 1873, height: 900 });
+    await page.goto("/dashboard");
+    await page.getByRole("tab", { name: /历史|history/i }).click();
+    const wrapper = page.getByTestId("usage-calendar-wrapper");
+    await wrapper.waitFor({ state: "visible" });
     // wait for calendar body to render
-    await page.locator('article').first().waitFor({ state: 'visible' })
+    await page.locator("article").first().waitFor({ state: "visible" });
     // sample width several times; ensure it stays stable (<= 2px span)
-    const samples: number[] = []
+    const samples: number[] = [];
     for (let i = 0; i < 6; i++) {
-      await page.waitForTimeout(250)
-      const w = await wrapper.evaluate((el) => (el as HTMLElement).getBoundingClientRect().width)
-      samples.push(Math.round(w))
+      await page.waitForTimeout(250);
+      const w = await wrapper.evaluate((el) => (el as HTMLElement).getBoundingClientRect().width);
+      samples.push(Math.round(w));
     }
-    const max = Math.max(...samples)
-    const min = Math.min(...samples)
-    test.info().annotations.push({ type: 'width-samples', description: JSON.stringify(samples) })
-    expect(max - min).toBeLessThanOrEqual(2)
-  })
+    const max = Math.max(...samples);
+    const min = Math.min(...samples);
+    test.info().annotations.push({ type: "width-samples", description: JSON.stringify(samples) });
+    expect(max - min).toBeLessThanOrEqual(2);
+  });
 
-  test('centers calendar when stacked at 768px', async ({ page }) => {
-    await page.setViewportSize({ width: 768, height: 900 })
-    await page.goto('/dashboard')
-    await page.getByRole('tab', { name: /历史|history/i }).click()
-    const wrapper = page.getByTestId('usage-calendar-wrapper')
-    await wrapper.waitFor({ state: 'visible' })
-    await page.waitForTimeout(300)
+  test("centers calendar when stacked at 768px", async ({ page }) => {
+    await page.setViewportSize({ width: 768, height: 900 });
+    await page.goto("/dashboard");
+    await page.getByRole("tab", { name: /历史|history/i }).click();
+    const wrapper = page.getByTestId("usage-calendar-wrapper");
+    await wrapper.waitFor({ state: "visible" });
+    await page.waitForTimeout(300);
     const gaps = await wrapper.evaluate((el) => {
-      const rect = (el as HTMLElement).getBoundingClientRect()
-      const article = (el as HTMLElement).querySelector('article') as HTMLElement | null
+      const rect = (el as HTMLElement).getBoundingClientRect();
+      const article = (el as HTMLElement).querySelector("article") as HTMLElement | null;
       if (!article) {
-        return { leftGap: 0, rightGap: 0, width: rect.width, articleWidth: rect.width }
+        return { leftGap: 0, rightGap: 0, width: rect.width, articleWidth: rect.width };
       }
-      const a = article.getBoundingClientRect()
-      const leftGap = Math.round(a.left - rect.left)
-      const rightGap = Math.round(rect.right - a.right)
-      return { leftGap, rightGap, width: Math.round(rect.width), articleWidth: Math.round(a.width) }
-    })
-    test.info().annotations.push({ type: 'center-gaps', description: JSON.stringify(gaps) })
-    expect(Math.abs(gaps.leftGap - gaps.rightGap)).toBeLessThanOrEqual(16)
-  })
+      const a = article.getBoundingClientRect();
+      const leftGap = Math.round(a.left - rect.left);
+      const rightGap = Math.round(rect.right - a.right);
+      return {
+        leftGap,
+        rightGap,
+        width: Math.round(rect.width),
+        articleWidth: Math.round(a.width),
+      };
+    });
+    test.info().annotations.push({ type: "center-gaps", description: JSON.stringify(gaps) });
+    expect(Math.abs(gaps.leftGap - gaps.rightGap)).toBeLessThanOrEqual(16);
+  });
 
-  test('does not shift history view inside activity overview while 6mo timeseries is loading', async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 900 })
+  test("does not shift history view inside activity overview while 6mo timeseries is loading", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
 
-    let releaseTimeseries: (() => void) | null = null
+    let releaseTimeseries: (() => void) | null = null;
     const gate = new Promise<void>((resolve) => {
-      releaseTimeseries = resolve
-    })
+      releaseTimeseries = resolve;
+    });
 
-    await page.route('**/api/stats/timeseries**', async (route) => {
-      const requestUrl = new URL(route.request().url())
-      const range = requestUrl.searchParams.get('range')
-      const bucket = requestUrl.searchParams.get('bucket')
-      if (range === '6mo' && bucket === '1d') {
-        await gate
+    await page.route("**/api/stats/timeseries**", async (route) => {
+      const requestUrl = new URL(route.request().url());
+      const range = requestUrl.searchParams.get("range");
+      const bucket = requestUrl.searchParams.get("bucket");
+      if (range === "6mo" && bucket === "1d") {
+        await gate;
       }
-      await route.continue()
-    })
+      await route.continue();
+    });
 
-    await page.goto('/dashboard')
-    const historyTab = page.getByRole('tab', { name: /历史|history/i })
-    await historyTab.click()
+    await page.goto("/dashboard");
+    const historyTab = page.getByRole("tab", { name: /历史|history/i });
+    await historyTab.click();
 
-    const overviewCard = page.getByTestId('dashboard-activity-overview')
-    const usageCard = page.getByTestId('usage-calendar-card')
-    await overviewCard.waitFor({ state: 'visible' })
-    await usageCard.waitFor({ state: 'visible' })
+    const overviewCard = page.getByTestId("dashboard-activity-overview");
+    const usageCard = page.getByTestId("usage-calendar-card");
+    await overviewCard.waitFor({ state: "visible" });
+    await usageCard.waitFor({ state: "visible" });
 
     // Ensure we are measuring the loading skeleton state, not the hydrated state.
-    const pulseBefore = await usageCard.locator('rect.animate-pulse').count()
-    expect(pulseBefore).toBeGreaterThan(0)
+    const pulseBefore = await usageCard.locator("rect.animate-pulse").count();
+    expect(pulseBefore).toBeGreaterThan(0);
 
-    const overviewBefore = await overviewCard.boundingBox()
-    const usageBefore = await usageCard.boundingBox()
-    expect(overviewBefore).not.toBeNull()
-    expect(usageBefore).not.toBeNull()
+    const overviewBefore = await overviewCard.boundingBox();
+    const usageBefore = await usageCard.boundingBox();
+    expect(overviewBefore).not.toBeNull();
+    expect(usageBefore).not.toBeNull();
 
-    const overviewBox = overviewBefore!
-    const usageBox = usageBefore!
+    const overviewBox = overviewBefore!;
+    const usageBox = usageBefore!;
     test.info().annotations.push({
-      type: 'history-overview-before',
+      type: "history-overview-before",
       description: JSON.stringify({
-        overview: { x: Math.round(overviewBox.x), y: Math.round(overviewBox.y), w: Math.round(overviewBox.width), h: Math.round(overviewBox.height) },
-        usage: { x: Math.round(usageBox.x), y: Math.round(usageBox.y), w: Math.round(usageBox.width), h: Math.round(usageBox.height) },
+        overview: {
+          x: Math.round(overviewBox.x),
+          y: Math.round(overviewBox.y),
+          w: Math.round(overviewBox.width),
+          h: Math.round(overviewBox.height),
+        },
+        usage: {
+          x: Math.round(usageBox.x),
+          y: Math.round(usageBox.y),
+          w: Math.round(usageBox.width),
+          h: Math.round(usageBox.height),
+        },
       }),
-    })
+    });
 
-    expect(usageBox.x).toBeGreaterThanOrEqual(overviewBox.x)
-    expect(usageBox.x + usageBox.width).toBeLessThanOrEqual(overviewBox.x + overviewBox.width + 2)
+    expect(usageBox.x).toBeGreaterThanOrEqual(overviewBox.x);
+    expect(usageBox.x + usageBox.width).toBeLessThanOrEqual(overviewBox.x + overviewBox.width + 2);
 
     const waitTimeseries = page.waitForResponse((resp) => {
-      if (!resp.url().includes('/api/stats/timeseries')) return false
+      if (!resp.url().includes("/api/stats/timeseries")) return false;
       try {
-        const url = new URL(resp.url())
-        return url.searchParams.get('range') === '6mo' && url.searchParams.get('bucket') === '1d'
+        const url = new URL(resp.url());
+        return url.searchParams.get("range") === "6mo" && url.searchParams.get("bucket") === "1d";
       } catch {
-        return false
+        return false;
       }
-    })
+    });
 
-    releaseTimeseries?.()
-    await waitTimeseries
+    releaseTimeseries?.();
+    await waitTimeseries;
 
     // Wait until the UI flips from skeleton to hydrated render (pulse class removed).
-    await expect(usageCard.locator('rect.animate-pulse')).toHaveCount(0)
+    await expect(usageCard.locator("rect.animate-pulse")).toHaveCount(0);
 
-    const usageAfter = await usageCard.boundingBox()
-    expect(usageAfter).not.toBeNull()
-    const usageAfterBox = usageAfter!
+    const usageAfter = await usageCard.boundingBox();
+    expect(usageAfter).not.toBeNull();
+    const usageAfterBox = usageAfter!;
 
     test.info().annotations.push({
-      type: 'history-overview-after',
+      type: "history-overview-after",
       description: JSON.stringify({
-        usage: { x: Math.round(usageAfterBox.x), y: Math.round(usageAfterBox.y), w: Math.round(usageAfterBox.width), h: Math.round(usageAfterBox.height) },
+        usage: {
+          x: Math.round(usageAfterBox.x),
+          y: Math.round(usageAfterBox.y),
+          w: Math.round(usageAfterBox.width),
+          h: Math.round(usageAfterBox.height),
+        },
       }),
-    })
+    });
 
-    expect(Math.abs(usageAfterBox.x - usageBox.x)).toBeLessThanOrEqual(2)
-  })
+    expect(Math.abs(usageAfterBox.x - usageBox.x)).toBeLessThanOrEqual(2);
+  });
 
-  test('renders an empty 6mo calendar when timeseries returns no points', async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 900 })
+  test("renders an empty 6mo calendar when timeseries returns no points", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
 
-    await page.route('**/api/stats/timeseries**', async (route) => {
-      const requestUrl = new URL(route.request().url())
-      const range = requestUrl.searchParams.get('range')
-      const bucket = requestUrl.searchParams.get('bucket')
-      if (range === '6mo' && bucket === '1d') {
+    await page.route("**/api/stats/timeseries**", async (route) => {
+      const requestUrl = new URL(route.request().url());
+      const range = requestUrl.searchParams.get("range");
+      const bucket = requestUrl.searchParams.get("bucket");
+      if (range === "6mo" && bucket === "1d") {
         await route.fulfill({
           status: 200,
-          contentType: 'application/json',
+          contentType: "application/json",
           body: JSON.stringify({
-            rangeStart: '2025-10-09T00:00:00Z',
-            rangeEnd: '2026-04-08T00:00:00Z',
+            rangeStart: "2025-10-09T00:00:00Z",
+            rangeEnd: "2026-04-08T00:00:00Z",
             bucketSeconds: 86400,
             points: [],
           }),
-        })
-        return
+        });
+        return;
       }
-      await route.continue()
-    })
+      await route.continue();
+    });
 
-    await page.goto('/dashboard')
-    await page.getByRole('tab', { name: /历史|history/i }).click()
+    await page.goto("/dashboard");
+    await page.getByRole("tab", { name: /历史|history/i }).click();
 
-    const usageCard = page.getByTestId('usage-calendar-card')
-    await usageCard.waitFor({ state: 'visible' })
-    await expect(usageCard.locator('[data-testid="usage-calendar-wrapper"]')).toBeVisible()
-    await expect(usageCard.locator('rect.animate-pulse')).toHaveCount(0)
+    const usageCard = page.getByTestId("usage-calendar-card");
+    await usageCard.waitFor({ state: "visible" });
+    await expect(usageCard.locator('[data-testid="usage-calendar-wrapper"]')).toBeVisible();
+    await expect(usageCard.locator("rect.animate-pulse")).toHaveCount(0);
 
     // Empty calendar should still render a full grid of blocks (no fallback to library loading skeleton).
-    const blockCount = await usageCard.locator('svg rect').count()
-    expect(blockCount).toBeGreaterThanOrEqual(120)
-  })
-})
+    const blockCount = await usageCard.locator("svg rect").count();
+    expect(blockCount).toBeGreaterThanOrEqual(120);
+  });
+});

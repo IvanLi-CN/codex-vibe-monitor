@@ -1,15 +1,15 @@
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { MemoryRouter, NavLink } from 'react-router-dom'
-import { SegmentedControl, SegmentedControlItem } from './segmented-control'
-import { segmentedControlItemVariants } from './segmented-control.variants'
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { MemoryRouter, NavLink } from "react-router-dom";
+import { SegmentedControl, SegmentedControlItem } from "./segmented-control";
+import { segmentedControlItemVariants } from "./segmented-control.variants";
 
 const meta = {
-  title: 'UI/SegmentedControl',
+  title: "UI/SegmentedControl",
   component: SegmentedControl,
-  tags: ['autodocs'],
+  tags: ["autodocs"],
   decorators: [
     (Story) => (
-      <MemoryRouter initialEntries={['/dashboard']}>
+      <MemoryRouter initialEntries={["/dashboard"]}>
         <div className="surface-panel max-w-3xl">
           <div className="surface-panel-body gap-6">
             <Story />
@@ -18,11 +18,11 @@ const meta = {
       </MemoryRouter>
     ),
   ],
-} satisfies Meta<typeof SegmentedControl>
+} satisfies Meta<typeof SegmentedControl>;
 
-export default meta
+export default meta;
 
-type Story = StoryObj<typeof meta>
+type Story = StoryObj<typeof meta>;
 
 export const Overview: Story = {
   render: () => (
@@ -57,17 +57,32 @@ export const Overview: Story = {
       <div className="space-y-2">
         <p className="text-sm font-medium text-base-content/80">Router-driven navigation</p>
         <SegmentedControl size="nav" aria-label="Primary navigation">
-          <NavLink to="/dashboard" className={({ isActive }) => segmentedControlItemVariants({ size: 'nav', active: isActive })}>
+          <NavLink
+            to="/dashboard"
+            className={({ isActive }) =>
+              segmentedControlItemVariants({ size: "nav", active: isActive })
+            }
+          >
             总览
           </NavLink>
-          <NavLink to="/stats" className={({ isActive }) => segmentedControlItemVariants({ size: 'nav', active: isActive })}>
+          <NavLink
+            to="/stats"
+            className={({ isActive }) =>
+              segmentedControlItemVariants({ size: "nav", active: isActive })
+            }
+          >
             统计
           </NavLink>
-          <NavLink to="/settings" className={({ isActive }) => segmentedControlItemVariants({ size: 'nav', active: isActive })}>
+          <NavLink
+            to="/settings"
+            className={({ isActive }) =>
+              segmentedControlItemVariants({ size: "nav", active: isActive })
+            }
+          >
             设置
           </NavLink>
         </SegmentedControl>
       </div>
     </div>
   ),
-}
+};

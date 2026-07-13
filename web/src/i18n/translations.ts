@@ -26,8 +26,7 @@ const baseTranslations = {
     "app.theme.switchToDark": "Switch to dark mode",
     "app.proxySettings.button": "Proxy settings",
     "app.proxySettings.title": "Model list hijack",
-    "app.proxySettings.description":
-      "Control how /v1/models is exposed by the reverse proxy.",
+    "app.proxySettings.description": "Control how /v1/models is exposed by the reverse proxy.",
     "app.proxySettings.loading": "Loading settings…",
     "app.proxySettings.loadError": "Failed to load settings: {{error}}",
     "app.proxySettings.saveError": "Failed to save settings: {{error}}",
@@ -37,8 +36,7 @@ const baseTranslations = {
     "app.proxySettings.mergeLabel": "Merge upstream models in real time",
     "app.proxySettings.mergeHint":
       "When enabled, merge upstream models with presets and deduplicate by model id.",
-    "app.proxySettings.mergeDisabledHint":
-      "Enable hijack first to turn this option on.",
+    "app.proxySettings.mergeDisabledHint": "Enable hijack first to turn this option on.",
     "app.proxySettings.presetModels": "Preset model list",
     "app.proxySettings.enabledCount": "Enabled: {{count}} / {{total}}",
     "app.proxySettings.noneEnabledHint":
@@ -53,8 +51,7 @@ const baseTranslations = {
     "app.update.refresh": "Refresh now",
     "app.update.later": "Later",
     "app.sse.banner.title": "Live connection lost",
-    "app.sse.banner.description":
-      "No server events have arrived for over two minutes.",
+    "app.sse.banner.description": "No server events have arrived for over two minutes.",
     "app.sse.banner.duration": "Offline for {{minutes}}m {{seconds}}s",
     "app.sse.banner.durationChip": "Offline {{minutes}}m {{seconds}}s",
     "app.sse.banner.retryIn": "Auto reconnect in {{seconds}}s",
@@ -143,17 +140,14 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.grouped.proxiesEmpty": "No bound proxy",
     "accountPool.upstreamAccounts.proxy.pending": "Pending",
     "accountPool.upstreamAccounts.proxy.unconfigured": "Unconfigured proxy",
-    "accountPool.upstreamAccounts.proxyBindings.accountTitle":
-      "Account forward proxies",
+    "accountPool.upstreamAccounts.proxyBindings.accountTitle": "Account forward proxies",
     "accountPool.upstreamAccounts.proxyBindings.accountDescription":
       "Choose explicit proxy nodes for this account. Empty inherits the group configuration.",
     "accountPool.upstreamAccounts.proxyBindings.addLabel": "Add proxy",
-    "accountPool.upstreamAccounts.proxyBindings.addPlaceholder":
-      "Select a proxy node",
+    "accountPool.upstreamAccounts.proxyBindings.addPlaceholder": "Select a proxy node",
     "accountPool.upstreamAccounts.proxyBindings.loading": "Loading proxy nodes",
     "accountPool.upstreamAccounts.proxyBindings.clear": "Inherit group",
-    "accountPool.upstreamAccounts.proxyBindings.dialogTitle":
-      "Select account proxy nodes",
+    "accountPool.upstreamAccounts.proxyBindings.dialogTitle": "Select account proxy nodes",
     "accountPool.upstreamAccounts.proxyBindings.dialogDescription":
       "Choose one or more explicit proxy nodes for this account. Clear all selections to inherit the group configuration.",
     "accountPool.upstreamAccounts.proxyBindings.dialogAutomatic":
@@ -161,8 +155,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.proxyBindings.dialogEmpty":
       "No proxy nodes are available right now.",
     "accountPool.upstreamAccounts.proxyBindings.apply": "Apply selection",
-    "accountPool.upstreamAccounts.proxyBindings.sourceAccount":
-      "Account override",
+    "accountPool.upstreamAccounts.proxyBindings.sourceAccount": "Account override",
     "accountPool.upstreamAccounts.proxyBindings.sourceGroup": "Inherited group",
     "accountPool.upstreamAccounts.proxyBindings.effectiveEmpty":
       "No explicit proxy list; automatic routing remains in effect.",
@@ -170,8 +163,7 @@ const baseTranslations = {
       "Requests keep the current node sticky. After consecutive network failures, the next selectable node is chosen from this list by existing proxy weight and penalty rules. If every explicit node is unavailable, routing fails instead of falling back.",
     "accountPool.upstreamAccounts.proxyBindings.remove": "Remove proxy",
     "accountPool.upstreamAccounts.proxyBindings.statusAvailable": "Available",
-    "accountPool.upstreamAccounts.proxyBindings.statusUnavailable":
-      "Unavailable",
+    "accountPool.upstreamAccounts.proxyBindings.statusUnavailable": "Unavailable",
     "accountPool.upstreamAccounts.proxyBindings.statusMissing": "Missing",
     "accountPool.upstreamAccounts.plan.free": "Free",
     "accountPool.upstreamAccounts.plan.plus": "Plus",
@@ -184,8 +176,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.loadingTitle": "Loading roster",
     "accountPool.upstreamAccounts.loadingDescription":
       "Waiting for the current filters, page, or page size to return.",
-    "accountPool.upstreamAccounts.listErrorTitle":
-      "Could not load this roster query",
+    "accountPool.upstreamAccounts.listErrorTitle": "Could not load this roster query",
     "accountPool.upstreamAccounts.listRetry": "Retry",
     "accountPool.upstreamAccounts.detailEmptyTitle": "Choose an account",
     "accountPool.upstreamAccounts.detailEmptyDescription":
@@ -205,8 +196,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.limitLegendTitle": "Quota legend",
     "accountPool.upstreamAccounts.limitLegendDescription":
       "OAuth accounts show normalized upstream usage snapshots. API key accounts show local placeholder limits until routing metrics are wired in.",
-    "accountPool.upstreamAccounts.routing.title":
-      "Advanced routing & sync settings",
+    "accountPool.upstreamAccounts.routing.title": "Advanced routing & sync settings",
     "accountPool.upstreamAccounts.routing.description":
       "Edit the downstream pool API key and the tiered maintenance sync cadence for the account pool.",
     "accountPool.upstreamAccounts.routing.currentKey": "Current pool API key",
@@ -217,28 +207,21 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.apiKeySectionTitle": "Pool route key",
     "accountPool.upstreamAccounts.routing.apiKeySectionDescription":
       "Optional. Leave blank to keep the current downstream pool API key unchanged.",
-    "accountPool.upstreamAccounts.routing.apiKeyLabel":
-      "Downstream pool API key",
+    "accountPool.upstreamAccounts.routing.apiKeyLabel": "Downstream pool API key",
     "accountPool.upstreamAccounts.routing.generate": "Generate key",
     "accountPool.upstreamAccounts.routing.apiKeyPlaceholder":
       "Paste a new pool API key to rotate the route target",
-    "accountPool.upstreamAccounts.routing.maintenanceSectionTitle":
-      "Tiered maintenance sync",
+    "accountPool.upstreamAccounts.routing.maintenanceSectionTitle": "Tiered maintenance sync",
     "accountPool.upstreamAccounts.routing.maintenanceSectionDescription":
       "Keep account quota updates fresh while they are actively serving traffic, and automatically refresh again soon after a primary or secondary limit resets to reduce stale availability.",
-    "accountPool.upstreamAccounts.routing.primarySyncIntervalLabel":
-      "Priority sync interval",
-    "accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel":
-      "Secondary sync interval",
-    "accountPool.upstreamAccounts.routing.priorityCapLabel":
-      "Priority available account cap",
-    "accountPool.upstreamAccounts.routing.priorityCapValue":
-      "Top {{count}} accounts",
+    "accountPool.upstreamAccounts.routing.primarySyncIntervalLabel": "Priority sync interval",
+    "accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel": "Secondary sync interval",
+    "accountPool.upstreamAccounts.routing.priorityCapLabel": "Priority available account cap",
+    "accountPool.upstreamAccounts.routing.priorityCapValue": "Top {{count}} accounts",
     "accountPool.upstreamAccounts.routing.intervalHours": "{{count}}h",
     "accountPool.upstreamAccounts.routing.intervalMinutes": "{{count}}m",
     "accountPool.upstreamAccounts.routing.intervalSeconds": "{{count}}s",
-    "accountPool.upstreamAccounts.routing.dialogTitle":
-      "Advanced routing & sync settings",
+    "accountPool.upstreamAccounts.routing.dialogTitle": "Advanced routing & sync settings",
     "accountPool.upstreamAccounts.routing.dialogDescription":
       "Edit the pool route key, request path timeouts, and the two-tier maintenance queue without touching environment variables.",
     "accountPool.upstreamAccounts.routing.save": "Save settings",
@@ -252,8 +235,7 @@ const baseTranslations = {
       "Secondary sync interval must be greater than or equal to the priority sync interval.",
     "accountPool.upstreamAccounts.routing.validation.priorityCapMin":
       "Priority available account cap must be at least 1.",
-    "accountPool.upstreamAccounts.routing.timeout.sectionTitle":
-      "Request path timeouts (seconds)",
+    "accountPool.upstreamAccounts.routing.timeout.sectionTitle": "Request path timeouts (seconds)",
     "accountPool.upstreamAccounts.routing.timeout.responsesFirstByte":
       "Standard response first byte timeout",
     "accountPool.upstreamAccounts.routing.timeout.compactFirstByte":
@@ -270,19 +252,14 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.actions.backToList": "Back to accounts",
     "accountPool.upstreamAccounts.actions.cancel": "Cancel",
     "accountPool.upstreamAccounts.actions.startOauth": "Start OAuth login",
-    "accountPool.upstreamAccounts.actions.generateOauthUrl":
-      "Generate OAuth URL",
-    "accountPool.upstreamAccounts.actions.regenerateOauthUrl":
-      "Regenerate OAuth URL",
+    "accountPool.upstreamAccounts.actions.generateOauthUrl": "Generate OAuth URL",
+    "accountPool.upstreamAccounts.actions.regenerateOauthUrl": "Regenerate OAuth URL",
     "accountPool.upstreamAccounts.actions.copyOauthUrl": "Copy OAuth URL",
-    "accountPool.upstreamAccounts.actions.completeOauth":
-      "Complete OAuth login",
+    "accountPool.upstreamAccounts.actions.completeOauth": "Complete OAuth login",
     "accountPool.upstreamAccounts.actions.generateMailbox": "Generate",
     "accountPool.upstreamAccounts.actions.useMailboxAddress": "Use address",
-    "accountPool.upstreamAccounts.actions.submitMailboxAddress":
-      "Submit mailbox address",
-    "accountPool.upstreamAccounts.actions.cancelMailboxEdit":
-      "Cancel mailbox edit",
+    "accountPool.upstreamAccounts.actions.submitMailboxAddress": "Submit mailbox address",
+    "accountPool.upstreamAccounts.actions.cancelMailboxEdit": "Cancel mailbox edit",
     "accountPool.upstreamAccounts.actions.copyMailbox": "Copy mailbox",
     "accountPool.upstreamAccounts.actions.copyMailboxHint": "Click to copy",
     "accountPool.upstreamAccounts.actions.copied": "Copied",
@@ -292,21 +269,17 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.actions.copyCode": "Copy code",
     "accountPool.upstreamAccounts.actions.copyInvite": "Copy invite",
     "accountPool.upstreamAccounts.actions.fetchMailboxStatus": "Fetch",
-    "accountPool.upstreamAccounts.actions.createApiKey":
-      "Create API key account",
+    "accountPool.upstreamAccounts.actions.createApiKey": "Create API key account",
     "accountPool.upstreamAccounts.actions.syncNow": "Sync now",
     "accountPool.upstreamAccounts.actions.relogin": "Re-authorize",
     "accountPool.upstreamAccounts.actions.delete": "Delete",
     "accountPool.upstreamAccounts.actions.confirmDelete": "Delete account",
     "accountPool.upstreamAccounts.actions.save": "Save changes",
-    "accountPool.upstreamAccounts.actions.editRoutingPolicy":
-      "Edit account policy",
+    "accountPool.upstreamAccounts.actions.editRoutingPolicy": "Edit account policy",
     "accountPool.upstreamAccounts.actions.enable": "Enabled",
     "accountPool.upstreamAccounts.actions.openDetails": "Open details",
-    "accountPool.upstreamAccounts.actions.dismissDuplicateWarning":
-      "Dismiss warning",
-    "accountPool.upstreamAccounts.partialSuccess.title":
-      "Saved with follow-up warning",
+    "accountPool.upstreamAccounts.actions.dismissDuplicateWarning": "Dismiss warning",
+    "accountPool.upstreamAccounts.partialSuccess.title": "Saved with follow-up warning",
     "accountPool.upstreamAccounts.partialSuccess.createdButGroupSettingsFailed":
       "The account was created, but saving the draft group settings failed: {error}",
     "accountPool.upstreamAccounts.partialSuccess.savedButGroupSettingsFailed":
@@ -315,10 +288,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupFilterLabel": "Account groups",
     "accountPool.upstreamAccounts.groupFilter.all": "All groups",
     "accountPool.upstreamAccounts.groupFilter.ungrouped": "Ungrouped",
-    "accountPool.upstreamAccounts.groupFilterPlaceholder":
-      "All groups or search group names",
-    "accountPool.upstreamAccounts.groupFilterSearchPlaceholder":
-      "Search groups...",
+    "accountPool.upstreamAccounts.groupFilterPlaceholder": "All groups or search group names",
+    "accountPool.upstreamAccounts.groupFilterSearchPlaceholder": "Search groups...",
     "accountPool.upstreamAccounts.groupFilterEmpty": "No matching groups.",
     "accountPool.upstreamAccounts.groupFilterClear": "Clear group filters",
     "accountPool.upstreamAccounts.groupFilterUseValue": 'Filter by "{{value}}"',
@@ -327,37 +298,27 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.statusFilter.all": "All statuses",
     "accountPool.upstreamAccounts.workStatusFilterLabel": "Work status",
     "accountPool.upstreamAccounts.workStatusFilter.all": "All work statuses",
-    "accountPool.upstreamAccounts.workStatusFilter.searchPlaceholder":
-      "Search work statuses...",
-    "accountPool.upstreamAccounts.workStatusFilter.empty":
-      "No matching work statuses.",
-    "accountPool.upstreamAccounts.workStatusFilter.clear":
-      "Clear work status filters",
+    "accountPool.upstreamAccounts.workStatusFilter.searchPlaceholder": "Search work statuses...",
+    "accountPool.upstreamAccounts.workStatusFilter.empty": "No matching work statuses.",
+    "accountPool.upstreamAccounts.workStatusFilter.clear": "Clear work status filters",
     "accountPool.upstreamAccounts.enableStatusFilterLabel": "Enable status",
-    "accountPool.upstreamAccounts.enableStatusFilter.all":
-      "All enable statuses",
+    "accountPool.upstreamAccounts.enableStatusFilter.all": "All enable statuses",
     "accountPool.upstreamAccounts.enableStatusFilter.searchPlaceholder":
       "Search enable statuses...",
-    "accountPool.upstreamAccounts.enableStatusFilter.empty":
-      "No matching enable statuses.",
-    "accountPool.upstreamAccounts.enableStatusFilter.clear":
-      "Clear enable status filters",
+    "accountPool.upstreamAccounts.enableStatusFilter.empty": "No matching enable statuses.",
+    "accountPool.upstreamAccounts.enableStatusFilter.clear": "Clear enable status filters",
     "accountPool.upstreamAccounts.healthStatusFilterLabel": "Account health",
-    "accountPool.upstreamAccounts.healthStatusFilter.all":
-      "All account health statuses",
+    "accountPool.upstreamAccounts.healthStatusFilter.all": "All account health statuses",
     "accountPool.upstreamAccounts.healthStatusFilter.searchPlaceholder":
       "Search account health statuses...",
-    "accountPool.upstreamAccounts.healthStatusFilter.empty":
-      "No matching account health statuses.",
-    "accountPool.upstreamAccounts.healthStatusFilter.clear":
-      "Clear account health filters",
+    "accountPool.upstreamAccounts.healthStatusFilter.empty": "No matching account health statuses.",
+    "accountPool.upstreamAccounts.healthStatusFilter.clear": "Clear account health filters",
     "accountPool.upstreamAccounts.tagFilterLabel": "Account tags",
     "accountPool.upstreamAccounts.tagFilterPlaceholder": "All tags",
     "accountPool.upstreamAccounts.tagFilterSearchPlaceholder": "Search tags...",
     "accountPool.upstreamAccounts.tagFilterEmpty": "No matching tags.",
     "accountPool.upstreamAccounts.tagFilterClear": "Clear tag filters",
-    "accountPool.upstreamAccounts.tagFilterAriaLabel":
-      "Filter accounts by tags",
+    "accountPool.upstreamAccounts.tagFilterAriaLabel": "Filter accounts by tags",
     "accountPool.upstreamAccounts.oauth.createTitle": "Codex OAuth login",
     "accountPool.upstreamAccounts.oauth.createDescription":
       "Generate a manual OAuth URL, copy it to another browser, and paste the localhost callback URL back here after sign-in.",
@@ -370,24 +331,19 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.oauth.popupClosed":
       "The popup was closed before the login session completed.",
     "accountPool.upstreamAccounts.oauth.openAgain": "Open login page again",
-    "accountPool.upstreamAccounts.oauth.status.pending":
-      "Waiting for OAuth callback",
-    "accountPool.upstreamAccounts.oauth.status.completed":
-      "OAuth callback completed",
+    "accountPool.upstreamAccounts.oauth.status.pending": "Waiting for OAuth callback",
+    "accountPool.upstreamAccounts.oauth.status.completed": "OAuth callback completed",
     "accountPool.upstreamAccounts.oauth.status.failed": "OAuth login failed",
     "accountPool.upstreamAccounts.oauth.status.expired": "OAuth login expired",
-    "accountPool.upstreamAccounts.oauth.emailChoiceTitle":
-      "Choose which email to keep",
+    "accountPool.upstreamAccounts.oauth.emailChoiceTitle": "Choose which email to keep",
     "accountPool.upstreamAccounts.oauth.emailChoiceBody":
       "OAuth verified {{verifiedEmail}}, but this draft currently uses {{chosenEmail}}. Pick the email you want to keep on the account.",
-    "accountPool.upstreamAccounts.oauth.keepVerifiedEmail":
-      "Keep verified email",
+    "accountPool.upstreamAccounts.oauth.keepVerifiedEmail": "Keep verified email",
     "accountPool.upstreamAccounts.oauth.keepEnteredEmail": "Keep entered email",
     "accountPool.upstreamAccounts.createPage.title": "Add upstream account",
     "accountPool.upstreamAccounts.createPage.description":
       "Use one dedicated screen to create single OAuth, batch OAuth, or API key accounts without squeezing the roster view.",
-    "accountPool.upstreamAccounts.createPage.relinkTitle":
-      "Re-authorize upstream account",
+    "accountPool.upstreamAccounts.createPage.relinkTitle": "Re-authorize upstream account",
     "accountPool.upstreamAccounts.createPage.relinkDescription":
       "Generate a fresh OAuth link for {{name}}, then paste the localhost callback URL here to keep the stored credentials valid.",
     "accountPool.upstreamAccounts.createPage.relinkLoading":
@@ -403,24 +359,19 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.createPage.tabs.oauth": "OAuth login",
     "accountPool.upstreamAccounts.createPage.tabs.batchOauth": "Batch OAuth",
     "accountPool.upstreamAccounts.createPage.tabs.import": "Import JSON",
-    "accountPool.upstreamAccounts.createPage.tabs.importSession":
-      "Import Session",
+    "accountPool.upstreamAccounts.createPage.tabs.importSession": "Import Session",
     "accountPool.upstreamAccounts.createPage.tabs.apiKey": "API key",
     "accountPool.upstreamAccounts.import.createTitle": "Import OAuth JSON",
     "accountPool.upstreamAccounts.import.createDescription":
       "Select exported credential files or paste one credential JSON at a time, run local checks and dedupe first, then use Validate and review for the actual server-side preview.",
-    "accountPool.upstreamAccounts.import.fileInputLabel":
-      "Credential JSON files",
-    "accountPool.upstreamAccounts.import.paste.label":
-      "Paste one credential JSON",
+    "accountPool.upstreamAccounts.import.fileInputLabel": "Credential JSON files",
+    "accountPool.upstreamAccounts.import.paste.label": "Paste one credential JSON",
     "accountPool.upstreamAccounts.import.paste.placeholder":
       '{\n  "type": "auth0",\n  "email": "owner@example.com",\n  ...\n}',
     "accountPool.upstreamAccounts.import.paste.hint":
       "Paste exactly one credential JSON object. A successful paste is checked locally and added to the queue automatically; actual API validation waits for Validate and review.",
-    "accountPool.upstreamAccounts.import.paste.validating":
-      "Checking pasted credential locally…",
-    "accountPool.upstreamAccounts.import.paste.action":
-      "Check and add to queue",
+    "accountPool.upstreamAccounts.import.paste.validating": "Checking pasted credential locally…",
+    "accountPool.upstreamAccounts.import.paste.action": "Check and add to queue",
     "accountPool.upstreamAccounts.import.paste.clearDraft": "Clear editor",
     "accountPool.upstreamAccounts.import.paste.emptyError":
       "Paste one credential JSON object before validating.",
@@ -430,126 +381,91 @@ const baseTranslations = {
       "Paste exactly one credential JSON object.",
     "accountPool.upstreamAccounts.import.paste.unexpectedResponse":
       "The pasted credential returned an unexpected validation response.",
-    "accountPool.upstreamAccounts.import.local.requiredField":
-      "{{fieldName}} is required.",
-    "accountPool.upstreamAccounts.import.local.invalidJwt":
-      "{{tokenName}} must be a valid JWT.",
+    "accountPool.upstreamAccounts.import.local.requiredField": "{{fieldName}} is required.",
+    "accountPool.upstreamAccounts.import.local.invalidJwt": "{{tokenName}} must be a valid JWT.",
     "accountPool.upstreamAccounts.import.local.invalidExpired":
       "expired must be a valid RFC3339 timestamp.",
     "accountPool.upstreamAccounts.import.local.missingExpiry":
       "expired is required when token exp is unavailable.",
-    "accountPool.upstreamAccounts.import.local.emailMismatch":
-      "email does not match id_token.",
+    "accountPool.upstreamAccounts.import.local.emailMismatch": "email does not match id_token.",
     "accountPool.upstreamAccounts.import.local.accountIdMismatch":
       "account_id does not match id_token.",
     "accountPool.upstreamAccounts.import.local.pasteDuplicate":
       "This credential is already queued.",
-    "accountPool.upstreamAccounts.import.local.fileRejected":
-      'Skipped "{{fileName}}": {{reason}}',
+    "accountPool.upstreamAccounts.import.local.fileRejected": 'Skipped "{{fileName}}": {{reason}}',
     "accountPool.upstreamAccounts.import.local.duplicateSkipped":
       'Skipped duplicate credential "{{fileName}}" because the same account is already queued.',
-    "accountPool.upstreamAccounts.import.selectedFilesTitle":
-      "Queued credentials",
-    "accountPool.upstreamAccounts.import.selectedFilesEmpty":
-      "No credential has been added yet.",
-    "accountPool.upstreamAccounts.import.filesSelected":
-      "{{count}} credentials queued",
+    "accountPool.upstreamAccounts.import.selectedFilesTitle": "Queued credentials",
+    "accountPool.upstreamAccounts.import.selectedFilesEmpty": "No credential has been added yet.",
+    "accountPool.upstreamAccounts.import.filesSelected": "{{count}} credentials queued",
     "accountPool.upstreamAccounts.import.clearSelection": "Clear selection",
     "accountPool.upstreamAccounts.import.defaultGroupPlaceholder":
       "Apply a default group to newly created imports",
     "accountPool.upstreamAccounts.import.defaultMetadataHint":
       "Default group notes and tags apply only when the import creates a brand-new account.",
     "accountPool.upstreamAccounts.import.validateAction": "Validate and review",
-    "accountPool.upstreamAccounts.importSession.createTitle":
-      "Import ChatGPT Web Session",
+    "accountPool.upstreamAccounts.importSession.createTitle": "Import ChatGPT Web Session",
     "accountPool.upstreamAccounts.importSession.createDescription":
       "Select exported ChatGPT Web session files or paste session JSON. The browser session is converted locally into the supported Codex OAuth import format before server-side preview.",
-    "accountPool.upstreamAccounts.importSession.fileInputLabel":
-      "Web session JSON files",
-    "accountPool.upstreamAccounts.importSession.paste.label":
-      "Paste Web Session JSON",
+    "accountPool.upstreamAccounts.importSession.fileInputLabel": "Web session JSON files",
+    "accountPool.upstreamAccounts.importSession.paste.label": "Paste Web Session JSON",
     "accountPool.upstreamAccounts.importSession.paste.placeholder":
       '{\n  "user": { "email": "owner@example.com" },\n  "account": { "id": "acct_...", "planType": "plus" },\n  "accessToken": "...",\n  "sessionToken": "...",\n  "expires": "2026-08-06T14:29:36.155Z"\n}',
     "accountPool.upstreamAccounts.importSession.paste.hint":
       "Paste a ChatGPT Web session object, array, or exported JSON containing sessions. Converted credentials without refresh tokens are marked No RT after import.",
     "accountPool.upstreamAccounts.importSession.paste.validating":
       "Converting pasted session locally…",
-    "accountPool.upstreamAccounts.importSession.paste.action":
-      "Convert and add to queue",
+    "accountPool.upstreamAccounts.importSession.paste.action": "Convert and add to queue",
     "accountPool.upstreamAccounts.importSession.paste.emptyError":
       "Paste Web Session JSON before validating.",
     "accountPool.upstreamAccounts.importSession.local.noSession":
       "No ChatGPT Web session with accessToken and account identity was found.",
     "accountPool.upstreamAccounts.importSession.local.missingAccessToken":
       "accessToken is required.",
-    "accountPool.upstreamAccounts.importSession.selectedFilesTitle":
-      "Queued sessions",
+    "accountPool.upstreamAccounts.importSession.selectedFilesTitle": "Queued sessions",
     "accountPool.upstreamAccounts.importSession.selectedFilesEmpty":
       "No session has been added yet.",
-    "accountPool.upstreamAccounts.importSession.validateAction":
-      "Validate and review",
+    "accountPool.upstreamAccounts.importSession.validateAction": "Validate and review",
     "accountPool.upstreamAccounts.import.validation.title": "Import validation",
     "accountPool.upstreamAccounts.import.validation.description":
       "Checked {{checked}} of {{total}} unique credentials from {{files}} queued items.",
-    "accountPool.upstreamAccounts.import.validation.checking":
-      "Validating queued credentials…",
-    "accountPool.upstreamAccounts.import.validation.empty":
-      "No validation rows to show yet.",
-    "accountPool.upstreamAccounts.import.validation.clearFilter":
-      "Clear filter",
-    "accountPool.upstreamAccounts.import.validation.resultsTitle":
-      "Validation result list",
+    "accountPool.upstreamAccounts.import.validation.checking": "Validating queued credentials…",
+    "accountPool.upstreamAccounts.import.validation.empty": "No validation rows to show yet.",
+    "accountPool.upstreamAccounts.import.validation.clearFilter": "Clear filter",
+    "accountPool.upstreamAccounts.import.validation.resultsTitle": "Validation result list",
     "accountPool.upstreamAccounts.import.validation.resultsCount":
       "Showing {{shown}} of {{total}} rows.",
-    "accountPool.upstreamAccounts.import.validation.metrics.files":
-      "Selected files",
-    "accountPool.upstreamAccounts.import.validation.metrics.unique":
-      "Unique credentials",
-    "accountPool.upstreamAccounts.import.validation.metrics.usable":
-      "Usable now",
-    "accountPool.upstreamAccounts.import.validation.metrics.review":
-      "Needs review",
-    "accountPool.upstreamAccounts.import.validation.columns.file":
-      "File / identity",
+    "accountPool.upstreamAccounts.import.validation.metrics.files": "Selected files",
+    "accountPool.upstreamAccounts.import.validation.metrics.unique": "Unique credentials",
+    "accountPool.upstreamAccounts.import.validation.metrics.usable": "Usable now",
+    "accountPool.upstreamAccounts.import.validation.metrics.review": "Needs review",
+    "accountPool.upstreamAccounts.import.validation.columns.file": "File / identity",
     "accountPool.upstreamAccounts.import.validation.columns.result": "Result",
     "accountPool.upstreamAccounts.import.validation.columns.detail": "Detail",
     "accountPool.upstreamAccounts.import.validation.columns.actions": "Actions",
-    "accountPool.upstreamAccounts.import.validation.matchedAccount":
-      "Matches {{name}}",
-    "accountPool.upstreamAccounts.import.validation.attempts":
-      "Attempt {{count}}",
-    "accountPool.upstreamAccounts.import.validation.noDetail":
-      "No extra detail.",
-    "accountPool.upstreamAccounts.import.validation.importedAccount":
-      "Local account #{{id}}",
+    "accountPool.upstreamAccounts.import.validation.matchedAccount": "Matches {{name}}",
+    "accountPool.upstreamAccounts.import.validation.attempts": "Attempt {{count}}",
+    "accountPool.upstreamAccounts.import.validation.noDetail": "No extra detail.",
+    "accountPool.upstreamAccounts.import.validation.importedAccount": "Local account #{{id}}",
     "accountPool.upstreamAccounts.import.validation.retryOne": "Retry",
-    "accountPool.upstreamAccounts.import.validation.retryFailed":
-      "Retry failed",
-    "accountPool.upstreamAccounts.import.validation.importValid":
-      "Import usable files ({{count}})",
+    "accountPool.upstreamAccounts.import.validation.retryFailed": "Retry failed",
+    "accountPool.upstreamAccounts.import.validation.importValid": "Import usable files ({{count}})",
     "accountPool.upstreamAccounts.import.validation.footerHint":
       "{{valid}} files are ready to import. Duplicate-in-input rows: {{duplicates}}.",
     "accountPool.upstreamAccounts.import.validation.status.pending": "Checking",
-    "accountPool.upstreamAccounts.import.validation.status.duplicate":
-      "Duplicate",
+    "accountPool.upstreamAccounts.import.validation.status.duplicate": "Duplicate",
     "accountPool.upstreamAccounts.import.validation.status.ok": "Ready",
-    "accountPool.upstreamAccounts.import.validation.status.exhausted":
-      "Importable (exhausted)",
+    "accountPool.upstreamAccounts.import.validation.status.exhausted": "Importable (exhausted)",
     "accountPool.upstreamAccounts.import.validation.status.invalid": "Invalid",
     "accountPool.upstreamAccounts.import.validation.status.error": "Error",
-    "accountPool.upstreamAccounts.import.validation.reportTitle":
-      "Import report",
+    "accountPool.upstreamAccounts.import.validation.reportTitle": "Import report",
     "accountPool.upstreamAccounts.import.validation.reportReady": "Completed",
     "accountPool.upstreamAccounts.import.validation.report.created": "Created",
-    "accountPool.upstreamAccounts.import.validation.report.updated":
-      "Updated existing",
+    "accountPool.upstreamAccounts.import.validation.report.updated": "Updated existing",
     "accountPool.upstreamAccounts.import.validation.report.failed": "Failed",
-    "accountPool.upstreamAccounts.import.validation.report.selected":
-      "Selected",
-    "accountPool.upstreamAccounts.import.validation.reportResultsTitle":
-      "Imported rows",
-    "accountPool.upstreamAccounts.batchOauth.createTitle":
-      "Batch Codex OAuth onboarding",
+    "accountPool.upstreamAccounts.import.validation.report.selected": "Selected",
+    "accountPool.upstreamAccounts.import.validation.reportResultsTitle": "Imported rows",
+    "accountPool.upstreamAccounts.batchOauth.createTitle": "Batch Codex OAuth onboarding",
     "accountPool.upstreamAccounts.batchOauth.createDescription":
       "Fill the table, generate one OAuth URL per row, and complete callbacks independently without leaving this screen.",
     "accountPool.upstreamAccounts.batchOauth.tableTitle": "Batch OAuth table",
@@ -560,62 +476,45 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.batchOauth.statusHeader": "Status",
     "accountPool.upstreamAccounts.batchOauth.actionsHeader": "Row actions",
     "accountPool.upstreamAccounts.batchOauth.actions.addRow": "Add row",
-    "accountPool.upstreamAccounts.batchOauth.defaultGroupLabel":
-      "Default group",
+    "accountPool.upstreamAccounts.batchOauth.defaultGroupLabel": "Default group",
     "accountPool.upstreamAccounts.batchOauth.defaultGroupPlaceholder":
       "Apply a default group to new rows",
     "accountPool.upstreamAccounts.batchOauth.actions.removeRow": "Remove row",
     "accountPool.upstreamAccounts.batchOauth.actions.expandNote": "Expand note",
-    "accountPool.upstreamAccounts.batchOauth.actions.collapseNote":
-      "Collapse note",
-    "accountPool.upstreamAccounts.batchOauth.actions.toggleMother":
-      "Toggle mother account",
-    "accountPool.upstreamAccounts.batchOauth.actions.editMailbox":
-      "Edit mailbox",
-    "accountPool.upstreamAccounts.batchOauth.actions.submitMailbox":
-      "Submit mailbox",
-    "accountPool.upstreamAccounts.batchOauth.actions.cancelMailboxEdit":
-      "Cancel mailbox edit",
+    "accountPool.upstreamAccounts.batchOauth.actions.collapseNote": "Collapse note",
+    "accountPool.upstreamAccounts.batchOauth.actions.toggleMother": "Toggle mother account",
+    "accountPool.upstreamAccounts.batchOauth.actions.editMailbox": "Edit mailbox",
+    "accountPool.upstreamAccounts.batchOauth.actions.submitMailbox": "Submit mailbox",
+    "accountPool.upstreamAccounts.batchOauth.actions.cancelMailboxEdit": "Cancel mailbox edit",
     "accountPool.upstreamAccounts.batchOauth.validation.mailboxFormat":
       "Enter a valid email address before attaching it.",
-    "accountPool.upstreamAccounts.batchOauth.tooltip.generateTitle":
-      "Generate OAuth URL",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.generateTitle": "Generate OAuth URL",
     "accountPool.upstreamAccounts.batchOauth.tooltip.generateBody":
       "Generate a fresh login link for this row after the account metadata is ready.",
-    "accountPool.upstreamAccounts.batchOauth.tooltip.regenerateTitle":
-      "Refresh OAuth URL",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.regenerateTitle": "Refresh OAuth URL",
     "accountPool.upstreamAccounts.batchOauth.tooltip.regenerateBody":
       "Use this when the old URL expired or the metadata changed. The previous login link should be considered invalid.",
-    "accountPool.upstreamAccounts.batchOauth.tooltip.copyTitle":
-      "Copy OAuth URL",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.copyTitle": "Copy OAuth URL",
     "accountPool.upstreamAccounts.batchOauth.tooltip.copyBody":
       "Copy the generated login URL, open it in the browser that will complete the login, and return here with the callback URL.",
     "accountPool.upstreamAccounts.batchOauth.oauthAction.remaining":
       "Current link expires in {{time}}.",
-    "accountPool.upstreamAccounts.batchOauth.oauthAction.expiresAt":
-      "Expires at {{timestamp}}.",
-    "accountPool.upstreamAccounts.batchOauth.tooltip.copyCodeTitle":
-      "Copy verification code",
-    "accountPool.upstreamAccounts.batchOauth.tooltip.editMailboxTitle":
-      "Edit mailbox",
+    "accountPool.upstreamAccounts.batchOauth.oauthAction.expiresAt": "Expires at {{timestamp}}.",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.copyCodeTitle": "Copy verification code",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.editMailboxTitle": "Edit mailbox",
     "accountPool.upstreamAccounts.batchOauth.tooltip.editMailboxBody":
       "Edit this row mailbox inside the popover, then submit the address to attach mailbox enhancements without leaving the table.",
-    "accountPool.upstreamAccounts.batchOauth.codeMissing":
-      "No verification code yet.",
-    "accountPool.upstreamAccounts.batchOauth.tooltip.invitedTitle":
-      "Invite received",
+    "accountPool.upstreamAccounts.batchOauth.codeMissing": "No verification code yet.",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.invitedTitle": "Invite received",
     "accountPool.upstreamAccounts.batchOauth.tooltip.invitedBody":
       "This mailbox already received a workspace invite email.",
-    "accountPool.upstreamAccounts.batchOauth.tooltip.notInvitedTitle":
-      "No invite yet",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.notInvitedTitle": "No invite yet",
     "accountPool.upstreamAccounts.batchOauth.tooltip.notInvitedBody":
       "This mailbox has not received a workspace invite email yet.",
-    "accountPool.upstreamAccounts.batchOauth.tooltip.noteTitle":
-      "Optional note",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.noteTitle": "Optional note",
     "accountPool.upstreamAccounts.batchOauth.tooltip.noteBody":
       "Store row-specific reminders here. This does not affect the OAuth flow and stays hidden unless you expand it.",
-    "accountPool.upstreamAccounts.groupNotes.actions.edit":
-      "Edit group settings",
+    "accountPool.upstreamAccounts.groupNotes.actions.edit": "Edit group settings",
     "accountPool.upstreamAccounts.groupNotes.tooltip.body":
       "Edit the shared note, bound forward proxy nodes, and node shunt strategy for this group.",
     "accountPool.upstreamAccounts.groupNotes.dialogTitle": "Group settings",
@@ -623,15 +522,12 @@ const baseTranslations = {
       "This group already exists. Saving here updates the shared note and proxy bindings immediately.",
     "accountPool.upstreamAccounts.groupNotes.draftDescription":
       "This group is not populated yet. Saving here creates its shared settings in advance.",
-    "accountPool.upstreamAccounts.groupNotes.notePlaceholder":
-      "Write a shared note for this group",
-    "accountPool.upstreamAccounts.groupNotes.concurrency.label":
-      "Concurrency limit",
+    "accountPool.upstreamAccounts.groupNotes.notePlaceholder": "Write a shared note for this group",
+    "accountPool.upstreamAccounts.groupNotes.concurrency.label": "Concurrency limit",
     "accountPool.upstreamAccounts.groupNotes.concurrency.hint":
       "Use 1-30 to cap fresh assignments for this group. The last slider step means unlimited.",
     "accountPool.upstreamAccounts.groupNotes.concurrency.current": "Current",
-    "accountPool.upstreamAccounts.groupNotes.concurrency.unlimited":
-      "Unlimited",
+    "accountPool.upstreamAccounts.groupNotes.concurrency.unlimited": "Unlimited",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "Saved group",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "Draft group",
     "accountPool.upstreamAccounts.groupNotes.tabs.info": "Group info",
@@ -640,12 +536,10 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.accountCount": "Accounts",
     "accountPool.upstreamAccounts.groupNotes.deleteBlockedWithCount":
       "Move the remaining {{count}} account(s) out before deleting this group.",
-    "accountPool.upstreamAccounts.groupNotes.nodeShunt.label":
-      "Node shunt strategy",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.label": "Node shunt strategy",
     "accountPool.upstreamAccounts.groupNotes.nodeShunt.hint":
       "Each selected node becomes an exclusive slot. If this group selects N nodes, the group can provide N upstream accounts at the same time.",
-    "accountPool.upstreamAccounts.groupNotes.nodeShunt.toggle":
-      "Enable exclusive node slots",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.toggle": "Enable exclusive node slots",
     "accountPool.upstreamAccounts.groupNotes.nodeShunt.warning":
       "Enable this strategy only after binding at least one node (including Direct).",
     "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.label":
@@ -654,50 +548,37 @@ const baseTranslations = {
       "Successful conversations stay on the same account. After upstream 429 retry is exhausted, only that conversation moves to the next reset-time candidate.",
     "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.toggle":
       "Keep conversations on one account until final 429",
-    "accountPool.upstreamAccounts.groupNotes.upstream429.label":
-      "Upstream 429 retry",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.label": "Upstream 429 retry",
     "accountPool.upstreamAccounts.groupNotes.upstream429.hint":
       "Choose 0 to disable retries. Otherwise, this group keeps the same account and retries after upstream 429 with a random 1-10 second delay before falling back to account cooldown and failover.",
     "accountPool.upstreamAccounts.groupNotes.upstream429.toggle":
       "Retry the same account after upstream 429",
-    "accountPool.upstreamAccounts.groupNotes.upstream429.countLabel":
-      "Retry count",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.countLabel": "Retry count",
     "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce": "1 retry",
-    "accountPool.upstreamAccounts.groupNotes.upstream429.countMany":
-      "{{count}} retries",
-    "accountPool.upstreamAccounts.groupNotes.routingPolicy.label":
-      "Routing policy",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.countMany": "{{count}} retries",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.label": "Routing policy",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.hint":
       "Customize priority, FAST mode, block-new-conversations, cut-in/cut-out, concurrency, and upstream 429 retry for this group.",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.edit": "Edit policy",
-    "accountPool.upstreamAccounts.groupNotes.routingPolicy.title":
-      "Group routing policy",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.title": "Group routing policy",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.description":
       "These settings override root defaults for accounts in this group. Tags and account policy can still override them later.",
-    "accountPool.upstreamAccounts.groupNotes.routingPolicy.save":
-      "Apply group policy",
-    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteMode":
-      "Image tools",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.save": "Apply group policy",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteMode": "Image tools",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint":
       "Keep original follows the account's own image capability. Fill when missing only injects image tools when image intent is confirmed; force add always injects; force remove always strips it.",
-    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolKeepOriginal":
-      "Keep original",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolKeepOriginal": "Keep original",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolFillMissing":
       "Fill when missing",
-    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceAdd":
-      "Force add",
-    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceRemove":
-      "Force remove",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceAdd": "Force add",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceRemove": "Force remove",
     "accountPool.upstreamAccounts.statusChangeReasons.sectionTitle":
       "Status change trigger reasons",
     "accountPool.upstreamAccounts.statusChangeReasons.sectionHint":
       "When disabled, this reason still keeps call evidence and a neutral account event, but no longer pushes the account into reauth, rejection, cooldown, or degraded states.",
-    "accountPool.upstreamAccounts.statusChangeReasons.summary":
-      "{{enabled}} / {{total}} enabled",
-    "accountPool.upstreamAccounts.statusChangeReasons.enabledValue":
-      "Triggers status change",
-    "accountPool.upstreamAccounts.statusChangeReasons.disabledValue":
-      "Evidence only",
+    "accountPool.upstreamAccounts.statusChangeReasons.summary": "{{enabled}} / {{total}} enabled",
+    "accountPool.upstreamAccounts.statusChangeReasons.enabledValue": "Triggers status change",
+    "accountPool.upstreamAccounts.statusChangeReasons.disabledValue": "Evidence only",
     "accountPool.upstreamAccounts.statusChangeReasons.toggleEnabled": "On",
     "accountPool.upstreamAccounts.statusChangeReasons.toggleDisabled": "Off",
     "accountPool.upstreamAccounts.statusChangeReasons.resetAction": "Reset",
@@ -721,33 +602,25 @@ const baseTranslations = {
       "Transport failure",
     "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_server_overloaded":
       "Upstream overloaded",
-    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_5xx":
-      "Upstream 5xx",
-    "accountPool.upstreamAccounts.policyDialog.accountTitle":
-      "Account routing policy",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_5xx": "Upstream 5xx",
+    "accountPool.upstreamAccounts.policyDialog.accountTitle": "Account routing policy",
     "accountPool.upstreamAccounts.policyDialog.accountDescription":
       "These settings are the account layer and override group and tag policy for this account.",
     "accountPool.upstreamAccounts.policyDialog.save": "Save account policy",
-    "accountPool.upstreamAccounts.groupNotes.proxyBindings.label":
-      "Bound proxy nodes",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.label": "Bound proxy nodes",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.hint":
       "Leave empty to keep automatic routing. With node shunt disabled, selected nodes stay as a shared hard-bound pool; with node shunt enabled, each selected node becomes one exclusive account slot.",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic":
       "No nodes bound. This group uses automatic routing.",
-    "accountPool.upstreamAccounts.groupNotes.proxyBindings.loading":
-      "Loading proxy nodes…",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.loading": "Loading proxy nodes…",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.empty":
       "No proxy nodes available right now.",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.missing": "Missing",
-    "accountPool.upstreamAccounts.groupNotes.proxyBindings.unavailable":
-      "Unavailable",
-    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartLabel":
-      "24h request trend",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.unavailable": "Unavailable",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartLabel": "24h request trend",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartSuccess": "ok",
-    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartFailure":
-      "fail",
-    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty":
-      "No 24h data",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartFailure": "fail",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty": "No 24h data",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartTotal": "total",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartAriaLabel":
       "Last 24h request volume chart",
@@ -755,8 +628,7 @@ const baseTranslations = {
       "Hover or tap for details. Focus the chart and use arrow keys to switch points.",
     "accountPool.upstreamAccounts.table.routingBlockShort": "Blocked",
     "accountPool.upstreamAccounts.routingBlock.title": "Routing blocked",
-    "accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle":
-      "Submit callback",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle": "Submit callback",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeBody":
       "After login succeeds in the browser, paste the callback URL into the field above, then submit this row to finish account creation.",
     "accountPool.upstreamAccounts.batchOauth.tooltip.confirmIdentityTitle":
@@ -771,20 +643,16 @@ const baseTranslations = {
       "Identity overwrite confirmation required",
     "accountPool.upstreamAccounts.batchOauth.identityConfirmation.body":
       "Account display fields stay unchanged until you confirm. Closing this row does not update the account.",
-    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.current":
-      "Current account",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.current": "Current account",
     "accountPool.upstreamAccounts.batchOauth.identityConfirmation.incoming":
       "Incoming OAuth identity",
-    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willUpdate":
-      "Will update:",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willUpdate": "Will update:",
     "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willUpdateDetail":
       "OAuth credentials, verified email, ChatGPT identity, plan, and token metadata.",
-    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willKeep":
-      "Will keep:",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willKeep": "Will keep:",
     "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willKeepDetail":
       "Display name, manually entered email, group, tags, note, and mother account flag.",
-    "accountPool.upstreamAccounts.batchOauth.tooltip.motherTitle":
-      "Toggle mother account",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.motherTitle": "Toggle mother account",
     "accountPool.upstreamAccounts.batchOauth.tooltip.motherBody":
       "Mark this row as the mother account for its group. Other drafts in the same group will immediately give up the crown.",
     "accountPool.upstreamAccounts.batchOauth.tooltip.removeTitle": "Remove row",
@@ -798,11 +666,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.batchOauth.summary.quickHint":
       "Fill metadata first, then generate and complete OAuth for this row.",
     "accountPool.upstreamAccounts.batchOauth.status.draft": "Draft",
-    "accountPool.upstreamAccounts.batchOauth.status.pending":
-      "Waiting for callback",
+    "accountPool.upstreamAccounts.batchOauth.status.pending": "Waiting for callback",
     "accountPool.upstreamAccounts.batchOauth.status.completed": "Completed",
-    "accountPool.upstreamAccounts.batchOauth.status.completedNeedsRefresh":
-      "Needs refresh",
+    "accountPool.upstreamAccounts.batchOauth.status.completedNeedsRefresh": "Needs refresh",
     "accountPool.upstreamAccounts.batchOauth.status.needs_identity_confirmation":
       "Confirm identity",
     "accountPool.upstreamAccounts.batchOauth.status.failed": "Failed",
@@ -827,8 +693,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.apiKey.createTitle": "Codex API key account",
     "accountPool.upstreamAccounts.apiKey.createDescription":
       "Store a masked API key plus local placeholder limits for the 5-hour and 7-day windows.",
-    "accountPool.upstreamAccounts.apiKey.localPlaceholder":
-      "Local placeholder usage",
+    "accountPool.upstreamAccounts.apiKey.localPlaceholder": "Local placeholder usage",
     "accountPool.upstreamAccounts.editTitle": "Editable profile",
     "accountPool.upstreamAccounts.editDescription":
       "Update display metadata, the per-account upstream base URL, local placeholder limits, or rotate the API key without deleting the account.",
@@ -837,44 +702,33 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.healthTitle": "Login health",
     "accountPool.upstreamAccounts.healthDescription":
       "Keep the last successful sync, refresh, expiry, and error context visible so re-auth is never silent.",
-    "accountPool.upstreamAccounts.stickyConversations.title":
-      "Sticky key conversations",
+    "accountPool.upstreamAccounts.stickyConversations.title": "Sticky key conversations",
     "accountPool.upstreamAccounts.stickyConversations.description":
       "Review the sticky keys currently attached to this upstream account, plus 24h request activity.",
-    "accountPool.upstreamAccounts.stickyConversations.limitLabel":
-      "Conversations",
-    "accountPool.upstreamAccounts.stickyConversations.limitOption":
-      "{{count}} conversations",
+    "accountPool.upstreamAccounts.stickyConversations.limitLabel": "Conversations",
+    "accountPool.upstreamAccounts.stickyConversations.limitOption": "{{count}} conversations",
     "accountPool.upstreamAccounts.stickyConversations.empty":
       "No sticky key conversations are attached to this account yet.",
-    "accountPool.upstreamAccounts.stickyConversations.chartAria":
-      "24h token cumulative chart",
-    "accountPool.upstreamAccounts.stickyConversations.table.stickyKey":
-      "Sticky Key",
+    "accountPool.upstreamAccounts.stickyConversations.chartAria": "24h token cumulative chart",
+    "accountPool.upstreamAccounts.stickyConversations.table.stickyKey": "Sticky Key",
     "accountPool.upstreamAccounts.stickyConversations.table.actions": "Actions",
     "accountPool.upstreamAccounts.records.title": "Call records",
-    "accountPool.upstreamAccounts.records.activityOverviewTitle":
-      "Account activity overview",
+    "accountPool.upstreamAccounts.records.activityOverviewTitle": "Account activity overview",
     "accountPool.upstreamAccounts.records.description":
       "Review the latest retained invocations routed to this upstream account.",
     "accountPool.upstreamAccounts.records.limitLabel": "Rows",
     "accountPool.upstreamAccounts.records.limitOption": "{{count}} records",
     "accountPool.upstreamAccounts.records.empty":
       "No retained call records for this upstream account yet.",
-    "accountPool.upstreamAccounts.records.loadingMore":
-      "Loading more records...",
-    "accountPool.upstreamAccounts.records.loaded":
-      "Loaded {{loaded}} / {{total}} retained records",
-    "accountPool.upstreamAccounts.records.allLoaded":
-      "All {{count}} retained records loaded",
-    "accountPool.upstreamAccounts.records.locating":
-      "Locating the selected invocation...",
+    "accountPool.upstreamAccounts.records.loadingMore": "Loading more records...",
+    "accountPool.upstreamAccounts.records.loaded": "Loaded {{loaded}} / {{total}} retained records",
+    "accountPool.upstreamAccounts.records.allLoaded": "All {{count}} retained records loaded",
+    "accountPool.upstreamAccounts.records.locating": "Locating the selected invocation...",
     "accountPool.upstreamAccounts.records.locateUnavailable":
       "The location request did not complete; live updates remain paused.",
     "accountPool.upstreamAccounts.records.located":
       "Showing the frozen history window around {{invokeId}}.",
-    "accountPool.upstreamAccounts.records.returnLatest":
-      "Return to latest records",
+    "accountPool.upstreamAccounts.records.returnLatest": "Return to latest records",
     "accountPool.upstreamAccounts.records.locateNotFound":
       "Invocation {{invokeId}} was not found in retained records.",
     "accountPool.upstreamAccounts.records.locateFailed":
@@ -882,8 +736,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.records.retryLocate": "Retry",
     "accountPool.upstreamAccounts.records.anchoredLoaded":
       "Loaded {{loaded}} of {{total}} retained records around the selected invocation",
-    "accountPool.upstreamAccounts.effectiveRule.title":
-      "Effective routing rule",
+    "accountPool.upstreamAccounts.effectiveRule.title": "Effective routing rule",
     "accountPool.upstreamAccounts.effectiveRule.description":
       "This is the final policy currently used by routing, with account-level overrides applied last.",
     "accountPool.upstreamAccounts.effectiveRule.noTags":
@@ -894,66 +747,46 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.denyCutIn": "Cut in blocked",
     "accountPool.upstreamAccounts.effectiveRule.priorityPrimary": "Primary",
     "accountPool.upstreamAccounts.effectiveRule.priorityNormal": "Normal",
-    "accountPool.upstreamAccounts.effectiveRule.priorityFallback":
-      "Fallback only",
+    "accountPool.upstreamAccounts.effectiveRule.priorityFallback": "Fallback only",
     "accountPool.upstreamAccounts.effectiveRule.priorityNoNew": "No new",
-    "accountPool.upstreamAccounts.effectiveRule.fastModeKeepOriginal":
-      "Keep original",
-    "accountPool.upstreamAccounts.effectiveRule.fastModeFillMissing":
-      "Fill when missing",
+    "accountPool.upstreamAccounts.effectiveRule.fastModeKeepOriginal": "Keep original",
+    "accountPool.upstreamAccounts.effectiveRule.fastModeFillMissing": "Fill when missing",
     "accountPool.upstreamAccounts.effectiveRule.fastModeForceAdd": "Force add",
-    "accountPool.upstreamAccounts.effectiveRule.fastModeForceRemove":
-      "Force remove",
+    "accountPool.upstreamAccounts.effectiveRule.fastModeForceRemove": "Force remove",
     "accountPool.upstreamAccounts.effectiveRule.sourceTags": "Rule source tags",
-    "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle":
-      "Field source breakdown",
+    "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle": "Field source breakdown",
     "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutOut": "Cut out",
     "accountPool.upstreamAccounts.effectiveRule.fieldCutOut": "Cut out",
     "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutIn": "Cut in",
     "accountPool.upstreamAccounts.effectiveRule.fieldCutIn": "Cut in",
     "accountPool.upstreamAccounts.effectiveRule.fieldPriority": "Priority",
     "accountPool.upstreamAccounts.effectiveRule.fieldFastMode": "FAST mode",
-    "accountPool.upstreamAccounts.effectiveRule.fieldImageToolRewriteMode":
-      "Image tools",
-    "accountPool.upstreamAccounts.effectiveRule.fieldConcurrency":
-      "Concurrency",
-    "accountPool.upstreamAccounts.effectiveRule.fieldUpstream429":
-      "Upstream 429 retry",
-    "accountPool.upstreamAccounts.effectiveRule.fieldAvailableModels":
-      "Available models",
-    "accountPool.upstreamAccounts.effectiveRule.fieldSystemDeniedModels":
-      "System denied models",
-    "accountPool.upstreamAccounts.effectiveRule.fieldProxyBindings":
-      "Account proxy",
+    "accountPool.upstreamAccounts.effectiveRule.fieldImageToolRewriteMode": "Image tools",
+    "accountPool.upstreamAccounts.effectiveRule.fieldConcurrency": "Concurrency",
+    "accountPool.upstreamAccounts.effectiveRule.fieldUpstream429": "Upstream 429 retry",
+    "accountPool.upstreamAccounts.effectiveRule.fieldAvailableModels": "Available models",
+    "accountPool.upstreamAccounts.effectiveRule.fieldSystemDeniedModels": "System denied models",
+    "accountPool.upstreamAccounts.effectiveRule.fieldProxyBindings": "Account proxy",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited":
       "Inherited / unrestricted",
-    "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed":
-      "No models allowed",
-    "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty":
-      "None",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed": "No models allowed",
+    "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty": "None",
     "accountPool.upstreamAccounts.effectiveRule.sourceRoot": "Root default",
     "accountPool.upstreamAccounts.effectiveRule.sourceGroup": "Group",
     "accountPool.upstreamAccounts.effectiveRule.sourceTag": "Tag",
     "accountPool.upstreamAccounts.effectiveRule.sourceAccount": "Account",
-    "accountPool.upstreamAccounts.effectiveRule.sourceConversation":
-      "Conversation",
+    "accountPool.upstreamAccounts.effectiveRule.sourceConversation": "Conversation",
     "accountPool.upstreamAccounts.effectiveRule.sourceSystem": "System",
-    "accountPool.upstreamAccounts.effectiveRule.overrideEdit":
-      "Edit account override",
-    "accountPool.upstreamAccounts.effectiveRule.overrideActive":
-      "Account override",
-    "accountPool.upstreamAccounts.effectiveRule.overrideClear":
-      "Clear account override",
+    "accountPool.upstreamAccounts.effectiveRule.overrideEdit": "Edit account override",
+    "accountPool.upstreamAccounts.effectiveRule.overrideActive": "Account override",
+    "accountPool.upstreamAccounts.effectiveRule.overrideClear": "Clear account override",
     "accountPool.upstreamAccounts.effectiveRule.overrideSaving": "Saving...",
     "accountPool.upstreamAccounts.effectiveRule.inheritValue":
       "The default control value matches the inherited value.",
     "accountPool.upstreamAccounts.timeoutEditor.inherited": "Inherited",
-    "accountPool.upstreamAccounts.timeoutEditor.groupOverride":
-      "Group override",
-    "accountPool.upstreamAccounts.timeoutEditor.accountOverride":
-      "Account override",
-    "accountPool.upstreamAccounts.timeoutEditor.conversationOverride":
-      "Conversation override",
+    "accountPool.upstreamAccounts.timeoutEditor.groupOverride": "Group override",
+    "accountPool.upstreamAccounts.timeoutEditor.accountOverride": "Account override",
+    "accountPool.upstreamAccounts.timeoutEditor.conversationOverride": "Conversation override",
     "accountPool.upstreamAccounts.detailTitle": "Account details",
     "accountPool.upstreamAccounts.detailTabs.overview": "Overview",
     "accountPool.upstreamAccounts.detailTabs.records": "Upstream calls",
@@ -975,7 +808,8 @@ const baseTranslations = {
     "accountPool.upstreamAttempts.copyError": "Copy error",
     "accountPool.upstreamAttempts.copied": "Copied",
     "accountPool.upstreamAttempts.details": "Diagnostics",
-    "accountPool.upstreamAttempts.timingCompact": "Connect {{connect}} | First byte {{firstByte}} | Stream {{stream}}",
+    "accountPool.upstreamAttempts.timingCompact":
+      "Connect {{connect}} | First byte {{firstByte}} | Stream {{stream}}",
     "accountPool.upstreamAttempts.phase.connecting": "Connecting",
     "accountPool.upstreamAttempts.phase.sendingRequest": "Sending request",
     "accountPool.upstreamAttempts.phase.waitingFirstByte": "Waiting for first byte",
@@ -1001,15 +835,13 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.detailTabs.edit": "Edit",
     "accountPool.upstreamAccounts.detailTabs.routing": "Routing",
     "accountPool.upstreamAccounts.detailTabs.healthEvents": "Health & events",
-    "accountPool.upstreamAccounts.identityUnavailable":
-      "Identity is not available yet.",
+    "accountPool.upstreamAccounts.identityUnavailable": "Identity is not available yet.",
     "accountPool.upstreamAccounts.noHistory": "No quota history yet.",
     "accountPool.upstreamAccounts.noError": "No recent error.",
     "accountPool.upstreamAccounts.never": "Never",
     "accountPool.upstreamAccounts.unlimited": "Unlimited",
     "accountPool.upstreamAccounts.unavailable": "Unavailable",
-    "accountPool.upstreamAccounts.writesDisabledTitle":
-      "Write actions are disabled",
+    "accountPool.upstreamAccounts.writesDisabledTitle": "Write actions are disabled",
     "accountPool.upstreamAccounts.writesDisabledBody":
       "Set UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET before creating or updating upstream accounts, so refreshable credentials can stay encrypted on disk.",
     "accountPool.upstreamAccounts.deleteConfirm":
@@ -1018,8 +850,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.kind.oauth": "OAuth",
     "accountPool.upstreamAccounts.kind.apiKey": "API key",
     "accountPool.upstreamAccounts.workStatus.working": "Working",
-    "accountPool.upstreamAccounts.workStatus.workingWithCount":
-      "Working {{count}}",
+    "accountPool.upstreamAccounts.workStatus.workingWithCount": "Working {{count}}",
     "accountPool.upstreamAccounts.workStatus.degraded": "Degraded",
     "accountPool.upstreamAccounts.workStatus.idle": "Idle",
     "accountPool.upstreamAccounts.workStatus.rate_limited": "Rate limited",
@@ -1028,25 +859,20 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.enableStatus.disabled": "Disabled",
     "accountPool.upstreamAccounts.healthStatus.normal": "Normal",
     "accountPool.upstreamAccounts.healthStatus.needs_reauth": "Needs re-auth",
-    "accountPool.upstreamAccounts.healthStatus.upstream_unavailable":
-      "Upstream unavailable",
-    "accountPool.upstreamAccounts.healthStatus.upstream_rejected":
-      "Upstream rejected",
+    "accountPool.upstreamAccounts.healthStatus.upstream_unavailable": "Upstream unavailable",
+    "accountPool.upstreamAccounts.healthStatus.upstream_rejected": "Upstream rejected",
     "accountPool.upstreamAccounts.healthStatus.error_other": "Other error",
     "accountPool.upstreamAccounts.syncState.idle": "Sync idle",
     "accountPool.upstreamAccounts.syncState.syncing": "Syncing",
     "accountPool.upstreamAccounts.status.active": "Active",
     "accountPool.upstreamAccounts.status.syncing": "Syncing",
     "accountPool.upstreamAccounts.status.needs_reauth": "Needs re-auth",
-    "accountPool.upstreamAccounts.status.upstream_unavailable":
-      "Upstream unavailable",
-    "accountPool.upstreamAccounts.status.upstream_rejected":
-      "Upstream rejected",
+    "accountPool.upstreamAccounts.status.upstream_unavailable": "Upstream unavailable",
+    "accountPool.upstreamAccounts.status.upstream_rejected": "Upstream rejected",
     "accountPool.upstreamAccounts.status.error_other": "Other error",
     "accountPool.upstreamAccounts.status.error": "Error",
     "accountPool.upstreamAccounts.status.disabled": "Disabled",
-    "accountPool.upstreamAccounts.bulk.selectedCount":
-      "{{count}} accounts selected across pages",
+    "accountPool.upstreamAccounts.bulk.selectedCount": "{{count}} accounts selected across pages",
     "accountPool.upstreamAccounts.bulk.enable": "Enable",
     "accountPool.upstreamAccounts.bulk.disable": "Disable",
     "accountPool.upstreamAccounts.bulk.setGroup": "Set group",
@@ -1056,8 +882,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.bulk.delete": "Delete selected",
     "accountPool.upstreamAccounts.bulk.clearSelection": "Clear selection",
     "accountPool.upstreamAccounts.bulk.selectPage": "Select current page",
-    "accountPool.upstreamAccounts.bulk.selectFiltered":
-      "Select filtered accounts",
+    "accountPool.upstreamAccounts.bulk.selectFiltered": "Select filtered accounts",
     "accountPool.upstreamAccounts.bulk.selectRow": "Select {{name}}",
     "accountPool.upstreamAccounts.bulk.apply": "Apply",
     "accountPool.upstreamAccounts.bulk.actionLabel.enable": "Enable",
@@ -1077,23 +902,19 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.bulk.rowStatus.succeeded": "Succeeded",
     "accountPool.upstreamAccounts.bulk.rowStatus.failed": "Failed",
     "accountPool.upstreamAccounts.bulk.rowStatus.skipped": "Skipped",
-    "accountPool.upstreamAccounts.bulk.groupDialogTitle":
-      "Set group for selected accounts",
+    "accountPool.upstreamAccounts.bulk.groupDialogTitle": "Set group for selected accounts",
     "accountPool.upstreamAccounts.bulk.groupDialogDescription":
       "Enter a group name to overwrite the selected accounts. Leave it empty to clear the group.",
     "accountPool.upstreamAccounts.bulk.groupField": "Target group",
     "accountPool.upstreamAccounts.bulk.groupPlaceholder":
       "Type a group name or leave empty to clear",
-    "accountPool.upstreamAccounts.bulk.addTagsDialogTitle":
-      "Add tags to selected accounts",
-    "accountPool.upstreamAccounts.bulk.removeTagsDialogTitle":
-      "Remove tags from selected accounts",
+    "accountPool.upstreamAccounts.bulk.addTagsDialogTitle": "Add tags to selected accounts",
+    "accountPool.upstreamAccounts.bulk.removeTagsDialogTitle": "Remove tags from selected accounts",
     "accountPool.upstreamAccounts.bulk.tagsDialogDescription":
       "Choose one or more existing tags for the selected accounts.",
     "accountPool.upstreamAccounts.bulk.tagsField": "Tags",
     "accountPool.upstreamAccounts.bulk.tagsPlaceholder": "Choose tags",
-    "accountPool.upstreamAccounts.bulk.deleteDialogTitle":
-      "Delete selected accounts",
+    "accountPool.upstreamAccounts.bulk.deleteDialogTitle": "Delete selected accounts",
     "accountPool.upstreamAccounts.bulk.deleteDialogDescription":
       "Delete {{count}} selected accounts? This cannot be undone.",
     "accountPool.upstreamAccounts.pagination.summary":
@@ -1116,8 +937,7 @@ const baseTranslations = {
       "The OAuth data plane rejected this request",
     "accountPool.upstreamAccounts.hints.dataPlaneRejectedBody":
       "The in-process OAuth Codex adapter reached the upstream data plane, but the request was rejected. Check the upstream message for missing scopes, permissions, or other account-specific failures before re-authorizing.",
-    "accountPool.upstreamAccounts.hints.reauthTitle":
-      "This OAuth account needs a fresh sign-in",
+    "accountPool.upstreamAccounts.hints.reauthTitle": "This OAuth account needs a fresh sign-in",
     "accountPool.upstreamAccounts.hints.reauthBody":
       "The upstream token or refresh grant is no longer valid. Re-authorize this account to issue a new token set.",
     "accountPool.upstreamAccounts.usage.primaryDescription":
@@ -1139,19 +959,14 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.table.outputTokensMetric": "Output",
     "accountPool.upstreamAccounts.table.cacheInputTokensMetric": "Cached input",
     "accountPool.upstreamAccounts.table.off": "Off",
-    "accountPool.upstreamAccounts.table.hiddenTagsA11y":
-      "Show {{count}} hidden tags: {{names}}",
+    "accountPool.upstreamAccounts.table.hiddenTagsA11y": "Show {{count}} hidden tags: {{names}}",
     "accountPool.upstreamAccounts.fields.displayName": "Display name",
     "accountPool.upstreamAccounts.fields.groupName": "Group",
-    "accountPool.upstreamAccounts.fields.groupNamePlaceholder":
-      "Select or type a group",
-    "accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder":
-      "Search or create a group...",
-    "accountPool.upstreamAccounts.fields.groupNameEmpty":
-      "No existing group yet.",
+    "accountPool.upstreamAccounts.fields.groupNamePlaceholder": "Select or type a group",
+    "accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder": "Search or create a group...",
+    "accountPool.upstreamAccounts.fields.groupNameEmpty": "No existing group yet.",
     "accountPool.upstreamAccounts.fields.groupNameUseValue": 'Use "{{value}}"',
-    "accountPool.upstreamAccounts.fields.groupNameConfigureValue":
-      'Configure "{{value}}"',
+    "accountPool.upstreamAccounts.fields.groupNameConfigureValue": 'Configure "{{value}}"',
     "accountPool.tags.title": "Tag policies",
     "accountPool.tags.description":
       "Create reusable tags for upstream accounts and manage routing rules, account coverage, and group coverage in one place.",
@@ -1203,12 +1018,9 @@ const baseTranslations = {
     "accountPool.tags.dialog.description":
       "Adjust the tag name and the routing rules that accounts under this tag must follow.",
     "accountPool.tags.dialog.name": "Tag name",
-    "accountPool.tags.dialog.namePlaceholder":
-      "For example: vip, night-shift, warm-standby",
-    "accountPool.tags.dialog.allowCutOut":
-      "Do not block moving conversations out of this account",
-    "accountPool.tags.dialog.allowCutIn":
-      "Do not block moving conversations into this account",
+    "accountPool.tags.dialog.namePlaceholder": "For example: vip, night-shift, warm-standby",
+    "accountPool.tags.dialog.allowCutOut": "Do not block moving conversations out of this account",
+    "accountPool.tags.dialog.allowCutIn": "Do not block moving conversations into this account",
     "accountPool.tags.dialog.forbidCutOut": "Block moving conversations out",
     "accountPool.tags.dialog.forbidCutIn": "Block moving conversations in",
     "accountPool.tags.dialog.priorityTier": "Preferred usage",
@@ -1249,12 +1061,10 @@ const baseTranslations = {
       "Copy failed. Use the manual copy panel instead.",
     "accountPool.upstreamAccounts.oauth.regenerateRequired":
       "Group note changed. Generate a fresh OAuth URL before completing login.",
-    "accountPool.upstreamAccounts.oauth.manualFlowTitle":
-      "Manual OAuth handoff",
+    "accountPool.upstreamAccounts.oauth.manualFlowTitle": "Manual OAuth handoff",
     "accountPool.upstreamAccounts.oauth.manualFlowDescription":
       "Generate the OAuth URL here, copy it to the browser where you want to log in, then paste the final localhost callback URL back into this form.",
-    "accountPool.upstreamAccounts.oauth.manualCopyTitle":
-      "Manual copy required",
+    "accountPool.upstreamAccounts.oauth.manualCopyTitle": "Manual copy required",
     "accountPool.upstreamAccounts.oauth.manualCopyDescription":
       "Automatic copy was blocked. The OAuth URL is selected below so you can copy it manually.",
     "accountPool.upstreamAccounts.oauth.callbackUrlLabel": "Callback URL",
@@ -1276,18 +1086,14 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.oauth.mailboxStatusRefreshFailed":
       "Mailbox refresh failed. We could not confirm the latest code or invite state.",
     "accountPool.upstreamAccounts.oauth.mailboxCheckingBadge": "Checking",
-    "accountPool.upstreamAccounts.oauth.mailboxCheckFailedBadge":
-      "Check failed",
-    "accountPool.upstreamAccounts.oauth.refreshing":
-      "Fetching the latest mailbox state...",
+    "accountPool.upstreamAccounts.oauth.mailboxCheckFailedBadge": "Check failed",
+    "accountPool.upstreamAccounts.oauth.refreshing": "Fetching the latest mailbox state...",
     "accountPool.upstreamAccounts.oauth.refreshingShort": "Fetching",
-    "accountPool.upstreamAccounts.oauth.refreshIn":
-      "Next refresh in {{seconds}}s",
+    "accountPool.upstreamAccounts.oauth.refreshIn": "Next refresh in {{seconds}}s",
     "accountPool.upstreamAccounts.oauth.refreshInShort": "{{seconds}}s",
     "accountPool.upstreamAccounts.oauth.refreshScheduledUnknown":
       "Waiting for the next refresh window",
-    "accountPool.upstreamAccounts.oauth.receivedAt":
-      "Received at {{timestamp}}",
+    "accountPool.upstreamAccounts.oauth.receivedAt": "Received at {{timestamp}}",
     "accountPool.upstreamAccounts.oauth.mailboxUnsupportedInvalidFormat":
       "This does not look like a valid email address, so mailbox enhancements stay disabled.",
     "accountPool.upstreamAccounts.oauth.mailboxUnsupportedDomain":
@@ -1295,11 +1101,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.oauth.mailboxUnsupportedNotReadable":
       "This mailbox is not readable through the current KaisouMail integration, so mailbox enhancements stay disabled.",
     "accountPool.upstreamAccounts.oauth.codeCardTitle": "Verification code",
-    "accountPool.upstreamAccounts.oauth.codeCardEmpty":
-      "No verification code detected yet.",
+    "accountPool.upstreamAccounts.oauth.codeCardEmpty": "No verification code detected yet.",
     "accountPool.upstreamAccounts.oauth.inviteCardTitle": "Invite summary",
-    "accountPool.upstreamAccounts.oauth.inviteCardEmpty":
-      "No invite detected yet.",
+    "accountPool.upstreamAccounts.oauth.inviteCardEmpty": "No invite detected yet.",
     "accountPool.upstreamAccounts.oauth.invitedState": "Invited",
     "accountPool.upstreamAccounts.oauth.notInvitedState": "Not invited",
     "accountPool.upstreamAccounts.fields.note": "Note",
@@ -1311,8 +1115,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.verifiedEmail": "Verified email",
     "accountPool.upstreamAccounts.fields.accountId": "Account ID",
     "accountPool.upstreamAccounts.fields.userId": "User ID",
-    "accountPool.upstreamAccounts.fields.imageToolCapability":
-      "Image capability",
+    "accountPool.upstreamAccounts.fields.imageToolCapability": "Image capability",
     "accountPool.upstreamAccounts.fields.primaryLimit": "5h local limit",
     "accountPool.upstreamAccounts.fields.secondaryLimit": "7d local limit",
     "accountPool.upstreamAccounts.fields.limitUnit": "Limit unit",
@@ -1329,12 +1132,9 @@ const baseTranslations = {
       "Leave blank to keep the current key",
     "accountPool.upstreamAccounts.fields.lastSyncedAt": "Last sync",
     "accountPool.upstreamAccounts.fields.lastRefreshedAt": "Last refresh",
-    "accountPool.upstreamAccounts.fields.tokenExpiresAt":
-      "Access token expires",
-    "accountPool.upstreamAccounts.imageToolCapability.supported":
-      "Image-capable",
-    "accountPool.upstreamAccounts.imageToolCapability.unsupported":
-      "Not image-capable",
+    "accountPool.upstreamAccounts.fields.tokenExpiresAt": "Access token expires",
+    "accountPool.upstreamAccounts.imageToolCapability.supported": "Image-capable",
+    "accountPool.upstreamAccounts.imageToolCapability.unsupported": "Not image-capable",
     "accountPool.upstreamAccounts.imageToolCapability.unknown": "Unknown",
     "accountPool.upstreamAccounts.imageToolCapabilityHint.supported":
       "This account can be selected for image requests.",
@@ -1343,112 +1143,81 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.imageToolCapabilityHint.unknown":
       "The system has not observed enough evidence yet.",
     "accountPool.upstreamAccounts.noRefreshToken.badge": "无 RT",
-    "accountPool.upstreamAccounts.fields.lastSuccessSync":
-      "Last successful sync",
+    "accountPool.upstreamAccounts.fields.lastSuccessSync": "Last successful sync",
     "accountPool.upstreamAccounts.fields.credits": "Credits",
     "accountPool.upstreamAccounts.fields.compactSupport": "Compact support",
-    "accountPool.upstreamAccounts.fields.compactObservedAt":
-      "Compact observed at",
+    "accountPool.upstreamAccounts.fields.compactObservedAt": "Compact observed at",
     "accountPool.upstreamAccounts.fields.compactReason": "Compact reason",
     "accountPool.upstreamAccounts.fields.lastError": "Last error",
     "accountPool.upstreamAccounts.table.latestActionShort": "Latest",
-    "accountPool.upstreamAccounts.validation.displayNameDuplicate":
-      "Display name must be unique.",
+    "accountPool.upstreamAccounts.validation.displayNameDuplicate": "Display name must be unique.",
     "accountPool.upstreamAccounts.latestAction.title": "Latest account action",
-    "accountPool.upstreamAccounts.latestAction.empty":
-      "No account action has been recorded yet.",
+    "accountPool.upstreamAccounts.latestAction.empty": "No account action has been recorded yet.",
     "accountPool.upstreamAccounts.latestAction.unknown": "Unknown",
     "accountPool.upstreamAccounts.latestAction.fields.action": "Action",
     "accountPool.upstreamAccounts.latestAction.fields.source": "Source",
     "accountPool.upstreamAccounts.latestAction.fields.reason": "Reason",
-    "accountPool.upstreamAccounts.latestAction.fields.httpStatus":
-      "HTTP status",
-    "accountPool.upstreamAccounts.latestAction.fields.occurredAt":
-      "Occurred at",
+    "accountPool.upstreamAccounts.latestAction.fields.httpStatus": "HTTP status",
+    "accountPool.upstreamAccounts.latestAction.fields.occurredAt": "Occurred at",
     "accountPool.upstreamAccounts.latestAction.fields.invokeId": "Invoke ID",
     "accountPool.upstreamAccounts.latestAction.fields.message": "Message",
     "accountPool.upstreamAccounts.compactSupport.supportedBadge": "Compact OK",
-    "accountPool.upstreamAccounts.compactSupport.unsupportedBadge":
-      "Compact unsupported",
+    "accountPool.upstreamAccounts.compactSupport.unsupportedBadge": "Compact unsupported",
     "accountPool.upstreamAccounts.compactSupport.status.supported": "Supported",
-    "accountPool.upstreamAccounts.compactSupport.status.unsupported":
-      "Unsupported",
+    "accountPool.upstreamAccounts.compactSupport.status.unsupported": "Unsupported",
     "accountPool.upstreamAccounts.compactSupport.status.unknown": "Unknown",
-    "accountPool.upstreamAccounts.latestAction.actions.route_recovered":
-      "Route recovered",
+    "accountPool.upstreamAccounts.latestAction.actions.route_recovered": "Route recovered",
     "accountPool.upstreamAccounts.latestAction.actions.route_retryable_failure":
       "Temporary upstream failure",
-    "accountPool.upstreamAccounts.latestAction.actions.route_cooldown_started":
-      "Route cooldown",
-    "accountPool.upstreamAccounts.latestAction.actions.route_hard_unavailable":
-      "Hard unavailable",
+    "accountPool.upstreamAccounts.latestAction.actions.route_cooldown_started": "Route cooldown",
+    "accountPool.upstreamAccounts.latestAction.actions.route_hard_unavailable": "Hard unavailable",
     "accountPool.upstreamAccounts.latestAction.actions.sync_hard_unavailable":
       "Sync marked unavailable",
-    "accountPool.upstreamAccounts.latestAction.actions.sync_succeeded":
-      "Sync succeeded",
-    "accountPool.upstreamAccounts.latestAction.actions.sync_deferred":
-      "Sync deferred",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_succeeded": "Sync succeeded",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_deferred": "Sync deferred",
     "accountPool.upstreamAccounts.latestAction.actions.sync_recovery_blocked":
       "Recovery still blocked",
-    "accountPool.upstreamAccounts.latestAction.actions.sync_failed":
-      "Sync failed",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_failed": "Sync failed",
     "accountPool.upstreamAccounts.latestAction.actions.status_change_suppressed":
       "Status change suppressed",
-    "accountPool.upstreamAccounts.latestAction.actions.account_updated":
-      "Account updated",
+    "accountPool.upstreamAccounts.latestAction.actions.account_updated": "Account updated",
     "accountPool.upstreamAccounts.latestAction.sources.call": "Call",
-    "accountPool.upstreamAccounts.latestAction.sources.sync_manual":
-      "Manual sync",
-    "accountPool.upstreamAccounts.latestAction.sources.sync_maintenance":
-      "Maintenance sync",
-    "accountPool.upstreamAccounts.latestAction.sources.sync_post_create":
-      "Post-create sync",
-    "accountPool.upstreamAccounts.latestAction.sources.oauth_import":
-      "OAuth import",
-    "accountPool.upstreamAccounts.latestAction.sources.account_update":
-      "Account update",
-    "accountPool.upstreamAccounts.maintenanceEvents.title":
-      "Non-model call execution records",
+    "accountPool.upstreamAccounts.latestAction.sources.sync_manual": "Manual sync",
+    "accountPool.upstreamAccounts.latestAction.sources.sync_maintenance": "Maintenance sync",
+    "accountPool.upstreamAccounts.latestAction.sources.sync_post_create": "Post-create sync",
+    "accountPool.upstreamAccounts.latestAction.sources.oauth_import": "OAuth import",
+    "accountPool.upstreamAccounts.latestAction.sources.account_update": "Account update",
+    "accountPool.upstreamAccounts.maintenanceEvents.title": "Non-model call execution records",
     "accountPool.upstreamAccounts.maintenanceEvents.description":
       "Recent account maintenance calls, syncs, and proxy-bound checks.",
     "accountPool.upstreamAccounts.maintenanceEvents.loadError":
       "Failed to load maintenance records.",
-    "accountPool.upstreamAccounts.maintenanceEvents.resetFilters":
-      "Reset filters",
+    "accountPool.upstreamAccounts.maintenanceEvents.resetFilters": "Reset filters",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.account": "Account",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.accountPlaceholder":
       "Search account name or ID",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.group": "Group",
-    "accountPool.upstreamAccounts.maintenanceEvents.filters.groupPlaceholder":
-      "Search group name",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.groupPlaceholder": "Search group name",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.node": "Node",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.result": "Result",
-    "accountPool.upstreamAccounts.maintenanceEvents.filters.allNodes":
-      "All nodes",
-    "accountPool.upstreamAccounts.maintenanceEvents.filters.allResults":
-      "All results",
-    "accountPool.upstreamAccounts.maintenanceEvents.columns.time":
-      "Execution time",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.allNodes": "All nodes",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.allResults": "All results",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.time": "Execution time",
     "accountPool.upstreamAccounts.maintenanceEvents.columns.account": "Account",
     "accountPool.upstreamAccounts.maintenanceEvents.columns.proxy": "Proxy",
     "accountPool.upstreamAccounts.maintenanceEvents.columns.action": "Action",
     "accountPool.upstreamAccounts.maintenanceEvents.columns.result": "Result",
     "accountPool.upstreamAccounts.maintenanceEvents.results.success": "Success",
     "accountPool.upstreamAccounts.maintenanceEvents.results.failed": "Failed",
-    "accountPool.upstreamAccounts.maintenanceEvents.results.deferred":
-      "Deferred",
-    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_deferred":
-      "Sync deferred",
-    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_succeeded":
-      "Sync succeeded",
-    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_failed":
-      "Sync failed",
+    "accountPool.upstreamAccounts.maintenanceEvents.results.deferred": "Deferred",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_deferred": "Sync deferred",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_succeeded": "Sync succeeded",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_failed": "Sync failed",
     "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_hard_unavailable":
       "Sync unavailable",
     "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_recovery_blocked":
       "Recovery blocked",
-    "accountPool.upstreamAccounts.maintenanceEvents.actions.route_recovered":
-      "Route recovered",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.route_recovered": "Route recovered",
     "accountPool.upstreamAccounts.maintenanceEvents.actions.route_cooldown_started":
       "Route cooldown",
     "accountPool.upstreamAccounts.maintenanceEvents.actions.route_retryable_failure":
@@ -1457,19 +1226,13 @@ const baseTranslations = {
       "Route unavailable",
     "accountPool.upstreamAccounts.maintenanceEvents.actions.status_change_suppressed":
       "Status change suppressed",
-    "accountPool.upstreamAccounts.maintenanceEvents.actions.account_updated":
-      "Account updated",
-    "accountPool.upstreamAccounts.maintenanceEvents.unknownAccount":
-      "Unknown account",
-    "accountPool.upstreamAccounts.maintenanceEvents.unknownGroup":
-      "Unknown group",
-    "accountPool.upstreamAccounts.maintenanceEvents.unknownProxy":
-      "Unknown proxy",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.account_updated": "Account updated",
+    "accountPool.upstreamAccounts.maintenanceEvents.unknownAccount": "Unknown account",
+    "accountPool.upstreamAccounts.maintenanceEvents.unknownGroup": "Unknown group",
+    "accountPool.upstreamAccounts.maintenanceEvents.unknownProxy": "Unknown proxy",
     "accountPool.upstreamAccounts.maintenanceEvents.noEgressIp": "Not recorded",
-    "accountPool.upstreamAccounts.maintenanceEvents.egressIpPending":
-      "Refresh pending",
-    "accountPool.upstreamAccounts.maintenanceEvents.noDescription":
-      "No result description",
+    "accountPool.upstreamAccounts.maintenanceEvents.egressIpPending": "Refresh pending",
+    "accountPool.upstreamAccounts.maintenanceEvents.noDescription": "No result description",
     "accountPool.upstreamAccounts.maintenanceEvents.descriptions.egressThrottledWithSeconds":
       "Same egress {{proxy}} is rate-limited. Retry after {{seconds}}s.",
     "accountPool.upstreamAccounts.maintenanceEvents.descriptions.egressThrottled":
@@ -1482,20 +1245,17 @@ const baseTranslations = {
       "Maintenance sync failed before a usable account snapshot was saved.",
     "accountPool.upstreamAccounts.maintenanceEvents.descriptions.httpStatus":
       "Maintenance request returned HTTP {{status}}.",
-    "accountPool.upstreamAccounts.latestAction.reasons.sync_ok":
-      "Sync completed successfully",
+    "accountPool.upstreamAccounts.latestAction.reasons.sync_ok": "Sync completed successfully",
     "accountPool.upstreamAccounts.latestAction.reasons.account_updated":
       "Account settings were updated",
-    "accountPool.upstreamAccounts.latestAction.reasons.sync_error":
-      "Sync failed",
+    "accountPool.upstreamAccounts.latestAction.reasons.sync_error": "Sync failed",
     "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_exhausted":
       "Latest usage snapshot already shows an exhausted limit window",
     "accountPool.upstreamAccounts.latestAction.reasons.quota_still_exhausted":
       "Fresh usage snapshot still shows an exhausted limit window",
     "accountPool.upstreamAccounts.latestAction.reasons.recovery_unconfirmed_manual_required":
       "Manual recovery is required before the account can return to routing",
-    "accountPool.upstreamAccounts.latestAction.reasons.transport_failure":
-      "Transport failure",
+    "accountPool.upstreamAccounts.latestAction.reasons.transport_failure": "Transport failure",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_server_overloaded":
       "Upstream is temporarily overloaded",
     "accountPool.upstreamAccounts.latestAction.reasons.reauth_required":
@@ -1515,29 +1275,25 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.recentActions.title": "Recent account events",
     "accountPool.upstreamAccounts.recentActions.description":
       "Latest call and sync actions for this account.",
-    "accountPool.upstreamAccounts.recentActions.empty":
-      "No recent account events yet.",
+    "accountPool.upstreamAccounts.recentActions.empty": "No recent account events yet.",
     "accountPool.upstreamAccounts.duplicate.badge": "Duplicate",
     "accountPool.upstreamAccounts.duplicate.warningTitle":
       "{{name}} was saved, but the upstream identity looks duplicated.",
     "accountPool.upstreamAccounts.duplicate.warningBody":
       "Matched reasons: {{reasons}}. Related account ids: {{peers}}.",
-    "accountPool.upstreamAccounts.duplicate.compactTitle":
-      "Possible upstream duplicate",
+    "accountPool.upstreamAccounts.duplicate.compactTitle": "Possible upstream duplicate",
     "accountPool.upstreamAccounts.duplicate.compactBody":
       "Matched: {{reasons}}. Related account ids: {{peers}}.",
     "accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptAccountId":
       "shared ChatGPT account id",
-    "accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptUserId":
-      "shared ChatGPT user id",
+    "accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptUserId": "shared ChatGPT user id",
     "accountPool.upstreamAccounts.mother.badge": "Mother",
     "accountPool.upstreamAccounts.mother.fieldLabel": "Mother account",
     "accountPool.upstreamAccounts.mother.notMother": "No",
     "accountPool.upstreamAccounts.mother.toggleLabel": "Use as mother account",
     "accountPool.upstreamAccounts.mother.toggleDescription":
       "Each group can keep only one mother account. Turning this on automatically moves the crown away from the previous owner.",
-    "accountPool.upstreamAccounts.mother.notifications.title":
-      "Mother account updated",
+    "accountPool.upstreamAccounts.mother.notifications.title": "Mother account updated",
     "accountPool.upstreamAccounts.mother.notifications.undo": "Undo",
     "accountPool.upstreamAccounts.mother.notifications.dismiss": "Dismiss",
     "accountPool.upstreamAccounts.mother.notifications.replaced":
@@ -1584,14 +1340,11 @@ const baseTranslations = {
     "system.status.sections.archiveLogicalDescription":
       "Use archived body counts and archive footprint to understand what the archive currently represents.",
     "system.status.breakdown.rawPayloadBytes": "Raw payload footprint",
-    "system.status.breakdown.rawPayloadBytesHint":
-      "Unique request + response raw files on disk.",
+    "system.status.breakdown.rawPayloadBytesHint": "Unique request + response raw files on disk.",
     "system.status.breakdown.archiveBytes": "Archive footprint",
-    "system.status.breakdown.archiveBytesHint":
-      "Completed invocation archive files on disk.",
+    "system.status.breakdown.archiveBytesHint": "Completed invocation archive files on disk.",
     "system.status.breakdown.databaseBytes": "Database footprint",
-    "system.status.breakdown.databaseBytesHint":
-      "SQLite database + WAL/SHM files.",
+    "system.status.breakdown.databaseBytesHint": "SQLite database + WAL/SHM files.",
     "system.status.breakdown.otherFilesBytes": "Other runtime footprint",
     "system.status.breakdown.otherFilesBytesHint":
       "Remaining runtime-owned files outside DB/raw/archive.",
@@ -1599,13 +1352,10 @@ const baseTranslations = {
     "system.status.cards.liveInvocationsCountHint":
       "Current `codex_invocations` row count in the live database.",
     "system.status.cards.successCount": "Successful calls",
-    "system.status.cards.successCountHint":
-      "Recorded invocations with status = success.",
+    "system.status.cards.successCountHint": "Recorded invocations with status = success.",
     "system.status.cards.nonSuccessCount": "Non-success calls",
-    "system.status.cards.nonSuccessCountHint":
-      "Recorded invocations with status != success.",
-    "system.status.cards.completedArchiveBatchesCount":
-      "Completed archive batches",
+    "system.status.cards.nonSuccessCountHint": "Recorded invocations with status != success.",
+    "system.status.cards.completedArchiveBatchesCount": "Completed archive batches",
     "system.status.cards.completedArchiveBatchesCountHint":
       "Completed `archive_batches` for `codex_invocations`.",
     "system.status.cards.archivedBodiesCount": "Archived bodies",
@@ -1637,8 +1387,7 @@ const baseTranslations = {
     "system.status.cards.responseRawBodiesSplitHint":
       "Use this side split to understand why response is heavy.",
     "system.status.cards.databaseBytes": "Database size",
-    "system.status.cards.databaseBytesHint":
-      "Current SQLite database file size.",
+    "system.status.cards.databaseBytesHint": "Current SQLite database file size.",
     "system.status.cards.otherFilesBytes": "Other files size",
     "system.status.cards.otherFilesBytesHint":
       "Remaining runtime files under the database root excluding DB, raw, and archive directories.",
@@ -1649,15 +1398,13 @@ const baseTranslations = {
     "system.tasks.loadError": "Failed to load task runs: {{error}}",
     "system.tasks.empty": "No task runs matched the current filter.",
     "system.tasks.meta": "{{trigger}} started at {{startedAt}}",
-    "system.tasks.duration":
-      "Duration: {{duration}} · Finished: {{finishedAt}}",
+    "system.tasks.duration": "Duration: {{duration}} · Finished: {{finishedAt}}",
     "system.tasks.filters.taskKindPlaceholder": "Filter by task kind",
     "system.tasks.filters.allStatuses": "All statuses",
     "system.tasks.filters.startedAtFrom": "Started from",
     "system.tasks.filters.startedAtTo": "Started to",
     "system.tasks.filters.count": "{{count}} runs",
-    "system.tasks.pagination.summary":
-      "Page {{page}} of {{pageCount}} · {{total}} runs",
+    "system.tasks.pagination.summary": "Page {{page}} of {{pageCount}} · {{total}} runs",
     "system.tasks.pagination.pageSize": "Page size",
     "system.tasks.pagination.previous": "Previous",
     "system.tasks.pagination.next": "Next",
@@ -1678,8 +1425,7 @@ const baseTranslations = {
     "settings.externalApiKeys.loading": "Loading external API keys…",
     "settings.externalApiKeys.empty":
       "No external API key yet. Create one to hand off to a partner.",
-    "settings.externalApiKeys.error":
-      "External API key request failed: {{error}}",
+    "settings.externalApiKeys.error": "External API key request failed: {{error}}",
     "settings.externalApiKeys.create": "Create key",
     "settings.externalApiKeys.rotate": "Rotate",
     "settings.externalApiKeys.disable": "Disable",
@@ -1692,8 +1438,7 @@ const baseTranslations = {
     "settings.externalApiKeys.columns.actions": "Actions",
     "settings.externalApiKeys.status.active": "Active",
     "settings.externalApiKeys.status.disabled": "Disabled",
-    "settings.externalApiKeys.validation.nameRequired":
-      "Please enter an API key name first.",
+    "settings.externalApiKeys.validation.nameRequired": "Please enter an API key name first.",
     "settings.externalApiKeys.secret.createdTitle": "External API key created",
     "settings.externalApiKeys.secret.rotatedTitle": "External API key rotated",
     "settings.externalApiKeys.secret.description":
@@ -1703,8 +1448,7 @@ const baseTranslations = {
     "settings.externalApiKeys.createDialog.description":
       "Give this partner key a readable name for internal operations.",
     "settings.externalApiKeys.createDialog.nameLabel": "Key name",
-    "settings.externalApiKeys.createDialog.namePlaceholder":
-      "Example: Vendor A upstream sync",
+    "settings.externalApiKeys.createDialog.namePlaceholder": "Example: Vendor A upstream sync",
     "settings.externalApiKeys.createDialog.confirm": "Create key",
     "settings.externalApiKeys.rotateDialog.title": "Rotate external API key",
     "settings.externalApiKeys.rotateDialog.description":
@@ -1723,8 +1467,7 @@ const baseTranslations = {
     "settings.proxy.mergeLabel": "Merge upstream models in real time",
     "settings.proxy.mergeHint":
       "When enabled, merge upstream models with presets and deduplicate by model id.",
-    "settings.proxy.mergeDisabledHint":
-      "Enable hijack first to turn this option on.",
+    "settings.proxy.mergeDisabledHint": "Enable hijack first to turn this option on.",
     "settings.proxy.presetModels": "Preset model list",
     "settings.proxy.enabledCount": "Enabled: {{count}} / {{total}}",
     "settings.proxy.noneEnabledHint":
@@ -1753,12 +1496,10 @@ const baseTranslations = {
     "settings.proxy.websocketEnabled": "Enabled",
     "settings.proxy.websocketDisabled": "Disabled",
     "settings.proxy.websocketEnvLabel": "Global",
-    "settings.proxy.encryptedOwnerRoutingTitle":
-      "Encrypted conversation routing",
+    "settings.proxy.encryptedOwnerRoutingTitle": "Encrypted conversation routing",
     "settings.proxy.encryptedOwnerRoutingHint":
       "Control whether encrypted conversations are pinned to the upstream account that owns their encrypted session state.",
-    "settings.proxy.encryptedOwnerRoutingLabel":
-      "Bind encrypted conversation routes",
+    "settings.proxy.encryptedOwnerRoutingLabel": "Bind encrypted conversation routes",
     "settings.proxy.encryptedOwnerRoutingDescription":
       "When disabled, encrypted content no longer creates or enforces owner route bindings, and route-binding warnings stay hidden.",
     "settings.proxy.bodyLoggingTitle": "Invocation body retention",
@@ -1781,8 +1522,7 @@ const baseTranslations = {
     "settings.forwardProxy.subscriptionUrls": "Subscription URLs",
     "settings.forwardProxy.subscriptionUrlsPlaceholder":
       "https://example.com/subscription.txt\nhttps://example.com/subscription.base64",
-    "settings.forwardProxy.subscriptionInterval":
-      "Subscription refresh interval",
+    "settings.forwardProxy.subscriptionInterval": "Subscription refresh interval",
     "settings.forwardProxy.interval.1m": "1 minute",
     "settings.forwardProxy.interval.5m": "5 minutes",
     "settings.forwardProxy.interval.15m": "15 minutes",
@@ -1796,17 +1536,14 @@ const baseTranslations = {
     "settings.forwardProxy.refreshingSubscriptions": "Refreshing...",
     "settings.forwardProxy.refreshSubscriptionsSuccess":
       "Subscriptions refreshed: {{count}} source(s), {{added}} new node(s).",
-    "settings.forwardProxy.refreshSubscriptionsFailed":
-      "Subscription refresh failed: {{error}}",
+    "settings.forwardProxy.refreshSubscriptionsFailed": "Subscription refresh failed: {{error}}",
     "settings.forwardProxy.testAllLatency": "Test all",
     "settings.forwardProxy.proxyCount": "Configured nodes: {{count}}",
-    "settings.forwardProxy.subscriptionCount":
-      "Configured subscriptions: {{count}}",
+    "settings.forwardProxy.subscriptionCount": "Configured subscriptions: {{count}}",
     "settings.forwardProxy.nodeItemFallback": "Node #{{index}}",
     "settings.forwardProxy.subscriptionItemFallback": "Subscription #{{index}}",
     "settings.forwardProxy.remove": "Remove",
-    "settings.forwardProxy.listEmpty":
-      "No entry yet. Add one after validation.",
+    "settings.forwardProxy.listEmpty": "No entry yet. Add one after validation.",
     "settings.forwardProxy.subscriptionListEmpty": "No subscription yet.",
     "settings.forwardProxy.supportHint":
       "Supported schemes: http, https, socks, socks5, socks5h, vmess, vless, trojan, ss (via Xray)",
@@ -1841,16 +1578,14 @@ const baseTranslations = {
       "Cannot reach backend service. Please ensure 127.0.0.1:8080 is running.",
     "settings.forwardProxy.modal.backendServerError":
       "Backend returned an internal error. Please check backend status and logs.",
-    "settings.forwardProxy.modal.batchValidateSuccess":
-      "Validation passed for {{count}} node(s).",
+    "settings.forwardProxy.modal.batchValidateSuccess": "Validation passed for {{count}} node(s).",
     "settings.forwardProxy.modal.batchValidateFailed":
       "Validation failed for {{failed}}/{{total}} node(s).",
     "settings.forwardProxy.modal.batchValidateSummary":
       "Available: {{available}}, unavailable: {{unavailable}}.",
     "settings.forwardProxy.modal.batchValidateProgress":
       "Validating: {{validating}}, available: {{available}}, unavailable: {{unavailable}}.",
-    "settings.forwardProxy.modal.normalizedCount":
-      "Normalized entries: {{count}}",
+    "settings.forwardProxy.modal.normalizedCount": "Normalized entries: {{count}}",
     "settings.forwardProxy.modal.normalizedValue": "Normalized: {{value}}",
     "settings.forwardProxy.modal.probeSummary":
       "Discovered: {{nodes}} node(s), probe latency: {{latency}}",
@@ -1869,8 +1604,7 @@ const baseTranslations = {
     "settings.forwardProxy.modal.statusValidating": "Validating",
     "settings.forwardProxy.modal.statusTimeout": "Timeout",
     "settings.forwardProxy.modal.roundProgress": "R{{current}}/{{total}}",
-    "settings.forwardProxy.modal.roundResultSuccess":
-      "R{{round}} OK {{latency}}",
+    "settings.forwardProxy.modal.roundResultSuccess": "R{{round}} OK {{latency}}",
     "settings.forwardProxy.modal.roundResultTimeout": "R{{round}} Timeout",
     "settings.forwardProxy.modal.roundResultFailed": "R{{round}} Failed",
     "settings.forwardProxy.table.proxy": "Proxy",
@@ -1890,20 +1624,17 @@ const baseTranslations = {
     "settings.forwardProxy.latency.empty": "--",
     "settings.forwardProxy.latency.timeout": "Timeout",
     "settings.forwardProxy.latency.streamFailed": "Latency test stream failed.",
-    "settings.forwardProxy.latency.tooltipIdle":
-      "Click to test this node with 5 rounds.",
+    "settings.forwardProxy.latency.tooltipIdle": "Click to test this node with 5 rounds.",
     "settings.forwardProxy.latency.tooltipTesting":
       "Testing this node. The first valid sample will be shown immediately.",
     "settings.forwardProxy.latency.tooltipReady":
       "{{latency}} from {{success}}/{{attempts}} successful samples.\n{{targets}}\nClick to retest.",
-    "settings.forwardProxy.latency.tooltipFailed":
-      "{{message}}\n{{targets}}\nClick to retest.",
+    "settings.forwardProxy.latency.tooltipFailed": "{{message}}\n{{targets}}\nClick to retest.",
     "settings.forwardProxy.latency.target.egressIp": "Egress IP",
     "settings.forwardProxy.latency.target.oauthUpstream": "OAuth /models",
     "settings.forwardProxy.latency.target.codexResponses": "Codex /responses",
     "settings.forwardProxy.latency.targetOk": "{{target}}: reachable{{detail}}",
-    "settings.forwardProxy.latency.targetFailed":
-      "{{target}}: failed{{detail}}",
+    "settings.forwardProxy.latency.targetFailed": "{{target}}: failed{{detail}}",
     "settings.forwardProxy.latency.ariaLabel": "Test latency for {{node}}",
     "settings.pricing.title": "Pricing configuration",
     "settings.pricing.description":
@@ -1921,16 +1652,12 @@ const baseTranslations = {
     "settings.pricing.columns.reasoning": "Reasoning / 1M",
     "settings.pricing.columns.source": "Source",
     "settings.pricing.columns.actions": "Actions",
-    "settings.pricing.errors.catalogVersionRequired":
-      "Catalog version is required.",
+    "settings.pricing.errors.catalogVersionRequired": "Catalog version is required.",
     "settings.pricing.errors.modelRequired": "Model id is required.",
-    "settings.pricing.errors.modelTooLong":
-      "Model id cannot exceed 128 characters.",
+    "settings.pricing.errors.modelTooLong": "Model id cannot exceed 128 characters.",
     "settings.pricing.errors.modelDuplicated": "Model id must be unique.",
-    "settings.pricing.errors.numberInvalid":
-      "Pricing values must be valid numbers.",
-    "settings.pricing.errors.numberNegative":
-      "Pricing values must be non-negative.",
+    "settings.pricing.errors.numberInvalid": "Pricing values must be valid numbers.",
+    "settings.pricing.errors.numberNegative": "Pricing values must be non-negative.",
     "dashboard.section.summaryTitle": "Last 24 hours summary",
     "dashboard.activityOverview.title": "Activity Overview",
     "dashboard.activityOverview.rangeToday": "Today",
@@ -1948,10 +1675,8 @@ const baseTranslations = {
     "dashboard.upstreamAccounts.countBadge": "{{count}} active accounts",
     "dashboard.upstreamAccounts.subtitle":
       "Shows upstream accounts with activity in the selected overview range plus a dynamic recent invocation window for each account.",
-    "dashboard.upstreamAccounts.empty":
-      "No active upstream accounts in the selected range.",
-    "dashboard.upstreamAccounts.recentInvocations":
-      "Latest {{count}} invocations",
+    "dashboard.upstreamAccounts.empty": "No active upstream accounts in the selected range.",
+    "dashboard.upstreamAccounts.recentInvocations": "Latest {{count}} invocations",
     "dashboard.upstreamAccounts.channelName": "Channel {{name}}",
     "dashboard.workingConversations.empty":
       "No working conversations match the last 5 minutes or active in-flight window.",
@@ -1959,8 +1684,7 @@ const baseTranslations = {
     "dashboard.workingConversations.promptCacheKeyLabel": "Prompt cache key",
     "dashboard.workingConversations.currentInvocation": "Current invocation",
     "dashboard.workingConversations.previousInvocation": "Previous invocation",
-    "dashboard.workingConversations.openConversation":
-      "Open conversation details",
+    "dashboard.workingConversations.openConversation": "Open conversation details",
     "dashboard.workingConversations.openInvocation": "Open invocation details",
     "dashboard.workingConversations.placeholderBadge": "Waiting",
     "dashboard.workingConversations.previousPlaceholder":
@@ -1973,15 +1697,11 @@ const baseTranslations = {
     "dashboard.workingConversations.totalCostLabel": "Cost",
     "dashboard.workingConversations.sortAnchorLabel": "Sort anchor",
     "dashboard.workingConversations.drawer.close": "Close invocation details",
-    "dashboard.workingConversations.drawer.subtitle":
-      "Working conversation invocation",
+    "dashboard.workingConversations.drawer.subtitle": "Working conversation invocation",
     "dashboard.workingConversations.drawer.title": "Invocation details",
-    "dashboard.workingConversations.drawer.loading":
-      "Loading full invocation record…",
-    "dashboard.workingConversations.drawer.errorTitle":
-      "Failed to load invocation details",
-    "dashboard.workingConversations.drawer.emptyTitle":
-      "Invocation unavailable",
+    "dashboard.workingConversations.drawer.loading": "Loading full invocation record…",
+    "dashboard.workingConversations.drawer.errorTitle": "Failed to load invocation details",
+    "dashboard.workingConversations.drawer.emptyTitle": "Invocation unavailable",
     "dashboard.workingConversations.drawer.emptyBody":
       "The full retained record may already be pruned, or this invoke ID is no longer available.",
     "dashboard.today.title": "Today summary",
@@ -2062,8 +1782,7 @@ const baseTranslations = {
     "stats.parallelWork.empty": "No complete buckets yet.",
     "stats.parallelWork.detailsTooltipLabel": "Explain {{title}} details",
     "stats.parallelWork.chartAria": "{{title}} trend",
-    "stats.parallelWork.samples":
-      "{{complete}} complete buckets · {{active}} active buckets",
+    "stats.parallelWork.samples": "{{complete}} complete buckets · {{active}} active buckets",
     "stats.parallelWork.rangeSummary": "Range: {{start}} → {{end}}",
     "stats.parallelWork.timeZoneFallback":
       "Aligned to {{timeZone}} because this window cannot be losslessly re-bucketed from hourly rollups in the current time zone.",
@@ -2115,8 +1834,7 @@ const baseTranslations = {
     "live.conversations.actions.collapsePreview": "Collapse recent calls",
     "live.conversations.actions.openHistory": "Open full call history",
     "live.conversations.option.count": "{{count}} conversations",
-    "live.conversations.option.activityHours":
-      "Active in last {{hours}} hour(s)",
+    "live.conversations.option.activityHours": "Active in last {{hours}} hour(s)",
     "live.conversations.empty": "No conversations available.",
     "live.conversations.implicitFilter.inactiveOutside24h":
       "{{count}} newer conversation(s) were hidden because count mode only includes conversations active in the last 24 hours.",
@@ -2151,14 +1869,11 @@ const baseTranslations = {
     "live.conversations.drawer.eyebrow": "Conversation details",
     "live.conversations.drawer.description":
       "Shows every retained raw invocation for this Prompt Cache Key, newest first.",
-    "live.conversations.drawer.progress":
-      "Loaded {{loaded}} / {{total}} retained record(s)",
-    "live.conversations.drawer.progressComplete":
-      "{{count}} retained record(s)",
+    "live.conversations.drawer.progress": "Loaded {{loaded}} / {{total}} retained record(s)",
+    "live.conversations.drawer.progressComplete": "{{count}} retained record(s)",
     "live.conversations.drawer.loadMore": "Load more records",
     "live.conversations.drawer.loadingMore": "Loading more records…",
-    "live.conversations.drawer.empty":
-      "No retained call records for this conversation.",
+    "live.conversations.drawer.empty": "No retained call records for this conversation.",
     "live.conversations.drawer.tabs.label": "Conversation drawer sections",
     "live.conversations.drawer.tabs.overview": "Overview",
     "live.conversations.drawer.tabs.calls": "Calls",
@@ -2173,20 +1888,15 @@ const baseTranslations = {
     "live.conversations.drawer.binding.account": "Account binding target",
     "live.conversations.drawer.binding.save": "Save",
     "live.conversations.drawer.binding.saving": "Saving…",
-    "live.conversations.drawer.binding.currentNone":
-      "Current: no manual binding",
-    "live.conversations.drawer.binding.currentGroup":
-      "Current: group {{group}}",
-    "live.conversations.drawer.binding.currentAccount":
-      "Current: account {{account}}",
-    "live.conversations.drawer.binding.encryptedOwner":
-      "Encrypted session owner: {{owner}}",
+    "live.conversations.drawer.binding.currentNone": "Current: no manual binding",
+    "live.conversations.drawer.binding.currentGroup": "Current: group {{group}}",
+    "live.conversations.drawer.binding.currentAccount": "Current: account {{account}}",
+    "live.conversations.drawer.binding.encryptedOwner": "Encrypted session owner: {{owner}}",
     "live.conversations.drawer.policy.title": "Conversation overrides",
     "live.conversations.drawer.policy.inherit": "Inherit",
     "live.conversations.drawer.policy.override": "Override",
     "live.conversations.drawer.policy.cutOut": "Switch out",
-    "live.conversations.drawer.policy.cutOutInherited":
-      "Inherited switching policy",
+    "live.conversations.drawer.policy.cutOutInherited": "Inherited switching policy",
     "live.conversations.drawer.policy.cutOutAllow": "Allow switching upstream",
     "live.conversations.drawer.policy.cutOutDeny": "Keep current upstream",
     "live.conversations.drawer.policy.fastMode": "FAST mode",
@@ -2196,20 +1906,17 @@ const baseTranslations = {
     "live.conversations.drawer.policy.proxyAddPlaceholder": "Add a proxy node",
     "live.conversations.drawer.policy.proxyRemove": "Remove proxy",
     "live.conversations.drawer.policy.availableModels": "Available models",
-    "live.conversations.drawer.policy.availableModelsPlaceholder":
-      "Comma-separated model names",
+    "live.conversations.drawer.policy.availableModelsPlaceholder": "Comma-separated model names",
     "live.conversations.drawer.policy.availableModelsRequired":
       "Available models override cannot be empty.",
     "live.conversations.drawer.policy.editField": "Edit conversation override",
-    "live.conversations.drawer.policy.clearField":
-      "Clear conversation override",
+    "live.conversations.drawer.policy.clearField": "Clear conversation override",
     "live.conversations.drawer.policy.applyField": "Apply override",
     "live.conversations.drawer.policy.rewrite.forceRemove": "Force remove",
     "live.conversations.drawer.policy.rewrite.keepOriginal": "Keep original",
     "live.conversations.drawer.policy.rewrite.fillMissing": "Fill missing",
     "live.conversations.drawer.policy.rewrite.forceAdd": "Force add",
-    "live.conversations.drawer.policy.rewriteInherited":
-      "Inherited rewrite policy",
+    "live.conversations.drawer.policy.rewriteInherited": "Inherited rewrite policy",
     "live.conversations.drawer.binding.encryptedOwnerHint":
       "Clearing the manual binding does not clear the encrypted-session owner lock.",
     "live.conversations.drawer.binding.ownerConfirm.title":
@@ -2220,8 +1927,7 @@ const baseTranslations = {
       "Changing the binding may make future requests fail with invalid_encrypted_content.",
     "live.conversations.drawer.binding.ownerConfirm.cancel": "Cancel",
     "live.conversations.drawer.binding.ownerConfirm.confirm": "Continue",
-    "live.conversations.drawer.binding.ownerConfirm.unknownOwner":
-      "unknown owner",
+    "live.conversations.drawer.binding.ownerConfirm.unknownOwner": "unknown owner",
     "live.conversations.activity.title": "Conversation activity overview",
     "live.conversations.activity.metricRequests": "Calls",
     "live.conversations.activity.metricSuccess": "Success",
@@ -2230,8 +1936,7 @@ const baseTranslations = {
     "live.conversations.activity.metricTokens": "Tokens",
     "live.conversations.activity.metricCost": "Cost",
     "live.conversations.activity.metricAvgDuration": "Avg duration",
-    "live.conversations.activity.chartAria":
-      "Conversation activity trend chart",
+    "live.conversations.activity.chartAria": "Conversation activity trend chart",
     "live.conversations.activity.legendSuccess": "Success",
     "live.conversations.activity.legendFailure": "Failure",
     "live.conversations.activity.legendInFlight": "Running",
@@ -2332,8 +2037,7 @@ const baseTranslations = {
     "records.summary.notice.refreshAction": "Load new data",
     "records.summary.notice.newDataAria":
       "{{count}} new records available. Activate to load them into the current snapshot.",
-    "records.summary.notice.refreshAria":
-      "Load {{count}} new records into the current snapshot.",
+    "records.summary.notice.refreshAria": "Load {{count}} new records into the current snapshot.",
     "records.summary.notice.refreshingAria":
       "Loading {{count}} new records into the current snapshot.",
     "records.summary.token.requests": "Requests",
@@ -2418,14 +2122,11 @@ const baseTranslations = {
     "table.noRecords": "No records yet.",
     "table.column.time": "Time",
     "table.column.model": "Model",
-    "table.model.routingMismatchTitle":
-      "Response model differs from the requested model",
-    "table.model.routingMismatchAria":
-      "Upstream routed this request to a different response model",
+    "table.model.routingMismatchTitle": "Response model differs from the requested model",
+    "table.model.routingMismatchAria": "Upstream routed this request to a different response model",
     "table.model.fastPriorityTitle": "Fast (priority processing)",
     "table.model.fastPriorityAria": "Fast mode enabled via priority processing",
-    "table.model.fastRequestedOnlyTitle":
-      "Fast requested, but priority processing was not applied",
+    "table.model.fastRequestedOnlyTitle": "Fast requested, but priority processing was not applied",
     "table.model.fastRequestedOnlyAria":
       "Fast was requested, but priority processing was not applied",
     "table.column.account": "Account",
@@ -2440,8 +2141,7 @@ const baseTranslations = {
     "table.column.costUsd": "Cost (USD)",
     "table.column.latency": "Elapsed",
     "table.column.firstByteCompression": "First byte / HTTP compression",
-    "table.column.firstResponseByteTotalCompression":
-      "System to first byte / HTTP compression",
+    "table.column.firstResponseByteTotalCompression": "System to first byte / HTTP compression",
     "table.column.totalLatencyShort": "Elapsed",
     "table.column.firstByteLatencyShort": "TTFB",
     "table.column.firstResponseByteTotalShort": "First byte total",
@@ -2498,12 +2198,9 @@ const baseTranslations = {
     "table.details.reasoningEffort": "Reasoning effort",
     "table.details.reasoningTokens": "Reasoning tokens",
     "table.details.proxyWeightDelta": "Proxy weight delta (this call)",
-    "table.details.proxyWeightDeltaA11yIncrease":
-      "Proxy weight increased by {{value}}",
-    "table.details.proxyWeightDeltaA11yDecrease":
-      "Proxy weight decreased by {{value}}",
-    "table.details.proxyWeightDeltaA11yUnchanged":
-      "Proxy weight unchanged ({{value}})",
+    "table.details.proxyWeightDeltaA11yIncrease": "Proxy weight increased by {{value}}",
+    "table.details.proxyWeightDeltaA11yDecrease": "Proxy weight decreased by {{value}}",
+    "table.details.proxyWeightDeltaA11yUnchanged": "Proxy weight unchanged ({{value}})",
     "table.details.failureKind": "Failure kind",
     "table.details.failureClass": "Failure class",
     "table.details.actionable": "Actionable",
@@ -2536,8 +2233,7 @@ const baseTranslations = {
       "Only the retained response preview is available for this record.",
     "table.responseBody.unavailable.missingBody":
       "No retained response body is available for this record.",
-    "table.responseBody.unavailable.generic":
-      "The response body is currently unavailable.",
+    "table.responseBody.unavailable.generic": "The response body is currently unavailable.",
     "table.details.timingsTitle": "Stage timings",
     "table.details.stage.requestRead": "Request read",
     "table.details.stage.requestParse": "Request parse",
@@ -2554,8 +2250,7 @@ const baseTranslations = {
     "table.poolAttempts.title": "Pool attempts",
     "table.poolAttempts.loading": "Loading pool attempts",
     "table.poolAttempts.loadError": "Failed to load pool attempts: {{error}}",
-    "table.poolAttempts.empty":
-      "No pool attempt records found. The detail may already be cleaned.",
+    "table.poolAttempts.empty": "No pool attempt records found. The detail may already be cleaned.",
     "table.poolAttempts.notPool": "This request did not use pool routing.",
     "table.poolAttempts.realAttemptCount": "Actual attempts",
     "table.poolAttempts.terminalRecordCount": "Terminal records",
@@ -2658,17 +2353,14 @@ const baseTranslations = {
     "app.theme.switchToDark": "切换到深色模式",
     "app.proxySettings.button": "代理设置",
     "app.proxySettings.title": "模型列表劫持",
-    "app.proxySettings.description":
-      "控制反向代理对 /v1/models 的对外返回行为。",
+    "app.proxySettings.description": "控制反向代理对 /v1/models 的对外返回行为。",
     "app.proxySettings.loading": "正在加载设置…",
     "app.proxySettings.loadError": "加载设置失败：{{error}}",
     "app.proxySettings.saveError": "保存设置失败：{{error}}",
     "app.proxySettings.hijackLabel": "劫持 /v1/models",
-    "app.proxySettings.hijackHint":
-      "开启后由当前代理返回预置模型列表，而不是纯透传上游。",
+    "app.proxySettings.hijackHint": "开启后由当前代理返回预置模型列表，而不是纯透传上游。",
     "app.proxySettings.mergeLabel": "实时合并上游模型",
-    "app.proxySettings.mergeHint":
-      "开启后会实时请求上游模型并与预置列表按模型 ID 去重合并。",
+    "app.proxySettings.mergeHint": "开启后会实时请求上游模型并与预置列表按模型 ID 去重合并。",
     "app.proxySettings.mergeDisabledHint": "请先开启劫持，再启用该选项。",
     "app.proxySettings.presetModels": "预置模型列表",
     "app.proxySettings.enabledCount": "已启用：{{count}} / {{total}}",
@@ -2704,8 +2396,7 @@ const baseTranslations = {
       "集中管理 Codex 上游账号、持久登录状态，以及归一化后的 5 小时 / 7 天额度快照。",
     "system.eyebrow": "系统",
     "system.title": "系统工作区",
-    "system.description":
-      "把运行状态、后台任务、共享设置与正向代理运维集中到同一个系统工作区里。",
+    "system.description": "把运行状态、后台任务、共享设置与正向代理运维集中到同一个系统工作区里。",
     "system.nav.label": "系统分区",
     "system.nav.status": "状态",
     "system.nav.tasks": "任务",
@@ -2722,8 +2413,7 @@ const baseTranslations = {
     "accountPool.groups.ungroupedAccountsCount": "{{count}} 个未分组账号",
     "accountPool.groups.retry": "重试",
     "accountPool.groups.loadingTitle": "正在加载分组总览",
-    "accountPool.groups.loadingDescription":
-      "正在汇总最新账号列表、共享分组设置与绑定代理信息。",
+    "accountPool.groups.loadingDescription": "正在汇总最新账号列表、共享分组设置与绑定代理信息。",
     "accountPool.groups.loadError": "加载账号分组失败。",
     "accountPool.groups.emptyTitle": "还没有可展示的分组",
     "accountPool.groups.emptyDescription":
@@ -2818,17 +2508,13 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.generate": "生成密钥",
     "accountPool.upstreamAccounts.routing.apiKeyPlaceholder":
       "粘贴新的号池 API Key 以切换内部路由入口",
-    "accountPool.upstreamAccounts.routing.maintenanceSectionTitle":
-      "分层维护同步",
+    "accountPool.upstreamAccounts.routing.maintenanceSectionTitle": "分层维护同步",
     "accountPool.upstreamAccounts.routing.maintenanceSectionDescription":
       "让正在承接流量的账号额度更新更及时；主限制或次限制重置后，也会尽快再同步一次，减少可用性显示滞后。",
-    "accountPool.upstreamAccounts.routing.primarySyncIntervalLabel":
-      "优先队列同步间隔",
-    "accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel":
-      "次级队列同步间隔",
+    "accountPool.upstreamAccounts.routing.primarySyncIntervalLabel": "优先队列同步间隔",
+    "accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel": "次级队列同步间隔",
     "accountPool.upstreamAccounts.routing.priorityCapLabel": "优先可用账号上限",
-    "accountPool.upstreamAccounts.routing.priorityCapValue":
-      "前 {{count}} 个账号",
+    "accountPool.upstreamAccounts.routing.priorityCapValue": "前 {{count}} 个账号",
     "accountPool.upstreamAccounts.routing.intervalHours": "{{count}} 小时",
     "accountPool.upstreamAccounts.routing.intervalMinutes": "{{count}} 分钟",
     "accountPool.upstreamAccounts.routing.intervalSeconds": "{{count}} 秒",
@@ -2836,8 +2522,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.dialogDescription":
       "在项目界面里直接编辑号池路由密钥、请求链路超时和双层 maintenance 队列参数。",
     "accountPool.upstreamAccounts.routing.save": "保存设置",
-    "accountPool.upstreamAccounts.routing.validation.integerRequired":
-      "同步字段必须填写为正整数。",
+    "accountPool.upstreamAccounts.routing.validation.integerRequired": "同步字段必须填写为正整数。",
     "accountPool.upstreamAccounts.routing.validation.primaryMin":
       "优先队列同步间隔不能小于 60 秒。",
     "accountPool.upstreamAccounts.routing.validation.secondaryMin":
@@ -2846,16 +2531,11 @@ const baseTranslations = {
       "次级队列同步间隔必须大于等于优先队列同步间隔。",
     "accountPool.upstreamAccounts.routing.validation.priorityCapMin":
       "优先可用账号上限不能小于 1。",
-    "accountPool.upstreamAccounts.routing.timeout.sectionTitle":
-      "请求链路超时（秒）",
-    "accountPool.upstreamAccounts.routing.timeout.responsesFirstByte":
-      "一般请求响应体首字超时",
-    "accountPool.upstreamAccounts.routing.timeout.compactFirstByte":
-      "压缩请求响应体首字超时",
-    "accountPool.upstreamAccounts.routing.timeout.responsesStream":
-      "一般请求流结束超时",
-    "accountPool.upstreamAccounts.routing.timeout.compactStream":
-      "压缩请求流结束超时",
+    "accountPool.upstreamAccounts.routing.timeout.sectionTitle": "请求链路超时（秒）",
+    "accountPool.upstreamAccounts.routing.timeout.responsesFirstByte": "一般请求响应体首字超时",
+    "accountPool.upstreamAccounts.routing.timeout.compactFirstByte": "压缩请求响应体首字超时",
+    "accountPool.upstreamAccounts.routing.timeout.responsesStream": "一般请求流结束超时",
+    "accountPool.upstreamAccounts.routing.timeout.compactStream": "压缩请求流结束超时",
     "accountPool.upstreamAccounts.actions.refresh": "刷新列表",
     "accountPool.upstreamAccounts.actions.addAccount": "新增账号",
     "accountPool.upstreamAccounts.actions.addOauth": "新增 OAuth 账号",
@@ -2865,8 +2545,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.actions.cancel": "取消",
     "accountPool.upstreamAccounts.actions.startOauth": "开始 OAuth 登录",
     "accountPool.upstreamAccounts.actions.generateOauthUrl": "生成 OAuth 地址",
-    "accountPool.upstreamAccounts.actions.regenerateOauthUrl":
-      "重新生成 OAuth 地址",
+    "accountPool.upstreamAccounts.actions.regenerateOauthUrl": "重新生成 OAuth 地址",
     "accountPool.upstreamAccounts.actions.copyOauthUrl": "复制 OAuth 地址",
     "accountPool.upstreamAccounts.actions.completeOauth": "完成 OAuth 登录",
     "accountPool.upstreamAccounts.actions.generateMailbox": "生成",
@@ -2896,14 +2575,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.proxyBindings.addPlaceholder": "选择代理节点",
     "accountPool.upstreamAccounts.proxyBindings.loading": "正在加载代理节点",
     "accountPool.upstreamAccounts.proxyBindings.clear": "继承分组",
-    "accountPool.upstreamAccounts.proxyBindings.dialogTitle":
-      "选择账号代理节点",
+    "accountPool.upstreamAccounts.proxyBindings.dialogTitle": "选择账号代理节点",
     "accountPool.upstreamAccounts.proxyBindings.dialogDescription":
       "为这个账号选择一个或多个显式代理节点。清空选择后会继承分组配置。",
     "accountPool.upstreamAccounts.proxyBindings.dialogAutomatic":
       "当前没有账号覆盖，这个账号会继承分组代理配置。",
-    "accountPool.upstreamAccounts.proxyBindings.dialogEmpty":
-      "当前没有可用的代理节点。",
+    "accountPool.upstreamAccounts.proxyBindings.dialogEmpty": "当前没有可用的代理节点。",
     "accountPool.upstreamAccounts.proxyBindings.apply": "应用选择",
     "accountPool.upstreamAccounts.proxyBindings.sourceAccount": "账号覆盖",
     "accountPool.upstreamAccounts.proxyBindings.sourceGroup": "继承分组",
@@ -2918,8 +2595,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.actions.enable": "启用",
     "accountPool.upstreamAccounts.actions.openDetails": "打开详情",
     "accountPool.upstreamAccounts.actions.dismissDuplicateWarning": "收起提示",
-    "accountPool.upstreamAccounts.partialSuccess.title":
-      "保存成功，但后续步骤有警告",
+    "accountPool.upstreamAccounts.partialSuccess.title": "保存成功，但后续步骤有警告",
     "accountPool.upstreamAccounts.partialSuccess.createdButGroupSettingsFailed":
       "账号已创建，但保存分组草稿设置失败：{error}",
     "accountPool.upstreamAccounts.partialSuccess.savedButGroupSettingsFailed":
@@ -2928,8 +2604,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupFilterLabel": "账号分组",
     "accountPool.upstreamAccounts.groupFilter.all": "全部分组",
     "accountPool.upstreamAccounts.groupFilter.ungrouped": "未分组",
-    "accountPool.upstreamAccounts.groupFilterPlaceholder":
-      "全部分组或搜索分组名",
+    "accountPool.upstreamAccounts.groupFilterPlaceholder": "全部分组或搜索分组名",
     "accountPool.upstreamAccounts.groupFilterSearchPlaceholder": "搜索分组...",
     "accountPool.upstreamAccounts.groupFilterEmpty": "没有匹配的分组。",
     "accountPool.upstreamAccounts.groupFilterClear": "清空分组筛选",
@@ -2939,24 +2614,18 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.statusFilter.all": "全部状态",
     "accountPool.upstreamAccounts.workStatusFilterLabel": "工作状态",
     "accountPool.upstreamAccounts.workStatusFilter.all": "全部工作状态",
-    "accountPool.upstreamAccounts.workStatusFilter.searchPlaceholder":
-      "搜索工作状态...",
-    "accountPool.upstreamAccounts.workStatusFilter.empty":
-      "没有匹配的工作状态。",
+    "accountPool.upstreamAccounts.workStatusFilter.searchPlaceholder": "搜索工作状态...",
+    "accountPool.upstreamAccounts.workStatusFilter.empty": "没有匹配的工作状态。",
     "accountPool.upstreamAccounts.workStatusFilter.clear": "清空工作状态筛选",
     "accountPool.upstreamAccounts.enableStatusFilterLabel": "启用状态",
     "accountPool.upstreamAccounts.enableStatusFilter.all": "全部启用状态",
-    "accountPool.upstreamAccounts.enableStatusFilter.searchPlaceholder":
-      "搜索启用状态...",
-    "accountPool.upstreamAccounts.enableStatusFilter.empty":
-      "没有匹配的启用状态。",
+    "accountPool.upstreamAccounts.enableStatusFilter.searchPlaceholder": "搜索启用状态...",
+    "accountPool.upstreamAccounts.enableStatusFilter.empty": "没有匹配的启用状态。",
     "accountPool.upstreamAccounts.enableStatusFilter.clear": "清空启用状态筛选",
     "accountPool.upstreamAccounts.healthStatusFilterLabel": "账号状态",
     "accountPool.upstreamAccounts.healthStatusFilter.all": "全部账号状态",
-    "accountPool.upstreamAccounts.healthStatusFilter.searchPlaceholder":
-      "搜索账号状态...",
-    "accountPool.upstreamAccounts.healthStatusFilter.empty":
-      "没有匹配的账号状态。",
+    "accountPool.upstreamAccounts.healthStatusFilter.searchPlaceholder": "搜索账号状态...",
+    "accountPool.upstreamAccounts.healthStatusFilter.empty": "没有匹配的账号状态。",
     "accountPool.upstreamAccounts.healthStatusFilter.clear": "清空账号状态筛选",
     "accountPool.upstreamAccounts.tagFilterLabel": "账号标签",
     "accountPool.upstreamAccounts.tagFilterPlaceholder": "全部标签",
@@ -2967,14 +2636,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.oauth.createTitle": "Codex OAuth 登录",
     "accountPool.upstreamAccounts.oauth.createDescription":
       "先生成手动 OAuth 授权地址，再复制到其他浏览器完成登录，最后把 localhost 回调地址粘贴回这里。",
-    "accountPool.upstreamAccounts.oauth.completed":
-      "授权完成，账号列表已刷新。",
-    "accountPool.upstreamAccounts.oauth.failed":
-      "授权流程没有完成，请检查上游返回信息后重试。",
+    "accountPool.upstreamAccounts.oauth.completed": "授权完成，账号列表已刷新。",
+    "accountPool.upstreamAccounts.oauth.failed": "授权流程没有完成，请检查上游返回信息后重试。",
     "accountPool.upstreamAccounts.oauth.popupFallback":
       "登录弹窗被浏览器拦截，已改为在新标签页打开授权页。",
-    "accountPool.upstreamAccounts.oauth.popupClosed":
-      "登录弹窗在完成授权前被关闭了。",
+    "accountPool.upstreamAccounts.oauth.popupClosed": "登录弹窗在完成授权前被关闭了。",
     "accountPool.upstreamAccounts.oauth.openAgain": "重新打开授权页",
     "accountPool.upstreamAccounts.oauth.status.pending": "等待 OAuth 回调",
     "accountPool.upstreamAccounts.oauth.status.completed": "OAuth 回调已完成",
@@ -2993,8 +2659,7 @@ const baseTranslations = {
       "为 {{name}} 重新生成 OAuth 地址，再把 localhost 回调链接贴回这里，保持已保存凭据可续期。",
     "accountPool.upstreamAccounts.createPage.relinkLoading":
       "正在加载已保存账号信息，用于重新授权…",
-    "accountPool.upstreamAccounts.createPage.relinkLoadFailed":
-      "无法加载要重新授权的账号。",
+    "accountPool.upstreamAccounts.createPage.relinkLoadFailed": "无法加载要重新授权的账号。",
     "accountPool.upstreamAccounts.createPage.relinkNonOauth":
       "只有 OAuth 上游账号可以在这个页面重新授权。",
     "accountPool.upstreamAccounts.createPage.helpTitle": "创建说明",
@@ -3004,8 +2669,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.createPage.tabs.oauth": "OAuth 登录",
     "accountPool.upstreamAccounts.createPage.tabs.batchOauth": "批量 OAuth",
     "accountPool.upstreamAccounts.createPage.tabs.import": "导入 JSON",
-    "accountPool.upstreamAccounts.createPage.tabs.importSession":
-      "导入 Session",
+    "accountPool.upstreamAccounts.createPage.tabs.importSession": "导入 Session",
     "accountPool.upstreamAccounts.createPage.tabs.apiKey": "API Key",
     "accountPool.upstreamAccounts.import.createTitle": "导入 OAuth JSON",
     "accountPool.upstreamAccounts.import.createDescription":
@@ -3016,114 +2680,84 @@ const baseTranslations = {
       '{\n  "type": "auth0",\n  "email": "owner@example.com",\n  ...\n}',
     "accountPool.upstreamAccounts.import.paste.hint":
       "每次只粘贴一条凭据 JSON object。粘贴成功后会先做本地检查并自动加入列表；真正的接口校验会在“验证并预览”时统一执行。",
-    "accountPool.upstreamAccounts.import.paste.validating":
-      "正在本地检查粘贴的凭据…",
+    "accountPool.upstreamAccounts.import.paste.validating": "正在本地检查粘贴的凭据…",
     "accountPool.upstreamAccounts.import.paste.action": "检查并加入列表",
     "accountPool.upstreamAccounts.import.paste.clearDraft": "清空编辑框",
-    "accountPool.upstreamAccounts.import.paste.emptyError":
-      "请先粘贴一条凭据 JSON object。",
-    "accountPool.upstreamAccounts.import.paste.invalidJsonError":
-      "粘贴内容必须是合法 JSON。",
+    "accountPool.upstreamAccounts.import.paste.emptyError": "请先粘贴一条凭据 JSON object。",
+    "accountPool.upstreamAccounts.import.paste.invalidJsonError": "粘贴内容必须是合法 JSON。",
     "accountPool.upstreamAccounts.import.paste.singleObjectError":
       "一次只能粘贴一条凭据 JSON object。",
     "accountPool.upstreamAccounts.import.paste.unexpectedResponse":
       "粘贴凭据返回了无法识别的校验结果。",
-    "accountPool.upstreamAccounts.import.local.requiredField":
-      "{{fieldName}} 不能为空。",
-    "accountPool.upstreamAccounts.import.local.invalidJwt":
-      "{{tokenName}} 必须是合法 JWT。",
+    "accountPool.upstreamAccounts.import.local.requiredField": "{{fieldName}} 不能为空。",
+    "accountPool.upstreamAccounts.import.local.invalidJwt": "{{tokenName}} 必须是合法 JWT。",
     "accountPool.upstreamAccounts.import.local.invalidExpired":
       "expired 必须是合法 RFC3339 时间戳。",
     "accountPool.upstreamAccounts.import.local.missingExpiry":
       "当 token 缺少 exp 时，必须提供 expired。",
-    "accountPool.upstreamAccounts.import.local.emailMismatch":
-      "email 与 id_token 不一致。",
+    "accountPool.upstreamAccounts.import.local.emailMismatch": "email 与 id_token 不一致。",
     "accountPool.upstreamAccounts.import.local.accountIdMismatch":
       "account_id 与 id_token 不一致。",
-    "accountPool.upstreamAccounts.import.local.pasteDuplicate":
-      "这条凭据已经在待验证列表里了。",
-    "accountPool.upstreamAccounts.import.local.fileRejected":
-      "已跳过 {{fileName}}：{{reason}}",
+    "accountPool.upstreamAccounts.import.local.pasteDuplicate": "这条凭据已经在待验证列表里了。",
+    "accountPool.upstreamAccounts.import.local.fileRejected": "已跳过 {{fileName}}：{{reason}}",
     "accountPool.upstreamAccounts.import.local.duplicateSkipped":
       "已跳过重复凭据 {{fileName}}：同一账号已经在待验证列表里。",
     "accountPool.upstreamAccounts.import.selectedFilesTitle": "待验证凭据",
-    "accountPool.upstreamAccounts.import.selectedFilesEmpty":
-      "还没有加入任何凭据。",
-    "accountPool.upstreamAccounts.import.filesSelected":
-      "当前已加入 {{count}} 条凭据",
+    "accountPool.upstreamAccounts.import.selectedFilesEmpty": "还没有加入任何凭据。",
+    "accountPool.upstreamAccounts.import.filesSelected": "当前已加入 {{count}} 条凭据",
     "accountPool.upstreamAccounts.import.clearSelection": "清空选择",
-    "accountPool.upstreamAccounts.import.defaultGroupPlaceholder":
-      "为新建导入账号设置默认分组",
+    "accountPool.upstreamAccounts.import.defaultGroupPlaceholder": "为新建导入账号设置默认分组",
     "accountPool.upstreamAccounts.import.defaultMetadataHint":
       "默认分组备注和标签只会应用到新建账号，命中已有账号时不会覆盖现有元数据。",
     "accountPool.upstreamAccounts.import.validateAction": "验证并预览",
-    "accountPool.upstreamAccounts.importSession.createTitle":
-      "导入 ChatGPT Web Session",
+    "accountPool.upstreamAccounts.importSession.createTitle": "导入 ChatGPT Web Session",
     "accountPool.upstreamAccounts.importSession.createDescription":
       "选择导出的 ChatGPT Web session 文件，或粘贴 session JSON；前端会先转换成当前支持的 Codex OAuth 导入格式，再进入服务端预览。",
-    "accountPool.upstreamAccounts.importSession.fileInputLabel":
-      "Web Session JSON 文件",
-    "accountPool.upstreamAccounts.importSession.paste.label":
-      "粘贴 Web Session JSON",
+    "accountPool.upstreamAccounts.importSession.fileInputLabel": "Web Session JSON 文件",
+    "accountPool.upstreamAccounts.importSession.paste.label": "粘贴 Web Session JSON",
     "accountPool.upstreamAccounts.importSession.paste.placeholder":
       '{\n  "user": { "email": "owner@example.com" },\n  "account": { "id": "acct_...", "planType": "plus" },\n  "accessToken": "...",\n  "sessionToken": "...",\n  "expires": "2026-08-06T14:29:36.155Z"\n}',
     "accountPool.upstreamAccounts.importSession.paste.hint":
       "可粘贴 ChatGPT Web session object、数组或包含 session 的导出 JSON。缺少 refresh token 的导入账号会显示无 RT。",
-    "accountPool.upstreamAccounts.importSession.paste.validating":
-      "正在本地转换粘贴的 Session…",
+    "accountPool.upstreamAccounts.importSession.paste.validating": "正在本地转换粘贴的 Session…",
     "accountPool.upstreamAccounts.importSession.paste.action": "转换并加入列表",
-    "accountPool.upstreamAccounts.importSession.paste.emptyError":
-      "请先粘贴 Web Session JSON。",
+    "accountPool.upstreamAccounts.importSession.paste.emptyError": "请先粘贴 Web Session JSON。",
     "accountPool.upstreamAccounts.importSession.local.noSession":
       "没有找到包含 accessToken 和账号身份的 ChatGPT Web Session。",
-    "accountPool.upstreamAccounts.importSession.local.missingAccessToken":
-      "accessToken 不能为空。",
-    "accountPool.upstreamAccounts.importSession.selectedFilesTitle":
-      "待验证 Session",
-    "accountPool.upstreamAccounts.importSession.selectedFilesEmpty":
-      "还没有加入任何 Session。",
+    "accountPool.upstreamAccounts.importSession.local.missingAccessToken": "accessToken 不能为空。",
+    "accountPool.upstreamAccounts.importSession.selectedFilesTitle": "待验证 Session",
+    "accountPool.upstreamAccounts.importSession.selectedFilesEmpty": "还没有加入任何 Session。",
     "accountPool.upstreamAccounts.importSession.validateAction": "验证并预览",
     "accountPool.upstreamAccounts.import.validation.title": "导入验证",
     "accountPool.upstreamAccounts.import.validation.description":
       "已检查 {{files}} 个输入项中的 {{checked}} / {{total}} 条唯一凭据。",
-    "accountPool.upstreamAccounts.import.validation.checking":
-      "正在验证待选凭据…",
-    "accountPool.upstreamAccounts.import.validation.empty":
-      "暂时没有可显示的验证结果。",
+    "accountPool.upstreamAccounts.import.validation.checking": "正在验证待选凭据…",
+    "accountPool.upstreamAccounts.import.validation.empty": "暂时没有可显示的验证结果。",
     "accountPool.upstreamAccounts.import.validation.clearFilter": "清除筛选",
-    "accountPool.upstreamAccounts.import.validation.resultsTitle":
-      "验证结果列表",
+    "accountPool.upstreamAccounts.import.validation.resultsTitle": "验证结果列表",
     "accountPool.upstreamAccounts.import.validation.resultsCount":
       "当前显示 {{shown}} / {{total}} 行。",
     "accountPool.upstreamAccounts.import.validation.metrics.files": "已选文件",
     "accountPool.upstreamAccounts.import.validation.metrics.unique": "唯一凭据",
-    "accountPool.upstreamAccounts.import.validation.metrics.usable":
-      "当前可导入",
+    "accountPool.upstreamAccounts.import.validation.metrics.usable": "当前可导入",
     "accountPool.upstreamAccounts.import.validation.metrics.review": "需要关注",
-    "accountPool.upstreamAccounts.import.validation.columns.file":
-      "文件 / 身份",
+    "accountPool.upstreamAccounts.import.validation.columns.file": "文件 / 身份",
     "accountPool.upstreamAccounts.import.validation.columns.result": "结果",
     "accountPool.upstreamAccounts.import.validation.columns.detail": "详情",
     "accountPool.upstreamAccounts.import.validation.columns.actions": "操作",
-    "accountPool.upstreamAccounts.import.validation.matchedAccount":
-      "匹配到 {{name}}",
-    "accountPool.upstreamAccounts.import.validation.attempts":
-      "第 {{count}} 次",
+    "accountPool.upstreamAccounts.import.validation.matchedAccount": "匹配到 {{name}}",
+    "accountPool.upstreamAccounts.import.validation.attempts": "第 {{count}} 次",
     "accountPool.upstreamAccounts.import.validation.noDetail": "没有额外详情。",
-    "accountPool.upstreamAccounts.import.validation.importedAccount":
-      "本地账号 #{{id}}",
+    "accountPool.upstreamAccounts.import.validation.importedAccount": "本地账号 #{{id}}",
     "accountPool.upstreamAccounts.import.validation.retryOne": "重试此项",
     "accountPool.upstreamAccounts.import.validation.retryFailed": "重试失败项",
-    "accountPool.upstreamAccounts.import.validation.importValid":
-      "导入可用项（{{count}}）",
+    "accountPool.upstreamAccounts.import.validation.importValid": "导入可用项（{{count}}）",
     "accountPool.upstreamAccounts.import.validation.footerHint":
       "当前有 {{valid}} 个文件可导入，输入内重复 {{duplicates}} 个。",
     "accountPool.upstreamAccounts.import.validation.status.pending": "校验中",
-    "accountPool.upstreamAccounts.import.validation.status.duplicate":
-      "输入重复",
+    "accountPool.upstreamAccounts.import.validation.status.duplicate": "输入重复",
     "accountPool.upstreamAccounts.import.validation.status.ok": "可导入",
-    "accountPool.upstreamAccounts.import.validation.status.exhausted":
-      "可导入（额度耗尽）",
+    "accountPool.upstreamAccounts.import.validation.status.exhausted": "可导入（额度耗尽）",
     "accountPool.upstreamAccounts.import.validation.status.invalid": "无效",
     "accountPool.upstreamAccounts.import.validation.status.error": "错误",
     "accountPool.upstreamAccounts.import.validation.reportTitle": "导入报告",
@@ -3131,12 +2765,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.import.validation.report.created": "新建",
     "accountPool.upstreamAccounts.import.validation.report.updated": "更新现有",
     "accountPool.upstreamAccounts.import.validation.report.failed": "失败",
-    "accountPool.upstreamAccounts.import.validation.report.selected":
-      "已选导入",
-    "accountPool.upstreamAccounts.import.validation.reportResultsTitle":
-      "导入明细",
-    "accountPool.upstreamAccounts.batchOauth.createTitle":
-      "批量 Codex OAuth 入池",
+    "accountPool.upstreamAccounts.import.validation.report.selected": "已选导入",
+    "accountPool.upstreamAccounts.import.validation.reportResultsTitle": "导入明细",
+    "accountPool.upstreamAccounts.batchOauth.createTitle": "批量 Codex OAuth 入池",
     "accountPool.upstreamAccounts.batchOauth.createDescription":
       "在表格中填写多行账号，逐行生成 OAuth 地址并分别完成 callback，无需离开当前页面。",
     "accountPool.upstreamAccounts.batchOauth.tableTitle": "批量 OAuth 表格",
@@ -3148,48 +2779,37 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.batchOauth.actionsHeader": "行操作",
     "accountPool.upstreamAccounts.batchOauth.actions.addRow": "新增一行",
     "accountPool.upstreamAccounts.batchOauth.defaultGroupLabel": "默认分组",
-    "accountPool.upstreamAccounts.batchOauth.defaultGroupPlaceholder":
-      "给新增行设置默认分组",
+    "accountPool.upstreamAccounts.batchOauth.defaultGroupPlaceholder": "给新增行设置默认分组",
     "accountPool.upstreamAccounts.batchOauth.actions.removeRow": "移除该行",
     "accountPool.upstreamAccounts.batchOauth.actions.expandNote": "展开备注",
     "accountPool.upstreamAccounts.batchOauth.actions.collapseNote": "收起备注",
-    "accountPool.upstreamAccounts.batchOauth.actions.toggleMother":
-      "切换母号标记",
+    "accountPool.upstreamAccounts.batchOauth.actions.toggleMother": "切换母号标记",
     "accountPool.upstreamAccounts.batchOauth.actions.editMailbox": "编辑邮箱",
     "accountPool.upstreamAccounts.batchOauth.actions.submitMailbox": "提交邮箱",
-    "accountPool.upstreamAccounts.batchOauth.actions.cancelMailboxEdit":
-      "取消邮箱编辑",
+    "accountPool.upstreamAccounts.batchOauth.actions.cancelMailboxEdit": "取消邮箱编辑",
     "accountPool.upstreamAccounts.batchOauth.validation.mailboxFormat":
       "请先填写格式正确的邮箱地址，再执行附着。",
-    "accountPool.upstreamAccounts.batchOauth.tooltip.generateTitle":
-      "生成 OAuth 地址",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.generateTitle": "生成 OAuth 地址",
     "accountPool.upstreamAccounts.batchOauth.tooltip.generateBody":
       "先确认这一行的账号信息无误，再生成登录链接，后续就在这条链接上继续完成授权。",
-    "accountPool.upstreamAccounts.batchOauth.tooltip.regenerateTitle":
-      "重新生成 OAuth 地址",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.regenerateTitle": "重新生成 OAuth 地址",
     "accountPool.upstreamAccounts.batchOauth.tooltip.regenerateBody":
       "当旧链接过期，或你改动了账号信息时，重新生成新的链接继续操作；旧链接应视为失效。",
-    "accountPool.upstreamAccounts.batchOauth.tooltip.copyTitle":
-      "复制 OAuth 地址",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.copyTitle": "复制 OAuth 地址",
     "accountPool.upstreamAccounts.batchOauth.tooltip.copyBody":
       "把当前登录链接复制出去，在要完成登录的浏览器中打开；登录完成后，再把回调链接粘贴回这一行。",
     "accountPool.upstreamAccounts.batchOauth.oauthAction.remaining":
       "当前链接剩余有效时间：{{time}}。",
-    "accountPool.upstreamAccounts.batchOauth.oauthAction.expiresAt":
-      "过期时间：{{timestamp}}。",
-    "accountPool.upstreamAccounts.batchOauth.tooltip.copyCodeTitle":
-      "复制验证码",
-    "accountPool.upstreamAccounts.batchOauth.tooltip.editMailboxTitle":
-      "编辑邮箱",
+    "accountPool.upstreamAccounts.batchOauth.oauthAction.expiresAt": "过期时间：{{timestamp}}。",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.copyCodeTitle": "复制验证码",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.editMailboxTitle": "编辑邮箱",
     "accountPool.upstreamAccounts.batchOauth.tooltip.editMailboxBody":
       "在悬浮气泡里直接编辑这行邮箱地址，提交后即可附着邮箱增强能力，不用离开表格。",
     "accountPool.upstreamAccounts.batchOauth.codeMissing": "还没有收到验证码。",
-    "accountPool.upstreamAccounts.batchOauth.tooltip.invitedTitle":
-      "已收到邀请",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.invitedTitle": "已收到邀请",
     "accountPool.upstreamAccounts.batchOauth.tooltip.invitedBody":
       "这个邮箱已经收到工作区邀请邮件。",
-    "accountPool.upstreamAccounts.batchOauth.tooltip.notInvitedTitle":
-      "暂未受邀",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.notInvitedTitle": "暂未受邀",
     "accountPool.upstreamAccounts.batchOauth.tooltip.notInvitedBody":
       "这个邮箱暂时还没有收到工作区邀请邮件。",
     "accountPool.upstreamAccounts.batchOauth.tooltip.noteTitle": "备注（可选）",
@@ -3203,8 +2823,7 @@ const baseTranslations = {
       "这个分组已经存在，保存后会立即更新共享备注和代理绑定。",
     "accountPool.upstreamAccounts.groupNotes.draftDescription":
       "这个分组还没有实际账号，现在保存会提前创建它的共享设置。",
-    "accountPool.upstreamAccounts.groupNotes.notePlaceholder":
-      "填写这个分组的共享备注",
+    "accountPool.upstreamAccounts.groupNotes.notePlaceholder": "填写这个分组的共享备注",
     "accountPool.upstreamAccounts.groupNotes.concurrency.label": "并发限制",
     "accountPool.upstreamAccounts.groupNotes.concurrency.hint":
       "用 1-30 限制这个分组的新分配并发，最后一档表示无限。",
@@ -3221,71 +2840,50 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.nodeShunt.label": "节点分流策略",
     "accountPool.upstreamAccounts.groupNotes.nodeShunt.hint":
       "每个选中的节点都会成为独占槽位；勾选 N 个节点，就代表这个分组同时能提供 N 个上游账号。",
-    "accountPool.upstreamAccounts.groupNotes.nodeShunt.toggle":
-      "开启独占节点槽位",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.toggle": "开启独占节点槽位",
     "accountPool.upstreamAccounts.groupNotes.nodeShunt.warning":
       "开启前请至少绑定一个节点（含 Direct）。",
-    "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.label":
-      "分组单账号轮换负载",
+    "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.label": "分组单账号轮换负载",
     "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.hint":
       "成功请求会让同一对话继续留在当前账号；上游 429 重试耗尽后，只把该对话切到按重置时间排序的下一候选账号。",
     "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.toggle":
       "对话遇到最终 429 后才切换账号",
-    "accountPool.upstreamAccounts.groupNotes.upstream429.label":
-      "上游 429 重试",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.label": "上游 429 重试",
     "accountPool.upstreamAccounts.groupNotes.upstream429.hint":
       "0 表示不重试；选择 1-5 后，这个分组遇到上游 429 时会先保留当前账号，并在随机 1-10 秒后重试，耗尽后再回到当前的账号冷却和切号流程。",
-    "accountPool.upstreamAccounts.groupNotes.upstream429.toggle":
-      "上游 429 后继续重试当前账号",
-    "accountPool.upstreamAccounts.groupNotes.upstream429.countLabel":
-      "重试次数",
-    "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce":
-      "重试 1 次",
-    "accountPool.upstreamAccounts.groupNotes.upstream429.countMany":
-      "重试 {{count}} 次",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.toggle": "上游 429 后继续重试当前账号",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.countLabel": "重试次数",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce": "重试 1 次",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.countMany": "重试 {{count}} 次",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.label": "路由策略",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.hint":
       "为该分组自定义优先级、FAST 模式、滚动窗口、切入/切出、并发和上游 429 retry。",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.edit": "编辑策略",
-    "accountPool.upstreamAccounts.groupNotes.routingPolicy.title":
-      "分组路由策略",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.title": "分组路由策略",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.description":
       "这些设置会覆盖根默认值，Tag 和账号策略仍可继续覆盖。",
-    "accountPool.upstreamAccounts.groupNotes.routingPolicy.save":
-      "应用分组策略",
-    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteMode":
-      "图片工具",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.save": "应用分组策略",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteMode": "图片工具",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint":
       "保持原样会依据账号自身图片能力；缺少时补充只在已确认图片意图时注入图片工具；强制补充会无条件注入；强制去掉会无条件移除。",
-    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolKeepOriginal":
-      "保持原样",
-    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolFillMissing":
-      "缺少时补充",
-    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceAdd":
-      "强制补充",
-    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceRemove":
-      "强制去掉",
-    "accountPool.upstreamAccounts.statusChangeReasons.sectionTitle":
-      "状态变化触发原因",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolKeepOriginal": "保持原样",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolFillMissing": "缺少时补充",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceAdd": "强制补充",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceRemove": "强制去掉",
+    "accountPool.upstreamAccounts.statusChangeReasons.sectionTitle": "状态变化触发原因",
     "accountPool.upstreamAccounts.statusChangeReasons.sectionHint":
       "关闭后，这类原因仍会保留调用证据和一条中性账号事件，但不再把账号推向重新登录、上游拒绝、冷却或降级状态。",
-    "accountPool.upstreamAccounts.statusChangeReasons.summary":
-      "已启用 {{enabled}} / {{total}}",
-    "accountPool.upstreamAccounts.statusChangeReasons.enabledValue":
-      "会触发状态变化",
-    "accountPool.upstreamAccounts.statusChangeReasons.disabledValue":
-      "仅保留证据",
+    "accountPool.upstreamAccounts.statusChangeReasons.summary": "已启用 {{enabled}} / {{total}}",
+    "accountPool.upstreamAccounts.statusChangeReasons.enabledValue": "会触发状态变化",
+    "accountPool.upstreamAccounts.statusChangeReasons.disabledValue": "仅保留证据",
     "accountPool.upstreamAccounts.statusChangeReasons.toggleEnabled": "开启",
     "accountPool.upstreamAccounts.statusChangeReasons.toggleDisabled": "关闭",
     "accountPool.upstreamAccounts.statusChangeReasons.resetAction": "重置",
-    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_401":
-      "401 凭据无效",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_401": "401 凭据无效",
     "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_402":
       "402 套餐或计费拒绝",
-    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_403":
-      "403 权限拒绝",
-    "accountPool.upstreamAccounts.statusChangeReasons.reasons.reauth_required":
-      "需要重新登录",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_403": "403 权限拒绝",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.reauth_required": "需要重新登录",
     "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_429_rate_limit":
       "429 限流",
     "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_429_quota_exhausted":
@@ -3294,37 +2892,27 @@ const baseTranslations = {
       "额度快照已耗尽",
     "accountPool.upstreamAccounts.statusChangeReasons.reasons.quota_still_exhausted":
       "刷新后仍然耗尽",
-    "accountPool.upstreamAccounts.statusChangeReasons.reasons.transport_failure":
-      "网络或传输失败",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.transport_failure": "网络或传输失败",
     "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_server_overloaded":
       "上游暂时过载",
-    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_5xx":
-      "上游 5xx",
+    "accountPool.upstreamAccounts.statusChangeReasons.reasons.upstream_http_5xx": "上游 5xx",
     "accountPool.upstreamAccounts.policyDialog.accountTitle": "账号路由策略",
     "accountPool.upstreamAccounts.policyDialog.accountDescription":
       "这些设置属于账号层，会覆盖分组和 Tag 策略。",
     "accountPool.upstreamAccounts.policyDialog.save": "保存账号策略",
-    "accountPool.upstreamAccounts.groupNotes.proxyBindings.label":
-      "绑定代理节点",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.label": "绑定代理节点",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.hint":
       "留空时继续走自动路由。关闭节点分流策略时，所选节点会作为共享硬绑定池；开启后，每个选中节点都会变成一个独占账号槽位。",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic":
       "当前没有绑定节点，这个分组会继续使用自动路由。",
-    "accountPool.upstreamAccounts.groupNotes.proxyBindings.loading":
-      "正在加载代理节点…",
-    "accountPool.upstreamAccounts.groupNotes.proxyBindings.empty":
-      "当前没有可用的代理节点。",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.loading": "正在加载代理节点…",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.empty": "当前没有可用的代理节点。",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.missing": "已失效",
-    "accountPool.upstreamAccounts.groupNotes.proxyBindings.unavailable":
-      "不可选",
-    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartLabel":
-      "24 小时请求图",
-    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartSuccess":
-      "成功",
-    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartFailure":
-      "失败",
-    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty":
-      "暂无 24 小时数据",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.unavailable": "不可选",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartLabel": "24 小时请求图",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartSuccess": "成功",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartFailure": "失败",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty": "暂无 24 小时数据",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartTotal": "总计",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartAriaLabel":
       "最近 24 小时请求量图表",
@@ -3335,28 +2923,21 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle": "提交回调",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeBody":
       "浏览器登录成功后，把上方回调链接粘贴完整，再点击这里完成这一行账号的入池。",
-    "accountPool.upstreamAccounts.batchOauth.tooltip.confirmIdentityTitle":
-      "确认身份覆盖",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.confirmIdentityTitle": "确认身份覆盖",
     "accountPool.upstreamAccounts.batchOauth.tooltip.confirmIdentityBody":
       "这次 OAuth 回调属于另一个 ChatGPT 身份。只有确认该账号应改用新 OAuth 凭据时才继续。",
-    "accountPool.upstreamAccounts.batchOauth.actions.confirmIdentityOverwrite":
-      "确认身份覆盖",
+    "accountPool.upstreamAccounts.batchOauth.actions.confirmIdentityOverwrite": "确认身份覆盖",
     "accountPool.upstreamAccounts.batchOauth.identityConfirmation.required":
       "OAuth 返回了不同的 ChatGPT 身份，需要确认覆盖后才会更新凭据。",
-    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.title":
-      "需要确认身份覆盖",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.title": "需要确认身份覆盖",
     "accountPool.upstreamAccounts.batchOauth.identityConfirmation.body":
       "确认前不会改写账号；关闭或移除这一行不会更新原账号。",
-    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.current":
-      "当前账号",
-    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.incoming":
-      "新 OAuth 身份",
-    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willUpdate":
-      "将更新：",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.current": "当前账号",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.incoming": "新 OAuth 身份",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willUpdate": "将更新：",
     "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willUpdateDetail":
       "OAuth 凭据、可信邮箱、ChatGPT 身份、套餐和 token 元数据。",
-    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willKeep":
-      "将保留：",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willKeep": "将保留：",
     "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willKeepDetail":
       "显示名称、手工邮箱、分组、标签、备注和母号标记。",
     "accountPool.upstreamAccounts.batchOauth.tooltip.motherTitle": "切换母号",
@@ -3369,24 +2950,20 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.batchOauth.summary.draft": "草稿",
     "accountPool.upstreamAccounts.batchOauth.summary.pending": "待回调",
     "accountPool.upstreamAccounts.batchOauth.summary.completed": "已完成",
-    "accountPool.upstreamAccounts.batchOauth.summary.untitled":
-      "第 {{index}} 行",
+    "accountPool.upstreamAccounts.batchOauth.summary.untitled": "第 {{index}} 行",
     "accountPool.upstreamAccounts.batchOauth.summary.quickHint":
       "先填元数据，再为这一行生成并完成 OAuth。",
     "accountPool.upstreamAccounts.batchOauth.status.draft": "草稿",
     "accountPool.upstreamAccounts.batchOauth.status.pending": "等待回调",
     "accountPool.upstreamAccounts.batchOauth.status.completed": "已完成",
-    "accountPool.upstreamAccounts.batchOauth.status.completedNeedsRefresh":
-      "待刷新",
-    "accountPool.upstreamAccounts.batchOauth.status.needs_identity_confirmation":
-      "待确认身份",
+    "accountPool.upstreamAccounts.batchOauth.status.completedNeedsRefresh": "待刷新",
+    "accountPool.upstreamAccounts.batchOauth.status.needs_identity_confirmation": "待确认身份",
     "accountPool.upstreamAccounts.batchOauth.status.failed": "失败",
     "accountPool.upstreamAccounts.batchOauth.status.expired": "已过期",
     "accountPool.upstreamAccounts.batchOauth.statusDetail.draft":
       "先填写该行元数据，生成 OAuth 地址后再把 callback URL 粘贴回这里。",
     "accountPool.upstreamAccounts.batchOauth.authUrlLabel": "授权地址",
-    "accountPool.upstreamAccounts.batchOauth.authUrlPlaceholder":
-      "先为这一行生成 OAuth 地址",
+    "accountPool.upstreamAccounts.batchOauth.authUrlPlaceholder": "先为这一行生成 OAuth 地址",
     "accountPool.upstreamAccounts.batchOauth.footerHint":
       "已完成的行会保留在当前页面，方便继续处理剩余账号。",
     "accountPool.upstreamAccounts.batchOauth.regenerateRequired":
@@ -3395,8 +2972,7 @@ const baseTranslations = {
       "OAuth 地址已生成并复制。请在其他浏览器完成登录，再把回调链接粘贴回这一行。",
     "accountPool.upstreamAccounts.batchOauth.copyInlineFallback":
       "复制失败，请直接选中授权地址字段手动复制。",
-    "accountPool.upstreamAccounts.batchOauth.completed":
-      "{{name}} 已就绪，你可以继续处理剩余行。",
+    "accountPool.upstreamAccounts.batchOauth.completed": "{{name}} 已就绪，你可以继续处理剩余行。",
     "accountPool.upstreamAccounts.batchOauth.completedNeedsRefresh":
       "服务端已完成 OAuth，请刷新账号列表以加载最终账号详情。",
     "accountPool.upstreamAccounts.apiKey.createTitle": "Codex API Key 账号",
@@ -3415,29 +2991,22 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.stickyConversations.description":
       "查看当前账号承接的 sticky key，以及最近 24 小时请求活跃情况。",
     "accountPool.upstreamAccounts.stickyConversations.limitLabel": "对话数量",
-    "accountPool.upstreamAccounts.stickyConversations.limitOption":
-      "{{count}} 个对话",
+    "accountPool.upstreamAccounts.stickyConversations.limitOption": "{{count}} 个对话",
     "accountPool.upstreamAccounts.stickyConversations.empty":
       "这个账号暂时还没有关联的 sticky key 对话。",
-    "accountPool.upstreamAccounts.stickyConversations.chartAria":
-      "24 小时 Token 累计图",
-    "accountPool.upstreamAccounts.stickyConversations.table.stickyKey":
-      "Sticky Key",
+    "accountPool.upstreamAccounts.stickyConversations.chartAria": "24 小时 Token 累计图",
+    "accountPool.upstreamAccounts.stickyConversations.table.stickyKey": "Sticky Key",
     "accountPool.upstreamAccounts.stickyConversations.table.actions": "操作",
     "accountPool.upstreamAccounts.records.title": "上游调用尝试",
-    "accountPool.upstreamAccounts.records.activityOverviewTitle":
-      "账号活动总览",
+    "accountPool.upstreamAccounts.records.activityOverviewTitle": "账号活动总览",
     "accountPool.upstreamAccounts.records.description":
       "查看这个上游账号最近 7 天的每一次上游调用尝试、重试和结果。",
     "accountPool.upstreamAccounts.records.limitLabel": "记录数量",
     "accountPool.upstreamAccounts.records.limitOption": "{{count}} 条记录",
-    "accountPool.upstreamAccounts.records.empty":
-      "这个上游账号最近 7 天暂时还没有上游调用尝试。",
+    "accountPool.upstreamAccounts.records.empty": "这个上游账号最近 7 天暂时还没有上游调用尝试。",
     "accountPool.upstreamAccounts.records.loadingMore": "正在加载更多记录...",
-    "accountPool.upstreamAccounts.records.loaded":
-      "已加载 {{loaded}} / {{total}} 条保留调用记录",
-    "accountPool.upstreamAccounts.records.allLoaded":
-      "已加载全部 {{count}} 条保留调用记录",
+    "accountPool.upstreamAccounts.records.loaded": "已加载 {{loaded}} / {{total}} 条保留调用记录",
+    "accountPool.upstreamAccounts.records.allLoaded": "已加载全部 {{count}} 条保留调用记录",
     "accountPool.upstreamAccounts.records.locating": "正在定位所选调用...",
     "accountPool.upstreamAccounts.records.locateUnavailable":
       "定位请求未完成；实时更新仍保持暂停。",
@@ -3446,8 +3015,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.records.returnLatest": "返回最新记录",
     "accountPool.upstreamAccounts.records.locateNotFound":
       "未找到调用记录 {{invokeId}}，该记录可能已被清理。",
-    "accountPool.upstreamAccounts.records.locateFailed":
-      "无法定位调用记录 {{invokeId}}。",
+    "accountPool.upstreamAccounts.records.locateFailed": "无法定位调用记录 {{invokeId}}。",
     "accountPool.upstreamAccounts.records.retryLocate": "重试",
     "accountPool.upstreamAccounts.records.anchoredLoaded":
       "已加载目标调用附近 {{loaded}} / {{total}} 条保留记录",
@@ -3464,18 +3032,13 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.priorityNormal": "正常",
     "accountPool.upstreamAccounts.effectiveRule.priorityFallback": "兜底",
     "accountPool.upstreamAccounts.effectiveRule.priorityNoNew": "禁新",
-    "accountPool.upstreamAccounts.effectiveRule.fastModeKeepOriginal":
-      "保持原样",
-    "accountPool.upstreamAccounts.effectiveRule.fastModeFillMissing":
-      "缺少时补充",
+    "accountPool.upstreamAccounts.effectiveRule.fastModeKeepOriginal": "保持原样",
+    "accountPool.upstreamAccounts.effectiveRule.fastModeFillMissing": "缺少时补充",
     "accountPool.upstreamAccounts.effectiveRule.fastModeForceAdd": "强制补充",
-    "accountPool.upstreamAccounts.effectiveRule.fastModeForceRemove":
-      "强制去掉",
-    "accountPool.upstreamAccounts.effectiveRule.fieldImageToolRewriteMode":
-      "图片工具",
+    "accountPool.upstreamAccounts.effectiveRule.fastModeForceRemove": "强制去掉",
+    "accountPool.upstreamAccounts.effectiveRule.fieldImageToolRewriteMode": "图片工具",
     "accountPool.upstreamAccounts.effectiveRule.sourceTags": "规则来源 tag",
-    "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle":
-      "字段来源明细",
+    "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle": "字段来源明细",
     "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutOut": "切出",
     "accountPool.upstreamAccounts.effectiveRule.fieldCutOut": "切出",
     "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutIn": "切入",
@@ -3483,17 +3046,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.fieldPriority": "优先级",
     "accountPool.upstreamAccounts.effectiveRule.fieldFastMode": "FAST 模式",
     "accountPool.upstreamAccounts.effectiveRule.fieldConcurrency": "并发限制",
-    "accountPool.upstreamAccounts.effectiveRule.fieldUpstream429":
-      "上游 429 重试",
-    "accountPool.upstreamAccounts.effectiveRule.fieldAvailableModels":
-      "可用模型",
-    "accountPool.upstreamAccounts.effectiveRule.fieldSystemDeniedModels":
-      "系统拒绝模型",
+    "accountPool.upstreamAccounts.effectiveRule.fieldUpstream429": "上游 429 重试",
+    "accountPool.upstreamAccounts.effectiveRule.fieldAvailableModels": "可用模型",
+    "accountPool.upstreamAccounts.effectiveRule.fieldSystemDeniedModels": "系统拒绝模型",
     "accountPool.upstreamAccounts.effectiveRule.fieldProxyBindings": "账号代理",
-    "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited":
-      "继承 / 不限",
-    "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed":
-      "无可用模型",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited": "继承 / 不限",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed": "无可用模型",
     "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty": "无",
     "accountPool.upstreamAccounts.effectiveRule.sourceRoot": "根默认",
     "accountPool.upstreamAccounts.effectiveRule.sourceGroup": "分组",
@@ -3505,13 +3063,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.overrideActive": "账号覆盖",
     "accountPool.upstreamAccounts.effectiveRule.overrideClear": "清除账号覆盖",
     "accountPool.upstreamAccounts.effectiveRule.overrideSaving": "正在保存...",
-    "accountPool.upstreamAccounts.effectiveRule.inheritValue":
-      "默认控件值等于当前继承到的值。",
+    "accountPool.upstreamAccounts.effectiveRule.inheritValue": "默认控件值等于当前继承到的值。",
     "accountPool.upstreamAccounts.timeoutEditor.inherited": "继承值",
     "accountPool.upstreamAccounts.timeoutEditor.groupOverride": "分组覆盖",
     "accountPool.upstreamAccounts.timeoutEditor.accountOverride": "账号覆盖",
-    "accountPool.upstreamAccounts.timeoutEditor.conversationOverride":
-      "对话覆盖",
+    "accountPool.upstreamAccounts.timeoutEditor.conversationOverride": "对话覆盖",
     "accountPool.upstreamAccounts.detailTitle": "账号详情",
     "accountPool.upstreamAccounts.detailTabs.overview": "概览",
     "accountPool.upstreamAccounts.detailTabs.records": "上游调用",
@@ -3533,7 +3089,8 @@ const baseTranslations = {
     "accountPool.upstreamAttempts.copyError": "复制错误",
     "accountPool.upstreamAttempts.copied": "已复制",
     "accountPool.upstreamAttempts.details": "诊断详情",
-    "accountPool.upstreamAttempts.timingCompact": "连接 {{connect}} | 首字节 {{firstByte}} | 流式 {{stream}}",
+    "accountPool.upstreamAttempts.timingCompact":
+      "连接 {{connect}} | 首字节 {{firstByte}} | 流式 {{stream}}",
     "accountPool.upstreamAttempts.phase.connecting": "正在连接",
     "accountPool.upstreamAttempts.phase.sendingRequest": "正在发送请求",
     "accountPool.upstreamAttempts.phase.waitingFirstByte": "等待首字节",
@@ -3559,8 +3116,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.detailTabs.edit": "编辑",
     "accountPool.upstreamAccounts.detailTabs.routing": "路由",
     "accountPool.upstreamAccounts.detailTabs.healthEvents": "健康与事件",
-    "accountPool.upstreamAccounts.identityUnavailable":
-      "暂时还没有可展示的身份信息。",
+    "accountPool.upstreamAccounts.identityUnavailable": "暂时还没有可展示的身份信息。",
     "accountPool.upstreamAccounts.noHistory": "还没有额度历史。",
     "accountPool.upstreamAccounts.noError": "最近没有错误。",
     "accountPool.upstreamAccounts.never": "从未",
@@ -3575,8 +3131,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.kind.oauth": "OAuth",
     "accountPool.upstreamAccounts.kind.apiKey": "API Key",
     "accountPool.upstreamAccounts.workStatus.working": "工作",
-    "accountPool.upstreamAccounts.workStatus.workingWithCount":
-      "工作 {{count}}",
+    "accountPool.upstreamAccounts.workStatus.workingWithCount": "工作 {{count}}",
     "accountPool.upstreamAccounts.workStatus.degraded": "工作降级",
     "accountPool.upstreamAccounts.workStatus.idle": "空闲",
     "accountPool.upstreamAccounts.workStatus.rate_limited": "限流",
@@ -3585,8 +3140,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.enableStatus.disabled": "禁用",
     "accountPool.upstreamAccounts.healthStatus.normal": "正常",
     "accountPool.upstreamAccounts.healthStatus.needs_reauth": "需要重新授权",
-    "accountPool.upstreamAccounts.healthStatus.upstream_unavailable":
-      "上游不可达",
+    "accountPool.upstreamAccounts.healthStatus.upstream_unavailable": "上游不可达",
     "accountPool.upstreamAccounts.healthStatus.upstream_rejected": "上游拒绝",
     "accountPool.upstreamAccounts.healthStatus.error_other": "其它异常",
     "accountPool.upstreamAccounts.syncState.idle": "同步空闲",
@@ -3599,8 +3153,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.status.error_other": "其它异常",
     "accountPool.upstreamAccounts.status.error": "异常",
     "accountPool.upstreamAccounts.status.disabled": "已停用",
-    "accountPool.upstreamAccounts.bulk.selectedCount":
-      "已跨页选中 {{count}} 个账号",
+    "accountPool.upstreamAccounts.bulk.selectedCount": "已跨页选中 {{count}} 个账号",
     "accountPool.upstreamAccounts.bulk.enable": "批量启用",
     "accountPool.upstreamAccounts.bulk.disable": "批量停用",
     "accountPool.upstreamAccounts.bulk.setGroup": "设置分组",
@@ -3634,12 +3187,10 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.bulk.groupDialogDescription":
       "输入分组名后会覆盖所选账号的分组；留空则清空分组。",
     "accountPool.upstreamAccounts.bulk.groupField": "目标分组",
-    "accountPool.upstreamAccounts.bulk.groupPlaceholder":
-      "输入分组名，留空则清空",
+    "accountPool.upstreamAccounts.bulk.groupPlaceholder": "输入分组名，留空则清空",
     "accountPool.upstreamAccounts.bulk.addTagsDialogTitle": "批量增加标签",
     "accountPool.upstreamAccounts.bulk.removeTagsDialogTitle": "批量移除标签",
-    "accountPool.upstreamAccounts.bulk.tagsDialogDescription":
-      "为所选账号选择一个或多个已有标签。",
+    "accountPool.upstreamAccounts.bulk.tagsDialogDescription": "为所选账号选择一个或多个已有标签。",
     "accountPool.upstreamAccounts.bulk.tagsField": "标签",
     "accountPool.upstreamAccounts.bulk.tagsPlaceholder": "选择标签",
     "accountPool.upstreamAccounts.bulk.deleteDialogTitle": "批量删除账号",
@@ -3647,27 +3198,23 @@ const baseTranslations = {
       "确认删除这 {{count}} 个已选账号吗？此操作不可恢复。",
     "accountPool.upstreamAccounts.pagination.summary":
       "第 {{page}} / {{pageCount}} 页，共 {{total}} 个账号",
-    "accountPool.upstreamAccounts.pagination.loading":
-      "正在加载第 {{page}} 页…",
+    "accountPool.upstreamAccounts.pagination.loading": "正在加载第 {{page}} 页…",
     "accountPool.upstreamAccounts.pagination.error":
       "当前页刷新失败，可调整筛选、每页条数，或直接重试。",
     "accountPool.upstreamAccounts.pagination.pageSize": "每页",
     "accountPool.upstreamAccounts.pagination.previous": "上一页",
     "accountPool.upstreamAccounts.pagination.next": "下一页",
-    "accountPool.upstreamAccounts.hints.dataPlaneUnavailableTitle":
-      "OAuth 数据面当前不可用",
+    "accountPool.upstreamAccounts.hints.dataPlaneUnavailableTitle": "OAuth 数据面当前不可用",
     "accountPool.upstreamAccounts.hints.dataPlaneUnavailableBody":
       "主服务暂时连不到内联 OAuth Codex 上游。先检查到 chatgpt.com 的出网连通性，并确认当前部署不是还停留在旧 bridge 版本。",
     "accountPool.upstreamAccounts.hints.bridgeExchangeTitle":
       "这个 OAuth 账号仍在展示历史 bridge 错误",
     "accountPool.upstreamAccounts.hints.bridgeExchangeBody":
       "当前展示的 last_error 来自已经移除的 OAuth bridge 链路。只要再完成一次成功同步或路由，它通常就会被覆盖；如果同样的文案再次出现，说明部署还在跑旧版本。",
-    "accountPool.upstreamAccounts.hints.dataPlaneRejectedTitle":
-      "OAuth 数据面拒绝了这次请求",
+    "accountPool.upstreamAccounts.hints.dataPlaneRejectedTitle": "OAuth 数据面拒绝了这次请求",
     "accountPool.upstreamAccounts.hints.dataPlaneRejectedBody":
       "内联 OAuth Codex adapter 已经连到数据面上游，但请求被拒绝了。先检查上游返回里的 scopes、权限或账号能力，再决定是否需要重新授权。",
-    "accountPool.upstreamAccounts.hints.reauthTitle":
-      "这个 OAuth 账号需要重新登录",
+    "accountPool.upstreamAccounts.hints.reauthTitle": "这个 OAuth 账号需要重新登录",
     "accountPool.upstreamAccounts.hints.reauthBody":
       "上游 token 或 refresh grant 已经失效。请重新授权这个账号，生成一套新的凭据。",
     "accountPool.upstreamAccounts.usage.primaryDescription":
@@ -3689,25 +3236,20 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.table.outputTokensMetric": "输出",
     "accountPool.upstreamAccounts.table.cacheInputTokensMetric": "缓存输入",
     "accountPool.upstreamAccounts.table.off": "停用",
-    "accountPool.upstreamAccounts.table.hiddenTagsA11y":
-      "显示另外 {{count}} 个隐藏标签：{{names}}",
+    "accountPool.upstreamAccounts.table.hiddenTagsA11y": "显示另外 {{count}} 个隐藏标签：{{names}}",
     "accountPool.upstreamAccounts.fields.displayName": "显示名称",
     "accountPool.upstreamAccounts.fields.groupName": "分组",
-    "accountPool.upstreamAccounts.fields.groupNamePlaceholder":
-      "选择已有分组，或直接输入新分组",
-    "accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder":
-      "搜索或新建分组...",
+    "accountPool.upstreamAccounts.fields.groupNamePlaceholder": "选择已有分组，或直接输入新分组",
+    "accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder": "搜索或新建分组...",
     "accountPool.upstreamAccounts.fields.groupNameEmpty": "当前还没有分组。",
     "accountPool.upstreamAccounts.fields.groupNameUseValue": "使用“{{value}}”",
-    "accountPool.upstreamAccounts.fields.groupNameConfigureValue":
-      "先配置“{{value}}”",
+    "accountPool.upstreamAccounts.fields.groupNameConfigureValue": "先配置“{{value}}”",
     "accountPool.tags.title": "Tag 路由策略",
     "accountPool.tags.description":
       "集中管理上游账号标签、路由规则摘要，以及它们覆盖的账号和账号分组范围。",
     "accountPool.tags.actions.create": "创建 tag",
     "accountPool.tags.listTitle": "Tag 列表",
-    "accountPool.tags.listDescription":
-      "快速查看每个 tag 的规则、关联账号数量和关联分组数量。",
+    "accountPool.tags.listDescription": "快速查看每个 tag 的规则、关联账号数量和关联分组数量。",
     "accountPool.tags.filters.search": "搜索",
     "accountPool.tags.filters.searchPlaceholder": "按 tag 名称搜索",
     "accountPool.tags.filters.hasAccounts": "账号关联",
@@ -3749,11 +3291,9 @@ const baseTranslations = {
     "accountPool.tags.field.edit": "编辑规则",
     "accountPool.tags.dialog.createTitle": "创建 tag",
     "accountPool.tags.dialog.editTitle": "编辑 tag",
-    "accountPool.tags.dialog.description":
-      "设置 tag 名称，以及所有关联账号都要遵守的路由规则。",
+    "accountPool.tags.dialog.description": "设置 tag 名称，以及所有关联账号都要遵守的路由规则。",
     "accountPool.tags.dialog.name": "Tag 名称",
-    "accountPool.tags.dialog.namePlaceholder":
-      "例如：vip、night-shift、warm-standby",
+    "accountPool.tags.dialog.namePlaceholder": "例如：vip、night-shift、warm-standby",
     "accountPool.tags.dialog.allowCutOut": "未禁止把对话切出到其他账号",
     "accountPool.tags.dialog.allowCutIn": "未禁止把对话切入到当前账号",
     "accountPool.tags.dialog.forbidCutOut": "禁止切出",
@@ -3769,8 +3309,7 @@ const baseTranslations = {
     "accountPool.tags.dialog.fastModeForceAdd": "强制补充",
     "accountPool.tags.dialog.fastModeForceRemove": "强制去掉",
     "accountPool.tags.dialog.concurrencyLimit": "并发限制",
-    "accountPool.tags.dialog.concurrencyHint":
-      "用 1-30 限制新分配并发，最后一档表示无限。",
+    "accountPool.tags.dialog.concurrencyHint": "用 1-30 限制新分配并发，最后一档表示无限。",
     "accountPool.tags.dialog.currentValue": "当前",
     "accountPool.tags.dialog.unlimited": "无限",
     "accountPool.tags.dialog.availableModels": "可用模型",
@@ -3788,19 +3327,16 @@ const baseTranslations = {
     "accountPool.tags.dialog.createAction": "创建 tag",
     "accountPool.tags.dialog.validation":
       "开启会话上限后，“回看小时数”和“最大对话数”都必须是正整数。",
-    "accountPool.upstreamAccounts.oauth.generated":
-      "OAuth 地址已生成，过期时间：{{expiresAt}}。",
+    "accountPool.upstreamAccounts.oauth.generated": "OAuth 地址已生成，过期时间：{{expiresAt}}。",
     "accountPool.upstreamAccounts.oauth.copied":
       "OAuth 地址已复制。请在其他浏览器完成登录，再把回调链接粘贴回这里。",
-    "accountPool.upstreamAccounts.oauth.copyFailed":
-      "复制失败了，请使用手动复制面板。",
+    "accountPool.upstreamAccounts.oauth.copyFailed": "复制失败了，请使用手动复制面板。",
     "accountPool.upstreamAccounts.oauth.regenerateRequired":
       "分组备注已变更，请先重新生成 OAuth 地址再完成登录。",
     "accountPool.upstreamAccounts.oauth.manualFlowTitle": "手动 OAuth 交接",
     "accountPool.upstreamAccounts.oauth.manualFlowDescription":
       "先在这里生成 OAuth 地址，复制到你要登录的浏览器里完成授权，再把最终停在 localhost 的完整回调链接贴回表单。",
-    "accountPool.upstreamAccounts.oauth.manualCopyTitle":
-      "请手动复制 OAuth 地址",
+    "accountPool.upstreamAccounts.oauth.manualCopyTitle": "请手动复制 OAuth 地址",
     "accountPool.upstreamAccounts.oauth.manualCopyDescription":
       "当前浏览器拦截了自动复制，下面已经选中原始 OAuth 地址，直接手动复制即可。",
     "accountPool.upstreamAccounts.oauth.callbackUrlLabel": "回调链接",
@@ -3827,8 +3363,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.oauth.refreshingShort": "拉取中",
     "accountPool.upstreamAccounts.oauth.refreshIn": "{{seconds}} 秒后自动刷新",
     "accountPool.upstreamAccounts.oauth.refreshInShort": "{{seconds}}秒",
-    "accountPool.upstreamAccounts.oauth.refreshScheduledUnknown":
-      "等待下一轮刷新",
+    "accountPool.upstreamAccounts.oauth.refreshScheduledUnknown": "等待下一轮刷新",
     "accountPool.upstreamAccounts.oauth.receivedAt": "收到于 {{timestamp}}",
     "accountPool.upstreamAccounts.oauth.mailboxUnsupportedInvalidFormat":
       "这个邮箱地址格式不正确，所以邮箱增强能力暂时不会启用。",
@@ -3837,11 +3372,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.oauth.mailboxUnsupportedNotReadable":
       "当前 KaisouMail 集成暂时读不到这个邮箱，所以邮箱增强能力暂时不会启用。",
     "accountPool.upstreamAccounts.oauth.codeCardTitle": "验证码",
-    "accountPool.upstreamAccounts.oauth.codeCardEmpty":
-      "暂时还没有识别到验证码。",
+    "accountPool.upstreamAccounts.oauth.codeCardEmpty": "暂时还没有识别到验证码。",
     "accountPool.upstreamAccounts.oauth.inviteCardTitle": "邀请摘要",
-    "accountPool.upstreamAccounts.oauth.inviteCardEmpty":
-      "暂时还没有识别到邀请通知。",
+    "accountPool.upstreamAccounts.oauth.inviteCardEmpty": "暂时还没有识别到邀请通知。",
     "accountPool.upstreamAccounts.oauth.invitedState": "已受邀",
     "accountPool.upstreamAccounts.oauth.notInvitedState": "未受邀",
     "accountPool.upstreamAccounts.fields.note": "备注",
@@ -3866,22 +3399,18 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.validation.upstreamBaseUrlNoQueryOrFragment":
       "上游地址不能包含查询串或片段。",
     "accountPool.upstreamAccounts.fields.rotateApiKey": "轮换 API Key",
-    "accountPool.upstreamAccounts.fields.rotateApiKeyPlaceholder":
-      "留空则保持当前密钥不变",
+    "accountPool.upstreamAccounts.fields.rotateApiKeyPlaceholder": "留空则保持当前密钥不变",
     "accountPool.upstreamAccounts.fields.lastSyncedAt": "最近同步",
     "accountPool.upstreamAccounts.fields.lastRefreshedAt": "最近刷新",
     "accountPool.upstreamAccounts.fields.tokenExpiresAt": "访问令牌过期时间",
-    "accountPool.upstreamAccounts.imageToolCapability.supported":
-      "支持图片工具",
-    "accountPool.upstreamAccounts.imageToolCapability.unsupported":
-      "不支持图片工具",
+    "accountPool.upstreamAccounts.imageToolCapability.supported": "支持图片工具",
+    "accountPool.upstreamAccounts.imageToolCapability.unsupported": "不支持图片工具",
     "accountPool.upstreamAccounts.imageToolCapability.unknown": "未知",
     "accountPool.upstreamAccounts.imageToolCapabilityHint.supported":
       "这个账号可以参与需要图片工具的请求。",
     "accountPool.upstreamAccounts.imageToolCapabilityHint.unsupported":
       "这个账号会被排除在图片请求之外。",
-    "accountPool.upstreamAccounts.imageToolCapabilityHint.unknown":
-      "系统还没有观测到足够信息。",
+    "accountPool.upstreamAccounts.imageToolCapabilityHint.unknown": "系统还没有观测到足够信息。",
     "accountPool.upstreamAccounts.noRefreshToken.badge": "无 RT",
     "accountPool.upstreamAccounts.fields.lastSuccessSync": "最近成功同步",
     "accountPool.upstreamAccounts.fields.credits": "Credits",
@@ -3890,16 +3419,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.compactReason": "Compact 观测原因",
     "accountPool.upstreamAccounts.fields.lastError": "最近错误",
     "accountPool.upstreamAccounts.table.latestActionShort": "最近动作",
-    "accountPool.upstreamAccounts.validation.displayNameDuplicate":
-      "显示名称必须唯一。",
+    "accountPool.upstreamAccounts.validation.displayNameDuplicate": "显示名称必须唯一。",
     "accountPool.upstreamAccounts.latestAction.title": "最近账号动作",
-    "accountPool.upstreamAccounts.latestAction.empty":
-      "暂时还没有记录到账号动作。",
+    "accountPool.upstreamAccounts.latestAction.empty": "暂时还没有记录到账号动作。",
     "accountPool.upstreamAccounts.latestAction.unknown": "未知",
-    "accountPool.upstreamAccounts.compactSupport.supportedBadge":
-      "Compact 可用",
-    "accountPool.upstreamAccounts.compactSupport.unsupportedBadge":
-      "Compact 不支持",
+    "accountPool.upstreamAccounts.compactSupport.supportedBadge": "Compact 可用",
+    "accountPool.upstreamAccounts.compactSupport.unsupportedBadge": "Compact 不支持",
     "accountPool.upstreamAccounts.compactSupport.status.supported": "支持",
     "accountPool.upstreamAccounts.compactSupport.status.unsupported": "不支持",
     "accountPool.upstreamAccounts.compactSupport.status.unknown": "未知",
@@ -3910,56 +3435,36 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.fields.occurredAt": "发生时间",
     "accountPool.upstreamAccounts.latestAction.fields.invokeId": "调用 ID",
     "accountPool.upstreamAccounts.latestAction.fields.message": "消息",
-    "accountPool.upstreamAccounts.latestAction.actions.route_recovered":
-      "路由恢复成功",
-    "accountPool.upstreamAccounts.latestAction.actions.route_retryable_failure":
-      "临时上游失败",
-    "accountPool.upstreamAccounts.latestAction.actions.route_cooldown_started":
-      "进入冷却",
-    "accountPool.upstreamAccounts.latestAction.actions.route_hard_unavailable":
-      "标记为硬失效",
-    "accountPool.upstreamAccounts.latestAction.actions.sync_hard_unavailable":
-      "同步标记为不可用",
-    "accountPool.upstreamAccounts.latestAction.actions.sync_succeeded":
-      "同步成功",
-    "accountPool.upstreamAccounts.latestAction.actions.sync_deferred":
-      "同步延期",
-    "accountPool.upstreamAccounts.latestAction.actions.sync_recovery_blocked":
-      "恢复仍被阻止",
+    "accountPool.upstreamAccounts.latestAction.actions.route_recovered": "路由恢复成功",
+    "accountPool.upstreamAccounts.latestAction.actions.route_retryable_failure": "临时上游失败",
+    "accountPool.upstreamAccounts.latestAction.actions.route_cooldown_started": "进入冷却",
+    "accountPool.upstreamAccounts.latestAction.actions.route_hard_unavailable": "标记为硬失效",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_hard_unavailable": "同步标记为不可用",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_succeeded": "同步成功",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_deferred": "同步延期",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_recovery_blocked": "恢复仍被阻止",
     "accountPool.upstreamAccounts.latestAction.actions.sync_failed": "同步失败",
-    "accountPool.upstreamAccounts.latestAction.actions.status_change_suppressed":
-      "已抑制状态变更",
-    "accountPool.upstreamAccounts.latestAction.actions.account_updated":
-      "账号已更新",
+    "accountPool.upstreamAccounts.latestAction.actions.status_change_suppressed": "已抑制状态变更",
+    "accountPool.upstreamAccounts.latestAction.actions.account_updated": "账号已更新",
     "accountPool.upstreamAccounts.latestAction.sources.call": "调用",
     "accountPool.upstreamAccounts.latestAction.sources.sync_manual": "手动同步",
-    "accountPool.upstreamAccounts.latestAction.sources.sync_maintenance":
-      "维护同步",
-    "accountPool.upstreamAccounts.latestAction.sources.sync_post_create":
-      "创建后同步",
-    "accountPool.upstreamAccounts.latestAction.sources.oauth_import":
-      "OAuth 导入",
-    "accountPool.upstreamAccounts.latestAction.sources.account_update":
-      "账号修改",
-    "accountPool.upstreamAccounts.maintenanceEvents.title":
-      "非模型调用执行记录",
+    "accountPool.upstreamAccounts.latestAction.sources.sync_maintenance": "维护同步",
+    "accountPool.upstreamAccounts.latestAction.sources.sync_post_create": "创建后同步",
+    "accountPool.upstreamAccounts.latestAction.sources.oauth_import": "OAuth 导入",
+    "accountPool.upstreamAccounts.latestAction.sources.account_update": "账号修改",
+    "accountPool.upstreamAccounts.maintenanceEvents.title": "非模型调用执行记录",
     "accountPool.upstreamAccounts.maintenanceEvents.description":
       "展示最近的账号维护调用、同步与代理探测。",
-    "accountPool.upstreamAccounts.maintenanceEvents.loadError":
-      "加载维护记录失败。",
+    "accountPool.upstreamAccounts.maintenanceEvents.loadError": "加载维护记录失败。",
     "accountPool.upstreamAccounts.maintenanceEvents.resetFilters": "重置筛选",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.account": "账号",
-    "accountPool.upstreamAccounts.maintenanceEvents.filters.accountPlaceholder":
-      "搜索账号名或 ID",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.accountPlaceholder": "搜索账号名或 ID",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.group": "分组",
-    "accountPool.upstreamAccounts.maintenanceEvents.filters.groupPlaceholder":
-      "搜索分组名",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.groupPlaceholder": "搜索分组名",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.node": "节点",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.result": "结果",
-    "accountPool.upstreamAccounts.maintenanceEvents.filters.allNodes":
-      "全部节点",
-    "accountPool.upstreamAccounts.maintenanceEvents.filters.allResults":
-      "全部结果",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.allNodes": "全部节点",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.allResults": "全部结果",
     "accountPool.upstreamAccounts.maintenanceEvents.columns.time": "执行时间",
     "accountPool.upstreamAccounts.maintenanceEvents.columns.account": "账号",
     "accountPool.upstreamAccounts.maintenanceEvents.columns.proxy": "代理",
@@ -3968,36 +3473,25 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.maintenanceEvents.results.success": "成功",
     "accountPool.upstreamAccounts.maintenanceEvents.results.failed": "失败",
     "accountPool.upstreamAccounts.maintenanceEvents.results.deferred": "延期",
-    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_deferred":
-      "同步延期",
-    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_succeeded":
-      "同步成功",
-    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_failed":
-      "同步失败",
-    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_hard_unavailable":
-      "同步不可用",
-    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_recovery_blocked":
-      "恢复受阻",
-    "accountPool.upstreamAccounts.maintenanceEvents.actions.route_recovered":
-      "路由恢复成功",
-    "accountPool.upstreamAccounts.maintenanceEvents.actions.route_cooldown_started":
-      "路由冷却",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_deferred": "同步延期",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_succeeded": "同步成功",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_failed": "同步失败",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_hard_unavailable": "同步不可用",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_recovery_blocked": "恢复受阻",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.route_recovered": "路由恢复成功",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.route_cooldown_started": "路由冷却",
     "accountPool.upstreamAccounts.maintenanceEvents.actions.route_retryable_failure":
       "路由临时失败",
-    "accountPool.upstreamAccounts.maintenanceEvents.actions.route_hard_unavailable":
-      "路由不可用",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.route_hard_unavailable": "路由不可用",
     "accountPool.upstreamAccounts.maintenanceEvents.actions.status_change_suppressed":
       "已抑制状态变更",
-    "accountPool.upstreamAccounts.maintenanceEvents.actions.account_updated":
-      "账号已更新",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.account_updated": "账号已更新",
     "accountPool.upstreamAccounts.maintenanceEvents.unknownAccount": "未知账号",
     "accountPool.upstreamAccounts.maintenanceEvents.unknownGroup": "未知分组",
     "accountPool.upstreamAccounts.maintenanceEvents.unknownProxy": "未知代理",
     "accountPool.upstreamAccounts.maintenanceEvents.noEgressIp": "未记录",
-    "accountPool.upstreamAccounts.maintenanceEvents.egressIpPending":
-      "等待刷新",
-    "accountPool.upstreamAccounts.maintenanceEvents.noDescription":
-      "暂无结果描述",
+    "accountPool.upstreamAccounts.maintenanceEvents.egressIpPending": "等待刷新",
+    "accountPool.upstreamAccounts.maintenanceEvents.noDescription": "暂无结果描述",
     "accountPool.upstreamAccounts.maintenanceEvents.descriptions.egressThrottledWithSeconds":
       "同出口 {{proxy}} 正在限频，{{seconds}} 秒后可再次执行。",
     "accountPool.upstreamAccounts.maintenanceEvents.descriptions.egressThrottled":
@@ -4011,8 +3505,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.maintenanceEvents.descriptions.httpStatus":
       "维护请求返回 HTTP {{status}}。",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_ok": "同步完成",
-    "accountPool.upstreamAccounts.latestAction.reasons.account_updated":
-      "账号设置已更新",
+    "accountPool.upstreamAccounts.latestAction.reasons.account_updated": "账号设置已更新",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error": "同步失败",
     "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_exhausted":
       "最新额度快照已经显示限制窗口耗尽",
@@ -4020,27 +3513,20 @@ const baseTranslations = {
       "最新额度快照仍显示限制窗口已耗尽",
     "accountPool.upstreamAccounts.latestAction.reasons.recovery_unconfirmed_manual_required":
       "账号返回路由前仍需要人工恢复",
-    "accountPool.upstreamAccounts.latestAction.reasons.transport_failure":
-      "网络或传输失败",
-    "accountPool.upstreamAccounts.latestAction.reasons.upstream_server_overloaded":
-      "上游暂时过载",
-    "accountPool.upstreamAccounts.latestAction.reasons.reauth_required":
-      "需要重新登录",
-    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_401":
-      "上游拒绝凭据（401）",
+    "accountPool.upstreamAccounts.latestAction.reasons.transport_failure": "网络或传输失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_server_overloaded": "上游暂时过载",
+    "accountPool.upstreamAccounts.latestAction.reasons.reauth_required": "需要重新登录",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_401": "上游拒绝凭据（401）",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_402":
       "上游因套餐或计费拒绝访问（402）",
-    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_403":
-      "上游拒绝权限（403）",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_403": "上游拒绝权限（403）",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_429_rate_limit":
       "上游对该账号限流",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_429_quota_exhausted":
       "上游额度或周限已耗尽",
-    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_5xx":
-      "上游服务异常",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_5xx": "上游服务异常",
     "accountPool.upstreamAccounts.recentActions.title": "最近账号事件",
-    "accountPool.upstreamAccounts.recentActions.description":
-      "展示这条账号最近的调用与同步动作。",
+    "accountPool.upstreamAccounts.recentActions.description": "展示这条账号最近的调用与同步动作。",
     "accountPool.upstreamAccounts.recentActions.empty": "暂时还没有最近事件。",
     "accountPool.upstreamAccounts.duplicate.badge": "重复账号",
     "accountPool.upstreamAccounts.duplicate.warningTitle":
@@ -4050,10 +3536,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.duplicate.compactTitle": "检测到上游身份重复",
     "accountPool.upstreamAccounts.duplicate.compactBody":
       "命中：{{reasons}}。关联账号 ID：{{peers}}。",
-    "accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptAccountId":
-      "共享 ChatGPT 账号 ID",
-    "accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptUserId":
-      "共享 ChatGPT 用户 ID",
+    "accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptAccountId": "共享 ChatGPT 账号 ID",
+    "accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptUserId": "共享 ChatGPT 用户 ID",
     "accountPool.upstreamAccounts.mother.badge": "母号",
     "accountPool.upstreamAccounts.mother.fieldLabel": "母号状态",
     "accountPool.upstreamAccounts.mother.notMother": "否",
@@ -4070,11 +3554,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.mother.notifications.cleared":
       "{{previous}} 已不再是 {{group}} 的母号。",
     "settings.title": "设置",
-    "settings.description":
-      "集中配置当前 pool `/v1/models` 覆盖、正向代理路由与成本估算价格目录。",
+    "settings.description": "集中配置当前 pool `/v1/models` 覆盖、正向代理路由与成本估算价格目录。",
     "system.status.title": "系统状态",
-    "system.status.description":
-      "查看由调用记录、归档目录和本地运行文件聚合出的系统级运行指标。",
+    "system.status.description": "查看由调用记录、归档目录和本地运行文件聚合出的系统级运行指标。",
     "system.status.loading": "正在加载系统状态…",
     "system.status.loadError": "加载系统状态失败：{{error}}",
     "system.status.refreshing": "刷新中…",
@@ -4110,53 +3592,43 @@ const baseTranslations = {
     "system.status.breakdown.rawPayloadBytesHint":
       "去重后的 request + response raw payload 文件磁盘占用。",
     "system.status.breakdown.archiveBytes": "archive 占用",
-    "system.status.breakdown.archiveBytesHint":
-      "已完成 invocation archive 文件的磁盘占用。",
+    "system.status.breakdown.archiveBytesHint": "已完成 invocation archive 文件的磁盘占用。",
     "system.status.breakdown.databaseBytes": "数据库占用",
-    "system.status.breakdown.databaseBytesHint":
-      "SQLite 主库与 WAL/SHM 文件占用。",
+    "system.status.breakdown.databaseBytesHint": "SQLite 主库与 WAL/SHM 文件占用。",
     "system.status.breakdown.otherFilesBytes": "其他运行文件占用",
-    "system.status.breakdown.otherFilesBytesHint":
-      "除数据库、raw、archive 外的项目运行文件占用。",
+    "system.status.breakdown.otherFilesBytesHint": "除数据库、raw、archive 外的项目运行文件占用。",
     "system.status.cards.liveInvocationsCount": "live invocations",
     "system.status.cards.liveInvocationsCountHint":
       "当前 live 数据库中 `codex_invocations` 的总行数。",
     "system.status.cards.successCount": "调用成功数",
     "system.status.cards.successCountHint": "状态为 success 的调用记录总数。",
     "system.status.cards.nonSuccessCount": "调用非成功数",
-    "system.status.cards.nonSuccessCountHint":
-      "状态不等于 success 的调用记录总数。",
+    "system.status.cards.nonSuccessCountHint": "状态不等于 success 的调用记录总数。",
     "system.status.cards.completedArchiveBatchesCount": "已完成归档批次数",
     "system.status.cards.completedArchiveBatchesCountHint":
       "当前 `archive_batches` 中已完成的 `codex_invocations` 归档批次数。",
     "system.status.cards.archivedBodiesCount": "已归档 body 数量",
-    "system.status.cards.archivedBodiesCountHint":
-      "已进入完成归档批次的 codex invocation 行数。",
+    "system.status.cards.archivedBodiesCountHint": "已进入完成归档批次的 codex invocation 行数。",
     "system.status.cards.archivedBodiesBytes": "已归档 body 体积",
     "system.status.cards.archivedBodiesBytesHint":
       "当前已完成 invocation archive 的磁盘占用，已计入上方项目磁盘总量。",
     "system.status.cards.rawBodiesCount": "raw payload 数量",
-    "system.status.cards.rawBodiesCountHint":
-      "去重后的 request + response raw payload 文件数。",
+    "system.status.cards.rawBodiesCountHint": "去重后的 request + response raw payload 文件数。",
     "system.status.cards.rawBodiesBytes": "raw payload 总量",
     "system.status.cards.rawBodiesBytesHint":
       "request + response raw payload 去重并集后的磁盘实测字节数。",
     "system.status.cards.requestRawBodiesCount": "request raw payload 数量",
-    "system.status.cards.requestRawBodiesCountHint":
-      "去重后的 request 侧 raw payload 文件数。",
+    "system.status.cards.requestRawBodiesCountHint": "去重后的 request 侧 raw payload 文件数。",
     "system.status.cards.requestRawBodiesBytes": "request 侧 raw payload",
     "system.status.cards.requestRawBodiesBytesHint":
       "request 侧 raw payload 的磁盘实测字节数，只用于解释分布，不代表再次去重后的可加总量。",
-    "system.status.cards.requestRawBodiesSplitHint":
-      "用这个侧向拆分判断为什么 request 偏大。",
+    "system.status.cards.requestRawBodiesSplitHint": "用这个侧向拆分判断为什么 request 偏大。",
     "system.status.cards.responseRawBodiesCount": "response raw payload 数量",
-    "system.status.cards.responseRawBodiesCountHint":
-      "去重后的 response 侧 raw payload 文件数。",
+    "system.status.cards.responseRawBodiesCountHint": "去重后的 response 侧 raw payload 文件数。",
     "system.status.cards.responseRawBodiesBytes": "response 侧 raw payload",
     "system.status.cards.responseRawBodiesBytesHint":
       "response 侧 raw payload 的磁盘实测字节数，只用于解释分布，不代表再次去重后的可加总量。",
-    "system.status.cards.responseRawBodiesSplitHint":
-      "用这个侧向拆分判断为什么 response 偏大。",
+    "system.status.cards.responseRawBodiesSplitHint": "用这个侧向拆分判断为什么 response 偏大。",
     "system.status.cards.databaseBytes": "数据库体积",
     "system.status.cards.databaseBytesHint": "当前 SQLite 数据库文件大小。",
     "system.status.cards.otherFilesBytes": "其他文件体积",
@@ -4175,14 +3647,12 @@ const baseTranslations = {
     "system.tasks.filters.startedAtFrom": "开始时间（从）",
     "system.tasks.filters.startedAtTo": "开始时间（到）",
     "system.tasks.filters.count": "{{count}} 条记录",
-    "system.tasks.pagination.summary":
-      "第 {{page}} / {{pageCount}} 页 · 共 {{total}} 条记录",
+    "system.tasks.pagination.summary": "第 {{page}} / {{pageCount}} 页 · 共 {{total}} 条记录",
     "system.tasks.pagination.pageSize": "每页",
     "system.tasks.pagination.previous": "上一页",
     "system.tasks.pagination.next": "下一页",
     "system.settings.title": "系统设置",
-    "system.settings.description":
-      "保留原设置页中的模型、价格和外部 API key 配置，保存语义不变。",
+    "system.settings.description": "保留原设置页中的模型、价格和外部 API key 配置，保存语义不变。",
     "system.proxy.title": "代理",
     "system.proxy.description":
       "承载原正向代理 URL、订阅、节点健康、测速与刷新能力，保存契约保持不变。",
@@ -4195,8 +3665,7 @@ const baseTranslations = {
       "管理第三方开放接口使用的 API Key，用于外部上游账号操作。",
     "settings.externalApiKeys.summary": "已启用 {{count}} / 总计 {{total}}",
     "settings.externalApiKeys.loading": "正在加载 External API Keys…",
-    "settings.externalApiKeys.empty":
-      "还没有 External API Key，先创建一个再交给第三方使用。",
+    "settings.externalApiKeys.empty": "还没有 External API Key，先创建一个再交给第三方使用。",
     "settings.externalApiKeys.error": "External API Key 请求失败：{{error}}",
     "settings.externalApiKeys.create": "创建 Key",
     "settings.externalApiKeys.rotate": "轮换",
@@ -4213,15 +3682,13 @@ const baseTranslations = {
     "settings.externalApiKeys.validation.nameRequired": "请先输入 Key 名称。",
     "settings.externalApiKeys.secret.createdTitle": "External API Key 已创建",
     "settings.externalApiKeys.secret.rotatedTitle": "External API Key 已轮换",
-    "settings.externalApiKeys.secret.description":
-      "请现在复制这段 secret；它只会展示这一次。",
+    "settings.externalApiKeys.secret.description": "请现在复制这段 secret；它只会展示这一次。",
     "settings.externalApiKeys.secret.dismiss": "我已复制",
     "settings.externalApiKeys.createDialog.title": "创建 External API Key",
     "settings.externalApiKeys.createDialog.description":
       "给这把第三方 Key 起一个便于运营识别的名字。",
     "settings.externalApiKeys.createDialog.nameLabel": "Key 名称",
-    "settings.externalApiKeys.createDialog.namePlaceholder":
-      "例如：Vendor A upstream sync",
+    "settings.externalApiKeys.createDialog.namePlaceholder": "例如：Vendor A upstream sync",
     "settings.externalApiKeys.createDialog.confirm": "创建 Key",
     "settings.externalApiKeys.rotateDialog.title": "轮换 External API Key",
     "settings.externalApiKeys.rotateDialog.description":
@@ -4232,19 +3699,15 @@ const baseTranslations = {
       "确定现在停用 {{name}} 吗？该 secret 会立即被拒绝。",
     "settings.externalApiKeys.disableDialog.confirm": "立即停用",
     "settings.proxy.title": "代理配置",
-    "settings.proxy.description":
-      "配置当前 pool `/v1/models` 路径的覆盖与上游合并行为。",
+    "settings.proxy.description": "配置当前 pool `/v1/models` 路径的覆盖与上游合并行为。",
     "settings.proxy.hijackLabel": "劫持 /v1/models",
-    "settings.proxy.hijackHint":
-      "开启后由当前代理返回预置模型列表，而不是纯透传上游。",
+    "settings.proxy.hijackHint": "开启后由当前代理返回预置模型列表，而不是纯透传上游。",
     "settings.proxy.mergeLabel": "实时合并上游模型",
-    "settings.proxy.mergeHint":
-      "开启后会实时请求上游模型并与预置列表按模型 ID 去重合并。",
+    "settings.proxy.mergeHint": "开启后会实时请求上游模型并与预置列表按模型 ID 去重合并。",
     "settings.proxy.mergeDisabledHint": "请先开启劫持，再启用该选项。",
     "settings.proxy.presetModels": "预置模型列表",
     "settings.proxy.enabledCount": "已启用：{{count}} / {{total}}",
-    "settings.proxy.noneEnabledHint":
-      "当前没有启用任何预置模型；劫持模式下不会返回预置模型。",
+    "settings.proxy.noneEnabledHint": "当前没有启用任何预置模型；劫持模式下不会返回预置模型。",
     "settings.proxy.fastModeRewriteLabel": "Fast 模式请求改写",
     "settings.proxy.fastModeRewriteHint":
       "仅作用于 POST /v1/responses 与 POST /v1/chat/completions；`requestedServiceTier` 继续表示最终发给上游的值。",
@@ -4261,11 +3724,9 @@ const baseTranslations = {
     "settings.proxy.websocketRuntimeHint":
       "这些全局设置会立即保存生效，环境变量只作为首次启动默认值。",
     "settings.proxy.websocketDownstreamLabel": "允许下游 WS",
-    "settings.proxy.websocketDownstreamHint":
-      "控制客户端是否可将 `/v1/*` 请求升级为 WebSocket。",
+    "settings.proxy.websocketDownstreamHint": "控制客户端是否可将 `/v1/*` 请求升级为 WebSocket。",
     "settings.proxy.websocketUpstreamLabel": "默认使用上游 WS",
-    "settings.proxy.websocketUpstreamHint":
-      "控制本服务是否为 WS 请求尝试连接上游 ws/wss。",
+    "settings.proxy.websocketUpstreamHint": "控制本服务是否为 WS 请求尝试连接上游 ws/wss。",
     "settings.proxy.websocketEnabled": "已开启",
     "settings.proxy.websocketDisabled": "已关闭",
     "settings.proxy.websocketEnvLabel": "全局设置",
@@ -4276,11 +3737,9 @@ const baseTranslations = {
     "settings.proxy.encryptedOwnerRoutingDescription":
       "关闭后，加密内容不会创建或强制 owner 路由绑定，对话绑定风险提示也会静音。",
     "settings.proxy.bodyLoggingTitle": "调用 body 留存",
-    "settings.proxy.bodyLoggingHint":
-      "控制新的代理调用是否继续保留请求或响应 body 内容。",
+    "settings.proxy.bodyLoggingHint": "控制新的代理调用是否继续保留请求或响应 body 内容。",
     "settings.proxy.requestBodyLoggingLabel": "记录请求 body",
-    "settings.proxy.requestBodyLoggingHint":
-      "结构化元数据仍会保留；仅停止新的原始请求 body 留存。",
+    "settings.proxy.requestBodyLoggingHint": "结构化元数据仍会保留；仅停止新的原始请求 body 留存。",
     "settings.proxy.responseBodyLoggingLabel": "记录响应 body",
     "settings.proxy.responseBodyLoggingHint":
       "会同时关闭新的完整响应 raw 留存与详情页 inline preview。",
@@ -4309,8 +3768,7 @@ const baseTranslations = {
     "settings.forwardProxy.refreshingSubscriptions": "刷新中…",
     "settings.forwardProxy.refreshSubscriptionsSuccess":
       "订阅已刷新：{{count}} 个来源，新增 {{added}} 个节点。",
-    "settings.forwardProxy.refreshSubscriptionsFailed":
-      "订阅刷新失败：{{error}}",
+    "settings.forwardProxy.refreshSubscriptionsFailed": "订阅刷新失败：{{error}}",
     "settings.forwardProxy.testAllLatency": "测试全部",
     "settings.forwardProxy.proxyCount": "已配置节点：{{count}}",
     "settings.forwardProxy.subscriptionCount": "已配置订阅：{{count}}",
@@ -4322,8 +3780,7 @@ const baseTranslations = {
     "settings.forwardProxy.supportHint":
       "支持协议：http、https、socks、socks5、socks5h、vmess、vless、trojan、ss（vmess/vless/trojan/ss 由 Xray 转发）",
     "settings.forwardProxy.directLabel": "直连",
-    "settings.forwardProxy.modal.description":
-      "先输入候选内容并验证可用，验证通过后才可添加。",
+    "settings.forwardProxy.modal.description": "先输入候选内容并验证可用，验证通过后才可添加。",
     "settings.forwardProxy.modal.step1": "步骤 1：输入节点",
     "settings.forwardProxy.modal.step2": "步骤 2：校验结果",
     "settings.forwardProxy.modal.step1Compact": "输入节点",
@@ -4350,10 +3807,8 @@ const baseTranslations = {
     "settings.forwardProxy.modal.validateFailed": "验证失败。",
     "settings.forwardProxy.modal.backendUnreachable":
       "无法连接后端服务，请确认 127.0.0.1:8080 已启动。",
-    "settings.forwardProxy.modal.backendServerError":
-      "后端返回内部错误，请检查后端状态与日志。",
-    "settings.forwardProxy.modal.batchValidateSuccess":
-      "共 {{count}} 条节点验证通过。",
+    "settings.forwardProxy.modal.backendServerError": "后端返回内部错误，请检查后端状态与日志。",
+    "settings.forwardProxy.modal.batchValidateSuccess": "共 {{count}} 条节点验证通过。",
     "settings.forwardProxy.modal.batchValidateFailed":
       "共 {{total}} 条中有 {{failed}} 条验证失败。",
     "settings.forwardProxy.modal.batchValidateSummary":
@@ -4362,8 +3817,7 @@ const baseTranslations = {
       "正在校验 {{validating}} 条，可用 {{available}} 条，不可用 {{unavailable}} 条。",
     "settings.forwardProxy.modal.normalizedCount": "规范化条目：{{count}}",
     "settings.forwardProxy.modal.normalizedValue": "规范化结果：{{value}}",
-    "settings.forwardProxy.modal.probeSummary":
-      "解析节点：{{nodes}}，探测延迟：{{latency}}",
+    "settings.forwardProxy.modal.probeSummary": "解析节点：{{nodes}}，探测延迟：{{latency}}",
     "settings.forwardProxy.modal.unknownNode": "未命名节点",
     "settings.forwardProxy.modal.unknownProtocol": "未知",
     "settings.forwardProxy.modal.rowValidating": "校验中…",
@@ -4379,8 +3833,7 @@ const baseTranslations = {
     "settings.forwardProxy.modal.statusValidating": "校验中",
     "settings.forwardProxy.modal.statusTimeout": "超时",
     "settings.forwardProxy.modal.roundProgress": "第 {{current}}/{{total}} 轮",
-    "settings.forwardProxy.modal.roundResultSuccess":
-      "第 {{round}} 轮 成功 {{latency}}",
+    "settings.forwardProxy.modal.roundResultSuccess": "第 {{round}} 轮 成功 {{latency}}",
     "settings.forwardProxy.modal.roundResultTimeout": "第 {{round}} 轮 超时",
     "settings.forwardProxy.modal.roundResultFailed": "第 {{round}} 轮 失败",
     "settings.forwardProxy.table.proxy": "代理",
@@ -4400,14 +3853,12 @@ const baseTranslations = {
     "settings.forwardProxy.latency.empty": "--",
     "settings.forwardProxy.latency.timeout": "超时",
     "settings.forwardProxy.latency.streamFailed": "延迟测试连接中断。",
-    "settings.forwardProxy.latency.tooltipIdle":
-      "点击后对该节点执行 5 轮测试。",
+    "settings.forwardProxy.latency.tooltipIdle": "点击后对该节点执行 5 轮测试。",
     "settings.forwardProxy.latency.tooltipTesting":
       "正在测试该节点；出现第一轮有效样本后会立即显示。",
     "settings.forwardProxy.latency.tooltipReady":
       "{{latency}}，来自 {{success}}/{{attempts}} 个成功样本。\n{{targets}}\n点击可重新测试。",
-    "settings.forwardProxy.latency.tooltipFailed":
-      "{{message}}\n{{targets}}\n点击可重新测试。",
+    "settings.forwardProxy.latency.tooltipFailed": "{{message}}\n{{targets}}\n点击可重新测试。",
     "settings.forwardProxy.latency.target.egressIp": "出站 IP",
     "settings.forwardProxy.latency.target.oauthUpstream": "OAuth /models",
     "settings.forwardProxy.latency.target.codexResponses": "Codex /responses",
@@ -4417,8 +3868,7 @@ const baseTranslations = {
     "settings.pricing.title": "价格配置",
     "settings.pricing.description":
       "编辑用于代理成本估算的模型价格，包括 Prompt Cache 的读写计费拆分。",
-    "settings.pricing.compactNote":
-      "这些价格只是一层成本估算 contract，不是上游 token 真值来源。",
+    "settings.pricing.compactNote": "这些价格只是一层成本估算 contract，不是上游 token 真值来源。",
     "settings.pricing.add": "新增模型",
     "settings.pricing.remove": "删除",
     "settings.pricing.catalogVersion": "价格版本",
@@ -4465,8 +3915,7 @@ const baseTranslations = {
     "dashboard.workingConversations.openConversation": "打开对话详情",
     "dashboard.workingConversations.openInvocation": "打开调用详情",
     "dashboard.workingConversations.placeholderBadge": "占位",
-    "dashboard.workingConversations.previousPlaceholder":
-      "这条对话还没有可展示的上一条调用。",
+    "dashboard.workingConversations.previousPlaceholder": "这条对话还没有可展示的上一条调用。",
     "dashboard.workingConversations.previousPlaceholderHint":
       "这里会保持等高占位，避免对话刚开始时卡片高度跳变。",
     "dashboard.workingConversations.modelLabel": "模型",
@@ -4504,16 +3953,13 @@ const baseTranslations = {
       "首字总耗时均值，按最近 5 分钟窗口内的活跃尾段计算；无完整样本时显示为空。",
     "dashboard.today.inProgressConversationsDescription":
       "当前处于请求中或响应中的调用数；同一对话下的多个进行中调用会分别计数。",
-    "dashboard.today.queuedInvocationsDescription":
-      "当前尚未开始请求上游的排队中调用数。",
+    "dashboard.today.queuedInvocationsDescription": "当前尚未开始请求上游的排队中调用数。",
     "dashboard.today.parallelConversationsDescription":
       "所选窗口最后一分钟切片内统计到的唯一 prompt-cache 对话数量。",
     "dashboard.today.successDescription": "所选自然日窗口内累计成功的调用数。",
     "dashboard.today.failuresDescription": "所选自然日窗口内累计失败的调用数。",
-    "dashboard.today.totalCostDescription":
-      "所选自然日窗口内累计的预估消费金额。",
-    "dashboard.today.totalTokensDescription":
-      "所选自然日窗口内累计的输入、输出和缓存 Tokens。",
+    "dashboard.today.totalCostDescription": "所选自然日窗口内累计的预估消费金额。",
+    "dashboard.today.totalTokensDescription": "所选自然日窗口内累计的输入、输出和缓存 Tokens。",
     "dashboard.today.secondary.dayAverage": "日均",
     "dashboard.today.secondary.previous7dAverage": "7日均",
     "dashboard.today.secondary.vsYesterday": "较昨日",
@@ -4558,8 +4004,7 @@ const baseTranslations = {
     "stats.parallelWork.empty": "还没有可统计的完整 bucket。",
     "stats.parallelWork.detailsTooltipLabel": "查看“{{title}}”说明",
     "stats.parallelWork.chartAria": "{{title}} 趋势",
-    "stats.parallelWork.samples":
-      "{{complete}} 个完整 bucket · {{active}} 个活跃 bucket",
+    "stats.parallelWork.samples": "{{complete}} 个完整 bucket · {{active}} 个活跃 bucket",
     "stats.parallelWork.rangeSummary": "范围：{{start}} → {{end}}",
     "stats.parallelWork.timeZoneFallback":
       "当前窗口按 {{timeZone}} 对齐；这个窗口在当前时区下无法从 hourly rollup 无损重分桶。",
@@ -4644,10 +4089,8 @@ const baseTranslations = {
     "live.conversations.invocations.identityUnavailable": "未知来源",
     "live.conversations.drawer.close": "关闭调用记录抽屉",
     "live.conversations.drawer.eyebrow": "对话详情",
-    "live.conversations.drawer.description":
-      "覆盖从首条到最新一条当前仍可回放的原始调用记录。",
-    "live.conversations.drawer.progress":
-      "已加载 {{loaded}} / {{total}} 条保留调用记录",
+    "live.conversations.drawer.description": "覆盖从首条到最新一条当前仍可回放的原始调用记录。",
+    "live.conversations.drawer.progress": "已加载 {{loaded}} / {{total}} 条保留调用记录",
     "live.conversations.drawer.progressComplete": "共 {{count}} 条保留调用记录",
     "live.conversations.drawer.loadMore": "继续加载更多记录",
     "live.conversations.drawer.loadingMore": "继续加载调用记录中…",
@@ -4668,10 +4111,8 @@ const baseTranslations = {
     "live.conversations.drawer.binding.saving": "保存中…",
     "live.conversations.drawer.binding.currentNone": "当前：无手工绑定",
     "live.conversations.drawer.binding.currentGroup": "当前：分组 {{group}}",
-    "live.conversations.drawer.binding.currentAccount":
-      "当前：账号 {{account}}",
-    "live.conversations.drawer.binding.encryptedOwner":
-      "加密会话 owner：{{owner}}",
+    "live.conversations.drawer.binding.currentAccount": "当前：账号 {{account}}",
+    "live.conversations.drawer.binding.encryptedOwner": "加密会话 owner：{{owner}}",
     "live.conversations.drawer.policy.title": "当前对话覆盖",
     "live.conversations.drawer.policy.inherit": "继承",
     "live.conversations.drawer.policy.override": "覆盖",
@@ -4686,10 +4127,8 @@ const baseTranslations = {
     "live.conversations.drawer.policy.proxyAddPlaceholder": "添加代理节点",
     "live.conversations.drawer.policy.proxyRemove": "移除代理",
     "live.conversations.drawer.policy.availableModels": "可用模型",
-    "live.conversations.drawer.policy.availableModelsPlaceholder":
-      "用逗号分隔模型名",
-    "live.conversations.drawer.policy.availableModelsRequired":
-      "可用模型覆盖不能为空。",
+    "live.conversations.drawer.policy.availableModelsPlaceholder": "用逗号分隔模型名",
+    "live.conversations.drawer.policy.availableModelsRequired": "可用模型覆盖不能为空。",
     "live.conversations.drawer.policy.editField": "编辑对话覆盖",
     "live.conversations.drawer.policy.clearField": "清除对话覆盖",
     "live.conversations.drawer.policy.applyField": "应用覆盖",
@@ -4700,8 +4139,7 @@ const baseTranslations = {
     "live.conversations.drawer.policy.rewriteInherited": "继承改写策略",
     "live.conversations.drawer.binding.encryptedOwnerHint":
       "清空手工绑定不会清除加密会话 owner 锁。",
-    "live.conversations.drawer.binding.ownerConfirm.title":
-      "要更改加密会话的路由绑定吗？",
+    "live.conversations.drawer.binding.ownerConfirm.title": "要更改加密会话的路由绑定吗？",
     "live.conversations.drawer.binding.ownerConfirm.description":
       "这个对话已经绑定加密会话 owner：{{owner}}。",
     "live.conversations.drawer.binding.ownerConfirm.risk":
@@ -4726,8 +4164,7 @@ const baseTranslations = {
     "live.conversations.activity.sampledChart":
       "图表采样最近 {{loaded}} / {{total}} 条匹配调用；上方指标卡使用服务端完整统计。",
     "live.conversations.chartAria": "{{hours}} 小时 Token 累计图",
-    "live.chart.tooltip.instructions":
-      "悬停或点按查看详情；聚焦图表后可用方向键切换数据点。",
+    "live.chart.tooltip.instructions": "悬停或点按查看详情；聚焦图表后可用方向键切换数据点。",
     "live.conversations.chart.tooltip.status": "状态",
     "live.conversations.chart.tooltip.requestTokens": "本次 Tokens",
     "live.conversations.chart.tooltip.cumulativeTokens": "累计 Tokens",
@@ -4755,11 +4192,9 @@ const baseTranslations = {
     "live.proxy.table.currentWeight": "当前权重 {{value}}",
     "live.proxy.table.empty": "暂无代理统计数据。",
     "records.title": "请求记录",
-    "records.subtitle":
-      "基于稳定搜索快照分析请求，避免高速新增数据打乱分页结果。",
+    "records.subtitle": "基于稳定搜索快照分析请求，避免高速新增数据打乱分页结果。",
     "records.filters.title": "筛选",
-    "records.filters.description":
-      "修改筛选只会更新草稿；点击搜索后才会对齐最新快照。",
+    "records.filters.description": "修改筛选只会更新草稿；点击搜索后才会对齐最新快照。",
     "records.filters.rangePreset": "时间范围",
     "records.filters.rangePreset.today": "今天",
     "records.filters.rangePreset.lastDay": "近 24 小时",
@@ -4811,17 +4246,13 @@ const baseTranslations = {
     "records.focus.network": "网络",
     "records.focus.exception": "异常",
     "records.summary.title": "统计",
-    "records.summary.description":
-      "切换聚焦只会更换统计卡片和列表列，不会刷新当前快照。",
+    "records.summary.description": "切换聚焦只会更换统计卡片和列表列，不会刷新当前快照。",
     "records.summary.loadError": "加载统计失败：{{error}}",
     "records.summary.notice.newData": "有 {{count}} 条新数据",
     "records.summary.notice.refreshAction": "加载新数据",
-    "records.summary.notice.newDataAria":
-      "有 {{count}} 条新数据，点击后会并入当前快照。",
-    "records.summary.notice.refreshAria":
-      "加载这 {{count}} 条新数据并刷新当前快照。",
-    "records.summary.notice.refreshingAria":
-      "正在加载这 {{count}} 条新数据并刷新当前快照。",
+    "records.summary.notice.newDataAria": "有 {{count}} 条新数据，点击后会并入当前快照。",
+    "records.summary.notice.refreshAria": "加载这 {{count}} 条新数据并刷新当前快照。",
+    "records.summary.notice.refreshingAria": "正在加载这 {{count}} 条新数据并刷新当前快照。",
     "records.summary.token.requests": "请求数",
     "records.summary.token.totalTokens": "总 Tokens",
     "records.summary.token.avgTokens": "单次平均 Tokens",
@@ -4837,8 +4268,7 @@ const baseTranslations = {
     "records.summary.exception.abort": "客户端中断数",
     "records.summary.exception.actionable": "可行动故障数",
     "records.list.title": "记录",
-    "records.list.description":
-      "排序与分页都会锁定在当前快照内，直到你再次点击搜索。",
+    "records.list.description": "排序与分页都会锁定在当前快照内，直到你再次点击搜索。",
     "records.list.totalCount": "共 {{count}} 条记录",
     "records.list.pageSize": "分页大小",
     "records.list.sortBy": "排序字段",
@@ -4907,12 +4337,9 @@ const baseTranslations = {
     "table.model.routingMismatchTitle": "响应模型与请求模型不同",
     "table.model.routingMismatchAria": "上游将这次请求路由到了不同的响应模型",
     "table.model.fastPriorityTitle": "Fast 模式（Priority processing）",
-    "table.model.fastPriorityAria":
-      "当前请求通过 Priority processing 启用 Fast 模式",
-    "table.model.fastRequestedOnlyTitle":
-      "请求想要 Fast，但实际未命中 Priority processing",
-    "table.model.fastRequestedOnlyAria":
-      "请求想要 Fast，但实际未命中 Priority processing",
+    "table.model.fastPriorityAria": "当前请求通过 Priority processing 启用 Fast 模式",
+    "table.model.fastRequestedOnlyTitle": "请求想要 Fast，但实际未命中 Priority processing",
+    "table.model.fastRequestedOnlyAria": "请求想要 Fast，但实际未命中 Priority processing",
     "table.column.account": "账号",
     "table.column.proxy": "代理",
     "table.column.status": "状态",
@@ -5003,19 +4430,13 @@ const baseTranslations = {
     "table.responseBody.openFullDetails": "查看完整详情",
     "table.responseBody.loading": "正在加载响应体…",
     "table.responseBody.loadError": "加载响应体失败：{{error}}",
-    "table.responseBody.previewTruncated":
-      "当前仅展示节选，可打开完整详情抽屉查看完整记录。",
+    "table.responseBody.previewTruncated": "当前仅展示节选，可打开完整详情抽屉查看完整记录。",
     "table.responseBody.unavailable.notAbnormal": "该记录没有异常响应体。",
-    "table.responseBody.unavailable.detailPruned":
-      "该记录的完整响应体已不再在线保留。",
-    "table.responseBody.unavailable.rawFileMissing":
-      "归档 raw 响应文件已不可用。",
-    "table.responseBody.unavailable.rawFileUnreadable":
-      "归档 raw 响应文件暂时无法读取。",
-    "table.responseBody.unavailable.previewOnly":
-      "该记录当前仅保留响应体节选。",
-    "table.responseBody.unavailable.missingBody":
-      "该记录没有保留可展示的响应体。",
+    "table.responseBody.unavailable.detailPruned": "该记录的完整响应体已不再在线保留。",
+    "table.responseBody.unavailable.rawFileMissing": "归档 raw 响应文件已不可用。",
+    "table.responseBody.unavailable.rawFileUnreadable": "归档 raw 响应文件暂时无法读取。",
+    "table.responseBody.unavailable.previewOnly": "该记录当前仅保留响应体节选。",
+    "table.responseBody.unavailable.missingBody": "该记录没有保留可展示的响应体。",
     "table.responseBody.unavailable.generic": "响应体当前不可用。",
     "table.details.timingsTitle": "阶段耗时",
     "table.details.stage.requestRead": "请求读取",
@@ -5082,12 +4503,10 @@ const baseTranslations = {
     "table.accountDrawer.fallbackTitle": "上游账号",
     "table.accountDrawer.errorTitle": "加载上游账号详情失败",
     "table.accountDrawer.emptyTitle": "上游账号不可用",
-    "table.accountDrawer.emptyBody":
-      "该账号可能已被移除，或当前请求已无法关联到可用账号。",
+    "table.accountDrawer.emptyBody": "该账号可能已被移除，或当前请求已无法关联到可用账号。",
     "table.accountDrawer.openAccountPool": "去号池查看完整详情",
     "table.accountDrawer.healthTitle": "健康信息",
-    "table.accountDrawer.healthDescription":
-      "展示该上游账号最近同步、令牌与错误状态。",
+    "table.accountDrawer.healthDescription": "展示该上游账号最近同步、令牌与错误状态。",
     "table.accountDrawer.tabs.overview": "概览",
     "table.accountDrawer.tabs.health": "健康",
     "stats.cards.loadError": "加载统计失败：{{error}}",
@@ -5119,19 +4538,13 @@ const baseTranslations = {
 type BaseTranslations = typeof baseTranslations;
 type TranslationKey = keyof BaseTranslations["en"];
 
-export const translations: Record<
-  Locale,
-  Record<TranslationKey, string>
-> = baseTranslations;
+export const translations: Record<Locale, Record<TranslationKey, string>> = baseTranslations;
 
 export type { TranslationKey };
 
 export const FALLBACK_LOCALE: Locale = "en";
 
-export function formatTranslation(
-  template: string,
-  values?: TranslationValues,
-) {
+export function formatTranslation(template: string, values?: TranslationValues) {
   if (!values) return template;
   return template.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, key: string) => {
     const value = values[key];

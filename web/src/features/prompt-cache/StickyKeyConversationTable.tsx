@@ -109,8 +109,7 @@ export function StickyKeyConversationTable({
   );
   const historyRecordMatchesConversationKey = useCallback(
     (record: ApiInvocation, stickyKey: string) => {
-      const resolvedStickyKey =
-        record.stickyKey?.trim() || record.promptCacheKey?.trim() || "";
+      const resolvedStickyKey = record.stickyKey?.trim() || record.promptCacheKey?.trim() || "";
       if (resolvedStickyKey !== stickyKey) return false;
       if (accountId == null) return true;
       return record.upstreamAccountId === accountId;
@@ -126,9 +125,7 @@ export function StickyKeyConversationTable({
       expandedPromptCacheKeys={expandedStickyKeys}
       onToggleExpandedPromptCacheKey={onToggleExpandedStickyKey}
       onOpenUpstreamAccount={onOpenUpstreamAccount}
-      keyColumnLabel={t(
-        "accountPool.upstreamAccounts.stickyConversations.table.stickyKey",
-      )}
+      keyColumnLabel={t("accountPool.upstreamAccounts.stickyConversations.table.stickyKey")}
       emptyLabel={t("accountPool.upstreamAccounts.stickyConversations.empty")}
       historyQueryForConversationKey={historyQueryForConversationKey}
       historyRecordMatchesConversationKey={historyRecordMatchesConversationKey}

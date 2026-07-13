@@ -1,9 +1,12 @@
 import { useMemo } from "react";
+import { Alert } from "../../components/ui/alert";
+import {
+  type InlineChartTooltipData,
+  InlineChartTooltipSurface,
+} from "../../components/ui/inline-chart-tooltip";
+import { Spinner } from "../../components/ui/spinner";
 import { useTranslation } from "../../i18n";
-import type {
-  ConversationRequestOutcome,
-  ConversationRequestPoint,
-} from "../../lib/api";
+import type { ConversationRequestOutcome, ConversationRequestPoint } from "../../lib/api";
 import { resolveConversationRequestPointOutcome } from "../../lib/conversationRequestPoint";
 import {
   buildConversationSegments,
@@ -11,12 +14,6 @@ import {
   findVisibleConversationChartMax,
   resolveConversationRangeEpochs,
 } from "./keyedConversationChart";
-import { Alert } from "../../components/ui/alert";
-import {
-  InlineChartTooltipSurface,
-  type InlineChartTooltipData,
-} from "../../components/ui/inline-chart-tooltip";
-import { Spinner } from "../../components/ui/spinner";
 
 export interface KeyedConversationRecord {
   requestCount: number;
@@ -27,17 +24,13 @@ export interface KeyedConversationRecord {
   last24hRequests: ConversationRequestPoint[];
 }
 
-interface KeyedConversationStats<
-  TConversation extends KeyedConversationRecord,
-> {
+interface KeyedConversationStats<TConversation extends KeyedConversationRecord> {
   rangeStart: string;
   rangeEnd: string;
   conversations: TConversation[];
 }
 
-interface KeyedConversationTableProps<
-  TConversation extends KeyedConversationRecord,
-> {
+interface KeyedConversationTableProps<TConversation extends KeyedConversationRecord> {
   stats: KeyedConversationStats<TConversation> | null;
   isLoading: boolean;
   error?: string | null;
@@ -64,9 +57,7 @@ interface ConversationChartSegment {
 interface ConversationChartGeometry {
   width: number;
   height: number;
-  segments: Array<
-    ConversationChartSegment & { x1: number; x2: number; y: number }
-  >;
+  segments: Array<ConversationChartSegment & { x1: number; x2: number; y: number }>;
   jumps: Array<{ x: number; y1: number; y2: number }>;
 }
 
@@ -119,11 +110,7 @@ function buildGeometry(
   const range = resolveConversationRangeEpochs(rangeStart, rangeEnd);
   if (!range) return null;
 
-  const segments = buildConversationSegments(
-    points,
-    range.rangeStartEpoch,
-    range.rangeEndEpoch,
-  );
+  const segments = buildConversationSegments(points, range.rangeStartEpoch, range.rangeEndEpoch);
   if (segments.length === 0) return null;
 
   const maxCumulative = Math.max(
@@ -132,10 +119,8 @@ function buildGeometry(
     1,
   );
   const span = range.rangeEndEpoch - range.rangeStartEpoch;
-  const xForEpoch = (epoch: number) =>
-    ((epoch - range.rangeStartEpoch) / span) * CHART_WIDTH;
-  const yForTokens = (tokens: number) =>
-    CHART_HEIGHT - (tokens / maxCumulative) * CHART_HEIGHT;
+  const xForEpoch = (epoch: number) => ((epoch - range.rangeStartEpoch) / span) * CHART_WIDTH;
+  const yForTokens = (tokens: number) => CHART_HEIGHT - (tokens / maxCumulative) * CHART_HEIGHT;
 
   const positioned = segments.map((segment) => ({
     ...segment,
@@ -201,9 +186,7 @@ function buildConversationTooltipData(
   };
 }
 
-export function ConversationSparkline<
-  TConversation extends KeyedConversationRecord,
->({
+export function ConversationSparkline<TConversation extends KeyedConversationRecord>({
   conversation,
   rangeStart,
   rangeEnd,
@@ -229,36 +212,20 @@ export function ConversationSparkline<
   conversationKey: string;
 }) {
   const geometry = useMemo(
-    () =>
-      buildGeometry(
-        conversation.last24hRequests,
-        rangeStart,
-        rangeEnd,
-        maxCumulativeTokens,
-      ),
+    () => buildGeometry(conversation.last24hRequests, rangeStart, rangeEnd, maxCumulativeTokens),
     [conversation.last24hRequests, maxCumulativeTokens, rangeEnd, rangeStart],
   );
-  const numberFormatter = useMemo(
-    () => new Intl.NumberFormat(localeTag),
-    [localeTag],
-  );
+  const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
   const tooltipData = useMemo(
     () =>
       geometry?.segments.map((segment) =>
-        buildConversationTooltipData(
-          segment.point,
-          localeTag,
-          tooltipLabels,
-          numberFormatter,
-        ),
+        buildConversationTooltipData(segment.point, localeTag, tooltipLabels, numberFormatter),
       ) ?? [],
     [geometry?.segments, localeTag, numberFormatter, tooltipLabels],
   );
 
   if (!geometry) {
-    return (
-      <div className="text-[11px] text-base-content/55">{FALLBACK_CELL}</div>
-    );
+    return <div className="text-[11px] text-base-content/55">{FALLBACK_CELL}</div>;
   }
 
   const defaultIndex = Math.max(0, geometry.segments.length - 1);
@@ -273,8 +240,7 @@ export function ConversationSparkline<
       chartClassName="h-12"
     >
       {({ activeIndex, getItemProps }) => {
-        const activeSegment =
-          activeIndex != null ? geometry.segments[activeIndex] : null;
+        const activeSegment = activeIndex != null ? geometry.segments[activeIndex] : null;
         return (
           <svg
             viewBox={`0 0 ${geometry.width} ${geometry.height}`}
@@ -353,9 +319,7 @@ export function ConversationSparkline<
   );
 }
 
-export function KeyedConversationTable<
-  TConversation extends KeyedConversationRecord,
->({
+export function KeyedConversationTable<TConversation extends KeyedConversationRecord>({
   stats,
   isLoading,
   error,
@@ -369,10 +333,7 @@ export function KeyedConversationTable<
 }: KeyedConversationTableProps<TConversation>) {
   const { t, locale } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
-  const numberFormatter = useMemo(
-    () => new Intl.NumberFormat(localeTag),
-    [localeTag],
-  );
+  const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
   const currencyFormatter = useMemo(
     () =>
       new Intl.NumberFormat(localeTag, {
@@ -408,16 +369,10 @@ export function KeyedConversationTable<
   const rangeStart = chartRangeOverride?.rangeStart ?? stats?.rangeStart ?? "";
   const rangeEnd = chartRangeOverride?.rangeEnd ?? stats?.rangeEnd ?? "";
   const conversationChartMax = useMemo(
-    () =>
-      findVisibleConversationChartMax(
-        stats?.conversations ?? [],
-        rangeStart,
-        rangeEnd,
-      ),
+    () => findVisibleConversationChartMax(stats?.conversations ?? [], rangeStart, rangeEnd),
     [rangeEnd, rangeStart, stats?.conversations],
   );
-  const resolvedChartColumnLabel =
-    chartColumnLabel ?? t("live.conversations.table.chart24h");
+  const resolvedChartColumnLabel = chartColumnLabel ?? t("live.conversations.table.chart24h");
 
   if (error) {
     return (
@@ -439,9 +394,7 @@ export function KeyedConversationTable<
     return (
       <div className="space-y-2">
         <Alert>{emptyLabel}</Alert>
-        {footerNote ? (
-          <p className="px-1 text-[11px] text-base-content/55">{footerNote}</p>
-        ) : null}
+        {footerNote ? <p className="px-1 text-[11px] text-base-content/55">{footerNote}</p> : null}
       </div>
     );
   }
@@ -452,14 +405,8 @@ export function KeyedConversationTable<
         <div className="space-y-3 p-3 sm:hidden">
           {stats.conversations.map((conversation) => {
             const conversationKey = getConversationKey(conversation);
-            const createdAtLabel = formatDateLabel(
-              conversation.createdAt,
-              dateFormatter,
-            );
-            const lastActivityLabel = formatDateLabel(
-              conversation.lastActivityAt,
-              dateFormatter,
-            );
+            const createdAtLabel = formatDateLabel(conversation.createdAt, dateFormatter);
+            const lastActivityLabel = formatDateLabel(conversation.lastActivityAt, dateFormatter);
 
             return (
               <article
@@ -470,9 +417,7 @@ export function KeyedConversationTable<
                   <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
                     {keyColumnLabel}
                   </div>
-                  <div className="break-all font-mono text-xs">
-                    {conversationKey}
-                  </div>
+                  <div className="break-all font-mono text-xs">{conversationKey}</div>
                 </div>
 
                 <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
@@ -480,17 +425,13 @@ export function KeyedConversationTable<
                     <dt className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
                       {t("live.conversations.table.requestCount")}
                     </dt>
-                    <dd>
-                      {formatNumber(conversation.requestCount, numberFormatter)}
-                    </dd>
+                    <dd>{formatNumber(conversation.requestCount, numberFormatter)}</dd>
                   </div>
                   <div>
                     <dt className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
                       {t("live.conversations.table.totalTokens")}
                     </dt>
-                    <dd>
-                      {formatNumber(conversation.totalTokens, numberFormatter)}
-                    </dd>
+                    <dd>{formatNumber(conversation.totalTokens, numberFormatter)}</dd>
                   </div>
                   <div>
                     <dt className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
@@ -566,25 +507,13 @@ export function KeyedConversationTable<
           <tbody className="divide-y divide-base-300/65">
             {stats.conversations.map((conversation) => {
               const conversationKey = getConversationKey(conversation);
-              const createdAtLabel = formatDateLabel(
-                conversation.createdAt,
-                dateFormatter,
-              );
-              const lastActivityLabel = formatDateLabel(
-                conversation.lastActivityAt,
-                dateFormatter,
-              );
+              const createdAtLabel = formatDateLabel(conversation.createdAt, dateFormatter);
+              const lastActivityLabel = formatDateLabel(conversation.lastActivityAt, dateFormatter);
 
               return (
-                <tr
-                  key={conversationKey}
-                  className="transition-colors hover:bg-primary/6"
-                >
+                <tr key={conversationKey} className="transition-colors hover:bg-primary/6">
                   <td className="max-w-0 px-2 py-2 align-middle sm:px-3 sm:py-3">
-                    <div
-                      className="truncate font-mono text-xs"
-                      title={conversationKey}
-                    >
+                    <div className="truncate font-mono text-xs" title={conversationKey}>
                       {conversationKey}
                     </div>
                   </td>
@@ -624,9 +553,7 @@ export function KeyedConversationTable<
           </tbody>
         </table>
       </div>
-      {footerNote ? (
-        <p className="px-1 text-[11px] text-base-content/55">{footerNote}</p>
-      ) : null}
+      {footerNote ? <p className="px-1 text-[11px] text-base-content/55">{footerNote}</p> : null}
     </div>
   );
 }

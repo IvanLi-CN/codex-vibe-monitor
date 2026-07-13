@@ -113,9 +113,7 @@ function DashboardPerformanceDiagnosticsPanel() {
     >
       <div className="surface-panel-body gap-3">
         <div className="section-heading">
-          <h2 className="section-title text-sm">
-            Dashboard diagnostics (debug)
-          </h2>
+          <h2 className="section-title text-sm">Dashboard diagnostics (debug)</h2>
         </div>
         <dl className="grid gap-3 md:grid-cols-2">
           {rows.map((row) => (
@@ -123,9 +121,7 @@ function DashboardPerformanceDiagnosticsPanel() {
               key={row.key}
               className="rounded-lg border border-base-300/80 bg-base-100/80 px-3 py-2"
             >
-              <dt className="text-xs font-medium text-base-content/70">
-                {row.label}
-              </dt>
+              <dt className="text-xs font-medium text-base-content/70">{row.label}</dt>
               <dd
                 className="mt-1 text-lg font-semibold text-base-content"
                 data-testid={`dashboard-performance-diagnostics-${row.key}`}

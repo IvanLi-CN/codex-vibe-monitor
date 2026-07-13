@@ -5103,10 +5103,7 @@ async fn proxy_openai_v1_direct_image_prebuffer_preserves_image_capture_target_w
             .into_response()
     }
 
-    let app = Router::new().route(
-        "/v1/images/generations",
-        post(|headers, body| direct_image_echo_upstream(headers, body)),
-    );
+    let app = Router::new().route("/v1/images/generations", post(direct_image_echo_upstream));
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind direct image upstream");
@@ -5204,10 +5201,7 @@ async fn proxy_openai_v1_responses_force_add_failure_learns_image_unsupported() 
             .into_response()
     }
 
-    let app = Router::new().route(
-        "/v1/responses",
-        post(|body| image_unsupported_upstream(body)),
-    );
+    let app = Router::new().route("/v1/responses", post(image_unsupported_upstream));
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind image unsupported upstream");
@@ -5349,17 +5343,14 @@ async fn proxy_openai_v1_responses_pool_runtime_exposes_remote_v2_compaction_req
             .await
             .expect("timed out waiting for runtime records payload")
             .expect("broadcast channel should stay open");
-        match payload {
-            BroadcastPayload::Records { records } => {
-                if let Some(record) = records.into_iter().find(|record| {
-                    record.endpoint.as_deref() == Some("/v1/responses")
-                        && record.compaction_request_kind.as_deref() == Some("remote_v2")
-                        && record.status.as_deref() == Some("running")
-                }) {
-                    break record;
-                }
-            }
-            _ => {}
+        if let BroadcastPayload::Records { records } = payload
+            && let Some(record) = records.into_iter().find(|record| {
+                record.endpoint.as_deref() == Some("/v1/responses")
+                    && record.compaction_request_kind.as_deref() == Some("remote_v2")
+                    && record.status.as_deref() == Some("running")
+            })
+        {
+            break record;
         }
     };
     assert_eq!(
@@ -5540,10 +5531,7 @@ async fn proxy_openai_v1_direct_image_pool_runtime_exposes_direct_image_intent()
             .into_response()
     }
 
-    let app = Router::new().route(
-        "/v1/images/generations",
-        post(|headers, body| direct_image_echo_upstream(headers, body)),
-    );
+    let app = Router::new().route("/v1/images/generations", post(direct_image_echo_upstream));
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind direct image upstream");

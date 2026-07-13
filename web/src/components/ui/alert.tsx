@@ -1,35 +1,32 @@
-import * as React from 'react'
-import { cva, type VariantProps } from 'class-variance-authority'
-import { cn } from '../../lib/utils'
+import { cva, type VariantProps } from "class-variance-authority";
+import * as React from "react";
+import { cn } from "../../lib/utils";
 
-const alertVariants = cva('flex items-start gap-2 rounded-xl border px-4 py-3 text-sm', {
+const alertVariants = cva("flex items-start gap-2 rounded-xl border px-4 py-3 text-sm", {
   variants: {
     variant: {
-      default: 'border-base-300/75 bg-base-200/55 text-base-content',
-      info: 'border-info/45 bg-info/10 text-info',
-      success: 'border-success/45 bg-success/10 text-success',
-      warning: 'border-warning/45 bg-warning/15 text-warning',
-      error: 'border-error/45 bg-error/15 text-error',
+      default: "border-base-300/75 bg-base-200/55 text-base-content",
+      info: "border-info/45 bg-info/10 text-info",
+      success: "border-success/45 bg-success/10 text-success",
+      warning: "border-warning/45 bg-warning/15 text-warning",
+      error: "border-error/45 bg-error/15 text-error",
     },
   },
   defaultVariants: {
-    variant: 'default',
+    variant: "default",
   },
-})
+});
 
-export interface AlertProps extends React.HTMLAttributes<HTMLDivElement>, VariantProps<typeof alertVariants> {}
+export interface AlertProps
+  extends React.HTMLAttributes<HTMLDivElement>,
+    VariantProps<typeof alertVariants> {}
 
 const Alert = React.forwardRef<HTMLDivElement, AlertProps>(
   ({ className, variant, ...props }, ref) => (
-    <div
-      ref={ref}
-      className={cn(alertVariants({ variant }), className)}
-      role="status"
-      {...props}
-    />
+    <div ref={ref} className={cn(alertVariants({ variant }), className)} role="status" {...props} />
   ),
-)
+);
 
-Alert.displayName = 'Alert'
+Alert.displayName = "Alert";
 
-export { Alert }
+export { Alert };

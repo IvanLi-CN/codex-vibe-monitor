@@ -1,20 +1,24 @@
-import { useLayoutEffect, useRef, type ReactNode } from 'react'
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, within } from 'storybook/test'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { I18nProvider } from '../../i18n'
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { expect, within } from "storybook/test";
+import { I18nProvider } from "../../i18n";
 import type {
   ExternalApiKeySummary,
   SettingsPayload,
   SystemStatusResponse,
   SystemTaskRunsResponse,
-} from '../../lib/api'
-import { FullPageStorySurface, StorybookPageEnvironment, type StorybookRequestHandler } from '../../storybook/storybookPageHelpers'
-import SystemLayout from '../../pages/system/SystemLayout'
-import SystemProxyPage from '../../pages/system/SystemProxyPage'
-import SystemSettingsPage from '../../pages/system/SystemSettingsPage'
-import SystemStatusPage from '../../pages/system/SystemStatusPage'
-import SystemTasksPage from '../../pages/system/SystemTasksPage'
+} from "../../lib/api";
+import SystemLayout from "../../pages/system/SystemLayout";
+import SystemProxyPage from "../../pages/system/SystemProxyPage";
+import SystemSettingsPage from "../../pages/system/SystemSettingsPage";
+import SystemStatusPage from "../../pages/system/SystemStatusPage";
+import SystemTasksPage from "../../pages/system/SystemTasksPage";
+import {
+  FullPageStorySurface,
+  StorybookPageEnvironment,
+  type StorybookRequestHandler,
+} from "../../storybook/storybookPageHelpers";
 
 const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
   liveInvocationsCount: 128_076,
@@ -27,104 +31,114 @@ const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
   responseRawBodies: { count: 670, bytes: 8_000_000_000 },
   databaseBytes: 618_659_840,
   otherFilesBytes: 142_344_192,
-  refreshedAt: '2026-06-22T09:28:00Z',
-}
+  refreshedAt: "2026-06-22T09:28:00Z",
+};
 
-const STORYBOOK_SYSTEM_TASK_ITEMS: SystemTaskRunsResponse['items'] = [
+const STORYBOOK_SYSTEM_TASK_ITEMS: SystemTaskRunsResponse["items"] = [
   {
     id: 41,
-    taskKind: 'forward_proxy_subscription_refresh',
-    triggerKind: 'interval',
-    status: 'success',
-    summary: 'refreshed 3 subscriptions and added 18 nodes',
-    detail: 'Completed in background maintenance loop without manual intervention.',
-    startedAt: '2026-06-22T09:20:00Z',
-    finishedAt: '2026-06-22T09:20:02Z',
+    taskKind: "forward_proxy_subscription_refresh",
+    triggerKind: "interval",
+    status: "success",
+    summary: "refreshed 3 subscriptions and added 18 nodes",
+    detail: "Completed in background maintenance loop without manual intervention.",
+    startedAt: "2026-06-22T09:20:00Z",
+    finishedAt: "2026-06-22T09:20:02Z",
     durationMs: 2014,
   },
   {
     id: 40,
-    taskKind: 'retention_archive',
-    triggerKind: 'interval',
-    status: 'success',
-    summary: 'compressed=27 archived_invocations=860 pruned_details=860 orphan_raw_removed=4',
-    detail: 'Archive maintenance rotated raw payloads and trimmed invocation details.',
-    startedAt: '2026-06-22T09:00:00Z',
-    finishedAt: '2026-06-22T09:00:11Z',
+    taskKind: "retention_archive",
+    triggerKind: "interval",
+    status: "success",
+    summary: "compressed=27 archived_invocations=860 pruned_details=860 orphan_raw_removed=4",
+    detail: "Archive maintenance rotated raw payloads and trimmed invocation details.",
+    startedAt: "2026-06-22T09:00:00Z",
+    finishedAt: "2026-06-22T09:00:11Z",
     durationMs: 11182,
   },
   {
     id: 39,
-    taskKind: 'startup_backfill',
-    triggerKind: 'startup',
-    status: 'success',
-    summary: 'replayed retained raw captures into usage rollups',
-    detail: 'Startup backfill completed before the main scheduler resumed normal polling.',
-    startedAt: '2026-06-22T08:58:00Z',
-    finishedAt: '2026-06-22T08:58:12Z',
+    taskKind: "startup_backfill",
+    triggerKind: "startup",
+    status: "success",
+    summary: "replayed retained raw captures into usage rollups",
+    detail: "Startup backfill completed before the main scheduler resumed normal polling.",
+    startedAt: "2026-06-22T08:58:00Z",
+    finishedAt: "2026-06-22T08:58:12Z",
     durationMs: 12103,
   },
   {
     id: 38,
-    taskKind: 'scheduler_poll',
-    triggerKind: 'interval',
-    status: 'failed',
-    summary: 'pool poll timed out while upstream was degraded',
-    detail: 'The scheduler retried after a handshake timeout and recovered on the next interval.',
-    startedAt: '2026-06-22T08:40:00Z',
-    finishedAt: '2026-06-22T08:40:10Z',
+    taskKind: "scheduler_poll",
+    triggerKind: "interval",
+    status: "failed",
+    summary: "pool poll timed out while upstream was degraded",
+    detail: "The scheduler retried after a handshake timeout and recovered on the next interval.",
+    startedAt: "2026-06-22T08:40:00Z",
+    finishedAt: "2026-06-22T08:40:10Z",
     durationMs: 10000,
   },
-]
+];
 
 for (let index = 0; index < 21; index += 1) {
-  const id = 37 - index
+  const id = 37 - index;
   STORYBOOK_SYSTEM_TASK_ITEMS.push({
     id,
-    taskKind: index % 4 === 0 ? 'scheduler_poll' : index % 4 === 1 ? 'retention_archive' : index % 4 === 2 ? 'startup_backfill' : 'forward_proxy_subscription_refresh',
-    triggerKind: index % 3 === 0 ? 'interval' : 'startup',
-    status: index % 5 === 0 ? 'failed' : 'success',
+    taskKind:
+      index % 4 === 0
+        ? "scheduler_poll"
+        : index % 4 === 1
+          ? "retention_archive"
+          : index % 4 === 2
+            ? "startup_backfill"
+            : "forward_proxy_subscription_refresh",
+    triggerKind: index % 3 === 0 ? "interval" : "startup",
+    status: index % 5 === 0 ? "failed" : "success",
     summary: `storybook task run ${id} summary`,
     detail: `Synthetic task run ${id} keeps pagination states visible in the system workspace story.`,
-    startedAt: `2026-06-21T${String(23 - (index % 10)).padStart(2, '0')}:00:00Z`,
-    finishedAt: `2026-06-21T${String(23 - (index % 10)).padStart(2, '0')}:00:05Z`,
+    startedAt: `2026-06-21T${String(23 - (index % 10)).padStart(2, "0")}:00:00Z`,
+    finishedAt: `2026-06-21T${String(23 - (index % 10)).padStart(2, "0")}:00:05Z`,
     durationMs: 5000 + index * 73,
-  })
+  });
 }
 
 function filterStorybookSystemTasks(url: URL): SystemTaskRunsResponse {
-  const taskKind = url.searchParams.get('taskKind')?.trim()
-  const status = url.searchParams.get('status')?.trim()
-  const startedAtFrom = url.searchParams.get('startedAtFrom')?.trim()
-  const startedAtTo = url.searchParams.get('startedAtTo')?.trim()
-  const startedAtFromMs = startedAtFrom ? Date.parse(startedAtFrom) : Number.NaN
-  const startedAtToMs = startedAtTo ? Date.parse(startedAtTo) : Number.NaN
-  const page = Number(url.searchParams.get('page') ?? '1')
-  const pageSize = Number(url.searchParams.get('pageSize') ?? url.searchParams.get('limit') ?? '20')
+  const taskKind = url.searchParams.get("taskKind")?.trim();
+  const status = url.searchParams.get("status")?.trim();
+  const startedAtFrom = url.searchParams.get("startedAtFrom")?.trim();
+  const startedAtTo = url.searchParams.get("startedAtTo")?.trim();
+  const startedAtFromMs = startedAtFrom ? Date.parse(startedAtFrom) : Number.NaN;
+  const startedAtToMs = startedAtTo ? Date.parse(startedAtTo) : Number.NaN;
+  const page = Number(url.searchParams.get("page") ?? "1");
+  const pageSize = Number(
+    url.searchParams.get("pageSize") ?? url.searchParams.get("limit") ?? "20",
+  );
   const filtered = STORYBOOK_SYSTEM_TASK_ITEMS.filter((item) => {
-    const startedAtMs = Date.parse(item.startedAt)
-    if (taskKind && item.taskKind !== taskKind) return false
-    if (status && item.status !== status) return false
-    if (startedAtFrom && Number.isFinite(startedAtFromMs) && startedAtMs < startedAtFromMs) return false
-    if (startedAtTo && Number.isFinite(startedAtToMs) && startedAtMs > startedAtToMs) return false
-    return true
-  })
-  const safePage = Math.max(1, page)
-  const safePageSize = Math.min(100, Math.max(1, pageSize))
-  const start = (safePage - 1) * safePageSize
+    const startedAtMs = Date.parse(item.startedAt);
+    if (taskKind && item.taskKind !== taskKind) return false;
+    if (status && item.status !== status) return false;
+    if (startedAtFrom && Number.isFinite(startedAtFromMs) && startedAtMs < startedAtFromMs)
+      return false;
+    if (startedAtTo && Number.isFinite(startedAtToMs) && startedAtMs > startedAtToMs) return false;
+    return true;
+  });
+  const safePage = Math.max(1, page);
+  const safePageSize = Math.min(100, Math.max(1, pageSize));
+  const start = (safePage - 1) * safePageSize;
   return {
     total: filtered.length,
     page: safePage,
     pageSize: safePageSize,
     items: filtered.slice(start, start + safePageSize),
-  }
+  };
 }
 
 const STORYBOOK_SETTINGS: SettingsPayload = {
   proxy: {
     hijackEnabled: true,
     mergeUpstreamEnabled: true,
-    fastModeRewriteMode: 'disabled',
+    fastModeRewriteMode: "disabled",
     upstream429MaxRetries: 3,
     websocketEnabled: true,
     upstreamWebsocketDefaultEnabled: true,
@@ -132,19 +146,19 @@ const STORYBOOK_SETTINGS: SettingsPayload = {
     responseBodyLoggingEnabled: true,
     encryptedSessionOwnerRoutingEnabled: false,
     defaultHijackEnabled: false,
-    models: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4'],
-    enabledModels: ['gpt-5.5', 'gpt-5.5-pro'],
+    models: ["gpt-5.5", "gpt-5.5-pro", "gpt-5.4"],
+    enabledModels: ["gpt-5.5", "gpt-5.5-pro"],
   },
   forwardProxy: {
-    proxyUrls: ['http://tokyo-edge.internal:8080', 'socks5://singapore-edge.internal:1080'],
-    subscriptionUrls: ['https://example.com/subscription.base64'],
+    proxyUrls: ["http://tokyo-edge.internal:8080", "socks5://singapore-edge.internal:1080"],
+    subscriptionUrls: ["https://example.com/subscription.base64"],
     subscriptionUpdateIntervalSecs: 3600,
     nodes: [
       {
-        key: 'tokyo-edge',
-        source: 'manual',
-        displayName: 'tokyo-edge.internal:8080',
-        endpointUrl: 'http://tokyo-edge.internal:8080',
+        key: "tokyo-edge",
+        source: "manual",
+        displayName: "tokyo-edge.internal:8080",
+        endpointUrl: "http://tokyo-edge.internal:8080",
         weight: 0.92,
         penalized: false,
         stats: {
@@ -156,10 +170,10 @@ const STORYBOOK_SETTINGS: SettingsPayload = {
         },
       },
       {
-        key: 'singapore-edge',
-        source: 'manual',
-        displayName: 'singapore-edge.internal:1080',
-        endpointUrl: 'socks5://singapore-edge.internal:1080',
+        key: "singapore-edge",
+        source: "manual",
+        displayName: "singapore-edge.internal:1080",
+        endpointUrl: "socks5://singapore-edge.internal:1080",
         weight: 0.71,
         penalized: false,
         stats: {
@@ -173,77 +187,77 @@ const STORYBOOK_SETTINGS: SettingsPayload = {
     ],
   },
   pricing: {
-    catalogVersion: 'storybook-system-2026-06',
+    catalogVersion: "storybook-system-2026-06",
     entries: [
       {
-        model: 'gpt-5.6-sol',
+        model: "gpt-5.6-sol",
         inputPer1m: 5,
         outputPer1m: 30,
         cacheInputPer1m: 0.5,
         cacheReadPer1m: 0.5,
         cacheWritePer1m: 6.25,
         reasoningPer1m: null,
-        source: 'official',
+        source: "official",
       },
       {
-        model: 'gpt-5.6-terra',
+        model: "gpt-5.6-terra",
         inputPer1m: 2.5,
         outputPer1m: 15,
         cacheInputPer1m: null,
         cacheReadPer1m: 0.25,
         cacheWritePer1m: 3.125,
         reasoningPer1m: null,
-        source: 'official',
+        source: "official",
       },
     ],
   },
-}
+};
 
 const STORYBOOK_EXTERNAL_API_KEYS: ExternalApiKeySummary[] = [
   {
     id: 11,
-    name: 'Partner sync',
-    status: 'active',
-    prefix: 'cvm_ext_sys',
-    lastUsedAt: '2026-06-22T08:22:00Z',
-    createdAt: '2026-06-21T10:00:00Z',
-    updatedAt: '2026-06-22T08:22:00Z',
+    name: "Partner sync",
+    status: "active",
+    prefix: "cvm_ext_sys",
+    lastUsedAt: "2026-06-22T08:22:00Z",
+    createdAt: "2026-06-21T10:00:00Z",
+    updatedAt: "2026-06-22T08:22:00Z",
   },
-]
+];
 
 function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 function buildSystemWorkspaceRequestHandler(
   statusOverride?: SystemStatusResponse,
 ): StorybookRequestHandler {
   return async ({ url, init }) => {
-    const method = (init?.method ?? 'GET').toUpperCase()
+    const method = (init?.method ?? "GET").toUpperCase();
     const jsonResponse = (payload: unknown, status = 200) =>
       new Response(JSON.stringify(payload), {
         status,
-        headers: { 'Content-Type': 'application/json' },
-      })
+        headers: { "Content-Type": "application/json" },
+      });
 
-    if (url.pathname === '/api/system/status' && method === 'GET') {
-      return jsonResponse(clone(statusOverride ?? STORYBOOK_SYSTEM_STATUS))
+    if (url.pathname === "/api/system/status" && method === "GET") {
+      return jsonResponse(clone(statusOverride ?? STORYBOOK_SYSTEM_STATUS));
     }
 
-    if (url.pathname === '/api/system/tasks' && method === 'GET') {
-      return jsonResponse(clone(filterStorybookSystemTasks(url)))
+    if (url.pathname === "/api/system/tasks" && method === "GET") {
+      return jsonResponse(clone(filterStorybookSystemTasks(url)));
     }
 
-    if (url.pathname === '/api/settings' && method === 'GET') {
-      return jsonResponse(clone(STORYBOOK_SETTINGS))
+    if (url.pathname === "/api/settings" && method === "GET") {
+      return jsonResponse(clone(STORYBOOK_SETTINGS));
     }
 
-    if (url.pathname === '/api/settings/external-api-keys' && method === 'GET') {
-      return jsonResponse({ items: clone(STORYBOOK_EXTERNAL_API_KEYS) })
+    if (url.pathname === "/api/settings/external-api-keys" && method === "GET") {
+      return jsonResponse({ items: clone(STORYBOOK_EXTERNAL_API_KEYS) });
     }
 
-    return undefined
-  }
+    return undefined;
+  };
 }
 
 function StorybookSystemWorkspaceRoutes() {
@@ -256,34 +270,30 @@ function StorybookSystemWorkspaceRoutes() {
         <Route path="proxy" element={<SystemProxyPage />} />
       </Route>
     </Routes>
-  )
+  );
 }
 
-function StorybookSystemWorkspaceMock({
-  children,
-}: {
-  children: ReactNode
-}) {
-  const originalFetchRef = useRef<typeof window.fetch | null>(null)
+function StorybookSystemWorkspaceMock({ children }: { children: ReactNode }) {
+  const originalFetchRef = useRef<typeof window.fetch | null>(null);
 
   useLayoutEffect(() => {
-    originalFetchRef.current = window.fetch.bind(window)
+    originalFetchRef.current = window.fetch.bind(window);
     return () => {
       if (originalFetchRef.current) {
-        window.fetch = originalFetchRef.current
+        window.fetch = originalFetchRef.current;
       }
-    }
-  }, [])
+    };
+  }, []);
 
-  return <>{children}</>
+  return <>{children}</>;
 }
 
 const meta = {
-  title: 'System/SystemWorkspace',
-  tags: ['autodocs'],
+  title: "System/SystemWorkspace",
+  tags: ["autodocs"],
   parameters: {
-    layout: 'fullscreen',
-    viewport: { defaultViewport: 'desktop1660' },
+    layout: "fullscreen",
+    viewport: { defaultViewport: "desktop1660" },
   },
   decorators: [
     (Story, context) => (
@@ -302,40 +312,51 @@ const meta = {
       </I18nProvider>
     ),
   ],
-} satisfies Meta
+} satisfies Meta;
 
-export default meta
+export default meta;
 
-type Story = StoryObj<typeof meta>
+type Story = StoryObj<typeof meta>;
 
 function renderWorkspace(initialEntry: string) {
   return (
     <MemoryRouter initialEntries={[initialEntry]}>
       <StorybookSystemWorkspaceRoutes />
     </MemoryRouter>
-  )
+  );
 }
 
 export const Status: Story = {
-  render: () => renderWorkspace('/system/status'),
+  render: () => renderWorkspace("/system/status"),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await expect(canvas.getByRole('heading', { name: '系统状态' })).toBeVisible()
-    await expect(canvas.getByTestId('system-status-overview')).toBeVisible()
-    await expect(canvas.getByRole('link', { name: '状态' })).toHaveAttribute('aria-current', 'page')
-    await expect(canvas.getByText('实际磁盘占用总览')).toBeVisible()
-    await expect(canvas.getByText('数据库记录概况')).toBeVisible()
-    await expect(canvas.getByText('当前项目磁盘占用 = raw payload 并集总量 + archive + 数据库 + 其他运行文件。')).toBeVisible()
-    await expect(canvas.getByTestId('system-status-request-raw-breakdown')).toBeVisible()
-    await expect(canvas.getByTestId('system-status-response-raw-breakdown')).toBeVisible()
-    await expect(canvas.getAllByText('侧向拆分')).toHaveLength(2)
-    await expect(canvas.getByTestId('system-status-request-raw-breakdown')).toHaveTextContent('数量')
-    await expect(canvas.getByTestId('system-status-response-raw-breakdown')).toHaveTextContent('数量')
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("heading", { name: "系统状态" })).toBeVisible();
+    await expect(canvas.getByTestId("system-status-overview")).toBeVisible();
+    await expect(canvas.getByRole("link", { name: "状态" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    await expect(canvas.getByText("实际磁盘占用总览")).toBeVisible();
+    await expect(canvas.getByText("数据库记录概况")).toBeVisible();
+    await expect(
+      canvas.getByText(
+        "当前项目磁盘占用 = raw payload 并集总量 + archive + 数据库 + 其他运行文件。",
+      ),
+    ).toBeVisible();
+    await expect(canvas.getByTestId("system-status-request-raw-breakdown")).toBeVisible();
+    await expect(canvas.getByTestId("system-status-response-raw-breakdown")).toBeVisible();
+    await expect(canvas.getAllByText("侧向拆分")).toHaveLength(2);
+    await expect(canvas.getByTestId("system-status-request-raw-breakdown")).toHaveTextContent(
+      "数量",
+    );
+    await expect(canvas.getByTestId("system-status-response-raw-breakdown")).toHaveTextContent(
+      "数量",
+    );
   },
-}
+};
 
 export const StatusRequestHeavy: Story = {
-  render: () => renderWorkspace('/system/status'),
+  render: () => renderWorkspace("/system/status"),
   parameters: {
     systemStatusOverride: {
       ...STORYBOOK_SYSTEM_STATUS,
@@ -348,46 +369,50 @@ export const StatusRequestHeavy: Story = {
     } satisfies SystemStatusResponse,
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await expect(canvas.getByTestId('system-status-overview')).toBeVisible()
-    await expect(canvas.getByText('raw payload 总量')).toBeVisible()
-    await expect(canvas.getByText('request 侧 raw payload')).toBeVisible()
-    await expect(canvas.getByText('response 侧 raw payload')).toBeVisible()
-    await expect(canvas.getByText('并集总量')).toBeVisible()
-    await expect(canvas.getAllByText('侧向拆分')).toHaveLength(2)
-    await expect(canvas.getByTestId('system-status-request-raw-breakdown')).toHaveTextContent('812')
-    await expect(canvas.getByTestId('system-status-response-raw-breakdown')).toHaveTextContent('670')
-    await expect(canvas.getByText('64 GB')).toBeVisible()
-    await expect(canvas.getByText('5.5 GB')).toBeVisible()
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId("system-status-overview")).toBeVisible();
+    await expect(canvas.getByText("raw payload 总量")).toBeVisible();
+    await expect(canvas.getByText("request 侧 raw payload")).toBeVisible();
+    await expect(canvas.getByText("response 侧 raw payload")).toBeVisible();
+    await expect(canvas.getByText("并集总量")).toBeVisible();
+    await expect(canvas.getAllByText("侧向拆分")).toHaveLength(2);
+    await expect(canvas.getByTestId("system-status-request-raw-breakdown")).toHaveTextContent(
+      "812",
+    );
+    await expect(canvas.getByTestId("system-status-response-raw-breakdown")).toHaveTextContent(
+      "670",
+    );
+    await expect(canvas.getByText("64 GB")).toBeVisible();
+    await expect(canvas.getByText("5.5 GB")).toBeVisible();
   },
-}
+};
 
 export const Tasks: Story = {
-  render: () => renderWorkspace('/system/tasks'),
+  render: () => renderWorkspace("/system/tasks"),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await expect(canvas.getByRole('heading', { name: '后台任务' })).toBeVisible()
-    await expect(canvas.getByTestId('system-tasks-list')).toBeVisible()
-    await expect(canvas.getByText(/forward_proxy_subscription_refresh/)).toBeVisible()
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("heading", { name: "后台任务" })).toBeVisible();
+    await expect(canvas.getByTestId("system-tasks-list")).toBeVisible();
+    await expect(canvas.getByText(/forward_proxy_subscription_refresh/)).toBeVisible();
   },
-}
+};
 
 export const Settings: Story = {
-  render: () => renderWorkspace('/system/settings'),
+  render: () => renderWorkspace("/system/settings"),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await expect(canvas.getByRole('heading', { name: '系统设置' })).toBeVisible()
-    await expect(canvas.getByText('价格配置')).toBeVisible()
-    await expect(canvas.getByText('External API Keys')).toBeVisible()
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("heading", { name: "系统设置" })).toBeVisible();
+    await expect(canvas.getByText("价格配置")).toBeVisible();
+    await expect(canvas.getByText("External API Keys")).toBeVisible();
   },
-}
+};
 
-export const Proxy: Story = {
-  render: () => renderWorkspace('/system/proxy'),
+export const ProxyPage: Story = {
+  render: () => renderWorkspace("/system/proxy"),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await expect(canvas.getByRole('heading', { name: '代理' })).toBeVisible()
-    await expect(canvas.getByText('正向代理路由')).toBeVisible()
-    await expect(canvas.getByTestId('settings-forward-proxy-desktop-table')).toBeVisible()
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("heading", { name: "代理" })).toBeVisible();
+    await expect(canvas.getByText("正向代理路由")).toBeVisible();
+    await expect(canvas.getByTestId("settings-forward-proxy-desktop-table")).toBeVisible();
   },
-}
+};

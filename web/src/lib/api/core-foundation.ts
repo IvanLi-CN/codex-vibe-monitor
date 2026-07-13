@@ -1,5 +1,5 @@
-import { getBrowserTimeZone } from "../timeZone";
 import { normalizeForwardProxyProtocolLabel } from "../forwardProxyDisplay";
+import { getBrowserTimeZone } from "../timeZone";
 import type {
   CompactSupportState,
   EffectiveRoutingRule,
@@ -14,7 +14,7 @@ import { normalizeEffectiveRoutingRule } from "./core-upstream";
 const rawBase =
   import.meta.env.VITE_APP_RUNTIME === "demo"
     ? import.meta.env.BASE_URL
-    : import.meta.env.VITE_API_BASE_URL ?? "";
+    : (import.meta.env.VITE_API_BASE_URL ?? "");
 const API_BASE = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
 const FORWARD_PROXY_VALIDATION_TIMEOUT_MS = 5_000;
 const FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_MS = 60_000;
@@ -45,24 +45,16 @@ export class ApiRequestError extends Error {
   }
 }
 
-function buildRequestError(
-  response: Response,
-  rawText: string,
-): ApiRequestError {
+function buildRequestError(response: Response, rawText: string): ApiRequestError {
   const compactText = rawText.replace(/\s+/g, " ").trim();
   const detail = (compactText || response.statusText || "").slice(0, 220);
   return new ApiRequestError(
     response.status,
-    detail
-      ? `Request failed: ${response.status} ${detail}`
-      : `Request failed: ${response.status}`,
+    detail ? `Request failed: ${response.status} ${detail}` : `Request failed: ${response.status}`,
   );
 }
 
-export async function fetchJson<T>(
-  path: string,
-  init?: RequestInit,
-): Promise<T> {
+export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const { data } = await fetchJsonResponse<T>(path, init);
   return data;
 }
@@ -127,10 +119,7 @@ function parseForwardProxyHistoryRangeSeconds(range: string): number | null {
   }
 }
 
-function getForwardProxyHistoryOffsetMinutes(
-  date: Date,
-  timeZone: string,
-): number | null {
+function getForwardProxyHistoryOffsetMinutes(date: Date, timeZone: string): number | null {
   const timeZoneName = new Intl.DateTimeFormat("en-US", {
     timeZone,
     timeZoneName: "shortOffset",
@@ -152,10 +141,7 @@ function getForwardProxyHistoryOffsetMinutes(
   return sign * (hours * 60 + minutes);
 }
 
-function getForwardProxyHistoryDateParts(
-  date: Date,
-  timeZone: string,
-): ZonedDateParts | null {
+function getForwardProxyHistoryDateParts(date: Date, timeZone: string): ZonedDateParts | null {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
     weekday: "short",
@@ -193,9 +179,7 @@ function getForwardProxyHistoryDateParts(
 }
 
 function addUtcDays(parts: ZonedDateParts, days: number): ZonedDateParts {
-  const shifted = new Date(
-    Date.UTC(parts.year, parts.month - 1, parts.day + days),
-  );
+  const shifted = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
   return {
     year: shifted.getUTCFullYear(),
     month: shifted.getUTCMonth() + 1,
@@ -208,20 +192,10 @@ function forwardProxyHistoryLocalMidnightUtcMillis(
   timeZone: string,
   parts: Pick<ZonedDateParts, "year" | "month" | "day">,
 ): number {
-  const localMidnightUtc = Date.UTC(
-    parts.year,
-    parts.month - 1,
-    parts.day,
-    0,
-    0,
-    0,
-  );
+  const localMidnightUtc = Date.UTC(parts.year, parts.month - 1, parts.day, 0, 0, 0);
   let candidate = localMidnightUtc;
   for (let index = 0; index < 4; index += 1) {
-    const offsetMinutes = getForwardProxyHistoryOffsetMinutes(
-      new Date(candidate),
-      timeZone,
-    );
+    const offsetMinutes = getForwardProxyHistoryOffsetMinutes(new Date(candidate), timeZone);
     if (offsetMinutes === null) {
       break;
     }
@@ -278,17 +252,10 @@ function resolveForwardProxyHistoryRangeMillis(
   };
 }
 
-function resolveForwardProxyHistoryTimeZone(
-  range: string,
-  timeZone?: string,
-): string {
+function resolveForwardProxyHistoryTimeZone(range: string, timeZone?: string): string {
   const candidate = timeZone ?? getBrowserTimeZone();
   try {
-    const rangeWindow = resolveForwardProxyHistoryRangeMillis(
-      range,
-      candidate,
-      new Date(),
-    );
+    const rangeWindow = resolveForwardProxyHistoryRangeMillis(range, candidate, new Date());
     if (!rangeWindow) {
       return candidate;
     }
@@ -297,10 +264,7 @@ function resolveForwardProxyHistoryTimeZone(
       currentMs < rangeWindow.endMs;
       currentMs += FORWARD_PROXY_HISTORY_DAY_MS
     ) {
-      const offsetMinutes = getForwardProxyHistoryOffsetMinutes(
-        new Date(currentMs),
-        candidate,
-      );
+      const offsetMinutes = getForwardProxyHistoryOffsetMinutes(new Date(currentMs), candidate);
       if (offsetMinutes !== null && offsetMinutes % 60 !== 0) {
         throw new Error(
           `unsupported timeZone for forward proxy hourly timeseries: ${candidate}; hourly buckets require whole-hour UTC offsets`,
@@ -321,9 +285,7 @@ function resolveForwardProxyHistoryTimeZone(
   } catch (error) {
     if (
       error instanceof Error &&
-      error.message.startsWith(
-        "unsupported timeZone for forward proxy hourly timeseries:",
-      )
+      error.message.startsWith("unsupported timeZone for forward proxy hourly timeseries:")
     ) {
       throw error;
     }
@@ -557,8 +519,7 @@ export interface InvocationRecordsResponse extends ListResponse {
   pageSize: number;
 }
 
-export interface InvocationRecordLocationResponse
-  extends InvocationRecordsResponse {
+export interface InvocationRecordLocationResponse extends InvocationRecordsResponse {
   anchorId: string;
   targetIndex: number;
   targetAbsoluteIndex: number;
@@ -941,14 +902,10 @@ export type BroadcastPayload =
       version: string;
     };
 
-function appendInvocationRecordsQuery(
-  search: URLSearchParams,
-  query: InvocationRecordsQuery,
-) {
+function appendInvocationRecordsQuery(search: URLSearchParams, query: InvocationRecordsQuery) {
   if (query.page != null) search.set("page", String(query.page));
   if (query.pageSize != null) search.set("pageSize", String(query.pageSize));
-  if (query.snapshotId != null)
-    search.set("snapshotId", String(query.snapshotId));
+  if (query.snapshotId != null) search.set("snapshotId", String(query.snapshotId));
   if (query.anchorId) search.set("anchorId", query.anchorId);
   if (query.sortBy) search.set("sortBy", query.sortBy);
   if (query.sortOrder) search.set("sortOrder", query.sortOrder);
@@ -967,14 +924,10 @@ function appendInvocationRecordsQuery(
     search.set("upstreamAccountId", String(query.upstreamAccountId));
   if (query.requesterIp) search.set("requesterIp", query.requesterIp);
   if (query.keyword) search.set("keyword", query.keyword);
-  if (query.minTotalTokens != null)
-    search.set("minTotalTokens", String(query.minTotalTokens));
-  if (query.maxTotalTokens != null)
-    search.set("maxTotalTokens", String(query.maxTotalTokens));
-  if (query.minTotalMs != null)
-    search.set("minTotalMs", String(query.minTotalMs));
-  if (query.maxTotalMs != null)
-    search.set("maxTotalMs", String(query.maxTotalMs));
+  if (query.minTotalTokens != null) search.set("minTotalTokens", String(query.minTotalTokens));
+  if (query.maxTotalTokens != null) search.set("maxTotalTokens", String(query.maxTotalTokens));
+  if (query.minTotalMs != null) search.set("minTotalMs", String(query.minTotalMs));
+  if (query.maxTotalMs != null) search.set("maxTotalMs", String(query.maxTotalMs));
   if (query.suggestField) search.set("suggestField", query.suggestField);
   if (query.suggestQuery) search.set("suggestQuery", query.suggestQuery);
 }
@@ -994,15 +947,12 @@ export async function fetchInvocations(
 export async function fetchInvocationRecords(query: InvocationRecordsQuery) {
   const search = new URLSearchParams();
   appendInvocationRecordsQuery(search, query);
-  return fetchJson<InvocationRecordsResponse>(
-    `/api/invocations?${search.toString()}`,
-    { signal: query.signal },
-  );
+  return fetchJson<InvocationRecordsResponse>(`/api/invocations?${search.toString()}`, {
+    signal: query.signal,
+  });
 }
 
-export async function fetchInvocationRecordLocation(
-  query: InvocationRecordLocationQuery,
-) {
+export async function fetchInvocationRecordLocation(query: InvocationRecordLocationQuery) {
   const search = new URLSearchParams({
     requestId: query.requestId,
     upstreamAccountId: String(query.upstreamAccountId),
@@ -1014,9 +964,7 @@ export async function fetchInvocationRecordLocation(
   );
 }
 
-export async function fetchInvocationRecordsSummary(
-  query: InvocationRecordsQuery,
-) {
+export async function fetchInvocationRecordsSummary(query: InvocationRecordsQuery) {
   const search = new URLSearchParams();
   appendInvocationRecordsQuery(search, query);
   return fetchJson<InvocationRecordsSummaryResponse>(
@@ -1025,9 +973,7 @@ export async function fetchInvocationRecordsSummary(
   );
 }
 
-export async function fetchInvocationRecordsNewCount(
-  query: InvocationRecordsQuery,
-) {
+export async function fetchInvocationRecordsNewCount(query: InvocationRecordsQuery) {
   const search = new URLSearchParams();
   appendInvocationRecordsQuery(search, query);
   return fetchJson<InvocationRecordsNewCountResponse>(
@@ -1035,9 +981,7 @@ export async function fetchInvocationRecordsNewCount(
   );
 }
 
-export async function fetchInvocationSuggestions(
-  query: InvocationRecordsQuery,
-) {
+export async function fetchInvocationSuggestions(query: InvocationRecordsQuery) {
   const search = new URLSearchParams();
   appendInvocationRecordsQuery(search, query);
   return fetchJson<InvocationSuggestionsResponse>(
@@ -1117,10 +1061,7 @@ export interface PricingSettings {
   entries: PricingEntry[];
 }
 
-export type ProxyFastModeRewriteMode =
-  | "disabled"
-  | "fill_missing"
-  | "force_priority";
+export type ProxyFastModeRewriteMode = "disabled" | "fill_missing" | "force_priority";
 
 export interface ProxySettings {
   hijackEnabled: boolean;
@@ -1288,11 +1229,7 @@ export interface ConversationRequestPoint {
   cumulativeTokens: number;
 }
 
-export type ConversationRequestOutcome =
-  | "success"
-  | "failure"
-  | "neutral"
-  | "in_flight";
+export type ConversationRequestOutcome = "success" | "failure" | "neutral" | "in_flight";
 
 export type PromptCacheConversationRequestPoint = ConversationRequestPoint;
 
@@ -1380,10 +1317,7 @@ export interface PromptCacheConversation {
   last24hRequests: PromptCacheConversationRequestPoint[];
 }
 
-export type PromptCacheConversationBindingKind =
-  | "none"
-  | "group"
-  | "upstreamAccount";
+export type PromptCacheConversationBindingKind = "none" | "group" | "upstreamAccount";
 export type PromptCacheConversationRewriteMode =
   | "force_remove"
   | "keep_original"
@@ -1462,9 +1396,7 @@ export type UpdatePromptCacheConversationBindingPayload =
 export type PromptCacheConversationSelectionMode = "count" | "activityWindow";
 export type PromptCacheConversationDetailLevel = "full" | "compact";
 
-export type PromptCacheConversationImplicitFilterKind =
-  | "inactiveOutside24h"
-  | "cappedTo50";
+export type PromptCacheConversationImplicitFilterKind = "inactiveOutside24h" | "cappedTo50";
 
 export interface PromptCacheConversationImplicitFilter {
   kind: PromptCacheConversationImplicitFilterKind | null;
@@ -1500,11 +1432,9 @@ export interface PromptCacheConversationPageQuery {
   signal?: AbortSignal;
 }
 
-export type StickyKeyConversationSelectionMode =
-  PromptCacheConversationSelectionMode;
+export type StickyKeyConversationSelectionMode = PromptCacheConversationSelectionMode;
 
-export type StickyKeyConversationImplicitFilterKind =
-  PromptCacheConversationImplicitFilterKind;
+export type StickyKeyConversationImplicitFilterKind = PromptCacheConversationImplicitFilterKind;
 
 export interface StickyKeyConversationImplicitFilter {
   kind: StickyKeyConversationImplicitFilterKind | null;
@@ -1515,8 +1445,7 @@ export type StickyKeyConversationSelection =
   | { mode: "count"; limit: number }
   | { mode: "activityWindow"; activityHours: number };
 
-export type StickyKeyConversationInvocationPreview =
-  PromptCacheConversationInvocationPreview;
+export type StickyKeyConversationInvocationPreview = PromptCacheConversationInvocationPreview;
 
 export interface StickyKeyConversation {
   stickyKey: string;
@@ -1549,9 +1478,7 @@ export interface ForwardProxyValidationResult {
   latencyMs?: number;
 }
 
-function forwardProxyValidationTimeoutMs(
-  kind: ForwardProxyValidationKind,
-): number {
+function forwardProxyValidationTimeoutMs(kind: ForwardProxyValidationKind): number {
   return kind === "subscriptionUrl"
     ? FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_MS
     : FORWARD_PROXY_VALIDATION_TIMEOUT_MS;
@@ -1654,14 +1581,14 @@ function normalizeInvocationPhaseCounts(value: unknown): InvocationPhaseCounts |
 }
 
 function normalizeUsageCostBreakdown(raw: unknown): UsageCostBreakdown | null {
-  if (!raw || typeof raw !== 'object') return null
-  const payload = raw as Record<string, unknown>
-  const input = normalizeFiniteNumber(payload.input)
-  const cacheWrite = normalizeFiniteNumber(payload.cacheWrite)
-  const cacheRead = normalizeFiniteNumber(payload.cacheRead)
-  const output = normalizeFiniteNumber(payload.output)
-  const reasoning = normalizeFiniteNumber(payload.reasoning)
-  if ([input, cacheWrite, cacheRead, output, reasoning].some((value) => value == null)) return null
+  if (!raw || typeof raw !== "object") return null;
+  const payload = raw as Record<string, unknown>;
+  const input = normalizeFiniteNumber(payload.input);
+  const cacheWrite = normalizeFiniteNumber(payload.cacheWrite);
+  const cacheRead = normalizeFiniteNumber(payload.cacheRead);
+  const output = normalizeFiniteNumber(payload.output);
+  const reasoning = normalizeFiniteNumber(payload.reasoning);
+  if ([input, cacheWrite, cacheRead, output, reasoning].some((value) => value == null)) return null;
   return {
     input: input ?? 0,
     cacheWrite: cacheWrite ?? 0,
@@ -1669,55 +1596,53 @@ function normalizeUsageCostBreakdown(raw: unknown): UsageCostBreakdown | null {
     output: output ?? 0,
     reasoning: reasoning ?? 0,
     unknown: normalizeFiniteNumber(payload.unknown) ?? 0,
-  }
+  };
 }
 
 function normalizeUsageBreakdown(raw: unknown): UsageBreakdown | null {
-  if (!raw || typeof raw !== 'object') return null
-  const payload = raw as Record<string, unknown>
+  if (!raw || typeof raw !== "object") return null;
+  const payload = raw as Record<string, unknown>;
   const models = Array.isArray(payload.models)
     ? payload.models.flatMap((rawModel) => {
-        const model = (rawModel ?? {}) as Record<string, unknown>
-        const name = typeof model.model === 'string' ? model.model.trim() : ''
-        if (!name) return []
-        return [{
-          model: name,
-          reasoningEffort: typeof model.reasoningEffort === 'string' && model.reasoningEffort.trim()
-            ? model.reasoningEffort.trim()
-            : null,
-          cacheWriteTokens: normalizeFiniteNumber(model.cacheWriteTokens) ?? 0,
-          cacheReadTokens: normalizeFiniteNumber(model.cacheReadTokens) ?? 0,
-          outputTokens: normalizeFiniteNumber(model.outputTokens) ?? 0,
-          costs: normalizeUsageCostBreakdown(model.costs),
-        }]
+        const model = (rawModel ?? {}) as Record<string, unknown>;
+        const name = typeof model.model === "string" ? model.model.trim() : "";
+        if (!name) return [];
+        return [
+          {
+            model: name,
+            reasoningEffort:
+              typeof model.reasoningEffort === "string" && model.reasoningEffort.trim()
+                ? model.reasoningEffort.trim()
+                : null,
+            cacheWriteTokens: normalizeFiniteNumber(model.cacheWriteTokens) ?? 0,
+            cacheReadTokens: normalizeFiniteNumber(model.cacheReadTokens) ?? 0,
+            outputTokens: normalizeFiniteNumber(model.outputTokens) ?? 0,
+            costs: normalizeUsageCostBreakdown(model.costs),
+          },
+        ];
       })
-    : []
+    : [];
   return {
     cacheWriteTokens: normalizeFiniteNumber(payload.cacheWriteTokens) ?? 0,
     cacheReadTokens: normalizeFiniteNumber(payload.cacheReadTokens) ?? 0,
     outputTokens: normalizeFiniteNumber(payload.outputTokens) ?? 0,
     costs: normalizeUsageCostBreakdown(payload.costs),
     models,
-  }
+  };
 }
 
 function normalizeTimeseriesPoint(raw: unknown): TimeseriesPoint | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
-  const bucketStart =
-    typeof payload.bucketStart === "string" ? payload.bucketStart : "";
-  const bucketEnd =
-    typeof payload.bucketEnd === "string" ? payload.bucketEnd : "";
+  const bucketStart = typeof payload.bucketStart === "string" ? payload.bucketStart : "";
+  const bucketEnd = typeof payload.bucketEnd === "string" ? payload.bucketEnd : "";
   if (!bucketStart || !bucketEnd) return null;
   const totalCount = normalizeFiniteNumber(payload.totalCount) ?? 0;
   const successCount = normalizeFiniteNumber(payload.successCount) ?? 0;
   const failureCount = normalizeFiniteNumber(payload.failureCount) ?? 0;
   const inFlightCount = normalizeFiniteNumber(payload.inFlightCount) ?? 0;
-  const inFlightPhaseCounts = normalizeInvocationPhaseCounts(
-    payload.inFlightPhaseCounts,
-  );
+  const inFlightPhaseCounts = normalizeInvocationPhaseCounts(payload.inFlightPhaseCounts);
   const hasCalls =
-    Math.max(totalCount, successCount + failureCount + Math.max(inFlightCount, 0)) >
-    0;
+    Math.max(totalCount, successCount + failureCount + Math.max(inFlightCount, 0)) > 0;
   return {
     bucketStart,
     bucketEnd,
@@ -1730,22 +1655,13 @@ function normalizeTimeseriesPoint(raw: unknown): TimeseriesPoint | null {
     cacheInputTokens: normalizeFiniteNumber(payload.cacheInputTokens) ?? 0,
     totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
     nonSuccessCost: normalizeFiniteNumber(payload.nonSuccessCost) ?? 0,
-    avgTotalMs: hasCalls
-      ? (normalizeFiniteNumber(payload.avgTotalMs) ?? null)
+    avgTotalMs: hasCalls ? (normalizeFiniteNumber(payload.avgTotalMs) ?? null) : null,
+    totalLatencySampleCount: hasCalls
+      ? (normalizeFiniteNumber(payload.totalLatencySampleCount) ?? null)
       : null,
-    totalLatencySampleCount:
-      hasCalls
-        ? (normalizeFiniteNumber(payload.totalLatencySampleCount) ?? null)
-        : null,
-    firstByteSampleCount: hasCalls
-      ? (normalizeFiniteNumber(payload.firstByteSampleCount) ?? 0)
-      : 0,
-    firstByteAvgMs: hasCalls
-      ? (normalizeFiniteNumber(payload.firstByteAvgMs) ?? null)
-      : null,
-    firstByteP95Ms: hasCalls
-      ? (normalizeFiniteNumber(payload.firstByteP95Ms) ?? null)
-      : null,
+    firstByteSampleCount: hasCalls ? (normalizeFiniteNumber(payload.firstByteSampleCount) ?? 0) : 0,
+    firstByteAvgMs: hasCalls ? (normalizeFiniteNumber(payload.firstByteAvgMs) ?? null) : null,
+    firstByteP95Ms: hasCalls ? (normalizeFiniteNumber(payload.firstByteP95Ms) ?? null) : null,
     firstResponseByteTotalSampleCount: hasCalls
       ? (normalizeFiniteNumber(payload.firstResponseByteTotalSampleCount) ?? 0)
       : 0,
@@ -1762,15 +1678,12 @@ function normalizeTimeseriesResponse(raw: unknown): TimeseriesResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const pointsRaw = Array.isArray(payload.points) ? payload.points : [];
   return {
-    rangeStart:
-      typeof payload.rangeStart === "string" ? payload.rangeStart : "",
+    rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
     rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
     bucketSeconds: normalizeFiniteNumber(payload.bucketSeconds) ?? 3600,
     snapshotId: normalizeFiniteNumber(payload.snapshotId) ?? undefined,
     effectiveBucket:
-      typeof payload.effectiveBucket === "string"
-        ? payload.effectiveBucket
-        : undefined,
+      typeof payload.effectiveBucket === "string" ? payload.effectiveBucket : undefined,
     availableBuckets: normalizeStringArray(payload.availableBuckets),
     bucketLimitedToDaily: payload.bucketLimitedToDaily === true,
     points: pointsRaw
@@ -1781,10 +1694,8 @@ function normalizeTimeseriesResponse(raw: unknown): TimeseriesResponse {
 
 function normalizeParallelWorkPoint(raw: unknown): ParallelWorkPoint | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
-  const bucketStart =
-    typeof payload.bucketStart === "string" ? payload.bucketStart : "";
-  const bucketEnd =
-    typeof payload.bucketEnd === "string" ? payload.bucketEnd : "";
+  const bucketStart = typeof payload.bucketStart === "string" ? payload.bucketStart : "";
+  const bucketEnd = typeof payload.bucketEnd === "string" ? payload.bucketEnd : "";
   if (!bucketStart || !bucketEnd) return null;
   return {
     bucketStart,
@@ -1793,12 +1704,9 @@ function normalizeParallelWorkPoint(raw: unknown): ParallelWorkPoint | null {
   };
 }
 
-function normalizeParallelWorkConversation(
-  raw: unknown,
-): ParallelWorkConversation | null {
+function normalizeParallelWorkConversation(raw: unknown): ParallelWorkConversation | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
-  const conversationId =
-    typeof payload.conversationId === "string" ? payload.conversationId : "";
+  const conversationId = typeof payload.conversationId === "string" ? payload.conversationId : "";
   const start = typeof payload.start === "string" ? payload.start : "";
   const end = typeof payload.end === "string" ? payload.end : "";
   if (!conversationId || !start || !end) return null;
@@ -1810,39 +1718,23 @@ function normalizeParallelWorkConversation(
   };
 }
 
-function normalizeParallelWorkWindowResponse(
-  raw: unknown,
-): ParallelWorkWindowResponse {
+function normalizeParallelWorkWindowResponse(raw: unknown): ParallelWorkWindowResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const pointsRaw = Array.isArray(payload.points) ? payload.points : [];
-  const conversationsRaw = Array.isArray(payload.conversations)
-    ? payload.conversations
-    : [];
+  const conversationsRaw = Array.isArray(payload.conversations) ? payload.conversations : [];
   const effectiveTimeZone =
-    typeof payload.effectiveTimeZone === "string" &&
-    payload.effectiveTimeZone.trim()
+    typeof payload.effectiveTimeZone === "string" && payload.effectiveTimeZone.trim()
       ? payload.effectiveTimeZone.trim()
       : "Asia/Shanghai";
   return {
-    rangeStart:
-      typeof payload.rangeStart === "string" ? payload.rangeStart : "",
+    rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
     rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
     bucketSeconds: normalizeFiniteNumber(payload.bucketSeconds) ?? 0,
-    completeBucketCount:
-      normalizeFiniteNumber(payload.completeBucketCount) ?? 0,
+    completeBucketCount: normalizeFiniteNumber(payload.completeBucketCount) ?? 0,
     activeBucketCount: normalizeFiniteNumber(payload.activeBucketCount) ?? 0,
-    minCount:
-      payload.minCount == null
-        ? null
-        : (normalizeFiniteNumber(payload.minCount) ?? null),
-    maxCount:
-      payload.maxCount == null
-        ? null
-        : (normalizeFiniteNumber(payload.maxCount) ?? null),
-    avgCount:
-      payload.avgCount == null
-        ? null
-        : (normalizeFiniteNumber(payload.avgCount) ?? null),
+    minCount: payload.minCount == null ? null : (normalizeFiniteNumber(payload.minCount) ?? null),
+    maxCount: payload.maxCount == null ? null : (normalizeFiniteNumber(payload.maxCount) ?? null),
+    avgCount: payload.avgCount == null ? null : (normalizeFiniteNumber(payload.avgCount) ?? null),
     effectiveTimeZone,
     timeZoneFallback: payload.timeZoneFallback === true,
     points: pointsRaw
@@ -1850,20 +1742,13 @@ function normalizeParallelWorkWindowResponse(
       .filter((point): point is ParallelWorkPoint => point != null),
     conversations: conversationsRaw
       .map(normalizeParallelWorkConversation)
-      .filter(
-        (conversation): conversation is ParallelWorkConversation =>
-          conversation != null,
-      ),
+      .filter((conversation): conversation is ParallelWorkConversation => conversation != null),
   };
 }
 
-function normalizeParallelWorkStatsResponse(
-  raw: unknown,
-): ParallelWorkStatsResponse {
+function normalizeParallelWorkStatsResponse(raw: unknown): ParallelWorkStatsResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
-  const current = normalizeParallelWorkWindowResponse(
-    payload.current ?? payload.minute7d,
-  );
+  const current = normalizeParallelWorkWindowResponse(payload.current ?? payload.minute7d);
   return {
     current,
     minute7d: normalizeParallelWorkWindowResponse(payload.minute7d ?? current),
@@ -1877,11 +1762,9 @@ function normalizePricingEntry(raw: unknown): PricingEntry | null {
   const model = typeof payload.model === "string" ? payload.model.trim() : "";
   const inputPer1m = normalizeFiniteNumber(payload.inputPer1m);
   const outputPer1m = normalizeFiniteNumber(payload.outputPer1m);
-  if (!model || inputPer1m === undefined || outputPer1m === undefined)
-    return null;
+  if (!model || inputPer1m === undefined || outputPer1m === undefined) return null;
   const legacyCacheInputPer1m = normalizeFiniteNumber(payload.cacheInputPer1m);
-  const cacheReadPer1m =
-    normalizeFiniteNumber(payload.cacheReadPer1m) ?? legacyCacheInputPer1m;
+  const cacheReadPer1m = normalizeFiniteNumber(payload.cacheReadPer1m) ?? legacyCacheInputPer1m;
   const cacheWritePer1m = normalizeFiniteNumber(payload.cacheWritePer1m);
   const reasoningPer1m = normalizeFiniteNumber(payload.reasoningPer1m);
   return {
@@ -1908,20 +1791,15 @@ function normalizePricingSettings(raw: unknown): PricingSettings {
     .sort((a, b) => a.model.localeCompare(b.model));
   return {
     catalogVersion:
-      typeof payload.catalogVersion === "string" &&
-      payload.catalogVersion.trim()
+      typeof payload.catalogVersion === "string" && payload.catalogVersion.trim()
         ? payload.catalogVersion.trim()
         : "custom",
     entries,
   };
 }
 
-function normalizeProxyFastModeRewriteMode(
-  raw: unknown,
-): ProxyFastModeRewriteMode {
-  return raw === "fill_missing" || raw === "force_priority"
-    ? raw
-    : "disabled";
+function normalizeProxyFastModeRewriteMode(raw: unknown): ProxyFastModeRewriteMode {
+  return raw === "fill_missing" || raw === "force_priority" ? raw : "disabled";
 }
 
 function normalizeProxySettings(raw: unknown): ProxySettings {
@@ -1931,9 +1809,7 @@ function normalizeProxySettings(raw: unknown): ProxySettings {
   return {
     hijackEnabled: payload.hijackEnabled === true,
     mergeUpstreamEnabled: payload.mergeUpstreamEnabled === true,
-    fastModeRewriteMode: normalizeProxyFastModeRewriteMode(
-      payload.fastModeRewriteMode,
-    ),
+    fastModeRewriteMode: normalizeProxyFastModeRewriteMode(payload.fastModeRewriteMode),
     upstream429MaxRetries: Math.max(
       0,
       Math.min(5, Math.trunc(normalizeFiniteNumber(payload.upstream429MaxRetries) ?? 3)),
@@ -1942,17 +1818,14 @@ function normalizeProxySettings(raw: unknown): ProxySettings {
     upstreamWebsocketDefaultEnabled: payload.upstreamWebsocketDefaultEnabled === true,
     requestBodyLoggingEnabled: payload.requestBodyLoggingEnabled !== false,
     responseBodyLoggingEnabled: payload.responseBodyLoggingEnabled !== false,
-    encryptedSessionOwnerRoutingEnabled:
-      payload.encryptedSessionOwnerRoutingEnabled === true,
+    encryptedSessionOwnerRoutingEnabled: payload.encryptedSessionOwnerRoutingEnabled === true,
     defaultHijackEnabled: payload.defaultHijackEnabled === true,
     models,
     enabledModels: models.filter((model) => enabledModelSet.has(model)),
   };
 }
 
-function normalizeForwardProxyWindowStats(
-  raw: unknown,
-): ForwardProxyWindowStats {
+function normalizeForwardProxyWindowStats(raw: unknown): ForwardProxyWindowStats {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const attempts = normalizeFiniteNumber(payload.attempts) ?? 0;
   const successRate = normalizeFiniteNumber(payload.successRate);
@@ -1982,17 +1855,13 @@ function normalizeForwardProxyNode(raw: unknown): ForwardProxyNode | null {
   return {
     key,
     source: typeof payload.source === "string" ? payload.source : "manual",
-    displayName:
-      typeof payload.displayName === "string" ? payload.displayName : key,
-    endpointUrl:
-      typeof payload.endpointUrl === "string" ? payload.endpointUrl : undefined,
+    displayName: typeof payload.displayName === "string" ? payload.displayName : key,
+    endpointUrl: typeof payload.endpointUrl === "string" ? payload.endpointUrl : undefined,
     weight: normalizeFiniteNumber(payload.weight) ?? 0,
     penalized: Boolean(payload.penalized),
     stats: {
       oneMinute: normalizeForwardProxyWindowStats(statsPayload.oneMinute),
-      fifteenMinutes: normalizeForwardProxyWindowStats(
-        statsPayload.fifteenMinutes,
-      ),
+      fifteenMinutes: normalizeForwardProxyWindowStats(statsPayload.fifteenMinutes),
       oneHour: normalizeForwardProxyWindowStats(statsPayload.oneHour),
       oneDay: normalizeForwardProxyWindowStats(statsPayload.oneDay),
       sevenDays: normalizeForwardProxyWindowStats(statsPayload.sevenDays),
@@ -2000,9 +1869,7 @@ function normalizeForwardProxyNode(raw: unknown): ForwardProxyNode | null {
   };
 }
 
-export function normalizeForwardProxyBindingNode(
-  raw: unknown,
-): ForwardProxyBindingNode | null {
+export function normalizeForwardProxyBindingNode(raw: unknown): ForwardProxyBindingNode | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const key = typeof payload.key === "string" ? payload.key.trim() : "";
   if (!key) return null;
@@ -2016,25 +1883,15 @@ export function normalizeForwardProxyBindingNode(
         ? payload.displayName.trim()
         : key,
     protocolLabel: normalizeForwardProxyProtocolLabel(
-      typeof payload.protocolLabel === "string"
-        ? payload.protocolLabel
-        : undefined,
+      typeof payload.protocolLabel === "string" ? payload.protocolLabel : undefined,
     ),
     egressIp: typeof payload.egressIp === "string" ? payload.egressIp : null,
     egressIpCheckedAt:
-      typeof payload.egressIpCheckedAt === "string"
-        ? payload.egressIpCheckedAt
-        : null,
+      typeof payload.egressIpCheckedAt === "string" ? payload.egressIpCheckedAt : null,
     egressIpProvider:
-      typeof payload.egressIpProvider === "string"
-        ? payload.egressIpProvider
-        : null,
-    egressIpError:
-      typeof payload.egressIpError === "string" ? payload.egressIpError : null,
-    egressIpErrorAt:
-      typeof payload.egressIpErrorAt === "string"
-        ? payload.egressIpErrorAt
-        : null,
+      typeof payload.egressIpProvider === "string" ? payload.egressIpProvider : null,
+    egressIpError: typeof payload.egressIpError === "string" ? payload.egressIpError : null,
+    egressIpErrorAt: typeof payload.egressIpErrorAt === "string" ? payload.egressIpErrorAt : null,
     penalized: Boolean(payload.penalized),
     selectable: payload.selectable === true,
     last24h: bucketsRaw
@@ -2062,9 +1919,7 @@ function normalizeForwardProxySettings(raw: unknown): ForwardProxySettings {
   };
 }
 
-function normalizeForwardProxyLatencyTargetResult(
-  raw: unknown,
-): ForwardProxyLatencyTargetResult {
+function normalizeForwardProxyLatencyTargetResult(raw: unknown): ForwardProxyLatencyTargetResult {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const latencyMs = normalizeFiniteNumber(payload.latencyMs);
   const httpStatus = normalizeFiniteNumber(payload.httpStatus);
@@ -2072,8 +1927,7 @@ function normalizeForwardProxyLatencyTargetResult(
     ok: payload.ok === true,
     latencyMs,
     ip: typeof payload.ip === "string" ? payload.ip : undefined,
-    httpStatus:
-      httpStatus == null ? undefined : Math.max(0, Math.trunc(httpStatus)),
+    httpStatus: httpStatus == null ? undefined : Math.max(0, Math.trunc(httpStatus)),
     error: typeof payload.error === "string" ? payload.error : undefined,
   };
 }
@@ -2087,12 +1941,8 @@ export function normalizeForwardProxyLatencyTestStreamEvent(
   if (!key) return null;
   const kind = payload.kind === "completed" ? "completed" : "progress";
   const egressIp = normalizeForwardProxyLatencyTargetResult(nodeRaw.egressIp);
-  const oauthUpstream = normalizeForwardProxyLatencyTargetResult(
-    nodeRaw.oauthUpstream,
-  );
-  const codexResponses = normalizeForwardProxyLatencyTargetResult(
-    nodeRaw.codexResponses,
-  );
+  const oauthUpstream = normalizeForwardProxyLatencyTargetResult(nodeRaw.oauthUpstream);
+  const codexResponses = normalizeForwardProxyLatencyTargetResult(nodeRaw.codexResponses);
   const derivedFailedTargets = [
     egressIp.ok ? null : "egressIp",
     oauthUpstream.ok ? null : "oauthUpstream",
@@ -2106,15 +1956,13 @@ export function normalizeForwardProxyLatencyTestStreamEvent(
     kind,
     node: {
       key,
-      displayName:
-        typeof nodeRaw.displayName === "string" ? nodeRaw.displayName : key,
+      displayName: typeof nodeRaw.displayName === "string" ? nodeRaw.displayName : key,
       round: normalizeFiniteNumber(nodeRaw.round) ?? 0,
       totalRounds: normalizeFiniteNumber(nodeRaw.totalRounds) ?? 5,
       completedRounds: normalizeFiniteNumber(nodeRaw.completedRounds) ?? 0,
       successCount: normalizeFiniteNumber(nodeRaw.successCount) ?? 0,
       attemptCount: normalizeFiniteNumber(nodeRaw.attemptCount) ?? 0,
-      averageLatencyMs:
-        normalizeFiniteNumber(nodeRaw.averageLatencyMs) ?? undefined,
+      averageLatencyMs: normalizeFiniteNumber(nodeRaw.averageLatencyMs) ?? undefined,
       egressIp,
       oauthUpstream,
       codexResponses,
@@ -2138,19 +1986,14 @@ function normalizeForwardProxyRefreshSubscriptionsResult(
     forwardProxy: normalizeForwardProxySettings(payload.forwardProxy),
     subscriptionCount: normalizeFiniteNumber(payload.subscriptionCount) ?? 0,
     addedNodeCount: normalizeFiniteNumber(payload.addedNodeCount) ?? 0,
-    refreshedAt:
-      typeof payload.refreshedAt === "string" ? payload.refreshedAt : "",
+    refreshedAt: typeof payload.refreshedAt === "string" ? payload.refreshedAt : "",
   };
 }
 
-function normalizeForwardProxyHourlyBucket(
-  raw: unknown,
-): ForwardProxyHourlyBucket | null {
+function normalizeForwardProxyHourlyBucket(raw: unknown): ForwardProxyHourlyBucket | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
-  const bucketStart =
-    typeof payload.bucketStart === "string" ? payload.bucketStart : "";
-  const bucketEnd =
-    typeof payload.bucketEnd === "string" ? payload.bucketEnd : "";
+  const bucketStart = typeof payload.bucketStart === "string" ? payload.bucketStart : "";
+  const bucketEnd = typeof payload.bucketEnd === "string" ? payload.bucketEnd : "";
   if (!bucketStart || !bucketEnd) return null;
   return {
     bucketStart,
@@ -2160,14 +2003,10 @@ function normalizeForwardProxyHourlyBucket(
   };
 }
 
-function normalizeForwardProxyWeightBucket(
-  raw: unknown,
-): ForwardProxyWeightBucket | null {
+function normalizeForwardProxyWeightBucket(raw: unknown): ForwardProxyWeightBucket | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
-  const bucketStart =
-    typeof payload.bucketStart === "string" ? payload.bucketStart : "";
-  const bucketEnd =
-    typeof payload.bucketEnd === "string" ? payload.bucketEnd : "";
+  const bucketStart = typeof payload.bucketStart === "string" ? payload.bucketStart : "";
+  const bucketEnd = typeof payload.bucketEnd === "string" ? payload.bucketEnd : "";
   if (!bucketStart || !bucketEnd) return null;
   const sampleCount = normalizeFiniteNumber(payload.sampleCount) ?? 0;
   const minWeight = normalizeFiniteNumber(payload.minWeight);
@@ -2193,9 +2032,7 @@ function normalizeForwardProxyWeightBucket(
   };
 }
 
-function normalizeForwardProxyLiveNode(
-  raw: unknown,
-): ForwardProxyLiveNode | null {
+function normalizeForwardProxyLiveNode(raw: unknown): ForwardProxyLiveNode | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const base = normalizeForwardProxyNode(raw);
   if (!base) return null;
@@ -2203,9 +2040,7 @@ function normalizeForwardProxyLiveNode(
   const last24h = bucketsRaw
     .map(normalizeForwardProxyHourlyBucket)
     .filter((item): item is ForwardProxyHourlyBucket => item != null);
-  const weightBucketsRaw = Array.isArray(payload.weight24h)
-    ? payload.weight24h
-    : [];
+  const weightBucketsRaw = Array.isArray(payload.weight24h) ? payload.weight24h : [];
   const weight24h = weightBucketsRaw
     .map(normalizeForwardProxyWeightBucket)
     .filter((item): item is ForwardProxyWeightBucket => item != null);
@@ -2222,9 +2057,7 @@ function normalizeForwardProxyLiveNode(
   };
 }
 
-function normalizeForwardProxyLiveStatsResponse(
-  raw: unknown,
-): ForwardProxyLiveStatsResponse {
+function normalizeForwardProxyLiveStatsResponse(raw: unknown): ForwardProxyLiveStatsResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const nodesRaw = Array.isArray(payload.nodes) ? payload.nodes : [];
   const nodes = nodesRaw
@@ -2232,24 +2065,19 @@ function normalizeForwardProxyLiveStatsResponse(
     .filter((node): node is ForwardProxyLiveNode => node != null)
     .sort((a, b) => a.displayName.localeCompare(b.displayName));
   return {
-    rangeStart:
-      typeof payload.rangeStart === "string" ? payload.rangeStart : "",
+    rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
     rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
     bucketSeconds: normalizeFiniteNumber(payload.bucketSeconds) ?? 3600,
     nodes,
   };
 }
 
-function normalizeForwardProxyTimeseriesNode(
-  raw: unknown,
-): ForwardProxyTimeseriesNode | null {
+function normalizeForwardProxyTimeseriesNode(raw: unknown): ForwardProxyTimeseriesNode | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const base = normalizeForwardProxyNode(raw);
   if (!base) return null;
   const bucketsRaw = Array.isArray(payload.buckets) ? payload.buckets : [];
-  const weightBucketsRaw = Array.isArray(payload.weightBuckets)
-    ? payload.weightBuckets
-    : [];
+  const weightBucketsRaw = Array.isArray(payload.weightBuckets) ? payload.weightBuckets : [];
   return {
     key: base.key,
     source: base.source,
@@ -2266,9 +2094,7 @@ function normalizeForwardProxyTimeseriesNode(
   };
 }
 
-function normalizeForwardProxyTimeseriesResponse(
-  raw: unknown,
-): ForwardProxyTimeseriesResponse {
+function normalizeForwardProxyTimeseriesResponse(raw: unknown): ForwardProxyTimeseriesResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const nodesRaw = Array.isArray(payload.nodes) ? payload.nodes : [];
   const nodes = nodesRaw
@@ -2279,14 +2105,10 @@ function normalizeForwardProxyTimeseriesResponse(
     ? payload.availableBuckets
     : [];
   return {
-    rangeStart:
-      typeof payload.rangeStart === "string" ? payload.rangeStart : "",
+    rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
     rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
     bucketSeconds: normalizeFiniteNumber(payload.bucketSeconds) ?? 3600,
-    effectiveBucket:
-      typeof payload.effectiveBucket === "string"
-        ? payload.effectiveBucket
-        : "1h",
+    effectiveBucket: typeof payload.effectiveBucket === "string" ? payload.effectiveBucket : "1h",
     availableBuckets: availableBucketsRaw.filter(
       (item): item is string => typeof item === "string" && item.length > 0,
     ),
@@ -2313,8 +2135,7 @@ function normalizePromptCacheConversationUpstreamAccount(
     requestCount: normalizeFiniteNumber(payload.requestCount) ?? 0,
     totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
     totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
-    lastActivityAt:
-      typeof payload.lastActivityAt === "string" ? payload.lastActivityAt : "",
+    lastActivityAt: typeof payload.lastActivityAt === "string" ? payload.lastActivityAt : "",
   };
 }
 
@@ -2322,15 +2143,11 @@ function normalizePromptCacheConversationInvocationPreview(
   raw: unknown,
 ): PromptCacheConversationInvocationPreview | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
-  const invokeId =
-    typeof payload.invokeId === "string" ? payload.invokeId.trim() : "";
-  const occurredAt =
-    typeof payload.occurredAt === "string" ? payload.occurredAt : "";
+  const invokeId = typeof payload.invokeId === "string" ? payload.invokeId.trim() : "";
+  const occurredAt = typeof payload.occurredAt === "string" ? payload.occurredAt : "";
   if (!invokeId || !occurredAt) return null;
   const failureClass =
-    typeof payload.failureClass === "string"
-      ? payload.failureClass.trim().toLowerCase()
-      : "";
+    typeof payload.failureClass === "string" ? payload.failureClass.trim().toLowerCase() : "";
   return {
     id: normalizeFiniteNumber(payload.id) ?? 0,
     invokeId,
@@ -2355,10 +2172,7 @@ function normalizePromptCacheConversationInvocationPreview(
       typeof payload.routeMode === "string" && payload.routeMode.trim()
         ? payload.routeMode.trim()
         : null,
-    model:
-      typeof payload.model === "string" && payload.model.trim()
-        ? payload.model.trim()
-        : null,
+    model: typeof payload.model === "string" && payload.model.trim() ? payload.model.trim() : null,
     requestModel:
       typeof payload.requestModel === "string" && payload.requestModel.trim()
         ? payload.requestModel.trim()
@@ -2370,19 +2184,16 @@ function normalizePromptCacheConversationInvocationPreview(
     totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
     cost: normalizeFiniteNumber(payload.cost) ?? null,
     proxyDisplayName:
-      typeof payload.proxyDisplayName === "string" &&
-      payload.proxyDisplayName.trim()
+      typeof payload.proxyDisplayName === "string" && payload.proxyDisplayName.trim()
         ? payload.proxyDisplayName.trim()
         : null,
     upstreamAccountId: normalizeFiniteNumber(payload.upstreamAccountId) ?? null,
     upstreamAccountName:
-      typeof payload.upstreamAccountName === "string" &&
-      payload.upstreamAccountName.trim()
+      typeof payload.upstreamAccountName === "string" && payload.upstreamAccountName.trim()
         ? payload.upstreamAccountName.trim()
         : null,
     upstreamAccountPlanType:
-      typeof payload.upstreamAccountPlanType === "string" &&
-      payload.upstreamAccountPlanType.trim()
+      typeof payload.upstreamAccountPlanType === "string" && payload.upstreamAccountPlanType.trim()
         ? payload.upstreamAccountPlanType.trim()
         : null,
     endpoint:
@@ -2390,13 +2201,11 @@ function normalizePromptCacheConversationInvocationPreview(
         ? payload.endpoint.trim()
         : null,
     compactionRequestKind:
-      payload.compactionRequestKind === "compact" ||
-      payload.compactionRequestKind === "remote_v2"
+      payload.compactionRequestKind === "compact" || payload.compactionRequestKind === "remote_v2"
         ? payload.compactionRequestKind
         : null,
     compactionResponseKind:
-      payload.compactionResponseKind === "compact" ||
-      payload.compactionResponseKind === "remote_v2"
+      payload.compactionResponseKind === "compact" || payload.compactionResponseKind === "remote_v2"
         ? payload.compactionResponseKind
         : null,
     imageIntent:
@@ -2421,8 +2230,7 @@ function normalizePromptCacheConversationInvocationPreview(
     costOutput: normalizeFiniteNumber(payload.costOutput),
     costReasoning: normalizeFiniteNumber(payload.costReasoning),
     reasoningEffort:
-      typeof payload.reasoningEffort === "string" &&
-      payload.reasoningEffort.trim()
+      typeof payload.reasoningEffort === "string" && payload.reasoningEffort.trim()
         ? payload.reasoningEffort.trim()
         : undefined,
     errorMessage:
@@ -2431,26 +2239,20 @@ function normalizePromptCacheConversationInvocationPreview(
         : undefined,
     downstreamStatusCode: normalizeFiniteNumber(payload.downstreamStatusCode),
     downstreamErrorMessage:
-      typeof payload.downstreamErrorMessage === "string" &&
-      payload.downstreamErrorMessage.trim()
+      typeof payload.downstreamErrorMessage === "string" && payload.downstreamErrorMessage.trim()
         ? payload.downstreamErrorMessage
         : undefined,
     failureKind:
       typeof payload.failureKind === "string" && payload.failureKind.trim()
         ? payload.failureKind.trim()
         : undefined,
-    isActionable:
-      typeof payload.isActionable === "boolean"
-        ? payload.isActionable
-        : undefined,
+    isActionable: typeof payload.isActionable === "boolean" ? payload.isActionable : undefined,
     responseContentEncoding:
-      typeof payload.responseContentEncoding === "string" &&
-      payload.responseContentEncoding.trim()
+      typeof payload.responseContentEncoding === "string" && payload.responseContentEncoding.trim()
         ? payload.responseContentEncoding.trim()
         : undefined,
     requestedServiceTier:
-      typeof payload.requestedServiceTier === "string" &&
-      payload.requestedServiceTier.trim()
+      typeof payload.requestedServiceTier === "string" && payload.requestedServiceTier.trim()
         ? payload.requestedServiceTier.trim()
         : undefined,
     serviceTier:
@@ -2458,8 +2260,7 @@ function normalizePromptCacheConversationInvocationPreview(
         ? payload.serviceTier.trim()
         : undefined,
     billingServiceTier:
-      typeof payload.billingServiceTier === "string" &&
-      payload.billingServiceTier.trim()
+      typeof payload.billingServiceTier === "string" && payload.billingServiceTier.trim()
         ? payload.billingServiceTier.trim()
         : undefined,
     tReqReadMs: normalizeFiniteNumber(payload.tReqReadMs),
@@ -2473,18 +2274,12 @@ function normalizePromptCacheConversationInvocationPreview(
   };
 }
 
-function normalizePromptCacheConversation(
-  raw: unknown,
-): PromptCacheConversation | null {
+function normalizePromptCacheConversation(raw: unknown): PromptCacheConversation | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const promptCacheKey =
-    typeof payload.promptCacheKey === "string"
-      ? payload.promptCacheKey.trim()
-      : "";
+    typeof payload.promptCacheKey === "string" ? payload.promptCacheKey.trim() : "";
   if (!promptCacheKey) return null;
-  const requestsRaw = Array.isArray(payload.last24hRequests)
-    ? payload.last24hRequests
-    : [];
+  const requestsRaw = Array.isArray(payload.last24hRequests) ? payload.last24hRequests : [];
   const recentInvocationsRaw = Array.isArray(payload.recentInvocations)
     ? payload.recentInvocations
     : [];
@@ -2497,58 +2292,39 @@ function normalizePromptCacheConversation(
     totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
     totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
     createdAt: typeof payload.createdAt === "string" ? payload.createdAt : "",
-    lastActivityAt:
-      typeof payload.lastActivityAt === "string" ? payload.lastActivityAt : "",
-    lastTerminalAt:
-      typeof payload.lastTerminalAt === "string"
-        ? payload.lastTerminalAt
-        : null,
-    lastInFlightAt:
-      typeof payload.lastInFlightAt === "string"
-        ? payload.lastInFlightAt
-        : null,
+    lastActivityAt: typeof payload.lastActivityAt === "string" ? payload.lastActivityAt : "",
+    lastTerminalAt: typeof payload.lastTerminalAt === "string" ? payload.lastTerminalAt : null,
+    lastInFlightAt: typeof payload.lastInFlightAt === "string" ? payload.lastInFlightAt : null,
     cursor: typeof payload.cursor === "string" ? payload.cursor : null,
     hasEncryptedSessionOwner:
       typeof payload.hasEncryptedSessionOwner === "boolean"
         ? payload.hasEncryptedSessionOwner
         : false,
-    encryptedOwnerAccountId:
-      normalizeFiniteNumber(payload.encryptedOwnerAccountId) ?? null,
+    encryptedOwnerAccountId: normalizeFiniteNumber(payload.encryptedOwnerAccountId) ?? null,
     encryptedOwnerAccountName:
       typeof payload.encryptedOwnerAccountName === "string" &&
       payload.encryptedOwnerAccountName.trim()
         ? payload.encryptedOwnerAccountName.trim()
         : null,
     encryptedOwnerGroupName:
-      typeof payload.encryptedOwnerGroupName === "string" &&
-      payload.encryptedOwnerGroupName.trim()
+      typeof payload.encryptedOwnerGroupName === "string" && payload.encryptedOwnerGroupName.trim()
         ? payload.encryptedOwnerGroupName.trim()
         : null,
     upstreamAccounts: upstreamAccountsRaw
       .map(normalizePromptCacheConversationUpstreamAccount)
-      .filter(
-        (item): item is PromptCacheConversationUpstreamAccount => item != null,
-      ),
+      .filter((item): item is PromptCacheConversationUpstreamAccount => item != null),
     recentInvocations: recentInvocationsRaw
       .map(normalizePromptCacheConversationInvocationPreview)
-      .filter(
-        (item): item is PromptCacheConversationInvocationPreview =>
-          item != null,
-      ),
+      .filter((item): item is PromptCacheConversationInvocationPreview => item != null),
     last24hRequests: requestsRaw
       .map(normalizePromptCacheConversationRequestPoint)
-      .filter(
-        (item): item is PromptCacheConversationRequestPoint => item != null,
-      ),
+      .filter((item): item is PromptCacheConversationRequestPoint => item != null),
   };
 }
 
-function normalizeConversationRequestPoint(
-  raw: unknown,
-): ConversationRequestPoint | null {
+function normalizeConversationRequestPoint(raw: unknown): ConversationRequestPoint | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
-  const occurredAt =
-    typeof payload.occurredAt === "string" ? payload.occurredAt : "";
+  const occurredAt = typeof payload.occurredAt === "string" ? payload.occurredAt : "";
   if (!occurredAt) return null;
   return {
     occurredAt,
@@ -2566,16 +2342,11 @@ function normalizeConversationRequestPoint(
   };
 }
 
-function normalizeStickyKeyConversation(
-  raw: unknown,
-): StickyKeyConversation | null {
+function normalizeStickyKeyConversation(raw: unknown): StickyKeyConversation | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
-  const stickyKey =
-    typeof payload.stickyKey === "string" ? payload.stickyKey.trim() : "";
+  const stickyKey = typeof payload.stickyKey === "string" ? payload.stickyKey.trim() : "";
   if (!stickyKey) return null;
-  const requestsRaw = Array.isArray(payload.last24hRequests)
-    ? payload.last24hRequests
-    : [];
+  const requestsRaw = Array.isArray(payload.last24hRequests) ? payload.last24hRequests : [];
   const recentInvocationsRaw = Array.isArray(payload.recentInvocations)
     ? payload.recentInvocations
     : [];
@@ -2585,18 +2356,13 @@ function normalizeStickyKeyConversation(
     totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
     totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
     createdAt: typeof payload.createdAt === "string" ? payload.createdAt : "",
-    lastActivityAt:
-      typeof payload.lastActivityAt === "string" ? payload.lastActivityAt : "",
+    lastActivityAt: typeof payload.lastActivityAt === "string" ? payload.lastActivityAt : "",
     recentInvocations: recentInvocationsRaw
       .map(normalizePromptCacheConversationInvocationPreview)
-      .filter(
-        (item): item is StickyKeyConversationInvocationPreview => item != null,
-      ),
+      .filter((item): item is StickyKeyConversationInvocationPreview => item != null),
     last24hRequests: requestsRaw
       .map(normalizeConversationRequestPoint)
-      .filter(
-        (item): item is StickyKeyConversationRequestPoint => item != null,
-      ),
+      .filter((item): item is StickyKeyConversationRequestPoint => item != null),
   };
 }
 
@@ -2604,40 +2370,30 @@ export function normalizeUpstreamStickyConversationsResponse(
   raw: unknown,
 ): UpstreamStickyConversationsResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
-  const conversationsRaw = Array.isArray(payload.conversations)
-    ? payload.conversations
-    : [];
+  const conversationsRaw = Array.isArray(payload.conversations) ? payload.conversations : [];
   const implicitFilterPayload =
     payload.implicitFilter && typeof payload.implicitFilter === "object"
       ? (payload.implicitFilter as Record<string, unknown>)
       : null;
   const implicitFilterKindRaw =
-    typeof implicitFilterPayload?.kind === "string"
-      ? implicitFilterPayload.kind
-      : null;
+    typeof implicitFilterPayload?.kind === "string" ? implicitFilterPayload.kind : null;
   const implicitFilterKind: StickyKeyConversationImplicitFilterKind | null =
-    implicitFilterKindRaw === "inactiveOutside24h" ||
-    implicitFilterKindRaw === "cappedTo50"
+    implicitFilterKindRaw === "inactiveOutside24h" || implicitFilterKindRaw === "cappedTo50"
       ? implicitFilterKindRaw
       : null;
-  const selectionModeRaw =
-    payload.selectionMode === "activityWindow" ? "activityWindow" : "count";
+  const selectionModeRaw = payload.selectionMode === "activityWindow" ? "activityWindow" : "count";
   return {
-    rangeStart:
-      typeof payload.rangeStart === "string" ? payload.rangeStart : "",
+    rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
     rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
     selectionMode: selectionModeRaw,
     selectedLimit:
       selectionModeRaw === "count"
-        ? (normalizeFiniteNumber(payload.selectedLimit) ??
-          DEFAULT_STICKY_KEY_CONVERSATION_LIMIT)
+        ? (normalizeFiniteNumber(payload.selectedLimit) ?? DEFAULT_STICKY_KEY_CONVERSATION_LIMIT)
         : (normalizeFiniteNumber(payload.selectedLimit) ?? null),
-    selectedActivityHours:
-      normalizeFiniteNumber(payload.selectedActivityHours) ?? null,
+    selectedActivityHours: normalizeFiniteNumber(payload.selectedActivityHours) ?? null,
     implicitFilter: {
       kind: implicitFilterKind,
-      filteredCount:
-        normalizeFiniteNumber(implicitFilterPayload?.filteredCount) ?? 0,
+      filteredCount: normalizeFiniteNumber(implicitFilterPayload?.filteredCount) ?? 0,
     },
     conversations: conversationsRaw
       .map(normalizeStickyKeyConversation)
@@ -2645,9 +2401,7 @@ export function normalizeUpstreamStickyConversationsResponse(
   };
 }
 
-export function normalizePoolRoutingSettings(
-  raw: unknown,
-): PoolRoutingSettings | null {
+export function normalizePoolRoutingSettings(raw: unknown): PoolRoutingSettings | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   if (typeof payload.apiKeyConfigured !== "boolean") return null;
   const maintenanceRaw =
@@ -2672,19 +2426,15 @@ export function normalizePoolRoutingSettings(
         : DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.priorityAvailableAccountCap,
   };
   return {
-    writesEnabled:
-      typeof payload.writesEnabled === "boolean" ? payload.writesEnabled : true,
+    writesEnabled: typeof payload.writesEnabled === "boolean" ? payload.writesEnabled : true,
     apiKeyConfigured: payload.apiKeyConfigured,
-    maskedApiKey:
-      typeof payload.maskedApiKey === "string" ? payload.maskedApiKey : null,
+    maskedApiKey: typeof payload.maskedApiKey === "string" ? payload.maskedApiKey : null,
     maintenance,
     timeouts: normalizePoolRoutingTimeoutSettings(payload.timeouts),
   };
 }
 
-function normalizePoolRoutingTimeoutSettings(
-  raw: unknown,
-): PoolRoutingTimeoutSettings {
+function normalizePoolRoutingTimeoutSettings(raw: unknown): PoolRoutingTimeoutSettings {
   const payload = (raw ?? {}) as Record<string, unknown>;
   return {
     responsesFirstByteTimeoutSecs:
@@ -2693,32 +2443,20 @@ function normalizePoolRoutingTimeoutSettings(
       normalizeFiniteNumber(payload.compactFirstByteTimeoutSecs) ??
       normalizeFiniteNumber(payload.compactUpstreamHandshakeTimeoutSecs) ??
       300,
-    responsesStreamTimeoutSecs:
-      normalizeFiniteNumber(payload.responsesStreamTimeoutSecs) ?? 300,
-    compactStreamTimeoutSecs:
-      normalizeFiniteNumber(payload.compactStreamTimeoutSecs) ?? 300,
+    responsesStreamTimeoutSecs: normalizeFiniteNumber(payload.responsesStreamTimeoutSecs) ?? 300,
+    compactStreamTimeoutSecs: normalizeFiniteNumber(payload.compactStreamTimeoutSecs) ?? 300,
   };
 }
 
-function normalizeRoutingTimeoutFieldSources(
-  raw: unknown,
-): EffectiveRoutingTimeoutFieldSources {
+function normalizeRoutingTimeoutFieldSources(raw: unknown): EffectiveRoutingTimeoutFieldSources {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const normalizeSource = (value: unknown) =>
     typeof value === "string" && value.trim() ? value : "root";
   return {
-    responsesFirstByteTimeoutSecs: normalizeSource(
-      payload.responsesFirstByteTimeoutSecs,
-    ),
-    compactFirstByteTimeoutSecs: normalizeSource(
-      payload.compactFirstByteTimeoutSecs,
-    ),
-    responsesStreamTimeoutSecs: normalizeSource(
-      payload.responsesStreamTimeoutSecs,
-    ),
-    compactStreamTimeoutSecs: normalizeSource(
-      payload.compactStreamTimeoutSecs,
-    ),
+    responsesFirstByteTimeoutSecs: normalizeSource(payload.responsesFirstByteTimeoutSecs),
+    compactFirstByteTimeoutSecs: normalizeSource(payload.compactFirstByteTimeoutSecs),
+    responsesStreamTimeoutSecs: normalizeSource(payload.responsesStreamTimeoutSecs),
+    compactStreamTimeoutSecs: normalizeSource(payload.compactStreamTimeoutSecs),
   };
 }
 
@@ -2726,9 +2464,7 @@ function normalizePromptCacheConversationBindingResponse(
   raw: Record<string, unknown>,
   promptCacheKey: string,
 ): PromptCacheConversationBindingResponse {
-  const normalizeRewriteMode = (
-    value: unknown,
-  ): PromptCacheConversationRewriteMode | null =>
+  const normalizeRewriteMode = (value: unknown): PromptCacheConversationRewriteMode | null =>
     value === "force_remove" ||
     value === "keep_original" ||
     value === "fill_missing" ||
@@ -2750,47 +2486,35 @@ function normalizePromptCacheConversationBindingResponse(
   const forwardProxyKey =
     typeof raw.forwardProxyKey === "string" && raw.forwardProxyKey.trim()
       ? raw.forwardProxyKey.trim()
-      : forwardProxyKeys[0] ?? null;
+      : (forwardProxyKeys[0] ?? null);
   return {
-    promptCacheKey:
-      typeof raw.promptCacheKey === "string" ? raw.promptCacheKey : promptCacheKey,
+    promptCacheKey: typeof raw.promptCacheKey === "string" ? raw.promptCacheKey : promptCacheKey,
     bindingKind:
       raw.bindingKind === "group" || raw.bindingKind === "upstreamAccount"
         ? raw.bindingKind
         : "none",
     groupName:
-      typeof raw.groupName === "string" && raw.groupName.trim()
-        ? raw.groupName.trim()
-        : null,
+      typeof raw.groupName === "string" && raw.groupName.trim() ? raw.groupName.trim() : null,
     upstreamAccountId: normalizeFiniteNumber(raw.upstreamAccountId) ?? null,
     upstreamAccountName:
       typeof raw.upstreamAccountName === "string" && raw.upstreamAccountName.trim()
         ? raw.upstreamAccountName.trim()
         : null,
     hasEncryptedSessionOwner:
-      typeof raw.hasEncryptedSessionOwner === "boolean"
-        ? raw.hasEncryptedSessionOwner
-        : false,
-    encryptedOwnerAccountId:
-      normalizeFiniteNumber(raw.encryptedOwnerAccountId) ?? null,
+      typeof raw.hasEncryptedSessionOwner === "boolean" ? raw.hasEncryptedSessionOwner : false,
+    encryptedOwnerAccountId: normalizeFiniteNumber(raw.encryptedOwnerAccountId) ?? null,
     encryptedOwnerAccountName:
-      typeof raw.encryptedOwnerAccountName === "string" &&
-      raw.encryptedOwnerAccountName.trim()
+      typeof raw.encryptedOwnerAccountName === "string" && raw.encryptedOwnerAccountName.trim()
         ? raw.encryptedOwnerAccountName.trim()
         : null,
     encryptedOwnerGroupName:
-      typeof raw.encryptedOwnerGroupName === "string" &&
-      raw.encryptedOwnerGroupName.trim()
+      typeof raw.encryptedOwnerGroupName === "string" && raw.encryptedOwnerGroupName.trim()
         ? raw.encryptedOwnerGroupName.trim()
         : null,
     timeouts: normalizePoolRoutingTimeoutSettings(raw.timeouts),
-    timeoutFieldSources: normalizeRoutingTimeoutFieldSources(
-      raw.timeoutFieldSources,
-    ),
+    timeoutFieldSources: normalizeRoutingTimeoutFieldSources(raw.timeoutFieldSources),
     allowSwitchUpstream:
-      typeof raw.allowSwitchUpstream === "boolean"
-        ? raw.allowSwitchUpstream
-        : null,
+      typeof raw.allowSwitchUpstream === "boolean" ? raw.allowSwitchUpstream : null,
     fastModeRewriteMode: normalizeRewriteMode(raw.fastModeRewriteMode),
     imageToolRewriteMode: normalizeRewriteMode(raw.imageToolRewriteMode),
     availableModels: Array.isArray(raw.availableModels)
@@ -2801,21 +2525,11 @@ function normalizePromptCacheConversationBindingResponse(
       : null,
     forwardProxyKey,
     forwardProxyKeys:
-      forwardProxyKeys.length > 0
-        ? forwardProxyKeys
-        : forwardProxyKey
-          ? [forwardProxyKey]
-          : [],
+      forwardProxyKeys.length > 0 ? forwardProxyKeys : forwardProxyKey ? [forwardProxyKey] : [],
     policyFieldSources: {
-      allowSwitchUpstream: normalizePolicySource(
-        rawPolicySources.allowSwitchUpstream,
-      ),
-      fastModeRewriteMode: normalizePolicySource(
-        rawPolicySources.fastModeRewriteMode,
-      ),
-      imageToolRewriteMode: normalizePolicySource(
-        rawPolicySources.imageToolRewriteMode,
-      ),
+      allowSwitchUpstream: normalizePolicySource(rawPolicySources.allowSwitchUpstream),
+      fastModeRewriteMode: normalizePolicySource(rawPolicySources.fastModeRewriteMode),
+      imageToolRewriteMode: normalizePolicySource(rawPolicySources.imageToolRewriteMode),
       availableModels: normalizePolicySource(rawPolicySources.availableModels),
       forwardProxyKey: normalizePolicySource(rawPolicySources.forwardProxyKey),
     },
@@ -2823,55 +2537,39 @@ function normalizePromptCacheConversationBindingResponse(
   };
 }
 
-export function normalizeCompactSupportState(
-  raw: unknown,
-): CompactSupportState {
+export function normalizeCompactSupportState(raw: unknown): CompactSupportState {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const status =
-    payload.status === "supported" || payload.status === "unsupported"
-      ? payload.status
-      : "unknown";
+    payload.status === "supported" || payload.status === "unsupported" ? payload.status : "unknown";
   return {
     status,
-    observedAt:
-      typeof payload.observedAt === "string" ? payload.observedAt : null,
+    observedAt: typeof payload.observedAt === "string" ? payload.observedAt : null,
     reason: typeof payload.reason === "string" ? payload.reason : null,
   };
 }
 
-function normalizePromptCacheConversationsResponse(
-  raw: unknown,
-): PromptCacheConversationsResponse {
+function normalizePromptCacheConversationsResponse(raw: unknown): PromptCacheConversationsResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
-  const conversationsRaw = Array.isArray(payload.conversations)
-    ? payload.conversations
-    : [];
+  const conversationsRaw = Array.isArray(payload.conversations) ? payload.conversations : [];
   const implicitFilterPayload =
     payload.implicitFilter && typeof payload.implicitFilter === "object"
       ? (payload.implicitFilter as Record<string, unknown>)
       : null;
   const implicitFilterKindRaw =
-    typeof implicitFilterPayload?.kind === "string"
-      ? implicitFilterPayload.kind
-      : null;
+    typeof implicitFilterPayload?.kind === "string" ? implicitFilterPayload.kind : null;
   const implicitFilterKind: PromptCacheConversationImplicitFilterKind | null =
-    implicitFilterKindRaw === "inactiveOutside24h" ||
-    implicitFilterKindRaw === "cappedTo50"
+    implicitFilterKindRaw === "inactiveOutside24h" || implicitFilterKindRaw === "cappedTo50"
       ? implicitFilterKindRaw
       : null;
-  const selectionModeRaw =
-    payload.selectionMode === "activityWindow" ? "activityWindow" : "count";
+  const selectionModeRaw = payload.selectionMode === "activityWindow" ? "activityWindow" : "count";
   return {
-    rangeStart:
-      typeof payload.rangeStart === "string" ? payload.rangeStart : "",
+    rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
     rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
-    snapshotAt:
-      typeof payload.snapshotAt === "string" ? payload.snapshotAt : null,
+    snapshotAt: typeof payload.snapshotAt === "string" ? payload.snapshotAt : null,
     selectionMode: selectionModeRaw,
     selectedLimit:
       selectionModeRaw === "count"
-        ? (normalizeFiniteNumber(payload.selectedLimit) ??
-          DEFAULT_PROMPT_CACHE_CONVERSATION_LIMIT)
+        ? (normalizeFiniteNumber(payload.selectedLimit) ?? DEFAULT_PROMPT_CACHE_CONVERSATION_LIMIT)
         : (normalizeFiniteNumber(payload.selectedLimit) ?? null),
     selectedActivityHours:
       selectionModeRaw === "activityWindow"
@@ -2883,22 +2581,18 @@ function normalizePromptCacheConversationsResponse(
         : (normalizeFiniteNumber(payload.selectedActivityMinutes) ?? null),
     implicitFilter: {
       kind: implicitFilterKind,
-      filteredCount:
-        normalizeFiniteNumber(implicitFilterPayload?.filteredCount) ?? 0,
+      filteredCount: normalizeFiniteNumber(implicitFilterPayload?.filteredCount) ?? 0,
     },
     totalMatched: normalizeFiniteNumber(payload.totalMatched) ?? null,
     hasMore: payload.hasMore === true,
-    nextCursor:
-      typeof payload.nextCursor === "string" ? payload.nextCursor : null,
+    nextCursor: typeof payload.nextCursor === "string" ? payload.nextCursor : null,
     conversations: conversationsRaw
       .map(normalizePromptCacheConversation)
       .filter((item): item is PromptCacheConversation => item != null),
   };
 }
 
-function normalizeForwardProxyValidationResult(
-  raw: unknown,
-): ForwardProxyValidationResult {
+function normalizeForwardProxyValidationResult(raw: unknown): ForwardProxyValidationResult {
   const payload = (raw ?? {}) as Record<string, unknown>;
   return {
     ok: payload.ok === true,
@@ -2907,9 +2601,7 @@ function normalizeForwardProxyValidationResult(
         ? payload.message
         : "validation failed",
     normalizedValue:
-      typeof payload.normalizedValue === "string"
-        ? payload.normalizedValue
-        : undefined,
+      typeof payload.normalizedValue === "string" ? payload.normalizedValue : undefined,
     discoveredNodes: normalizeFiniteNumber(payload.discoveredNodes),
     latencyMs: normalizeFiniteNumber(payload.latencyMs),
   };
@@ -2921,8 +2613,7 @@ function normalizeUpstreamAccountActivityAccount(
   const payload = (raw ?? {}) as Record<string, unknown>;
   const upstreamAccountId = normalizeFiniteNumber(payload.upstreamAccountId);
   const isUnassigned = payload.isUnassigned === true;
-  const displayName =
-    typeof payload.displayName === "string" ? payload.displayName.trim() : "";
+  const displayName = typeof payload.displayName === "string" ? payload.displayName.trim() : "";
   if ((upstreamAccountId == null && !isUnassigned) || !displayName) {
     return null;
   }
@@ -2941,29 +2632,15 @@ function normalizeUpstreamAccountActivityAccount(
     upstreamAccountId: upstreamAccountId ?? null,
     displayName,
     isUnassigned,
-    groupName:
-      typeof payload.groupName === "string" ? payload.groupName.trim() : null,
-    planType:
-      typeof payload.planType === "string" ? payload.planType.trim() : null,
+    groupName: typeof payload.groupName === "string" ? payload.groupName.trim() : null,
+    planType: typeof payload.planType === "string" ? payload.planType.trim() : null,
     enabled: typeof payload.enabled === "boolean" ? payload.enabled : null,
-    displayStatus:
-      typeof payload.displayStatus === "string"
-        ? payload.displayStatus.trim()
-        : null,
-    enableStatus:
-      typeof payload.enableStatus === "string"
-        ? payload.enableStatus.trim()
-        : null,
-    workStatus:
-      typeof payload.workStatus === "string" ? payload.workStatus.trim() : null,
-    healthStatus:
-      typeof payload.healthStatus === "string"
-        ? payload.healthStatus.trim()
-        : null,
-    syncState:
-      typeof payload.syncState === "string" ? payload.syncState.trim() : null,
-    lastError:
-      typeof payload.lastError === "string" ? payload.lastError.trim() : null,
+    displayStatus: typeof payload.displayStatus === "string" ? payload.displayStatus.trim() : null,
+    enableStatus: typeof payload.enableStatus === "string" ? payload.enableStatus.trim() : null,
+    workStatus: typeof payload.workStatus === "string" ? payload.workStatus.trim() : null,
+    healthStatus: typeof payload.healthStatus === "string" ? payload.healthStatus.trim() : null,
+    syncState: typeof payload.syncState === "string" ? payload.syncState.trim() : null,
+    lastError: typeof payload.lastError === "string" ? payload.lastError.trim() : null,
     lastActionReasonMessage:
       typeof payload.lastActionReasonMessage === "string"
         ? payload.lastActionReasonMessage.trim()
@@ -2989,20 +2666,12 @@ function normalizeUpstreamAccountActivityAccount(
     tokensPerMinute: normalizeFiniteNumber(payload.tokensPerMinute),
     spendRate: normalizeFiniteNumber(payload.spendRate),
     firstByteAvgMs: normalizeFiniteNumber(payload.firstByteAvgMs),
-    firstResponseByteTotalAvgMs: normalizeFiniteNumber(
-      payload.firstResponseByteTotalAvgMs,
-    ),
+    firstResponseByteTotalAvgMs: normalizeFiniteNumber(payload.firstResponseByteTotalAvgMs),
     avgTotalMs: normalizeFiniteNumber(payload.avgTotalMs),
-    inProgressInvocationCount: normalizeFiniteNumber(
-      payload.inProgressInvocationCount,
-    ),
-    inProgressPhaseCounts: normalizeInvocationPhaseCounts(
-      payload.inProgressPhaseCounts,
-    ),
+    inProgressInvocationCount: normalizeFiniteNumber(payload.inProgressInvocationCount),
+    inProgressPhaseCounts: normalizeInvocationPhaseCounts(payload.inProgressPhaseCounts),
     retryInvocationCount: normalizeFiniteNumber(payload.retryInvocationCount),
-    effectiveRoutingRule: normalizeEffectiveRoutingRule(
-      payload.effectiveRoutingRule,
-    ),
+    effectiveRoutingRule: normalizeEffectiveRoutingRule(payload.effectiveRoutingRule),
     recentInvocations,
   };
 }
@@ -3016,25 +2685,19 @@ function normalizeStatsResponse(raw: unknown): StatsResponse {
     totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
     totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
     usageBreakdown: normalizeUsageBreakdown(payload.usageBreakdown),
-    inProgressConversationCount: normalizeFiniteNumber(
-      payload.inProgressConversationCount,
-    ),
+    inProgressConversationCount: normalizeFiniteNumber(payload.inProgressConversationCount),
     inProgressRetryConversationCount: normalizeFiniteNumber(
       payload.inProgressRetryConversationCount,
     ),
     inProgressAvgWaitMs: normalizeFiniteNumber(payload.inProgressAvgWaitMs),
-    inProgressPhaseCounts: normalizeInvocationPhaseCounts(
-      payload.inProgressPhaseCounts,
-    ),
+    inProgressPhaseCounts: normalizeInvocationPhaseCounts(payload.inProgressPhaseCounts),
     nonSuccessCost: normalizeFiniteNumber(payload.nonSuccessCost),
     nonSuccessTokens: normalizeFiniteNumber(payload.nonSuccessTokens),
     maintenance: payload.maintenance as StatsMaintenanceResponse | undefined,
   };
 }
 
-function normalizeUpstreamAccountActivityResponse(
-  raw: unknown,
-): UpstreamAccountActivityResponse {
+function normalizeUpstreamAccountActivityResponse(raw: unknown): UpstreamAccountActivityResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   return {
     range: typeof payload.range === "string" ? payload.range : "",
@@ -3059,20 +2722,10 @@ function normalizeDashboardActivityResponse(raw: unknown): DashboardActivityResp
     snapshotId: normalizeFiniteNumber(payload.snapshotId) ?? 0,
     liveRevision: normalizeFiniteNumber(payload.liveRevision) ?? 0,
     rateWindow: {
-      start:
-        typeof rateWindowPayload.start === "string"
-          ? rateWindowPayload.start
-          : "",
-      end:
-        typeof rateWindowPayload.end === "string"
-          ? rateWindowPayload.end
-          : "",
-      windowMinutes:
-        normalizeFiniteNumber(rateWindowPayload.windowMinutes) ?? 0,
-      mode:
-        typeof rateWindowPayload.mode === "string"
-          ? rateWindowPayload.mode
-          : "",
+      start: typeof rateWindowPayload.start === "string" ? rateWindowPayload.start : "",
+      end: typeof rateWindowPayload.end === "string" ? rateWindowPayload.end : "",
+      windowMinutes: normalizeFiniteNumber(rateWindowPayload.windowMinutes) ?? 0,
+      mode: typeof rateWindowPayload.mode === "string" ? rateWindowPayload.mode : "",
     },
     summary: {
       stats: normalizeStatsResponse(summaryPayload.stats),
@@ -3157,26 +2810,15 @@ function normalizeSystemTaskRunsResponse(raw: unknown): SystemTaskRunsResponse {
   };
 }
 
-function normalizeExternalApiKeySummary(
-  raw: unknown,
-): ExternalApiKeySummary | null {
+function normalizeExternalApiKeySummary(raw: unknown): ExternalApiKeySummary | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const id = normalizeFiniteNumber(payload.id);
   const name = typeof payload.name === "string" ? payload.name : "";
   const status = typeof payload.status === "string" ? payload.status : "";
   const prefix = typeof payload.prefix === "string" ? payload.prefix : "";
-  const createdAt =
-    typeof payload.createdAt === "string" ? payload.createdAt : "";
-  const updatedAt =
-    typeof payload.updatedAt === "string" ? payload.updatedAt : "";
-  if (
-    id == null ||
-    !name ||
-    !status ||
-    !prefix ||
-    !createdAt ||
-    !updatedAt
-  ) {
+  const createdAt = typeof payload.createdAt === "string" ? payload.createdAt : "";
+  const updatedAt = typeof payload.updatedAt === "string" ? payload.updatedAt : "";
+  if (id == null || !name || !status || !prefix || !createdAt || !updatedAt) {
     return null;
   }
   return {
@@ -3184,16 +2826,13 @@ function normalizeExternalApiKeySummary(
     name,
     status,
     prefix,
-    lastUsedAt:
-      typeof payload.lastUsedAt === "string" ? payload.lastUsedAt : undefined,
+    lastUsedAt: typeof payload.lastUsedAt === "string" ? payload.lastUsedAt : undefined,
     createdAt,
     updatedAt,
   };
 }
 
-function normalizeExternalApiKeyListResponse(
-  raw: unknown,
-): ExternalApiKeyListResponse {
+function normalizeExternalApiKeyListResponse(raw: unknown): ExternalApiKeyListResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const items = Array.isArray(payload.items)
     ? payload.items
@@ -3203,9 +2842,7 @@ function normalizeExternalApiKeyListResponse(
   return { items };
 }
 
-function normalizeExternalApiKeyMutationResponse(
-  raw: unknown,
-): ExternalApiKeyMutationResponse {
+function normalizeExternalApiKeyMutationResponse(raw: unknown): ExternalApiKeyMutationResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const key = normalizeExternalApiKeySummary(payload.key);
   if (!key) {
@@ -3214,9 +2851,7 @@ function normalizeExternalApiKeyMutationResponse(
   return { key };
 }
 
-function normalizeExternalApiKeySecretResponse(
-  raw: unknown,
-): ExternalApiKeySecretResponse {
+function normalizeExternalApiKeySecretResponse(raw: unknown): ExternalApiKeySecretResponse {
   const payload = normalizeExternalApiKeyMutationResponse(raw);
   const response = (raw ?? {}) as Record<string, unknown>;
   const secret = typeof response.secret === "string" ? response.secret : "";
@@ -3280,33 +2915,21 @@ export async function createExternalApiKey(payload: {
   return normalizeExternalApiKeySecretResponse(response);
 }
 
-export async function rotateExternalApiKey(
-  id: number,
-): Promise<ExternalApiKeySecretResponse> {
-  const response = await fetchJson<unknown>(
-    `/api/settings/external-api-keys/${id}/rotate`,
-    {
-      method: "POST",
-    },
-  );
+export async function rotateExternalApiKey(id: number): Promise<ExternalApiKeySecretResponse> {
+  const response = await fetchJson<unknown>(`/api/settings/external-api-keys/${id}/rotate`, {
+    method: "POST",
+  });
   return normalizeExternalApiKeySecretResponse(response);
 }
 
-export async function disableExternalApiKey(
-  id: number,
-): Promise<ExternalApiKeyMutationResponse> {
-  const response = await fetchJson<unknown>(
-    `/api/settings/external-api-keys/${id}/disable`,
-    {
-      method: "POST",
-    },
-  );
+export async function disableExternalApiKey(id: number): Promise<ExternalApiKeyMutationResponse> {
+  const response = await fetchJson<unknown>(`/api/settings/external-api-keys/${id}/disable`, {
+    method: "POST",
+  });
   return normalizeExternalApiKeyMutationResponse(response);
 }
 
-export async function updatePricingSettings(
-  payload: PricingSettings,
-): Promise<PricingSettings> {
+export async function updatePricingSettings(payload: PricingSettings): Promise<PricingSettings> {
   const response = await fetchJson<unknown>("/api/settings/pricing", {
     method: "PUT",
     body: JSON.stringify(payload),
@@ -3346,34 +2969,26 @@ export async function updateForwardProxySettings(payload: {
 }
 
 export async function refreshForwardProxySubscriptions(): Promise<ForwardProxyRefreshSubscriptionsResult> {
-  const response = await fetchJson<unknown>(
-    "/api/settings/forward-proxy/refresh-subscriptions",
-    { method: "POST", body: JSON.stringify({}) },
-  );
+  const response = await fetchJson<unknown>("/api/settings/forward-proxy/refresh-subscriptions", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
   return normalizeForwardProxyRefreshSubscriptionsResult(response);
 }
 
-export function createForwardProxyNodeLatencyTestEventSource(
-  proxyKey: string,
-): EventSource {
+export function createForwardProxyNodeLatencyTestEventSource(proxyKey: string): EventSource {
   return new EventSource(
-    withBase(
-      `/api/settings/forward-proxy/nodes/${encodeURIComponent(proxyKey)}/test-stream`,
-    ),
+    withBase(`/api/settings/forward-proxy/nodes/${encodeURIComponent(proxyKey)}/test-stream`),
   );
 }
 
-export function createForwardProxyNodesLatencyTestEventSource(
-  proxyKeys: string[],
-): EventSource {
+export function createForwardProxyNodesLatencyTestEventSource(proxyKeys: string[]): EventSource {
   const query = new URLSearchParams();
   for (const proxyKey of proxyKeys) {
     query.append("key", proxyKey);
   }
   return new EventSource(
-    withBase(
-      `/api/settings/forward-proxy/nodes/test-stream?${query.toString()}`,
-    ),
+    withBase(`/api/settings/forward-proxy/nodes/test-stream?${query.toString()}`),
   );
 }
 
@@ -3385,20 +3000,15 @@ export async function validateForwardProxyCandidate(payload: {
   const timeoutMs = forwardProxyValidationTimeoutMs(payload.kind);
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetchJson<unknown>(
-      "/api/settings/forward-proxy/validate",
-      {
-        method: "POST",
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      },
-    );
+    const response = await fetchJson<unknown>("/api/settings/forward-proxy/validate", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
     return normalizeForwardProxyValidationResult(response);
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
-      throw new Error(
-        `validation request timed out after ${Math.floor(timeoutMs / 1000)}s`,
-      );
+      throw new Error(`validation request timed out after ${Math.floor(timeoutMs / 1000)}s`);
     }
     throw err;
   } finally {
@@ -3459,10 +3069,9 @@ export async function fetchDashboardActivity(
   if (options?.includeAccounts !== undefined) {
     search.set("includeAccounts", options.includeAccounts ? "true" : "false");
   }
-  const response = await fetchJson<unknown>(
-    `/api/stats/dashboard-activity?${search.toString()}`,
-    { signal: options?.signal },
-  );
+  const response = await fetchJson<unknown>(`/api/stats/dashboard-activity?${search.toString()}`, {
+    signal: options?.signal,
+  });
   return normalizeDashboardActivityResponse(response);
 }
 
@@ -3477,10 +3086,7 @@ export async function fetchForwardProxyTimeseries(
 ) {
   const search = new URLSearchParams();
   search.set("range", range);
-  search.set(
-    "timeZone",
-    resolveForwardProxyHistoryTimeZone(range, params?.timeZone),
-  );
+  search.set("timeZone", resolveForwardProxyHistoryTimeZone(range, params?.timeZone));
   if (params?.bucket) {
     search.set("bucket", params.bucket);
   }
@@ -3506,9 +3112,7 @@ export async function fetchPromptCacheConversationBinding(
   signal?: AbortSignal,
 ): Promise<PromptCacheConversationBindingResponse> {
   const raw = await fetchJson<Record<string, unknown>>(
-    `/api/stats/prompt-cache-conversation-bindings/${encodeURIComponent(
-      promptCacheKey,
-    )}`,
+    `/api/stats/prompt-cache-conversation-bindings/${encodeURIComponent(promptCacheKey)}`,
     { signal },
   );
   return normalizePromptCacheConversationBindingResponse(raw, promptCacheKey);
@@ -3520,9 +3124,7 @@ export async function updatePromptCacheConversationBinding(
   signal?: AbortSignal,
 ): Promise<PromptCacheConversationBindingResponse> {
   const raw = await fetchJson<Record<string, unknown>>(
-    `/api/stats/prompt-cache-conversation-bindings/${encodeURIComponent(
-      promptCacheKey,
-    )}`,
+    `/api/stats/prompt-cache-conversation-bindings/${encodeURIComponent(promptCacheKey)}`,
     {
       method: "PATCH",
       body: JSON.stringify(payload),
@@ -3586,10 +3188,9 @@ export async function fetchTimeseries(
     search.set("settlementHour", String(params.settlementHour));
   if (params?.upstreamAccountId !== undefined)
     search.set("upstreamAccountId", String(params.upstreamAccountId));
-  const response = await fetchJson<unknown>(
-    `/api/stats/timeseries?${search.toString()}`,
-    { signal: params?.signal },
-  );
+  const response = await fetchJson<unknown>(`/api/stats/timeseries?${search.toString()}`, {
+    signal: params?.signal,
+  });
   return normalizeTimeseriesResponse(response);
 }
 
@@ -3632,10 +3233,10 @@ export async function fetchParallelWorkStatsConditional(params?: {
   if (params?.etag) {
     headers["If-None-Match"] = params.etag;
   }
-  const response = await fetch(
-    withBase(`/api/stats/parallel-work?${search.toString()}`),
-    { headers, signal: params?.signal },
-  );
+  const response = await fetch(withBase(`/api/stats/parallel-work?${search.toString()}`), {
+    headers,
+    signal: params?.signal,
+  });
   const etag = response.headers.get("ETag");
 
   if (response.status === 304) {
@@ -3669,21 +3270,14 @@ export async function fetchErrorDistribution(
   search.set("timeZone", params?.timeZone ?? getBrowserTimeZone());
   if (params?.top != null) search.set("top", String(params.top));
   if (params?.scope) search.set("scope", params.scope);
-  return fetchJson<ErrorDistributionResponse>(
-    `/api/stats/errors?${search.toString()}`,
-  );
+  return fetchJson<ErrorDistributionResponse>(`/api/stats/errors?${search.toString()}`);
 }
 
-export async function fetchFailureSummary(
-  range: string,
-  params?: { timeZone?: string },
-) {
+export async function fetchFailureSummary(range: string, params?: { timeZone?: string }) {
   const search = new URLSearchParams();
   search.set("range", range);
   search.set("timeZone", params?.timeZone ?? getBrowserTimeZone());
-  return fetchJson<FailureSummaryResponse>(
-    `/api/stats/failures/summary?${search.toString()}`,
-  );
+  return fetchJson<FailureSummaryResponse>(`/api/stats/failures/summary?${search.toString()}`);
 }
 
 export async function fetchPerfStats(params?: PerfStatsQuery) {
@@ -3698,9 +3292,7 @@ export async function fetchPerfStats(params?: PerfStatsQuery) {
   if (params?.endpoint) search.set("endpoint", params.endpoint);
 
   const query = search.toString();
-  return fetchJson<PerfStatsResponse>(
-    query ? `/api/stats/perf?${query}` : "/api/stats/perf",
-  );
+  return fetchJson<PerfStatsResponse>(query ? `/api/stats/perf?${query}` : "/api/stats/perf");
 }
 
 export async function fetchQuotaSnapshot() {

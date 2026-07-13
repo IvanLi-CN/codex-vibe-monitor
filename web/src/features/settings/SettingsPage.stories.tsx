@@ -1,8 +1,7 @@
-import { useEffect, useRef, type ReactNode } from 'react'
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, userEvent, within } from 'storybook/test'
-import { I18nProvider } from '../../i18n'
-import SettingsPage from '../../pages/Settings'
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { type ReactNode, useEffect, useRef } from "react";
+import { expect, userEvent, within } from "storybook/test";
+import { I18nProvider } from "../../i18n";
 import type {
   ExternalApiKeySummary,
   ForwardProxyNode,
@@ -12,58 +11,59 @@ import type {
   PricingSettings,
   ProxySettings,
   SettingsPayload,
-} from '../../lib/api'
-import { paritySettingsNodes } from '../forward-proxy/storybookForwardProxyNodeHealth'
+} from "../../lib/api";
+import SettingsPage from "../../pages/Settings";
+import { paritySettingsNodes } from "../forward-proxy/storybookForwardProxyNodeHealth";
 
-const STORYBOOK_SETTINGS_STORAGE_PREFIX = 'storybook.settings-page.mock'
+const STORYBOOK_SETTINGS_STORAGE_PREFIX = "storybook.settings-page.mock";
 
 const DEFAULT_PRICING_ENTRIES: PricingEntry[] = [
   {
-    model: 'gpt-5.6-sol',
+    model: "gpt-5.6-sol",
     inputPer1m: 5.0,
     outputPer1m: 30.0,
     cacheInputPer1m: 0.5,
     cacheReadPer1m: 0.5,
     cacheWritePer1m: 6.25,
     reasoningPer1m: null,
-    source: 'official',
+    source: "official",
   },
   {
-    model: 'gpt-5.6-terra',
+    model: "gpt-5.6-terra",
     inputPer1m: 2.5,
     outputPer1m: 15.0,
     cacheInputPer1m: 0.25,
     cacheReadPer1m: 0.25,
     cacheWritePer1m: 3.125,
     reasoningPer1m: null,
-    source: 'official',
+    source: "official",
   },
   {
-    model: 'gpt-5.6-luna',
+    model: "gpt-5.6-luna",
     inputPer1m: 1.0,
     outputPer1m: 6.0,
     cacheInputPer1m: null,
     cacheReadPer1m: 0.1,
     cacheWritePer1m: 1.25,
     reasoningPer1m: null,
-    source: 'official',
+    source: "official",
   },
   {
-    model: 'gpt-5.4-mini',
+    model: "gpt-5.4-mini",
     inputPer1m: 0.75,
     outputPer1m: 4.5,
     cacheInputPer1m: 0.075,
     cacheReadPer1m: 0.075,
     cacheWritePer1m: null,
     reasoningPer1m: null,
-    source: 'official',
+    source: "official",
   },
-]
+];
 
 const DEFAULT_PROXY_SETTINGS: ProxySettings = {
   hijackEnabled: true,
   mergeUpstreamEnabled: true,
-  fastModeRewriteMode: 'disabled',
+  fastModeRewriteMode: "disabled",
   upstream429MaxRetries: 3,
   websocketEnabled: true,
   upstreamWebsocketDefaultEnabled: true,
@@ -72,154 +72,178 @@ const DEFAULT_PROXY_SETTINGS: ProxySettings = {
   encryptedSessionOwnerRoutingEnabled: false,
   defaultHijackEnabled: false,
   models: [
-    'gpt-5.6-sol',
-    'gpt-5.6-terra',
-    'gpt-5.6-luna',
-    'gpt-5.5',
-    'gpt-5.5-pro',
-    'gpt-5.4',
-    'gpt-5.4-pro',
-    'gpt-5.3-codex',
-    'gpt-5.2',
-    'gpt-5.2-codex',
-    'gpt-5.1-codex-max',
-    'gpt-5.1-codex-mini',
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.5-pro",
+    "gpt-5.4",
+    "gpt-5.4-pro",
+    "gpt-5.3-codex",
+    "gpt-5.2",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
   ],
   enabledModels: [
-    'gpt-5.6-sol',
-    'gpt-5.6-terra',
-    'gpt-5.6-luna',
-    'gpt-5.5',
-    'gpt-5.5-pro',
-    'gpt-5.4',
-    'gpt-5.4-pro',
-    'gpt-5.3-codex',
-    'gpt-5.2',
-    'gpt-5.2-codex',
-    'gpt-5.1-codex-max',
-    'gpt-5.1-codex-mini',
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.5-pro",
+    "gpt-5.4",
+    "gpt-5.4-pro",
+    "gpt-5.3-codex",
+    "gpt-5.2",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
   ],
-}
+};
 
-const DEFAULT_FORWARD_PROXY_SETTINGS: Omit<ForwardProxySettings, 'nodes'> = {
+const DEFAULT_FORWARD_PROXY_SETTINGS: Omit<ForwardProxySettings, "nodes"> = {
   proxyUrls: [
-    'vless://11111111-1111-1111-1111-111111111111@manual.example.com:443?encryption=none&security=tls&type=ws&host=cdn.manual.example.com&path=%2Fmanual#manual-vless',
-    'socks5://127.0.0.1:1080',
+    "vless://11111111-1111-1111-1111-111111111111@manual.example.com:443?encryption=none&security=tls&type=ws&host=cdn.manual.example.com&path=%2Fmanual#manual-vless",
+    "socks5://127.0.0.1:1080",
   ],
-  subscriptionUrls: ['https://example.com/subscription.base64'],
+  subscriptionUrls: ["https://example.com/subscription.base64"],
   subscriptionUpdateIntervalSecs: 3600,
-}
+};
 
-const MOCK_SUBSCRIPTION_NODE_TEMPLATES: Array<Pick<ForwardProxyNode, 'displayName' | 'endpointUrl'>> = [
+const MOCK_SUBSCRIPTION_NODE_TEMPLATES: Array<
+  Pick<ForwardProxyNode, "displayName" | "endpointUrl">
+> = [
   {
-    displayName: 'edge-vless',
+    displayName: "edge-vless",
     endpointUrl:
-      'vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?encryption=none&security=tls&type=ws&host=cdn.example.com&path=%2Fvless#edge-vless',
+      "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?encryption=none&security=tls&type=ws&host=cdn.example.com&path=%2Fvless#edge-vless",
   },
   {
-    displayName: 'trojan-ws',
+    displayName: "trojan-ws",
     endpointUrl:
-      'trojan://topsecret@trojan.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Ftrojan#trojan-ws',
+      "trojan://topsecret@trojan.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Ftrojan#trojan-ws",
   },
   {
-    displayName: 'ss-main',
-    endpointUrl: 'ss://YWVzLTI1Ni1nY206c3Rvcnlib29rLXBhc3M=@ss.example.com:8388#ss-main',
+    displayName: "ss-main",
+    endpointUrl: "ss://YWVzLTI1Ni1nY206c3Rvcnlib29rLXBhc3M=@ss.example.com:8388#ss-main",
   },
-]
+];
 
 type StorySettingsOverrides = {
-  proxy?: Partial<ProxySettings>
-  forwardProxy?: Partial<Omit<ForwardProxySettings, 'nodes'>>
-  pricing?: Partial<PricingSettings>
-}
+  proxy?: Partial<ProxySettings>;
+  forwardProxy?: Partial<Omit<ForwardProxySettings, "nodes">>;
+  pricing?: Partial<PricingSettings>;
+};
 
 function createMockExternalApiKeys(): ExternalApiKeySummary[] {
   return [
     {
       id: 11,
-      name: 'Vendor A upstream sync',
-      status: 'active',
-      prefix: 'cvm_ext_ven',
-      lastUsedAt: '2026-04-16T09:30:00Z',
-      createdAt: '2026-04-15T08:00:00Z',
-      updatedAt: '2026-04-16T09:30:00Z',
+      name: "Vendor A upstream sync",
+      status: "active",
+      prefix: "cvm_ext_ven",
+      lastUsedAt: "2026-04-16T09:30:00Z",
+      createdAt: "2026-04-15T08:00:00Z",
+      updatedAt: "2026-04-16T09:30:00Z",
     },
     {
       id: 12,
-      name: 'Vendor B repair',
-      status: 'disabled',
-      prefix: 'cvm_ext_rep',
+      name: "Vendor B repair",
+      status: "disabled",
+      prefix: "cvm_ext_rep",
       lastUsedAt: undefined,
-      createdAt: '2026-04-10T12:00:00Z',
-      updatedAt: '2026-04-12T18:45:00Z',
+      createdAt: "2026-04-10T12:00:00Z",
+      updatedAt: "2026-04-12T18:45:00Z",
     },
-  ]
+  ];
 }
 
 function statsPreset(index: number): ForwardProxyNodeStats {
-  const base = Math.max(1, 24 - index * 3)
-  const successRate = Math.max(0.08, 0.97 - index * 0.09)
+  const base = Math.max(1, 24 - index * 3);
+  const successRate = Math.max(0.08, 0.97 - index * 0.09);
   return {
     oneMinute: { attempts: base, successRate, avgLatencyMs: 190 + index * 120 },
-    fifteenMinutes: { attempts: base * 12, successRate: Math.max(0.1, successRate - 0.02), avgLatencyMs: 230 + index * 110 },
-    oneHour: { attempts: base * 42, successRate: Math.max(0.12, successRate - 0.04), avgLatencyMs: 260 + index * 100 },
-    oneDay: { attempts: base * 860, successRate: Math.max(0.15, successRate - 0.07), avgLatencyMs: 300 + index * 80 },
-    sevenDays: { attempts: base * 5920, successRate: Math.max(0.18, successRate - 0.09), avgLatencyMs: 330 + index * 70 },
-  }
+    fifteenMinutes: {
+      attempts: base * 12,
+      successRate: Math.max(0.1, successRate - 0.02),
+      avgLatencyMs: 230 + index * 110,
+    },
+    oneHour: {
+      attempts: base * 42,
+      successRate: Math.max(0.12, successRate - 0.04),
+      avgLatencyMs: 260 + index * 100,
+    },
+    oneDay: {
+      attempts: base * 860,
+      successRate: Math.max(0.15, successRate - 0.07),
+      avgLatencyMs: 300 + index * 80,
+    },
+    sevenDays: {
+      attempts: base * 5920,
+      successRate: Math.max(0.18, successRate - 0.09),
+      avgLatencyMs: 330 + index * 70,
+    },
+  };
 }
 
 function labelFromProxyUrl(rawUrl: string): string {
   try {
-    const parsed = new URL(rawUrl)
-    const defaultPort = parsed.protocol === 'https:' ? '443' : parsed.protocol === 'http:' ? '80' : ''
-    const port = parsed.port || defaultPort
-    return port ? `${parsed.hostname}:${port}` : parsed.hostname
+    const parsed = new URL(rawUrl);
+    const defaultPort =
+      parsed.protocol === "https:" ? "443" : parsed.protocol === "http:" ? "80" : "";
+    const port = parsed.port || defaultPort;
+    return port ? `${parsed.hostname}:${port}` : parsed.hostname;
   } catch {
-    return rawUrl
+    return rawUrl;
   }
 }
 
 function buildNodesFromSettings(settings: ForwardProxySettings): ForwardProxyNode[] {
   const manualNodes: ForwardProxyNode[] = settings.proxyUrls.map((proxyUrl, index) => ({
     key: proxyUrl,
-    source: 'manual',
+    source: "manual",
     displayName: labelFromProxyUrl(proxyUrl),
     endpointUrl: proxyUrl,
     weight: Number((1.1 - index * 0.22).toFixed(2)),
     penalized: index >= 2,
     stats: statsPreset(index),
-  }))
+  }));
 
-  const subscriptionNodes: ForwardProxyNode[] = settings.subscriptionUrls.map((_subscriptionUrl, index) => {
-    const template = MOCK_SUBSCRIPTION_NODE_TEMPLATES[index % MOCK_SUBSCRIPTION_NODE_TEMPLATES.length]
-    const key = `sub-${index + 1}-${template.displayName}`
-    return {
-      key,
-      source: 'subscription',
-      displayName: `${template.displayName}-${index + 1}`,
-      endpointUrl: template.endpointUrl,
-      weight: Number((0.65 - index * 0.12).toFixed(2)),
-      penalized: false,
-      stats: statsPreset(index + manualNodes.length),
-    }
-  })
+  const subscriptionNodes: ForwardProxyNode[] = settings.subscriptionUrls.map(
+    (_subscriptionUrl, index) => {
+      const template =
+        MOCK_SUBSCRIPTION_NODE_TEMPLATES[index % MOCK_SUBSCRIPTION_NODE_TEMPLATES.length];
+      const key = `sub-${index + 1}-${template.displayName}`;
+      return {
+        key,
+        source: "subscription",
+        displayName: `${template.displayName}-${index + 1}`,
+        endpointUrl: template.endpointUrl,
+        weight: Number((0.65 - index * 0.12).toFixed(2)),
+        penalized: false,
+        stats: statsPreset(index + manualNodes.length),
+      };
+    },
+  );
 
-  return [...manualNodes, ...subscriptionNodes]
+  return [...manualNodes, ...subscriptionNodes];
 }
 
 function cloneSettings(payload: SettingsPayload): SettingsPayload {
-  return JSON.parse(JSON.stringify(payload)) as SettingsPayload
+  return JSON.parse(JSON.stringify(payload)) as SettingsPayload;
 }
 
 function createStorySettings(overrides?: StorySettingsOverrides): SettingsPayload {
   const proxy: ProxySettings = {
     ...DEFAULT_PROXY_SETTINGS,
     ...overrides?.proxy,
-    models: overrides?.proxy?.models ? [...overrides.proxy.models] : [...DEFAULT_PROXY_SETTINGS.models],
+    models: overrides?.proxy?.models
+      ? [...overrides.proxy.models]
+      : [...DEFAULT_PROXY_SETTINGS.models],
     enabledModels: overrides?.proxy?.enabledModels
       ? [...overrides.proxy.enabledModels]
       : [...DEFAULT_PROXY_SETTINGS.enabledModels],
-  }
+  };
   const forwardProxyBase = {
     ...DEFAULT_FORWARD_PROXY_SETTINGS,
     ...overrides?.forwardProxy,
@@ -229,59 +253,56 @@ function createStorySettings(overrides?: StorySettingsOverrides): SettingsPayloa
     subscriptionUrls: overrides?.forwardProxy?.subscriptionUrls
       ? [...overrides.forwardProxy.subscriptionUrls]
       : [...DEFAULT_FORWARD_PROXY_SETTINGS.subscriptionUrls],
-  }
+  };
   const forwardProxy: ForwardProxySettings = {
     ...forwardProxyBase,
     nodes: [],
-  }
-  forwardProxy.nodes = buildNodesFromSettings(forwardProxy)
+  };
+  forwardProxy.nodes = buildNodesFromSettings(forwardProxy);
 
   const pricing: PricingSettings = {
-    catalogVersion: overrides?.pricing?.catalogVersion ?? 'openai-standard-2026-07-10',
+    catalogVersion: overrides?.pricing?.catalogVersion ?? "openai-standard-2026-07-10",
     entries: overrides?.pricing?.entries ? [...overrides.pricing.entries] : DEFAULT_PRICING_ENTRIES,
-  }
+  };
 
   return {
     proxy,
     forwardProxy,
     pricing,
-  }
+  };
 }
 
 function createParitySettings(): SettingsPayload {
   const settings = createStorySettings({
     forwardProxy: {
-      proxyUrls: [
-        'http://jp-edge-01.internal:8080',
-        'vless://example@us-edge-03.example.com:443',
-      ],
+      proxyUrls: ["http://jp-edge-01.internal:8080", "vless://example@us-edge-03.example.com:443"],
       subscriptionUrls: [],
       subscriptionUpdateIntervalSecs: 3600,
     },
     pricing: {
-      catalogVersion: 'storybook-node-health-parity',
+      catalogVersion: "storybook-node-health-parity",
       entries: DEFAULT_PRICING_ENTRIES,
     },
-  })
-  settings.forwardProxy.nodes = paritySettingsNodes
-  return settings
+  });
+  settings.forwardProxy.nodes = paritySettingsNodes;
+  return settings;
 }
 
 function loadPersistedSettings(storageKey: string, fallback: SettingsPayload): SettingsPayload {
-  if (typeof window === 'undefined') return cloneSettings(fallback)
+  if (typeof window === "undefined") return cloneSettings(fallback);
   try {
-    const raw = window.sessionStorage.getItem(storageKey)
-    if (!raw) return cloneSettings(fallback)
-    return JSON.parse(raw) as SettingsPayload
+    const raw = window.sessionStorage.getItem(storageKey);
+    if (!raw) return cloneSettings(fallback);
+    return JSON.parse(raw) as SettingsPayload;
   } catch {
-    return cloneSettings(fallback)
+    return cloneSettings(fallback);
   }
 }
 
 function persistSettings(storageKey: string, payload: SettingsPayload) {
-  if (typeof window === 'undefined') return
+  if (typeof window === "undefined") return;
   try {
-    window.sessionStorage.setItem(storageKey, JSON.stringify(payload))
+    window.sessionStorage.setItem(storageKey, JSON.stringify(payload));
   } catch {
     // ignore session storage write failures inside Storybook mock
   }
@@ -293,91 +314,94 @@ function StorybookSettingsMock({
   storageKey,
   initialExternalApiKeys,
 }: {
-  children: ReactNode
-  initialSettings?: SettingsPayload
-  storageKey: string
-  initialExternalApiKeys?: ExternalApiKeySummary[]
+  children: ReactNode;
+  initialSettings?: SettingsPayload;
+  storageKey: string;
+  initialExternalApiKeys?: ExternalApiKeySummary[];
 }) {
-  const fallbackSettings = initialSettings ? cloneSettings(initialSettings) : createStorySettings()
-  const settingsRef = useRef<SettingsPayload>(loadPersistedSettings(storageKey, fallbackSettings))
+  const fallbackSettings = initialSettings ? cloneSettings(initialSettings) : createStorySettings();
+  const settingsRef = useRef<SettingsPayload>(loadPersistedSettings(storageKey, fallbackSettings));
   const externalApiKeysRef = useRef<ExternalApiKeySummary[]>(
     initialExternalApiKeys ? [...initialExternalApiKeys] : createMockExternalApiKeys(),
-  )
+  );
   const nextExternalApiKeyIdRef = useRef(
     externalApiKeysRef.current.reduce((max, item) => Math.max(max, item.id), 0) + 1,
-  )
-  const originalFetchRef = useRef<typeof window.fetch | null>(null)
-  const originalEventSourceRef = useRef<typeof window.EventSource | null>(null)
-  const mockInstalledRef = useRef(false)
+  );
+  const originalFetchRef = useRef<typeof window.fetch | null>(null);
+  const originalEventSourceRef = useRef<typeof window.EventSource | null>(null);
+  const mockInstalledRef = useRef(false);
 
-  if (typeof window !== 'undefined' && !mockInstalledRef.current) {
-    mockInstalledRef.current = true
+  if (typeof window !== "undefined" && !mockInstalledRef.current) {
+    mockInstalledRef.current = true;
     if (!settingsRef.current.proxy) {
-      settingsRef.current.proxy = cloneSettings(fallbackSettings).proxy
+      settingsRef.current.proxy = cloneSettings(fallbackSettings).proxy;
     }
-    if (!Array.isArray(settingsRef.current.forwardProxy.nodes) || settingsRef.current.forwardProxy.nodes.length === 0) {
+    if (
+      !Array.isArray(settingsRef.current.forwardProxy.nodes) ||
+      settingsRef.current.forwardProxy.nodes.length === 0
+    ) {
       settingsRef.current.forwardProxy = {
         ...settingsRef.current.forwardProxy,
         nodes: buildNodesFromSettings(settingsRef.current.forwardProxy),
-      }
+      };
     }
-    persistSettings(storageKey, settingsRef.current)
+    persistSettings(storageKey, settingsRef.current);
 
-    originalFetchRef.current = window.fetch.bind(window)
-    originalEventSourceRef.current = window.EventSource
+    originalFetchRef.current = window.fetch.bind(window);
+    originalEventSourceRef.current = window.EventSource;
 
     class MockForwardProxyEventSource extends EventTarget {
-      readonly url: string
-      readonly withCredentials = false
-      readyState = 0
-      onopen: ((event: Event) => void) | null = null
-      onmessage: ((event: MessageEvent) => void) | null = null
-      onerror: ((event: Event) => void) | null = null
-      private timers: number[] = []
+      readonly url: string;
+      readonly withCredentials = false;
+      readyState = 0;
+      onopen: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      private timers: number[] = [];
 
       constructor(url: string | URL) {
-        super()
-        this.url = url.toString()
-        this.readyState = 1
-        this.onopen?.(new Event('open'))
-        this.start()
+        super();
+        this.url = url.toString();
+        this.readyState = 1;
+        this.onopen?.(new Event("open"));
+        this.start();
       }
 
       close() {
-        this.readyState = 2
+        this.readyState = 2;
         for (const timer of this.timers) {
-          window.clearTimeout(timer)
+          window.clearTimeout(timer);
         }
-        this.timers = []
+        this.timers = [];
       }
 
-      private emit(eventName: 'progress' | 'completed', payload: unknown, delay: number) {
+      private emit(eventName: "progress" | "completed", payload: unknown, delay: number) {
         const timer = window.setTimeout(() => {
-          if (this.readyState === 2) return
-          const event = new MessageEvent(eventName, { data: JSON.stringify(payload) })
-          this.dispatchEvent(event)
+          if (this.readyState === 2) return;
+          const event = new MessageEvent(eventName, { data: JSON.stringify(payload) });
+          this.dispatchEvent(event);
           if (this.onmessage) {
-            this.onmessage(new MessageEvent('message', { data: JSON.stringify(payload) }))
+            this.onmessage(new MessageEvent("message", { data: JSON.stringify(payload) }));
           }
-        }, delay)
-        this.timers.push(timer)
+        }, delay);
+        this.timers.push(timer);
       }
 
       private start() {
-        const parsedUrl = new URL(this.url, window.location.origin)
-        const keys = parsedUrl.pathname.includes('/nodes/test-stream')
-          ? parsedUrl.searchParams.getAll('key')
-          : [decodeURIComponent(parsedUrl.pathname.split('/').at(-2) ?? '')]
-        const activeKeys = keys.filter(Boolean)
-        let delay = 80
+        const parsedUrl = new URL(this.url, window.location.origin);
+        const keys = parsedUrl.pathname.includes("/nodes/test-stream")
+          ? parsedUrl.searchParams.getAll("key")
+          : [decodeURIComponent(parsedUrl.pathname.split("/").at(-2) ?? "")];
+        const activeKeys = keys.filter(Boolean);
+        let delay = 80;
         for (let round = 1; round <= 5; round += 1) {
           for (const key of activeKeys) {
-            const node = settingsRef.current.forwardProxy.nodes.find((item) => item.key === key)
-            const baseLatency = 82 + activeKeys.indexOf(key) * 37 + round * 8
-            const codexResponsesReachable = !node?.displayName.includes('trojan')
-            const success = codexResponsesReachable
+            const node = settingsRef.current.forwardProxy.nodes.find((item) => item.key === key);
+            const baseLatency = 82 + activeKeys.indexOf(key) * 37 + round * 8;
+            const codexResponsesReachable = !node?.displayName.includes("trojan");
+            const success = codexResponsesReachable;
             const payload = {
-              kind: round === 5 ? 'completed' : 'progress',
+              kind: round === 5 ? "completed" : "progress",
               node: {
                 key,
                 displayName: node?.displayName ?? key,
@@ -387,327 +411,353 @@ function StorybookSettingsMock({
                 successCount: success ? round * 3 : round * 2,
                 attemptCount: round * 3,
                 averageLatencyMs: baseLatency,
-                egressIp: { ok: true, latencyMs: baseLatency - 18, ip: '203.0.113.12' },
+                egressIp: { ok: true, latencyMs: baseLatency - 18, ip: "203.0.113.12" },
                 oauthUpstream: { ok: true, latencyMs: baseLatency + 8, httpStatus: 401 },
                 codexResponses: codexResponsesReachable
                   ? { ok: true, latencyMs: baseLatency + 18, httpStatus: 405 }
-                  : { ok: false, error: 'manual latency test round timed out after 5s' },
+                  : { ok: false, error: "manual latency test round timed out after 5s" },
                 allTargetsOk: success,
-                failedTargets: success ? [] : ['codexResponses'],
+                failedTargets: success ? [] : ["codexResponses"],
                 done: round === 5,
                 timedOut: !success && round === 5,
-                message: success ? `${baseLatency} ms` : 'failed targets: codexResponses',
+                message: success ? `${baseLatency} ms` : "failed targets: codexResponses",
               },
-            }
-            this.emit(round === 5 ? 'completed' : 'progress', payload, delay)
-            delay += 90
+            };
+            this.emit(round === 5 ? "completed" : "progress", payload, delay);
+            delay += 90;
           }
         }
       }
     }
 
-    window.EventSource = MockForwardProxyEventSource as unknown as typeof EventSource
+    window.EventSource = MockForwardProxyEventSource as unknown as typeof EventSource;
 
     const mockedFetch: typeof window.fetch = async (input, init) => {
-      const method = (init?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase()
-      const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-      const parsedUrl = new URL(inputUrl, window.location.origin)
-      const path = parsedUrl.pathname
+      const method = (
+        init?.method || (input instanceof Request ? input.method : "GET")
+      ).toUpperCase();
+      const inputUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const parsedUrl = new URL(inputUrl, window.location.origin);
+      const path = parsedUrl.pathname;
 
       const jsonResponse = (payload: unknown, status = 200) =>
         Promise.resolve(
           new Response(JSON.stringify(payload), {
             status,
-            headers: { 'Content-Type': 'application/json' },
+            headers: { "Content-Type": "application/json" },
           }),
-        )
+        );
 
       const parseBody = <T,>(fallback: T): T => {
-        const raw = init?.body
-        if (typeof raw !== 'string' || !raw) return fallback
+        const raw = init?.body;
+        if (typeof raw !== "string" || !raw) return fallback;
         try {
-          return JSON.parse(raw) as T
+          return JSON.parse(raw) as T;
         } catch {
-          return fallback
+          return fallback;
         }
+      };
+
+      if (path === "/api/settings" && method === "GET") {
+        return jsonResponse(cloneSettings(settingsRef.current));
       }
 
-      if (path === '/api/settings' && method === 'GET') {
-        return jsonResponse(cloneSettings(settingsRef.current))
-      }
-
-      if (path === '/api/settings/proxy' && method === 'PUT') {
+      if (path === "/api/settings/proxy" && method === "PUT") {
         const body = parseBody<{
-          hijackEnabled: boolean
-          mergeUpstreamEnabled: boolean
-          fastModeRewriteMode?: 'disabled' | 'fill_missing' | 'force_priority'
-          upstream429MaxRetries: number
-          websocketEnabled: boolean
-          upstreamWebsocketDefaultEnabled: boolean
-          requestBodyLoggingEnabled: boolean
-          responseBodyLoggingEnabled: boolean
-          encryptedSessionOwnerRoutingEnabled: boolean
-          enabledModels: string[]
+          hijackEnabled: boolean;
+          mergeUpstreamEnabled: boolean;
+          fastModeRewriteMode?: "disabled" | "fill_missing" | "force_priority";
+          upstream429MaxRetries: number;
+          websocketEnabled: boolean;
+          upstreamWebsocketDefaultEnabled: boolean;
+          requestBodyLoggingEnabled: boolean;
+          responseBodyLoggingEnabled: boolean;
+          encryptedSessionOwnerRoutingEnabled: boolean;
+          enabledModels: string[];
         }>({
           hijackEnabled: settingsRef.current.proxy.hijackEnabled,
           mergeUpstreamEnabled: settingsRef.current.proxy.mergeUpstreamEnabled,
           fastModeRewriteMode: settingsRef.current.proxy.fastModeRewriteMode,
           upstream429MaxRetries: settingsRef.current.proxy.upstream429MaxRetries,
           websocketEnabled: settingsRef.current.proxy.websocketEnabled,
-          upstreamWebsocketDefaultEnabled: settingsRef.current.proxy.upstreamWebsocketDefaultEnabled,
+          upstreamWebsocketDefaultEnabled:
+            settingsRef.current.proxy.upstreamWebsocketDefaultEnabled,
           requestBodyLoggingEnabled: settingsRef.current.proxy.requestBodyLoggingEnabled,
           responseBodyLoggingEnabled: settingsRef.current.proxy.responseBodyLoggingEnabled,
-          encryptedSessionOwnerRoutingEnabled: settingsRef.current.proxy.encryptedSessionOwnerRoutingEnabled,
+          encryptedSessionOwnerRoutingEnabled:
+            settingsRef.current.proxy.encryptedSessionOwnerRoutingEnabled,
           enabledModels: settingsRef.current.proxy.enabledModels,
-        })
+        });
 
-        const enabledSet = new Set((body.enabledModels || []).map((item) => item.trim()).filter(Boolean))
+        const enabledSet = new Set(
+          (body.enabledModels || []).map((item) => item.trim()).filter(Boolean),
+        );
         const nextProxy: ProxySettings = {
           ...settingsRef.current.proxy,
           hijackEnabled: body.hijackEnabled === true,
           mergeUpstreamEnabled: body.hijackEnabled === true && body.mergeUpstreamEnabled === true,
-          fastModeRewriteMode: 'disabled',
-          upstream429MaxRetries: Math.max(0, Math.min(5, Math.trunc(body.upstream429MaxRetries || 0))),
+          fastModeRewriteMode: "disabled",
+          upstream429MaxRetries: Math.max(
+            0,
+            Math.min(5, Math.trunc(body.upstream429MaxRetries || 0)),
+          ),
           websocketEnabled: body.websocketEnabled === true,
           upstreamWebsocketDefaultEnabled: body.upstreamWebsocketDefaultEnabled === true,
           requestBodyLoggingEnabled: body.requestBodyLoggingEnabled !== false,
           responseBodyLoggingEnabled: body.responseBodyLoggingEnabled !== false,
           encryptedSessionOwnerRoutingEnabled: body.encryptedSessionOwnerRoutingEnabled === true,
           enabledModels: settingsRef.current.proxy.models.filter((model) => enabledSet.has(model)),
-        }
-        settingsRef.current.proxy = nextProxy
-        persistSettings(storageKey, settingsRef.current)
-        return jsonResponse(nextProxy)
+        };
+        settingsRef.current.proxy = nextProxy;
+        persistSettings(storageKey, settingsRef.current);
+        return jsonResponse(nextProxy);
       }
 
-      if (path === '/api/settings/external-api-keys' && method === 'GET') {
+      if (path === "/api/settings/external-api-keys" && method === "GET") {
         return jsonResponse({
           items: [...externalApiKeysRef.current],
-        })
+        });
       }
 
-      if (path === '/api/settings/external-api-keys' && method === 'POST') {
-        const body = parseBody<{ name: string }>({ name: '' })
-        const id = nextExternalApiKeyIdRef.current++
-        const name = String(body.name || '').trim() || `External key ${id}`
-        const secret = `cvm_ext_story_${id.toString(16).padStart(6, '0')}`
-        const nowIso = new Date().toISOString()
+      if (path === "/api/settings/external-api-keys" && method === "POST") {
+        const body = parseBody<{ name: string }>({ name: "" });
+        const id = nextExternalApiKeyIdRef.current++;
+        const name = String(body.name || "").trim() || `External key ${id}`;
+        const secret = `cvm_ext_story_${id.toString(16).padStart(6, "0")}`;
+        const nowIso = new Date().toISOString();
         const key: ExternalApiKeySummary = {
           id,
           name,
-          status: 'active',
+          status: "active",
           prefix: secret.slice(0, 12),
           lastUsedAt: undefined,
           createdAt: nowIso,
           updatedAt: nowIso,
-        }
-        externalApiKeysRef.current = [...externalApiKeysRef.current, key]
-        return jsonResponse({ key, secret })
+        };
+        externalApiKeysRef.current = [...externalApiKeysRef.current, key];
+        return jsonResponse({ key, secret });
       }
 
-      const rotateMatch = path.match(/^\/api\/settings\/external-api-keys\/(\d+)\/rotate$/)
-      if (rotateMatch && method === 'POST') {
-        const targetId = Number(rotateMatch[1])
-        const target = externalApiKeysRef.current.find((item) => item.id === targetId)
+      const rotateMatch = path.match(/^\/api\/settings\/external-api-keys\/(\d+)\/rotate$/);
+      if (rotateMatch && method === "POST") {
+        const targetId = Number(rotateMatch[1]);
+        const target = externalApiKeysRef.current.find((item) => item.id === targetId);
         if (!target) {
-          return jsonResponse({ message: 'not found' }, 404)
+          return jsonResponse({ message: "not found" }, 404);
         }
-        const id = nextExternalApiKeyIdRef.current++
-        const secret = `cvm_ext_story_${id.toString(16).padStart(6, '0')}`
-        const nowIso = new Date().toISOString()
+        const id = nextExternalApiKeyIdRef.current++;
+        const secret = `cvm_ext_story_${id.toString(16).padStart(6, "0")}`;
+        const nowIso = new Date().toISOString();
         const key: ExternalApiKeySummary = {
           id,
           name: target.name,
-          status: 'active',
+          status: "active",
           prefix: secret.slice(0, 12),
           lastUsedAt: undefined,
           createdAt: nowIso,
           updatedAt: nowIso,
-        }
+        };
         externalApiKeysRef.current = [
           ...externalApiKeysRef.current.filter((item) => item.id !== targetId),
           key,
-        ]
-        return jsonResponse({ key, secret })
+        ];
+        return jsonResponse({ key, secret });
       }
 
-      const disableMatch = path.match(/^\/api\/settings\/external-api-keys\/(\d+)\/disable$/)
-      if (disableMatch && method === 'POST') {
-        const targetId = Number(disableMatch[1])
-        const nowIso = new Date().toISOString()
-        let key: ExternalApiKeySummary | null = null
+      const disableMatch = path.match(/^\/api\/settings\/external-api-keys\/(\d+)\/disable$/);
+      if (disableMatch && method === "POST") {
+        const targetId = Number(disableMatch[1]);
+        const nowIso = new Date().toISOString();
+        let key: ExternalApiKeySummary | null = null;
         externalApiKeysRef.current = externalApiKeysRef.current.map((item) => {
-          if (item.id !== targetId) return item
+          if (item.id !== targetId) return item;
           key = {
             ...item,
-            status: 'disabled',
+            status: "disabled",
             updatedAt: nowIso,
-          }
-          return key
-        })
+          };
+          return key;
+        });
         if (!key) {
-          return jsonResponse({ message: 'not found' }, 404)
+          return jsonResponse({ message: "not found" }, 404);
         }
-        return jsonResponse({ key })
+        return jsonResponse({ key });
       }
 
-      if (path === '/api/settings/forward-proxy' && method === 'PUT') {
+      if (path === "/api/settings/forward-proxy" && method === "PUT") {
         const body = parseBody<{
-          proxyUrls: string[]
-          subscriptionUrls: string[]
-          subscriptionUpdateIntervalSecs: number
+          proxyUrls: string[];
+          subscriptionUrls: string[];
+          subscriptionUpdateIntervalSecs: number;
         }>({
           proxyUrls: [],
           subscriptionUrls: [],
           subscriptionUpdateIntervalSecs: 3600,
-        })
+        });
 
         const nextForwardProxy: ForwardProxySettings = {
           ...settingsRef.current.forwardProxy,
           proxyUrls: (body.proxyUrls || []).map((item) => item.trim()).filter(Boolean),
-          subscriptionUrls: (body.subscriptionUrls || []).map((item) => item.trim()).filter(Boolean),
-          subscriptionUpdateIntervalSecs: Math.max(60, Math.floor(body.subscriptionUpdateIntervalSecs || 3600)),
+          subscriptionUrls: (body.subscriptionUrls || [])
+            .map((item) => item.trim())
+            .filter(Boolean),
+          subscriptionUpdateIntervalSecs: Math.max(
+            60,
+            Math.floor(body.subscriptionUpdateIntervalSecs || 3600),
+          ),
           nodes: [],
-        }
-        nextForwardProxy.nodes = buildNodesFromSettings(nextForwardProxy)
-        settingsRef.current.forwardProxy = nextForwardProxy
-        persistSettings(storageKey, settingsRef.current)
-        return jsonResponse(nextForwardProxy)
+        };
+        nextForwardProxy.nodes = buildNodesFromSettings(nextForwardProxy);
+        settingsRef.current.forwardProxy = nextForwardProxy;
+        persistSettings(storageKey, settingsRef.current);
+        return jsonResponse(nextForwardProxy);
       }
 
-      if (path === '/api/settings/forward-proxy/validate' && method === 'POST') {
-        const body = parseBody<{ kind: 'proxyUrl' | 'subscriptionUrl'; value: string }>({
-          kind: 'proxyUrl',
-          value: '',
-        })
-        const value = String(body.value || '').trim()
+      if (path === "/api/settings/forward-proxy/validate" && method === "POST") {
+        const body = parseBody<{ kind: "proxyUrl" | "subscriptionUrl"; value: string }>({
+          kind: "proxyUrl",
+          value: "",
+        });
+        const value = String(body.value || "").trim();
         if (!value) {
           return jsonResponse(
             {
               ok: false,
-              message: 'empty candidate',
+              message: "empty candidate",
             },
             200,
-          )
+          );
         }
-        if (body.kind === 'subscriptionUrl') {
-          const isHttp = value.startsWith('http://') || value.startsWith('https://')
+        if (body.kind === "subscriptionUrl") {
+          const isHttp = value.startsWith("http://") || value.startsWith("https://");
           if (!isHttp) {
             return jsonResponse(
               {
                 ok: false,
-                message: 'subscription url must be http/https',
+                message: "subscription url must be http/https",
               },
               200,
-            )
+            );
           }
           return jsonResponse({
             ok: true,
-            message: 'subscription validation succeeded',
+            message: "subscription validation succeeded",
             normalizedValue: value,
             discoveredNodes: 3,
             latencyMs: 320,
-          })
+          });
         }
 
-        const acceptedSchemes = ['http://', 'https://', 'socks://', 'socks5://', 'socks5h://', 'vmess://', 'vless://', 'trojan://', 'ss://']
+        const acceptedSchemes = [
+          "http://",
+          "https://",
+          "socks://",
+          "socks5://",
+          "socks5h://",
+          "vmess://",
+          "vless://",
+          "trojan://",
+          "ss://",
+        ];
         if (!acceptedSchemes.some((prefix) => value.startsWith(prefix))) {
           return jsonResponse(
             {
               ok: false,
-              message: 'unsupported proxy url scheme',
+              message: "unsupported proxy url scheme",
             },
             200,
-          )
+          );
         }
         return jsonResponse({
           ok: true,
-          message: 'proxy validation succeeded',
+          message: "proxy validation succeeded",
           normalizedValue: value,
           discoveredNodes: 1,
           latencyMs: 210,
-        })
+        });
       }
 
-      if (path === '/api/settings/forward-proxy/refresh-subscriptions' && method === 'POST') {
+      if (path === "/api/settings/forward-proxy/refresh-subscriptions" && method === "POST") {
         const nextForwardProxy: ForwardProxySettings = {
           ...settingsRef.current.forwardProxy,
           nodes: [],
-        }
+        };
         nextForwardProxy.nodes = [
           ...buildNodesFromSettings(nextForwardProxy),
           {
-            key: 'sub-refreshed-edge',
-            source: 'subscription',
-            displayName: 'refreshed-edge-1',
-            endpointUrl: 'socks5://refreshed.example.com:1080',
+            key: "sub-refreshed-edge",
+            source: "subscription",
+            displayName: "refreshed-edge-1",
+            endpointUrl: "socks5://refreshed.example.com:1080",
             weight: 0.74,
             penalized: false,
             stats: statsPreset(3),
           },
-        ]
-        settingsRef.current.forwardProxy = nextForwardProxy
-        persistSettings(storageKey, settingsRef.current)
+        ];
+        settingsRef.current.forwardProxy = nextForwardProxy;
+        persistSettings(storageKey, settingsRef.current);
         return jsonResponse({
           forwardProxy: nextForwardProxy,
           subscriptionCount: nextForwardProxy.subscriptionUrls.length,
           addedNodeCount: 1,
           refreshedAt: new Date().toISOString(),
-        })
+        });
       }
 
-      if (path === '/api/settings/pricing' && method === 'PUT') {
+      if (path === "/api/settings/pricing" && method === "PUT") {
         const body = parseBody<{ catalogVersion: string; entries: PricingEntry[] }>({
           catalogVersion: settingsRef.current.pricing.catalogVersion,
           entries: settingsRef.current.pricing.entries,
-        })
+        });
         settingsRef.current.pricing = {
-          catalogVersion: String(body.catalogVersion || 'storybook'),
+          catalogVersion: String(body.catalogVersion || "storybook"),
           entries: [...(body.entries || [])].sort((a, b) => a.model.localeCompare(b.model)),
-        }
-        persistSettings(storageKey, settingsRef.current)
-        return jsonResponse(settingsRef.current.pricing)
+        };
+        persistSettings(storageKey, settingsRef.current);
+        return jsonResponse(settingsRef.current.pricing);
       }
 
-      return (originalFetchRef.current as typeof window.fetch)(input, init)
-    }
+      return (originalFetchRef.current as typeof window.fetch)(input, init);
+    };
 
-    window.fetch = mockedFetch
+    window.fetch = mockedFetch;
   }
 
   useEffect(() => {
     return () => {
-      if (typeof window !== 'undefined' && originalFetchRef.current) {
-        window.fetch = originalFetchRef.current
-        originalFetchRef.current = null
+      if (typeof window !== "undefined" && originalFetchRef.current) {
+        window.fetch = originalFetchRef.current;
+        originalFetchRef.current = null;
       }
-      if (typeof window !== 'undefined' && originalEventSourceRef.current) {
-        window.EventSource = originalEventSourceRef.current
-        originalEventSourceRef.current = null
+      if (typeof window !== "undefined" && originalEventSourceRef.current) {
+        window.EventSource = originalEventSourceRef.current;
+        originalEventSourceRef.current = null;
       }
-    }
-  }, [])
+    };
+  }, []);
 
-  return <>{children}</>
+  return <>{children}</>;
 }
 
 type SettingsStoryParameters = {
-  mockSettings?: SettingsPayload
-  mockExternalApiKeys?: ExternalApiKeySummary[]
-}
+  mockSettings?: SettingsPayload;
+  mockExternalApiKeys?: ExternalApiKeySummary[];
+};
 
 const meta = {
-  title: 'Settings/SettingsPage',
+  title: "Settings/SettingsPage",
   component: SettingsPage,
-  tags: ['autodocs'],
+  tags: ["autodocs"],
   parameters: {
-    layout: 'fullscreen',
-    viewport: { defaultViewport: 'desktop1660' },
+    layout: "fullscreen",
+    viewport: { defaultViewport: "desktop1660" },
   },
   decorators: [
     (Story, context) => {
-      const mockSettings = (context.parameters as SettingsStoryParameters).mockSettings
-      const mockExternalApiKeys = (context.parameters as SettingsStoryParameters).mockExternalApiKeys
+      const mockSettings = (context.parameters as SettingsStoryParameters).mockSettings;
+      const mockExternalApiKeys = (context.parameters as SettingsStoryParameters)
+        .mockExternalApiKeys;
       return (
         <I18nProvider>
           <StorybookSettingsMock
@@ -722,28 +772,28 @@ const meta = {
             </div>
           </StorybookSettingsMock>
         </I18nProvider>
-      )
+      );
     },
   ],
-} satisfies Meta<typeof SettingsPage>
+} satisfies Meta<typeof SettingsPage>;
 
-export default meta
+export default meta;
 
-type Story = StoryObj<typeof meta>
+type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
   render: () => <SettingsPage />,
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await expect(canvas.getByRole('heading', { name: '设置' })).toBeVisible()
-    await expect(canvas.getByText('代理配置')).toBeVisible()
-    await expect(canvas.getByText('加密对话路由')).toBeVisible()
-    await expect(canvas.getByText('正向代理路由')).toBeVisible()
-    await expect(canvas.getByText('价格配置')).toBeVisible()
-    await expect(canvas.getByText('gpt-5.5')).toBeVisible()
-    await expect(canvas.getByText('External API Keys')).toBeVisible()
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("heading", { name: "设置" })).toBeVisible();
+    await expect(canvas.getByText("代理配置")).toBeVisible();
+    await expect(canvas.getByText("加密对话路由")).toBeVisible();
+    await expect(canvas.getByText("正向代理路由")).toBeVisible();
+    await expect(canvas.getByText("价格配置")).toBeVisible();
+    await expect(canvas.getByText("gpt-5.5")).toBeVisible();
+    await expect(canvas.getByText("External API Keys")).toBeVisible();
   },
-}
+};
 
 export const EncryptedOwnerRoutingDisabled: Story = {
   parameters: {
@@ -755,126 +805,129 @@ export const EncryptedOwnerRoutingDisabled: Story = {
   },
   render: () => <SettingsPage />,
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await expect(canvas.getByText('加密对话路由')).toBeVisible()
-    await expect(canvas.getByText('OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED')).toBeVisible()
-    const toggle = canvas.getByRole('switch', { name: '加密对话路由绑定' })
-    await expect(toggle).toHaveAttribute('aria-checked', 'false')
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("加密对话路由")).toBeVisible();
+    await expect(
+      canvas.getByText("OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED"),
+    ).toBeVisible();
+    const toggle = canvas.getByRole("switch", { name: "加密对话路由绑定" });
+    await expect(toggle).toHaveAttribute("aria-checked", "false");
   },
-}
+};
 
 export const ExternalApiKeysCreateReveal: Story = {
   render: () => <SettingsPage />,
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await userEvent.click(canvas.getByRole('button', { name: '创建 Key' }))
-    const dialog = within(document.body)
-    await userEvent.type(
-      dialog.getByLabelText('Key 名称'),
-      'Vendor C realtime fill',
-    )
-    await userEvent.click(dialog.getByRole('button', { name: '创建 Key' }))
-    await expect(canvas.getByTestId('external-api-key-secret-alert')).toBeVisible()
-    await expect(canvas.getByText('cvm_ext_story_')).toBeVisible()
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "创建 Key" }));
+    const dialog = within(document.body);
+    await userEvent.type(dialog.getByLabelText("Key 名称"), "Vendor C realtime fill");
+    await userEvent.click(dialog.getByRole("button", { name: "创建 Key" }));
+    await expect(canvas.getByTestId("external-api-key-secret-alert")).toBeVisible();
+    await expect(canvas.getByText("cvm_ext_story_")).toBeVisible();
   },
-}
+};
 
 export const ExternalApiKeysDisableConfirm: Story = {
   render: () => <SettingsPage />,
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await userEvent.click(canvas.getAllByRole('button', { name: '停用' })[0]!)
-    const dialog = within(document.body)
-    await expect(dialog.getByRole('heading', { name: '停用 External API Key' })).toBeVisible()
-    await userEvent.click(dialog.getByRole('button', { name: '立即停用' }))
-    await expect(canvas.getAllByText('已停用')[0]!).toBeVisible()
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getAllByRole("button", { name: "停用" })[0]!);
+    const dialog = within(document.body);
+    await expect(dialog.getByRole("heading", { name: "停用 External API Key" })).toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: "立即停用" }));
+    await expect(canvas.getAllByText("已停用")[0]!).toBeVisible();
   },
-}
+};
 
 export const SubscriptionHeavy: Story = {
   parameters: {
     mockSettings: createStorySettings({
       forwardProxy: {
-        proxyUrls: ['socks5://127.0.0.1:1080'],
+        proxyUrls: ["socks5://127.0.0.1:1080"],
         subscriptionUrls: [
-          'https://example.com/subscription.base64',
-          'https://example.com/backup-subscription.txt',
+          "https://example.com/subscription.base64",
+          "https://example.com/backup-subscription.txt",
         ],
       },
     }),
   },
   render: () => <SettingsPage />,
-}
+};
 
 export const ForwardProxyLatencyAndRefresh: Story = {
   parameters: {
     mockSettings: createStorySettings({
       forwardProxy: {
         proxyUrls: [
-          'http://tokyo-edge.example.com:8080',
-          'socks5://hk-edge.example.com:1080',
-          'trojan://storybook-secret@trojan.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Fedge#trojan-edge',
+          "http://tokyo-edge.example.com:8080",
+          "socks5://hk-edge.example.com:1080",
+          "trojan://storybook-secret@trojan.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Fedge#trojan-edge",
         ],
-        subscriptionUrls: ['https://example.com/subscription.base64'],
+        subscriptionUrls: ["https://example.com/subscription.base64"],
       },
     }),
   },
   render: () => <SettingsPage />,
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await expect(canvas.getByText('正向代理路由')).toBeVisible()
-    const desktopTable = canvasElement.querySelector('[data-testid="settings-forward-proxy-desktop-table"]')
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("正向代理路由")).toBeVisible();
+    const desktopTable = canvasElement.querySelector(
+      '[data-testid="settings-forward-proxy-desktop-table"]',
+    );
     if (!(desktopTable instanceof HTMLTableElement)) {
-      throw new Error('Missing forward proxy desktop table')
+      throw new Error("Missing forward proxy desktop table");
     }
-    const headers = Array.from(desktopTable.querySelectorAll('thead th')).map((header) => header.textContent ?? '')
-    await expect(headers.slice(2, 7)).toEqual(['7 天', '1 天', '1 小时', '15 分钟', '1 分钟'])
-    await userEvent.click(canvas.getByRole('button', { name: '测试全部' }))
-    await expect(await canvas.findByText(/ms$/)).toBeVisible()
-    const failedLatencyButton = await canvas.findByTitle(/failed targets: codexResponses/)
-    await expect(failedLatencyButton).toBeVisible()
-    await userEvent.hover(failedLatencyButton)
-    await expect(await within(document.body).findByText(/Codex \/responses：失败/)).toBeVisible()
-    await userEvent.click(canvas.getByRole('button', { name: '刷新订阅' }))
-    await expect(await canvas.findByText(/订阅已刷新/)).toBeVisible()
+    const headers = Array.from(desktopTable.querySelectorAll("thead th")).map(
+      (header) => header.textContent ?? "",
+    );
+    await expect(headers.slice(2, 7)).toEqual(["7 天", "1 天", "1 小时", "15 分钟", "1 分钟"]);
+    await userEvent.click(canvas.getByRole("button", { name: "测试全部" }));
+    await expect(await canvas.findByText(/ms$/)).toBeVisible();
+    const failedLatencyButton = await canvas.findByTitle(/failed targets: codexResponses/);
+    await expect(failedLatencyButton).toBeVisible();
+    await userEvent.hover(failedLatencyButton);
+    await expect(await within(document.body).findByText(/Codex \/responses：失败/)).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "刷新订阅" }));
+    await expect(await canvas.findByText(/订阅已刷新/)).toBeVisible();
   },
-}
+};
 
 export const MobileAdaptiveTables: Story = {
   parameters: {
-    viewport: { defaultViewport: 'mobile390' },
+    viewport: { defaultViewport: "mobile390" },
   },
   render: () => <SettingsPage />,
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
+    const canvas = within(canvasElement);
     await expect(
       canvasElement.querySelector('[data-testid="settings-forward-proxy-mobile-windows"]'),
-    ).not.toBeNull()
-    await expect(canvas.getAllByRole('button', { name: '停用' })[0]!).toBeVisible()
-    await userEvent.click(canvas.getByRole('button', { name: '创建 Key' }))
-    const dialog = within(document.body)
-    await expect(dialog.getByRole('heading', { name: '创建 External API Key' })).toBeVisible()
+    ).not.toBeNull();
+    await expect(canvas.getAllByRole("button", { name: "停用" })[0]!).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "创建 Key" }));
+    const dialog = within(document.body);
+    await expect(dialog.getByRole("heading", { name: "创建 External API Key" })).toBeVisible();
   },
-}
+};
 
 export const PenalizedPool: Story = {
   parameters: {
     mockSettings: createStorySettings({
       forwardProxy: {
         proxyUrls: [
-          'http://127.0.0.1:7890',
-          'socks5://127.0.0.1:1080',
-          'trojan://storybook-secret@trojan.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Fedge#trojan-edge',
+          "http://127.0.0.1:7890",
+          "socks5://127.0.0.1:1080",
+          "trojan://storybook-secret@trojan.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Fedge#trojan-edge",
         ],
       },
     }),
   },
   render: () => <SettingsPage />,
-}
+};
 
 export const RealNodeHealthParity: Story = {
   parameters: {
     mockSettings: createParitySettings(),
   },
   render: () => <SettingsPage />,
-}
+};

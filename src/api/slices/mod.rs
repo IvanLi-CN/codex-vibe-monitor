@@ -1,6 +1,16 @@
 use super::*;
 
+#[expect(
+    clippy::too_many_arguments,
+    clippy::large_enum_variant,
+    reason = "Existing internal response adapters preserve established call-site and payload contracts."
+)]
 mod error_distribution_and_sse;
+#[expect(
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    reason = "Existing internal query adapters preserve established call-site contracts."
+)]
 mod invocations_and_summary;
 mod prompt_cache_and_timeseries;
 mod settings_models_and_cache;

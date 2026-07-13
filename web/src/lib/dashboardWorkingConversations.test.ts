@@ -29,8 +29,7 @@ function createPreview(
     cost: overrides.cost ?? 0.012,
     proxyDisplayName: overrides.proxyDisplayName ?? "tokyo-edge-01",
     upstreamAccountId: overrides.upstreamAccountId ?? 17,
-    upstreamAccountName:
-      overrides.upstreamAccountName ?? "pool-alpha@example.com",
+    upstreamAccountName: overrides.upstreamAccountName ?? "pool-alpha@example.com",
     endpoint: overrides.endpoint ?? "/v1/responses",
     inputTokens: overrides.inputTokens ?? 64,
     outputTokens: overrides.outputTokens ?? 56,
@@ -55,14 +54,8 @@ function createConversation(
   recentInvocations: PromptCacheConversationInvocationPreview[],
   overrides: Partial<PromptCacheConversation> = {},
 ): PromptCacheConversation {
-  const hasLastTerminalAt = Object.prototype.hasOwnProperty.call(
-    overrides,
-    "lastTerminalAt",
-  );
-  const hasLastInFlightAt = Object.prototype.hasOwnProperty.call(
-    overrides,
-    "lastInFlightAt",
-  );
+  const hasLastTerminalAt = Object.hasOwn(overrides, "lastTerminalAt");
+  const hasLastInFlightAt = Object.hasOwn(overrides, "lastInFlightAt");
   return {
     promptCacheKey,
     requestCount: overrides.requestCount ?? recentInvocations.length,
@@ -73,15 +66,9 @@ function createConversation(
       recentInvocations[recentInvocations.length - 1]?.occurredAt ??
       "2026-04-04T10:00:00Z",
     lastActivityAt:
-      overrides.lastActivityAt ??
-      recentInvocations[0]?.occurredAt ??
-      "2026-04-04T10:00:00Z",
-    lastTerminalAt: hasLastTerminalAt
-      ? (overrides.lastTerminalAt ?? null)
-      : undefined,
-    lastInFlightAt: hasLastInFlightAt
-      ? (overrides.lastInFlightAt ?? null)
-      : undefined,
+      overrides.lastActivityAt ?? recentInvocations[0]?.occurredAt ?? "2026-04-04T10:00:00Z",
+    lastTerminalAt: hasLastTerminalAt ? (overrides.lastTerminalAt ?? null) : undefined,
+    lastInFlightAt: hasLastInFlightAt ? (overrides.lastInFlightAt ?? null) : undefined,
     upstreamAccounts: overrides.upstreamAccounts ?? [],
     recentInvocations,
     last24hRequests: overrides.last24hRequests ?? [],
@@ -105,15 +92,9 @@ function createResponse(
 
 describe("mapPromptCacheConversationsToDashboardCards", () => {
   it("strips the WC prefix from the display sequence id without changing the raw id", () => {
-    expect(formatDashboardWorkingConversationSequenceId("WC-ABCDEF")).toBe(
-      "ABCDEF",
-    );
-    expect(formatDashboardWorkingConversationSequenceId("WC-ABCDEF-11")).toBe(
-      "ABCDEF-11",
-    );
-    expect(formatDashboardWorkingConversationSequenceId("ABCDEF")).toBe(
-      "ABCDEF",
-    );
+    expect(formatDashboardWorkingConversationSequenceId("WC-ABCDEF")).toBe("ABCDEF");
+    expect(formatDashboardWorkingConversationSequenceId("WC-ABCDEF-11")).toBe("ABCDEF-11");
+    expect(formatDashboardWorkingConversationSequenceId("ABCDEF")).toBe("ABCDEF");
   });
 
   it("builds stable WC short sequence ids from prompt cache keys", () => {
@@ -132,9 +113,7 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     const second = mapPromptCacheConversationsToDashboardCards(response);
 
     expect(first[0]?.conversationSequenceId).toMatch(/^WC-[A-F0-9]{6}$/);
-    expect(first[0]?.conversationSequenceId).toBe(
-      second[0]?.conversationSequenceId,
-    );
+    expect(first[0]?.conversationSequenceId).toBe(second[0]?.conversationSequenceId);
     expect(first[0]?.hasPreviousPlaceholder).toBe(true);
   });
 
@@ -270,13 +249,9 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     ]);
 
     const cards = mapPromptCacheConversationsToDashboardCards(response);
-    const inflightAnchored = cards.find(
-      (card) => card.promptCacheKey === "pck-has-newer-inflight",
-    );
+    const inflightAnchored = cards.find((card) => card.promptCacheKey === "pck-has-newer-inflight");
 
-    expect(inflightAnchored?.sortAnchorEpoch).toBe(
-      Date.parse("2026-04-04T10:04:00Z"),
-    );
+    expect(inflightAnchored?.sortAnchorEpoch).toBe(Date.parse("2026-04-04T10:04:00Z"));
   });
 
   it("keeps the explicit 20-card cap anchored on active work before final display sorting", () => {
@@ -324,12 +299,8 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     });
 
     expect(cards).toHaveLength(20);
-    expect(cards.map((card) => card.promptCacheKey)).toContain(
-      "pck-old-running",
-    );
-    expect(cards.map((card) => card.promptCacheKey)).not.toContain(
-      "pck-base-00",
-    );
+    expect(cards.map((card) => card.promptCacheKey)).toContain("pck-old-running");
+    expect(cards.map((card) => card.promptCacheKey)).not.toContain("pck-base-00");
     expect(cards.at(-1)?.promptCacheKey).toBe("pck-old-running");
   });
 
@@ -459,8 +430,6 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
 
     expect(cards).toHaveLength(20);
     expect(cards.map((card) => card.promptCacheKey)).toContain("pck-tie-newer");
-    expect(cards.map((card) => card.promptCacheKey)).not.toContain(
-      "pck-tie-older",
-    );
+    expect(cards.map((card) => card.promptCacheKey)).not.toContain("pck-tie-older");
   });
 });

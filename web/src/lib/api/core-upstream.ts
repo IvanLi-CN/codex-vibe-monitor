@@ -1,3 +1,8 @@
+import type {
+  ForwardProxyBindingNode,
+  StickyKeyConversationSelection,
+  UpstreamStickyConversationsResponse,
+} from "./core-foundation";
 import {
   ensureJsonRequestOk,
   fetchJson,
@@ -9,14 +14,8 @@ import {
   normalizeUpstreamStickyConversationsResponse,
   withBase,
 } from "./core-foundation";
-import type {
-  ForwardProxyBindingNode,
-  StickyKeyConversationSelection,
-  UpstreamStickyConversationsResponse,
-} from "./core-foundation";
 
-const OAUTH_LOGIN_SESSION_BASE_UPDATED_AT_HEADER =
-  "X-Codex-Login-Session-Base-Updated-At";
+const OAUTH_LOGIN_SESSION_BASE_UPDATED_AT_HEADER = "X-Codex-Login-Session-Base-Updated-At";
 
 export interface RateWindowActualUsage {
   requestCount: number;
@@ -72,11 +71,7 @@ export type TagFastModeRewriteMode =
   | "keep_original"
   | "fill_missing"
   | "force_add";
-export type ImageToolRewriteMode =
-  | "keep_original"
-  | "fill_missing"
-  | "force_add"
-  | "force_remove";
+export type ImageToolRewriteMode = "keep_original" | "fill_missing" | "force_add" | "force_remove";
 export type ImageToolCapability = "supported" | "unsupported" | "unknown";
 export type ImageIntent = "yes" | "direct_image" | "no" | "unknown";
 
@@ -114,8 +109,7 @@ export const STATUS_CHANGE_REASON_CODES = [
   "upstream_http_5xx",
 ] as const;
 
-export type StatusChangeReasonCode =
-  (typeof STATUS_CHANGE_REASON_CODES)[number];
+export type StatusChangeReasonCode = (typeof STATUS_CHANGE_REASON_CODES)[number];
 
 export type StatusChangeReasons = Record<StatusChangeReasonCode, boolean>;
 
@@ -206,11 +200,7 @@ export interface TagListResponse {
   items: TagSummary[];
 }
 
-export type UpstreamAccountForwardProxyState =
-  | "assigned"
-  | "pending"
-  | "unconfigured"
-  | string;
+export type UpstreamAccountForwardProxyState = "assigned" | "pending" | "unconfigured" | string;
 
 export interface UpstreamAccountSummary {
   id: number;
@@ -220,13 +210,7 @@ export interface UpstreamAccountSummary {
   groupName?: string | null;
   isMother: boolean;
   status: "active" | "syncing" | "needs_reauth" | "error" | "disabled" | string;
-  workStatus?:
-    | "working"
-    | "degraded"
-    | "idle"
-    | "rate_limited"
-    | "unavailable"
-    | string;
+  workStatus?: "working" | "degraded" | "idle" | "rate_limited" | "unavailable" | string;
   enableStatus?: "enabled" | "disabled" | string;
   healthStatus?:
     | "normal"
@@ -418,14 +402,7 @@ export interface UpstreamAccountListMetrics {
 
 export interface BulkUpstreamAccountActionPayload {
   accountIds: number[];
-  action:
-    | "enable"
-    | "disable"
-    | "delete"
-    | "set_group"
-    | "add_tags"
-    | "remove_tags"
-    | string;
+  action: "enable" | "disable" | "delete" | "set_group" | "add_tags" | "remove_tags" | string;
   groupName?: string | null;
   tagIds?: number[];
 }
@@ -495,13 +472,7 @@ export interface BulkUpstreamAccountSyncFailedEventPayload {
 
 export interface LoginSessionStatusResponse {
   loginId: string;
-  status:
-    | "pending"
-    | "completed"
-    | "failed"
-    | "expired"
-    | "needs_identity_confirmation"
-    | string;
+  status: "pending" | "completed" | "failed" | "expired" | "needs_identity_confirmation" | string;
   authUrl?: string | null;
   redirectUri?: string | null;
   expiresAt: string;
@@ -528,9 +499,7 @@ export interface OauthIdentitySummary {
   planType?: string | null;
 }
 
-export type OauthMailboxSession =
-  | OauthMailboxSessionSupported
-  | OauthMailboxSessionUnsupported;
+export type OauthMailboxSession = OauthMailboxSessionSupported | OauthMailboxSessionUnsupported;
 
 export interface OauthMailboxSessionSupported {
   supported: true;
@@ -614,10 +583,7 @@ function withOauthLoginSessionBaseUpdatedAtHeader(
   if (!headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  headers.set(
-    OAUTH_LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
-    normalizedBaseUpdatedAt,
-  );
+  headers.set(OAUTH_LOGIN_SESSION_BASE_UPDATED_AT_HEADER, normalizedBaseUpdatedAt);
   return {
     ...init,
     headers,
@@ -708,14 +674,7 @@ export interface ImportedOauthValidationRow {
   displayName?: string | null;
   tokenExpiresAt?: string | null;
   matchedAccount?: ImportedOauthMatchSummary | null;
-  status:
-    | "pending"
-    | "duplicate_in_input"
-    | "ok"
-    | "ok_exhausted"
-    | "invalid"
-    | "error"
-    | string;
+  status: "pending" | "duplicate_in_input" | "ok" | "ok_exhausted" | "invalid" | "error" | string;
   detail?: string | null;
   attempts: number;
 }
@@ -831,9 +790,7 @@ export interface UpdateGroupAccountRoutingRulePayload {
   upstream429RetryEnabled?: NullableRoutingRuleValue<boolean>;
   upstream429MaxRetries?: NullableRoutingRuleValue<number>;
   availableModels?: NullableRoutingRuleValue<string[]>;
-  statusChangeReasons?: Partial<
-    Record<StatusChangeReasonCode, NullableRoutingRuleValue<boolean>>
-  >;
+  statusChangeReasons?: Partial<Record<StatusChangeReasonCode, NullableRoutingRuleValue<boolean>>>;
   timeouts?: {
     responsesFirstByteTimeoutSecs?: NullableRoutingRuleValue<number>;
     compactFirstByteTimeoutSecs?: NullableRoutingRuleValue<number>;
@@ -842,9 +799,7 @@ export interface UpdateGroupAccountRoutingRulePayload {
   };
 }
 
-function normalizeRateWindowActualUsage(
-  raw: unknown,
-): RateWindowActualUsage | null {
+function normalizeRateWindowActualUsage(raw: unknown): RateWindowActualUsage | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const requestCount = normalizeFiniteNumber(payload.requestCount);
   const totalTokens = normalizeFiniteNumber(payload.totalTokens);
@@ -876,16 +831,9 @@ function normalizeRateWindowSnapshot(raw: unknown): RateWindowSnapshot | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const usedPercent = normalizeFiniteNumber(payload.usedPercent);
   const usedText = typeof payload.usedText === "string" ? payload.usedText : "";
-  const limitText =
-    typeof payload.limitText === "string" ? payload.limitText : "";
+  const limitText = typeof payload.limitText === "string" ? payload.limitText : "";
   const windowDurationMins = normalizeFiniteNumber(payload.windowDurationMins);
-  if (
-    usedPercent == null ||
-    !usedText ||
-    !limitText ||
-    windowDurationMins == null
-  )
-    return null;
+  if (usedPercent == null || !usedText || !limitText || windowDurationMins == null) return null;
   return {
     usedPercent,
     usedText,
@@ -898,10 +846,7 @@ function normalizeRateWindowSnapshot(raw: unknown): RateWindowSnapshot | null {
 
 function normalizeCreditsSnapshot(raw: unknown): CreditsSnapshot | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
-  if (
-    typeof payload.hasCredits !== "boolean" ||
-    typeof payload.unlimited !== "boolean"
-  )
+  if (typeof payload.hasCredits !== "boolean" || typeof payload.unlimited !== "boolean")
     return null;
   return {
     hasCredits: payload.hasCredits,
@@ -945,17 +890,14 @@ function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
         ? payload.fastModeRewriteMode
         : "keep_original",
     concurrencyLimit:
-      concurrencyLimit != null && concurrencyLimit >= 0
-        ? Math.min(concurrencyLimit, 30)
-        : 0,
+      concurrencyLimit != null && concurrencyLimit >= 0 ? Math.min(concurrencyLimit, 30) : 0,
     upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
     upstream429MaxRetries,
     availableModels: normalizeStringArray(payload.availableModels)
       .map((value) => value.trim())
       .filter((value) => value.length > 0),
     availableModelsDefined:
-      payload.availableModelsDefined === true ||
-      Array.isArray(payload.availableModels),
+      payload.availableModelsDefined === true || Array.isArray(payload.availableModels),
   };
 }
 
@@ -969,9 +911,7 @@ function normalizeImageToolCapability(raw: unknown): ImageToolCapability {
   return raw === "supported" || raw === "unsupported" ? raw : "unknown";
 }
 
-function normalizePoolRoutingTimeoutSettings(
-  raw: unknown,
-): PoolRoutingTimeoutSettings {
+function normalizePoolRoutingTimeoutSettings(raw: unknown): PoolRoutingTimeoutSettings {
   const payload = (raw ?? {}) as Record<string, unknown>;
   return {
     responsesFirstByteTimeoutSecs:
@@ -980,10 +920,8 @@ function normalizePoolRoutingTimeoutSettings(
       normalizeFiniteNumber(payload.compactFirstByteTimeoutSecs) ??
       normalizeFiniteNumber(payload.compactUpstreamHandshakeTimeoutSecs) ??
       300,
-    responsesStreamTimeoutSecs:
-      normalizeFiniteNumber(payload.responsesStreamTimeoutSecs) ?? 300,
-    compactStreamTimeoutSecs:
-      normalizeFiniteNumber(payload.compactStreamTimeoutSecs) ?? 300,
+    responsesStreamTimeoutSecs: normalizeFiniteNumber(payload.responsesStreamTimeoutSecs) ?? 300,
+    compactStreamTimeoutSecs: normalizeFiniteNumber(payload.compactStreamTimeoutSecs) ?? 300,
   };
 }
 
@@ -996,15 +934,9 @@ function normalizeOptionalPoolRoutingTimeoutSettings(
   const responsesFirstByteTimeoutSecs = normalizeFiniteNumber(
     payload.responsesFirstByteTimeoutSecs,
   );
-  const compactFirstByteTimeoutSecs = normalizeFiniteNumber(
-    payload.compactFirstByteTimeoutSecs,
-  );
-  const responsesStreamTimeoutSecs = normalizeFiniteNumber(
-    payload.responsesStreamTimeoutSecs,
-  );
-  const compactStreamTimeoutSecs = normalizeFiniteNumber(
-    payload.compactStreamTimeoutSecs,
-  );
+  const compactFirstByteTimeoutSecs = normalizeFiniteNumber(payload.compactFirstByteTimeoutSecs);
+  const responsesStreamTimeoutSecs = normalizeFiniteNumber(payload.responsesStreamTimeoutSecs);
+  const compactStreamTimeoutSecs = normalizeFiniteNumber(payload.compactStreamTimeoutSecs);
   if (responsesFirstByteTimeoutSecs != null) {
     next.responsesFirstByteTimeoutSecs = responsesFirstByteTimeoutSecs;
   }
@@ -1020,25 +952,15 @@ function normalizeOptionalPoolRoutingTimeoutSettings(
   return Object.keys(next).length > 0 ? next : undefined;
 }
 
-function normalizeRoutingTimeoutFieldSources(
-  raw: unknown,
-): EffectiveRoutingTimeoutFieldSources {
+function normalizeRoutingTimeoutFieldSources(raw: unknown): EffectiveRoutingTimeoutFieldSources {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const normalizeSource = (value: unknown): EffectiveRoutingRuleSource =>
     typeof value === "string" && value.trim() ? value : "root";
   return {
-    responsesFirstByteTimeoutSecs: normalizeSource(
-      payload.responsesFirstByteTimeoutSecs,
-    ),
-    compactFirstByteTimeoutSecs: normalizeSource(
-      payload.compactFirstByteTimeoutSecs,
-    ),
-    responsesStreamTimeoutSecs: normalizeSource(
-      payload.responsesStreamTimeoutSecs,
-    ),
-    compactStreamTimeoutSecs: normalizeSource(
-      payload.compactStreamTimeoutSecs,
-    ),
+    responsesFirstByteTimeoutSecs: normalizeSource(payload.responsesFirstByteTimeoutSecs),
+    compactFirstByteTimeoutSecs: normalizeSource(payload.compactFirstByteTimeoutSecs),
+    responsesStreamTimeoutSecs: normalizeSource(payload.responsesStreamTimeoutSecs),
+    compactStreamTimeoutSecs: normalizeSource(payload.compactStreamTimeoutSecs),
   };
 }
 
@@ -1053,9 +975,7 @@ function normalizeStatusChangeReasons(raw: unknown): StatusChangeReasons {
   return next;
 }
 
-function normalizeStatusChangeReasonFieldSources(
-  raw: unknown,
-): StatusChangeReasonFieldSources {
+function normalizeStatusChangeReasonFieldSources(raw: unknown): StatusChangeReasonFieldSources {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const next = buildDefaultStatusChangeReasonFieldSources();
   for (const reason of STATUS_CHANGE_REASON_CODES) {
@@ -1066,19 +986,13 @@ function normalizeStatusChangeReasonFieldSources(
   return next;
 }
 
-function normalizeGroupAccountRoutingRule(
-  raw: unknown,
-): GroupAccountRoutingRule {
+function normalizeGroupAccountRoutingRule(raw: unknown): GroupAccountRoutingRule {
   const payload = normalizeTagRoutingRule(raw);
   const rawPayload = (raw ?? {}) as Record<string, unknown>;
   return {
     ...payload,
-    imageToolRewriteMode: normalizeImageToolRewriteMode(
-      rawPayload.imageToolRewriteMode,
-    ),
-    statusChangeReasons: normalizeStatusChangeReasons(
-      rawPayload.statusChangeReasons,
-    ),
+    imageToolRewriteMode: normalizeImageToolRewriteMode(rawPayload.imageToolRewriteMode),
+    statusChangeReasons: normalizeStatusChangeReasons(rawPayload.statusChangeReasons),
     timeouts: normalizeOptionalPoolRoutingTimeoutSettings(rawPayload.timeouts),
   };
 }
@@ -1100,10 +1014,7 @@ function normalizeAccountTagSummary(raw: unknown): AccountTagSummary | null {
 export function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRule {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const rawSources = (payload.fieldSources ?? {}) as Record<string, unknown>;
-  const rawTimeoutFieldSources = (payload.timeoutFieldSources ?? {}) as Record<
-    string,
-    unknown
-  >;
+  const rawTimeoutFieldSources = (payload.timeoutFieldSources ?? {}) as Record<string, unknown>;
   const normalizeSource = (value: unknown): EffectiveRoutingRuleSource =>
     typeof value === "string" && value.trim() ? value : "root";
   const sourceTagIds = Array.isArray(payload.sourceTagIds)
@@ -1112,9 +1023,7 @@ export function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRul
         .filter((value): value is number => value != null)
     : [];
   const sourceTagNames = Array.isArray(payload.sourceTagNames)
-    ? payload.sourceTagNames.filter(
-        (value): value is string => typeof value === "string",
-      )
+    ? payload.sourceTagNames.filter((value): value is string => typeof value === "string")
     : [];
   return {
     ...normalizeGroupAccountRoutingRule(payload),
@@ -1148,9 +1057,7 @@ export function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRul
       responsesStreamTimeoutSecs: normalizeSource(
         rawTimeoutFieldSources.responsesStreamTimeoutSecs,
       ),
-      compactStreamTimeoutSecs: normalizeSource(
-        rawTimeoutFieldSources.compactStreamTimeoutSecs,
-      ),
+      compactStreamTimeoutSecs: normalizeSource(rawTimeoutFieldSources.compactStreamTimeoutSecs),
     },
   };
 }
@@ -1161,16 +1068,8 @@ function normalizeTagSummary(raw: unknown): TagSummary | null {
   const name = typeof payload.name === "string" ? payload.name : "";
   const accountCount = normalizeFiniteNumber(payload.accountCount);
   const groupCount = normalizeFiniteNumber(payload.groupCount);
-  const updatedAt =
-    typeof payload.updatedAt === "string" ? payload.updatedAt : "";
-  if (
-    id == null ||
-    !name ||
-    accountCount == null ||
-    groupCount == null ||
-    !updatedAt
-  )
-    return null;
+  const updatedAt = typeof payload.updatedAt === "string" ? payload.updatedAt : "";
+  if (id == null || !name || accountCount == null || groupCount == null || !updatedAt) return null;
   return {
     id,
     name,
@@ -1183,18 +1082,14 @@ function normalizeTagSummary(raw: unknown): TagSummary | null {
   };
 }
 
-function normalizeUpstreamAccountSummary(
-  raw: unknown,
-): UpstreamAccountSummary | null {
+function normalizeUpstreamAccountSummary(raw: unknown): UpstreamAccountSummary | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const id = normalizeFiniteNumber(payload.id);
-  const displayName =
-    typeof payload.displayName === "string" ? payload.displayName : "";
+  const displayName = typeof payload.displayName === "string" ? payload.displayName : "";
   const kind = typeof payload.kind === "string" ? payload.kind : "";
   const provider = typeof payload.provider === "string" ? payload.provider : "";
   const status = typeof payload.status === "string" ? payload.status : "error";
-  const displayStatus =
-    typeof payload.displayStatus === "string" ? payload.displayStatus : status;
+  const displayStatus = typeof payload.displayStatus === "string" ? payload.displayStatus : status;
   const enableStatus =
     typeof payload.enableStatus === "string"
       ? payload.enableStatus
@@ -1245,70 +1140,40 @@ function normalizeUpstreamAccountSummary(
     enabled: payload.enabled !== false,
     email: typeof payload.email === "string" ? payload.email : null,
     chatgptAccountId:
-      typeof payload.chatgptAccountId === "string"
-        ? payload.chatgptAccountId
-        : null,
+      typeof payload.chatgptAccountId === "string" ? payload.chatgptAccountId : null,
     planType: typeof payload.planType === "string" ? payload.planType : null,
-    maskedApiKey:
-      typeof payload.maskedApiKey === "string" ? payload.maskedApiKey : null,
-    hasRefreshToken:
-      typeof payload.hasRefreshToken === "boolean"
-        ? payload.hasRefreshToken
-        : true,
-    lastSyncedAt:
-      typeof payload.lastSyncedAt === "string" ? payload.lastSyncedAt : null,
+    maskedApiKey: typeof payload.maskedApiKey === "string" ? payload.maskedApiKey : null,
+    hasRefreshToken: typeof payload.hasRefreshToken === "boolean" ? payload.hasRefreshToken : true,
+    lastSyncedAt: typeof payload.lastSyncedAt === "string" ? payload.lastSyncedAt : null,
     lastSuccessfulSyncAt:
-      typeof payload.lastSuccessfulSyncAt === "string"
-        ? payload.lastSuccessfulSyncAt
-        : null,
-    lastActivityAt:
-      typeof payload.lastActivityAt === "string"
-        ? payload.lastActivityAt
-        : null,
-    activeConversationCount:
-      normalizeFiniteNumber(payload.activeConversationCount) ?? 0,
+      typeof payload.lastSuccessfulSyncAt === "string" ? payload.lastSuccessfulSyncAt : null,
+    lastActivityAt: typeof payload.lastActivityAt === "string" ? payload.lastActivityAt : null,
+    activeConversationCount: normalizeFiniteNumber(payload.activeConversationCount) ?? 0,
     lastError: typeof payload.lastError === "string" ? payload.lastError : null,
-    lastErrorAt:
-      typeof payload.lastErrorAt === "string" ? payload.lastErrorAt : null,
-    lastAction:
-      typeof payload.lastAction === "string" ? payload.lastAction : null,
+    lastErrorAt: typeof payload.lastErrorAt === "string" ? payload.lastErrorAt : null,
+    lastAction: typeof payload.lastAction === "string" ? payload.lastAction : null,
     lastActionSource:
-      typeof payload.lastActionSource === "string"
-        ? payload.lastActionSource
-        : null,
+      typeof payload.lastActionSource === "string" ? payload.lastActionSource : null,
     lastActionReasonCode:
-      typeof payload.lastActionReasonCode === "string"
-        ? payload.lastActionReasonCode
-        : null,
+      typeof payload.lastActionReasonCode === "string" ? payload.lastActionReasonCode : null,
     lastActionReasonMessage:
-      typeof payload.lastActionReasonMessage === "string"
-        ? payload.lastActionReasonMessage
-        : null,
+      typeof payload.lastActionReasonMessage === "string" ? payload.lastActionReasonMessage : null,
     routingBlockReasonCode:
-      typeof payload.routingBlockReasonCode === "string"
-        ? payload.routingBlockReasonCode
-        : null,
+      typeof payload.routingBlockReasonCode === "string" ? payload.routingBlockReasonCode : null,
     routingBlockReasonMessage:
       typeof payload.routingBlockReasonMessage === "string"
         ? payload.routingBlockReasonMessage
         : null,
-    lastActionHttpStatus:
-      normalizeFiniteNumber(payload.lastActionHttpStatus) ?? null,
+    lastActionHttpStatus: normalizeFiniteNumber(payload.lastActionHttpStatus) ?? null,
     lastActionInvokeId:
-      typeof payload.lastActionInvokeId === "string"
-        ? payload.lastActionInvokeId
-        : null,
-    lastActionAt:
-      typeof payload.lastActionAt === "string" ? payload.lastActionAt : null,
-    cooldownUntil:
-      typeof payload.cooldownUntil === "string" ? payload.cooldownUntil : null,
+      typeof payload.lastActionInvokeId === "string" ? payload.lastActionInvokeId : null,
+    lastActionAt: typeof payload.lastActionAt === "string" ? payload.lastActionAt : null,
+    cooldownUntil: typeof payload.cooldownUntil === "string" ? payload.cooldownUntil : null,
     boundProxyKeys: normalizeStringArray(payload.boundProxyKeys)
       .map((item) => item.trim())
       .filter((item) => item.length > 0),
     currentForwardProxyKey:
-      typeof payload.currentForwardProxyKey === "string"
-        ? payload.currentForwardProxyKey
-        : null,
+      typeof payload.currentForwardProxyKey === "string" ? payload.currentForwardProxyKey : null,
     currentForwardProxyDisplayName:
       typeof payload.currentForwardProxyDisplayName === "string"
         ? payload.currentForwardProxyDisplayName
@@ -1317,33 +1182,24 @@ function normalizeUpstreamAccountSummary(
       typeof payload.currentForwardProxyState === "string"
         ? payload.currentForwardProxyState
         : undefined,
-    tokenExpiresAt:
-      typeof payload.tokenExpiresAt === "string"
-        ? payload.tokenExpiresAt
-        : null,
+    tokenExpiresAt: typeof payload.tokenExpiresAt === "string" ? payload.tokenExpiresAt : null,
     primaryWindow: normalizeRateWindowSnapshot(payload.primaryWindow),
     secondaryWindow: normalizeRateWindowSnapshot(payload.secondaryWindow),
     credits: normalizeCreditsSnapshot(payload.credits),
     localLimits: normalizeLocalLimitSnapshot(payload.localLimits),
     compactSupport: normalizeCompactSupportState(payload.compactSupport),
     duplicateInfo: normalizeUpstreamAccountDuplicateInfo(payload.duplicateInfo),
-    imageToolCapability: normalizeImageToolCapability(
-      payload.imageToolCapability,
-    ),
+    imageToolCapability: normalizeImageToolCapability(payload.imageToolCapability),
     tags: Array.isArray(payload.tags)
       ? payload.tags
           .map(normalizeAccountTagSummary)
           .filter((item): item is AccountTagSummary => item != null)
       : [],
-    effectiveRoutingRule: normalizeEffectiveRoutingRule(
-      payload.effectiveRoutingRule,
-    ),
+    effectiveRoutingRule: normalizeEffectiveRoutingRule(payload.effectiveRoutingRule),
   };
 }
 
-function normalizeUpstreamAccountListMetrics(
-  raw: unknown,
-): UpstreamAccountListMetrics {
+function normalizeUpstreamAccountListMetrics(raw: unknown): UpstreamAccountListMetrics {
   const payload = (raw ?? {}) as Record<string, unknown>;
   return {
     total: normalizeFiniteNumber(payload.total) ?? 0,
@@ -1353,9 +1209,7 @@ function normalizeUpstreamAccountListMetrics(
   };
 }
 
-function normalizeUpstreamAccountDuplicateInfo(
-  raw: unknown,
-): UpstreamAccountDuplicateInfo | null {
+function normalizeUpstreamAccountDuplicateInfo(raw: unknown): UpstreamAccountDuplicateInfo | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const peerAccountIds = Array.isArray(payload.peerAccountIds)
     ? payload.peerAccountIds
@@ -1364,8 +1218,7 @@ function normalizeUpstreamAccountDuplicateInfo(
     : [];
   const reasons = Array.isArray(payload.reasons)
     ? payload.reasons.filter(
-        (value): value is string =>
-          typeof value === "string" && value.trim().length > 0,
+        (value): value is string => typeof value === "string" && value.trim().length > 0,
       )
     : [];
   if (peerAccountIds.length === 0 || reasons.length === 0) return null;
@@ -1375,37 +1228,25 @@ function normalizeUpstreamAccountDuplicateInfo(
   };
 }
 
-function normalizeUpstreamAccountHistoryPoint(
-  raw: unknown,
-): UpstreamAccountHistoryPoint | null {
+function normalizeUpstreamAccountHistoryPoint(raw: unknown): UpstreamAccountHistoryPoint | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
-  const capturedAt =
-    typeof payload.capturedAt === "string" ? payload.capturedAt : "";
+  const capturedAt = typeof payload.capturedAt === "string" ? payload.capturedAt : "";
   if (!capturedAt) return null;
   return {
     capturedAt,
-    primaryUsedPercent:
-      normalizeFiniteNumber(payload.primaryUsedPercent) ?? null,
-    secondaryUsedPercent:
-      normalizeFiniteNumber(payload.secondaryUsedPercent) ?? null,
-    creditsBalance:
-      typeof payload.creditsBalance === "string"
-        ? payload.creditsBalance
-        : null,
+    primaryUsedPercent: normalizeFiniteNumber(payload.primaryUsedPercent) ?? null,
+    secondaryUsedPercent: normalizeFiniteNumber(payload.secondaryUsedPercent) ?? null,
+    creditsBalance: typeof payload.creditsBalance === "string" ? payload.creditsBalance : null,
   };
 }
 
-function normalizeUpstreamAccountActionEvent(
-  raw: unknown,
-): UpstreamAccountActionEvent | null {
+function normalizeUpstreamAccountActionEvent(raw: unknown): UpstreamAccountActionEvent | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const id = normalizeFiniteNumber(payload.id);
-  const occurredAt =
-    typeof payload.occurredAt === "string" ? payload.occurredAt : "";
+  const occurredAt = typeof payload.occurredAt === "string" ? payload.occurredAt : "";
   const action = typeof payload.action === "string" ? payload.action : "";
   const source = typeof payload.source === "string" ? payload.source : "";
-  const createdAt =
-    typeof payload.createdAt === "string" ? payload.createdAt : "";
+  const createdAt = typeof payload.createdAt === "string" ? payload.createdAt : "";
   if (id == null || !occurredAt || !action || !source || !createdAt) {
     return null;
   }
@@ -1415,37 +1256,21 @@ function normalizeUpstreamAccountActionEvent(
     action,
     source,
     accountDisplayName:
-      typeof payload.accountDisplayName === "string"
-        ? payload.accountDisplayName
-        : null,
+      typeof payload.accountDisplayName === "string" ? payload.accountDisplayName : null,
     accountGroupName:
-      typeof payload.accountGroupName === "string"
-        ? payload.accountGroupName
-        : null,
-    forwardProxyKey:
-      typeof payload.forwardProxyKey === "string"
-        ? payload.forwardProxyKey
-        : null,
+      typeof payload.accountGroupName === "string" ? payload.accountGroupName : null,
+    forwardProxyKey: typeof payload.forwardProxyKey === "string" ? payload.forwardProxyKey : null,
     forwardProxyDisplayName:
-      typeof payload.forwardProxyDisplayName === "string"
-        ? payload.forwardProxyDisplayName
-        : null,
+      typeof payload.forwardProxyDisplayName === "string" ? payload.forwardProxyDisplayName : null,
     forwardProxyEgressIp:
-      typeof payload.forwardProxyEgressIp === "string"
-        ? payload.forwardProxyEgressIp
-        : null,
+      typeof payload.forwardProxyEgressIp === "string" ? payload.forwardProxyEgressIp : null,
     result: typeof payload.result === "string" ? payload.result : null,
     resultDescription:
-      typeof payload.resultDescription === "string"
-        ? payload.resultDescription
-        : null,
-    reasonCode:
-      typeof payload.reasonCode === "string" ? payload.reasonCode : null,
-    reasonMessage:
-      typeof payload.reasonMessage === "string" ? payload.reasonMessage : null,
+      typeof payload.resultDescription === "string" ? payload.resultDescription : null,
+    reasonCode: typeof payload.reasonCode === "string" ? payload.reasonCode : null,
+    reasonMessage: typeof payload.reasonMessage === "string" ? payload.reasonMessage : null,
     httpStatus: normalizeFiniteNumber(payload.httpStatus) ?? null,
-    failureKind:
-      typeof payload.failureKind === "string" ? payload.failureKind : null,
+    failureKind: typeof payload.failureKind === "string" ? payload.failureKind : null,
     invokeId: typeof payload.invokeId === "string" ? payload.invokeId : null,
     attemptId: normalizeFiniteNumber(payload.attemptId) ?? null,
     stickyKey: typeof payload.stickyKey === "string" ? payload.stickyKey : null,
@@ -1463,18 +1288,10 @@ function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
   return {
     ...summary,
     note: typeof payload.note === "string" ? payload.note : null,
-    verifiedEmail:
-      typeof payload.verifiedEmail === "string" ? payload.verifiedEmail : null,
-    upstreamBaseUrl:
-      typeof payload.upstreamBaseUrl === "string"
-        ? payload.upstreamBaseUrl
-        : null,
-    chatgptUserId:
-      typeof payload.chatgptUserId === "string" ? payload.chatgptUserId : null,
-    lastRefreshedAt:
-      typeof payload.lastRefreshedAt === "string"
-        ? payload.lastRefreshedAt
-        : null,
+    verifiedEmail: typeof payload.verifiedEmail === "string" ? payload.verifiedEmail : null,
+    upstreamBaseUrl: typeof payload.upstreamBaseUrl === "string" ? payload.upstreamBaseUrl : null,
+    chatgptUserId: typeof payload.chatgptUserId === "string" ? payload.chatgptUserId : null,
+    lastRefreshedAt: typeof payload.lastRefreshedAt === "string" ? payload.lastRefreshedAt : null,
     history: historyRaw
       .map(normalizeUpstreamAccountHistoryPoint)
       .filter((item): item is UpstreamAccountHistoryPoint => item != null),
@@ -1492,12 +1309,9 @@ function normalizeUpstreamAccountGroupMaxRetries(raw: unknown): number {
   return Math.min(5, Math.max(0, Math.trunc(value)));
 }
 
-function normalizeUpstreamAccountGroupSummary(
-  raw: unknown,
-): UpstreamAccountGroupSummary | null {
+function normalizeUpstreamAccountGroupSummary(raw: unknown): UpstreamAccountGroupSummary | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
-  const groupName =
-    typeof payload.groupName === "string" ? payload.groupName.trim() : "";
+  const groupName = typeof payload.groupName === "string" ? payload.groupName.trim() : "";
   if (!groupName) return null;
   return {
     groupName,
@@ -1516,22 +1330,14 @@ function normalizeUpstreamAccountGroupSummary(
     nodeShuntEnabled: payload.nodeShuntEnabled === true,
     singleAccountRotationEnabled: payload.singleAccountRotationEnabled === true,
     upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
-    upstream429MaxRetries: normalizeUpstreamAccountGroupMaxRetries(
-      payload.upstream429MaxRetries,
-    ),
+    upstream429MaxRetries: normalizeUpstreamAccountGroupMaxRetries(payload.upstream429MaxRetries),
     routingRule: normalizeGroupAccountRoutingRule(payload.routingRule),
-    effectiveTimeouts: normalizePoolRoutingTimeoutSettings(
-      payload.effectiveTimeouts,
-    ),
-    timeoutFieldSources: normalizeRoutingTimeoutFieldSources(
-      payload.timeoutFieldSources,
-    ),
+    effectiveTimeouts: normalizePoolRoutingTimeoutSettings(payload.effectiveTimeouts),
+    timeoutFieldSources: normalizeRoutingTimeoutFieldSources(payload.timeoutFieldSources),
   };
 }
 
-function normalizeUpstreamAccountListResponse(
-  raw: unknown,
-): UpstreamAccountListResponse {
+function normalizeUpstreamAccountListResponse(raw: unknown): UpstreamAccountListResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const itemsRaw = Array.isArray(payload.items) ? payload.items : [];
   const groupsRaw = Array.isArray(payload.groups) ? payload.groups : [];
@@ -1588,12 +1394,8 @@ function normalizeUpstreamAccountWindowUsageResponse(
         if (accountId == null) return null;
         const normalized: UpstreamAccountWindowUsageItem = {
           accountId,
-          primaryActualUsage: normalizeRateWindowActualUsage(
-            entry.primaryActualUsage,
-          ),
-          secondaryActualUsage: normalizeRateWindowActualUsage(
-            entry.secondaryActualUsage,
-          ),
+          primaryActualUsage: normalizeRateWindowActualUsage(entry.primaryActualUsage),
+          secondaryActualUsage: normalizeRateWindowActualUsage(entry.secondaryActualUsage),
         };
         return normalized;
       })
@@ -1606,19 +1408,14 @@ function normalizeTagListResponse(raw: unknown): TagListResponse {
   const itemsRaw = Array.isArray(payload.items) ? payload.items : [];
   return {
     writesEnabled: payload.writesEnabled !== false,
-    items: itemsRaw
-      .map(normalizeTagSummary)
-      .filter((item): item is TagSummary => item != null),
+    items: itemsRaw.map(normalizeTagSummary).filter((item): item is TagSummary => item != null),
   };
 }
 
-function normalizeLoginSessionStatusResponse(
-  raw: unknown,
-): LoginSessionStatusResponse {
+function normalizeLoginSessionStatusResponse(raw: unknown): LoginSessionStatusResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const loginId = typeof payload.loginId === "string" ? payload.loginId : "";
-  const expiresAt =
-    typeof payload.expiresAt === "string" ? payload.expiresAt : "";
+  const expiresAt = typeof payload.expiresAt === "string" ? payload.expiresAt : "";
   if (!loginId || !expiresAt) {
     throw new Error("Request failed: invalid login session payload");
   }
@@ -1627,24 +1424,18 @@ function normalizeLoginSessionStatusResponse(
     loginId,
     status: typeof payload.status === "string" ? payload.status : "failed",
     authUrl: typeof payload.authUrl === "string" ? payload.authUrl : null,
-    redirectUri:
-      typeof payload.redirectUri === "string" ? payload.redirectUri : null,
+    redirectUri: typeof payload.redirectUri === "string" ? payload.redirectUri : null,
     expiresAt,
     updatedAt: typeof payload.updatedAt === "string" ? payload.updatedAt : null,
     accountId: accountId == null ? null : accountId,
     email: typeof payload.email === "string" ? payload.email : null,
     error: typeof payload.error === "string" ? payload.error : null,
-    syncApplied:
-      typeof payload.syncApplied === "boolean" ? payload.syncApplied : null,
-    identityConfirmation: normalizeOauthIdentityConfirmation(
-      payload.identityConfirmation,
-    ),
+    syncApplied: typeof payload.syncApplied === "boolean" ? payload.syncApplied : null,
+    identityConfirmation: normalizeOauthIdentityConfirmation(payload.identityConfirmation),
   };
 }
 
-function normalizeOauthIdentityConfirmation(
-  raw: unknown,
-): OauthIdentityConfirmation | null {
+function normalizeOauthIdentityConfirmation(raw: unknown): OauthIdentityConfirmation | null {
   const payload = raw as Record<string, unknown> | null | undefined;
   if (!payload || typeof payload !== "object") return null;
   return {
@@ -1659,28 +1450,20 @@ function normalizeOauthIdentitySummary(raw: unknown): OauthIdentitySummary {
   const accountId = normalizeFiniteNumber(payload.accountId);
   return {
     accountId: accountId == null ? null : accountId,
-    displayName:
-      typeof payload.displayName === "string" ? payload.displayName : null,
+    displayName: typeof payload.displayName === "string" ? payload.displayName : null,
     email: typeof payload.email === "string" ? payload.email : null,
-    verifiedEmail:
-      typeof payload.verifiedEmail === "string" ? payload.verifiedEmail : null,
+    verifiedEmail: typeof payload.verifiedEmail === "string" ? payload.verifiedEmail : null,
     chatgptAccountId:
-      typeof payload.chatgptAccountId === "string"
-        ? payload.chatgptAccountId
-        : null,
-    chatgptUserId:
-      typeof payload.chatgptUserId === "string" ? payload.chatgptUserId : null,
+      typeof payload.chatgptAccountId === "string" ? payload.chatgptAccountId : null,
+    chatgptUserId: typeof payload.chatgptUserId === "string" ? payload.chatgptUserId : null,
     planType: typeof payload.planType === "string" ? payload.planType : null,
   };
 }
 
-function normalizeImportedOauthMatchSummary(
-  raw: unknown,
-): ImportedOauthMatchSummary | null {
+function normalizeImportedOauthMatchSummary(raw: unknown): ImportedOauthMatchSummary | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const accountId = normalizeFiniteNumber(payload.accountId);
-  const displayName =
-    typeof payload.displayName === "string" ? payload.displayName : "";
+  const displayName = typeof payload.displayName === "string" ? payload.displayName : "";
   const status = typeof payload.status === "string" ? payload.status : "";
   if (accountId == null || !displayName || !status) return null;
   return {
@@ -1691,9 +1474,7 @@ function normalizeImportedOauthMatchSummary(
   };
 }
 
-function normalizeImportedOauthValidationRow(
-  raw: unknown,
-): ImportedOauthValidationRow | null {
+function normalizeImportedOauthValidationRow(raw: unknown): ImportedOauthValidationRow | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const sourceId = typeof payload.sourceId === "string" ? payload.sourceId : "";
   const fileName = typeof payload.fileName === "string" ? payload.fileName : "";
@@ -1705,15 +1486,9 @@ function normalizeImportedOauthValidationRow(
     fileName,
     email: typeof payload.email === "string" ? payload.email : null,
     chatgptAccountId:
-      typeof payload.chatgptAccountId === "string"
-        ? payload.chatgptAccountId
-        : null,
-    displayName:
-      typeof payload.displayName === "string" ? payload.displayName : null,
-    tokenExpiresAt:
-      typeof payload.tokenExpiresAt === "string"
-        ? payload.tokenExpiresAt
-        : null,
+      typeof payload.chatgptAccountId === "string" ? payload.chatgptAccountId : null,
+    displayName: typeof payload.displayName === "string" ? payload.displayName : null,
+    tokenExpiresAt: typeof payload.tokenExpiresAt === "string" ? payload.tokenExpiresAt : null,
     matchedAccount: normalizeImportedOauthMatchSummary(payload.matchedAccount),
     status,
     detail: typeof payload.detail === "string" ? payload.detail : null,
@@ -1721,18 +1496,14 @@ function normalizeImportedOauthValidationRow(
   };
 }
 
-function normalizeImportedOauthValidationResponse(
-  raw: unknown,
-): ImportedOauthValidationResponse {
+function normalizeImportedOauthValidationResponse(raw: unknown): ImportedOauthValidationResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const inputFiles = normalizeFiniteNumber(payload.inputFiles);
   const uniqueInInput = normalizeFiniteNumber(payload.uniqueInInput);
   const duplicateInInput = normalizeFiniteNumber(payload.duplicateInInput);
   const rowsRaw = Array.isArray(payload.rows) ? payload.rows : [];
   if (inputFiles == null || uniqueInInput == null || duplicateInInput == null) {
-    throw new Error(
-      "Request failed: invalid imported OAuth validation payload",
-    );
+    throw new Error("Request failed: invalid imported OAuth validation payload");
   }
   return {
     inputFiles,
@@ -1744,9 +1515,7 @@ function normalizeImportedOauthValidationResponse(
   };
 }
 
-function normalizeImportedOauthImportResult(
-  raw: unknown,
-): ImportedOauthImportResult | null {
+function normalizeImportedOauthImportResult(raw: unknown): ImportedOauthImportResult | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const sourceId = typeof payload.sourceId === "string" ? payload.sourceId : "";
   const fileName = typeof payload.fileName === "string" ? payload.fileName : "";
@@ -1757,9 +1526,7 @@ function normalizeImportedOauthImportResult(
     fileName,
     email: typeof payload.email === "string" ? payload.email : null,
     chatgptAccountId:
-      typeof payload.chatgptAccountId === "string"
-        ? payload.chatgptAccountId
-        : null,
+      typeof payload.chatgptAccountId === "string" ? payload.chatgptAccountId : null,
     accountId: normalizeFiniteNumber(payload.accountId) ?? null,
     status,
     detail: typeof payload.detail === "string" ? payload.detail : null,
@@ -1767,9 +1534,7 @@ function normalizeImportedOauthImportResult(
   };
 }
 
-function normalizeImportedOauthValidationCounts(
-  raw: unknown,
-): ImportedOauthValidationCounts {
+function normalizeImportedOauthValidationCounts(raw: unknown): ImportedOauthValidationCounts {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const pending = normalizeFiniteNumber(payload.pending);
   const duplicateInInput = normalizeFiniteNumber(payload.duplicateInInput);
@@ -1787,9 +1552,7 @@ function normalizeImportedOauthValidationCounts(
     error == null ||
     checked == null
   ) {
-    throw new Error(
-      "Request failed: invalid imported OAuth validation counts payload",
-    );
+    throw new Error("Request failed: invalid imported OAuth validation counts payload");
   }
   return {
     pending,
@@ -1808,9 +1571,7 @@ function normalizeImportedOauthValidationJobResponse(
   const payload = (raw ?? {}) as Record<string, unknown>;
   const jobId = typeof payload.jobId === "string" ? payload.jobId : "";
   if (!jobId) {
-    throw new Error(
-      "Request failed: invalid imported OAuth validation job payload",
-    );
+    throw new Error("Request failed: invalid imported OAuth validation job payload");
   }
   return {
     jobId,
@@ -1834,9 +1595,7 @@ export function normalizeImportedOauthValidationRowEventPayload(
   const payload = (raw ?? {}) as Record<string, unknown>;
   const row = normalizeImportedOauthValidationRow(payload.row);
   if (!row) {
-    throw new Error(
-      "Request failed: invalid imported OAuth validation row event payload",
-    );
+    throw new Error("Request failed: invalid imported OAuth validation row event payload");
   }
   return {
     row,
@@ -1850,9 +1609,7 @@ export function normalizeImportedOauthValidationFailedEventPayload(
   const payload = (raw ?? {}) as Record<string, unknown>;
   const error = typeof payload.error === "string" ? payload.error : "";
   if (!error) {
-    throw new Error(
-      "Request failed: invalid imported OAuth validation failed event payload",
-    );
+    throw new Error("Request failed: invalid imported OAuth validation failed event payload");
   }
   return {
     snapshot: normalizeImportedOauthValidationResponse(payload.snapshot),
@@ -1870,16 +1627,13 @@ function normalizeBulkUpstreamAccountActionResult(
   if (accountId == null || !status) return null;
   return {
     accountId,
-    displayName:
-      typeof payload.displayName === "string" ? payload.displayName : null,
+    displayName: typeof payload.displayName === "string" ? payload.displayName : null,
     status,
     detail: typeof payload.detail === "string" ? payload.detail : null,
   };
 }
 
-function normalizeBulkUpstreamAccountSyncCounts(
-  raw: unknown,
-): BulkUpstreamAccountSyncCounts {
+function normalizeBulkUpstreamAccountSyncCounts(raw: unknown): BulkUpstreamAccountSyncCounts {
   const payload = (raw ?? {}) as Record<string, unknown>;
   return {
     total: normalizeFiniteNumber(payload.total) ?? 0,
@@ -1890,13 +1644,10 @@ function normalizeBulkUpstreamAccountSyncCounts(
   };
 }
 
-function normalizeBulkUpstreamAccountSyncRow(
-  raw: unknown,
-): BulkUpstreamAccountSyncRow | null {
+function normalizeBulkUpstreamAccountSyncRow(raw: unknown): BulkUpstreamAccountSyncRow | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const accountId = normalizeFiniteNumber(payload.accountId);
-  const displayName =
-    typeof payload.displayName === "string" ? payload.displayName : "";
+  const displayName = typeof payload.displayName === "string" ? payload.displayName : "";
   const status = typeof payload.status === "string" ? payload.status : "";
   if (accountId == null || !displayName || !status) return null;
   return {
@@ -1907,16 +1658,12 @@ function normalizeBulkUpstreamAccountSyncRow(
   };
 }
 
-function normalizeBulkUpstreamAccountSyncSnapshot(
-  raw: unknown,
-): BulkUpstreamAccountSyncSnapshot {
+function normalizeBulkUpstreamAccountSyncSnapshot(raw: unknown): BulkUpstreamAccountSyncSnapshot {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const jobId = typeof payload.jobId === "string" ? payload.jobId : "";
   const status = typeof payload.status === "string" ? payload.status : "";
   if (!jobId || !status) {
-    throw new Error(
-      "Request failed: invalid bulk upstream account sync snapshot payload",
-    );
+    throw new Error("Request failed: invalid bulk upstream account sync snapshot payload");
   }
   const rows = Array.isArray(payload.rows) ? payload.rows : [];
   return {
@@ -1934,9 +1681,7 @@ function normalizeBulkUpstreamAccountActionResponse(
   const payload = (raw ?? {}) as Record<string, unknown>;
   const action = typeof payload.action === "string" ? payload.action : "";
   if (!action) {
-    throw new Error(
-      "Request failed: invalid bulk upstream account action payload",
-    );
+    throw new Error("Request failed: invalid bulk upstream account action payload");
   }
   const results = Array.isArray(payload.results) ? payload.results : [];
   return {
@@ -1957,9 +1702,7 @@ function normalizeBulkUpstreamAccountSyncJobResponse(
   const payload = (raw ?? {}) as Record<string, unknown>;
   const jobId = typeof payload.jobId === "string" ? payload.jobId : "";
   if (!jobId) {
-    throw new Error(
-      "Request failed: invalid bulk upstream account sync job payload",
-    );
+    throw new Error("Request failed: invalid bulk upstream account sync job payload");
   }
   return {
     jobId,
@@ -1984,9 +1727,7 @@ export function normalizeBulkUpstreamAccountSyncRowEventPayload(
   const payload = (raw ?? {}) as Record<string, unknown>;
   const row = normalizeBulkUpstreamAccountSyncRow(payload.row);
   if (!row) {
-    throw new Error(
-      "Request failed: invalid bulk upstream account sync row payload",
-    );
+    throw new Error("Request failed: invalid bulk upstream account sync row payload");
   }
   return {
     row,
@@ -2000,9 +1741,7 @@ export function normalizeBulkUpstreamAccountSyncFailedEventPayload(
   const payload = (raw ?? {}) as Record<string, unknown>;
   const error = typeof payload.error === "string" ? payload.error : "";
   if (!error) {
-    throw new Error(
-      "Request failed: invalid bulk upstream account sync failed payload",
-    );
+    throw new Error("Request failed: invalid bulk upstream account sync failed payload");
   }
   return {
     snapshot: normalizeBulkUpstreamAccountSyncSnapshot(payload.snapshot),
@@ -2011,9 +1750,7 @@ export function normalizeBulkUpstreamAccountSyncFailedEventPayload(
   };
 }
 
-function normalizeImportedOauthImportResponse(
-  raw: unknown,
-): ImportedOauthImportResponse {
+function normalizeImportedOauthImportResponse(raw: unknown): ImportedOauthImportResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const summaryPayload = (payload.summary ?? {}) as Record<string, unknown>;
   const inputFiles = normalizeFiniteNumber(summaryPayload.inputFiles);
@@ -2048,12 +1785,9 @@ function normalizeImportedOauthImportResponse(
 function normalizeOauthMailboxSession(raw: unknown): OauthMailboxSession {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const supported = payload.supported !== false;
-  const sessionId =
-    typeof payload.sessionId === "string" ? payload.sessionId : "";
-  const emailAddress =
-    typeof payload.emailAddress === "string" ? payload.emailAddress : "";
-  const expiresAt =
-    typeof payload.expiresAt === "string" ? payload.expiresAt : "";
+  const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : "";
+  const emailAddress = typeof payload.emailAddress === "string" ? payload.emailAddress : "";
+  const expiresAt = typeof payload.expiresAt === "string" ? payload.expiresAt : "";
   if (!supported) {
     return {
       supported: false,
@@ -2076,20 +1810,15 @@ function normalizeOauthMailboxSession(raw: unknown): OauthMailboxSession {
     emailAddress,
     expiresAt,
     source:
-      typeof payload.source === "string" && payload.source.trim()
-        ? payload.source
-        : "generated",
+      typeof payload.source === "string" && payload.source.trim() ? payload.source : "generated",
   };
 }
 
-function normalizeOauthMailboxCodeSummary(
-  raw: unknown,
-): OauthMailboxCodeSummary | null {
+function normalizeOauthMailboxCodeSummary(raw: unknown): OauthMailboxCodeSummary | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const value = typeof payload.value === "string" ? payload.value : "";
   const source = typeof payload.source === "string" ? payload.source : "";
-  const updatedAt =
-    typeof payload.updatedAt === "string" ? payload.updatedAt : "";
+  const updatedAt = typeof payload.updatedAt === "string" ? payload.updatedAt : "";
   if (!value || !source || !updatedAt) return null;
   return { value, source, updatedAt };
 }
@@ -2097,12 +1826,9 @@ function normalizeOauthMailboxCodeSummary(
 function normalizeOauthInviteSummary(raw: unknown): OauthInviteSummary | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const subject = typeof payload.subject === "string" ? payload.subject : "";
-  const copyValue =
-    typeof payload.copyValue === "string" ? payload.copyValue : "";
-  const copyLabel =
-    typeof payload.copyLabel === "string" ? payload.copyLabel : "";
-  const updatedAt =
-    typeof payload.updatedAt === "string" ? payload.updatedAt : "";
+  const copyValue = typeof payload.copyValue === "string" ? payload.copyValue : "";
+  const copyLabel = typeof payload.copyLabel === "string" ? payload.copyLabel : "";
+  const updatedAt = typeof payload.updatedAt === "string" ? payload.updatedAt : "";
   if (!subject || !copyValue || !copyLabel || !updatedAt) return null;
   return {
     subject,
@@ -2114,12 +1840,9 @@ function normalizeOauthInviteSummary(raw: unknown): OauthInviteSummary | null {
 
 function normalizeOauthMailboxStatus(raw: unknown): OauthMailboxStatus | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
-  const sessionId =
-    typeof payload.sessionId === "string" ? payload.sessionId : "";
-  const emailAddress =
-    typeof payload.emailAddress === "string" ? payload.emailAddress : "";
-  const expiresAt =
-    typeof payload.expiresAt === "string" ? payload.expiresAt : "";
+  const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : "";
+  const emailAddress = typeof payload.emailAddress === "string" ? payload.emailAddress : "";
+  const expiresAt = typeof payload.expiresAt === "string" ? payload.expiresAt : "";
   if (!sessionId || !emailAddress || !expiresAt) return null;
   return {
     sessionId,
@@ -2128,10 +1851,7 @@ function normalizeOauthMailboxStatus(raw: unknown): OauthMailboxStatus | null {
     latestCode: normalizeOauthMailboxCodeSummary(payload.latestCode),
     invite: normalizeOauthInviteSummary(payload.invite),
     invited: payload.invited === true,
-    error:
-      typeof payload.error === "string" && payload.error.trim()
-        ? payload.error
-        : null,
+    error: typeof payload.error === "string" && payload.error.trim() ? payload.error : null,
   };
 }
 
@@ -2143,8 +1863,7 @@ export async function fetchUpstreamAccounts(
     if (groupExact) search.append("groupExact", groupExact);
   }
   if (query?.groupSearch) search.set("groupSearch", query.groupSearch);
-  if (query?.groupUngrouped != null)
-    search.set("groupUngrouped", String(query.groupUngrouped));
+  if (query?.groupUngrouped != null) search.set("groupUngrouped", String(query.groupUngrouped));
   if (query?.status) search.set("status", query.status);
   for (const workStatus of query?.workStatus ?? []) {
     if (workStatus) search.append("workStatus", workStatus);
@@ -2157,8 +1876,7 @@ export async function fetchUpstreamAccounts(
   }
   if (query?.page != null) search.set("page", String(query.page));
   if (query?.pageSize != null) search.set("pageSize", String(query.pageSize));
-  if (query?.includeAll != null)
-    search.set("includeAll", String(query.includeAll));
+  if (query?.includeAll != null) search.set("includeAll", String(query.includeAll));
   for (const tagId of query?.tagIds ?? []) {
     search.append("tagIds", String(tagId));
   }
@@ -2192,24 +1910,17 @@ export async function fetchUpstreamAccountWindowUsage(
   accountIds: number[],
 ): Promise<UpstreamAccountWindowUsageResponse> {
   const normalizedAccountIds = Array.from(
-    new Set(
-      accountIds.filter(
-        (accountId) => Number.isFinite(accountId) && accountId > 0,
-      ),
-    ),
+    new Set(accountIds.filter((accountId) => Number.isFinite(accountId) && accountId > 0)),
   );
   if (normalizedAccountIds.length === 0) {
     return { items: [] };
   }
-  const response = await fetchJson<unknown>(
-    "/api/pool/upstream-accounts/window-usage",
-    {
-      method: "POST",
-      body: JSON.stringify({
-        accountIds: normalizedAccountIds,
-      }),
-    },
-  );
+  const response = await fetchJson<unknown>("/api/pool/upstream-accounts/window-usage", {
+    method: "POST",
+    body: JSON.stringify({
+      accountIds: normalizedAccountIds,
+    }),
+  });
   return normalizeUpstreamAccountWindowUsageResponse(response);
 }
 
@@ -2241,17 +1952,12 @@ export async function fetchForwardProxyBindingNodes(
     .filter((item): item is ForwardProxyBindingNode => item != null);
 }
 
-export async function fetchTags(
-  query?: FetchTagsQuery,
-): Promise<TagListResponse> {
+export async function fetchTags(query?: FetchTagsQuery): Promise<TagListResponse> {
   const search = new URLSearchParams();
   if (query?.search) search.set("search", query.search);
-  if (query?.hasAccounts != null)
-    search.set("hasAccounts", String(query.hasAccounts));
-  if (query?.allowCutIn != null)
-    search.set("allowCutIn", String(query.allowCutIn));
-  if (query?.allowCutOut != null)
-    search.set("allowCutOut", String(query.allowCutOut));
+  if (query?.hasAccounts != null) search.set("hasAccounts", String(query.hasAccounts));
+  if (query?.allowCutIn != null) search.set("allowCutIn", String(query.allowCutIn));
+  if (query?.allowCutOut != null) search.set("allowCutOut", String(query.allowCutOut));
   const response = await fetchJson<unknown>(
     search.size ? `/api/pool/tags?${search.toString()}` : "/api/pool/tags",
   );
@@ -2268,10 +1974,7 @@ export async function createTag(payload: CreateTagPayload): Promise<TagDetail> {
   return normalized;
 }
 
-export async function updateTag(
-  tagId: number,
-  payload: UpdateTagPayload,
-): Promise<TagDetail> {
+export async function updateTag(tagId: number, payload: UpdateTagPayload): Promise<TagDetail> {
   const response = await fetchJson<unknown>(`/api/pool/tags/${tagId}`, {
     method: "PATCH",
     body: JSON.stringify(payload),
@@ -2321,9 +2024,7 @@ export async function fetchUpstreamStickyConversations(
 
 export async function fetchUpstreamAccountDetail(
   accountId: number,
-  options:
-    | { signal?: AbortSignal; includeRecentActions?: boolean }
-    | AbortSignal = {},
+  options: { signal?: AbortSignal; includeRecentActions?: boolean } | AbortSignal = {},
 ): Promise<UpstreamAccountDetail> {
   type DetailOptions = { signal?: AbortSignal; includeRecentActions?: boolean };
   let detailOptions: DetailOptions;
@@ -2350,26 +2051,20 @@ export async function fetchUpstreamAccountDetail(
 export async function createOauthLoginSession(
   payload: CreateOauthLoginSessionPayload,
 ): Promise<LoginSessionStatusResponse> {
-  const response = await fetchJson<unknown>(
-    "/api/pool/upstream-accounts/oauth/login-sessions",
-    {
-      method: "POST",
-      body: JSON.stringify(payload),
-    },
-  );
+  const response = await fetchJson<unknown>("/api/pool/upstream-accounts/oauth/login-sessions", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
   return normalizeLoginSessionStatusResponse(response);
 }
 
 export async function createOauthMailboxSession(
   payload: CreateOauthMailboxSessionPayload = {},
 ): Promise<OauthMailboxSession> {
-  const response = await fetchJson<unknown>(
-    "/api/pool/upstream-accounts/oauth/mailbox-sessions",
-    {
-      method: "POST",
-      body: JSON.stringify(payload),
-    },
-  );
+  const response = await fetchJson<unknown>("/api/pool/upstream-accounts/oauth/mailbox-sessions", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
   return normalizeOauthMailboxSession(response);
 }
 
@@ -2383,9 +2078,7 @@ export async function fetchOauthMailboxStatuses(
       body: JSON.stringify(payload),
     },
   );
-  const items = Array.isArray(
-    (response as Record<string, unknown> | null)?.items,
-  )
+  const items = Array.isArray((response as Record<string, unknown> | null)?.items)
     ? ((response as Record<string, unknown>).items as unknown[])
     : [];
   return items
@@ -2393,9 +2086,7 @@ export async function fetchOauthMailboxStatuses(
     .filter((item): item is OauthMailboxStatus => item != null);
 }
 
-export async function deleteOauthMailboxSession(
-  sessionId: string,
-): Promise<void> {
+export async function deleteOauthMailboxSession(sessionId: string): Promise<void> {
   await fetchJson(
     `/api/pool/upstream-accounts/oauth/mailbox-sessions/${encodeURIComponent(sessionId)}`,
     {
@@ -2404,9 +2095,7 @@ export async function deleteOauthMailboxSession(
   );
 }
 
-export async function fetchOauthLoginSession(
-  loginId: string,
-): Promise<LoginSessionStatusResponse> {
+export async function fetchOauthLoginSession(loginId: string): Promise<LoginSessionStatusResponse> {
   const response = await fetchJson<unknown>(
     `/api/pool/upstream-accounts/oauth/login-sessions/${encodeURIComponent(loginId)}`,
   );
@@ -2434,9 +2123,7 @@ export async function updateOauthLoginSessionKeepalive(
   baseUpdatedAt?: string | null,
 ): Promise<void> {
   const response = await fetch(
-    withBase(
-      `/api/pool/upstream-accounts/oauth/login-sessions/${encodeURIComponent(loginId)}`,
-    ),
+    withBase(`/api/pool/upstream-accounts/oauth/login-sessions/${encodeURIComponent(loginId)}`),
     withOauthLoginSessionBaseUpdatedAtHeader(baseUpdatedAt, {
       method: "PATCH",
       headers: {
@@ -2490,13 +2177,10 @@ export async function confirmOauthIdentityOverwrite(
 export async function validateImportedOauthAccounts(
   payload: ValidateImportedOauthAccountsPayload,
 ): Promise<ImportedOauthValidationResponse> {
-  const response = await fetchJson<unknown>(
-    "/api/pool/upstream-accounts/oauth/imports/validate",
-    {
-      method: "POST",
-      body: JSON.stringify(payload),
-    },
-  );
+  const response = await fetchJson<unknown>("/api/pool/upstream-accounts/oauth/imports/validate", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
   return normalizeImportedOauthValidationResponse(response);
 }
 
@@ -2513,9 +2197,7 @@ export async function createImportedOauthValidationJob(
   return normalizeImportedOauthValidationJobResponse(response);
 }
 
-export async function cancelImportedOauthValidationJob(
-  jobId: string,
-): Promise<void> {
+export async function cancelImportedOauthValidationJob(jobId: string): Promise<void> {
   await fetchJson(
     `/api/pool/upstream-accounts/oauth/imports/validation-jobs/${encodeURIComponent(jobId)}`,
     {
@@ -2527,26 +2209,20 @@ export async function cancelImportedOauthValidationJob(
 export async function importValidatedOauthAccounts(
   payload: ImportValidatedOauthAccountsPayload,
 ): Promise<ImportedOauthImportResponse> {
-  const response = await fetchJson<unknown>(
-    "/api/pool/upstream-accounts/oauth/imports",
-    {
-      method: "POST",
-      body: JSON.stringify(payload),
-    },
-  );
+  const response = await fetchJson<unknown>("/api/pool/upstream-accounts/oauth/imports", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
   return normalizeImportedOauthImportResponse(response);
 }
 
 export async function createApiKeyUpstreamAccount(
   payload: CreateApiKeyAccountPayload,
 ): Promise<UpstreamAccountDetail> {
-  const response = await fetchJson<unknown>(
-    "/api/pool/upstream-accounts/api-keys",
-    {
-      method: "POST",
-      body: JSON.stringify(payload),
-    },
-  );
+  const response = await fetchJson<unknown>("/api/pool/upstream-accounts/api-keys", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
   return normalizeUpstreamAccountDetail(response);
 }
 
@@ -2554,13 +2230,10 @@ export async function updateUpstreamAccount(
   accountId: number,
   payload: UpdateUpstreamAccountPayload,
 ): Promise<UpstreamAccountDetail> {
-  const response = await fetchJson<unknown>(
-    `/api/pool/upstream-accounts/${accountId}`,
-    {
-      method: "PATCH",
-      body: JSON.stringify(payload),
-    },
-  );
+  const response = await fetchJson<unknown>(`/api/pool/upstream-accounts/${accountId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
   return normalizeUpstreamAccountDetail(response);
 }
 
@@ -2582,15 +2255,10 @@ export async function updateUpstreamAccountGroup(
   return normalized;
 }
 
-export async function deleteUpstreamAccountGroup(
-  groupName: string,
-): Promise<void> {
-  await fetchJson(
-    `/api/pool/upstream-account-groups/${encodeURIComponent(groupName)}`,
-    {
-      method: "DELETE",
-    },
-  );
+export async function deleteUpstreamAccountGroup(groupName: string): Promise<void> {
+  await fetchJson(`/api/pool/upstream-account-groups/${encodeURIComponent(groupName)}`, {
+    method: "DELETE",
+  });
 }
 
 export async function bulkUpdateUpstreamAccounts(
@@ -2609,28 +2277,20 @@ export async function deleteUpstreamAccount(accountId: number): Promise<void> {
   });
 }
 
-export async function syncUpstreamAccount(
-  accountId: number,
-): Promise<UpstreamAccountDetail> {
-  const response = await fetchJson<unknown>(
-    `/api/pool/upstream-accounts/${accountId}/sync`,
-    {
-      method: "POST",
-    },
-  );
+export async function syncUpstreamAccount(accountId: number): Promise<UpstreamAccountDetail> {
+  const response = await fetchJson<unknown>(`/api/pool/upstream-accounts/${accountId}/sync`, {
+    method: "POST",
+  });
   return normalizeUpstreamAccountDetail(response);
 }
 
 export async function createBulkUpstreamAccountSyncJob(
   payload: BulkUpstreamAccountSyncJobPayload,
 ): Promise<BulkUpstreamAccountSyncJobResponse> {
-  const response = await fetchJson<unknown>(
-    "/api/pool/upstream-accounts/bulk-sync-jobs",
-    {
-      method: "POST",
-      body: JSON.stringify(payload),
-    },
-  );
+  const response = await fetchJson<unknown>("/api/pool/upstream-accounts/bulk-sync-jobs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
   return normalizeBulkUpstreamAccountSyncJobResponse(response);
 }
 
@@ -2643,15 +2303,10 @@ export async function fetchBulkUpstreamAccountSyncJob(
   return normalizeBulkUpstreamAccountSyncJobResponse(response);
 }
 
-export async function cancelBulkUpstreamAccountSyncJob(
-  jobId: string,
-): Promise<void> {
-  await fetchJson(
-    `/api/pool/upstream-accounts/bulk-sync-jobs/${encodeURIComponent(jobId)}`,
-    {
-      method: "DELETE",
-    },
-  );
+export async function cancelBulkUpstreamAccountSyncJob(jobId: string): Promise<void> {
+  await fetchJson(`/api/pool/upstream-accounts/bulk-sync-jobs/${encodeURIComponent(jobId)}`, {
+    method: "DELETE",
+  });
 }
 
 export function createEventSource(path: string) {

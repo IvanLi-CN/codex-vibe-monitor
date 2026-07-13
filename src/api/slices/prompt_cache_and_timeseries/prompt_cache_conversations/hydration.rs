@@ -1,11 +1,4 @@
 use super::*;
-use anyhow::anyhow;
-use chrono::LocalResult;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use sqlx::FromRow;
-use tokio::sync::{broadcast, watch};
-use tracing::{debug, warn};
 
 pub(crate) struct PromptCacheConversationHydrationSnapshot<'a> {
     pub(crate) snapshot_upper_bound: &'a str,
@@ -486,7 +479,7 @@ pub(crate) fn prompt_cache_invocation_preview_from_runtime_record(
         live_phase: record
             .live_phase
             .clone()
-            .or_else(|| runtime_invocation_live_phase(&record).map(str::to_string)),
+            .or_else(|| runtime_invocation_live_phase(record).map(str::to_string)),
         failure_class: normalize_trimmed_optional_string(record.failure_class.clone()),
         route_mode: normalize_trimmed_optional_string(record.route_mode.clone()),
         model: normalize_trimmed_optional_string(record.model.clone()),

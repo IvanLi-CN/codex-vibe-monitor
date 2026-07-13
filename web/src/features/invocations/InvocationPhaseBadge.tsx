@@ -1,12 +1,12 @@
-import type { InvocationLivePhase, InvocationPhaseCounts } from "../../lib/api";
+import { Badge } from "../../components/ui/badge";
 import { useTranslation } from "../../i18n";
+import type { InvocationLivePhase, InvocationPhaseCounts } from "../../lib/api";
 import {
   getInvocationPhaseDisplay,
   normalizeInvocationPhaseCounts,
 } from "../../lib/invocationPhase";
 import { cn } from "../../lib/utils";
 import { AppIcon, type AppIconName } from "../shared/AppIcon";
-import { Badge } from "../../components/ui/badge";
 
 export type InvocationPhaseMotion = "static" | "dynamic";
 
@@ -35,23 +35,15 @@ const PHASE_TEXT_CLASSNAMES: Record<InvocationLivePhase, string> = {
   responding: "text-teal-600 dark:text-teal-300",
 };
 
-function phaseMotionClassName(
-  phase: InvocationLivePhase,
-  motion: InvocationPhaseMotion,
-) {
+function phaseMotionClassName(phase: InvocationLivePhase, motion: InvocationPhaseMotion) {
   if (motion !== "dynamic") return null;
   if (phase === "requesting") return "animate-invocation-phase-requesting";
   if (phase === "responding") return "animate-spin";
   return null;
 }
 
-function phaseIconName(
-  phase: InvocationLivePhase,
-  motion: InvocationPhaseMotion,
-) {
-  return motion === "static"
-    ? STATIC_PHASE_ICON_NAMES[phase]
-    : PHASE_ICON_NAMES[phase];
+function phaseIconName(phase: InvocationLivePhase, motion: InvocationPhaseMotion) {
+  return motion === "static" ? STATIC_PHASE_ICON_NAMES[phase] : PHASE_ICON_NAMES[phase];
 }
 
 export function InvocationPhaseBadge({
@@ -97,7 +89,7 @@ export function InvocationPhaseBadge({
         )}
         aria-label={showLabel ? undefined : label}
         title={showLabel ? undefined : label}
-        role={showLabel ? undefined : "img"}
+        role="img"
       >
         {icon}
         {showLabel ? <span>{label}</span> : null}
@@ -216,10 +208,7 @@ export function InvocationPhaseSegments({
               name={phaseIconName(item.phase, motion)}
               data-testid="invocation-phase-icon"
               data-phase-icon-name={phaseIconName(item.phase, motion)}
-              className={cn(
-                "h-3 w-3 shrink-0",
-                phaseMotionClassName(item.phase, motion),
-              )}
+              className={cn("h-3 w-3 shrink-0", phaseMotionClassName(item.phase, motion))}
               aria-hidden="true"
             />
             <span>{t(display.labelKey)}</span>

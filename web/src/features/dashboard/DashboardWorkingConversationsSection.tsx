@@ -1,81 +1,78 @@
+import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode,
 } from "react";
-import { useWindowVirtualizer } from "@tanstack/react-virtual";
-import { useTranslation } from "../../i18n";
+import { InvocationErrorSummary } from "../../components/InvocationErrorSummary";
+import { Alert } from "../../components/ui/alert";
+import { Badge } from "../../components/ui/badge";
+import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
+import { Spinner } from "../../components/ui/spinner";
+import { Tooltip } from "../../components/ui/tooltip";
+import { useDashboardUpstreamAccountActivity } from "../../hooks/useDashboardUpstreamAccountActivity";
 import type { TranslationKey } from "../../i18n";
+import { useTranslation } from "../../i18n";
+import type {
+  TagFastModeRewriteMode,
+  TagPriorityTier,
+  UpdateGroupAccountRoutingRulePayload,
+  UpstreamAccountActivityAccount,
+  UpstreamAccountActivityResponse,
+} from "../../lib/api";
+import { updateUpstreamAccount } from "../../lib/api";
 import type {
   DashboardWorkingConversationCardModel,
   DashboardWorkingConversationInvocationModel,
   DashboardWorkingConversationInvocationSelection,
   DashboardWorkingConversationTone,
 } from "../../lib/dashboardWorkingConversations";
-import type {
-  TagFastModeRewriteMode,
-  TagPriorityTier,
-  UpstreamAccountActivityAccount,
-  UpstreamAccountActivityResponse,
-  UpdateGroupAccountRoutingRulePayload,
-} from "../../lib/api";
-import { updateUpstreamAccount } from "../../lib/api";
 import {
-  DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
   buildDashboardWorkingConversationInvocationModel,
+  DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
   formatDashboardWorkingConversationSequenceId,
   hashDashboardWorkingConversationKey,
 } from "../../lib/dashboardWorkingConversations";
-import { cn } from "../../lib/utils";
-import { AppIcon, type AppIconName } from "../shared/AppIcon";
 import {
-  getReasoningEffortTone,
-  REASONING_EFFORT_TONE_CLASSNAMES,
-} from "../invocations/invocation-table-reasoning";
+  type InvocationImageIntentDisplay,
+  resolveFirstResponseByteTotalMs,
+} from "../../lib/invocation";
 import {
   compactUpstreamPlanLabel,
   shouldShowUpstreamPlanBadge,
   upstreamPlanBadgeRecipe,
 } from "../../lib/upstreamAccountBadges";
 import { emitUpstreamAccountsChanged } from "../../lib/upstreamAccountsEvents";
-import { Alert } from "../../components/ui/alert";
-import { AnimatedDigits } from "../shared/AnimatedDigits";
-import { Badge } from "../../components/ui/badge";
-import { InvocationErrorSummary } from "../../components/InvocationErrorSummary";
+import { cn } from "../../lib/utils";
+import { InvocationPhaseBadge, InvocationPhaseSegments } from "../invocations/InvocationPhaseBadge";
 import {
-  InvocationPhaseBadge,
-  InvocationPhaseSegments,
-} from "../invocations/InvocationPhaseBadge";
-import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
-import { Spinner } from "../../components/ui/spinner";
-import { Tooltip } from "../../components/ui/tooltip";
-import { UsageBreakdownTooltip } from "./UsageBreakdownTooltip";
-import {
+  buildInvocationDetailViewModel,
   FALLBACK_CELL,
   INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
-  buildInvocationDetailViewModel,
   renderEndpointSummary,
   renderFastIndicator,
   renderInvocationModelBadge,
 } from "../invocations/invocation-details-shared";
 import {
-  resolveFirstResponseByteTotalMs,
-  type InvocationImageIntentDisplay,
-} from "../../lib/invocation";
+  getReasoningEffortTone,
+  REASONING_EFFORT_TONE_CLASSNAMES,
+} from "../invocations/invocation-table-reasoning";
 import { renderInvocationTransportBadge } from "../invocations/invocation-transport-badge";
-import { useDashboardUpstreamAccountActivity } from "../../hooks/useDashboardUpstreamAccountActivity";
+import { AnimatedDigits } from "../shared/AnimatedDigits";
+import { AppIcon, type AppIconName } from "../shared/AppIcon";
 import {
   DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY,
-  readPersistedDashboardWorkspaceView,
-  persistDashboardWorkspaceView,
   type DashboardActivityRangeKey,
   type DashboardWorkspaceView,
+  persistDashboardWorkspaceView,
+  readPersistedDashboardWorkspaceView,
 } from "./dashboardActivityRange";
+import { UsageBreakdownTooltip } from "./UsageBreakdownTooltip";
 
 export interface DashboardOpenUpstreamAccountOptions {
   tab?: "overview" | "routing" | "healthEvents";
@@ -97,12 +94,8 @@ interface DashboardWorkingConversationsSectionProps {
     accountLabel: string,
     options?: DashboardOpenUpstreamAccountOptions,
   ) => void;
-  onOpenConversation?: (
-    selection: DashboardWorkingConversationSelection,
-  ) => void;
-  onOpenInvocation?: (
-    selection: DashboardWorkingConversationInvocationSelection,
-  ) => void;
+  onOpenConversation?: (selection: DashboardWorkingConversationSelection) => void;
+  onOpenInvocation?: (selection: DashboardWorkingConversationInvocationSelection) => void;
   upstreamAccountActivity?: UpstreamAccountActivityResponse | null;
   upstreamAccountActivityLoading?: boolean;
   upstreamAccountActivityError?: string | null;
@@ -123,8 +116,7 @@ const ACCOUNT_CARD_INNER_BORDER_CLASS_NAME = "border-[rgba(148,163,184,0.22)]";
 const ACCOUNT_CARD_INNER_RING_CLASS_NAME = "ring-[rgba(148,163,184,0.22)]";
 
 type StatusMeta = {
-  badgeVariant:
-    "default" | "secondary" | "success" | "warning" | "error" | "info";
+  badgeVariant: "default" | "secondary" | "success" | "warning" | "error" | "info";
   icon:
     | "loading"
     | "timer-refresh-outline"
@@ -169,14 +161,8 @@ const UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES = [
 function resolveConversationIdentityToneClassName(seed: string) {
   const hash = hashDashboardWorkingConversationKey(seed);
   const hashValue = Number.parseInt(hash, 16) >>> 0;
-  const mixedHash =
-    (hashValue ^
-      (hashValue >>> 7) ^
-      (hashValue >>> 13) ^
-      (hashValue >>> 21)) >>>
-    0;
-  const toneIndex =
-    mixedHash % UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES.length;
+  const mixedHash = (hashValue ^ (hashValue >>> 7) ^ (hashValue >>> 13) ^ (hashValue >>> 21)) >>> 0;
+  const toneIndex = mixedHash % UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES.length;
   return UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES[toneIndex];
 }
 
@@ -300,24 +286,14 @@ function CompactLatencyPills({
         data-testid="dashboard-compact-latency-first-byte"
         className="inline-flex min-w-0 items-center gap-1 text-secondary"
       >
-        <AppIcon
-          name="timer-outline"
-          className="h-3.5 w-3.5 shrink-0"
-          aria-hidden
-        />
-        <span className="truncate whitespace-nowrap">
-          {firstResponseByteTotalValue}
-        </span>
+        <AppIcon name="timer-outline" className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        <span className="truncate whitespace-nowrap">{firstResponseByteTotalValue}</span>
       </span>
       <span
         data-testid="dashboard-compact-latency-response-time"
         className="inline-flex min-w-0 items-center gap-1 text-primary"
       >
-        <AppIcon
-          name="speedometer"
-          className="h-3.5 w-3.5 shrink-0"
-          aria-hidden
-        />
+        <AppIcon name="speedometer" className="h-3.5 w-3.5 shrink-0" aria-hidden />
         <span className="truncate whitespace-nowrap">{responseTimeValue}</span>
       </span>
     </div>
@@ -369,9 +345,7 @@ function renderUpstreamAccountRecentModelDisplay(
   t: ReturnType<typeof useTranslation>["t"],
 ) {
   const shouldRenderMismatch =
-    hasMismatch &&
-    requestModelValue !== FALLBACK_CELL &&
-    responseModelValue !== FALLBACK_CELL;
+    hasMismatch && requestModelValue !== FALLBACK_CELL && responseModelValue !== FALLBACK_CELL;
 
   if (!shouldRenderMismatch) {
     return renderInvocationModelBadge(modelValue, {
@@ -430,10 +404,7 @@ function CompactAccountPlanBadge({ planType }: { planType: string | null }) {
   );
 }
 
-function resolveStatusMeta(
-  tone: DashboardWorkingConversationTone,
-  status: string,
-): StatusMeta {
+function resolveStatusMeta(tone: DashboardWorkingConversationTone, status: string): StatusMeta {
   const base = STATUS_META[tone];
   const normalized = status.trim().toLowerCase();
   if (normalized === "interrupted") {
@@ -509,10 +480,7 @@ function InlineInvocationStatus({
     >
       <AppIcon
         name={meta.icon}
-        className={cn(
-          "h-3.5 w-3.5 shrink-0",
-          meta.icon === "loading" && "animate-spin",
-        )}
+        className={cn("h-3.5 w-3.5 shrink-0", meta.icon === "loading" && "animate-spin")}
         aria-hidden
       />
       {showLabel ? <span>{label}</span> : null}
@@ -520,10 +488,7 @@ function InlineInvocationStatus({
   );
 }
 
-function formatAccountPercentValue(
-  value: number | null | undefined,
-  localeTag: string,
-) {
+function formatAccountPercentValue(value: number | null | undefined, localeTag: string) {
   if (value == null || !Number.isFinite(value)) return FALLBACK_CELL;
   return new Intl.NumberFormat(localeTag, {
     style: "percent",
@@ -567,10 +532,7 @@ function formatAccountCurrencyAmountValue(
   }).format(value);
 }
 
-function formatAccountDurationValue(
-  value: number | null | undefined,
-  localeTag: string,
-) {
+function formatAccountDurationValue(value: number | null | undefined, localeTag: string) {
   if (value == null || !Number.isFinite(value)) return FALLBACK_CELL;
   const abs = Math.abs(value);
   if (abs >= 1000) {
@@ -591,10 +553,7 @@ function resolveCompactSecondsFractionDigits(seconds: number) {
   return Math.max(0, Math.min(2, 4 - countCompactDisplayDigits(seconds)));
 }
 
-function formatCompactLatencySecondsValue(
-  value: number | null | undefined,
-  localeTag: string,
-) {
+function formatCompactLatencySecondsValue(value: number | null | undefined, localeTag: string) {
   if (value == null || !Number.isFinite(value)) return FALLBACK_CELL;
 
   const seconds = value / 1000;
@@ -617,20 +576,14 @@ function formatCompactElapsedSecondsFromTimestamp(
 ) {
   const occurredMs = occurredAt ? Date.parse(occurredAt) : Number.NaN;
   if (!Number.isFinite(occurredMs)) return FALLBACK_CELL;
-  return formatCompactLatencySecondsValue(
-    Math.max(0, nowMs - occurredMs),
-    localeTag,
-  );
+  return formatCompactLatencySecondsValue(Math.max(0, nowMs - occurredMs), localeTag);
 }
 
 function finiteNumber(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function accountCostShare(
-  numerator: number | null | undefined,
-  total: number | null | undefined,
-) {
+function accountCostShare(numerator: number | null | undefined, total: number | null | undefined) {
   const resolvedNumerator = finiteNumber(numerator);
   const resolvedTotal = finiteNumber(total);
   if (resolvedNumerator == null || resolvedTotal == null) return null;
@@ -671,16 +624,15 @@ type AccountMetricDetailSection = {
   rows: AccountMetricDetailRow[];
 };
 
-const ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES: Record<AccountMetricTone, string> =
-  {
-    neutral: "text-base-content",
-    primary: "text-primary",
-    secondary: "text-secondary",
-    success: "text-success",
-    warning: "text-accent",
-    error: "text-error",
-    info: "text-info",
-  };
+const ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES: Record<AccountMetricTone, string> = {
+  neutral: "text-base-content",
+  primary: "text-primary",
+  secondary: "text-secondary",
+  success: "text-success",
+  warning: "text-accent",
+  error: "text-error",
+  info: "text-info",
+};
 
 const ACCOUNT_METRIC_DOT_TONE_CLASSNAMES: Record<AccountMetricTone, string> = {
   neutral: "bg-base-content/38",
@@ -725,9 +677,7 @@ function accountPolicyDraftFromRule(
   };
 }
 
-function cycleAccountPriorityPolicy(
-  draft: AccountQuickPolicyDraft,
-): AccountQuickPolicyDraft {
+function cycleAccountPriorityPolicy(draft: AccountQuickPolicyDraft): AccountQuickPolicyDraft {
   if (draft.priorityTier === "normal") {
     return { ...draft, priorityTier: "fallback" };
   }
@@ -740,9 +690,7 @@ function cycleAccountPriorityPolicy(
   return { ...draft, priorityTier: "normal" };
 }
 
-function cycleAccountFastModePolicy(
-  draft: AccountQuickPolicyDraft,
-): AccountQuickPolicyDraft {
+function cycleAccountFastModePolicy(draft: AccountQuickPolicyDraft): AccountQuickPolicyDraft {
   if (draft.fastModeRewriteMode === "keep_original") {
     return { ...draft, fastModeRewriteMode: "fill_missing" };
   }
@@ -755,60 +703,42 @@ function cycleAccountFastModePolicy(
   return { ...draft, fastModeRewriteMode: "keep_original" };
 }
 
-function priorityPolicyLabel(
-  draft: AccountQuickPolicyDraft,
-  locale: "zh" | "en",
-) {
+function priorityPolicyLabel(draft: AccountQuickPolicyDraft, locale: "zh" | "en") {
   if (draft.priorityTier === "no_new") return locale === "zh" ? "禁新" : "No new";
-  if (draft.priorityTier === "primary")
-    return locale === "zh" ? "主力" : "Primary";
-  if (draft.priorityTier === "fallback")
-    return locale === "zh" ? "兜底" : "Fallback";
+  if (draft.priorityTier === "primary") return locale === "zh" ? "主力" : "Primary";
+  if (draft.priorityTier === "fallback") return locale === "zh" ? "兜底" : "Fallback";
   return locale === "zh" ? "普通" : "Normal";
 }
 
-function fastModePolicyLabel(
-  mode: TagFastModeRewriteMode,
-  locale: "zh" | "en",
-) {
+function fastModePolicyLabel(mode: TagFastModeRewriteMode, locale: "zh" | "en") {
   if (mode === "fill_missing") return locale === "zh" ? "补Fast" : "+Fast";
   if (mode === "force_add") return locale === "zh" ? "强制Fast" : "Force Fast";
   if (mode === "force_remove") return locale === "zh" ? "禁Fast" : "No Fast";
   return locale === "zh" ? "不改Fast" : "Leave Fast";
 }
 
-function fastModePolicyCycleTitle(
-  currentLabel: string,
-  locale: "zh" | "en",
-) {
+function fastModePolicyCycleTitle(currentLabel: string, locale: "zh" | "en") {
   if (locale === "zh") {
     return `Fast 改写策略：${currentLabel}。点击循环 不改Fast / 补Fast / 强制Fast / 禁Fast`;
   }
   return `Fast rewrite policy: ${currentLabel}. Cycle Leave Fast / +Fast / Force Fast / No Fast`;
 }
 
-function fastModePolicyAriaLabel(
-  currentLabel: string,
-  locale: "zh" | "en",
-) {
+function fastModePolicyAriaLabel(currentLabel: string, locale: "zh" | "en") {
   if (locale === "zh") {
     return `Fast 改写策略：${currentLabel}，点击切换`;
   }
   return `Fast rewrite policy: ${currentLabel}, click to cycle`;
 }
 
-function priorityPolicyTone(
-  draft: AccountQuickPolicyDraft,
-): AccountQuickPolicyTone {
+function priorityPolicyTone(draft: AccountQuickPolicyDraft): AccountQuickPolicyTone {
   if (draft.priorityTier === "no_new") return "warning";
   if (draft.priorityTier === "primary") return "primary";
   if (draft.priorityTier === "fallback") return "success";
   return "neutral";
 }
 
-function fastModePolicyTone(
-  mode: TagFastModeRewriteMode,
-): AccountQuickPolicyTone {
+function fastModePolicyTone(mode: TagFastModeRewriteMode): AccountQuickPolicyTone {
   if (mode === "force_remove") return "warning";
   if (mode === "force_add") return "primary";
   if (mode === "fill_missing") return "success";
@@ -819,10 +749,7 @@ function booleanBlockPolicyTone(isBlocked: boolean): AccountQuickPolicyTone {
   return isBlocked ? "warning" : "neutral";
 }
 
-const ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES: Record<
-  AccountQuickPolicyTone,
-  string
-> = {
+const ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES: Record<AccountQuickPolicyTone, string> = {
   neutral: "border-base-300/80 bg-base-100/75 text-base-content/60",
   success:
     "border-success/40 bg-success/15 text-success shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
@@ -851,8 +778,7 @@ function resolveAccountAttentionBadges(
     otherError: locale === "zh" ? "其它异常" : "Other error",
     unavailable: locale === "zh" ? "不可用" : "Unavailable",
   };
-  const detail =
-    account.lastActionReasonMessage || account.lastError || undefined;
+  const detail = account.lastActionReasonMessage || account.lastError || undefined;
   const badges: AccountAttentionBadge[] = [];
   const seen = new Set<string>();
   const add = (badge: AccountAttentionBadge) => {
@@ -866,11 +792,7 @@ function resolveAccountAttentionBadges(
   const syncState = normalizeStatusToken(account.syncState);
   const workStatus = normalizeStatusToken(account.workStatus);
 
-  if (
-    account.enabled === false ||
-    enableStatus === "disabled" ||
-    displayStatus === "disabled"
-  ) {
+  if (account.enabled === false || enableStatus === "disabled" || displayStatus === "disabled") {
     add({
       key: "disabled",
       label: labels.disabled,
@@ -1034,20 +956,13 @@ function AccountQuickPolicyChips({
         data-policy-key="priority-new-conversations"
         data-policy-tone={priorityTone}
         disabled={disabled}
-        className={cn(
-          chipBase,
-          ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[priorityTone],
-        )}
+        className={cn(chipBase, ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[priorityTone])}
         title={
           locale === "zh"
             ? "点击切换 普通 / 兜底 / 主力 / 禁新"
             : "Cycle normal / fallback / primary / no new"
         }
-        aria-label={
-          locale === "zh"
-            ? "切换账号优先级"
-            : "Cycle account priority"
-        }
+        aria-label={locale === "zh" ? "切换账号优先级" : "Cycle account priority"}
         onClick={(event) => {
           event.stopPropagation();
           onCyclePriority();
@@ -1064,10 +979,7 @@ function AccountQuickPolicyChips({
         data-policy-key="fast-mode-rewrite"
         data-policy-tone={fastModeTone}
         disabled={disabled}
-        className={cn(
-          chipBase,
-          ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[fastModeTone],
-        )}
+        className={cn(chipBase, ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[fastModeTone])}
         title={fastModePolicyCycleTitle(fastModeLabel, locale)}
         aria-label={fastModePolicyAriaLabel(fastModeLabel, locale)}
         onClick={(event) => {
@@ -1086,15 +998,8 @@ function AccountQuickPolicyChips({
         data-policy-key="allow-cut-out"
         data-policy-tone={cutOutTone}
         disabled={disabled}
-        className={cn(
-          chipBase,
-          ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[cutOutTone],
-        )}
-        title={
-          locale === "zh"
-            ? "点击切换账号级禁出"
-            : "Toggle account-level cut out"
-        }
+        className={cn(chipBase, ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[cutOutTone])}
+        title={locale === "zh" ? "点击切换账号级禁出" : "Toggle account-level cut out"}
         aria-label={locale === "zh" ? "切换禁出" : "Toggle cut out"}
         onClick={(event) => {
           event.stopPropagation();
@@ -1112,13 +1017,8 @@ function AccountQuickPolicyChips({
         data-policy-key="allow-cut-in"
         data-policy-tone={cutInTone}
         disabled={disabled}
-        className={cn(
-          chipBase,
-          ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[cutInTone],
-        )}
-        title={
-          locale === "zh" ? "点击切换账号级禁入" : "Toggle account-level cut in"
-        }
+        className={cn(chipBase, ACCOUNT_QUICK_POLICY_TONE_CLASSNAMES[cutInTone])}
+        title={locale === "zh" ? "点击切换账号级禁入" : "Toggle account-level cut in"}
         aria-label={locale === "zh" ? "切换禁入" : "Toggle cut in"}
         onClick={(event) => {
           event.stopPropagation();
@@ -1156,43 +1056,21 @@ function AccountHeroMetric({
   children?: ReactNode;
 }) {
   const toneSurfaceClassName = {
-    neutral: cn(
-      "bg-base-100/72 ring-1 ring-inset",
-      ACCOUNT_CARD_INNER_RING_CLASS_NAME,
-    ),
-    primary: cn(
-      "bg-base-100/72 ring-1 ring-inset",
-      ACCOUNT_CARD_INNER_RING_CLASS_NAME,
-    ),
-    secondary: cn(
-      "bg-base-100/72 ring-1 ring-inset",
-      ACCOUNT_CARD_INNER_RING_CLASS_NAME,
-    ),
-    success: cn(
-      "bg-base-100/72 ring-1 ring-inset",
-      ACCOUNT_CARD_INNER_RING_CLASS_NAME,
-    ),
-    warning: cn(
-      "bg-base-100/72 ring-1 ring-inset",
-      ACCOUNT_CARD_INNER_RING_CLASS_NAME,
-    ),
-    info: cn(
-      "bg-base-100/72 ring-1 ring-inset",
-      ACCOUNT_CARD_INNER_RING_CLASS_NAME,
-    ),
+    neutral: cn("bg-base-100/72 ring-1 ring-inset", ACCOUNT_CARD_INNER_RING_CLASS_NAME),
+    primary: cn("bg-base-100/72 ring-1 ring-inset", ACCOUNT_CARD_INNER_RING_CLASS_NAME),
+    secondary: cn("bg-base-100/72 ring-1 ring-inset", ACCOUNT_CARD_INNER_RING_CLASS_NAME),
+    success: cn("bg-base-100/72 ring-1 ring-inset", ACCOUNT_CARD_INNER_RING_CLASS_NAME),
+    warning: cn("bg-base-100/72 ring-1 ring-inset", ACCOUNT_CARD_INNER_RING_CLASS_NAME),
+    info: cn("bg-base-100/72 ring-1 ring-inset", ACCOUNT_CARD_INNER_RING_CLASS_NAME),
   }[tone];
   const valueClassName =
     value === FALLBACK_CELL
       ? "text-base-content/55"
-      : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[
-          tone === "neutral" ? "neutral" : tone
-        ];
+      : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[tone === "neutral" ? "neutral" : tone];
   const iconClassName =
     value === FALLBACK_CELL
       ? "text-base-content/45"
-      : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[
-          tone === "neutral" ? "neutral" : tone
-        ];
+      : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[tone === "neutral" ? "neutral" : tone];
 
   const card = (
     <div
@@ -1201,7 +1079,7 @@ function AccountHeroMetric({
       data-motion-surface
       className={cn(
         "h-full w-full rounded-[0.85rem] px-3 py-2.5 transition-colors duration-200",
-        (detailSections?.length || tooltipContent) ? "cursor-help focus-within:outline-none" : null,
+        detailSections?.length || tooltipContent ? "cursor-help focus-within:outline-none" : null,
         toneSurfaceClassName,
       )}
     >
@@ -1211,20 +1089,13 @@ function AccountHeroMetric({
       <div className="mt-1 flex min-w-0 items-center gap-1.5">
         <span
           aria-hidden
-          data-testid={
-            metricKey
-              ? `dashboard-upstream-account-${metricKey}-icon`
-              : undefined
-          }
+          data-testid={metricKey ? `dashboard-upstream-account-${metricKey}-icon` : undefined}
           className={cn(
             "flex h-[1.35rem] w-[1.35rem] shrink-0 items-center justify-center text-[1.22rem] leading-none",
             iconClassName,
           )}
         >
-          <AppIcon
-            name={iconName}
-            className={cn(iconName === "send" && "-rotate-45")}
-          />
+          <AppIcon name={iconName} className={cn(iconName === "send" && "-rotate-45")} />
         </span>
         <div
           className={cn(
@@ -1235,11 +1106,7 @@ function AccountHeroMetric({
           <AnimatedDigits value={value} />
         </div>
       </div>
-      {hint ? (
-        <div className="mt-1 text-[11px] leading-4 text-base-content/58">
-          {hint}
-        </div>
-      ) : null}
+      {hint ? <div className="mt-1 text-[11px] leading-4 text-base-content/58">{hint}</div> : null}
       {children ? <div className="mt-1.5">{children}</div> : null}
     </div>
   );
@@ -1253,11 +1120,20 @@ function AccountHeroMetric({
       sideOffset={12}
       triggerElement="div"
       className="h-full w-full rounded-[0.85rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-      contentClassName={tooltipContent
-        ? "max-w-[min(42rem,calc(100vw-1rem))] w-[min(42rem,calc(100vw-1rem))] px-3.5 py-3"
-        : "w-[min(21rem,calc(100vw-1rem))] px-3.5 py-3"}
+      contentClassName={
+        tooltipContent
+          ? "max-w-[min(42rem,calc(100vw-1rem))] w-[min(42rem,calc(100vw-1rem))] px-3.5 py-3"
+          : "w-[min(21rem,calc(100vw-1rem))] px-3.5 py-3"
+      }
       content={
-        tooltipContent ?? <AccountMetricDetailTooltip label={label} value={value} valueClassName={valueClassName} sections={detailSections ?? []} />
+        tooltipContent ?? (
+          <AccountMetricDetailTooltip
+            label={label}
+            value={value}
+            valueClassName={valueClassName}
+            sections={detailSections ?? []}
+          />
+        )
       }
       triggerProps={{
         tabIndex: 0,
@@ -1281,10 +1157,7 @@ function AccountMetricDetailTooltip({
   sections: AccountMetricDetailSection[];
 }) {
   return (
-    <div
-      data-testid="dashboard-upstream-account-metric-tooltip"
-      className="space-y-3"
-    >
+    <div data-testid="dashboard-upstream-account-metric-tooltip" className="space-y-3">
       <div className="flex min-w-0 items-baseline justify-between gap-4 border-b border-base-300/45 pb-2">
         <div className="min-w-0 text-[11px] font-semibold leading-4 text-base-content/62">
           {label}
@@ -1315,9 +1188,7 @@ function AccountMetricDetailTooltip({
                 <span
                   className={cn(
                     "min-w-0 max-w-[12rem] truncate text-right font-mono text-[11px] font-semibold leading-4 text-base-content",
-                    row.tone
-                      ? ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[row.tone]
-                      : null,
+                    row.tone ? ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[row.tone] : null,
                   )}
                 >
                   {row.value}
@@ -1343,13 +1214,9 @@ function AccountInlineMetric({
   iconName: AppIconName;
 }) {
   const valueClassName =
-    value === FALLBACK_CELL
-      ? "text-base-content/55"
-      : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[tone];
+    value === FALLBACK_CELL ? "text-base-content/55" : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[tone];
   const iconClassName =
-    value === FALLBACK_CELL
-      ? "text-base-content/45"
-      : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[tone];
+    value === FALLBACK_CELL ? "text-base-content/45" : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[tone];
 
   const metric = (
     <span className="inline-flex min-w-0 items-center gap-1.5 whitespace-nowrap">
@@ -1360,17 +1227,9 @@ function AccountInlineMetric({
           iconClassName,
         )}
       >
-        <AppIcon
-          name={iconName}
-          className={cn(iconName === "send" && "-rotate-45")}
-        />
+        <AppIcon name={iconName} className={cn(iconName === "send" && "-rotate-45")} />
       </span>
-      <span
-        className={cn(
-          "font-mono text-[1.02rem] font-semibold leading-none",
-          valueClassName,
-        )}
-      >
+      <span className={cn("font-mono text-[1.02rem] font-semibold leading-none", valueClassName)}>
         <AnimatedDigits value={value} />
       </span>
     </span>
@@ -1488,10 +1347,7 @@ function AccountSegmentList({
               content={
                 <span className="font-medium">
                   {segment.label}
-                  <span className="font-mono font-semibold">
-                    {" "}
-                    {String(segment.value)}
-                  </span>
+                  <span className="font-mono font-semibold"> {String(segment.value)}</span>
                 </span>
               }
               clickToOpen
@@ -1521,19 +1377,12 @@ function AccountRecentInvocationRow({
   locale: "zh" | "en";
   nowMs: number;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
-  onOpenConversation?: (
-    selection: DashboardWorkingConversationSelection,
-  ) => void;
-  onOpenInvocation?: (
-    selection: DashboardWorkingConversationInvocationSelection,
-  ) => void;
+  onOpenConversation?: (selection: DashboardWorkingConversationSelection) => void;
+  onOpenInvocation?: (selection: DashboardWorkingConversationInvocationSelection) => void;
 }) {
   const { t } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
-  const numberFormatter = useMemo(
-    () => new Intl.NumberFormat(localeTag),
-    [localeTag],
-  );
+  const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
   const currencyFormatter = useMemo(
     () =>
       new Intl.NumberFormat(localeTag, {
@@ -1621,10 +1470,7 @@ function AccountRecentInvocationRow({
       t,
     ],
   );
-  const statusMeta = resolveStatusMeta(
-    invocation.tone,
-    invocation.displayStatus,
-  );
+  const statusMeta = resolveStatusMeta(invocation.tone, invocation.displayStatus);
   const statusLabel = statusMeta.labelKey
     ? t(statusMeta.labelKey)
     : (statusMeta.label ?? t("table.status.unknown"));
@@ -1659,15 +1505,8 @@ function AccountRecentInvocationRow({
       ),
       responseTimeValue:
         normalizedStatus === "running" || normalizedStatus === "pending"
-          ? formatCompactElapsedSecondsFromTimestamp(
-              invocation.record.occurredAt,
-              localeTag,
-              nowMs,
-            )
-          : formatCompactLatencySecondsValue(
-              invocation.record.tTotalMs,
-              localeTag,
-            ),
+          ? formatCompactElapsedSecondsFromTimestamp(invocation.record.occurredAt, localeTag, nowMs)
+          : formatCompactLatencySecondsValue(invocation.record.tTotalMs, localeTag),
     };
   }, [invocation.displayStatus, invocation.record, localeTag, nowMs]);
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${invocation.record.invokeId}`;
@@ -1681,9 +1520,7 @@ function AccountRecentInvocationRow({
       slotKind: "current",
       conversationSequenceId: invocation.record.invokeId,
       promptCacheKey:
-        invocation.preview.promptCacheKey?.trim() ||
-        invocation.record.promptCacheKey?.trim() ||
-        "",
+        invocation.preview.promptCacheKey?.trim() || invocation.record.promptCacheKey?.trim() || "",
       invocation,
     });
   }, [invocation, onOpenInvocation]);
@@ -1755,9 +1592,7 @@ function AccountRecentInvocationRow({
                       conversationIdentityToneClassName,
                     )}
                     aria-label={conversationActionLabel ?? undefined}
-                    title={
-                      conversationActionLabel ?? displayConversationSequenceId
-                    }
+                    title={conversationActionLabel ?? displayConversationSequenceId}
                     onClick={handleIdentityChipClick}
                     onKeyDown={handleIdentityChipKeyDown}
                   >
@@ -1803,15 +1638,10 @@ function AccountRecentInvocationRow({
               t,
               UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME,
             )}
-            <DashboardImageToolIconBadge
-              imageIntentDisplay={viewModel.imageIntentDisplay}
-              t={t}
-            />
+            <DashboardImageToolIconBadge imageIntentDisplay={viewModel.imageIntentDisplay} t={t} />
             {fastIndicator}
             <CompactLatencyPills
-              firstResponseByteTotalValue={
-                compactLatencyValues.firstResponseByteTotalValue
-              }
+              firstResponseByteTotalValue={compactLatencyValues.firstResponseByteTotalValue}
               responseTimeValue={compactLatencyValues.responseTimeValue}
               t={t}
             />
@@ -1831,9 +1661,7 @@ function AccountRecentInvocationRow({
             {viewModel.reasoningEffortValue !== FALLBACK_CELL ? (
               <>
                 <span className="text-base-content/28">·</span>
-                <CompactReasoningEffortBadge
-                  value={viewModel.reasoningEffortValue}
-                />
+                <CompactReasoningEffortBadge value={viewModel.reasoningEffortValue} />
               </>
             ) : null}
           </div>
@@ -1842,17 +1670,25 @@ function AccountRecentInvocationRow({
           <div className="font-mono text-[12px] font-semibold text-base-content/88">
             {viewModel.totalTokensValue}
           </div>
-          <div className="text-[10.5px] text-base-content/62">
-            {compactCostValue}
-          </div>
+          <div className="text-[10.5px] text-base-content/62">{compactCostValue}</div>
         </div>
       </div>
       <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] leading-[1.45] text-base-content/74">
         <span>IN {viewModel.inputTokensValue}</span>
         <span className="text-base-content/28">·</span>
-        <span title="Cache write tokens" aria-label={`Cache write tokens: ${viewModel.cacheWriteTokensValue}`}>CW {viewModel.cacheWriteTokensValue}</span>
+        <span
+          title="Cache write tokens"
+          aria-label={`Cache write tokens: ${viewModel.cacheWriteTokensValue}`}
+        >
+          CW {viewModel.cacheWriteTokensValue}
+        </span>
         <span className="text-base-content/28">·</span>
-        <span title="Cache read tokens" aria-label={`Cache read tokens: ${viewModel.cacheInputTokensValue}`}>C {viewModel.cacheInputTokensValue}</span>
+        <span
+          title="Cache read tokens"
+          aria-label={`Cache read tokens: ${viewModel.cacheInputTokensValue}`}
+        >
+          C {viewModel.cacheInputTokensValue}
+        </span>
         <span className="text-base-content/28">·</span>
         <span>O {viewModel.outputTokensValue}</span>
         <span className="text-base-content/28">·</span>
@@ -1945,10 +1781,7 @@ function PlaceholderSlot() {
       </p>
       <div className="mt-2 space-y-1" aria-hidden>
         {Array.from({ length: 3 }, (_, index) => (
-          <div
-            key={index}
-            className="working-conversation-placeholder-line h-3 rounded-[0.5rem]"
-          />
+          <div key={index} className="working-conversation-placeholder-line h-3 rounded-[0.5rem]" />
         ))}
       </div>
     </div>
@@ -1974,16 +1807,11 @@ function InvocationSlot({
   nowMs: number;
   locale: "zh" | "en";
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
-  onOpenInvocation?: (
-    selection: DashboardWorkingConversationInvocationSelection,
-  ) => void;
+  onOpenInvocation?: (selection: DashboardWorkingConversationInvocationSelection) => void;
 }) {
   const { t } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
-  const numberFormatter = useMemo(
-    () => new Intl.NumberFormat(localeTag),
-    [localeTag],
-  );
+  const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
   const currencyFormatter = useMemo(
     () =>
       new Intl.NumberFormat(localeTag, {
@@ -2081,10 +1909,7 @@ function InvocationSlot({
     ],
   );
 
-  const statusMeta = resolveStatusMeta(
-    invocation.tone,
-    invocation.displayStatus,
-  );
+  const statusMeta = resolveStatusMeta(invocation.tone, invocation.displayStatus);
   const statusLabel = statusMeta.labelKey
     ? t(statusMeta.labelKey)
     : (statusMeta.label ?? t("table.status.unknown"));
@@ -2113,15 +1938,8 @@ function InvocationSlot({
       ),
       responseTimeValue:
         normalizedStatus === "running" || normalizedStatus === "pending"
-          ? formatCompactElapsedSecondsFromTimestamp(
-              invocation.record.occurredAt,
-              localeTag,
-              nowMs,
-            )
-          : formatCompactLatencySecondsValue(
-              invocation.record.tTotalMs,
-              localeTag,
-            ),
+          ? formatCompactElapsedSecondsFromTimestamp(invocation.record.occurredAt, localeTag, nowMs)
+          : formatCompactLatencySecondsValue(invocation.record.tTotalMs, localeTag),
     };
   }, [invocation.displayStatus, invocation.record, localeTag, nowMs]);
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${label} · ${displayConversationSequenceId} · ${invocation.record.invokeId}`;
@@ -2133,13 +1951,7 @@ function InvocationSlot({
       promptCacheKey,
       invocation,
     });
-  }, [
-    conversationSequenceId,
-    invocation,
-    onOpenInvocation,
-    promptCacheKey,
-    slotKind,
-  ]);
+  }, [conversationSequenceId, invocation, onOpenInvocation, promptCacheKey, slotKind]);
 
   const handleSlotKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -2223,9 +2035,7 @@ function InvocationSlot({
             </div>
           </div>
           <CompactLatencyPills
-            firstResponseByteTotalValue={
-              compactLatencyValues.firstResponseByteTotalValue
-            }
+            firstResponseByteTotalValue={compactLatencyValues.firstResponseByteTotalValue}
             responseTimeValue={compactLatencyValues.responseTimeValue}
             t={t}
             className="shrink-0 flex-nowrap gap-1 text-[11px]"
@@ -2253,10 +2063,7 @@ function InvocationSlot({
                     )}
                     onClick={(event) => {
                       event.stopPropagation();
-                      onOpenUpstreamAccount?.(
-                        viewModel.accountId ?? 0,
-                        viewModel.accountLabel,
-                      );
+                      onOpenUpstreamAccount?.(viewModel.accountId ?? 0, viewModel.accountLabel);
                     }}
                     onKeyDown={(event) => {
                       event.stopPropagation();
@@ -2296,10 +2103,7 @@ function InvocationSlot({
                 className="flex min-w-0 shrink-0 flex-wrap items-center gap-x-1 gap-y-0.5 text-base-content/70 sm:flex-nowrap"
                 title={`${viewModel.modelValue} · ${viewModel.reasoningEffortValue} · ${viewModel.serviceTierValue} · ${viewModel.proxyDisplayName}`}
               >
-                <span
-                  data-testid="dashboard-working-conversation-model-name"
-                  className="min-w-0"
-                >
+                <span data-testid="dashboard-working-conversation-model-name" className="min-w-0">
                   {renderInvocationModelBadge(viewModel.modelValue, {
                     t,
                     hasMismatch: viewModel.modelHasMismatch,
@@ -2310,9 +2114,7 @@ function InvocationSlot({
                   })}
                 </span>
                 <span className="shrink-0 text-base-content/28">·</span>
-                <CompactReasoningEffortBadge
-                  value={viewModel.reasoningEffortValue}
-                />
+                <CompactReasoningEffortBadge value={viewModel.reasoningEffortValue} />
                 {fastIndicator ? (
                   <>
                     <span className="shrink-0 text-base-content/28">·</span>
@@ -2331,9 +2133,19 @@ function InvocationSlot({
             <div className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5">
               <span>IN {viewModel.inputTokensValue}</span>
               <span className="text-base-content/28">·</span>
-              <span title="Cache write tokens" aria-label={`Cache write tokens: ${viewModel.cacheWriteTokensValue}`}>CW {viewModel.cacheWriteTokensValue}</span>
+              <span
+                title="Cache write tokens"
+                aria-label={`Cache write tokens: ${viewModel.cacheWriteTokensValue}`}
+              >
+                CW {viewModel.cacheWriteTokensValue}
+              </span>
               <span className="text-base-content/28">·</span>
-              <span title="Cache read tokens" aria-label={`Cache read tokens: ${viewModel.cacheInputTokensValue}`}>C {viewModel.cacheInputTokensValue}</span>
+              <span
+                title="Cache read tokens"
+                aria-label={`Cache read tokens: ${viewModel.cacheInputTokensValue}`}
+              >
+                C {viewModel.cacheInputTokensValue}
+              </span>
               <span className="text-base-content/28">·</span>
               <span>O {viewModel.outputTokensValue}</span>
               <span className="text-base-content/28">·</span>
@@ -2402,13 +2214,9 @@ function splitDashboardWorkingConversationGridTracks(template: string) {
   return tracks;
 }
 
-function resolveDashboardWorkingConversationCssColumnCount(
-  container: HTMLDivElement | null,
-) {
+function resolveDashboardWorkingConversationCssColumnCount(container: HTMLDivElement | null) {
   if (!container || typeof window === "undefined") return null;
-  const template = window
-    .getComputedStyle(container)
-    .gridTemplateColumns.trim();
+  const template = window.getComputedStyle(container).gridTemplateColumns.trim();
   if (!template || template === "none" || template === "subgrid") {
     return null;
   }
@@ -2480,34 +2288,21 @@ function DashboardUpstreamAccountActivityCard({
     accountLabel: string,
     options?: DashboardOpenUpstreamAccountOptions,
   ) => void;
-  onOpenConversation?: (
-    selection: DashboardWorkingConversationSelection,
-  ) => void;
-  onOpenInvocation?: (
-    selection: DashboardWorkingConversationInvocationSelection,
-  ) => void;
+  onOpenConversation?: (selection: DashboardWorkingConversationSelection) => void;
+  onOpenInvocation?: (selection: DashboardWorkingConversationInvocationSelection) => void;
   onPolicyChanged?: () => void;
 }) {
   const { t } = useTranslation();
-  const serverPolicyDraft = useMemo(
-    () => accountPolicyDraftFromRule(account),
-    [account],
-  );
-  const [policyDraft, setPolicyDraft] =
-    useState<AccountQuickPolicyDraft>(serverPolicyDraft);
+  const serverPolicyDraft = useMemo(() => accountPolicyDraftFromRule(account), [account]);
+  const [policyDraft, setPolicyDraft] = useState<AccountQuickPolicyDraft>(serverPolicyDraft);
   const [policySaveError, setPolicySaveError] = useState<string | null>(null);
   const [isSavingPolicy, setIsSavingPolicy] = useState(false);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingPatchRef = useRef<UpdateGroupAccountRoutingRulePayload | null>(
-    null,
-  );
+  const pendingPatchRef = useRef<UpdateGroupAccountRoutingRulePayload | null>(null);
   const pendingDraftRef = useRef<AccountQuickPolicyDraft | null>(null);
-  const lastCommittedPolicyRef =
-    useRef<AccountQuickPolicyDraft>(serverPolicyDraft);
+  const lastCommittedPolicyRef = useRef<AccountQuickPolicyDraft>(serverPolicyDraft);
   const mountedRef = useRef(true);
-  const flushPolicySaveRef = useRef<
-    ((updateUi?: boolean) => Promise<void>) | null
-  >(null);
+  const flushPolicySaveRef = useRef<((updateUi?: boolean) => Promise<void>) | null>(null);
   const saveSeqRef = useRef(0);
   const recentInvocations = useMemo(
     () =>
@@ -2589,10 +2384,7 @@ function DashboardUpstreamAccountActivityCard({
     [],
   );
   const schedulePolicySave = useCallback(
-    (
-      nextDraft: AccountQuickPolicyDraft,
-      patch: UpdateGroupAccountRoutingRulePayload,
-    ) => {
+    (nextDraft: AccountQuickPolicyDraft, patch: UpdateGroupAccountRoutingRulePayload) => {
       if (account.upstreamAccountId == null) return;
       setPolicyDraft(nextDraft);
       setPolicySaveError(null);
@@ -2658,19 +2450,10 @@ function DashboardUpstreamAccountActivityCard({
         tone: "warning" as const,
       },
     ],
-    [
-      account.failureCount,
-      account.nonSuccessCount,
-      account.successCount,
-      locale,
-      localeTag,
-    ],
+    [account.failureCount, account.nonSuccessCount, account.successCount, locale, localeTag],
   );
   const costSummarySegments = useMemo(() => {
-    const failureCostShare = accountCostShare(
-      account.failureCost,
-      account.totalCost,
-    );
+    const failureCostShare = accountCostShare(account.failureCost, account.totalCost);
     return [
       {
         label: locale === "zh" ? "失败" : "Failure",
@@ -2730,13 +2513,7 @@ function DashboardUpstreamAccountActivityCard({
       });
     }
     return segments;
-  }, [
-    account.failureCount,
-    account.nonSuccessCount,
-    account.successCount,
-    locale,
-    localeTag,
-  ]);
+  }, [account.failureCount, account.nonSuccessCount, account.successCount, locale, localeTag]);
   const firstByteValue =
     (account.firstResponseByteTotalAvgMs ?? account.firstByteAvgMs) == null
       ? FALLBACK_CELL
@@ -2744,45 +2521,65 @@ function DashboardUpstreamAccountActivityCard({
           account.firstResponseByteTotalAvgMs ?? account.firstByteAvgMs,
           localeTag,
         );
-  const avgTotalValue = formatAccountDurationValue(
-    account.avgTotalMs,
-    localeTag,
-  );
-  const totalRequestValue = formatAccountNumberValue(
-    account.requestCount,
-    localeTag,
-    0,
-  );
-  const totalCostValue = formatAccountCurrencyAmountValue(
-    account.totalCost,
-    localeTag,
-    2,
-  );
-  const totalTokenValue = formatAccountNumberValue(
-    account.totalTokens,
-    localeTag,
-    0,
-  );
-  const usageBreakdownLabels = locale === "zh"
-    ? {
-        total: "总计", cacheWrite: "缓存写入", cacheRead: "缓存读取", cacheHitTokens: "缓存读取", cacheHitRate: "缓存命中率", output: "输出",
-        model: "模型", input: "输入", reasoning: "推理", unknown: "未知", unavailable: "成本分项未提供", tokenUnavailable: "Token 分项未提供", unknownModel: "未标识模型",
-        reasoningEffort: "思考等级", unspecifiedEffort: "未指定", effortNone: "无", effortMinimal: "最小", effortLow: "低", effortMedium: "中", effortHigh: "高", effortXhigh: "极高",
-      }
-    : {
-        total: "Total", cacheWrite: "Cache write", cacheRead: "Cache read", cacheHitTokens: "Cache read", cacheHitRate: "Cache hit rate", output: "Output",
-        model: "Model", input: "Input", reasoning: "Reasoning", unknown: "Unknown", unavailable: "Cost breakdown unavailable", tokenUnavailable: "Token breakdown unavailable", unknownModel: "Unidentified model",
-        reasoningEffort: "Reasoning effort", unspecifiedEffort: "Unspecified", effortNone: "None", effortMinimal: "Minimal", effortLow: "Low", effortMedium: "Medium", effortHigh: "High", effortXhigh: "XHigh",
-      };
+  const avgTotalValue = formatAccountDurationValue(account.avgTotalMs, localeTag);
+  const totalRequestValue = formatAccountNumberValue(account.requestCount, localeTag, 0);
+  const totalCostValue = formatAccountCurrencyAmountValue(account.totalCost, localeTag, 2);
+  const totalTokenValue = formatAccountNumberValue(account.totalTokens, localeTag, 0);
+  const usageBreakdownLabels =
+    locale === "zh"
+      ? {
+          total: "总计",
+          cacheWrite: "缓存写入",
+          cacheRead: "缓存读取",
+          cacheHitTokens: "缓存读取",
+          cacheHitRate: "缓存命中率",
+          output: "输出",
+          model: "模型",
+          input: "输入",
+          reasoning: "推理",
+          unknown: "未知",
+          unavailable: "成本分项未提供",
+          tokenUnavailable: "Token 分项未提供",
+          unknownModel: "未标识模型",
+          reasoningEffort: "思考等级",
+          unspecifiedEffort: "未指定",
+          effortNone: "无",
+          effortMinimal: "最小",
+          effortLow: "低",
+          effortMedium: "中",
+          effortHigh: "高",
+          effortXhigh: "极高",
+        }
+      : {
+          total: "Total",
+          cacheWrite: "Cache write",
+          cacheRead: "Cache read",
+          cacheHitTokens: "Cache read",
+          cacheHitRate: "Cache hit rate",
+          output: "Output",
+          model: "Model",
+          input: "Input",
+          reasoning: "Reasoning",
+          unknown: "Unknown",
+          unavailable: "Cost breakdown unavailable",
+          tokenUnavailable: "Token breakdown unavailable",
+          unknownModel: "Unidentified model",
+          reasoningEffort: "Reasoning effort",
+          unspecifiedEffort: "Unspecified",
+          effortNone: "None",
+          effortMinimal: "Minimal",
+          effortLow: "Low",
+          effortMedium: "Medium",
+          effortHigh: "High",
+          effortXhigh: "XHigh",
+        };
   const formatBreakdownNumber = (value: number) => formatAccountNumberValue(value, localeTag, 0);
-  const formatBreakdownRatio = (value: number | null) => value == null
-    ? FALLBACK_CELL
-    : formatAccountPercentValue(value, localeTag);
-  const formatBreakdownCurrency = (value: number) => formatAccountCurrencyValue(value, localeTag, 4);
+  const formatBreakdownRatio = (value: number | null) =>
+    value == null ? FALLBACK_CELL : formatAccountPercentValue(value, localeTag);
+  const formatBreakdownCurrency = (value: number) =>
+    formatAccountCurrencyValue(value, localeTag, 4);
   const latencyDetailSections = useMemo<AccountMetricDetailSection[]>(() => {
-    const firstByteMs = finiteNumber(
-      account.firstResponseByteTotalAvgMs ?? account.firstByteAvgMs,
-    );
+    const firstByteMs = finiteNumber(account.firstResponseByteTotalAvgMs ?? account.firstByteAvgMs);
     const stageFirstByteMs = finiteNumber(account.firstByteAvgMs);
     const avgTotalMs = finiteNumber(account.avgTotalMs);
     const relatedRows: AccountMetricDetailRow[] = [];
@@ -2798,12 +2595,7 @@ function DashboardUpstreamAccountActivityCard({
         tone: "secondary",
       });
     }
-    if (
-      firstByteMs != null &&
-      avgTotalMs != null &&
-      avgTotalMs > 0 &&
-      firstByteMs <= avgTotalMs
-    ) {
+    if (firstByteMs != null && avgTotalMs != null && avgTotalMs > 0 && firstByteMs <= avgTotalMs) {
       relatedRows.push({
         label: locale === "zh" ? "首字占比" : "First-byte share",
         value: formatAccountPercentValue(firstByteMs / avgTotalMs, localeTag),
@@ -2847,18 +2639,11 @@ function DashboardUpstreamAccountActivityCard({
     t,
   ]);
   const requestDetailSections = useMemo<AccountMetricDetailSection[]>(() => {
-    const otherCount = Math.max(
-      0,
-      account.nonSuccessCount - account.failureCount,
-    );
+    const otherCount = Math.max(0, account.nonSuccessCount - account.failureCount);
     const successRate =
-      account.requestCount > 0
-        ? account.successCount / account.requestCount
-        : null;
+      account.requestCount > 0 ? account.successCount / account.requestCount : null;
     const nonSuccessRate =
-      account.requestCount > 0
-        ? account.nonSuccessCount / account.requestCount
-        : null;
+      account.requestCount > 0 ? account.nonSuccessCount / account.requestCount : null;
 
     return [
       {
@@ -2912,15 +2697,9 @@ function DashboardUpstreamAccountActivityCard({
     totalRequestValue,
   ]);
   const costDetailSections = useMemo<AccountMetricDetailSection[]>(() => {
-    const failureCostShare = accountCostShare(
-      account.failureCost,
-      account.totalCost,
-    );
+    const failureCostShare = accountCostShare(account.failureCost, account.totalCost);
     const nonFailureCost = account.totalCost - account.failureCost;
-    const averageCost =
-      account.requestCount > 0
-        ? account.totalCost / account.requestCount
-        : null;
+    const averageCost = account.requestCount > 0 ? account.totalCost / account.requestCount : null;
 
     return [
       {
@@ -2933,11 +2712,7 @@ function DashboardUpstreamAccountActivityCard({
           },
           {
             label: locale === "zh" ? "失败成本" : "Failure cost",
-            value: formatAccountCurrencyValue(
-              account.failureCost,
-              localeTag,
-              2,
-            ),
+            value: formatAccountCurrencyValue(account.failureCost, localeTag, 2),
             tone: "error" as const,
           },
           {
@@ -2973,9 +2748,7 @@ function DashboardUpstreamAccountActivityCard({
   ]);
   const tokenDetailSections = useMemo<AccountMetricDetailSection[]>(() => {
     const averageTokens =
-      account.requestCount > 0
-        ? account.totalTokens / account.requestCount
-        : null;
+      account.requestCount > 0 ? account.totalTokens / account.requestCount : null;
 
     return [
       {
@@ -2993,11 +2766,7 @@ function DashboardUpstreamAccountActivityCard({
           },
           {
             label: locale === "zh" ? "失败 Token" : "Failure tokens",
-            value: formatAccountNumberValue(
-              account.failureTokens,
-              localeTag,
-              0,
-            ),
+            value: formatAccountNumberValue(account.failureTokens, localeTag, 0),
             tone: "error" as const,
           },
         ],
@@ -3007,20 +2776,12 @@ function DashboardUpstreamAccountActivityCard({
         rows: [
           {
             label: locale === "zh" ? "成功 Token" : "Success tokens",
-            value: formatAccountNumberValue(
-              account.successTokens,
-              localeTag,
-              0,
-            ),
+            value: formatAccountNumberValue(account.successTokens, localeTag, 0),
             tone: "success" as const,
           },
           {
             label: locale === "zh" ? "非成功 Token" : "Non-success tokens",
-            value: formatAccountNumberValue(
-              account.nonSuccessTokens,
-              localeTag,
-              0,
-            ),
+            value: formatAccountNumberValue(account.nonSuccessTokens, localeTag, 0),
             tone: "warning" as const,
           },
           {
@@ -3043,10 +2804,7 @@ function DashboardUpstreamAccountActivityCard({
     totalTokenValue,
   ]);
   return (
-    <article
-      data-testid="dashboard-upstream-account-card"
-      className={ACCOUNT_CARD_CLASS_NAME}
-    >
+    <article data-testid="dashboard-upstream-account-card" className={ACCOUNT_CARD_CLASS_NAME}>
       <div
         data-testid="dashboard-upstream-account-header-row"
         className="flex flex-wrap items-start justify-between gap-4"
@@ -3065,10 +2823,7 @@ function DashboardUpstreamAccountActivityCard({
               )}
               onClick={() => {
                 if (account.upstreamAccountId == null) return;
-                onOpenUpstreamAccount?.(
-                  account.upstreamAccountId,
-                  account.displayName,
-                );
+                onOpenUpstreamAccount?.(account.upstreamAccountId, account.displayName);
               }}
             >
               <span className="truncate">{account.displayName}</span>
@@ -3081,10 +2836,7 @@ function DashboardUpstreamAccountActivityCard({
             />
             {shouldShowUpstreamPlanBadge(account.planType) ? (
               <Badge
-                variant={
-                  upstreamPlanBadgeRecipe(account.planType)?.variant ??
-                  "secondary"
-                }
+                variant={upstreamPlanBadgeRecipe(account.planType)?.variant ?? "secondary"}
                 data-plan={upstreamPlanBadgeRecipe(account.planType)?.dataPlan}
                 className={cn(
                   "h-5 px-2 py-0 text-[10px] font-semibold",
@@ -3119,31 +2871,19 @@ function DashboardUpstreamAccountActivityCard({
         <div className="flex min-w-0 flex-1 flex-wrap items-start justify-end gap-x-5 gap-y-1.5 text-right">
           <AccountInlineMetric
             label={t("dashboard.today.inProgressConversations")}
-            value={formatAccountNumberValue(
-              account.inProgressInvocationCount,
-              localeTag,
-              0,
-            )}
+            value={formatAccountNumberValue(account.inProgressInvocationCount, localeTag, 0)}
             tone="secondary"
             iconName="send"
           />
           <AccountInlineMetric
             label="TPM"
-            value={formatAccountNumberValue(
-              account.tokensPerMinute,
-              localeTag,
-              0,
-            )}
+            value={formatAccountNumberValue(account.tokensPerMinute, localeTag, 0)}
             tone="primary"
             iconName="speedometer"
           />
           <AccountInlineMetric
             label={t("dashboard.today.spendRate")}
-            value={formatAccountCurrencyAmountValue(
-              account.spendRate,
-              localeTag,
-              2,
-            )}
+            value={formatAccountCurrencyAmountValue(account.spendRate, localeTag, 2)}
             tone="warning"
             iconName="cash-clock"
           />
@@ -3157,12 +2897,8 @@ function DashboardUpstreamAccountActivityCard({
                 ? "cursor-not-allowed opacity-45"
                 : "hover:border-primary/45 hover:text-primary",
             )}
-            title={
-              locale === "zh" ? "打开账号路由设置" : "Open routing settings"
-            }
-            aria-label={
-              locale === "zh" ? "打开账号路由设置" : "Open routing settings"
-            }
+            title={locale === "zh" ? "打开账号路由设置" : "Open routing settings"}
+            aria-label={locale === "zh" ? "打开账号路由设置" : "Open routing settings"}
             onClick={(event) => {
               event.stopPropagation();
               handleOpenRoutingTab();
@@ -3171,11 +2907,7 @@ function DashboardUpstreamAccountActivityCard({
               event.stopPropagation();
             }}
           >
-            <AppIcon
-              name="cog-outline"
-              className="h-[1.125rem] w-[1.125rem]"
-              aria-hidden="true"
-            />
+            <AppIcon name="cog-outline" className="h-[1.125rem] w-[1.125rem]" aria-hidden="true" />
           </button>
         </div>
       </div>
@@ -3301,19 +3033,17 @@ function DashboardUpstreamAccountActivityCard({
           </div>
         </div>
         <div className="grid flex-1 auto-rows-fr gap-1.5">
-          {recentInvocations.map(
-            (invocation: DashboardWorkingConversationInvocationModel) => (
-              <AccountRecentInvocationRow
-                key={`${invocation.record.invokeId}:${invocation.record.occurredAt}:${invocation.record.id}`}
-                invocation={invocation}
-                locale={locale}
-                nowMs={nowMs}
-                onOpenUpstreamAccount={onOpenUpstreamAccount}
-                onOpenConversation={onOpenConversation}
-                onOpenInvocation={onOpenInvocation}
-              />
-            ),
-          )}
+          {recentInvocations.map((invocation: DashboardWorkingConversationInvocationModel) => (
+            <AccountRecentInvocationRow
+              key={`${invocation.record.invokeId}:${invocation.record.occurredAt}:${invocation.record.id}`}
+              invocation={invocation}
+              locale={locale}
+              nowMs={nowMs}
+              onOpenUpstreamAccount={onOpenUpstreamAccount}
+              onOpenConversation={onOpenConversation}
+              onOpenInvocation={onOpenInvocation}
+            />
+          ))}
         </div>
       </div>
     </article>
@@ -3331,20 +3061,13 @@ function readDashboardWorkingConversationAnchorKey(card: HTMLElement) {
   ).trim();
 }
 
-function captureVisibleCardAnchor(
-  container: HTMLDivElement,
-  hasVirtualizedRowsAbove = false,
-) {
+function captureVisibleCardAnchor(container: HTMLDivElement, hasVirtualizedRowsAbove = false) {
   const containerRect = container.getBoundingClientRect();
   const topBoundary = Math.max(0, containerRect.top);
   const viewportBottom =
-    typeof window === "undefined"
-      ? Number.POSITIVE_INFINITY
-      : window.innerHeight;
+    typeof window === "undefined" ? Number.POSITIVE_INFINITY : window.innerHeight;
   const cards = Array.from(
-    container.querySelectorAll<HTMLElement>(
-      '[data-testid="dashboard-working-conversation-card"]',
-    ),
+    container.querySelectorAll<HTMLElement>('[data-testid="dashboard-working-conversation-card"]'),
   );
   let hasHiddenContentAbove = hasVirtualizedRowsAbove;
   for (const card of cards) {
@@ -3389,9 +3112,8 @@ export function DashboardWorkingConversationsSection({
   onUpstreamAccountPolicyChanged,
 }: DashboardWorkingConversationsSectionProps) {
   const { t, locale } = useTranslation();
-  const [preferredView, setPreferredView] = useState<DashboardWorkspaceView>(
-    () =>
-      readPersistedDashboardWorkspaceView(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY),
+  const [preferredView, setPreferredView] = useState<DashboardWorkspaceView>(() =>
+    readPersistedDashboardWorkspaceView(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY),
   );
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [containerWidth, setContainerWidth] = useState(0);
@@ -3411,15 +3133,10 @@ export function DashboardWorkingConversationsSection({
     setGridElement(node);
   }, []);
   const hasInFlightCards = cards.some(
-    (card) =>
-      card.currentInvocation.isInFlight ||
-      card.previousInvocation?.isInFlight === true,
+    (card) => card.currentInvocation.isInFlight || card.previousInvocation?.isInFlight === true,
   );
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
-  const numberFormatter = useMemo(
-    () => new Intl.NumberFormat(localeTag),
-    [localeTag],
-  );
+  const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
   const currencyFormatter = useMemo(
     () =>
       new Intl.NumberFormat(localeTag, {
@@ -3502,10 +3219,7 @@ export function DashboardWorkingConversationsSection({
     [upstreamAccountActivity],
   );
   useEffect(() => {
-    persistDashboardWorkspaceView(
-      DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY,
-      preferredView,
-    );
+    persistDashboardWorkspaceView(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY, preferredView);
   }, [preferredView]);
   const countBadgeValue = totalMatched ?? cards.length;
   const accountCountBadgeValue = upstreamAccounts.length;
@@ -3521,9 +3235,7 @@ export function DashboardWorkingConversationsSection({
     () =>
       chunkDashboardUpstreamAccountRows(
         upstreamAccounts,
-        resolveDashboardUpstreamAccountColumnCount(
-          Math.max(containerWidth, viewportWidth),
-        ),
+        resolveDashboardUpstreamAccountColumnCount(Math.max(containerWidth, viewportWidth)),
       ),
     [containerWidth, upstreamAccounts, viewportWidth],
   );
@@ -3531,13 +3243,10 @@ export function DashboardWorkingConversationsSection({
     activeView === "upstreamAccounts"
       ? t("dashboard.upstreamAccounts.subtitle")
       : t("dashboard.section.workingConversationsSubtitle");
-  const cssColumnCount =
-    resolveDashboardWorkingConversationCssColumnCount(gridElement);
+  const cssColumnCount = resolveDashboardWorkingConversationCssColumnCount(gridElement);
   const columnCount =
     cssColumnCount ??
-    resolveDashboardWorkingConversationColumnCount(
-      Math.max(containerWidth, viewportWidth),
-    );
+    resolveDashboardWorkingConversationColumnCount(Math.max(containerWidth, viewportWidth));
   const rows = useMemo(
     () => chunkDashboardWorkingConversationRows(cards, columnCount),
     [cards, columnCount],
@@ -3551,12 +3260,7 @@ export function DashboardWorkingConversationsSection({
   const virtualRows = rowVirtualizer.getVirtualItems();
   const fallbackRowCount = Math.min(
     rows.length,
-    Math.max(
-      1,
-      Math.ceil(
-        DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE / Math.max(columnCount, 1),
-      ),
-    ),
+    Math.max(1, Math.ceil(DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE / Math.max(columnCount, 1))),
   );
   const renderedRows =
     virtualRows.length > 0
@@ -3566,10 +3270,8 @@ export function DashboardWorkingConversationsSection({
           index,
           start: scrollMargin + index * 360,
         }));
-  const hasVirtualizedRowsAbove =
-    renderedRows.length > 0 ? renderedRows[0]!.index > 0 : false;
-  const totalSize =
-    virtualRows.length > 0 ? rowVirtualizer.getTotalSize() : rows.length * 360;
+  const hasVirtualizedRowsAbove = renderedRows.length > 0 ? renderedRows[0]!.index > 0 : false;
+  const totalSize = virtualRows.length > 0 ? rowVirtualizer.getTotalSize() : rows.length * 360;
   const refreshTargetCount = useMemo(() => {
     if (cards.length === 0) {
       return DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE;
@@ -3608,8 +3310,7 @@ export function DashboardWorkingConversationsSection({
         setScrollMargin(0);
         return;
       }
-      const nextScrollMargin =
-        gridElement.getBoundingClientRect().top + window.scrollY;
+      const nextScrollMargin = gridElement.getBoundingClientRect().top + window.scrollY;
       setScrollMargin((current) =>
         Math.abs(current - nextScrollMargin) > 0.5 ? nextScrollMargin : current,
       );
@@ -3665,8 +3366,7 @@ export function DashboardWorkingConversationsSection({
       if (containerRect.bottom <= 0) {
         return;
       }
-      const sectionStartsBelowFold =
-        containerRect.top >= window.innerHeight - 1;
+      const sectionStartsBelowFold = containerRect.top >= window.innerHeight - 1;
       if (trigger === "mount" && sectionStartsBelowFold) {
         return;
       }
@@ -3677,23 +3377,13 @@ export function DashboardWorkingConversationsSection({
       }
     };
     const mountTimer = window.setTimeout(() => {
-      const nextAnchor = captureVisibleCardAnchor(
-        container,
-        hasVirtualizedRowsAbove,
-      );
-      visibleAnchorRef.current = nextAnchor?.hasHiddenContentAbove
-        ? nextAnchor
-        : null;
+      const nextAnchor = captureVisibleCardAnchor(container, hasVirtualizedRowsAbove);
+      visibleAnchorRef.current = nextAnchor?.hasHiddenContentAbove ? nextAnchor : null;
       maybeLoadMore("mount");
     }, 0);
     const handleScroll = () => {
-      const nextAnchor = captureVisibleCardAnchor(
-        container,
-        hasVirtualizedRowsAbove,
-      );
-      visibleAnchorRef.current = nextAnchor?.hasHiddenContentAbove
-        ? nextAnchor
-        : null;
+      const nextAnchor = captureVisibleCardAnchor(container, hasVirtualizedRowsAbove);
+      visibleAnchorRef.current = nextAnchor?.hasHiddenContentAbove ? nextAnchor : null;
       maybeLoadMore("scroll");
     };
     window.addEventListener("scroll", handleScroll, { passive: true });
@@ -3701,14 +3391,7 @@ export function DashboardWorkingConversationsSection({
       window.clearTimeout(mountTimer);
       window.removeEventListener("scroll", handleScroll);
     };
-  }, [
-    gridElement,
-    hasMore,
-    hasVirtualizedRowsAbove,
-    isLoadingMore,
-    onLoadMore,
-    rows.length,
-  ]);
+  }, [gridElement, hasMore, hasVirtualizedRowsAbove, isLoadingMore, onLoadMore, rows.length]);
 
   useEffect(() => {
     setRefreshTargetCount?.(refreshTargetCount);
@@ -3722,18 +3405,10 @@ export function DashboardWorkingConversationsSection({
         container.querySelectorAll<HTMLElement>(
           '[data-testid="dashboard-working-conversation-card"]',
         ),
-      ).find(
-        (card) =>
-          readDashboardWorkingConversationAnchorKey(card) ===
-          pendingAnchor.anchorKey,
-      );
+      ).find((card) => readDashboardWorkingConversationAnchorKey(card) === pendingAnchor.anchorKey);
       if (anchoredCard) {
-        const containerTopBoundary = Math.max(
-          0,
-          container.getBoundingClientRect().top,
-        );
-        const nextTop =
-          anchoredCard.getBoundingClientRect().top - containerTopBoundary;
+        const containerTopBoundary = Math.max(0, container.getBoundingClientRect().top);
+        const nextTop = anchoredCard.getBoundingClientRect().top - containerTopBoundary;
         const delta = nextTop - pendingAnchor.top;
         if (Math.abs(delta) > 0.5 && typeof window !== "undefined") {
           window.scrollBy(0, delta);
@@ -3743,22 +3418,15 @@ export function DashboardWorkingConversationsSection({
     const nextAnchor = container
       ? captureVisibleCardAnchor(container, hasVirtualizedRowsAbove)
       : null;
-    visibleAnchorRef.current = nextAnchor?.hasHiddenContentAbove
-      ? nextAnchor
-      : null;
+    visibleAnchorRef.current = nextAnchor?.hasHiddenContentAbove ? nextAnchor : null;
   }, [cards, columnCount, gridElement, hasVirtualizedRowsAbove]);
 
   if (error && cards.length === 0) {
     return (
-      <section
-        className="surface-panel"
-        data-testid="dashboard-working-conversations"
-      >
+      <section className="surface-panel" data-testid="dashboard-working-conversations">
         <div className="surface-panel-body gap-4 desktop:!p-5">
           <div className="section-heading">
-            <h2 className="section-title">
-              {t("dashboard.section.workingConversationsTitle")}
-            </h2>
+            <h2 className="section-title">{t("dashboard.section.workingConversationsTitle")}</h2>
           </div>
           <Alert variant="error">
             <span>{error}</span>
@@ -3776,9 +3444,7 @@ export function DashboardWorkingConversationsSection({
       <div className="surface-panel-body gap-5 desktop:!p-5">
         <div className="flex flex-col gap-3 desktop:flex-row desktop:items-start">
           <div className="section-heading min-w-0 desktop:flex-1">
-            <h2 className="section-title">
-              {t("dashboard.section.workingConversationsTitle")}
-            </h2>
+            <h2 className="section-title">{t("dashboard.section.workingConversationsTitle")}</h2>
             <p className="section-description">{sectionSubtitle}</p>
           </div>
           <div
@@ -3836,13 +3502,10 @@ export function DashboardWorkingConversationsSection({
             {upstreamAccountActivityLoading && upstreamAccounts.length === 0 ? (
               <div className="flex min-h-44 items-center justify-center gap-3 rounded-2xl border border-dashed border-base-300/75 bg-base-100/45">
                 <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
-                <span className="text-sm text-base-content/70">
-                  {t("chart.loadingDetailed")}
-                </span>
+                <span className="text-sm text-base-content/70">{t("chart.loadingDetailed")}</span>
               </div>
             ) : null}
-            {!upstreamAccountActivityLoading &&
-            upstreamAccounts.length === 0 ? (
+            {!upstreamAccountActivityLoading && upstreamAccounts.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-base-300/75 bg-base-100/45 px-5 py-8 text-sm text-base-content/65">
                 {t("dashboard.upstreamAccounts.empty")}
               </div>
@@ -3854,11 +3517,7 @@ export function DashboardWorkingConversationsSection({
               >
                 {upstreamAccountRows.flat().map((account) => (
                   <DashboardUpstreamAccountActivityCard
-                    key={
-                      account.accountKey ??
-                      account.upstreamAccountId ??
-                      "unassigned"
-                    }
+                    key={account.accountKey ?? account.upstreamAccountId ?? "unassigned"}
                     account={account}
                     locale={locale}
                     localeTag={localeTag}
@@ -3878,9 +3537,7 @@ export function DashboardWorkingConversationsSection({
         {activeView === "conversations" && isLoading && cards.length === 0 ? (
           <div className="flex min-h-44 items-center justify-center gap-3 rounded-2xl border border-dashed border-base-300/75 bg-base-100/45">
             <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
-            <span className="text-sm text-base-content/70">
-              {t("chart.loadingDetailed")}
-            </span>
+            <span className="text-sm text-base-content/70">{t("chart.loadingDetailed")}</span>
           </div>
         ) : null}
 
@@ -3932,19 +3589,15 @@ export function DashboardWorkingConversationsSection({
                           card.currentInvocation.tone,
                           card.currentInvocation.displayStatus,
                         );
-                        const displaySequenceId =
-                          formatDashboardWorkingConversationSequenceId(
-                            card.conversationSequenceId,
-                          );
+                        const displaySequenceId = formatDashboardWorkingConversationSequenceId(
+                          card.conversationSequenceId,
+                        );
                         const currentStatusLabel = currentStatusMeta.labelKey
                           ? t(currentStatusMeta.labelKey)
-                          : (currentStatusMeta.label ??
-                            t("table.status.unknown"));
+                          : (currentStatusMeta.label ?? t("table.status.unknown"));
                         const sortAnchorLabel =
                           card.sortAnchorEpoch != null
-                            ? timestampFormatter.format(
-                                new Date(card.sortAnchorEpoch),
-                              )
+                            ? timestampFormatter.format(new Date(card.sortAnchorEpoch))
                             : FALLBACK_CELL;
                         const sequenceConversationActionLabel = `${t("dashboard.workingConversations.openConversation")} · ${displaySequenceId} · ${card.promptCacheKey}`;
 
@@ -3955,15 +3608,11 @@ export function DashboardWorkingConversationsSection({
                               if (!node) return;
                               (
                                 node as DashboardWorkingConversationAnchorCardElement
-                              ).__dashboardWorkingConversationAnchorKey =
-                                card.promptCacheKey;
+                              ).__dashboardWorkingConversationAnchorKey = card.promptCacheKey;
                             }}
                             data-testid="dashboard-working-conversation-card"
                             data-conversation-sequence-id={displaySequenceId}
-                            className={cn(
-                              CARD_CLASS_NAME,
-                              currentStatusMeta.cardToneClassName,
-                            )}
+                            className={cn(CARD_CLASS_NAME, currentStatusMeta.cardToneClassName)}
                           >
                             <div className="relative">
                               <div className="flex min-w-0 items-center justify-between gap-3">
@@ -3976,15 +3625,12 @@ export function DashboardWorkingConversationsSection({
                                     title={sequenceConversationActionLabel}
                                     onClick={() => {
                                       onOpenConversation({
-                                        conversationSequenceId:
-                                          card.conversationSequenceId,
+                                        conversationSequenceId: card.conversationSequenceId,
                                         promptCacheKey: card.promptCacheKey,
                                       });
                                     }}
                                   >
-                                    <span className="min-w-0 truncate">
-                                      {displaySequenceId}
-                                    </span>
+                                    <span className="min-w-0 truncate">{displaySequenceId}</span>
                                   </button>
                                 ) : (
                                   <div className="min-w-0 shrink truncate font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content">
@@ -3992,9 +3638,7 @@ export function DashboardWorkingConversationsSection({
                                   </div>
                                 )}
                                 <div className="flex shrink-0 items-center justify-end gap-2 whitespace-nowrap text-[10px] text-base-content/62">
-                                  <span className="font-mono">
-                                    {sortAnchorLabel}
-                                  </span>
+                                  <span className="font-mono">{sortAnchorLabel}</span>
                                   {card.currentInvocation.livePhase ? (
                                     <InvocationPhaseBadge
                                       phase={card.currentInvocation.livePhase}
@@ -4022,28 +3666,16 @@ export function DashboardWorkingConversationsSection({
                               <div className="mt-2">
                                 <div className="grid grid-cols-3 gap-1.5">
                                   <SummaryMetric
-                                    label={t(
-                                      "dashboard.workingConversations.requestCountLabel",
-                                    )}
-                                    value={numberFormatter.format(
-                                      card.requestCount,
-                                    )}
+                                    label={t("dashboard.workingConversations.requestCountLabel")}
+                                    value={numberFormatter.format(card.requestCount)}
                                   />
                                   <SummaryMetric
-                                    label={t(
-                                      "dashboard.workingConversations.totalTokensLabel",
-                                    )}
-                                    value={numberFormatter.format(
-                                      card.totalTokens,
-                                    )}
+                                    label={t("dashboard.workingConversations.totalTokensLabel")}
+                                    value={numberFormatter.format(card.totalTokens)}
                                   />
                                   <SummaryMetric
-                                    label={t(
-                                      "dashboard.workingConversations.totalCostLabel",
-                                    )}
-                                    value={currencyFormatter.format(
-                                      card.totalCost,
-                                    )}
+                                    label={t("dashboard.workingConversations.totalCostLabel")}
+                                    value={currencyFormatter.format(card.totalCost)}
                                   />
                                 </div>
                               </div>
@@ -4051,13 +3683,9 @@ export function DashboardWorkingConversationsSection({
                               <div className="mt-2.5 space-y-1.5 sm:mt-3 sm:space-y-2">
                                 <InvocationSlot
                                   invocation={card.currentInvocation}
-                                  label={t(
-                                    "dashboard.workingConversations.currentInvocation",
-                                  )}
+                                  label={t("dashboard.workingConversations.currentInvocation")}
                                   slotKind="current"
-                                  conversationSequenceId={
-                                    card.conversationSequenceId
-                                  }
+                                  conversationSequenceId={card.conversationSequenceId}
                                   promptCacheKey={card.promptCacheKey}
                                   nowMs={nowMs}
                                   locale={locale}
@@ -4067,19 +3695,13 @@ export function DashboardWorkingConversationsSection({
                                 {card.previousInvocation ? (
                                   <InvocationSlot
                                     invocation={card.previousInvocation}
-                                    label={t(
-                                      "dashboard.workingConversations.previousInvocation",
-                                    )}
+                                    label={t("dashboard.workingConversations.previousInvocation")}
                                     slotKind="previous"
-                                    conversationSequenceId={
-                                      card.conversationSequenceId
-                                    }
+                                    conversationSequenceId={card.conversationSequenceId}
                                     promptCacheKey={card.promptCacheKey}
                                     nowMs={nowMs}
                                     locale={locale}
-                                    onOpenUpstreamAccount={
-                                      onOpenUpstreamAccount
-                                    }
+                                    onOpenUpstreamAccount={onOpenUpstreamAccount}
                                     onOpenInvocation={onOpenInvocation}
                                   />
                                 ) : (

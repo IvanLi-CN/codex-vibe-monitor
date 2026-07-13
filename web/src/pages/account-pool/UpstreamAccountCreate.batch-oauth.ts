@@ -1,32 +1,31 @@
-/* eslint-disable react-hooks/exhaustive-deps */
-import { useCallback, useEffect } from "react";
+// biome-ignore-all lint/correctness/useExhaustiveDependencies: refs and synchronization callbacks intentionally preserve stable legacy effect semantics
+
 import type { KeyboardEvent } from "react";
+import { useCallback, useEffect } from "react";
 import type { UpdateUpstreamAccountPayload } from "../../lib/api";
 import type { UpstreamAccountCreateControllerContext } from "./UpstreamAccountCreate.controller-context";
 import {
+  applyBatchMotherDraftRules,
   type BatchOauthPersistedMetadata,
   type BatchOauthRow,
-  type CreateTab,
-  MAX_SHARED_TAG_SYNC_ATTEMPTS,
   batchTagIdsEqual,
   buildBatchOauthPersistedMetadata,
   buildCompletedBatchOauthSharedTagBaselineSignature,
+  type CreateTab,
   canEditCompletedBatchOauthRowMetadata,
   createBatchOauthRow,
   didCompletedBatchOauthCommittedFieldsChange,
   enforceBatchMotherDraftUniqueness,
   findDisplayNameConflict,
+  MAX_SHARED_TAG_SYNC_ATTEMPTS,
   normalizeBatchTagIds,
-  resolveDisplayNameAfterEmailChange,
   reconcileBatchOauthMotherRowsAfterSave,
   resolveCompletedBatchOauthRowBaselineTagIds,
   resolveCompletedBatchOauthRowPersistedTagIds,
-  applyBatchMotherDraftRules,
+  resolveDisplayNameAfterEmailChange,
 } from "./UpstreamAccountCreate.shared";
 
-export function useUpstreamAccountCreateBatchOauth(
-  ctx: UpstreamAccountCreateControllerContext,
-) {
+export function useUpstreamAccountCreateBatchOauth(ctx: UpstreamAccountCreateControllerContext) {
   const {
     batchDefaultGroupName,
     batchRowIdRef,
@@ -82,10 +81,7 @@ export function useUpstreamAccountCreateBatchOauth(
     }, 1600);
   }, []);
 
-  const updateBatchRow = (
-    rowId: string,
-    updater: (row: BatchOauthRow) => BatchOauthRow,
-  ) => {
+  const updateBatchRow = (rowId: string, updater: (row: BatchOauthRow) => BatchOauthRow) => {
     setBatchRows((current: BatchOauthRow[]) =>
       enforceBatchMotherDraftUniqueness(
         applyBatchMotherDraftRules(
@@ -120,12 +116,7 @@ export function useUpstreamAccountCreateBatchOauth(
       const remaining = current.filter((row: BatchOauthRow) => row.id !== rowId);
       return remaining.length > 0
         ? remaining
-        : [
-            createBatchOauthRow(
-              `row-${batchRowIdRef.current++}`,
-              batchDefaultGroupName.trim(),
-            ),
-          ];
+        : [createBatchOauthRow(`row-${batchRowIdRef.current++}`, batchDefaultGroupName.trim())];
     });
     setBatchManualCopyRowId((current: string | null) => (current === rowId ? null : current));
     if (mailboxSessionId) {
@@ -146,11 +137,7 @@ export function useUpstreamAccountCreateBatchOauth(
     committedFields: Array<keyof BatchOauthPersistedMetadata>,
   ) {
     const sourceRow = batchRowsRef.current.find((item: BatchOauthRow) => item.id === rowId);
-    if (
-      !sourceRow ||
-      !canEditCompletedBatchOauthRowMetadata(sourceRow) ||
-      sourceRow.metadataBusy
-    ) {
+    if (!sourceRow || !canEditCompletedBatchOauthRowMetadata(sourceRow) || sourceRow.metadataBusy) {
       return;
     }
     const accountId = sourceRow.session?.accountId;
@@ -164,11 +151,7 @@ export function useUpstreamAccountCreateBatchOauth(
       tagIds: normalizeBatchTagIds(
         overrides.tagIds ??
           sourceRow.pendingSharedTagIds ??
-          resolveCompletedBatchOauthRowBaselineTagIds(
-            sourceRow,
-            items,
-            batchTagIds,
-          ),
+          resolveCompletedBatchOauthRowBaselineTagIds(sourceRow, items, batchTagIds),
       ),
     };
     const isPendingSharedTagSyncAttempt =
@@ -182,20 +165,13 @@ export function useUpstreamAccountCreateBatchOauth(
     ) {
       updateBatchRow(rowId, (current: BatchOauthRow) => ({
         ...current,
-        metadataError: t(
-          "accountPool.upstreamAccounts.validation.displayNameDuplicate",
-        ),
+        metadataError: t("accountPool.upstreamAccounts.validation.displayNameDuplicate"),
       }));
       return;
     }
 
     if (
-      !didCompletedBatchOauthCommittedFieldsChange(
-        sourceRow,
-        nextMetadata,
-        committedFields,
-        items,
-      )
+      !didCompletedBatchOauthCommittedFieldsChange(sourceRow, nextMetadata, committedFields, items)
     ) {
       updateBatchRow(rowId, (current: BatchOauthRow) =>
         current.metadataError
@@ -224,9 +200,7 @@ export function useUpstreamAccountCreateBatchOauth(
         payload.displayName = nextMetadata.displayName || undefined;
       }
       if (committedFields.includes("groupName")) {
-        const groupProxyState = resolveRequiredGroupProxyState(
-          nextMetadata.groupName,
-        );
+        const groupProxyState = resolveRequiredGroupProxyState(nextMetadata.groupName);
         if (groupProxyState.error) {
           throw new Error(groupProxyState.error);
         }
@@ -236,12 +210,10 @@ export function useUpstreamAccountCreateBatchOauth(
           nextMetadata.groupName,
         );
         payload.groupNodeShuntEnabled = groupProxyState.nodeShuntEnabled;
-        payload.groupSingleAccountRotationEnabled =
-          resolveGroupSingleAccountRotationEnabledForName(
-            nextMetadata.groupName,
-          );
-        payload.groupNote =
-          resolvePendingGroupNoteForName(nextMetadata.groupName) || undefined;
+        payload.groupSingleAccountRotationEnabled = resolveGroupSingleAccountRotationEnabledForName(
+          nextMetadata.groupName,
+        );
+        payload.groupNote = resolvePendingGroupNoteForName(nextMetadata.groupName) || undefined;
       }
       if (committedFields.includes("note")) {
         payload.note = nextMetadata.note;
@@ -279,17 +251,13 @@ export function useUpstreamAccountCreateBatchOauth(
             groupName: committedFields.includes("groupName")
               ? (detail.groupName ?? "")
               : current.groupName,
-            note: committedFields.includes("note")
-              ? (detail.note ?? "")
-              : current.note,
+            note: committedFields.includes("note") ? (detail.note ?? "") : current.note,
             isMother: detail.isMother === true,
             metadataBusy: false,
             metadataError: null,
             metadataPersisted: nextPersisted,
             pendingSharedTagIds,
-            sharedTagSyncAttempts: pendingSharedTagIds
-              ? current.sharedTagSyncAttempts
-              : 0,
+            sharedTagSyncAttempts: pendingSharedTagIds ? current.sharedTagSyncAttempts : 0,
             needsRefresh: false,
             actionError: null,
             session: current.session
@@ -305,10 +273,7 @@ export function useUpstreamAccountCreateBatchOauth(
             sessionHint:
               current.needsRefresh || committedFields.includes("displayName")
                 ? t("accountPool.upstreamAccounts.batchOauth.completed", {
-                    name:
-                      detail.displayName ||
-                      current.displayName ||
-                      `#${detail.id}`,
+                    name: detail.displayName || current.displayName || `#${detail.id}`,
                   })
                 : current.sessionHint,
             duplicateWarning: detail.duplicateInfo
@@ -351,8 +316,7 @@ export function useUpstreamAccountCreateBatchOauth(
         ...row,
         [field]: value,
         displayName: nextDisplayName,
-        emailResolution:
-          field === "email" ? null : row.emailResolution,
+        emailResolution: field === "email" ? null : row.emailResolution,
         metadataError:
           canEditCompletedBatchOauthRowMetadata(row) && field !== "callbackUrl"
             ? null
@@ -365,28 +329,19 @@ export function useUpstreamAccountCreateBatchOauth(
     });
   };
 
-  const handleBatchCompletedTextFieldBlur = (
-    rowId: string,
-    field: "displayName" | "note",
-  ) => {
+  const handleBatchCompletedTextFieldBlur = (rowId: string, field: "displayName" | "note") => {
     const row = batchRowsRef.current.find((item: BatchOauthRow) => item.id === rowId);
     if (!row || !canEditCompletedBatchOauthRowMetadata(row)) return;
     if (field === "displayName") {
-      void persistCompletedBatchRowMetadata(
-        rowId,
-        { displayName: row.displayName.trim() },
-        ["displayName"],
-      );
+      void persistCompletedBatchRowMetadata(rowId, { displayName: row.displayName.trim() }, [
+        "displayName",
+      ]);
       return;
     }
-    void persistCompletedBatchRowMetadata(rowId, { note: row.note.trim() }, [
-      "note",
-    ]);
+    void persistCompletedBatchRowMetadata(rowId, { note: row.note.trim() }, ["note"]);
   };
 
-  const handleBatchCompletedTextFieldKeyDown = (
-    event: KeyboardEvent<HTMLInputElement>,
-  ) => {
+  const handleBatchCompletedTextFieldKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key !== "Enter") return;
     event.preventDefault();
     event.currentTarget.blur();
@@ -398,11 +353,7 @@ export function useUpstreamAccountCreateBatchOauth(
     const normalizedValue = value.trim();
     const nextGroupName = normalizedValue || batchDefaultGroupName.trim();
     updateBatchRow(rowId, (current: BatchOauthRow) => {
-      if (
-        current.busyAction ||
-        current.mailboxBusyAction ||
-        current.metadataBusy
-      ) {
+      if (current.busyAction || current.mailboxBusyAction || current.metadataBusy) {
         return current;
       }
       return {
@@ -416,9 +367,7 @@ export function useUpstreamAccountCreateBatchOauth(
       };
     });
     if (!canEditCompletedBatchOauthRowMetadata(row)) return;
-    void persistCompletedBatchRowMetadata(rowId, { groupName: nextGroupName }, [
-      "groupName",
-    ]);
+    void persistCompletedBatchRowMetadata(rowId, { groupName: nextGroupName }, ["groupName"]);
   };
 
   const handleBatchMotherToggle = (rowId: string) => {
@@ -434,9 +383,7 @@ export function useUpstreamAccountCreateBatchOauth(
       }));
       return;
     }
-    void persistCompletedBatchRowMetadata(rowId, { isMother: nextIsMother }, [
-      "isMother",
-    ]);
+    void persistCompletedBatchRowMetadata(rowId, { isMother: nextIsMother }, ["isMother"]);
   };
 
   const handleBatchDefaultGroupChange = (value: string) => {
@@ -448,10 +395,7 @@ export function useUpstreamAccountCreateBatchOauth(
         if (row.busyAction || row.mailboxBusyAction || row.metadataBusy) {
           return row;
         }
-        if (
-          row.session?.status === "completed" &&
-          !canEditCompletedBatchOauthRowMetadata(row)
-        ) {
+        if (row.session?.status === "completed" && !canEditCompletedBatchOauthRowMetadata(row)) {
           return row;
         }
         if (!row.inheritsDefaultGroup) return row;
@@ -476,17 +420,14 @@ export function useUpstreamAccountCreateBatchOauth(
     setBatchDefaultGroupName(value);
     setBatchRows(nextRows);
     completedRowIdsToPersist.forEach((rowId) => {
-      void persistCompletedBatchRowMetadata(rowId, { groupName: nextTrimmed }, [
-        "groupName",
-      ]);
+      void persistCompletedBatchRowMetadata(rowId, { groupName: nextTrimmed }, ["groupName"]);
     });
   };
 
   useEffect(() => {
     const normalizedBatchTagIds = normalizeBatchTagIds(batchTagIds);
     const previousBatchTagIds = previousBatchTagIdsRef.current;
-    const baselineSignature =
-      buildCompletedBatchOauthSharedTagBaselineSignature(batchRows, items);
+    const baselineSignature = buildCompletedBatchOauthSharedTagBaselineSignature(batchRows, items);
     if (!batchSharedTagSyncEnabledRef.current) {
       previousBatchTagIdsRef.current = normalizedBatchTagIds;
       previousCompletedSharedTagBaselineRef.current = baselineSignature;
@@ -505,14 +446,8 @@ export function useUpstreamAccountCreateBatchOauth(
       let changed = false;
       const nextRows = current.map((row: BatchOauthRow) => {
         if (!canEditCompletedBatchOauthRowMetadata(row)) return row;
-        const persistedTagIds = resolveCompletedBatchOauthRowPersistedTagIds(
-          row,
-          items,
-        );
-        const nextPendingSharedTagIds = batchTagIdsEqual(
-          normalizedBatchTagIds,
-          persistedTagIds,
-        )
+        const persistedTagIds = resolveCompletedBatchOauthRowPersistedTagIds(row, items);
+        const nextPendingSharedTagIds = batchTagIdsEqual(normalizedBatchTagIds, persistedTagIds)
           ? null
           : normalizedBatchTagIds;
         if (
@@ -545,11 +480,9 @@ export function useUpstreamAccountCreateBatchOauth(
       ) {
         return;
       }
-      void persistCompletedBatchRowMetadata(
-        row.id,
-        { tagIds: row.pendingSharedTagIds },
-        ["tagIds"],
-      );
+      void persistCompletedBatchRowMetadata(row.id, { tagIds: row.pendingSharedTagIds }, [
+        "tagIds",
+      ]);
     });
   }, [batchRows]);
 
@@ -578,7 +511,6 @@ export function useUpstreamAccountCreateBatchOauth(
     const search = tab === "oauth" ? "?mode=oauth" : `?mode=${tab}`;
     navigate(`${location.pathname}${search}`, { replace: true });
   };
-
 
   return {
     appendBatchRow,

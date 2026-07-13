@@ -1,9 +1,8 @@
 use super::*;
-use anyhow::{anyhow, bail};
+use anyhow::bail;
 use sqlx::FromRow;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
 use std::str::FromStr;
-use tracing::warn;
 
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct PoolUpstreamRequestAttemptArchiveRow {

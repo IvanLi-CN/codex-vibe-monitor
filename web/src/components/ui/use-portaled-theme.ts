@@ -1,37 +1,40 @@
-import { useLayoutEffect, useState } from 'react'
-import type { FloatingSurfaceTheme } from './floating-surface'
+import { useLayoutEffect, useState } from "react";
+import type { FloatingSurfaceTheme } from "./floating-surface";
 
 export function usePortaledTheme(anchor: HTMLElement | null) {
   const [theme, setTheme] = useState<FloatingSurfaceTheme>(() => {
-    if (typeof document === 'undefined') {
-      return undefined
+    if (typeof document === "undefined") {
+      return undefined;
     }
-    const rootTheme = document.documentElement.getAttribute('data-theme')
-    return rootTheme === 'vibe-light' || rootTheme === 'vibe-dark' ? rootTheme : undefined
-  })
+    const rootTheme = document.documentElement.getAttribute("data-theme");
+    return rootTheme === "vibe-light" || rootTheme === "vibe-dark" ? rootTheme : undefined;
+  });
 
   useLayoutEffect(() => {
-    if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') {
-      return
+    if (typeof document === "undefined" || typeof MutationObserver === "undefined") {
+      return;
     }
 
-    const scopedThemeNode = anchor?.closest<HTMLElement>('[data-theme]') ?? document.documentElement
+    const scopedThemeNode =
+      anchor?.closest<HTMLElement>("[data-theme]") ?? document.documentElement;
 
     const syncTheme = () => {
-      const scopedTheme = scopedThemeNode.getAttribute('data-theme')
-      setTheme(scopedTheme === 'vibe-light' || scopedTheme === 'vibe-dark' ? scopedTheme : undefined)
-    }
+      const scopedTheme = scopedThemeNode.getAttribute("data-theme");
+      setTheme(
+        scopedTheme === "vibe-light" || scopedTheme === "vibe-dark" ? scopedTheme : undefined,
+      );
+    };
 
-    syncTheme()
+    syncTheme();
 
-    const observer = new MutationObserver(syncTheme)
+    const observer = new MutationObserver(syncTheme);
     observer.observe(scopedThemeNode, {
       attributes: true,
-      attributeFilter: ['data-theme'],
-    })
+      attributeFilter: ["data-theme"],
+    });
 
-    return () => observer.disconnect()
-  }, [anchor])
+    return () => observer.disconnect();
+  }, [anchor]);
 
-  return theme
+  return theme;
 }

@@ -111,8 +111,7 @@ function renderDialog(props: Partial<DialogProps> = {}) {
     existingBadgeLabel: "Persisted group",
     draftBadgeLabel: "Draft group",
     upstream429RetryLabel: "Upstream 429 retry",
-    upstream429RetryHint:
-      "Retry the same account after upstream 429 with a random delay.",
+    upstream429RetryHint: "Retry the same account after upstream 429 with a random delay.",
     upstream429RetryToggleLabel: "Retry the same account after upstream 429",
     upstream429RetryCountLabel: "Retry count",
     upstream429RetryCountOptions: [
@@ -123,12 +122,10 @@ function renderDialog(props: Partial<DialogProps> = {}) {
     singleAccountRotationLabel: "Single-account rotation load",
     singleAccountRotationHint:
       "Successful conversations stay on the same account until upstream 429 retry is exhausted.",
-    singleAccountRotationToggleLabel:
-      "Keep conversations on one account until final 429",
+    singleAccountRotationToggleLabel: "Keep conversations on one account until final 429",
     proxyBindingsLabel: "Bound proxy nodes",
     proxyBindingsHint: "Leave empty to keep automatic routing.",
-    proxyBindingsAutomaticLabel:
-      "No nodes bound. This group uses automatic routing.",
+    proxyBindingsAutomaticLabel: "No nodes bound. This group uses automatic routing.",
     proxyBindingsLoadingLabel: "Loading proxy nodes…",
     proxyBindingsEmptyLabel: "No proxy nodes available.",
     proxyBindingsMissingLabel: "Missing",
@@ -153,8 +150,8 @@ function bodyText() {
 }
 
 function clickTab(label: RegExp) {
-  const tab = Array.from(document.querySelectorAll('[role="tab"]')).find(
-    (candidate) => label.test(candidate.textContent ?? ""),
+  const tab = Array.from(document.querySelectorAll('[role="tab"]')).find((candidate) =>
+    label.test(candidate.textContent ?? ""),
   ) as HTMLButtonElement | undefined;
   expect(tab).toBeDefined();
   act(() => {
@@ -212,9 +209,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
     expect(scrollRegion).not.toBeNull();
     expect(scrollRegion?.className).toContain("overflow-y-auto");
 
-    const dialog = document.querySelector(
-      '[role="dialog"]',
-    ) as HTMLElement | null;
+    const dialog = document.querySelector('[role="dialog"]') as HTMLElement | null;
     expect(dialog).not.toBeNull();
     expect(dialog?.className).not.toContain("max-w-[72rem]");
     expect(dialog?.className).toContain("desktop:max-w-[44rem]");
@@ -267,9 +262,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
     expect(text).not.toContain("legacy-missing-binding");
     expect(text).toContain("Legacy Missing Binding");
 
-    const identityHints = Array.from(
-      document.querySelectorAll('[title^="ID "]'),
-    );
+    const identityHints = Array.from(document.querySelectorAll('[title^="ID "]'));
     expect(identityHints.length).toBeGreaterThanOrEqual(2);
     expect(text).toContain("Missing");
   });
@@ -302,9 +295,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
     });
     clickTab(/proxy nodes/i);
 
-    const identityHints = Array.from(
-      document.querySelectorAll('[title^="ID "]'),
-    );
+    const identityHints = Array.from(document.querySelectorAll('[title^="ID "]'));
     expect(identityHints.length).toBeGreaterThanOrEqual(2);
   });
 
@@ -352,9 +343,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
     expect(bodyText()).toContain("Loading proxy nodes…");
     expect(bodyText()).not.toContain("No proxy nodes available.");
 
-    const loadingState = document.querySelector(
-      '[data-testid="proxy-binding-options-loading"]',
-    );
+    const loadingState = document.querySelector('[data-testid="proxy-binding-options-loading"]');
     expect(loadingState).not.toBeNull();
   });
 
@@ -374,9 +363,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
     expect(bodyText()).toContain("fpn_missing_only");
     expect(bodyText()).toContain("Missing");
 
-    const missingBindingButton = Array.from(
-      document.querySelectorAll("button"),
-    ).find((candidate) =>
+    const missingBindingButton = Array.from(document.querySelectorAll("button")).find((candidate) =>
       (candidate.textContent ?? "").includes("fpn_missing_only"),
     ) as HTMLButtonElement | undefined;
 
@@ -422,8 +409,8 @@ describe("UpstreamAccountGroupNoteDialog", () => {
       "Select at least one available proxy node or clear bindings before saving.",
     );
 
-    const saveButton = Array.from(document.querySelectorAll("button")).find(
-      (candidate) => /save/i.test(candidate.textContent ?? ""),
+    const saveButton = Array.from(document.querySelectorAll("button")).find((candidate) =>
+      /save/i.test(candidate.textContent ?? ""),
     ) as HTMLButtonElement | undefined;
 
     expect(saveButton).toBeDefined();
@@ -456,15 +443,13 @@ describe("UpstreamAccountGroupNoteDialog", () => {
       "Select at least one available proxy node or clear bindings before saving.",
     );
 
-    const saveButton = Array.from(document.querySelectorAll("button")).find(
-      (candidate) => /save/i.test(candidate.textContent ?? ""),
+    const saveButton = Array.from(document.querySelectorAll("button")).find((candidate) =>
+      /save/i.test(candidate.textContent ?? ""),
     ) as HTMLButtonElement | undefined;
 
     expect(saveButton).toBeDefined();
     expect(saveButton?.disabled).toBe(false);
-    expect(onBoundProxyKeysChange).toHaveBeenCalledWith([
-      "fpb_canonical_vless_key",
-    ]);
+    expect(onBoundProxyKeysChange).toHaveBeenCalledWith(["fpb_canonical_vless_key"]);
   });
 
   it("hides unrelated stale missing nodes from other groups", () => {
@@ -513,9 +498,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
         '[role="switch"][aria-label="Retry the same account after upstream 429"]',
       ),
     ).toBeNull();
-    expect(
-      document.querySelector('[role="combobox"][aria-label="Retry count"]'),
-    ).toBeNull();
+    expect(document.querySelector('[role="combobox"][aria-label="Retry count"]')).toBeNull();
 
     const retryGroup = document.querySelector(
       '[role="radiogroup"][aria-label="Upstream 429 retry"]',
@@ -616,8 +599,8 @@ describe("UpstreamAccountGroupNoteDialog", () => {
     ) as HTMLElement | null;
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
 
-    const saveButton = Array.from(document.querySelectorAll("button")).find(
-      (candidate) => /save/i.test(candidate.textContent ?? ""),
+    const saveButton = Array.from(document.querySelectorAll("button")).find((candidate) =>
+      /save/i.test(candidate.textContent ?? ""),
     ) as HTMLButtonElement | undefined;
     expect(saveButton).toBeDefined();
     expect(saveButton?.disabled).toBe(true);
@@ -649,8 +632,8 @@ describe("UpstreamAccountGroupNoteDialog", () => {
       "Enable this strategy only after binding at least one node (including Direct).",
     );
 
-    const saveButton = Array.from(document.querySelectorAll("button")).find(
-      (candidate) => /save/i.test(candidate.textContent ?? ""),
+    const saveButton = Array.from(document.querySelectorAll("button")).find((candidate) =>
+      /save/i.test(candidate.textContent ?? ""),
     ) as HTMLButtonElement | undefined;
     expect(saveButton).toBeDefined();
     expect(saveButton?.disabled).toBe(false);
@@ -662,16 +645,15 @@ describe("UpstreamAccountGroupNoteDialog", () => {
       accountCount: 4,
       onDelete,
       deleteLabel: "Delete group",
-      deleteDisabledHint:
-        "Move the remaining 4 account(s) out before deleting this group.",
+      deleteDisabledHint: "Move the remaining 4 account(s) out before deleting this group.",
     });
 
     expect(bodyText()).not.toContain(
       "Move the remaining 4 account(s) out before deleting this group.",
     );
 
-    const deleteButton = Array.from(document.querySelectorAll("button")).find(
-      (candidate) => /delete group/i.test(candidate.textContent ?? ""),
+    const deleteButton = Array.from(document.querySelectorAll("button")).find((candidate) =>
+      /delete group/i.test(candidate.textContent ?? ""),
     ) as HTMLButtonElement | undefined;
     expect(deleteButton).toBeDefined();
     expect(deleteButton?.disabled).toBe(false);
@@ -682,8 +664,6 @@ describe("UpstreamAccountGroupNoteDialog", () => {
     });
 
     expect(onDelete).not.toHaveBeenCalled();
-    expect(bodyText()).toContain(
-      "Move the remaining 4 account(s) out before deleting this group.",
-    );
+    expect(bodyText()).toContain("Move the remaining 4 account(s) out before deleting this group.");
   });
 });

@@ -8,7 +8,6 @@ mod stateful_sqlite;
 mod support;
 
 pub(crate) use archive_file_io::*;
-pub(crate) use lightweight::*;
 pub(crate) use stateful_sqlite::*;
 pub(crate) use support::*;
 

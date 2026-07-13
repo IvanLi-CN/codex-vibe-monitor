@@ -34,10 +34,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function sanitizeFilterValues(
-  value: unknown,
-  allowedValues: readonly string[],
-): string[] {
+function sanitizeFilterValues(value: unknown, allowedValues: readonly string[]): string[] {
   if (!Array.isArray(value)) return [];
   const allowed = new Set(allowedValues);
   const next: string[] = [];
@@ -111,9 +108,7 @@ export function readPersistedUpstreamAccountFilters(): PersistedUpstreamAccounts
     return DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS;
   }
   try {
-    const raw = window.localStorage.getItem(
-      UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY,
-    );
+    const raw = window.localStorage.getItem(UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY);
     if (!raw) {
       return DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS;
     }
@@ -123,38 +118,22 @@ export function readPersistedUpstreamAccountFilters(): PersistedUpstreamAccounts
     }
     const groupFilters = sanitizeGroupFilters(parsed.groupFilters);
     return {
-      workStatus: sanitizeFilterValues(
-        parsed.workStatus,
-        WORK_STATUS_FILTER_VALUES,
-      ),
-      enableStatus: sanitizeFilterValues(
-        parsed.enableStatus,
-        ENABLE_STATUS_FILTER_VALUES,
-      ),
-      healthStatus: sanitizeFilterValues(
-        parsed.healthStatus,
-        HEALTH_STATUS_FILTER_VALUES,
-      ),
+      workStatus: sanitizeFilterValues(parsed.workStatus, WORK_STATUS_FILTER_VALUES),
+      enableStatus: sanitizeFilterValues(parsed.enableStatus, ENABLE_STATUS_FILTER_VALUES),
+      healthStatus: sanitizeFilterValues(parsed.healthStatus, HEALTH_STATUS_FILTER_VALUES),
       tagIds: sanitizeTagIds(parsed.tagIds),
       groupFilters:
-        groupFilters.length > 0
-          ? groupFilters
-          : migrateLegacyGroupFilter(parsed.groupFilter),
+        groupFilters.length > 0 ? groupFilters : migrateLegacyGroupFilter(parsed.groupFilter),
     };
   } catch {
     return DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS;
   }
 }
 
-export function persistUpstreamAccountFilters(
-  value: PersistedUpstreamAccountsFilters,
-): void {
+export function persistUpstreamAccountFilters(value: PersistedUpstreamAccountsFilters): void {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(
-      UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY,
-      JSON.stringify(value),
-    );
+    window.localStorage.setItem(UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY, JSON.stringify(value));
   } catch {
     // Ignore storage write failures and keep the current UI state.
   }

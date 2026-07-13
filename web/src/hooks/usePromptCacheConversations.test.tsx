@@ -27,8 +27,7 @@ const sseMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/api", async () => {
-  const actual =
-    await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return {
     ...actual,
     fetchPromptCacheConversations: apiMocks.fetchPromptCacheConversations,
@@ -200,9 +199,7 @@ function Probe({ selection }: { selection: PromptCacheConversationSelection }) {
 
   return (
     <div>
-      <div data-testid="prompt-cache-key">
-        {stats?.conversations[0]?.promptCacheKey ?? ""}
-      </div>
+      <div data-testid="prompt-cache-key">{stats?.conversations[0]?.promptCacheKey ?? ""}</div>
       <div data-testid="conversation-keys">
         {stats?.conversations.map((item) => item.promptCacheKey).join(",") ?? ""}
       </div>
@@ -235,9 +232,7 @@ describe("usePromptCacheConversations", () => {
     render(<Probe selection={{ mode: "count", limit: 50 }} />);
     expect(text("loading")).toBe("true");
 
-    rerender(
-      <Probe selection={{ mode: "activityWindow", activityHours: 3 }} />,
-    );
+    rerender(<Probe selection={{ mode: "activityWindow", activityHours: 3 }} />);
     await flushAsync();
 
     second.resolve(createResponse("pck-window"));
@@ -535,9 +530,7 @@ describe("usePromptCacheConversations", () => {
 
     expect(text("conversation-keys")).toBe("pck-selection-hidden,pck-count");
 
-    await rerenderAsync(
-      <Probe selection={{ mode: "activityWindow", activityHours: 3 }} />,
-    );
+    await rerenderAsync(<Probe selection={{ mode: "activityWindow", activityHours: 3 }} />);
     await flushAsync();
 
     expect(text("conversation-keys")).toBe("pck-window");

@@ -653,8 +653,8 @@ pub(crate) async fn run_sqlite_batch_writer(
                 };
                 pending_depth.fetch_sub(1, Ordering::Relaxed);
                 pending.push(write);
-                if pending.logical_rows() >= SQLITE_BATCH_MAX_ROWS {
-                    if let Some(retained) =
+                if pending.logical_rows() >= SQLITE_BATCH_MAX_ROWS
+                    && let Some(retained) =
                         flush_pending_batch(
                             &pool,
                             pending.take(),
@@ -666,7 +666,6 @@ pub(crate) async fn run_sqlite_batch_writer(
                     {
                         pending = retained.batch;
                     }
-                }
             }
             _ = ticker.tick() => {
                 if !pending.is_empty() {

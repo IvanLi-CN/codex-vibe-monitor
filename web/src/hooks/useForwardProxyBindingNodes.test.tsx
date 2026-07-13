@@ -6,12 +6,13 @@ import type { ForwardProxyBindingNode } from "../lib/api";
 import { useForwardProxyBindingNodes } from "./useForwardProxyBindingNodes";
 
 const apiMocks = vi.hoisted(() => ({
-  fetchForwardProxyBindingNodes: vi.fn<
-    (
-      keys?: string[],
-      options?: { includeCurrent?: boolean; groupName?: string },
-    ) => Promise<ForwardProxyBindingNode[]>
-  >(),
+  fetchForwardProxyBindingNodes:
+    vi.fn<
+      (
+        keys?: string[],
+        options?: { includeCurrent?: boolean; groupName?: string },
+      ) => Promise<ForwardProxyBindingNode[]>
+    >(),
 }));
 
 vi.mock("../lib/api", async () => {
@@ -66,11 +67,7 @@ async function flushAsync() {
   });
 }
 
-function Probe(props: {
-  keys?: string[];
-  enabled?: boolean;
-  groupName?: string;
-}) {
+function Probe(props: { keys?: string[]; enabled?: boolean; groupName?: string }) {
   const state = useForwardProxyBindingNodes(props.keys, {
     enabled: props.enabled,
     groupName: props.groupName,
@@ -91,19 +88,14 @@ describe("useForwardProxyBindingNodes", () => {
     await flushAsync();
 
     expect(apiMocks.fetchForwardProxyBindingNodes).toHaveBeenCalledTimes(1);
-    expect(apiMocks.fetchForwardProxyBindingNodes).toHaveBeenLastCalledWith(
-      ["__direct__"],
-      {
-        includeCurrent: true,
-        groupName: "prod",
-      },
-    );
+    expect(apiMocks.fetchForwardProxyBindingNodes).toHaveBeenLastCalledWith(["__direct__"], {
+      includeCurrent: true,
+      groupName: "prod",
+    });
   });
 
   it("treats groupName as part of the query identity so changing groups refetches", async () => {
-    apiMocks.fetchForwardProxyBindingNodes
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    apiMocks.fetchForwardProxyBindingNodes.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
     render(<Probe keys={["jp-edge-01"]} enabled groupName="prod" />);
     await flushAsync();
@@ -112,21 +104,13 @@ describe("useForwardProxyBindingNodes", () => {
     await flushAsync();
 
     expect(apiMocks.fetchForwardProxyBindingNodes).toHaveBeenCalledTimes(2);
-    expect(apiMocks.fetchForwardProxyBindingNodes).toHaveBeenNthCalledWith(
-      1,
-      ["jp-edge-01"],
-      {
-        includeCurrent: true,
-        groupName: "prod",
-      },
-    );
-    expect(apiMocks.fetchForwardProxyBindingNodes).toHaveBeenNthCalledWith(
-      2,
-      ["jp-edge-01"],
-      {
-        includeCurrent: true,
-        groupName: "staging",
-      },
-    );
+    expect(apiMocks.fetchForwardProxyBindingNodes).toHaveBeenNthCalledWith(1, ["jp-edge-01"], {
+      includeCurrent: true,
+      groupName: "prod",
+    });
+    expect(apiMocks.fetchForwardProxyBindingNodes).toHaveBeenNthCalledWith(2, ["jp-edge-01"], {
+      includeCurrent: true,
+      groupName: "staging",
+    });
   });
 });

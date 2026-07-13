@@ -328,7 +328,7 @@ pub(crate) fn pricing_backfill_attempt_version(catalog: &PricingCatalog) -> Stri
     mix_fvn1a(&mut hash, &[0xf8]);
 
     let mut models = catalog.models.iter().collect::<Vec<_>>();
-    models.sort_by(|(a, _), (b, _)| a.cmp(b));
+    models.sort_by_key(|(a, _)| *a);
     for (model, pricing) in models {
         mix_fvn1a(&mut hash, model.as_bytes());
         mix_fvn1a(&mut hash, &[0xfe]);
