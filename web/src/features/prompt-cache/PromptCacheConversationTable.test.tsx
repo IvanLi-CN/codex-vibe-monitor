@@ -1486,19 +1486,31 @@ describe("PromptCacheConversationTable", () => {
     await user.click(
       document.querySelector('[role="combobox"][aria-label="FAST 模式"]') as HTMLElement,
     );
+    expect(document.querySelector('[role="listbox"]')?.textContent).not.toContain("继承");
     await user.click(findSelectOption("强制添加")!);
     await flushInteractive();
     await vi.waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(2),
     );
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector('[role="combobox"][aria-label="FAST 模式"]')?.textContent,
+      ).toContain("强制添加"),
+    );
     await user.click(findButtonByAriaLabel("编辑对话覆盖: 图片工具")!);
     await user.click(
       document.querySelector('[role="combobox"][aria-label="图片工具"]') as HTMLElement,
     );
+    expect(document.querySelector('[role="listbox"]')?.textContent).not.toContain("继承");
     await user.click(findSelectOption("强制移除")!);
     await flushInteractive();
     await vi.waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(3),
+    );
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector('[role="combobox"][aria-label="图片工具"]')?.textContent,
+      ).toContain("强制移除"),
     );
     await user.click(findButtonByAriaLabel("编辑对话覆盖: 代理")!);
     await user.click(document.querySelector('[role="combobox"][aria-label="代理"]') as HTMLElement);
