@@ -2818,7 +2818,6 @@ function SharedUpstreamAccountDetailDrawerInner({
                   role="tab"
                   aria-selected={detailTab === "overview"}
                   aria-controls={detailTabIds.overview.panel}
-                  aria-pressed={detailTab === "overview"}
                   onClick={() => handleSelectDetailTab("overview")}
                 >
                   {t("accountPool.upstreamAccounts.detailTabs.overview")}
@@ -2829,7 +2828,6 @@ function SharedUpstreamAccountDetailDrawerInner({
                   role="tab"
                   aria-selected={detailTab === "records"}
                   aria-controls={detailTabIds.records.panel}
-                  aria-pressed={detailTab === "records"}
                   onClick={() => {
                     setFocusedAttemptId(null);
                     handleSelectDetailTab("records");
@@ -2843,7 +2841,6 @@ function SharedUpstreamAccountDetailDrawerInner({
                   role="tab"
                   aria-selected={detailTab === "edit"}
                   aria-controls={detailTabIds.edit.panel}
-                  aria-pressed={detailTab === "edit"}
                   onClick={() => handleSelectDetailTab("edit")}
                 >
                   {t("accountPool.upstreamAccounts.detailTabs.edit")}
@@ -2854,7 +2851,6 @@ function SharedUpstreamAccountDetailDrawerInner({
                   role="tab"
                   aria-selected={detailTab === "routing"}
                   aria-controls={detailTabIds.routing.panel}
-                  aria-pressed={detailTab === "routing"}
                   onClick={() => handleSelectDetailTab("routing")}
                 >
                   {t("accountPool.upstreamAccounts.detailTabs.routing")}
@@ -2865,7 +2861,6 @@ function SharedUpstreamAccountDetailDrawerInner({
                   role="tab"
                   aria-selected={detailTab === "healthEvents"}
                   aria-controls={detailTabIds.healthEvents.panel}
-                  aria-pressed={detailTab === "healthEvents"}
                   onClick={() => handleSelectDetailTab("healthEvents")}
                 >
                   {t("accountPool.upstreamAccounts.detailTabs.healthEvents")}
@@ -4007,8 +4002,8 @@ function SharedUpstreamAccountDetailDrawerInner({
                                   className="mt-2 block select-text break-all font-mono text-xs text-info underline decoration-info/35 underline-offset-4 transition hover:decoration-info focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                                   onClick={() => locateAccountAttempt(actionEvent.attemptId)}
                                 >
-                                  {t("accountPool.upstreamAccounts.latestAction.fields.invokeId")}:{" "}
-                                  {actionEvent.invokeId}
+                                  {t("accountPool.upstreamAccounts.latestAction.fields.attemptId")}:{" "}
+                                  {actionEvent.attemptId}
                                 </button>
                               ) : actionEvent.invokeId ? (
                                 <p className="mt-2 break-all font-mono text-xs text-base-content/55">

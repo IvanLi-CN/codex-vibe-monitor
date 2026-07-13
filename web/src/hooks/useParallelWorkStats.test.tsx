@@ -98,6 +98,20 @@ async function flushAsync() {
   });
 }
 
+async function waitFor(check: () => void, attempts = 20) {
+  let lastError: unknown = null;
+  for (let index = 0; index < attempts; index += 1) {
+    try {
+      check();
+      return;
+    } catch (error) {
+      lastError = error;
+      await flushAsync();
+    }
+  }
+  throw lastError;
+}
+
 function createStats(): ParallelWorkStatsResponse {
   const current = {
     rangeStart: "2026-03-01T00:00:00Z",
@@ -439,9 +453,10 @@ describe("useParallelWorkStats", () => {
     );
 
     await vi.advanceTimersByTimeAsync(2_000);
-    await flushAsync();
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2);
-    expect(host?.querySelector('[data-testid="error"]')?.textContent).toBe("");
+    await waitFor(() => {
+      expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2);
+      expect(host?.querySelector('[data-testid="error"]')?.textContent).toBe("");
+    });
     expect(host?.querySelector('[data-testid="current-count"]')?.textContent).toBe("1");
   });
 });

@@ -446,6 +446,59 @@ pub(crate) async fn insert_api_key_account(pool: &SqlitePool, display_name: &str
         .expect("insert api key account")
 }
 
+#[tokio::test]
+async fn account_attempt_list_reads_models_from_invocation_payload_without_schema_columns() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_api_key_account(&state.pool, "Attempt payload compatibility").await;
+    let occurred_at = format_utc_iso(Utc::now());
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (invoke_id, occurred_at, source, model, payload, raw_response)
+        VALUES (?1, ?2, 'proxy', 'gpt-5.4', ?3, '')
+        "#,
+    )
+    .bind("attempt-payload-compat")
+    .bind(&occurred_at)
+    .bind(r#"{"requestModel":"gpt-5.3","responseModel":"gpt-5.4"}"#)
+    .execute(&state.pool)
+    .await
+    .expect("insert invocation payload");
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            invoke_id, occurred_at, endpoint, route_mode, upstream_account_id,
+            attempt_index, distinct_account_index, same_account_retry_index,
+            started_at, finished_at, status, phase, http_status, created_at
+        )
+        VALUES (?1, ?2, '/v1/responses', 'pool', ?3, 1, 1, 0, ?2, ?2, 'success', 'completed', 200, ?2)
+        "#,
+    )
+    .bind("attempt-payload-compat")
+    .bind(&occurred_at)
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("insert upstream attempt");
+
+    let Json(response) = list_upstream_account_attempts(
+        State(state),
+        AxumPath(account_id),
+        Query(ListUpstreamAccountAttemptsQuery {
+            page: Some(1),
+            page_size: Some(20),
+        }),
+    )
+    .await
+    .expect("list account attempts without request_model columns");
+
+    let item = response.items.first().expect("one attempt");
+    assert_eq!(item.model.as_deref(), Some("gpt-5.3"));
+    assert_eq!(item.request_model.as_deref(), Some("gpt-5.3"));
+    assert_eq!(item.response_model.as_deref(), Some("gpt-5.4"));
+}
+
 pub(crate) async fn insert_oauth_account(pool: &SqlitePool, display_name: &str) -> i64 {
     ensure_test_group_binding(pool, test_required_group_name()).await;
     let now_iso = format_utc_iso(Utc::now());
