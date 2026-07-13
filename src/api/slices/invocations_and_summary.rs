@@ -4884,6 +4884,25 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
     })
 }
 
+fn dashboard_live_snapshot_in_progress_counts(
+    snapshot: &DashboardActivityLiveSnapshot,
+) -> HashMap<Option<i64>, UpstreamAccountInProgressSummary> {
+    snapshot
+        .accounts
+        .iter()
+        .map(|account| {
+            (
+                account.upstream_account_id,
+                UpstreamAccountInProgressSummary {
+                    in_progress_count: account.in_progress_invocation_count,
+                    retry_count: account.retry_invocation_count,
+                    phase_counts: account.in_progress_phase_counts,
+                },
+            )
+        })
+        .collect()
+}
+
 pub(crate) const DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES: i64 = 5;
 
 #[derive(Debug)]
@@ -5222,6 +5241,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     reporting_tz: Tz,
     recent_limit: usize,
     include_accounts: bool,
+    in_progress_counts_override: Option<HashMap<Option<i64>, UpstreamAccountInProgressSummary>>,
 ) -> Result<DashboardActivitySnapshot, ApiError> {
     let range_window = resolve_range_window(range_name, reporting_tz).map_err(ApiError::from)?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
@@ -5359,7 +5379,10 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     let in_progress_counts = if range_name == "yesterday" {
         HashMap::new()
     } else {
-        query_upstream_account_in_progress_counts(state, source_scope).await?
+        match in_progress_counts_override {
+            Some(counts) => counts,
+            None => query_upstream_account_in_progress_counts(state, source_scope).await?,
+        }
     };
     for upstream_account_id in in_progress_counts.keys() {
         account_activity.entry(*upstream_account_id).or_default();
@@ -5596,17 +5619,23 @@ pub(crate) async fn fetch_dashboard_activity(
         params.recent_limit,
     )?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    let live = if params.range != "yesterday" {
+        Some(capture_dashboard_activity_live_snapshot(state.as_ref()).await?)
+    } else {
+        None
+    };
     let mut snapshot = load_dashboard_activity_snapshot(
         state.as_ref(),
         params.range.as_str(),
         reporting_tz,
         recent_limit,
         params.include_accounts,
+        live.as_ref()
+            .map(dashboard_live_snapshot_in_progress_counts),
     )
     .await?;
-    let live = capture_dashboard_activity_live_snapshot(state.as_ref()).await?;
-    let live_revision = live.revision;
-    if snapshot.range != "yesterday" {
+    let live_revision = live.as_ref().map_or(0, |snapshot| snapshot.revision);
+    if let Some(live) = live {
         snapshot.summary.stats.in_progress_conversation_count =
             Some(live.in_progress_invocation_count);
         snapshot.summary.stats.in_progress_retry_conversation_count =
@@ -5670,6 +5699,7 @@ pub(crate) async fn fetch_upstream_account_activity(
         reporting_tz,
         recent_limit,
         true,
+        None,
     )
     .await?;
     let accounts = snapshot

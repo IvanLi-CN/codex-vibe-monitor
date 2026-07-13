@@ -12465,9 +12465,10 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
         Some("pck-dashboard-activity-runtime-before-today-running".to_string());
     state.proxy_runtime_invocations.upsert(runtime_before_today);
 
-    let activity = load_dashboard_activity_snapshot(state.as_ref(), "today", Shanghai, 4, true)
-        .await
-        .expect("load dashboard activity snapshot");
+    let activity =
+        load_dashboard_activity_snapshot(state.as_ref(), "today", Shanghai, 4, true, None)
+            .await
+            .expect("load dashboard activity snapshot");
 
     let accounts = activity.accounts();
     assert_eq!(accounts.len(), 3);
@@ -12603,6 +12604,31 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             .expect("full snapshot spend rate"),
     );
 
+    let Json(full_response) = fetch_dashboard_activity(
+        State(state.clone()),
+        Query(DashboardActivityQuery {
+            range: "today".to_string(),
+            recent_limit: Some(4),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: true,
+        }),
+    )
+    .await
+    .expect("fetch full dashboard activity snapshot");
+    let full_accounts = full_response
+        .accounts
+        .expect("full response accounts included");
+    assert!(full_response.live_revision > 0);
+    assert_eq!(
+        full_response.summary.stats.in_progress_conversation_count,
+        Some(
+            full_accounts
+                .iter()
+                .map(|account| account.in_progress_invocation_count.unwrap_or(0))
+                .sum::<i64>(),
+        ),
+    );
+
     let Json(yesterday_activity) = fetch_dashboard_activity(
         State(state),
         Query(DashboardActivityQuery {
@@ -12614,6 +12640,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     )
     .await
     .expect("fetch yesterday dashboard activity snapshot");
+    assert_eq!(yesterday_activity.live_revision, 0);
     assert_eq!(
         yesterday_activity
             .summary
