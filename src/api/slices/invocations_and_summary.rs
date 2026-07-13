@@ -4695,6 +4695,19 @@ pub(crate) async fn query_upstream_account_in_progress_counts(
     state: &AppState,
     source_scope: InvocationSourceScope,
 ) -> Result<HashMap<Option<i64>, UpstreamAccountInProgressSummary>, ApiError> {
+    query_upstream_account_in_progress_counts_from_runtime(
+        &state.pool,
+        state.proxy_runtime_invocations.as_ref(),
+        source_scope,
+    )
+    .await
+}
+
+pub(crate) async fn query_upstream_account_in_progress_counts_from_runtime(
+    pool: &Pool<Sqlite>,
+    proxy_runtime_invocations: &ProxyRuntimeInvocationStore,
+    source_scope: InvocationSourceScope,
+) -> Result<HashMap<Option<i64>, UpstreamAccountInProgressSummary>, ApiError> {
     #[derive(Debug, FromRow)]
     struct RuntimeKeyRow {
         invoke_id: String,
@@ -4731,7 +4744,7 @@ pub(crate) async fn query_upstream_account_in_progress_counts(
     }
     let db_rows = db_key_query
         .build_query_as::<RuntimeKeyRow>()
-        .fetch_all(&state.pool)
+        .fetch_all(pool)
         .await?;
     let mut counts = HashMap::<Option<i64>, UpstreamAccountInProgressSummary>::new();
     for row in &db_rows {
@@ -4749,9 +4762,9 @@ pub(crate) async fn query_upstream_account_in_progress_counts(
             )
         })
         .collect::<HashMap<_, _>>();
-    let runtime_snapshot = state.proxy_runtime_invocations.snapshot();
+    let runtime_snapshot = proxy_runtime_invocations.snapshot();
     let db_terminal_keys =
-        query_terminal_db_keys_for_runtime_records(&state.pool, &runtime_snapshot, None).await?;
+        query_terminal_db_keys_for_runtime_records(pool, &runtime_snapshot, None).await?;
     let mut runtime_overlay_row_count = 0_i64;
     for record in runtime_snapshot {
         if db_terminal_keys.contains(&(record.invoke_id.clone(), record.occurred_at.clone())) {
@@ -4815,8 +4828,25 @@ pub(crate) async fn query_dashboard_activity_live_snapshot(
     state: &AppState,
     revision: u64,
 ) -> Result<DashboardActivityLiveSnapshot, ApiError> {
-    let counts =
-        query_upstream_account_in_progress_counts(state, InvocationSourceScope::All).await?;
+    query_dashboard_activity_live_snapshot_from_runtime(
+        &state.pool,
+        state.proxy_runtime_invocations.as_ref(),
+        revision,
+    )
+    .await
+}
+
+pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
+    pool: &Pool<Sqlite>,
+    proxy_runtime_invocations: &ProxyRuntimeInvocationStore,
+    revision: u64,
+) -> Result<DashboardActivityLiveSnapshot, ApiError> {
+    let counts = query_upstream_account_in_progress_counts_from_runtime(
+        pool,
+        proxy_runtime_invocations,
+        InvocationSourceScope::All,
+    )
+    .await?;
     let mut accounts = counts
         .into_iter()
         .map(

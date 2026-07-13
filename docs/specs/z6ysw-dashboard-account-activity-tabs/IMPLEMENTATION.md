@@ -51,6 +51,7 @@
 - 已实现：新增 `GET /api/stats/dashboard-activity` 活动快照读路径；请求开始时固定 `rangeEnd`，一次读取 runtime overlay，并返回 summary-only 或 summary + accounts 两种形态。
 - 已实现：Dashboard 顶部当前 `TPM / 消费速率 / 进行中调用` 改读 `dashboard-activity.summary`；账号 tab 打开后升级为 `includeAccounts=true`，顶部 KPI 与账号卡片共享同一个 `snapshotId/rangeEnd` 响应。
 - 已实现：Dashboard 当前进行中、重试与阶段计数改由后端 SQLite live read model 加 runtime overlay 的统一算法生成版本化 `dashboardActivityLive` SSE 快照；前端按 revision 覆盖顶部与账号卡 live 字段，旧 HTTP reconcile 不再把新状态回写为 0，重连时服务端立即种入当前快照。
+- 已实现：运行态变更只无阻塞地递增 live snapshot 序列号；单个后台 worker 在 100ms 合并窗口内收敛多次变更后读取 SQLite 并广播，避免把实时查询放进代理上游派发和首字节关键路径。
 - 已实现：`dashboard-activity.summary` 的 `tokensPerMinute`、`spendRate` 与 in-progress 调用数由账号聚合结果求和得到；无账号流量进入 `unassigned` 聚合项，避免顶部数字无法由同屏明细解释。
 - 已实现：via-pool 请求级 cleanup guard 在响应消费期间保留 `pool-via-*` synthetic runtime snapshot，并随最终 stream task 生命周期收口；成功、失败、所有重试耗尽、下游断开或任务取消后清除残留非终态 snapshot，单次 upstream attempt 终结不会提前移除；普通 invocation runtime 与短暂终态 overlay 仍由其原有终态持久化路径负责。
 - 已实现：timeseries 继续只服务趋势图与兼容回退，不再作为 Dashboard 顶部当前速率类 KPI 的事实来源。

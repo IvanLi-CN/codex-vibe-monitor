@@ -990,7 +990,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             "failed to broadcast new proxy capture record"
         );
     }
-    broadcast_dashboard_activity_live_snapshot(state).await;
+    schedule_dashboard_activity_live_snapshot(state);
     if terminal_enqueued {
         schedule_proxy_capture_follow_up_after_terminal_enqueue(state, &invoke_id, "raw_terminal");
     }

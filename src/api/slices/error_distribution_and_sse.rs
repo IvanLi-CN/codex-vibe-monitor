@@ -4,6 +4,7 @@ use chrono::Timelike;
 use serde::Serialize;
 use sqlx::FromRow;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use tokio::sync::broadcast;
 use tracing::warn;
 
@@ -2042,6 +2043,7 @@ pub(crate) struct BroadcastStateCache {
 }
 
 static DASHBOARD_ACTIVITY_LIVE_REVISION: AtomicU64 = AtomicU64::new(0);
+const DASHBOARD_ACTIVITY_LIVE_BROADCAST_DEBOUNCE: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -2071,8 +2073,20 @@ pub(crate) fn current_dashboard_activity_live_revision() -> u64 {
 pub(crate) async fn capture_dashboard_activity_live_snapshot(
     state: &AppState,
 ) -> Result<DashboardActivityLiveSnapshot, ApiError> {
+    capture_dashboard_activity_live_snapshot_from_runtime(
+        &state.pool,
+        state.proxy_runtime_invocations.as_ref(),
+    )
+    .await
+}
+
+async fn capture_dashboard_activity_live_snapshot_from_runtime(
+    pool: &Pool<Sqlite>,
+    proxy_runtime_invocations: &ProxyRuntimeInvocationStore,
+) -> Result<DashboardActivityLiveSnapshot, ApiError> {
     let revision = DASHBOARD_ACTIVITY_LIVE_REVISION.fetch_add(1, Ordering::AcqRel) + 1;
-    query_dashboard_activity_live_snapshot(state, revision).await
+    query_dashboard_activity_live_snapshot_from_runtime(pool, proxy_runtime_invocations, revision)
+        .await
 }
 
 pub(crate) fn build_dashboard_activity_live_snapshot(
@@ -2133,27 +2147,85 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
     }
 }
 
-pub(crate) async fn broadcast_dashboard_activity_live_snapshot(state: &AppState) {
-    if state.broadcaster.receiver_count() == 0 {
+pub(crate) fn schedule_dashboard_activity_live_snapshot(state: &AppState) {
+    if state.broadcaster.receiver_count() == 0 || state.shutdown.is_cancelled() {
         return;
     }
-    let snapshot = match capture_dashboard_activity_live_snapshot(state).await {
-        Ok(snapshot) => snapshot,
-        Err(err) => {
-            warn!(?err, "failed to capture dashboard activity live snapshot");
+    let worker_start_seq = state
+        .dashboard_activity_live_broadcast_seq
+        .fetch_add(1, Ordering::Relaxed)
+        + 1;
+    if state
+        .dashboard_activity_live_broadcast_running
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    let latest_seq = state.dashboard_activity_live_broadcast_seq.clone();
+    let broadcast_running = state.dashboard_activity_live_broadcast_running.clone();
+    let pool = state.pool.clone();
+    let proxy_runtime_invocations = state.proxy_runtime_invocations.clone();
+    let broadcaster = state.broadcaster.clone();
+    let shutdown = state.shutdown.clone();
+    tokio::spawn(async move {
+        let mut delivered_seq = worker_start_seq.saturating_sub(1);
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    broadcast_running.store(false, Ordering::Release);
+                    return;
+                }
+                _ = tokio::time::sleep(DASHBOARD_ACTIVITY_LIVE_BROADCAST_DEBOUNCE) => {}
+            }
+
+            let sent_seq = latest_seq.load(Ordering::Acquire);
+            if broadcaster.receiver_count() > 0 {
+                let started = Instant::now();
+                match capture_dashboard_activity_live_snapshot_from_runtime(
+                    &pool,
+                    proxy_runtime_invocations.as_ref(),
+                )
+                .await
+                {
+                    Ok(snapshot) => {
+                        let revision = snapshot.revision;
+                        if let Err(err) =
+                            broadcaster.send(BroadcastPayload::DashboardActivityLive { snapshot })
+                        {
+                            warn!(
+                                ?err,
+                                revision, "failed to broadcast dashboard activity live snapshot"
+                            );
+                        } else {
+                            tracing::debug!(
+                                revision,
+                                coalesced_mutation_count = sent_seq.saturating_sub(delivered_seq),
+                                generated_to_sent_ms = started.elapsed().as_millis() as u64,
+                                "broadcast dashboard activity live snapshot"
+                            );
+                        }
+                    }
+                    Err(err) => warn!(?err, "failed to capture dashboard activity live snapshot"),
+                }
+            }
+            delivered_seq = sent_seq;
+
+            if latest_seq.load(Ordering::Acquire) != sent_seq {
+                continue;
+            }
+            broadcast_running.store(false, Ordering::Release);
+            if latest_seq.load(Ordering::Acquire) != sent_seq
+                && broadcast_running
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
+                continue;
+            }
             return;
         }
-    };
-    let revision = snapshot.revision;
-    if let Err(err) = state
-        .broadcaster
-        .send(BroadcastPayload::DashboardActivityLive { snapshot })
-    {
-        warn!(
-            ?err,
-            revision, "failed to broadcast dashboard activity live snapshot"
-        );
-    }
+    });
 }
 
 #[derive(Debug, Clone, Serialize)]

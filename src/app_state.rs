@@ -398,6 +398,8 @@ pub(crate) struct AppState {
     pub(crate) proxy_summary_quota_broadcast_seq: Arc<AtomicU64>,
     pub(crate) proxy_summary_quota_broadcast_running: Arc<AtomicBool>,
     pub(crate) proxy_summary_quota_broadcast_handle: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    pub(crate) dashboard_activity_live_broadcast_seq: Arc<AtomicU64>,
+    pub(crate) dashboard_activity_live_broadcast_running: Arc<AtomicBool>,
     pub(crate) startup_ready: Arc<AtomicBool>,
     pub(crate) shutdown: CancellationToken,
     pub(crate) semaphore: Arc<Semaphore>,
