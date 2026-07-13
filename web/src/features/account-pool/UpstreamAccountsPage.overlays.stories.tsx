@@ -208,6 +208,7 @@ export const DetailDrawerRecordsPopulated: Story = {
 };
 
 export const DetailDrawerEventLocatesAttempt: Story = {
+  tags: ["test"],
   render: () => <AccountPoolStoryRouter initialEntry={detailRouteEntry(101)} />,
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body);
@@ -215,7 +216,7 @@ export const DetailDrawerEventLocatesAttempt: Story = {
     await userEvent.click(within(dialog).getByRole("tab", { name: /健康与事件|health & events/i }));
     await userEvent.click(
       within(dialog).getByRole("button", {
-        name: /调用 ID.*inv_story_pool_failover_001|invoke id.*inv_story_pool_failover_001/i,
+        name: /上游尝试 ID.*9001|upstream attempt id.*9001/i,
       }),
     );
     const recordsTable = await within(dialog).findByTestId("upstream-account-call-records-table");
@@ -223,6 +224,10 @@ export const DetailDrawerEventLocatesAttempt: Story = {
     await expect(disclosure).toHaveAttribute("open");
     await expect(within(disclosure).getByText("upstream-story-500")).toBeInTheDocument();
   },
+};
+
+export const DetailDrawerHealthEventAttemptLink: Story = {
+  render: () => <DetailDrawerStorySurface initialTab="healthEvents" />,
 };
 
 export const DetailDrawerRecordsMobile: Story = {
@@ -368,7 +373,7 @@ export const DetailDrawerInvocationLocate: Story = {
       name: /Codex Pro - Tokyo/i,
     });
     const invokeButton = await within(dialog).findByRole("button", {
-      name: "inv_story_pool_failover_001",
+      name: /上游尝试 ID.*9001|upstream attempt id.*9001/i,
     });
     await userEvent.click(invokeButton);
     await expect(
@@ -403,7 +408,7 @@ export const DetailDrawerInvocationLocateReturnLatest: Story = {
     });
     await userEvent.click(
       await within(dialog).findByRole("button", {
-        name: "inv_story_pool_failover_001",
+        name: /上游尝试 ID.*9001|upstream attempt id.*9001/i,
       }),
     );
     await userEvent.click(

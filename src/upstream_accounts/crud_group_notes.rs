@@ -128,12 +128,15 @@ async fn load_upstream_account_attempt_page(
             attempts.same_account_retry_index,
             attempts.requester_ip,
             COALESCE(
-                inv.request_model,
+                CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.requestModel') AS TEXT) END,
                 inv.model,
-                inv.response_model
+                CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.responseModel') AS TEXT) END
             ) AS model,
-            COALESCE(inv.request_model, inv.model) AS request_model,
-            inv.response_model,
+            COALESCE(
+                CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.requestModel') AS TEXT) END,
+                inv.model
+            ) AS request_model,
+            CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.responseModel') AS TEXT) END AS response_model,
             attempts.started_at,
             attempts.finished_at,
             attempts.status,
