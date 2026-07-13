@@ -282,6 +282,11 @@ export function useDashboardActivitySnapshot(
   useEffect(() => {
     if (!enabled) return;
     const unsubscribe = subscribeToSse((payload) => {
+      if (payload.type === "version") {
+        latestLiveSnapshotRef.current = null;
+        setData((currentData) => (currentData ? { ...currentData, liveRevision: 0 } : currentData));
+        return;
+      }
       if (payload.type === "dashboardActivityLive") {
         const current = latestLiveSnapshotRef.current;
         if (current && payload.snapshot.revision <= current.revision) return;
