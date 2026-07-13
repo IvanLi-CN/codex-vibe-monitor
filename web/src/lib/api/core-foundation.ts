@@ -682,11 +682,29 @@ export interface DashboardActivitySummary {
   spendRate?: number | null;
 }
 
+export interface DashboardActivityLiveAccount {
+  accountKey: string;
+  upstreamAccountId: number | null;
+  inProgressInvocationCount: number;
+  inProgressPhaseCounts: InvocationPhaseCounts;
+  retryInvocationCount: number;
+}
+
+export interface DashboardActivityLiveSnapshot {
+  revision: number;
+  generatedAt: string;
+  inProgressInvocationCount: number;
+  inProgressPhaseCounts: InvocationPhaseCounts;
+  retryInvocationCount: number;
+  accounts: DashboardActivityLiveAccount[];
+}
+
 export interface DashboardActivityResponse {
   range: string;
   rangeStart: string;
   rangeEnd: string;
   snapshotId: number;
+  liveRevision?: number;
   rateWindow: DashboardActivityRateWindow;
   summary: DashboardActivitySummary;
   accounts?: UpstreamAccountActivityAccount[];
@@ -860,6 +878,10 @@ export type BroadcastPayload =
   | {
       type: "records";
       records: ApiInvocation[];
+    }
+  | {
+      type: "dashboardActivityLive";
+      snapshot: DashboardActivityLiveSnapshot;
     }
   | {
       type: "pool_attempts";
@@ -2698,6 +2720,7 @@ function normalizeDashboardActivityResponse(raw: unknown): DashboardActivityResp
     rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
     rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
     snapshotId: normalizeFiniteNumber(payload.snapshotId) ?? 0,
+    liveRevision: normalizeFiniteNumber(payload.liveRevision) ?? 0,
     rateWindow: {
       start: typeof rateWindowPayload.start === "string" ? rateWindowPayload.start : "",
       end: typeof rateWindowPayload.end === "string" ? rateWindowPayload.end : "",

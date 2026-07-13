@@ -1222,7 +1222,11 @@ function createDashboardRequestHandler(scenario: DashboardScenario = "default") 
       bucketSeconds: 60,
       effectiveBucket: "1m",
       availableBuckets: ["1m"],
-      points: buildTimeseriesPoints({ count: 24 * 60, bucketSeconds: 60, startMs: range1dStart }),
+      points: buildTimeseriesPoints({
+        count: 24 * 60,
+        bucketSeconds: 60,
+        startMs: range1dStart,
+      }),
     }),
     timeseries7d: buildTimeseriesResponse({
       rangeStart: new Date(range7dStart).toISOString(),
@@ -1292,7 +1296,9 @@ function createDashboardRequestHandler(scenario: DashboardScenario = "default") 
     if (url.pathname === "/api/stats/summary") {
       const window = url.searchParams.get("window") ?? "today";
       if (scenario === "degraded" && window === "today") {
-        return new Response("dashboard today summary unavailable", { status: 500 });
+        return new Response("dashboard today summary unavailable", {
+          status: 500,
+        });
       }
       return jsonResponse(
         responses[window as keyof Pick<typeof responses, "today" | "yesterday" | "1d" | "7d">] ??
@@ -1493,6 +1499,32 @@ export const LiveRefreshDiagnostics: Story = {
         },
       ],
     });
+    controller.emit({
+      type: "dashboardActivityLive",
+      snapshot: {
+        revision: 12,
+        generatedAt: "2026-04-06T12:00:21.000Z",
+        inProgressInvocationCount: 4,
+        inProgressPhaseCounts: { queued: 0, requesting: 2, responding: 2 },
+        retryInvocationCount: 1,
+        accounts: [
+          {
+            accountKey: "upstream:42",
+            upstreamAccountId: 42,
+            inProgressInvocationCount: 2,
+            inProgressPhaseCounts: { queued: 0, requesting: 1, responding: 1 },
+            retryInvocationCount: 0,
+          },
+          {
+            accountKey: "upstream:77",
+            upstreamAccountId: 77,
+            inProgressInvocationCount: 2,
+            inProgressPhaseCounts: { queued: 0, requesting: 1, responding: 1 },
+            retryInvocationCount: 1,
+          },
+        ],
+      },
+    });
 
     await waitFor(
       () => {
@@ -1526,6 +1558,13 @@ export const LiveRefreshDiagnostics: Story = {
           .textContent ?? "0",
       ),
     ).toBe(initialChartRenderCount);
+
+    const accountTab = canvas.getByRole("tab", { name: "上游账号" });
+    await userEvent.click(accountTab);
+    await waitFor(() => {
+      const headers = canvas.getAllByTestId("dashboard-upstream-account-header-row");
+      expect(headers[1]?.querySelector('[aria-label="进行中 2"]')).not.toBeNull();
+    });
   },
 };
 

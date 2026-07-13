@@ -1765,7 +1765,8 @@ async fn finish_summary_quota_broadcast_idle_flushes_pending_tail_when_shutdown_
             }
             BroadcastPayload::Records { .. }
             | BroadcastPayload::Version { .. }
-            | BroadcastPayload::PoolAttempts { .. } => {}
+            | BroadcastPayload::PoolAttempts { .. }
+            | BroadcastPayload::DashboardActivityLive { .. } => {}
         }
 
         if saw_quota && summary_windows.len() == expected_summary_windows {
@@ -1827,7 +1828,9 @@ async fn persist_and_broadcast_proxy_capture_flushes_follow_up_when_shutdown_beg
                 saw_quota = true;
                 assert_eq!(snapshot.total_requests, 9);
             }
-            BroadcastPayload::Version { .. } | BroadcastPayload::PoolAttempts { .. } => {}
+            BroadcastPayload::Version { .. }
+            | BroadcastPayload::PoolAttempts { .. }
+            | BroadcastPayload::DashboardActivityLive { .. } => {}
         }
 
         if saw_record && saw_quota && summary_windows.len() == expected_summary_windows {
@@ -1897,7 +1900,9 @@ async fn persist_and_broadcast_runtime_terminal_schedules_follow_up_after_flush(
                 saw_quota = true;
                 assert_eq!(snapshot.total_requests, 9);
             }
-            BroadcastPayload::Version { .. } | BroadcastPayload::PoolAttempts { .. } => {}
+            BroadcastPayload::Version { .. }
+            | BroadcastPayload::PoolAttempts { .. }
+            | BroadcastPayload::DashboardActivityLive { .. } => {}
         }
 
         if saw_record && saw_quota && summary_windows.len() == expected_summary_windows {

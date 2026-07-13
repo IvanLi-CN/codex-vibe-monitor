@@ -845,6 +845,8 @@ pub(crate) async fn test_state_from_config_with_pool_no_available_wait(
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
         proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
+        dashboard_activity_live_broadcast_seq: Arc::new(AtomicU64::new(0)),
+        dashboard_activity_live_broadcast_running: Arc::new(AtomicBool::new(false)),
         startup_ready: Arc::new(AtomicBool::new(startup_ready)),
         shutdown: CancellationToken::new(),
         semaphore,
@@ -900,6 +902,10 @@ pub(crate) fn clone_state_with_upstream_accounts(
         proxy_summary_quota_broadcast_seq: state.proxy_summary_quota_broadcast_seq.clone(),
         proxy_summary_quota_broadcast_running: state.proxy_summary_quota_broadcast_running.clone(),
         proxy_summary_quota_broadcast_handle: state.proxy_summary_quota_broadcast_handle.clone(),
+        dashboard_activity_live_broadcast_seq: state.dashboard_activity_live_broadcast_seq.clone(),
+        dashboard_activity_live_broadcast_running: state
+            .dashboard_activity_live_broadcast_running
+            .clone(),
         startup_ready: state.startup_ready.clone(),
         shutdown: state.shutdown.clone(),
         semaphore: state.semaphore.clone(),
@@ -945,6 +951,10 @@ pub(crate) fn clone_state_with_pool_group_429_retry_delay_override(
         proxy_summary_quota_broadcast_seq: state.proxy_summary_quota_broadcast_seq.clone(),
         proxy_summary_quota_broadcast_running: state.proxy_summary_quota_broadcast_running.clone(),
         proxy_summary_quota_broadcast_handle: state.proxy_summary_quota_broadcast_handle.clone(),
+        dashboard_activity_live_broadcast_seq: state.dashboard_activity_live_broadcast_seq.clone(),
+        dashboard_activity_live_broadcast_running: state
+            .dashboard_activity_live_broadcast_running
+            .clone(),
         startup_ready: state.startup_ready.clone(),
         shutdown: state.shutdown.clone(),
         semaphore: state.semaphore.clone(),
@@ -1001,6 +1011,8 @@ pub(crate) async fn test_state_from_existing_pool(
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
         proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
+        dashboard_activity_live_broadcast_seq: Arc::new(AtomicU64::new(0)),
+        dashboard_activity_live_broadcast_running: Arc::new(AtomicBool::new(false)),
         startup_ready: Arc::new(AtomicBool::new(startup_ready)),
         shutdown: CancellationToken::new(),
         semaphore,

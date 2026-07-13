@@ -28,6 +28,8 @@ export type {
   CreateOauthMailboxSessionPayload,
   CreateTagPayload,
   CreditsSnapshot,
+  DashboardActivityLiveAccount,
+  DashboardActivityLiveSnapshot,
   DashboardActivityRateWindow,
   DashboardActivityResponse,
   DashboardActivitySummary,

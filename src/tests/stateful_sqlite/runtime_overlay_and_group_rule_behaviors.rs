@@ -819,17 +819,11 @@ async fn admitted_proxy_capture_snapshot_is_visible_before_body_parse_and_later_
         .await
         .expect("admitted snapshot should store in memory and broadcast");
 
-    let payload = rx
-        .recv()
+    let admitted_broadcast = recv_next_records(&mut rx)
         .await
-        .expect("admitted runtime snapshot should arrive");
-    let admitted_broadcast = match payload {
-        BroadcastPayload::Records { records } => {
-            assert_eq!(records.len(), 1);
-            records.into_iter().next().expect("single admitted record")
-        }
-        other => panic!("expected records payload, got {other:?}"),
-    };
+        .into_iter()
+        .next()
+        .expect("single admitted record");
     assert_eq!(admitted_broadcast.id, 0);
     assert_eq!(admitted_broadcast.status.as_deref(), Some("running"));
     assert_eq!(
@@ -887,17 +881,11 @@ async fn admitted_proxy_capture_snapshot_is_visible_before_body_parse_and_later_
         .await
         .expect("body-parsed snapshot should enrich the same runtime row");
 
-    let payload = rx
-        .recv()
+    let enriched_broadcast = recv_next_records(&mut rx)
         .await
-        .expect("enriched runtime snapshot should arrive");
-    let enriched_broadcast = match payload {
-        BroadcastPayload::Records { records } => {
-            assert_eq!(records.len(), 1);
-            records.into_iter().next().expect("single enriched record")
-        }
-        other => panic!("expected records payload, got {other:?}"),
-    };
+        .into_iter()
+        .next()
+        .expect("single enriched record");
     assert_eq!(enriched_broadcast.id, 0);
     assert_eq!(enriched_broadcast.model.as_deref(), Some("gpt-5.4"));
     assert_eq!(
@@ -1056,17 +1044,11 @@ async fn admitted_proxy_capture_snapshot_is_cleared_when_cleanup_guard_drops_bef
             .as_ref()
             .is_some_and(|record| record.status.as_deref() == Some(INVOCATION_STATUS_INTERRUPTED))
         {
-            let payload = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            let terminal_broadcast = recv_next_records(&mut rx)
                 .await
-                .expect("terminalized runtime snapshot should be broadcast")
-                .expect("terminalized runtime snapshot channel should stay open");
-            let terminal_broadcast = match payload {
-                BroadcastPayload::Records { records } => {
-                    assert_eq!(records.len(), 1);
-                    records.into_iter().next().expect("single terminal record")
-                }
-                other => panic!("expected terminal records payload, got {other:?}"),
-            };
+                .into_iter()
+                .next()
+                .expect("single terminal record");
             assert_eq!(terminal_broadcast.invoke_id, invoke_id);
             assert_eq!(terminal_broadcast.occurred_at, occurred_at);
             assert_eq!(
@@ -1110,17 +1092,11 @@ async fn admitted_proxy_capture_snapshot_is_terminalized_on_pre_attempt_error() 
         .await
         .expect("admitted snapshot should store in memory and broadcast");
 
-    let payload = rx
-        .recv()
+    let admitted_broadcast = recv_next_records(&mut rx)
         .await
-        .expect("admitted runtime snapshot should arrive");
-    let admitted_broadcast = match payload {
-        BroadcastPayload::Records { records } => {
-            assert_eq!(records.len(), 1);
-            records.into_iter().next().expect("single admitted record")
-        }
-        other => panic!("expected admitted records payload, got {other:?}"),
-    };
+        .into_iter()
+        .next()
+        .expect("single admitted record");
     assert_eq!(admitted_broadcast.status.as_deref(), Some("running"));
 
     let mut terminal_record = test_proxy_capture_record(invoke_id, occurred_at);
@@ -1134,17 +1110,11 @@ async fn admitted_proxy_capture_snapshot_is_terminalized_on_pre_attempt_error() 
         .await
         .expect("pre-attempt terminal record should broadcast without waiting for sqlite");
 
-    let payload = rx
-        .recv()
+    let terminal_broadcast = recv_next_records(&mut rx)
         .await
-        .expect("terminal runtime snapshot should arrive");
-    let terminal_broadcast = match payload {
-        BroadcastPayload::Records { records } => {
-            assert_eq!(records.len(), 1);
-            records.into_iter().next().expect("single terminal record")
-        }
-        other => panic!("expected terminal records payload, got {other:?}"),
-    };
+        .into_iter()
+        .next()
+        .expect("single terminal record");
     assert_eq!(terminal_broadcast.invoke_id, invoke_id);
     assert_eq!(terminal_broadcast.occurred_at, occurred_at);
     assert_eq!(terminal_broadcast.status.as_deref(), Some("http_502"));
@@ -2122,6 +2092,21 @@ pub(crate) async fn drain_broadcast_messages(rx: &mut broadcast::Receiver<Broadc
             Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
             Ok(Err(broadcast::error::RecvError::Closed)) => break,
             Err(_) => break,
+        }
+    }
+}
+
+pub(crate) async fn recv_next_records(
+    rx: &mut broadcast::Receiver<BroadcastPayload>,
+) -> Vec<ApiInvocation> {
+    loop {
+        let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("records broadcast should arrive")
+            .expect("records broadcast channel should stay open");
+        if let BroadcastPayload::Records { records } = payload {
+            assert_eq!(records.len(), 1);
+            return records;
         }
     }
 }

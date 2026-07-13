@@ -211,6 +211,7 @@ pub(crate) async fn proxy_openai_v1_common(
                 &err.message,
                 "missing_bearer_token",
             );
+            schedule_dashboard_activity_live_snapshot(state.as_ref());
         }
         return build_proxy_error_response(err, &invoke_id);
     }
@@ -247,6 +248,7 @@ pub(crate) async fn proxy_openai_v1_common(
                     &err.message,
                     "route_validation_failed",
                 );
+                schedule_dashboard_activity_live_snapshot(state.as_ref());
             }
             return build_proxy_error_response(err, &invoke_id);
         }

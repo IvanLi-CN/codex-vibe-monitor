@@ -1043,6 +1043,8 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
         proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
+        dashboard_activity_live_broadcast_seq: Arc::new(AtomicU64::new(0)),
+        dashboard_activity_live_broadcast_running: Arc::new(AtomicBool::new(false)),
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
@@ -1354,6 +1356,7 @@ async fn proxy_capture_persist_and_broadcast_emits_records_summary_and_quota() {
     let mut saw_record = false;
     let mut captured_record: Option<ApiInvocation> = None;
     let mut saw_quota = false;
+    let mut saw_dashboard_live = false;
     let mut summary_windows = HashSet::new();
     let expected_summary_windows = summary_broadcast_specs().len();
     for _ in 0..16 {
@@ -1381,16 +1384,27 @@ async fn proxy_capture_persist_and_broadcast_emits_records_summary_and_quota() {
                 saw_quota = true;
                 assert_eq!(snapshot.total_requests, 9);
             }
+            BroadcastPayload::DashboardActivityLive { .. } => {
+                saw_dashboard_live = true;
+            }
             BroadcastPayload::Version { .. } | BroadcastPayload::PoolAttempts { .. } => {}
         }
 
-        if saw_record && saw_quota && summary_windows.len() == expected_summary_windows {
+        if saw_record
+            && saw_quota
+            && saw_dashboard_live
+            && summary_windows.len() == expected_summary_windows
+        {
             break;
         }
     }
 
     assert!(saw_record, "records payload should be broadcast");
     assert!(saw_quota, "quota payload should be broadcast");
+    assert!(
+        saw_dashboard_live,
+        "live dashboard snapshot should be scheduled after the record mutation"
+    );
     assert_eq!(
         summary_windows.len(),
         expected_summary_windows,

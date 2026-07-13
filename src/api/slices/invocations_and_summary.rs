@@ -4695,6 +4695,19 @@ pub(crate) async fn query_upstream_account_in_progress_counts(
     state: &AppState,
     source_scope: InvocationSourceScope,
 ) -> Result<HashMap<Option<i64>, UpstreamAccountInProgressSummary>, ApiError> {
+    query_upstream_account_in_progress_counts_from_runtime(
+        &state.pool,
+        state.proxy_runtime_invocations.as_ref(),
+        source_scope,
+    )
+    .await
+}
+
+pub(crate) async fn query_upstream_account_in_progress_counts_from_runtime(
+    pool: &Pool<Sqlite>,
+    proxy_runtime_invocations: &ProxyRuntimeInvocationStore,
+    source_scope: InvocationSourceScope,
+) -> Result<HashMap<Option<i64>, UpstreamAccountInProgressSummary>, ApiError> {
     #[derive(Debug, FromRow)]
     struct RuntimeKeyRow {
         invoke_id: String,
@@ -4731,7 +4744,7 @@ pub(crate) async fn query_upstream_account_in_progress_counts(
     }
     let db_rows = db_key_query
         .build_query_as::<RuntimeKeyRow>()
-        .fetch_all(&state.pool)
+        .fetch_all(pool)
         .await?;
     let mut counts = HashMap::<Option<i64>, UpstreamAccountInProgressSummary>::new();
     for row in &db_rows {
@@ -4749,9 +4762,9 @@ pub(crate) async fn query_upstream_account_in_progress_counts(
             )
         })
         .collect::<HashMap<_, _>>();
-    let runtime_snapshot = state.proxy_runtime_invocations.snapshot();
+    let runtime_snapshot = proxy_runtime_invocations.snapshot();
     let db_terminal_keys =
-        query_terminal_db_keys_for_runtime_records(&state.pool, &runtime_snapshot, None).await?;
+        query_terminal_db_keys_for_runtime_records(pool, &runtime_snapshot, None).await?;
     let mut runtime_overlay_row_count = 0_i64;
     for record in runtime_snapshot {
         if db_terminal_keys.contains(&(record.invoke_id.clone(), record.occurred_at.clone())) {
@@ -4809,6 +4822,85 @@ pub(crate) async fn query_upstream_account_in_progress_counts(
         );
     }
     Ok(counts)
+}
+
+pub(crate) async fn query_dashboard_activity_live_snapshot(
+    state: &AppState,
+    revision: u64,
+) -> Result<DashboardActivityLiveSnapshot, ApiError> {
+    query_dashboard_activity_live_snapshot_from_runtime(
+        &state.pool,
+        state.proxy_runtime_invocations.as_ref(),
+        revision,
+    )
+    .await
+}
+
+pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
+    pool: &Pool<Sqlite>,
+    proxy_runtime_invocations: &ProxyRuntimeInvocationStore,
+    revision: u64,
+) -> Result<DashboardActivityLiveSnapshot, ApiError> {
+    let counts = query_upstream_account_in_progress_counts_from_runtime(
+        pool,
+        proxy_runtime_invocations,
+        InvocationSourceScope::All,
+    )
+    .await?;
+    let mut accounts = counts
+        .into_iter()
+        .map(
+            |(upstream_account_id, summary)| DashboardActivityLiveAccount {
+                account_key: upstream_account_id
+                    .map(|id| format!("upstream:{id}"))
+                    .unwrap_or_else(|| "unassigned".to_string()),
+                upstream_account_id,
+                in_progress_invocation_count: summary.in_progress_count,
+                in_progress_phase_counts: summary.phase_counts,
+                retry_invocation_count: summary.retry_count,
+            },
+        )
+        .collect::<Vec<_>>();
+    accounts.sort_by(|left, right| left.account_key.cmp(&right.account_key));
+
+    let mut in_progress_phase_counts = InvocationPhaseCountsResponse::default();
+    let mut in_progress_invocation_count = 0;
+    let mut retry_invocation_count = 0;
+    for account in &accounts {
+        in_progress_invocation_count += account.in_progress_invocation_count;
+        retry_invocation_count += account.retry_invocation_count;
+        in_progress_phase_counts.queued += account.in_progress_phase_counts.queued;
+        in_progress_phase_counts.requesting += account.in_progress_phase_counts.requesting;
+        in_progress_phase_counts.responding += account.in_progress_phase_counts.responding;
+    }
+
+    Ok(DashboardActivityLiveSnapshot {
+        revision,
+        generated_at: format_utc_iso(Utc::now()),
+        in_progress_invocation_count,
+        in_progress_phase_counts,
+        retry_invocation_count,
+        accounts,
+    })
+}
+
+fn dashboard_live_snapshot_in_progress_counts(
+    snapshot: &DashboardActivityLiveSnapshot,
+) -> HashMap<Option<i64>, UpstreamAccountInProgressSummary> {
+    snapshot
+        .accounts
+        .iter()
+        .map(|account| {
+            (
+                account.upstream_account_id,
+                UpstreamAccountInProgressSummary {
+                    in_progress_count: account.in_progress_invocation_count,
+                    retry_count: account.retry_invocation_count,
+                    phase_counts: account.in_progress_phase_counts,
+                },
+            )
+        })
+        .collect()
 }
 
 pub(crate) const DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES: i64 = 5;
@@ -5149,6 +5241,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     reporting_tz: Tz,
     recent_limit: usize,
     include_accounts: bool,
+    in_progress_counts_override: Option<HashMap<Option<i64>, UpstreamAccountInProgressSummary>>,
 ) -> Result<DashboardActivitySnapshot, ApiError> {
     let range_window = resolve_range_window(range_name, reporting_tz).map_err(ApiError::from)?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
@@ -5286,7 +5379,10 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     let in_progress_counts = if range_name == "yesterday" {
         HashMap::new()
     } else {
-        query_upstream_account_in_progress_counts(state, source_scope).await?
+        match in_progress_counts_override {
+            Some(counts) => counts,
+            None => query_upstream_account_in_progress_counts(state, source_scope).await?,
+        }
     };
     for upstream_account_id in in_progress_counts.keys() {
         account_activity.entry(*upstream_account_id).or_default();
@@ -5523,14 +5619,46 @@ pub(crate) async fn fetch_dashboard_activity(
         params.recent_limit,
     )?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-    let snapshot = load_dashboard_activity_snapshot(
+    let live = if params.range != "yesterday" {
+        Some(capture_dashboard_activity_live_snapshot(state.as_ref()).await?)
+    } else {
+        None
+    };
+    let mut snapshot = load_dashboard_activity_snapshot(
         state.as_ref(),
         params.range.as_str(),
         reporting_tz,
         recent_limit,
         params.include_accounts,
+        live.as_ref()
+            .map(dashboard_live_snapshot_in_progress_counts),
     )
     .await?;
+    let live_revision = live.as_ref().map_or(0, |snapshot| snapshot.revision);
+    if let Some(live) = live {
+        snapshot.summary.stats.in_progress_conversation_count =
+            Some(live.in_progress_invocation_count);
+        snapshot.summary.stats.in_progress_retry_conversation_count =
+            Some(live.retry_invocation_count);
+        snapshot.summary.stats.in_progress_phase_counts = Some(live.in_progress_phase_counts);
+        let live_accounts = live
+            .accounts
+            .into_iter()
+            .map(|account| (account.account_key.clone(), account))
+            .collect::<HashMap<_, _>>();
+        for account in &mut snapshot.accounts {
+            let live_account = live_accounts.get(&account.account_key);
+            account.in_progress_invocation_count =
+                Some(live_account.map_or(0, |row| row.in_progress_invocation_count));
+            account.in_progress_phase_counts = Some(
+                live_account
+                    .map(|row| row.in_progress_phase_counts)
+                    .unwrap_or_default(),
+            );
+            account.retry_invocation_count =
+                Some(live_account.map_or(0, |row| row.retry_invocation_count));
+        }
+    }
     let rate_window_start = snapshot
         .range_start
         .max(snapshot.range_end - ChronoDuration::minutes(DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES));
@@ -5543,6 +5671,7 @@ pub(crate) async fn fetch_dashboard_activity(
         range_start,
         range_end: range_end.clone(),
         snapshot_id: snapshot.range_end.timestamp_millis(),
+        live_revision,
         rate_window: DashboardActivityRateWindowResponse {
             start: format_utc_iso(rate_window_start),
             end: range_end,
@@ -5570,6 +5699,7 @@ pub(crate) async fn fetch_upstream_account_activity(
         reporting_tz,
         recent_limit,
         true,
+        None,
     )
     .await?;
     let accounts = snapshot

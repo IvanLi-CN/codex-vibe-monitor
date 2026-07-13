@@ -1,9 +1,10 @@
 use super::*;
 use anyhow::anyhow;
-use chrono::LocalResult;
 use chrono::Timelike;
 use serde::Serialize;
 use sqlx::FromRow;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use tokio::sync::broadcast;
 use tracing::warn;
 
@@ -1695,15 +1696,30 @@ pub(crate) async fn sse_stream(
             }
         }
     });
-    // Seed a version event on connect so clients know the current server version immediately
+    // Seed connection state so a reconnect does not wait for the next invocation mutation.
     let initial = {
         let (backend, _frontend) = detect_versions(state.config.static_dir.as_deref());
-        let payload = BroadcastPayload::Version { version: backend };
-        let ev = Event::default().json_data(&payload);
-        match ev {
-            Ok(event) => stream::iter(vec![Ok(event)]),
-            Err(_) => stream::iter(Vec::<Result<Event, Infallible>>::new()),
-        }
+        let live = match capture_dashboard_activity_live_snapshot(state.as_ref()).await {
+            Ok(snapshot) => snapshot,
+            Err(err) => {
+                warn!(
+                    ?err,
+                    "failed to capture initial dashboard activity live snapshot"
+                );
+                build_dashboard_activity_live_snapshot(
+                    current_dashboard_activity_live_revision(),
+                    state.proxy_runtime_invocations.snapshot(),
+                )
+            }
+        };
+        let events = [
+            BroadcastPayload::Version { version: backend },
+            BroadcastPayload::DashboardActivityLive { snapshot: live },
+        ]
+        .into_iter()
+        .filter_map(|payload| Event::default().json_data(&payload).ok().map(Ok))
+        .collect::<Vec<_>>();
+        stream::iter(events)
     };
 
     let merged = initial.chain(broadcast);
@@ -1720,6 +1736,141 @@ pub(crate) struct VersionResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn live_record(
+        invoke_id: &str,
+        account_id: Option<i64>,
+        status: &str,
+        phase: Option<&str>,
+        attempts: i64,
+    ) -> ApiInvocation {
+        ApiInvocation {
+            id: 1,
+            invoke_id: invoke_id.to_string(),
+            occurred_at: "2026-07-12 10:00:00".to_string(),
+            source: SOURCE_PROXY.to_string(),
+            proxy_display_name: None,
+            model: None,
+            request_model: None,
+            response_model: None,
+            input_tokens: None,
+            output_tokens: None,
+            cache_input_tokens: None,
+            reasoning_tokens: None,
+            reasoning_effort: None,
+            total_tokens: None,
+            cost: None,
+            cost_input: None,
+            cost_cache_write: None,
+            cost_cache_read: None,
+            cost_output: None,
+            cost_reasoning: None,
+            cache_write_tokens: None,
+            status: Some(status.to_string()),
+            live_phase: phase.map(str::to_string),
+            error_message: None,
+            downstream_status_code: None,
+            failure_kind: None,
+            stream_terminal_event: None,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            downstream_error_message: None,
+            upstream_request_id: None,
+            failure_class: None,
+            is_actionable: None,
+            endpoint: None,
+            compaction_request_kind: None,
+            compaction_response_kind: None,
+            image_intent: None,
+            requester_ip: None,
+            prompt_cache_key: None,
+            sticky_key: None,
+            route_mode: None,
+            upstream_account_id: account_id,
+            upstream_account_name: None,
+            response_content_encoding: None,
+            transport: None,
+            pool_attempt_count: Some(attempts),
+            pool_distinct_account_count: None,
+            pool_attempt_terminal_reason: None,
+            requested_service_tier: None,
+            service_tier: None,
+            billing_service_tier: None,
+            proxy_weight_delta: None,
+            cost_estimated: None,
+            price_version: None,
+            request_raw_path: None,
+            request_raw_size: None,
+            request_raw_truncated: None,
+            request_raw_truncated_reason: None,
+            response_raw_path: None,
+            response_raw_size: None,
+            response_raw_truncated: None,
+            response_raw_truncated_reason: None,
+            detail_level: "full".to_string(),
+            detail_pruned_at: None,
+            detail_prune_reason: None,
+            t_total_ms: None,
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: None,
+            t_upstream_stream_ms: None,
+            t_resp_parse_ms: None,
+            t_persist_ms: None,
+            created_at: "2026-07-12 10:00:00".to_string(),
+        }
+    }
+
+    #[test]
+    fn dashboard_activity_live_snapshot_groups_one_runtime_read_by_account() {
+        let snapshot = build_dashboard_activity_live_snapshot(
+            9,
+            [
+                live_record("c-1", Some(42), "running", Some("requesting"), 1),
+                live_record("c-2", Some(42), "pending", Some("responding"), 2),
+                live_record("u-1", None, "running", None, 1),
+                live_record("done", Some(42), "success", None, 1),
+            ],
+        );
+
+        assert_eq!(snapshot.revision, 9);
+        assert_eq!(snapshot.in_progress_invocation_count, 3);
+        assert_eq!(snapshot.retry_invocation_count, 1);
+        assert_eq!(snapshot.in_progress_phase_counts.queued, 1);
+        assert_eq!(snapshot.in_progress_phase_counts.requesting, 1);
+        assert_eq!(snapshot.in_progress_phase_counts.responding, 1);
+        assert_eq!(snapshot.accounts.len(), 2);
+        let account = snapshot
+            .accounts
+            .iter()
+            .find(|row| row.upstream_account_id == Some(42))
+            .unwrap();
+        assert_eq!(account.in_progress_invocation_count, 2);
+        assert_eq!(account.retry_invocation_count, 1);
+    }
+
+    #[test]
+    fn dashboard_activity_live_snapshot_infers_missing_runtime_phase() {
+        let mut requesting = live_record("requesting", Some(42), "running", None, 1);
+        requesting.t_upstream_connect_ms = Some(4.0);
+        let mut responding = live_record("responding", Some(42), "running", None, 1);
+        responding.t_upstream_ttfb_ms = Some(12.0);
+
+        let snapshot = build_dashboard_activity_live_snapshot(10, [requesting, responding]);
+
+        assert_eq!(snapshot.in_progress_phase_counts.queued, 0);
+        assert_eq!(snapshot.in_progress_phase_counts.requesting, 1);
+        assert_eq!(snapshot.in_progress_phase_counts.responding, 1);
+    }
+
+    #[test]
+    fn dashboard_activity_live_revision_reservation_is_monotonic() {
+        let first = reserve_dashboard_activity_live_revision();
+        let second = reserve_dashboard_activity_live_revision();
+
+        assert_eq!(second, first + 1);
+    }
 
     #[test]
     fn build_invocation_filters_normalizes_request_id() {
@@ -1899,6 +2050,197 @@ pub(crate) struct BroadcastStateCache {
     pub(crate) quota: Option<QuotaSnapshotResponse>,
 }
 
+static DASHBOARD_ACTIVITY_LIVE_REVISION: AtomicU64 = AtomicU64::new(0);
+const DASHBOARD_ACTIVITY_LIVE_BROADCAST_DEBOUNCE: Duration = Duration::from_millis(100);
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardActivityLiveAccount {
+    pub(crate) account_key: String,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) in_progress_invocation_count: i64,
+    pub(crate) in_progress_phase_counts: InvocationPhaseCountsResponse,
+    pub(crate) retry_invocation_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardActivityLiveSnapshot {
+    pub(crate) revision: u64,
+    pub(crate) generated_at: String,
+    pub(crate) in_progress_invocation_count: i64,
+    pub(crate) in_progress_phase_counts: InvocationPhaseCountsResponse,
+    pub(crate) retry_invocation_count: i64,
+    pub(crate) accounts: Vec<DashboardActivityLiveAccount>,
+}
+
+pub(crate) fn current_dashboard_activity_live_revision() -> u64 {
+    DASHBOARD_ACTIVITY_LIVE_REVISION.load(Ordering::Acquire)
+}
+
+fn reserve_dashboard_activity_live_revision() -> u64 {
+    DASHBOARD_ACTIVITY_LIVE_REVISION.fetch_add(1, Ordering::AcqRel) + 1
+}
+
+pub(crate) async fn capture_dashboard_activity_live_snapshot(
+    state: &AppState,
+) -> Result<DashboardActivityLiveSnapshot, ApiError> {
+    capture_dashboard_activity_live_snapshot_from_runtime(
+        &state.pool,
+        state.proxy_runtime_invocations.as_ref(),
+    )
+    .await
+}
+
+async fn capture_dashboard_activity_live_snapshot_from_runtime(
+    pool: &Pool<Sqlite>,
+    proxy_runtime_invocations: &ProxyRuntimeInvocationStore,
+) -> Result<DashboardActivityLiveSnapshot, ApiError> {
+    // Reserve before awaiting so concurrent captures cannot label an older read as newer.
+    let revision = reserve_dashboard_activity_live_revision();
+    query_dashboard_activity_live_snapshot_from_runtime(pool, proxy_runtime_invocations, revision)
+        .await
+}
+
+pub(crate) fn build_dashboard_activity_live_snapshot(
+    revision: u64,
+    records: impl IntoIterator<Item = ApiInvocation>,
+) -> DashboardActivityLiveSnapshot {
+    let mut accounts = HashMap::<Option<i64>, DashboardActivityLiveAccount>::new();
+    for record in records {
+        if !matches!(
+            normalized_runtime_text(record.status.as_deref()).as_str(),
+            "running" | "pending"
+        ) {
+            continue;
+        }
+        let account_id = record.upstream_account_id;
+        let account = accounts
+            .entry(account_id)
+            .or_insert_with(|| DashboardActivityLiveAccount {
+                account_key: account_id
+                    .map(|id| format!("upstream:{id}"))
+                    .unwrap_or_else(|| "unassigned".to_string()),
+                upstream_account_id: account_id,
+                in_progress_invocation_count: 0,
+                in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
+                retry_invocation_count: 0,
+            });
+        account.in_progress_invocation_count += 1;
+        let live_phase = record
+            .live_phase
+            .as_deref()
+            .or_else(|| runtime_invocation_live_phase(&record));
+        account
+            .in_progress_phase_counts
+            .increment_phase_name(live_phase);
+        if record.pool_attempt_count.unwrap_or_default() > 1 {
+            account.retry_invocation_count += 1;
+        }
+    }
+    let mut accounts = accounts.into_values().collect::<Vec<_>>();
+    accounts.sort_by(|left, right| left.account_key.cmp(&right.account_key));
+    let mut phase_counts = InvocationPhaseCountsResponse::default();
+    let mut in_progress_invocation_count = 0;
+    let mut retry_invocation_count = 0;
+    for account in &accounts {
+        in_progress_invocation_count += account.in_progress_invocation_count;
+        retry_invocation_count += account.retry_invocation_count;
+        phase_counts.queued += account.in_progress_phase_counts.queued;
+        phase_counts.requesting += account.in_progress_phase_counts.requesting;
+        phase_counts.responding += account.in_progress_phase_counts.responding;
+    }
+    DashboardActivityLiveSnapshot {
+        revision,
+        generated_at: format_utc_iso(Utc::now()),
+        in_progress_invocation_count,
+        in_progress_phase_counts: phase_counts,
+        retry_invocation_count,
+        accounts,
+    }
+}
+
+pub(crate) fn schedule_dashboard_activity_live_snapshot(state: &AppState) {
+    if state.broadcaster.receiver_count() == 0 || state.shutdown.is_cancelled() {
+        return;
+    }
+    let worker_start_seq = state
+        .dashboard_activity_live_broadcast_seq
+        .fetch_add(1, Ordering::Relaxed)
+        + 1;
+    if state
+        .dashboard_activity_live_broadcast_running
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    let latest_seq = state.dashboard_activity_live_broadcast_seq.clone();
+    let broadcast_running = state.dashboard_activity_live_broadcast_running.clone();
+    let pool = state.pool.clone();
+    let proxy_runtime_invocations = state.proxy_runtime_invocations.clone();
+    let broadcaster = state.broadcaster.clone();
+    let shutdown = state.shutdown.clone();
+    tokio::spawn(async move {
+        let mut delivered_seq = worker_start_seq.saturating_sub(1);
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    broadcast_running.store(false, Ordering::Release);
+                    return;
+                }
+                _ = tokio::time::sleep(DASHBOARD_ACTIVITY_LIVE_BROADCAST_DEBOUNCE) => {}
+            }
+
+            let sent_seq = latest_seq.load(Ordering::Acquire);
+            if broadcaster.receiver_count() > 0 {
+                let started = Instant::now();
+                match capture_dashboard_activity_live_snapshot_from_runtime(
+                    &pool,
+                    proxy_runtime_invocations.as_ref(),
+                )
+                .await
+                {
+                    Ok(snapshot) => {
+                        let revision = snapshot.revision;
+                        if let Err(err) =
+                            broadcaster.send(BroadcastPayload::DashboardActivityLive { snapshot })
+                        {
+                            warn!(
+                                ?err,
+                                revision, "failed to broadcast dashboard activity live snapshot"
+                            );
+                        } else {
+                            tracing::debug!(
+                                revision,
+                                coalesced_mutation_count = sent_seq.saturating_sub(delivered_seq),
+                                generated_to_sent_ms = started.elapsed().as_millis() as u64,
+                                "broadcast dashboard activity live snapshot"
+                            );
+                        }
+                    }
+                    Err(err) => warn!(?err, "failed to capture dashboard activity live snapshot"),
+                }
+            }
+            delivered_seq = sent_seq;
+
+            if latest_seq.load(Ordering::Acquire) != sent_seq {
+                continue;
+            }
+            broadcast_running.store(false, Ordering::Release);
+            if latest_seq.load(Ordering::Acquire) != sent_seq
+                && broadcast_running
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
+                continue;
+            }
+            return;
+        }
+    });
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub(crate) enum BroadcastPayload {
@@ -1907,6 +2249,9 @@ pub(crate) enum BroadcastPayload {
     },
     Records {
         records: Vec<ApiInvocation>,
+    },
+    DashboardActivityLive {
+        snapshot: DashboardActivityLiveSnapshot,
     },
     #[serde(rename = "pool_attempts")]
     PoolAttempts {

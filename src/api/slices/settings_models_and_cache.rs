@@ -1564,6 +1564,7 @@ pub(crate) struct DashboardActivityResponse {
     pub(crate) range_start: String,
     pub(crate) range_end: String,
     pub(crate) snapshot_id: i64,
+    pub(crate) live_revision: u64,
     pub(crate) rate_window: DashboardActivityRateWindowResponse,
     pub(crate) summary: DashboardActivitySummaryResponse,
     #[serde(skip_serializing_if = "Option::is_none")]

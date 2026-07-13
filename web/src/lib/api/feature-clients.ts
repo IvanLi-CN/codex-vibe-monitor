@@ -1,4 +1,6 @@
 export type {
+  DashboardActivityLiveAccount,
+  DashboardActivityLiveSnapshot,
   DashboardActivityRateWindow,
   DashboardActivityResponse,
   DashboardActivitySummary,
