@@ -2475,7 +2475,7 @@ function SharedUpstreamAccountDetailDrawerInner({
           onPortalContainerChange={setDetailDrawerPortalContainer}
           onBodyElementChange={setDetailDrawerBodyElement}
           onClose={handleDetailDrawerClose}
-          shellClassName="max-w-[90rem]"
+          shellClassName="desktop:w-[min(90rem,calc(100vw-2rem))]"
           header={
             <div className="space-y-4">
               <div className="space-y-3">

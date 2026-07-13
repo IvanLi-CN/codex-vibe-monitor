@@ -99,6 +99,7 @@
 - 锚点窗口必须冻结到定位响应的 `snapshotId + anchorId` 并暂停 records SSE；`anchorId` 负责让双向分页复现定位时的 runtime overlay，用户返回最新记录后才恢复第一页与实时订阅。
 - 账号详情调用记录中的调用 ID 必须使用等宽字体单行完整展示，不得换行或截断；仅该详情面板可收紧用时、输入与输出列，为调用 ID 保留稳定宽度，不改变其他 `InvocationTable` 使用方。
 - 程序化定位目标行必须使用不改变布局的单层短暂高亮，并抑制浏览器默认 outline，避免边框、阴影与焦点轮廓叠加。
+- 桌面 overlay 模式的共享账号详情抽屉必须使用 `min(90rem, calc(100vw - 2rem))` 的确定宽度；加载状态、数据结算与 tab 切换不得改变抽屉宽度。紧凑视口页面化模式继续占满可用宽度。
 
 ## 验收标准（Acceptance Criteria）
 
@@ -110,9 +111,15 @@
 - 后端必须覆盖：增量维护、历史补齐幂等、boundary + live tail 精确性、cursor 恢复、接口只读 read-model 行为。
 - 前端必须覆盖：锚点页虚拟定位、向上 prepend 保持视口、向下 append、稳定去重、返回最新恢复 SSE，以及定位 `404`/请求失败提示。
 - 前端必须覆盖：桌面与移动布局均完整单行展示调用 ID，目标行聚焦后只出现一层清晰高亮且不产生横向溢出。
+- 前端必须通过真实浏览器布局覆盖：详情加载态、数据结算态及概览、上游调用、编辑、路由、健康与事件 tab 的抽屉宽度保持一致。
 - 后端必须覆盖：账号作用域首/中/末页定位、runtime overlay、固定快照、账号不匹配和 retention 后未找到语义，且定位响应不得包含全量历史。
 
 ## Visual Evidence
+
+- 账号详情抽屉固定桌面宽度（mock Storybook；`1920px` viewport 下抽屉保持 `1440px`，五个 tab 切换前后宽度一致）
+
+PR: include
+![账号详情抽屉固定桌面宽度](./assets/detail-drawer-fixed-width-health-events.png)
 
 - 账号详情调用 ID 锚点定位成功态（mock Storybook；冻结历史窗口、返回最新入口、目标行居中聚焦与非布局型高亮）
 
