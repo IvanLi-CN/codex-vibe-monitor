@@ -1702,11 +1702,19 @@ pub(crate) async fn sse_stream(
     // Seed connection state so a reconnect does not wait for the next invocation mutation.
     let initial = {
         let (backend, _frontend) = detect_versions(state.config.static_dir.as_deref());
-        let revision = current_dashboard_activity_live_revision();
-        let live = build_dashboard_activity_live_snapshot(
-            revision,
-            state.proxy_runtime_invocations.snapshot(),
-        );
+        let live = match capture_dashboard_activity_live_snapshot(state.as_ref()).await {
+            Ok(snapshot) => snapshot,
+            Err(err) => {
+                warn!(
+                    ?err,
+                    "failed to capture initial dashboard activity live snapshot"
+                );
+                build_dashboard_activity_live_snapshot(
+                    current_dashboard_activity_live_revision(),
+                    state.proxy_runtime_invocations.snapshot(),
+                )
+            }
+        };
         let events = [
             BroadcastPayload::Version { version: backend },
             BroadcastPayload::DashboardActivityLive { snapshot: live },
@@ -2064,11 +2072,11 @@ pub(crate) fn current_dashboard_activity_live_revision() -> u64 {
     DASHBOARD_ACTIVITY_LIVE_REVISION.load(Ordering::Acquire)
 }
 
-pub(crate) fn capture_dashboard_activity_live_snapshot(
+pub(crate) async fn capture_dashboard_activity_live_snapshot(
     state: &AppState,
-) -> DashboardActivityLiveSnapshot {
+) -> Result<DashboardActivityLiveSnapshot, ApiError> {
     let revision = DASHBOARD_ACTIVITY_LIVE_REVISION.fetch_add(1, Ordering::AcqRel) + 1;
-    build_dashboard_activity_live_snapshot(revision, state.proxy_runtime_invocations.snapshot())
+    query_dashboard_activity_live_snapshot(state, revision).await
 }
 
 pub(crate) fn build_dashboard_activity_live_snapshot(
@@ -2129,8 +2137,14 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
     }
 }
 
-pub(crate) fn broadcast_dashboard_activity_live_snapshot(state: &AppState) {
-    let snapshot = capture_dashboard_activity_live_snapshot(state);
+pub(crate) async fn broadcast_dashboard_activity_live_snapshot(state: &AppState) {
+    let snapshot = match capture_dashboard_activity_live_snapshot(state).await {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            warn!(?err, "failed to capture dashboard activity live snapshot");
+            return;
+        }
+    };
     let revision = snapshot.revision;
     if state.broadcaster.receiver_count() == 0 {
         return;

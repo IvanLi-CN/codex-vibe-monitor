@@ -39,7 +39,7 @@ Using one cadence for all three overfits the most urgent surface and overloads t
 ## Resolution
 
 - Let SSE summary payloads drive KPI-style counters directly when the payload already contains the authoritative window.
-- For account-level current state, publish one revisioned backend live snapshot from a single runtime-store read. Merge only its live fields into the heavier HTTP snapshot, reject lower revisions, and seed the current snapshot on SSE reconnect; do not turn records events into permission to rerun a multi-second aggregate query.
+- For account-level current state, publish one revisioned backend live snapshot from the bounded SQLite live read model plus the runtime-store overlay. Merge only its live fields into the heavier HTTP snapshot, reject lower revisions, and seed the current snapshot on SSE reconnect; do not turn records events into permission to rerun a multi-second historical aggregate query.
 - Keep lightweight live KPI semantics separate from heavy aggregate endpoint semantics. If the KPI means “strictly in progress now”, expose that directly on the summary path instead of reusing the latest point from a historical bucket series.
 - When a top-level KPI and a visible breakdown explain the same live quantity, serve them from one backend activity snapshot with one `rangeEnd`, one runtime overlay read, and one aggregation algorithm. Do not let the top KPI use frontend timeseries math while the breakdown uses backend account aggregation.
 - Prefer account-first aggregation for visible account breakdowns: calculate account rows, add an explicit unassigned bucket for traffic without an account, then derive summary rates and live counts by summing the rows. This keeps the visible decomposition able to explain the top number.

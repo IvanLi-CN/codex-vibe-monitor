@@ -971,7 +971,7 @@ pub(crate) async fn broadcast_recovered_proxy_invocations(
                 anyhow!("failed to broadcast recovered proxy invocation records: {err}")
             })?;
     }
-    broadcast_dashboard_activity_live_snapshot(state);
+    broadcast_dashboard_activity_live_snapshot(state).await;
     schedule_proxy_capture_follow_up_worker(state, &summary_invoke_id).await?;
 
     Ok(())
@@ -1203,6 +1203,7 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
             &pending_attempt_record.occurred_at,
             "drop_guard",
         );
+        broadcast_dashboard_activity_live_snapshot(state).await;
     } else {
         remove_proxy_runtime_snapshot_by_key(
             state,
@@ -1273,6 +1274,7 @@ pub(crate) async fn recover_guard_dropped_pool_invocation_orphan(
             &selector.occurred_at,
             recovery_trigger,
         );
+        broadcast_dashboard_activity_live_snapshot(state).await;
         return Ok(());
     }
 
@@ -2507,7 +2509,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
             "failed to broadcast runtime proxy capture snapshot"
         );
     }
-    broadcast_dashboard_activity_live_snapshot(state);
+    broadcast_dashboard_activity_live_snapshot(state).await;
 
     let elapsed_ms = started.elapsed().as_millis() as u64;
     debug!(
@@ -2617,7 +2619,6 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_by_key(
             "failed to broadcast terminalized proxy runtime snapshot"
         );
     }
-    broadcast_dashboard_activity_live_snapshot(state);
     true
 }
 
@@ -2690,7 +2691,6 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_with_error(
             "failed to broadcast terminal error proxy runtime snapshot"
         );
     }
-    broadcast_dashboard_activity_live_snapshot(state);
     true
 }
 
@@ -2766,7 +2766,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
             "failed to broadcast terminal proxy capture record"
         );
     }
-    broadcast_dashboard_activity_live_snapshot(state);
+    broadcast_dashboard_activity_live_snapshot(state).await;
     if terminal_enqueued {
         schedule_proxy_capture_follow_up_after_terminal_enqueue(
             state,

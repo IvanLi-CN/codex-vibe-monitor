@@ -102,7 +102,7 @@
 ### SHOULD
 
 - 当前进行中、重试和阶段计数必须由后端基于一次 runtime store 读取生成版本化 `dashboardActivityLive` SSE 快照；前端不得从 recent/records 自行推导。历史聚合、recent 与账号元数据继续沿用 5 秒 HTTP reconcile budget。
-- `dashboardActivityLive.revision` 必须单调递增；`GET /api/stats/dashboard-activity.liveRevision` 标识 HTTP 读取时的实时版本。前端不得用较旧 HTTP 或 SSE revision 覆盖较新的实时字段，SSE 重连必须立即下发当前快照。
+- `dashboardActivityLive.revision` 必须单调递增；其快照由 SQLite live read model 与 runtime overlay 的同一合并算法生成。`GET /api/stats/dashboard-activity.liveRevision` 标识 HTTP 返回的实时字段版本。前端不得用较旧 HTTP 或 SSE revision 覆盖较新的实时字段，SSE 重连必须立即下发当前快照。
 - 当前实现中，账号视图与 current summary 一样统一收口到 `5s` reconcile/open-resync 预算；任何更激进的 cadence 变更都必须先补充 slow-path 证据。
 - 共享 range 状态应继续使用现有 localStorage key，避免打断用户已保存的 Dashboard 偏好。
 - 账号卡内的最近调用记录应复用已有 invocation 语义 helper，保证状态、模型、耗时与账号 badge 文案一致。
@@ -238,14 +238,6 @@
 - `cd web && bun run build-storybook`
 
 ## Visual Evidence
-
-- source_type: storybook_canvas
-  story_id_or_title: `pages-dashboardpage--unified-activity-snapshot`
-  scenario: `CIII account live invocation counts`
-  evidence_note: 验证 Dashboard 上游账号视图中 CIII 的进行中调用计数与顶部实时 KPI 同屏渲染；账号卡直接消费后端权威 live snapshot，而不是等待完整历史聚合 HTTP 重查。
-  image:
-  PR: include
-  ![Dashboard CIII 实时账号调用快照](./assets/dashboard-live-account-snapshot.jpg)
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--error-summary-tooltips`

@@ -4817,6 +4817,49 @@ pub(crate) async fn query_upstream_account_in_progress_counts(
     Ok(counts)
 }
 
+pub(crate) async fn query_dashboard_activity_live_snapshot(
+    state: &AppState,
+    revision: u64,
+) -> Result<DashboardActivityLiveSnapshot, ApiError> {
+    let counts =
+        query_upstream_account_in_progress_counts(state, InvocationSourceScope::All).await?;
+    let mut accounts = counts
+        .into_iter()
+        .map(
+            |(upstream_account_id, summary)| DashboardActivityLiveAccount {
+                account_key: upstream_account_id
+                    .map(|id| format!("upstream:{id}"))
+                    .unwrap_or_else(|| "unassigned".to_string()),
+                upstream_account_id,
+                in_progress_invocation_count: summary.in_progress_count,
+                in_progress_phase_counts: summary.phase_counts,
+                retry_invocation_count: summary.retry_count,
+            },
+        )
+        .collect::<Vec<_>>();
+    accounts.sort_by(|left, right| left.account_key.cmp(&right.account_key));
+
+    let mut in_progress_phase_counts = InvocationPhaseCountsResponse::default();
+    let mut in_progress_invocation_count = 0;
+    let mut retry_invocation_count = 0;
+    for account in &accounts {
+        in_progress_invocation_count += account.in_progress_invocation_count;
+        retry_invocation_count += account.retry_invocation_count;
+        in_progress_phase_counts.queued += account.in_progress_phase_counts.queued;
+        in_progress_phase_counts.requesting += account.in_progress_phase_counts.requesting;
+        in_progress_phase_counts.responding += account.in_progress_phase_counts.responding;
+    }
+
+    Ok(DashboardActivityLiveSnapshot {
+        revision,
+        generated_at: format_utc_iso(Utc::now()),
+        in_progress_invocation_count,
+        in_progress_phase_counts,
+        retry_invocation_count,
+        accounts,
+    })
+}
+
 pub(crate) const DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES: i64 = 5;
 
 #[derive(Debug)]
@@ -5539,7 +5582,7 @@ pub(crate) async fn fetch_dashboard_activity(
         params.include_accounts,
     )
     .await?;
-    let live = capture_dashboard_activity_live_snapshot(state.as_ref());
+    let live = capture_dashboard_activity_live_snapshot(state.as_ref()).await?;
     let live_revision = live.revision;
     if snapshot.range != "yesterday" {
         snapshot.summary.stats.in_progress_conversation_count =
