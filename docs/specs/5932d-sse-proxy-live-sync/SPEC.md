@@ -68,6 +68,7 @@
 - Dashboard 顶部 `today`/`yesterday` 1 分钟粒度活动图：
   - 继续使用既有 Recharts 图表、tooltip、1 分钟 bucket 与交互结构。
   - `today` 图表接收的 timeseries response 允许高频到达，但提交给图表渲染的数据快照必须独立节流到不超过每 5 秒一次。
+  - 采用前端本地 live patch 的 timeseries 消费者在页面持续可见时，仍必须保留低频 silent HTTP reconcile 兜底（例如 60 秒一次）；不得无限期只依赖 SSE 本地状态自收敛，否则丢失 terminal 事件或过期 in-flight seed 会长期滞留在图表状态里。
   - closed natural day（例如 `yesterday`）不需要延迟提交。
 - Dashboard working conversations:
   - SSE `records` 对已加载会话的本地可见 patch 必须 1 秒合批提交，避免逐条记录触发卡片重排。
@@ -125,6 +126,7 @@
 - Given 一个 `pending` 或 `running` 调用 started 超过 5 分钟，When 查询 Dashboard 当前 summary、account activity 或 working conversations，Then 该调用仍计入 active phase counts 并出现在当前卡片列表。
 - Given working conversation 历史跨 hourly rollup、exact DB 与 runtime overlay，When 查询当前卡片，Then 卡片 totals 使用该 prompt-cache key 的完整生命周期聚合，不随 5 分钟筛选窗口缩水。
 - Given timeseries bucket 内含 queued/requesting/responding，When 返回 `TimeseriesPoint`，Then `inFlightPhaseCounts` 明细正确且 `inFlightCount` 保持兼容合计。
+- Given Dashboard `today` timeseries 当前仅靠本地 live patch 保持可见态，When 页面持续可见并跨过下一次低频 silent reconcile cadence，Then 错过 terminal SSE 或过期 seed 造成的 stale in-flight 状态必须被 authoritative timeseries response 清除。
 - Given parallel-work payload 未变化，When 客户端带上前次 `ETag` 请求 `/api/stats/parallel-work`，Then 服务端可返回 `304`，客户端复用既有数据且不改变 JSON shape。
 
 ### Performance & Reliability
@@ -153,3 +155,14 @@
 
 PR: include
 ![Dashboard 完整桌面页 Storybook 证据](./assets/dashboard-page-full-desktop1660-storybook.png)
+
+- source_type=storybook_canvas
+- target_program=mock-only
+- capture_scope=browser-viewport
+- requested_viewport=1660x960
+- viewport_strategy=devtools-emulate
+- sensitive_exclusion=N/A
+- submission_gate=owner-approved
+- story_id_or_title=pages-dashboardpage--live-refresh-diagnostics
+- state=live refresh diagnostics
+- evidence_note=验证 diagnostics story 中，单条 `records` SSE 会触发 working-conversations 可见 patch 与 summary refresh 计数增长，但不会同步放大 chart render；本次实现继续要求 local-patch timeseries 保留低频 silent authoritative reconcile，避免长驻标签页把 stale in-flight 状态永久留在前端。

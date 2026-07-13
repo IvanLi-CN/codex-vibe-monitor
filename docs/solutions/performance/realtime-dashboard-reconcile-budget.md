@@ -47,6 +47,7 @@ Using one cadence for all three overfits the most urgent surface and overloads t
 - If a page-level activity snapshot already includes the visible natural-day summary and rate window, consume that snapshot directly for the main card truth. Fetch only comparison windows separately instead of layering a second same-window summary subscription under the same visible panel.
 - Batch visible local patches separately from head/snapshot reconcile. A 1 second visible patch batch is responsive enough for card updates while avoiding per-record rerenders.
 - Put expensive HTTP reconcile and dense chart data commits behind a separate 5 second budget.
+- Even when a chart or summary surface can patch visible state locally, keep a low-frequency silent authoritative reconcile budget in the background. Local patch mode is a latency optimization, not a license to let frontend live state drift forever if terminal SSE cleanup or in-flight seed expiry is missed.
 - For large aggregate endpoints that must keep their JSON shape, add conditional HTTP (`ETag` and `304 Not Modified`) instead of trimming fields.
 - Add lightweight diagnostics counters for each path: visible patch count, head fetch count, SSE summary commit count, HTTP reconcile count, chart data commit count, and conditional fetch hit count.
 - Keep `current` summary and dashboard account-activity reconcile on the same 5 second budget. A faster current-window reconcile without a matching backend live read model simply turns SQLite scan cost into a tighter request loop.
@@ -75,6 +76,7 @@ Using one cadence for all three overfits the most urgent surface and overloads t
 - Do not let HTTP open-resync depend on DB persistence of transient runtime rows. If DB writes are intentionally skipped for `running` snapshots, open-resync must overlay the same runtime store used by SSE across records, summary, timeseries, account activity, and prompt-cache working conversations; otherwise the UI will flicker or lose visible in-flight rows until terminal.
 - Apply terminal-DB exclusion to every runtime overlay path, including stats summary live augmentation. A runtime memory row may outlive terminal persistence after a missed cleanup, so overlay code must query terminal DB keys and skip matching memory rows before counting in-progress totals, retry totals, or wait averages.
 - Do not use a runtime-age cutoff to compensate for a synthetic snapshot lifecycle leak. An age filter hides the ownership defect and can remove a genuine long-running request from strict current-live counters; repair the terminal cleanup path instead.
+- Do not let a local live-patch map linger indefinitely just because the tab stays visible and SSE never reconnects. Every local patch surface needs an eventual authoritative reconcile path that can clear stale in-flight state without waiting for manual refresh.
 
 ## References
 

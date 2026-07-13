@@ -9,7 +9,11 @@ import type {
   InvocationRecordsResponse,
   TimeseriesResponse,
 } from "../lib/api";
-import { clearTimeseriesRemountCache, useTimeseries } from "./useTimeseries";
+import {
+  clearTimeseriesRemountCache,
+  TIMESERIES_POLLING_REFRESH_INTERVAL_MS,
+  useTimeseries,
+} from "./useTimeseries";
 
 const apiMocks = vi.hoisted(() => ({
   fetchTimeseries:
@@ -763,5 +767,81 @@ describe("useTimeseries page restore resync", () => {
     await flushAsync();
 
     expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("useTimeseries live seed gating", () => {
+  it("skips invocation seed fetches when the timeseries contains no in-flight counts", async () => {
+    apiMocks.fetchTimeseries.mockResolvedValue(
+      createBaseTimeseries({
+        totalCount: 3,
+        successCount: 3,
+        failureCount: 0,
+        inFlightCount: 0,
+        totalTokens: 120,
+        totalCost: 0.12,
+      }),
+    );
+    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
+
+    render(<Probe />);
+    await flushAsync();
+
+    expect(text("loading")).toBe("false");
+    expect(text("error")).toBe("");
+    expect(text("total")).toBe("3");
+    expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalled();
+  });
+
+  it("silently reconciles local live deltas on the polling interval", async () => {
+    vi.useFakeTimers();
+
+    const initialResponse = createBaseTimeseries({
+      totalCount: 1,
+      successCount: 0,
+      failureCount: 0,
+      inFlightCount: 1,
+      totalTokens: 0,
+      totalCost: 0,
+    });
+    const refreshedResponse = createBaseTimeseries({
+      totalCount: 1,
+      successCount: 1,
+      failureCount: 0,
+      inFlightCount: 0,
+      totalTokens: 44,
+      totalCost: 0.44,
+    });
+    const runningRecord = createRunningRecord();
+
+    apiMocks.fetchTimeseries
+      .mockResolvedValueOnce(initialResponse)
+      .mockResolvedValueOnce(refreshedResponse);
+    apiMocks.fetchInvocationRecords.mockImplementation(async ({ status }) =>
+      createRecordsPage(status === "running" ? [runningRecord] : []),
+    );
+
+    render(<Probe />);
+    await flushAsync();
+
+    expect(text("loading")).toBe("false");
+    expect(text("total")).toBe("1");
+    expect(text("success")).toBe("0");
+    expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(TIMESERIES_POLLING_REFRESH_INTERVAL_MS);
+    });
+    await flushAsync();
+
+    expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(2);
+    expect(text("loading")).toBe("false");
+    expect(text("error")).toBe("");
+    expect(text("total")).toBe("1");
+    expect(text("success")).toBe("1");
+    expect(text("failure")).toBe("0");
+    expect(text("tokens")).toBe("44");
+    expect(text("cost")).toBe("0.44");
   });
 });

@@ -67,6 +67,7 @@ interface LiveRecordDelta {
 export const TIMESERIES_RECORDS_RESYNC_THROTTLE_MS = 3_000;
 export const TIMESERIES_OPEN_RESYNC_COOLDOWN_MS = 3_000;
 export const TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS = 60_000;
+export const TIMESERIES_POLLING_REFRESH_INTERVAL_MS = 60_000;
 export const TIMESERIES_REMOUNT_CACHE_TTL_MS = Math.max(
   30_000,
   TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS,
@@ -493,6 +494,10 @@ function buildUntrackedInFlightCounts(
     }
   }
   return remaining;
+}
+
+function hasTimeseriesInFlightCounts(current: TimeseriesResponse) {
+  return current.points.some((point) => getTimeseriesPointInFlightCount(point) > 0);
 }
 
 function claimUntrackedInFlightDelta(
@@ -1164,6 +1169,10 @@ async function loadSeededLiveRecordDeltas(
     return new Map<string, LiveRecordDelta>();
   }
 
+  if (!hasTimeseriesInFlightCounts(current)) {
+    return new Map<string, LiveRecordDelta>();
+  }
+
   if (syncMode === "current-day-local") {
     const seedEpoch = resolveCurrentDayLiveSeedEpoch(current);
     const seedRange = resolveCurrentDayLiveSeedRange(current, seedEpoch);
@@ -1616,6 +1625,13 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     }, 2000);
     return () => clearTimeout(id);
   }, [error, load]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void load({ silent: true });
+    }, TIMESERIES_POLLING_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [load]);
 
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
