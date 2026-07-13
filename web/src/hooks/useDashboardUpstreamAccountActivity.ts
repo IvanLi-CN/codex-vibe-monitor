@@ -329,7 +329,7 @@ export function useDashboardActivitySnapshot(
     }
     hasActivatedRef.current = true;
     void load({ silent: hasHydratedRef.current });
-  }, [clearPendingRefreshTimer, enabled, invalidateCurrentRequest, load]);
+  }, [clearPendingRefreshTimer, enabled, invalidateCurrentRequest, load, range]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -345,7 +345,11 @@ export function useDashboardActivitySnapshot(
         latestLiveSnapshotRef.current = payload.snapshot;
         if (rangeRef.current === "yesterday") return;
         setData((currentData) => {
-          if (!currentData || payload.snapshot.revision <= (currentData.liveRevision ?? 0)) {
+          if (
+            !currentData ||
+            currentData.range !== rangeRef.current ||
+            payload.snapshot.revision <= (currentData.liveRevision ?? 0)
+          ) {
             return currentData;
           }
           return mergeDashboardActivityLiveSnapshot(currentData, payload.snapshot);

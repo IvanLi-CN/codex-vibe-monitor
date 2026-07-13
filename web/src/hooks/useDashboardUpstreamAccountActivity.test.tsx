@@ -436,6 +436,44 @@ describe("useDashboardUpstreamAccountActivity", () => {
     expect(text("summary-live-count")).toBe("0");
   });
 
+  it("does not merge a live snapshot into a response from the previous range", async () => {
+    const yesterdayResponse = {
+      ...createAccountResponse(3, []),
+      range: "yesterday",
+    };
+    const nextTodayResponse = deferred<DashboardActivityResponse>();
+    apiMocks.fetchDashboardActivity
+      .mockResolvedValueOnce(yesterdayResponse)
+      .mockImplementationOnce(() => nextTodayResponse.promise);
+
+    render(<SnapshotProbe includeAccounts range="yesterday" />);
+    await flushAsync();
+    expect(text("summary-live-count")).toBe("3");
+
+    act(() => {
+      root?.render(<SnapshotProbe includeAccounts range="today" />);
+    });
+    await flushAsync();
+
+    act(() => {
+      sseMocks.listener?.({
+        type: "dashboardActivityLive",
+        snapshot: {
+          revision: 8,
+          generatedAt: "2026-04-04T10:05:01Z",
+          inProgressInvocationCount: 2,
+          inProgressPhaseCounts: { queued: 0, requesting: 1, responding: 1 },
+          retryInvocationCount: 1,
+          accounts: [],
+        },
+      });
+    });
+
+    expect(text("summary-live-count")).toBe("3");
+    nextTodayResponse.resolve(createAccountResponse(0, []));
+    await flushAsync();
+  });
+
   it("does not let an SSE seed overwrite an equal-revision HTTP snapshot", async () => {
     apiMocks.fetchDashboardActivity.mockResolvedValue({
       ...createAccountResponse(3, []),
