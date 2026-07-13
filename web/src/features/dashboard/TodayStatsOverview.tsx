@@ -652,6 +652,7 @@ export function TodayStatsOverview({
   const tokensLabel = isToday
     ? t("dashboard.today.todayTokens")
     : t("dashboard.today.yesterdayTokens");
+  const usageDetailsLabel = t("dashboard.usageBreakdown.title");
   const comparisonLabel = isToday
     ? t("dashboard.today.secondary.vsYesterday")
     : t("dashboard.today.secondary.comparison");
@@ -997,9 +998,8 @@ export function TodayStatsOverview({
             metricTooltipContent={
               stats?.usageBreakdown ? (
                 <UsageBreakdownTooltip
-                  title={costLabel}
+                  title={usageDetailsLabel}
                   breakdown={stats.usageBreakdown}
-                  kind="cost"
                   formatNumber={formatBreakdownNumber}
                   formatRatio={formatBreakdownRatio}
                   formatCurrency={formatBreakdownCurrency}
@@ -1043,9 +1043,8 @@ export function TodayStatsOverview({
             metricTooltipContent={
               stats?.usageBreakdown ? (
                 <UsageBreakdownTooltip
-                  title={tokensLabel}
+                  title={usageDetailsLabel}
                   breakdown={stats.usageBreakdown}
-                  kind="tokens"
                   formatNumber={formatBreakdownNumber}
                   formatRatio={formatBreakdownRatio}
                   formatCurrency={formatBreakdownCurrency}
