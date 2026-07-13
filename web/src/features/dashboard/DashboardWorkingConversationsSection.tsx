@@ -2525,6 +2525,7 @@ function DashboardUpstreamAccountActivityCard({
   const totalRequestValue = formatAccountNumberValue(account.requestCount, localeTag, 0);
   const totalCostValue = formatAccountCurrencyAmountValue(account.totalCost, localeTag, 2);
   const totalTokenValue = formatAccountNumberValue(account.totalTokens, localeTag, 0);
+  const usageDetailsLabel = t("dashboard.usageBreakdown.title");
   const usageBreakdownLabels =
     locale === "zh"
       ? {
@@ -2957,9 +2958,8 @@ function DashboardUpstreamAccountActivityCard({
             detailSections={costDetailSections}
             tooltipContent={
               <UsageBreakdownTooltip
-                title={locale === "zh" ? "成本" : "Cost"}
+                title={usageDetailsLabel}
                 breakdown={account.usageBreakdown}
-                kind="cost"
                 formatNumber={formatBreakdownNumber}
                 formatRatio={formatBreakdownRatio}
                 formatCurrency={formatBreakdownCurrency}
@@ -2982,9 +2982,8 @@ function DashboardUpstreamAccountActivityCard({
             detailSections={tokenDetailSections}
             tooltipContent={
               <UsageBreakdownTooltip
-                title="Token"
+                title={usageDetailsLabel}
                 breakdown={account.usageBreakdown}
-                kind="tokens"
                 formatNumber={formatBreakdownNumber}
                 formatRatio={formatBreakdownRatio}
                 formatCurrency={formatBreakdownCurrency}

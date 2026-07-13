@@ -1739,6 +1739,7 @@ const baseTranslations = {
       "Total estimated spend accumulated in the selected natural-day window.",
     "dashboard.today.totalTokensDescription":
       "Total input, output, and cached tokens accumulated in the selected natural-day window.",
+    "dashboard.usageBreakdown.title": "Usage details",
     "dashboard.today.secondary.dayAverage": "Day avg",
     "dashboard.today.secondary.previous7dAverage": "7d daily avg",
     "dashboard.today.secondary.vsYesterday": "vs yesterday",
@@ -3962,6 +3963,7 @@ const baseTranslations = {
     "dashboard.today.failuresDescription": "所选自然日窗口内累计失败的调用数。",
     "dashboard.today.totalCostDescription": "所选自然日窗口内累计的预估消费金额。",
     "dashboard.today.totalTokensDescription": "所选自然日窗口内累计的输入、输出和缓存 Tokens。",
+    "dashboard.usageBreakdown.title": "用量明细",
     "dashboard.today.secondary.dayAverage": "日均",
     "dashboard.today.secondary.previous7dAverage": "7日均",
     "dashboard.today.secondary.vsYesterday": "较昨日",
