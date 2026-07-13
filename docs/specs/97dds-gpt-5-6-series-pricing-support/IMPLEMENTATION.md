@@ -35,5 +35,5 @@
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
 - `cd web && bun run demo:build`
-- `cd web && bun run lint`
+- `bun run lint:web`
 - The spec's `assets/` directory contains mock-only Storybook evidence for the shared desktop and 390px `Usage details` table. The 390px state verifies that no horizontal scrollbar is needed.
