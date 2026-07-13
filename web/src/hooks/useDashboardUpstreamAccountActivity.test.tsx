@@ -9,6 +9,7 @@ import type {
   PromptCacheConversationInvocationPreview,
 } from "../lib/api";
 import {
+  mergeDashboardActivityLiveSnapshot,
   resolveUpstreamAccountRecentPreviewLimit,
   useDashboardActivitySnapshot,
   useDashboardUpstreamAccountActivity,
@@ -315,6 +316,40 @@ describe("resolveUpstreamAccountRecentPreviewLimit", () => {
 });
 
 describe("useDashboardUpstreamAccountActivity", () => {
+  it("adds SSE-only live accounts so the visible breakdown matches the total", () => {
+    const merged = mergeDashboardActivityLiveSnapshot(createAccountResponse(0, []), {
+      revision: 8,
+      generatedAt: "2026-04-04T10:05:01Z",
+      inProgressInvocationCount: 2,
+      inProgressPhaseCounts: { queued: 0, requesting: 1, responding: 1 },
+      retryInvocationCount: 1,
+      accounts: [
+        {
+          accountKey: "upstream:77",
+          upstreamAccountId: 77,
+          inProgressInvocationCount: 2,
+          inProgressPhaseCounts: { queued: 0, requesting: 1, responding: 1 },
+          retryInvocationCount: 1,
+        },
+      ],
+    });
+
+    expect(merged.accounts).toHaveLength(2);
+    expect(merged.accounts?.find((account) => account.accountKey === "upstream:77")).toEqual(
+      expect.objectContaining({
+        displayName: "#77",
+        inProgressInvocationCount: 2,
+        retryInvocationCount: 1,
+      }),
+    );
+    expect(
+      merged.accounts?.reduce(
+        (total, account) => total + (account.inProgressInvocationCount ?? 0),
+        0,
+      ),
+    ).toBe(merged.summary.stats.inProgressConversationCount);
+  });
+
   it("applies a newer dashboard live snapshot without waiting for the HTTP refresh budget", async () => {
     apiMocks.fetchDashboardActivity.mockResolvedValue(createAccountResponse(0, []));
     render(<SnapshotProbe includeAccounts />);

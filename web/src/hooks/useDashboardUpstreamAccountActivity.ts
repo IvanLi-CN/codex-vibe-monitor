@@ -5,6 +5,7 @@ import {
   fetchDashboardActivity,
   type UpstreamAccountActivityAccount,
 } from "../lib/api";
+import { normalizeEffectiveRoutingRule } from "../lib/api/core-upstream";
 import {
   recordUpstreamAccountActivityOpenResync,
   recordUpstreamAccountActivityRefresh,
@@ -22,24 +23,45 @@ interface LoadOptions {
   silent?: boolean;
 }
 
+function buildLiveOnlyAccount(
+  live: DashboardActivityLiveSnapshot["accounts"][number],
+): UpstreamAccountActivityAccount {
+  return {
+    accountKey: live.accountKey,
+    upstreamAccountId: live.upstreamAccountId,
+    displayName: live.upstreamAccountId == null ? "unassigned" : `#${live.upstreamAccountId}`,
+    isUnassigned: live.upstreamAccountId == null,
+    requestCount: 0,
+    successCount: 0,
+    failureCount: 0,
+    nonSuccessCount: 0,
+    totalTokens: 0,
+    successTokens: 0,
+    nonSuccessTokens: 0,
+    failureTokens: 0,
+    failureCost: 0,
+    totalCost: 0,
+    usageBreakdown: {
+      cacheWriteTokens: 0,
+      cacheReadTokens: 0,
+      outputTokens: 0,
+      models: [],
+    },
+    inProgressInvocationCount: live.inProgressInvocationCount,
+    inProgressPhaseCounts: live.inProgressPhaseCounts,
+    retryInvocationCount: live.retryInvocationCount,
+    effectiveRoutingRule: normalizeEffectiveRoutingRule({}),
+    recentInvocations: [],
+  };
+}
+
 export function mergeDashboardActivityLiveSnapshot(
   response: DashboardActivityResponse,
   live: DashboardActivityLiveSnapshot,
 ): DashboardActivityResponse {
   const liveAccounts = new Map(live.accounts.map((account) => [account.accountKey, account]));
-  return {
-    ...response,
-    liveRevision: live.revision,
-    summary: {
-      ...response.summary,
-      stats: {
-        ...response.summary.stats,
-        inProgressConversationCount: live.inProgressInvocationCount,
-        inProgressRetryConversationCount: live.retryInvocationCount,
-        inProgressPhaseCounts: live.inProgressPhaseCounts,
-      },
-    },
-    accounts: response.accounts?.map((account) => {
+  const accounts: UpstreamAccountActivityAccount[] | undefined = response.accounts?.map(
+    (account) => {
       const liveAccount = liveAccounts.get(
         account.accountKey ??
           (account.upstreamAccountId == null
@@ -56,7 +78,37 @@ export function mergeDashboardActivityLiveSnapshot(
         },
         retryInvocationCount: liveAccount?.retryInvocationCount ?? 0,
       };
-    }),
+    },
+  );
+  if (accounts) {
+    const existingAccountKeys = new Set(
+      accounts.map(
+        (account) =>
+          account.accountKey ??
+          (account.upstreamAccountId == null
+            ? "unassigned"
+            : `upstream:${account.upstreamAccountId}`),
+      ),
+    );
+    for (const account of live.accounts) {
+      if (!existingAccountKeys.has(account.accountKey)) {
+        accounts.push(buildLiveOnlyAccount(account));
+      }
+    }
+  }
+  return {
+    ...response,
+    liveRevision: live.revision,
+    summary: {
+      ...response.summary,
+      stats: {
+        ...response.summary.stats,
+        inProgressConversationCount: live.inProgressInvocationCount,
+        inProgressRetryConversationCount: live.retryInvocationCount,
+        inProgressPhaseCounts: live.inProgressPhaseCounts,
+      },
+    },
+    accounts,
   };
 }
 
