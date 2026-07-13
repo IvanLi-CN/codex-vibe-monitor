@@ -2084,9 +2084,11 @@ async fn capture_dashboard_activity_live_snapshot_from_runtime(
     pool: &Pool<Sqlite>,
     proxy_runtime_invocations: &ProxyRuntimeInvocationStore,
 ) -> Result<DashboardActivityLiveSnapshot, ApiError> {
-    let revision = DASHBOARD_ACTIVITY_LIVE_REVISION.fetch_add(1, Ordering::AcqRel) + 1;
-    query_dashboard_activity_live_snapshot_from_runtime(pool, proxy_runtime_invocations, revision)
-        .await
+    let mut snapshot =
+        query_dashboard_activity_live_snapshot_from_runtime(pool, proxy_runtime_invocations, 0)
+            .await?;
+    snapshot.revision = DASHBOARD_ACTIVITY_LIVE_REVISION.fetch_add(1, Ordering::AcqRel) + 1;
+    Ok(snapshot)
 }
 
 pub(crate) fn build_dashboard_activity_live_snapshot(
