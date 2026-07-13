@@ -40,6 +40,7 @@ vi.mock("../../i18n", () => ({
         "dashboard.today.failuresDescription": "Failed calls in the selected day.",
         "dashboard.today.totalCostDescription": "Total cost in the selected day.",
         "dashboard.today.totalTokensDescription": "Total tokens in the selected day.",
+        "dashboard.usageBreakdown.title": "Usage details",
         "dashboard.today.secondary.dayAverage": "Day avg",
         "dashboard.today.secondary.previous7dAverage": "7d daily avg",
         "dashboard.today.secondary.vsYesterday": "vs yesterday",

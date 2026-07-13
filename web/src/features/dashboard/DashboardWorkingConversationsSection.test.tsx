@@ -936,12 +936,12 @@ describe("DashboardWorkingConversationsSection", () => {
 
     await waitFor(() => {
       const tooltipText = document.body.textContent ?? "";
-      expect(tooltipText).toContain("成本");
+      expect(tooltipText).toContain("用量明细");
       expect(tooltipText).toContain("缓存写入");
       expect(tooltipText).toContain("缓存读取");
-      expect(tooltipText).toContain("推理");
+      expect(tooltipText).toContain("总计");
       expect(tooltipText).toContain("gpt-5.6");
-      expect(tooltipText).toContain("$0.28");
+      expect(tooltipText).toContain("$0.34");
     });
 
     const tokenTrigger = host?.querySelector(
@@ -957,12 +957,13 @@ describe("DashboardWorkingConversationsSection", () => {
 
     await waitFor(() => {
       const tooltipText = document.body.textContent ?? "";
-      expect(tooltipText).toContain("Token");
+      expect(tooltipText).toContain("用量明细");
       expect(tooltipText).toContain("3,200");
       expect(tooltipText).toContain("缓存写入");
       expect(tooltipText).toContain("缓存读取");
       expect(tooltipText).toContain("缓存命中率");
       expect(tooltipText).toContain("输出");
+      expect(tooltipText).toContain("总计");
       expect(tooltipText).toContain("gpt-5.6");
     });
 

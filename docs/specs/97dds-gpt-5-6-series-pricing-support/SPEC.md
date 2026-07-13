@@ -37,7 +37,7 @@ The project needs a compatible upgrade that preserves existing user-defined pric
 - New invocation rows must persist exact cost buckets. Historical rows with a known total cost must contribute that full amount to `unknown` instead of being repriced or invalidating exact realtime buckets; rows without a total cost do not fabricate an unknown amount.
 - `cacheWriteTokens` must be derived as `max(inputTokens - cacheInputTokens, 0)`; `cacheInputTokens` remains the upstream cache-read count.
 - Dashboard summary and upstream-account activity APIs must return total and model-plus-reasoning-effort usage breakdowns. Cost breakdowns include input, cache write, cache read, output, reasoning, and unknown cost, and every returned cost row must reconcile to its total.
-- Dashboard and account-card cost/Token labels must provide keyboard-accessible detail panels; records, live cards, and dashboard call previews must display `CW` and `C` together.
+- Dashboard and account-card cost/Token labels must open the same keyboard-accessible `Usage details` table. Its fixed columns are model, cache write, cache read, cache hit rate, output, and total; cache write/read/output/total show Tokens then amount, while cache hit rate stays a single first-line value with an empty second-line placeholder. Records, live cards, and dashboard call previews must display `CW` and `C` together.
 
 ## Interface Contract
 
@@ -84,11 +84,12 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 - Given a new GPT-5.6 invocation, when its usage is persisted, then its cost buckets sum to `cost`, cache write Token count is non-negative, and the total/model usage breakdowns remain reconcilable.
 - Given a historical invocation without persisted cost buckets but with a known total cost, when it appears with exact realtime records, then Token derivation and exact cost buckets remain visible while the historical total is shown in `unknown`.
 - Given a record without a total cost, when usage is aggregated, then it contributes no fabricated unknown cost.
-- Given an exact-only range, when cost detail is rendered, then the `unknown` value is zero and the UI keeps the five known cost columns.
+- Given an exact-only range, when the unified usage detail is rendered, then cache-write amount equals input plus cache-write cost, cache-read amount equals cache-read cost, output amount equals output plus reasoning cost, and the total amount includes all known cost buckets.
 - Given calls for the same model with different recorded reasoning efforts, when usage is aggregated, then each model-plus-effort pair is returned separately while the total remains reconciled across all pairs.
 - Given a missing or blank recorded reasoning effort, when its model row is rendered, then it is labelled as unspecified without inferring a model default.
-- Given a Token detail panel, when cache-read Token usage is rendered, then its column is labelled as cache read while the cost panel retains the cache-read billing label.
-- Given a dashboard or upstream-account cost/Token label, when it is hovered, focused, or clicked, then total and sorted model detail is readable on desktop and mobile.
+- Given a historical invocation without cost buckets but with a known total cost, when unified usage detail is rendered, then cache write, cache read, and output amounts are unavailable while the total amount retains the known historical cost.
+- Given a range without any cost, when unified usage detail is rendered, then every amount is unavailable without fabricating a cost.
+- Given a dashboard or upstream-account cost/Token label, when it is hovered, focused, or clicked, then it opens the same titled table with total first and sorted model-plus-effort rows, readable at desktop and 390px without horizontal scrolling.
 
 ## Visual Evidence
 
@@ -105,84 +106,35 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 - state: default pricing contract editor
 - evidence_note: Verifies the Settings pricing table exposes separate cache read and cache write columns, includes the GPT-5.6 trio, and labels the table as estimation contract metadata rather than runtime token truth.
 
-![Upstream account cost breakdown table](./assets/account-cost-breakdown-desktop.png)
+![Unified usage details on desktop](./assets/usage-breakdown-desktop.jpg)
+
+PR: include
 
 - source_type: storybook_canvas
 - target_program: mock-only
 - capture_scope: story canvas
-- requested_viewport: desktop default
-- viewport_strategy: storybook-viewport
+- requested_viewport: desktop
+- viewport_strategy: Storybook canvas
 - sensitive_exclusion: N/A
 - submission_gate: approved
-- story_id_or_title: Dashboard/WorkingConversationsSection Upstream Account Metric Tooltips
-- state: cost detail open
-- evidence_note: Verifies the cost detail uses one horizontal table with a total row followed by model rows, exposes all five billing buckets, and has no internal scrollbar.
+- story_id_or_title: Dashboard/UsageBreakdownTooltip Exact Costs
+- state: exact bucket costs with total and model-plus-effort rows
+- evidence_note: Verifies the shared six-column table maps cache write to input plus cache-write cost, output to output plus reasoning cost, shows Tokens and amount in every applicable cell, places total after output, uses normal-weight body values with the same primary foreground for cache hit rate and Token values, and anchors cache hit rate in the first line with a blank second-line slot.
+
+![Unified usage details at 390px](./assets/usage-breakdown-mobile390.jpg)
 
 PR: include
-![Dashboard Token breakdown with cache hit rate on mobile](./assets/dashboard-token-breakdown-cache-hit-rate-mobile.jpg)
 
 - source_type: storybook_canvas
 - target_program: mock-only
-- capture_scope: full story canvas
+- capture_scope: story canvas
 - requested_viewport: 390x844
-- viewport_strategy: browser-resize-fallback because the direct Storybook iframe does not apply manager viewport parameters
+- viewport_strategy: Storybook viewport
 - sensitive_exclusion: N/A
 - submission_gate: approved
-- story_id_or_title: Dashboard/TodayStatsOverview Usage Breakdown Details
-- state: Token detail open with cache hit rate column
-- evidence_note: Verifies the five-column Token detail puts cache hit rate immediately after cache read, followed by output, for total and model rows without an internal scrollbar.
-
-![Mixed realtime and historical cost breakdown on desktop](./assets/dashboard-mixed-cost-unknown-desktop.png)
-
-- source_type: storybook_canvas
-- target_program: mock-only
-- capture_scope: browser-viewport
-- requested_viewport: 1440x900
-- viewport_strategy: devtools-emulate with story-bound desktop viewport
-- sensitive_exclusion: N/A
-- submission_gate: approved
-- story_id_or_title: Dashboard/TodayStatsOverview Mixed Cost Breakdown Unknown Desktop
-- state: mixed exact and historical cost detail open
-- evidence_note: Verifies exact input, cache-write, cache-read, output, and reasoning amounts remain visible while historical total cost is reconciled in the dynamic unknown column.
-
-![Mixed realtime and historical cost breakdown on mobile](./assets/dashboard-mixed-cost-unknown-mobile.png)
-
-- source_type: storybook_canvas
-- target_program: mock-only
-- capture_scope: browser-viewport
-- requested_viewport: 390x844
-- viewport_strategy: devtools-emulate with story-bound mobile viewport
-- sensitive_exclusion: N/A
-- submission_gate: approved
-- story_id_or_title: Dashboard/TodayStatsOverview Mixed Cost Breakdown Unknown Mobile
-- state: mixed exact and historical cost detail open
-- evidence_note: Verifies the dynamic six-column cost table remains legible on a narrow viewport with explicit cell dividers and no internal scrollbar.
-
-![Dashboard model and reasoning Token breakdown on desktop](./assets/dashboard-model-reasoning-breakdown-desktop.png)
-
-- source_type: ui_demo
-- target_program: mock-only Web Demo
-- capture_scope: browser viewport
-- requested_viewport: 1440x900
-- viewport_strategy: browser viewport capability
-- sensitive_exclusion: N/A
-- submission_gate: approved
-- story_id_or_title: `/#/dashboard?demoScene=operational&demoTheme=dark`
-- state: Dashboard Token detail open with high, medium, and unspecified reasoning-effort rows
-- evidence_note: Verifies model-plus-effort rows use a two-line first cell, the Token table calls `cacheReadTokens` cache-read Tokens, and the full table renders without an internal scrollbar.
-
-![Dashboard model and reasoning Token breakdown on mobile](./assets/dashboard-model-reasoning-breakdown-mobile.png)
-
-- source_type: ui_demo
-- target_program: mock-only Web Demo
-- capture_scope: browser viewport
-- requested_viewport: 390x844
-- viewport_strategy: browser viewport capability
-- sensitive_exclusion: N/A
-- submission_gate: approved
-- story_id_or_title: `/#/dashboard?demoScene=operational&demoTheme=dark`
-- state: Upstream-account Token detail open with high and medium reasoning-effort rows
-- evidence_note: Verifies the narrow layout preserves all Token columns and model-plus-effort rows without an internal or page-level horizontal scrollbar.
+- story_id_or_title: Dashboard/UsageBreakdownTooltip Mobile 390
+- state: exact bucket costs at narrow width
+- evidence_note: Verifies the same semantic table remains within the 390px canvas without a horizontal scrollbar; model and effort wrap while Token and amount pairs remain aligned, and cache hit rate retains its first-line alignment through its blank second-line slot.
 
 ## References
 

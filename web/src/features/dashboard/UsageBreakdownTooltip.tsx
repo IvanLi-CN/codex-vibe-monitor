@@ -1,12 +1,11 @@
 import type { ReactNode } from "react";
 import type { UsageBreakdown, UsageBreakdownModel } from "../../lib/api";
 
-export type UsageBreakdownKind = "cost" | "tokens";
+type UsageCostBreakdown = NonNullable<UsageBreakdown["costs"]>;
 
 export interface UsageBreakdownTooltipProps {
   title: string;
-  breakdown?: UsageBreakdown | null;
-  kind: UsageBreakdownKind;
+  breakdown: UsageBreakdown;
   formatNumber: (value: number) => string;
   formatRatio: (value: number | null) => string;
   formatCurrency: (value: number) => string;
@@ -15,14 +14,8 @@ export interface UsageBreakdownTooltipProps {
     model: string;
     cacheWrite: string;
     cacheRead: string;
-    cacheHitTokens: string;
     cacheHitRate: string;
     output: string;
-    input: string;
-    reasoning: string;
-    unknown: string;
-    unavailable: string;
-    tokenUnavailable: string;
     unknownModel: string;
     reasoningEffort: string;
     unspecifiedEffort: string;
@@ -35,11 +28,20 @@ export interface UsageBreakdownTooltipProps {
   };
 }
 
+type UsageBreakdownItem = Pick<
+  UsageBreakdown,
+  "cacheWriteTokens" | "cacheReadTokens" | "outputTokens" | "costs"
+>;
+
 interface BreakdownTableRow {
   key: string;
   label: ReactNode;
-  values?: string[];
-  unavailable?: string;
+  values: BreakdownTableValue[];
+}
+
+interface BreakdownTableValue {
+  key: string;
+  content: ReactNode;
 }
 
 interface BreakdownTableColumn {
@@ -78,12 +80,9 @@ function groupLabel(model: UsageBreakdownModel, labels: UsageBreakdownTooltipPro
   const modelName = modelLabel(model.model, labels.unknownModel);
   const effort = effortLabel(model.reasoningEffort, labels);
   return (
-    <span
-      className="flex min-w-0 flex-col gap-0.5"
-      aria-label={`${modelName}, ${labels.reasoningEffort}: ${effort}`}
-    >
-      <span className="break-all font-medium text-base-content/80">{modelName}</span>
-      <span className="break-words text-[9px] font-normal leading-3 text-base-content/58 sm:text-[10px]">
+    <span className="flex min-w-0 flex-col gap-0.5">
+      <span className="break-all font-normal text-base-content/80">{modelName}</span>
+      <span className="break-words text-[8px] font-normal leading-3 text-base-content/58 sm:text-[10px]">
         {labels.reasoningEffort}: {effort}
       </span>
     </span>
@@ -95,36 +94,25 @@ function BreakdownTable({
   columns,
   rows,
   modelLabel: modelColumnLabel,
-  modelWidth,
 }: {
   title: string;
   columns: readonly BreakdownTableColumn[];
   rows: readonly BreakdownTableRow[];
   modelLabel: string;
-  modelWidth: string;
 }) {
-  const dense = columns.length >= 4;
   return (
-    <table
-      className={`w-full table-fixed border-collapse ${dense ? "text-[8px] leading-3 sm:text-[10px] sm:leading-4" : "text-[10px] leading-4 sm:text-[11px]"}`}
-    >
+    <table className="w-full table-fixed border-collapse text-[8px] leading-3 sm:text-[10px] sm:leading-4">
       <caption className="sr-only">{title}</caption>
-      <thead
-        className={`border-y border-base-300/50 bg-base-200/45 font-semibold text-base-content/58 ${dense ? "text-[8px] sm:text-[9px]" : "text-[9px] sm:text-[10px]"}`}
-      >
+      <thead className="border-y border-base-300/50 bg-base-200/45 text-[8px] font-semibold text-base-content/58 sm:text-[9px]">
         <tr>
-          <th
-            scope="col"
-            className="px-1.5 py-1.5 text-left font-semibold"
-            style={{ width: modelWidth }}
-          >
+          <th scope="col" className="w-[38%] px-1.5 py-1.5 text-left font-semibold sm:w-[30%]">
             {modelColumnLabel}
           </th>
           {columns.map((column) => (
             <th
               key={column.label}
               scope="col"
-              className={`${dense ? "px-0.5" : "px-1"} border-l border-base-300/30 py-1.5 text-right font-semibold break-words`}
+              className="border-l border-base-300/30 px-0.5 py-1.5 text-right font-semibold break-words"
             >
               {column.label}
             </th>
@@ -143,24 +131,18 @@ function BreakdownTable({
           >
             <th
               scope="row"
-              className="px-1.5 py-1.5 text-left font-medium text-base-content/76 break-all"
+              className="px-1.5 py-1.5 text-left font-normal text-base-content/76 break-all"
             >
               {row.label}
             </th>
-            {row.unavailable ? (
-              <td colSpan={columns.length} className="px-1.5 py-1.5 text-left text-base-content/62">
-                {row.unavailable}
+            {row.values.map((value) => (
+              <td
+                key={`${row.key}:${value.key}`}
+                className="border-l border-base-300/30 px-0.5 py-1.5 text-right font-mono font-normal tabular-nums"
+              >
+                {value.content}
               </td>
-            ) : (
-              row.values?.map((value, columnIndex) => (
-                <td
-                  key={`${row.key}:${columnIndex}`}
-                  className={`${dense ? "px-0.5" : "px-1"} border-l border-base-300/30 py-1.5 text-right font-mono font-semibold text-base-content tabular-nums whitespace-nowrap`}
-                >
-                  {value}
-                </td>
-              ))
-            )}
+            ))}
           </tr>
         ))}
       </tbody>
@@ -168,85 +150,164 @@ function BreakdownTable({
   );
 }
 
-function CostBreakdownTable({
-  title,
-  breakdown,
-  models,
-  formatCurrency,
-  labels,
-}: Pick<UsageBreakdownTooltipProps, "formatCurrency" | "labels"> & {
-  title: string;
-  breakdown?: UsageBreakdown | null;
-  models: UsageBreakdown["models"];
-}) {
-  const columns = [
-    { label: labels.input, key: "input" },
-    { label: labels.cacheWrite, key: "cacheWrite" },
-    { label: labels.cacheRead, key: "cacheRead" },
-    { label: labels.output, key: "output" },
-    { label: labels.reasoning, key: "reasoning" },
-    ...((breakdown?.costs?.unknown ?? 0) !== 0 ||
-    models.some((model) => (model.costs?.unknown ?? 0) !== 0)
-      ? [{ label: labels.unknown, key: "unknown" as const }]
-      : []),
-  ] as const;
-  const rowFor = (
-    key: string,
-    label: ReactNode,
-    costs: UsageBreakdown["costs"],
-  ): BreakdownTableRow => {
-    if (!costs) return { key, label, unavailable: labels.unavailable };
-    return {
-      key,
-      label,
-      values: columns.map(({ key }) => (costs[key] === 0 ? "-" : formatCurrency(costs[key]))),
-    };
-  };
-
+function totalTokens(
+  item: Pick<UsageBreakdownItem, "cacheWriteTokens" | "cacheReadTokens" | "outputTokens">,
+) {
   return (
-    <BreakdownTable
-      title={title}
-      modelLabel={labels.model}
-      modelWidth={columns.length === 6 ? "20%" : "22%"}
-      columns={columns}
-      rows={[
-        rowFor("total", labels.total, breakdown?.costs),
-        ...models.map((model) => rowFor(groupKey(model), groupLabel(model, labels), model.costs)),
-      ]}
-    />
+    Math.max(item.cacheWriteTokens, 0) +
+    Math.max(item.cacheReadTokens, 0) +
+    Math.max(item.outputTokens, 0)
   );
 }
 
-function TokenBreakdownTable({
+function totalCost(costs: UsageCostBreakdown | null | undefined) {
+  if (!costs) return null;
+  return (
+    costs.input +
+    costs.cacheWrite +
+    costs.cacheRead +
+    costs.output +
+    costs.reasoning +
+    costs.unknown
+  );
+}
+
+function isHistoricalCostOnly(costs: UsageCostBreakdown | null | undefined) {
+  if (!costs) return false;
+  return (
+    costs.unknown !== 0 &&
+    costs.input === 0 &&
+    costs.cacheWrite === 0 &&
+    costs.cacheRead === 0 &&
+    costs.output === 0 &&
+    costs.reasoning === 0
+  );
+}
+
+function cacheWriteCost(costs: UsageCostBreakdown | null | undefined) {
+  if (!costs || isHistoricalCostOnly(costs)) return null;
+  return costs.input + costs.cacheWrite;
+}
+
+function cacheReadCost(costs: UsageCostBreakdown | null | undefined) {
+  if (!costs || isHistoricalCostOnly(costs)) return null;
+  return costs.cacheRead;
+}
+
+function outputCost(costs: UsageCostBreakdown | null | undefined) {
+  if (!costs || isHistoricalCostOnly(costs)) return null;
+  return costs.output + costs.reasoning;
+}
+
+function displayCurrency(value: number | null, formatCurrency: (value: number) => string) {
+  return value == null ? "—" : formatCurrency(value);
+}
+
+function UsageAndCostValue({
+  tokenCount,
+  cost,
+  formatNumber,
+  formatCurrency,
+}: {
+  tokenCount: number;
+  cost: number | null;
+  formatNumber: (value: number) => string;
+  formatCurrency: (value: number) => string;
+}) {
+  const tokenText = formatNumber(tokenCount);
+  const costText = displayCurrency(cost, formatCurrency);
+  return (
+    <span className="flex min-w-0 flex-col items-end gap-0.5 whitespace-nowrap">
+      <span className="text-base-content">{tokenText}</span>
+      <span className="text-base-content/62">{costText}</span>
+    </span>
+  );
+}
+
+function UsageValueWithPlaceholder({ value }: { value: string }) {
+  return (
+    <span className="flex min-w-0 flex-col items-end gap-0.5 whitespace-nowrap">
+      <span className="text-base-content">{value}</span>
+      <span aria-hidden="true" className="block h-3 sm:h-4" />
+    </span>
+  );
+}
+
+function cacheHitRate(
+  item: Pick<UsageBreakdownItem, "cacheWriteTokens" | "cacheReadTokens" | "outputTokens">,
+) {
+  const rowTotalTokens = totalTokens(item);
+  return rowTotalTokens > 0 ? Math.max(item.cacheReadTokens, 0) / rowTotalTokens : null;
+}
+
+function UsageBreakdownTable({
   title,
   breakdown,
   models,
   formatNumber,
   formatRatio,
+  formatCurrency,
   labels,
-}: Pick<UsageBreakdownTooltipProps, "formatNumber" | "formatRatio" | "labels"> & {
-  title: string;
-  breakdown?: UsageBreakdown | null;
-  models: UsageBreakdown["models"];
-}) {
+}: UsageBreakdownTooltipProps & { models: UsageBreakdown["models"] }) {
   const columns = [
     { label: labels.cacheWrite },
-    { label: labels.cacheHitTokens },
+    { label: labels.cacheRead },
     { label: labels.cacheHitRate },
     { label: labels.output },
+    { label: labels.total },
   ];
-  const rowFor = (
-    key: string,
-    label: ReactNode,
-    item: Pick<UsageBreakdown, "cacheWriteTokens" | "cacheReadTokens" | "outputTokens">,
-  ): BreakdownTableRow => ({
+  const rowFor = (key: string, label: ReactNode, item: UsageBreakdownItem): BreakdownTableRow => ({
     key,
     label,
     values: [
-      formatNumber(item.cacheWriteTokens),
-      formatNumber(item.cacheReadTokens),
-      formatRatio(cacheHitRate(item)),
-      formatNumber(item.outputTokens),
+      {
+        key: "cache-write",
+        content: (
+          <UsageAndCostValue
+            tokenCount={item.cacheWriteTokens}
+            cost={cacheWriteCost(item.costs)}
+            formatNumber={formatNumber}
+            formatCurrency={formatCurrency}
+          />
+        ),
+      },
+      {
+        key: "cache-read",
+        content: (
+          <UsageAndCostValue
+            tokenCount={item.cacheReadTokens}
+            cost={cacheReadCost(item.costs)}
+            formatNumber={formatNumber}
+            formatCurrency={formatCurrency}
+          />
+        ),
+      },
+      {
+        key: "cache-hit-rate",
+        content: <UsageValueWithPlaceholder value={formatRatio(cacheHitRate(item))} />,
+      },
+      {
+        key: "output",
+        content: (
+          <UsageAndCostValue
+            tokenCount={item.outputTokens}
+            cost={outputCost(item.costs)}
+            formatNumber={formatNumber}
+            formatCurrency={formatCurrency}
+          />
+        ),
+      },
+      {
+        key: "total",
+        content: (
+          <UsageAndCostValue
+            tokenCount={totalTokens(item)}
+            cost={totalCost(item.costs)}
+            formatNumber={formatNumber}
+            formatCurrency={formatCurrency}
+          />
+        ),
+      },
     ],
   });
 
@@ -254,98 +315,54 @@ function TokenBreakdownTable({
     <BreakdownTable
       title={title}
       modelLabel={labels.model}
-      modelWidth="28%"
       columns={columns}
-      rows={
-        breakdown
-          ? [
-              rowFor("total", labels.total, breakdown),
-              ...models.map((model) => rowFor(groupKey(model), groupLabel(model, labels), model)),
-            ]
-          : [{ key: "total", label: labels.total, unavailable: labels.tokenUnavailable }]
-      }
+      rows={[
+        rowFor("total", labels.total, breakdown),
+        ...models.map((model) => rowFor(groupKey(model), groupLabel(model, labels), model)),
+      ]}
     />
   );
-}
-
-function cacheHitRate(
-  item: Pick<UsageBreakdown, "cacheWriteTokens" | "cacheReadTokens" | "outputTokens">,
-) {
-  const cacheWriteTokens = Math.max(item.cacheWriteTokens, 0);
-  const cacheReadTokens = Math.max(item.cacheReadTokens, 0);
-  const outputTokens = Math.max(item.outputTokens, 0);
-  const totalTokens = cacheWriteTokens + cacheReadTokens + outputTokens;
-  return totalTokens > 0 ? cacheReadTokens / totalTokens : null;
 }
 
 export function UsageBreakdownTooltip({
   title,
   breakdown,
-  kind,
   formatNumber,
   formatRatio,
   formatCurrency,
   labels,
 }: UsageBreakdownTooltipProps) {
-  const models = [...(breakdown?.models ?? [])]
-    .filter((model) => {
-      if (kind === "tokens") {
-        return model.cacheWriteTokens > 0 || model.cacheReadTokens > 0 || model.outputTokens > 0;
-      }
-      return (
+  const models = [...breakdown.models]
+    .filter(
+      (model) =>
         model.costs != null ||
         model.cacheWriteTokens > 0 ||
         model.cacheReadTokens > 0 ||
-        model.outputTokens > 0
-      );
-    })
+        model.outputTokens > 0,
+    )
     .sort((left, right) => {
-      const leftValue =
-        kind === "tokens"
-          ? left.cacheWriteTokens + left.cacheReadTokens + left.outputTokens
-          : (left.costs?.input ?? 0) +
-            (left.costs?.cacheWrite ?? 0) +
-            (left.costs?.cacheRead ?? 0) +
-            (left.costs?.output ?? 0) +
-            (left.costs?.reasoning ?? 0) +
-            (left.costs?.unknown ?? 0);
-      const rightValue =
-        kind === "tokens"
-          ? right.cacheWriteTokens + right.cacheReadTokens + right.outputTokens
-          : (right.costs?.input ?? 0) +
-            (right.costs?.cacheWrite ?? 0) +
-            (right.costs?.cacheRead ?? 0) +
-            (right.costs?.output ?? 0) +
-            (right.costs?.reasoning ?? 0) +
-            (right.costs?.unknown ?? 0);
+      const tokenDifference = totalTokens(right) - totalTokens(left);
+      const costDifference = (totalCost(right.costs) ?? 0) - (totalCost(left.costs) ?? 0);
       return (
-        rightValue - leftValue ||
+        tokenDifference ||
+        costDifference ||
         left.model.localeCompare(right.model) ||
         groupKey(left).localeCompare(groupKey(right))
       );
     });
 
   return (
-    <div data-testid={`usage-breakdown-tooltip-${kind}`} className="space-y-1.5">
+    <div data-testid="usage-breakdown-tooltip" className="space-y-1.5">
       <div className="px-0.5 text-[11px] font-semibold leading-4 text-base-content/72">{title}</div>
-      {kind === "tokens" ? (
-        <TokenBreakdownTable
-          title={title}
-          breakdown={breakdown}
-          models={models}
-          formatNumber={formatNumber}
-          formatRatio={formatRatio}
-          labels={labels}
-        />
-      ) : (
-        <CostBreakdownTable
-          title={title}
-          breakdown={breakdown}
-          models={models}
-          formatCurrency={formatCurrency}
-          labels={labels}
-        />
-      )}
+      <UsageBreakdownTable
+        title={title}
+        breakdown={breakdown}
+        models={models}
+        formatNumber={formatNumber}
+        formatRatio={formatRatio}
+        formatCurrency={formatCurrency}
+        labels={labels}
+      />
     </div>
   );
 }
