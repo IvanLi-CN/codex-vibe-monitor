@@ -353,6 +353,20 @@
   image:
   ![Invocation detail pool routing account states](./assets/pool-routing-account-detail-storybook.png)
 
+- source_type: storybook_canvas
+  story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays/DetailDrawerHealthEventAttemptLink
+  state: health event with a precise upstream attempt link
+  evidence_note: verifies a new routing event exposes one clickable upstream attempt ID while adjacent historical events remain visibly non-locatable rather than rendering an empty final invocation ID.
+  requested_viewport: 1280x720
+  viewport_strategy: storybook-manager-canvas
+  PR: include
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only account and request data
+  submission_gate: approved
+  image:
+  ![Upstream attempt event link](./assets/upstream-account-attempt-event-link-storybook.jpg)
+
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
 - 风险：上游请求不保证稳定携带 `prompt_cache_key`，仍可能出现正常缺失。
