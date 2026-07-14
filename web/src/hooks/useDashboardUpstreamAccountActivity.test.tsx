@@ -717,7 +717,7 @@ describe("useDashboardUpstreamAccountActivity", () => {
     expect(text("recent-count")).toBe("7");
   });
 
-  it("ignores stale recent responses after a newer summary snapshot is loaded", async () => {
+  it("lets an active recent hydration finish before loading the newest summary snapshot", async () => {
     const firstRecent = deferred<DashboardActivityRecentResponse>();
     const secondRecent = deferred<DashboardActivityRecentResponse>();
     const first = createAccountResponse(4, []);
@@ -737,25 +737,9 @@ describe("useDashboardUpstreamAccountActivity", () => {
       sseMocks.listener?.({ type: "records", records: [] });
     });
     await flushAsync();
-    secondRecent.resolve({
-      rangeStart: second.rangeStart,
-      rangeEnd: second.rangeEnd,
-      snapshotId: second.snapshotId,
-      accounts: [
-        {
-          accountKey: "upstream:42",
-          recentInvocations: Array.from({ length: 9 }, (_, index) =>
-            createPreview({
-              id: 500 + index,
-              invokeId: `new-${index}`,
-              occurredAt: "2026-04-04T10:09:00Z",
-              status: "running",
-            }),
-          ),
-        },
-      ],
-    });
-    await flushAsync();
+    expect(apiMocks.fetchDashboardActivityRecent).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchDashboardActivityRecent.mock.calls[0]?.[0].signal?.aborted).toBe(false);
+
     firstRecent.resolve({
       rangeStart: first.rangeStart,
       rangeEnd: first.rangeEnd,
@@ -771,6 +755,27 @@ describe("useDashboardUpstreamAccountActivity", () => {
               status: "success",
             }),
           ],
+        },
+      ],
+    });
+    await flushAsync();
+    expect(apiMocks.fetchDashboardActivityRecent).toHaveBeenCalledTimes(2);
+
+    secondRecent.resolve({
+      rangeStart: second.rangeStart,
+      rangeEnd: second.rangeEnd,
+      snapshotId: second.snapshotId,
+      accounts: [
+        {
+          accountKey: "upstream:42",
+          recentInvocations: Array.from({ length: 9 }, (_, index) =>
+            createPreview({
+              id: 500 + index,
+              invokeId: `new-${index}`,
+              occurredAt: "2026-04-04T10:09:00Z",
+              status: "running",
+            }),
+          ),
         },
       ],
     });
