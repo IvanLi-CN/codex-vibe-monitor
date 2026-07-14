@@ -16,7 +16,7 @@ function minutePoint(offsetMinutes: number, totalTokens: number, totalCost: numb
 }
 
 describe("buildDashboardTodayRateSnapshot", () => {
-  it("uses the active tail inside the latest five-minute window as the default rate source", () => {
+  it("uses the complete selected range as the default rate source", () => {
     const snapshot = buildDashboardTodayRateSnapshot(
       {
         rangeStart: "2026-04-10 00:00:00",
@@ -34,13 +34,13 @@ describe("buildDashboardTodayRateSnapshot", () => {
       { now: new Date(2026, 3, 10, 0, 6, 30, 0) },
     );
 
-    expect(snapshot?.tokensPerMinute).toBe(2000);
-    expect(snapshot?.spendRate).toBeCloseTo(0.2, 6);
-    expect(snapshot?.windowMinutes).toBe(5);
+    expect(snapshot?.tokensPerMinute).toBeCloseTo(10_000 / 6.5, 6);
+    expect(snapshot?.spendRate).toBeCloseTo(1 / 6.5, 6);
+    expect(snapshot?.windowMinutes).toBe(6.5);
     expect(snapshot?.available).toBe(true);
   });
 
-  it("does not let leading zero minutes dilute the active tail average", () => {
+  it("includes leading zero minutes in the complete selected range denominator", () => {
     const snapshot = buildDashboardTodayRateSnapshot(
       {
         rangeStart: "2026-04-10 00:00:00",
@@ -54,15 +54,15 @@ describe("buildDashboardTodayRateSnapshot", () => {
           minutePoint(5, 600, 0.06),
         ],
       },
-      { now: new Date(2026, 3, 10, 0, 5, 30, 0), targetWindowMinutes: 5 },
+      { now: new Date(2026, 3, 10, 0, 5, 30, 0) },
     );
 
-    expect(snapshot?.tokensPerMinute).toBe(1000);
-    expect(snapshot?.spendRate).toBeCloseTo(0.1, 6);
-    expect(snapshot?.windowMinutes).toBe(1.5);
+    expect(snapshot?.tokensPerMinute).toBeCloseTo(1500 / 5.5, 6);
+    expect(snapshot?.spendRate).toBeCloseTo(0.15 / 5.5, 6);
+    expect(snapshot?.windowMinutes).toBe(5.5);
   });
 
-  it("uses separate active tails when tokens and cost start in different buckets", () => {
+  it("uses one complete selected range when tokens and cost start in different buckets", () => {
     const snapshot = buildDashboardTodayRateSnapshot(
       {
         rangeStart: "2026-04-10 00:00:00",
@@ -78,12 +78,12 @@ describe("buildDashboardTodayRateSnapshot", () => {
       { now: new Date(2026, 3, 10, 0, 5, 0, 0) },
     );
 
-    expect(snapshot?.tokensPerMinute).toBe(150);
-    expect(snapshot?.spendRate).toBeCloseTo(0.1, 6);
-    expect(snapshot?.windowMinutes).toBe(4);
+    expect(snapshot?.tokensPerMinute).toBe(120);
+    expect(snapshot?.spendRate).toBeCloseTo(0.04, 6);
+    expect(snapshot?.windowMinutes).toBe(5);
   });
 
-  it("counts the active bucket that overlaps the rolling window start", () => {
+  it("includes all selected-range buckets before the partial final minute", () => {
     const snapshot = buildDashboardTodayRateSnapshot(
       {
         rangeStart: "2026-04-10 00:00:00",
@@ -91,12 +91,12 @@ describe("buildDashboardTodayRateSnapshot", () => {
         bucketSeconds: 60,
         points: [minutePoint(0, 500, 0.05), minutePoint(1, 500, 0.05)],
       },
-      { now: new Date(2026, 3, 10, 0, 5, 30, 0), targetWindowMinutes: 5 },
+      { now: new Date(2026, 3, 10, 0, 5, 30, 0) },
     );
 
-    expect(snapshot?.tokensPerMinute).toBe(200);
-    expect(snapshot?.spendRate).toBeCloseTo(0.02, 6);
-    expect(snapshot?.windowMinutes).toBe(5);
+    expect(snapshot?.tokensPerMinute).toBeCloseTo(1000 / 5.5, 6);
+    expect(snapshot?.spendRate).toBeCloseTo(0.1 / 5.5, 6);
+    expect(snapshot?.windowMinutes).toBe(5.5);
   });
 
   it("includes the current partial minute and divides by the actual active elapsed minutes", () => {
@@ -115,7 +115,7 @@ describe("buildDashboardTodayRateSnapshot", () => {
     expect(snapshot?.windowMinutes).toBeCloseTo(19 / 6, 6);
   });
 
-  it("keeps post-activity quiet time in the denominator to avoid spikes", () => {
+  it("keeps all post-activity quiet time in the complete selected range denominator", () => {
     const snapshot = buildDashboardTodayRateSnapshot(
       {
         rangeStart: "2026-04-10 00:00:00",
@@ -132,12 +132,12 @@ describe("buildDashboardTodayRateSnapshot", () => {
       { now: new Date(2026, 3, 10, 0, 5, 40, 0) },
     );
 
-    expect(snapshot?.tokensPerMinute).toBeCloseTo(1200 / (14 / 3), 6);
-    expect(snapshot?.spendRate).toBeCloseTo(0.12 / (14 / 3), 6);
-    expect(snapshot?.windowMinutes).toBeCloseTo(14 / 3, 6);
+    expect(snapshot?.tokensPerMinute).toBeCloseTo(1200 / (17 / 3), 6);
+    expect(snapshot?.spendRate).toBeCloseTo(0.12 / (17 / 3), 6);
+    expect(snapshot?.windowMinutes).toBeCloseTo(17 / 3, 6);
   });
 
-  it("uses current same-day time so active-tail rates decay during quiet periods", () => {
+  it("uses current same-day time as the complete live-range endpoint", () => {
     const snapshot = buildDashboardTodayRateSnapshot(
       {
         rangeStart: "2026-04-10 00:00:00",
@@ -148,9 +148,9 @@ describe("buildDashboardTodayRateSnapshot", () => {
       { now: new Date(2026, 3, 10, 0, 5, 0, 0) },
     );
 
-    expect(snapshot?.tokensPerMinute).toBe(300);
-    expect(snapshot?.spendRate).toBeCloseTo(0.03, 6);
-    expect(snapshot?.windowMinutes).toBe(4);
+    expect(snapshot?.tokensPerMinute).toBe(240);
+    expect(snapshot?.spendRate).toBeCloseTo(0.024, 6);
+    expect(snapshot?.windowMinutes).toBe(5);
   });
 
   it("keeps fixed fixture days anchored to their response end instead of wall-clock now", () => {
@@ -164,9 +164,9 @@ describe("buildDashboardTodayRateSnapshot", () => {
       { now: new Date(2026, 3, 11, 0, 5, 0, 0) },
     );
 
-    expect(snapshot?.tokensPerMinute).toBe(1200);
-    expect(snapshot?.spendRate).toBeCloseTo(0.12, 6);
-    expect(snapshot?.windowMinutes).toBe(1);
+    expect(snapshot?.tokensPerMinute).toBe(600);
+    expect(snapshot?.spendRate).toBeCloseTo(0.06, 6);
+    expect(snapshot?.windowMinutes).toBe(2);
   });
 
   it("returns zero values when there are no completed minutes yet", () => {
@@ -186,7 +186,7 @@ describe("buildDashboardTodayRateSnapshot", () => {
     expect(snapshot?.available).toBe(true);
   });
 
-  it("keeps yesterday closed-day rates on the previous natural day even when rangeEnd is rounded into the next minute", () => {
+  it("uses the complete closed natural-day range when rangeEnd is rounded into the next minute", () => {
     const snapshot = buildDashboardTodayRateSnapshot(
       {
         rangeStart: "2026-04-09 00:00:00",
@@ -246,9 +246,9 @@ describe("buildDashboardTodayRateSnapshot", () => {
       },
     );
 
-    expect(snapshot?.tokensPerMinute).toBe(700);
-    expect(snapshot?.spendRate).toBeCloseTo(0.07, 6);
-    expect(snapshot?.windowMinutes).toBe(5);
+    expect(snapshot?.tokensPerMinute).toBeCloseTo(3500 / 1440, 6);
+    expect(snapshot?.spendRate).toBeCloseTo(0.35 / 1440, 6);
+    expect(snapshot?.windowMinutes).toBe(1440);
     expect(snapshot?.available).toBe(true);
   });
 });

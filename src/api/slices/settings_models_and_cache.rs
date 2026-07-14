@@ -1562,10 +1562,43 @@ pub(crate) struct DashboardActivityRateWindowResponse {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct ModelPerformanceMetricsResponse {
+    pub(crate) tokens_per_minute: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) streaming_response_rate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) avg_response_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) avg_first_response_byte_total_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) usage_duration_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModelPerformanceModelResponse {
+    pub(crate) model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reasoning_effort: Option<String>,
+    #[serde(flatten)]
+    pub(crate) metrics: ModelPerformanceMetricsResponse,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModelPerformanceResponse {
+    pub(crate) available: bool,
+    pub(crate) total: ModelPerformanceMetricsResponse,
+    pub(crate) models: Vec<ModelPerformanceModelResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct DashboardActivitySummaryResponse {
     pub(crate) stats: StatsResponse,
     pub(crate) tokens_per_minute: Option<f64>,
     pub(crate) spend_rate: Option<f64>,
+    pub(crate) model_performance: ModelPerformanceResponse,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1642,6 +1675,7 @@ pub(crate) struct DashboardActivityAccountResponse {
     pub(crate) non_success_cost: f64,
     pub(crate) total_cost: f64,
     pub(crate) usage_breakdown: UsageBreakdownResponse,
+    pub(crate) model_performance: ModelPerformanceResponse,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cache_hit_rate: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]

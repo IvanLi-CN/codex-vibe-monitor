@@ -588,7 +588,7 @@ describe("DashboardActivityOverview", () => {
     expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')).toBeNull();
     expect(host?.querySelector('[data-testid="dashboard-activity-range-usage"]')).toBeNull();
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
-      "total:12;cacheWrite:null;inProgress:11;retry:3;wait:1700;nonSuccessCost:0.12;nonSuccessTokens:256;surface:false;header:false;badge:false;tpm:1000;spendRate:0.1;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true",
+      "total:12;cacheWrite:null;inProgress:11;retry:3;wait:1700;nonSuccessCost:0.12;nonSuccessTokens:256;surface:false;header:false;badge:false;tpm:833.3333333333334;spendRate:0.08333333333333333;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true",
     );
     expect(
       host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent,

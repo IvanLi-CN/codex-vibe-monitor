@@ -1732,11 +1732,33 @@ const baseTranslations = {
     "dashboard.today.todayTokens": "Today Token",
     "dashboard.today.yesterdayTokens": "Yesterday Token",
     "dashboard.today.tokensPerMinuteDescription":
-      "Tokens per minute, calculated from the active tail inside the latest 5-minute window. Leading idle time is ignored.",
+      "Tokens per minute averaged across the complete selected time range.",
     "dashboard.today.spendRateDescription":
-      "Cost per minute, calculated from the active tail inside the latest 5-minute window. Leading idle time is ignored.",
+      "Cost per minute averaged across the complete selected time range.",
     "dashboard.today.responseTimeDescription":
-      "Average first-response-byte total from the active tail inside the latest 5-minute window.",
+      "Average system-to-first-byte time across the complete selected time range.",
+    "dashboard.modelPerformance.title": "Model performance",
+    "dashboard.modelPerformance.description":
+      "Complete-range metrics for successful billed calls, grouped by response model and reasoning effort.",
+    "dashboard.modelPerformance.total": "Total",
+    "dashboard.modelPerformance.model": "Model / effort",
+    "dashboard.modelPerformance.reasoningEffort": "Reasoning",
+    "dashboard.modelPerformance.columns.tpm": "TPM",
+    "dashboard.modelPerformance.columns.streamingRate": "Streaming rate",
+    "dashboard.modelPerformance.columns.response": "Avg response",
+    "dashboard.modelPerformance.columns.firstByte": "Avg first byte",
+    "dashboard.modelPerformance.columns.usageDuration": "Usage duration",
+    "dashboard.modelPerformance.empty": "No successful billed calls in this time range.",
+    "dashboard.modelPerformance.unavailable":
+      "Retained raw calls are unavailable for this time range, so model performance cannot be calculated.",
+    "dashboard.modelPerformance.close": "Close model performance details",
+    "dashboard.modelPerformance.effort.unspecified": "Unspecified",
+    "dashboard.modelPerformance.effort.none": "None",
+    "dashboard.modelPerformance.effort.minimal": "Minimal",
+    "dashboard.modelPerformance.effort.low": "Low",
+    "dashboard.modelPerformance.effort.medium": "Medium",
+    "dashboard.modelPerformance.effort.high": "High",
+    "dashboard.modelPerformance.effort.xhigh": "Extra high",
     "dashboard.today.inProgressConversationsDescription":
       "Current requesting or responding invocations. Multiple in-flight invocations from one conversation are counted separately.",
     "dashboard.today.queuedInvocationsDescription":
@@ -3972,11 +3994,32 @@ const baseTranslations = {
     "dashboard.today.todayTokens": "今日 Token",
     "dashboard.today.yesterdayTokens": "昨日 Token",
     "dashboard.today.tokensPerMinuteDescription":
-      "每分钟 Tokens，按最近 5 分钟窗口内的活跃尾段计算均值；前置空闲时间不参与分母。",
+      "每分钟 Tokens，按当前所选时间范围的完整周期计算均值。",
     "dashboard.today.spendRateDescription":
-      "每分钟消费金额，按最近 5 分钟窗口内的活跃尾段计算均值；前置空闲时间不参与分母。",
+      "每分钟消费金额，按当前所选时间范围的完整周期计算均值。",
     "dashboard.today.responseTimeDescription":
-      "首字总耗时均值，按最近 5 分钟窗口内的活跃尾段计算；无完整样本时显示为空。",
+      "首字总耗时均值，按当前所选时间范围的完整周期计算；无完整样本时显示为空。",
+    "dashboard.modelPerformance.title": "模型性能",
+    "dashboard.modelPerformance.description":
+      "仅统计成功且已计费调用，按响应模型与思考程度汇总当前范围完整周期的指标。",
+    "dashboard.modelPerformance.total": "总计",
+    "dashboard.modelPerformance.model": "模型 / 思考程度",
+    "dashboard.modelPerformance.reasoningEffort": "思考程度",
+    "dashboard.modelPerformance.columns.tpm": "TPM",
+    "dashboard.modelPerformance.columns.streamingRate": "流式响应速率",
+    "dashboard.modelPerformance.columns.response": "平均响应时长",
+    "dashboard.modelPerformance.columns.firstByte": "平均首字用时",
+    "dashboard.modelPerformance.columns.usageDuration": "使用时长",
+    "dashboard.modelPerformance.empty": "当前范围内没有成功且已计费的调用。",
+    "dashboard.modelPerformance.unavailable": "当前范围的原始调用明细不可用，无法计算模型性能。",
+    "dashboard.modelPerformance.close": "关闭模型性能详情",
+    "dashboard.modelPerformance.effort.unspecified": "未指定",
+    "dashboard.modelPerformance.effort.none": "无",
+    "dashboard.modelPerformance.effort.minimal": "最少",
+    "dashboard.modelPerformance.effort.low": "低",
+    "dashboard.modelPerformance.effort.medium": "中",
+    "dashboard.modelPerformance.effort.high": "高",
+    "dashboard.modelPerformance.effort.xhigh": "极高",
     "dashboard.today.inProgressConversationsDescription":
       "当前处于请求中或响应中的调用数；同一对话下的多个进行中调用会分别计数。",
     "dashboard.today.queuedInvocationsDescription": "当前尚未开始请求上游的排队中调用数。",
