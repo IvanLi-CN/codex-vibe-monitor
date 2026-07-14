@@ -319,6 +319,13 @@ PR: include
   ![Dashboard 上游账号进行中调用标题区证据](./assets/dashboard-upstream-account-in-progress-invocations.png)
 
 - source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-phase-breakdown-static`
+  scenario: `dark header row vertical alignment`
+  evidence_note: 验证深色主题下上游账号卡标题顶行已拆成独立对齐层；右上角实时 `进行中调用 / TPM / 消费速率 / 齿轮` 与左侧账号名、状态 badge、快捷策略 chip 保持同一垂直节奏，不再出现视觉上浮或下坠。
+  image:
+  ![Dashboard 上游账号标题行深色对齐证据](./assets/dashboard-upstream-account-header-alignment-dark.png)
+
+- source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-metric-tooltips`
   scenario: `metric card whole-card tooltip`
   evidence_note: 验证上游账号四组统计卡支持整卡触发结构化浮层；截图保留成本卡打开态，浮层按主字段、当前字段与相关数据分层展示，并明确列出字段名和值。
