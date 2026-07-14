@@ -393,6 +393,10 @@ export default function UpstreamAccountsPage() {
       new Set(visibleGroupedAccountIds.filter((accountId) => visibleRosterIdSet.has(accountId))),
     );
   }, [rosterViewMode, visibleGroupedAccountIds, visibleRosterItems]);
+  const visibleHydrationAccountIdsKey = useMemo(
+    () => [...visibleHydrationAccountIds].sort((left, right) => left - right).join(","),
+    [visibleHydrationAccountIds],
+  );
   const effectiveMetrics = listMetrics ?? {
     total: items.length,
     oauth: items.filter((item) => item.kind === "oauth_codex").length,
@@ -459,6 +463,7 @@ export default function UpstreamAccountsPage() {
     listState.hasCurrentQueryData,
     showBlockingRosterState,
     visibleHydrationAccountIds,
+    visibleHydrationAccountIdsKey,
   ]);
   const handleWorkStatusFilterChange = useCallback(
     (value: string[]) => {
@@ -621,7 +626,7 @@ export default function UpstreamAccountsPage() {
     }, UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS);
 
     return () => window.clearTimeout(timer);
-  }, [listState.loadingState]);
+  }, [listState.dataQueryKey, listState.loadingState, listState.queryKey]);
 
   useLayoutEffect(() => {
     if (hideRosterDerivedUi) return;
@@ -630,7 +635,17 @@ export default function UpstreamAccountsPage() {
     const nextHeight = Math.ceil(region.getBoundingClientRect().height);
     if (!(nextHeight > 0)) return;
     setLastStableRosterRegionHeight((current) => (current === nextHeight ? current : nextHeight));
-  }, [hideRosterDerivedUi]);
+  }, [
+    bulkActionError,
+    bulkActionMessage,
+    hideRosterDerivedUi,
+    page,
+    pageCount,
+    pageSize,
+    selectedAccountIds.length,
+    visibleListWarning,
+    visibleRosterItems,
+  ]);
 
   useEffect(() => {
     if (

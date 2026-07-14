@@ -43,35 +43,42 @@ function buildEditableMailboxHint(copyLabel: string, emailAddress: string | null
   );
 }
 
-function selectManualCopyText(target: HTMLInputElement | null) {
+function selectManualCopyText(target: HTMLDivElement | null) {
   if (!target) return;
   target.focus();
-  target.select();
+  const selection = target.ownerDocument.getSelection?.();
+  if (!selection) return;
+  const range = target.ownerDocument.createRange();
+  range.selectNodeContents(target);
+  selection.removeAllRanges();
+  selection.addRange(range);
 }
 
 function buildMailboxManualTooltip(
   manualCopyLabel: string,
   emailAddress: string,
-  valueRef: React.RefObject<HTMLInputElement | null>,
+  valueRef: React.RefObject<HTMLDivElement | null>,
 ) {
   return (
     <div className="space-y-2">
       <p className="text-xs font-medium leading-5 text-base-content/78">{manualCopyLabel}</p>
-      <input
+      <div
         ref={valueRef}
-        type="text"
+        role="textbox"
         aria-label={manualCopyLabel}
-        readOnly
+        aria-readonly="true"
+        tabIndex={0}
         translate="no"
         spellCheck={false}
         data-lpignore="true"
         data-1p-ignore="true"
         data-form-type="other"
-        value={emailAddress}
         className="h-9 w-full overflow-x-auto rounded-lg border border-warning/35 bg-base-100 px-3 py-2 font-mono text-xs text-base-content shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-warning/40"
         onFocus={(event) => selectManualCopyText(event.currentTarget)}
         onClick={(event) => selectManualCopyText(event.currentTarget)}
-      />
+      >
+        <span className="whitespace-nowrap">{emailAddress}</span>
+      </div>
     </div>
   );
 }
@@ -124,7 +131,7 @@ export function OauthMailboxChip({
 }: OauthMailboxChipProps) {
   const longPressTimerRef = useRef<number | null>(null);
   const hoverCloseTimerRef = useRef<number | null>(null);
-  const manualCopyValueRef = useRef<HTMLInputElement | null>(null);
+  const manualCopyValueRef = useRef<HTMLDivElement | null>(null);
   const [longPressOpen, setLongPressOpen] = useState(false);
   const [hoverOpen, setHoverOpen] = useState(false);
 

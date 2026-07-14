@@ -3622,7 +3622,7 @@ export function DashboardWorkingConversationsSection({
 
   useEffect(() => {
     setNowMs(Date.now());
-  }, []);
+  }, [cards]);
 
   useEffect(() => {
     const updateLayoutMetrics = () => {
@@ -3727,7 +3727,15 @@ export function DashboardWorkingConversationsSection({
       window.clearTimeout(mountTimer);
       window.removeEventListener("scroll", handleScroll);
     };
-  }, [activeView, gridElement, hasMore, isLoadingMore, onLoadMore]);
+  }, [
+    activeView,
+    gridElement,
+    hasMore,
+    hasVirtualizedRowsAbove,
+    isLoadingMore,
+    onLoadMore,
+    rows.length,
+  ]);
 
   useEffect(() => {
     setRefreshTargetCount?.(refreshTargetCount);
@@ -3751,7 +3759,7 @@ export function DashboardWorkingConversationsSection({
     }
     const nextAnchor = container ? captureVisibleCardAnchor(container, visibleAnchorTarget) : null;
     visibleAnchorRef.current = nextAnchor?.hasHiddenContentAbove ? nextAnchor : null;
-  }, [gridElement, visibleAnchorTarget]);
+  }, [cards, columnCount, gridElement, rows, upstreamAccounts, visibleAnchorTarget]);
 
   if (error && cards.length === 0) {
     return (
