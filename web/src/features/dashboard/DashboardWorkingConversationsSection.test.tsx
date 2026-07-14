@@ -837,7 +837,6 @@ describe("DashboardWorkingConversationsSection", () => {
       throw new Error("missing workspace controls");
     }
     expect(controls.className).toContain("flex-col");
-    expect(controls.className).toContain("items-stretch");
     expect(controls.querySelector('[role="tablist"]')?.className).toContain("w-full");
     expect(controls.querySelectorAll('[role="tab"]')[0]?.className).toContain("flex-1");
     expect(controls.querySelectorAll('[role="tab"]')[1]?.className).toContain("flex-1");
@@ -883,9 +882,6 @@ describe("DashboardWorkingConversationsSection", () => {
       recentInvocationLimit: 4,
     });
     expect(host?.textContent).toContain("当前活动账号 1 个");
-    expect(host?.textContent).toContain(
-      "展示当前总览范围内有调用的上游账号，以及每个账号的动态最近调用窗口。",
-    );
     expect(host?.textContent).toContain("最近 4 条调用");
     expect(host?.textContent).not.toContain("账号状态");
     expect(host?.querySelector('[data-testid="dashboard-upstream-account-status"]')).toBeNull();
@@ -1453,7 +1449,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(restoredAccountTab?.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("switches the section subtitle when the upstream account tab is active", () => {
+  it("switches workspace views without rendering the removed description", () => {
     upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
 
     renderSection(
@@ -1469,9 +1465,7 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    expect(host?.textContent).toContain(
-      "展示最近 5 分钟内有终态调用，或当前仍处于运行中 / 排队中的对话。",
-    );
+    expect(host?.textContent).not.toContain("展示最近 5 分钟内有终态调用");
 
     const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
       node.textContent?.includes("上游账号"),
@@ -1484,9 +1478,7 @@ describe("DashboardWorkingConversationsSection", () => {
       fireEvent.click(accountTab);
     });
 
-    expect(host?.textContent).toContain(
-      "展示当前总览范围内有调用的上游账号，以及每个账号的动态最近调用窗口。",
-    );
+    expect(host?.textContent).not.toContain("展示当前总览范围内有调用的上游账号");
     expect(host?.textContent).not.toContain(
       "展示最近 5 分钟内有终态调用，或当前仍处于运行中 / 排队中的对话。",
     );
@@ -1832,7 +1824,6 @@ describe("DashboardWorkingConversationsSection", () => {
 
     expect(host?.querySelector('[data-testid="dashboard-working-conversation-card"]')).toBeTruthy();
     expect(host?.textContent).toContain("load more temporarily unavailable");
-    expect(host?.textContent).toContain("运行中");
   });
 
   it("places reasoning effort between the model name and service-tier indicator", () => {
@@ -2570,6 +2561,90 @@ describe("DashboardWorkingConversationsSection", () => {
     );
 
     act(() => {
+      vi.runAllTimers();
+      window.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(onLoadMore).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("does not load more hidden conversations from the upstream-account tab", () => {
+    vi.useFakeTimers();
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(900);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
+        return {
+          x: 0,
+          y: 0,
+          top: 0,
+          bottom: 1_360,
+          left: 0,
+          right: 1200,
+          width: 1200,
+          height: 1_360,
+          toJSON: () => ({}),
+        } satisfies DOMRect;
+      }
+      if (this.getAttribute("data-testid") === "dashboard-upstream-account-grid") {
+        return {
+          x: 0,
+          y: 0,
+          top: 0,
+          bottom: 640,
+          left: 0,
+          right: 1200,
+          width: 1200,
+          height: 640,
+          toJSON: () => ({}),
+        } satisfies DOMRect;
+      }
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        bottom: 0,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: 0,
+        toJSON: () => ({}),
+      } satisfies DOMRect;
+    });
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+    const onLoadMore = vi.fn();
+
+    renderSection(
+      createResponse(
+        Array.from({ length: 4 }, (_, index) =>
+          createConversation(`pck-hidden-${index + 1}`, [
+            createPreview({
+              id: index + 1,
+              invokeId: `invoke-hidden-${index + 1}`,
+              occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+              status: "completed",
+            }),
+          ]),
+        ),
+      ),
+      {
+        hasMore: true,
+        onLoadMore,
+      },
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
       vi.runAllTimers();
       window.dispatchEvent(new Event("scroll"));
     });
@@ -3828,6 +3903,191 @@ describe("DashboardWorkingConversationsSection", () => {
     const scrollBy = vi.spyOn(window, "scrollBy");
 
     rerenderSectionWithCards(nextCards);
+
+    expect(scrollBy).toHaveBeenCalledWith(0, 180);
+  });
+
+  it("preserves the page-scroll anchor when cycling conversation sort reorders the visible cards", () => {
+    const conversations = createResponse([
+      {
+        ...createConversation("sort-anchor-a", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-sort-anchor-a",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+        ]),
+        createdAt: "2026-04-04T10:03:00Z",
+        lastActivityAt: "2026-04-04T10:04:00Z",
+      },
+      {
+        ...createConversation("sort-anchor-b", [
+          createPreview({
+            id: 2,
+            invokeId: "invoke-sort-anchor-b",
+            occurredAt: "2026-04-04T10:03:00Z",
+            status: "completed",
+          }),
+        ]),
+        createdAt: "2026-04-04T10:02:00Z",
+        lastActivityAt: "2026-04-04T10:03:00Z",
+      },
+      {
+        ...createConversation("sort-anchor-c", [
+          createPreview({
+            id: 3,
+            invokeId: "invoke-sort-anchor-c",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "completed",
+          }),
+        ]),
+        createdAt: "2026-04-04T10:01:00Z",
+        lastActivityAt: "2026-04-04T10:05:00Z",
+      },
+    ]);
+
+    const rectFor = (top: number, height = 160) =>
+      ({
+        x: 0,
+        y: top,
+        top,
+        bottom: top + height,
+        left: 0,
+        right: 1200,
+        width: 1200,
+        height,
+        toJSON: () => ({}),
+      }) satisfies DOMRect;
+
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
+        return rectFor(0, 600);
+      }
+      if (this.getAttribute("data-testid") === "dashboard-working-conversation-card") {
+        const cards = Array.from(
+          this.ownerDocument.querySelectorAll<HTMLElement>(
+            '[data-testid="dashboard-working-conversation-card"]',
+          ),
+        );
+        const cardIndex = cards.indexOf(this);
+        return rectFor(-220 + cardIndex * 180);
+      }
+      return rectFor(0, 0);
+    });
+
+    renderSection(conversations);
+
+    const sortButton = host?.querySelector('[data-testid="dashboard-workspace-sort-button"]');
+    if (!(sortButton instanceof HTMLButtonElement)) {
+      throw new Error("missing workspace sort button");
+    }
+
+    const scrollBy = vi.spyOn(window, "scrollBy");
+
+    act(() => {
+      fireEvent.click(sortButton);
+    });
+
+    expect(scrollBy).toHaveBeenCalledWith(0, 180);
+  });
+
+  it("preserves the page-scroll anchor when cycling account sort reorders the visible cards", () => {
+    const baseAccount = createUpstreamAccountActivityResponse().accounts[0]!;
+    upstreamAccountActivityMock.data = {
+      ...createUpstreamAccountActivityResponse(),
+      accounts: [
+        {
+          ...baseAccount,
+          upstreamAccountId: 101,
+          displayName: "Pool Alpha",
+          latestConversationCreatedAt: "2026-04-04T10:03:00Z",
+          lastInvocationAt: "2026-04-04T10:04:00Z",
+        },
+        {
+          ...baseAccount,
+          upstreamAccountId: 102,
+          displayName: "Pool Beta",
+          latestConversationCreatedAt: "2026-04-04T10:02:00Z",
+          lastInvocationAt: "2026-04-04T10:03:00Z",
+        },
+        {
+          ...baseAccount,
+          upstreamAccountId: 103,
+          displayName: "Pool Gamma",
+          latestConversationCreatedAt: "2026-04-04T10:01:00Z",
+          lastInvocationAt: "2026-04-04T10:05:00Z",
+        },
+      ],
+    };
+
+    const rectFor = (top: number, height = 160) =>
+      ({
+        x: 0,
+        y: top,
+        top,
+        bottom: top + height,
+        left: 0,
+        right: 1200,
+        width: 1200,
+        height,
+        toJSON: () => ({}),
+      }) satisfies DOMRect;
+
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.getAttribute("data-testid") === "dashboard-upstream-account-grid") {
+        return rectFor(0, 600);
+      }
+      if (this.getAttribute("data-testid") === "dashboard-upstream-account-card") {
+        const cards = Array.from(
+          this.ownerDocument.querySelectorAll<HTMLElement>(
+            '[data-testid="dashboard-upstream-account-card"]',
+          ),
+        );
+        const cardIndex = cards.indexOf(this);
+        return rectFor(-220 + cardIndex * 180);
+      }
+      return rectFor(0, 0);
+    });
+
+    renderSection(
+      createResponse([
+        createConversation("account-sort-anchor-a", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-account-sort-anchor-a",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+        ]),
+      ]),
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const sortButton = host?.querySelector('[data-testid="dashboard-workspace-sort-button"]');
+    if (!(sortButton instanceof HTMLButtonElement)) {
+      throw new Error("missing workspace sort button");
+    }
+
+    const scrollBy = vi.spyOn(window, "scrollBy");
+
+    act(() => {
+      fireEvent.click(sortButton);
+    });
 
     expect(scrollBy).toHaveBeenCalledWith(0, 180);
   });

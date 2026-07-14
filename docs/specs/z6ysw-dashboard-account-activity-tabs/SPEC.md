@@ -71,7 +71,11 @@
 - 单账号卡四组周期统计必须以整张统计卡作为 hover / focus / click / long-press 的浮层触发区域；浮层顶部展示该卡主字段和值，下方按“当前字段 / 相关数据”分组明确列出字段名和值，不得只展示裸数值。
 - 单账号卡四组周期统计的卡内分解段落不得再各自挂载独立 tooltip，避免在整卡 tooltip 内形成嵌套 trigger；recent 区标题行右侧状态分解不受此限制，继续保留自身 hover/title 行为。
 - 单账号卡四组周期统计浮层的补充数据最多 3 项，且只能来自账号活动接口已有字段或前端可安全计算值；不得为了 tooltip 新增后端字段、接口或改变聚合口径。
-- 四组周期统计与顶部实时指标中的所有数值必须使用 Dashboard 既有滚动数字效果；账号卡排序必须按 `totalTokens DESC`，再按最近调用时间与账号 ID 保持稳定。
+- 四组周期统计与顶部实时指标中的所有数值必须使用 Dashboard 既有滚动数字效果。
+- 工作区在 `对话 / 上游账号` tabs 右侧必须显示当前排序名称的循环按钮；点击按 `createdAt -> lastInvocation -> cost -> tokens` 循环。两个视图分别使用独立 localStorage key，首次均默认 `createdAt`，切换视图不得覆盖另一视图的选择。
+- 对话的 `createdAt` 与 `lastInvocation` 按时间倒序，`cost` 与 `tokens` 按数值正序；缺失时间置后，最终以 `promptCacheKey` 作为稳定次级排序。
+- 账号活动响应必须返回 `latestConversationCreatedAt` 与 `lastInvocationAt`。前者取账号关联对话中最新的真实 conversation `createdAt`，后者取账号关联调用的最新 `occurredAt`；不得用账号创建时间或 recent preview 的截断结果替代。账号排序使用这两个时间字段倒序，成本/Token 使用既有聚合值正序，最终以 `accountKey` / 账号 ID 稳定排序。
+- 排序只能从现有 SSE patch 或账号活动快照派生，不得新增请求或改变 refresh cadence；重排后继续复用既有虚拟列表锚定逻辑。
 - 摘要区不得加入低价值说明型文案；“按调用计数，不按对话去重”、“仍在重试链路中的调用”、“账号状态说明条”之类解释性文字不得出现在卡面常驻内容里。
 - 请求数、成本与 Token 附加分解摘要在卡面常驻态只显示色点与数值；不得出现任何可见文字标签（包括单字、缩写、短标签）。完整 `label + value` 只通过 hover / title 暴露，不得额外占用版面。
 - 账号卡内部所有结构性描边（外框、摘要格子、recent 行、分隔线）必须统一使用低对比中性边框，不得把主题主色、语义色或任意彩色边框用于结构分割；颜色只保留给状态点、数值与徽章等语义元素。
@@ -191,7 +195,9 @@
 - Given 查看账号卡周期统计，When 卡片渲染完成，Then 可见四组统计：`首字用时 + 响应时间`、`请求数 + 成功 / 失败 / 其他`、`成本 + 失败 / 失败成本比率(%)`、`Token + 缓存命中率 / 失败`，且所有数值使用滚动数字效果；当 `failureCost=0` 时，成本组失败成本比率显示为 `0%`。
 - Given 查看账号卡四组周期统计，When 对任一统计卡 hover、focus、点击或移动端长按，Then 整张统计卡打开结构化浮层，浮层明确展示主字段名和值、卡面已有分解字段名和值，以及 0 到 3 个相关补充数据。
 - Given 查看账号卡四组周期统计，When 卡片常驻态渲染完成，Then 卡内分解段落不再各自创建独立 tooltip trigger，避免和整卡浮层形成嵌套触发区域。
-- Given 多个账号都有范围内调用，When 查看上游账号列表，Then 账号卡按 `totalTokens` 倒序排列；Token 相同再按最近调用时间和账号 ID 稳定排序。
+- Given 两个工作区视图分别选择了不同排序，When 切换标签或刷新页面，Then 每个标签恢复自己的选择，并显示对应排序名称。
+- Given 多个对话或账号收到 SSE patch / 活动快照更新，When 当前排序字段发生变化，Then 卡片立即按当前模式重排，且不产生额外刷新请求。
+- Given 账号存在多条关联对话和调用，When 分别选择“对话创建”与“最新调用”，Then 使用 `latestConversationCreatedAt` 与 `lastInvocationAt` 倒序排列；缺失时间置后且平局稳定。
 - Given 某账号有至少 4 条范围内调用，When 查看账号卡底部，Then 只显示最近 4 条，按 `occurredAt DESC` 排序。
 - Given 某账号 recent 调用记录存在真实 `promptCacheKey`，When 查看请求标识主行，Then 可见基于该键计算出的对话短 ID、分隔图标与完整请求 ID，且短 ID 展示值不带 `WC-` 前缀。
 - Given 某账号 recent 调用记录渲染主标识行，When 查看对话短 ID，Then 它表现为轻量短码 chip，且颜色来自稳定离散辅助色槽位，而不是单独的状态样式圆点。
@@ -250,6 +256,10 @@
 - `cd web && bun run build-storybook`
 
 ## Visual Evidence
+
+PR: include
+
+![Dashboard workspace sorting controls](./assets/dashboard-workspace-controls-focused.png)
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--error-summary-tooltips`
