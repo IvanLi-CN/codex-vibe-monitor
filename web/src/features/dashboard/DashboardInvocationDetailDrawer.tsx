@@ -110,7 +110,7 @@ function formatOccurredAtLabel(value: string, formatter: Intl.DateTimeFormat) {
 
 function SummaryCard({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-base-300/70 bg-base-100/65 p-3">
+    <div className="min-w-0 max-w-full rounded-xl border border-base-300/70 bg-base-100/65 p-3">
       <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/60">
         {label}
       </div>
@@ -424,8 +424,8 @@ export function DashboardInvocationDetailDrawer({
           </p>
         </div>
       ) : (
-        <div className="grid gap-4">
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid min-w-0 max-w-full grid-cols-1 gap-4">
+          <div className="grid min-w-0 max-w-full grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
             <SummaryCard label={t("table.details.account")}>
               <div className="text-sm font-medium">
                 {renderAccountValue(

@@ -3,7 +3,7 @@
 ## Current State
 
 - Canonical spec: `docs/specs/dqstf-invocation-detail-routing-payload-viewer/SPEC.md`
-- Implementation summary: 本地实现与自动化验证完成，视觉证据待浏览器能力恢复后补齐
+- Implementation summary: 本地实现、定向验证与桌面/移动视觉证据均已完成
 - Branch: `th/invocation-detail-route-viewer`
 - Base: `origin/main@d0480696be2e385b268175aff47bfc383d370271`
 
@@ -18,14 +18,11 @@
 
 ## Verification
 
-- `cd web && bun run test -- --reporter=dot`: 111 files passed，1218 tests passed，6 skipped。
-- `cd web && bun run test-storybook`: 6 files passed，11 tests passed，52 unsupported stories skipped。
+- `cd web && bun run test -- --reporter=dot src/demo/runtime.test.ts src/features/invocations/structuredPayload.test.ts src/features/dashboard/DashboardInvocationDetailDrawer.test.tsx src/demo/handlers.test.ts`: 4 files passed，25 tests passed。
 - `cd web && bun run build`: passed。
 - `cd web && bun run demo:build`: passed。
-- `cd web && bun run build-storybook`: passed。
-- changed-files Biome check: passed；全仓 lint 仍包含未改动存量文件的既有 errors/warnings。
+- Chrome Control mock-only Web Demo proof: `http://127.0.0.1:34490/#/dashboard/invocations/demo-invocation-9002?demoScene=attention` 与 `&demoViewport=mobile390` 均可稳定打开，并已把 `异常响应体 / SSE 事件流` 证据写入 spec `## Visual Evidence`。
 
 ## Remaining Delivery Gate
 
-- mock-only Web Demo 已在当前 worktree 的有效端口租约上启动，但 Chrome Control bootstrap 与 chrome-devtools 连接均不可用，无法按仓库规定完成浏览器截图和 overflow measurement。
-- 在浏览器能力恢复并补齐 spec `## Visual Evidence` 前，不进入 push、PR 或 `Step 5C Ready`。
+- 无。视觉证据门禁已清除，可进入 push、PR 与 merge path。

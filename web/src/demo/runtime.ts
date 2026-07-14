@@ -5,6 +5,7 @@ export type DemoScene =
   | "progressive-loading"
   | "network-failure";
 export type DemoTheme = "light" | "dark";
+export type DemoViewport = "default" | "mobile390";
 
 const RUNTIME_VALUES = new Set(["live", "demo"]);
 const SCENE_VALUES = new Set<DemoScene>([
@@ -15,6 +16,14 @@ const SCENE_VALUES = new Set<DemoScene>([
   "network-failure",
 ]);
 const THEME_VALUES = new Set<DemoTheme>(["light", "dark"]);
+const VIEWPORT_VALUES = new Set<DemoViewport>(["default", "mobile390"]);
+
+function hashSearchFromLocation(
+  location: Location | undefined = typeof window === "undefined" ? undefined : window.location,
+) {
+  if (!location || !location.hash.includes("?")) return "";
+  return location.hash.slice(location.hash.indexOf("?") + 1);
+}
 
 export function appRuntime(): "live" | "demo" {
   const value = import.meta.env.VITE_APP_RUNTIME ?? "live";
@@ -32,9 +41,7 @@ export function sceneFromLocation(
   location: Location | undefined = typeof window === "undefined" ? undefined : window.location,
 ): DemoScene {
   if (!location) return "operational";
-  const hashSearch = location.hash.includes("?")
-    ? location.hash.slice(location.hash.indexOf("?") + 1)
-    : "";
+  const hashSearch = hashSearchFromLocation(location);
   const scene = new URLSearchParams(hashSearch).get("demoScene");
   return scene && SCENE_VALUES.has(scene as DemoScene) ? (scene as DemoScene) : "operational";
 }
@@ -43,11 +50,27 @@ export function themeFromLocation(
   location: Location | undefined = typeof window === "undefined" ? undefined : window.location,
 ): DemoTheme {
   if (!location) return "light";
-  const hashSearch = location.hash.includes("?")
-    ? location.hash.slice(location.hash.indexOf("?") + 1)
-    : "";
+  const hashSearch = hashSearchFromLocation(location);
   const theme = new URLSearchParams(hashSearch).get("demoTheme");
   return theme && THEME_VALUES.has(theme as DemoTheme) ? (theme as DemoTheme) : "light";
+}
+
+export function viewportFromLocation(
+  location: Location | undefined = typeof window === "undefined" ? undefined : window.location,
+): DemoViewport {
+  if (!location) return "default";
+  const hashSearch = hashSearchFromLocation(location);
+  const viewport = new URLSearchParams(hashSearch).get("demoViewport");
+  return viewport && VIEWPORT_VALUES.has(viewport as DemoViewport)
+    ? (viewport as DemoViewport)
+    : "default";
+}
+
+export function isEmbeddedDemoViewport(
+  location: Location | undefined = typeof window === "undefined" ? undefined : window.location,
+) {
+  if (!location) return false;
+  return new URLSearchParams(hashSearchFromLocation(location)).get("demoEmbed") === "1";
 }
 
 export async function initializeDemoRuntime(): Promise<void> {
