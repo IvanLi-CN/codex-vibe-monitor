@@ -680,6 +680,142 @@ describe("DashboardWorkingConversationsSection", () => {
     ).toBeNull();
   });
 
+  it("keeps the header refresh chip idle during short background account refreshes", async () => {
+    vi.useFakeTimers();
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+    upstreamAccountActivityMock.isRefreshing = true;
+
+    renderSection(createResponse([]));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const refreshChip = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-refresh-chip"]',
+    );
+    const refreshChipContent = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-refresh-chip-content"]',
+    );
+    const refreshChipStatus = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-refresh-status"]',
+    );
+    const accountGrid = host?.querySelector('[data-testid="dashboard-upstream-account-grid"]');
+    if (
+      !(refreshChip instanceof HTMLElement) ||
+      !(refreshChipContent instanceof HTMLElement) ||
+      !(refreshChipStatus instanceof HTMLElement) ||
+      !(accountGrid instanceof HTMLElement)
+    ) {
+      throw new Error("missing refresh chip or account grid");
+    }
+
+    expect(refreshChip.dataset.state).toBe("idle");
+    expect(refreshChipContent.getAttribute("aria-hidden")).toBe("true");
+    expect(refreshChipContent.getAttribute("aria-label")).toBeNull();
+    expect(refreshChipStatus.textContent).toBe("刷新中");
+    expect(
+      Array.from(host?.querySelectorAll('[role="status"]') ?? []).some(
+        (element) =>
+          element.closest('[data-testid="dashboard-upstream-account-refresh-chip"]') == null,
+      ),
+    ).toBe(false);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(299);
+    });
+
+    expect(refreshChip.dataset.state).toBe("idle");
+    expect(refreshChipContent.getAttribute("aria-hidden")).toBe("true");
+    expect(
+      Array.from(host?.querySelectorAll('[role="status"]') ?? []).some(
+        (element) =>
+          element.closest('[data-testid="dashboard-upstream-account-refresh-chip"]') == null,
+      ),
+    ).toBe(false);
+
+    vi.useRealTimers();
+  });
+
+  it("shows the header refresh chip only after the delay and keeps it visible briefly after refresh ends", async () => {
+    vi.useFakeTimers();
+    const response = createResponse([]);
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+    upstreamAccountActivityMock.isRefreshing = true;
+
+    renderSection(response);
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const refreshChip = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-refresh-chip"]',
+    );
+    const refreshChipContent = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-refresh-chip-content"]',
+    );
+    const refreshChipStatus = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-refresh-status"]',
+    );
+    const accountGrid = host?.querySelector('[data-testid="dashboard-upstream-account-grid"]');
+    if (
+      !(refreshChip instanceof HTMLElement) ||
+      !(refreshChipContent instanceof HTMLElement) ||
+      !(refreshChipStatus instanceof HTMLElement) ||
+      !(accountGrid instanceof HTMLElement)
+    ) {
+      throw new Error("missing refresh chip or account grid");
+    }
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+
+    expect(refreshChip.dataset.state).toBe("visible");
+    expect(refreshChipContent.getAttribute("aria-hidden")).toBeNull();
+    expect(refreshChipContent.getAttribute("aria-label")).toBe("正在更新账号汇总");
+    expect(refreshChipStatus.textContent).toBe("刷新中");
+    expect(
+      Array.from(host?.querySelectorAll('[role="status"]') ?? []).filter(
+        (element) =>
+          element.closest('[data-testid="dashboard-upstream-account-refresh-chip"]') != null,
+      ),
+    ).toHaveLength(1);
+
+    upstreamAccountActivityMock.isRefreshing = false;
+    rerenderSection(response);
+
+    expect(refreshChip.dataset.state).toBe("visible");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(599);
+    });
+
+    expect(refreshChip.dataset.state).toBe("visible");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    expect(refreshChip.dataset.state).toBe("idle");
+    expect(refreshChipContent.getAttribute("aria-hidden")).toBe("true");
+
+    vi.useRealTimers();
+  });
+
   it("stacks workspace controls below the description on compact screens", () => {
     renderSection(
       createResponse([

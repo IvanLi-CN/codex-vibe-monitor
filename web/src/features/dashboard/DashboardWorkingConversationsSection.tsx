@@ -136,6 +136,8 @@ const DASHBOARD_ACCOUNT_RECENT_SKELETON_IDS = [
   "recent-row-3",
   "recent-row-4",
 ];
+const UPSTREAM_ACCOUNT_REFRESH_CHIP_SHOW_DELAY_MS = 300;
+const UPSTREAM_ACCOUNT_REFRESH_CHIP_MIN_VISIBLE_MS = 600;
 
 type StatusMeta = {
   badgeVariant: "default" | "secondary" | "success" | "warning" | "error" | "info";
@@ -3135,6 +3137,48 @@ function DashboardUpstreamAccountGridSkeleton() {
   );
 }
 
+function DashboardUpstreamAccountRefreshChip({
+  label,
+  visibleLabel,
+  visible,
+}: {
+  label: string;
+  visibleLabel: string;
+  visible: boolean;
+}) {
+  return (
+    <div
+      data-testid="dashboard-upstream-account-refresh-chip"
+      data-state={visible ? "visible" : "idle"}
+      className="inline-flex h-7 shrink-0 items-center"
+    >
+      <div
+        data-testid="dashboard-upstream-account-refresh-chip-content"
+        role={visible ? "status" : undefined}
+        aria-live={visible ? "polite" : undefined}
+        aria-hidden={visible ? undefined : true}
+        aria-label={visible ? label : undefined}
+        title={visible ? label : undefined}
+        className={cn(
+          "inline-flex h-full min-w-0 items-center gap-1 rounded-full border px-2 text-[11px] font-semibold whitespace-nowrap transition-opacity duration-200",
+          visible
+            ? "border-info/35 bg-info/12 text-info shadow-[inset_0_1px_0_rgba(255,255,255,0.16)]"
+            : "invisible border-transparent bg-transparent text-transparent opacity-0",
+        )}
+      >
+        <Spinner size="sm" className="h-3 w-3 border-[1.65px]" aria-hidden />
+        <span
+          data-testid="dashboard-upstream-account-refresh-status"
+          aria-hidden
+          className="truncate whitespace-nowrap"
+        >
+          {visibleLabel}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 interface DashboardWorkingConversationAnchorCardElement extends HTMLElement {
   __dashboardWorkingConversationAnchorKey?: string;
 }
@@ -3218,6 +3262,11 @@ export function DashboardWorkingConversationsSection({
   const loadMoreRequestPendingRef = useRef(false);
   const previousLoadingMoreRef = useRef(isLoadingMore);
   const previousRowsLengthRef = useRef(cards.length);
+  const upstreamAccountRefreshChipVisibleAtRef = useRef<number | null>(null);
+  const upstreamAccountRefreshChipShowTimerRef = useRef<number | null>(null);
+  const upstreamAccountRefreshChipHideTimerRef = useRef<number | null>(null);
+  const [isUpstreamAccountRefreshChipVisible, setIsUpstreamAccountRefreshChipVisible] =
+    useState(false);
   const setGridContainerRef = useCallback((node: HTMLDivElement | null) => {
     setGridElement(node);
   }, []);
@@ -3308,6 +3357,16 @@ export function DashboardWorkingConversationsSection({
   useEffect(() => {
     onUpstreamAccountActivityEnabledChange?.(upstreamAccountActivityEnabled);
   }, [onUpstreamAccountActivityEnabledChange, upstreamAccountActivityEnabled]);
+  const clearUpstreamAccountRefreshChipTimers = useCallback(() => {
+    if (upstreamAccountRefreshChipShowTimerRef.current != null) {
+      clearTimeout(upstreamAccountRefreshChipShowTimerRef.current);
+      upstreamAccountRefreshChipShowTimerRef.current = null;
+    }
+    if (upstreamAccountRefreshChipHideTimerRef.current != null) {
+      clearTimeout(upstreamAccountRefreshChipHideTimerRef.current);
+      upstreamAccountRefreshChipHideTimerRef.current = null;
+    }
+  }, []);
   const upstreamAccounts = useMemo(
     () =>
       [...(upstreamAccountActivity?.accounts ?? [])].sort((left, right) => {
@@ -3340,6 +3399,77 @@ export function DashboardWorkingConversationsSection({
         : t("dashboard.upstreamAccounts.countBadge", {
             count: accountCountBadgeValue,
           });
+  const shouldReserveUpstreamAccountRefreshChip = activeView === "upstreamAccounts";
+  const shouldShowUpstreamAccountRefreshChip =
+    shouldReserveUpstreamAccountRefreshChip &&
+    upstreamAccounts.length > 0 &&
+    isUpstreamAccountRefreshChipVisible;
+  useEffect(() => {
+    if (!shouldReserveUpstreamAccountRefreshChip || upstreamAccounts.length === 0) {
+      clearUpstreamAccountRefreshChipTimers();
+      upstreamAccountRefreshChipVisibleAtRef.current = null;
+      setIsUpstreamAccountRefreshChipVisible(false);
+      return;
+    }
+    if (upstreamAccountActivityRefreshing) {
+      if (upstreamAccountRefreshChipHideTimerRef.current != null) {
+        clearTimeout(upstreamAccountRefreshChipHideTimerRef.current);
+        upstreamAccountRefreshChipHideTimerRef.current = null;
+      }
+      if (
+        isUpstreamAccountRefreshChipVisible ||
+        upstreamAccountRefreshChipShowTimerRef.current != null
+      ) {
+        return;
+      }
+      upstreamAccountRefreshChipShowTimerRef.current = window.setTimeout(() => {
+        upstreamAccountRefreshChipShowTimerRef.current = null;
+        upstreamAccountRefreshChipVisibleAtRef.current = Date.now();
+        setIsUpstreamAccountRefreshChipVisible(true);
+      }, UPSTREAM_ACCOUNT_REFRESH_CHIP_SHOW_DELAY_MS);
+      return;
+    }
+    if (upstreamAccountRefreshChipShowTimerRef.current != null) {
+      clearTimeout(upstreamAccountRefreshChipShowTimerRef.current);
+      upstreamAccountRefreshChipShowTimerRef.current = null;
+    }
+    if (!isUpstreamAccountRefreshChipVisible) {
+      return;
+    }
+    const visibleForMs =
+      upstreamAccountRefreshChipVisibleAtRef.current == null
+        ? UPSTREAM_ACCOUNT_REFRESH_CHIP_MIN_VISIBLE_MS
+        : Date.now() - upstreamAccountRefreshChipVisibleAtRef.current;
+    const remainingVisibleMs = Math.max(
+      0,
+      UPSTREAM_ACCOUNT_REFRESH_CHIP_MIN_VISIBLE_MS - visibleForMs,
+    );
+    if (remainingVisibleMs === 0) {
+      upstreamAccountRefreshChipVisibleAtRef.current = null;
+      setIsUpstreamAccountRefreshChipVisible(false);
+      return;
+    }
+    if (upstreamAccountRefreshChipHideTimerRef.current != null) {
+      return;
+    }
+    upstreamAccountRefreshChipHideTimerRef.current = window.setTimeout(() => {
+      upstreamAccountRefreshChipHideTimerRef.current = null;
+      upstreamAccountRefreshChipVisibleAtRef.current = null;
+      setIsUpstreamAccountRefreshChipVisible(false);
+    }, remainingVisibleMs);
+  }, [
+    clearUpstreamAccountRefreshChipTimers,
+    isUpstreamAccountRefreshChipVisible,
+    shouldReserveUpstreamAccountRefreshChip,
+    upstreamAccountActivityRefreshing,
+    upstreamAccounts.length,
+  ]);
+  useEffect(
+    () => () => {
+      clearUpstreamAccountRefreshChipTimers();
+    },
+    [clearUpstreamAccountRefreshChipTimers],
+  );
   const upstreamAccountRows = useMemo(
     () =>
       chunkDashboardUpstreamAccountRows(
@@ -3560,12 +3690,24 @@ export function DashboardWorkingConversationsSection({
             className="flex min-w-0 flex-col items-stretch gap-2 desktop:ml-auto desktop:flex-row desktop:items-center desktop:justify-end"
             data-testid="dashboard-working-conversations-controls"
           >
-            <Badge
-              variant="default"
-              className="w-fit rounded-full px-3 py-1 font-mono text-xs font-semibold"
+            <div
+              className="flex min-w-0 flex-wrap items-center gap-2 desktop:justify-end"
+              data-testid="dashboard-working-conversations-badges"
             >
-              {countBadgeLabel}
-            </Badge>
+              <Badge
+                variant="default"
+                className="w-fit rounded-full px-3 py-1 font-mono text-xs font-semibold"
+              >
+                {countBadgeLabel}
+              </Badge>
+              {shouldReserveUpstreamAccountRefreshChip ? (
+                <DashboardUpstreamAccountRefreshChip
+                  label={t("dashboard.upstreamAccounts.refreshing")}
+                  visibleLabel={t("dashboard.upstreamAccounts.refreshingShort")}
+                  visible={shouldShowUpstreamAccountRefreshChip}
+                />
+              ) : null}
+            </div>
             <SegmentedControl
               size="compact"
               className="w-full desktop:w-auto"
@@ -3603,15 +3745,6 @@ export function DashboardWorkingConversationsSection({
 
         {activeView === "upstreamAccounts" ? (
           <>
-            {upstreamAccountActivityRefreshing && upstreamAccounts.length > 0 ? (
-              <div
-                className="flex items-center gap-2 text-xs font-medium text-base-content/62"
-                role="status"
-              >
-                <Spinner size="sm" aria-hidden />
-                <span>{t("dashboard.upstreamAccounts.refreshing")}</span>
-              </div>
-            ) : null}
             {upstreamAccountActivityError ? (
               <Alert variant="error">
                 <span>{upstreamAccountActivityError}</span>

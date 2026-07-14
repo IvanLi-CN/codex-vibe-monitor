@@ -3304,13 +3304,52 @@ export const UpstreamAccountRefreshing: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByText("正在更新账号汇总")).toBeVisible();
+    await waitFor(async () => {
+      await expect(canvas.getByRole("status", { name: "正在更新账号汇总" })).toBeVisible();
+    });
     await expect(canvas.getByTestId("dashboard-upstream-account-card")).toBeVisible();
+    await expect(canvas.getByTestId("dashboard-upstream-account-refresh-chip")).toHaveAttribute(
+      "data-state",
+      "visible",
+    );
   },
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
     docs: {
-      description: { story: "Range refresh keeps the previous cards visible until replacement." },
+      description: {
+        story:
+          "Range refresh keeps the previous cards visible until replacement while the header chip keeps a stable intrinsic width instead of reserving a wider blank slot or inserting a new layout row above the account grid.",
+      },
+    },
+  },
+};
+
+export const UpstreamAccountRefreshingMobile: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <ForcedWorkspaceViewStory view="upstreamAccounts">
+      <DrawerPreviewStory
+        response={createResponse([])}
+        upstreamAccountActivity={createUpstreamAccountActivityStoryResponse()}
+        upstreamAccountActivityRefreshing
+      />
+    </ForcedWorkspaceViewStory>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(async () => {
+      await expect(canvas.getByRole("status", { name: "正在更新账号汇总" })).toBeVisible();
+    });
+    await expect(canvas.getByTestId("dashboard-upstream-account-card")).toBeVisible();
+    await expect(canvas.getByTestId("dashboard-working-conversations-badges")).toBeVisible();
+  },
+  parameters: {
+    viewport: { defaultViewport: "mobile430" },
+    docs: {
+      description: {
+        story:
+          "Mobile refresh keeps the account card visible and uses the same intrinsic-width chip, so toggling refresh does not consume a dedicated wide slot or introduce a transient extra row.",
+      },
     },
   },
 };
