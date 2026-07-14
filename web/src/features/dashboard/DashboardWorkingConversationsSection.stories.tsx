@@ -4137,6 +4137,18 @@ export const WideDesktop1660: Story = {
       },
     },
   },
+  play: async ({ canvasElement }) => {
+    const controls = canvasElement.querySelector(
+      '[data-testid="dashboard-working-conversations-controls"]',
+    );
+    if (!(controls instanceof HTMLElement)) {
+      throw new Error("missing workspace controls");
+    }
+    await expect(controls.firstElementChild?.getAttribute("role")).toBe("tablist");
+    await expect(controls.children.item(1)?.getAttribute("data-testid")).toBe(
+      "dashboard-working-conversations-actions",
+    );
+  },
 };
 
 export const VirtualizedLargeDataset: Story = {

@@ -13364,9 +13364,8 @@ async fn upstream_account_activity_uses_rollup_created_at_when_working_set_row_i
     .await
     .expect("insert upstream account");
 
-    let current_day_start =
-        local_midnight_utc(Utc::now().with_timezone(&Shanghai).date_naive(), Shanghai);
-    let rollup_bucket_start = current_day_start + ChronoDuration::hours(1);
+    let now = Utc::now();
+    let rollup_bucket_start = now - ChronoDuration::seconds(3);
     let expected_created_at =
         format_naive(rollup_bucket_start.with_timezone(&Shanghai).naive_local());
     insert_parallel_work_prompt_cache_rollup_hourly_row(
@@ -13395,11 +13394,7 @@ async fn upstream_account_activity_uses_rollup_created_at_when_working_set_row_i
     )
     .bind(9_100_i64)
     .bind("upstream-history-only")
-    .bind(format_naive(
-        (current_day_start + ChronoDuration::hours(6))
-            .with_timezone(&Shanghai)
-            .naive_local(),
-    ))
+    .bind(format_naive(now.with_timezone(&Shanghai).naive_local()))
     .bind(SOURCE_PROXY)
     .bind("completed")
     .bind(120_i64)
@@ -13467,10 +13462,9 @@ async fn upstream_account_activity_all_scope_uses_actual_created_at_for_mixed_so
     .await
     .expect("insert upstream account");
 
-    let current_day_start =
-        local_midnight_utc(Utc::now().with_timezone(&Shanghai).date_naive(), Shanghai);
-    let all_created_bucket_start = current_day_start + ChronoDuration::hours(1);
-    let proxy_created_bucket_start = current_day_start + ChronoDuration::hours(4);
+    let now = Utc::now();
+    let all_created_bucket_start = now - ChronoDuration::seconds(4);
+    let proxy_created_bucket_start = now - ChronoDuration::seconds(3);
     let all_created_at = format_naive(
         all_created_bucket_start
             .with_timezone(&Shanghai)
@@ -13481,11 +13475,7 @@ async fn upstream_account_activity_all_scope_uses_actual_created_at_for_mixed_so
             .with_timezone(&Shanghai)
             .naive_local(),
     );
-    let last_activity_at = format_naive(
-        (current_day_start + ChronoDuration::hours(9))
-            .with_timezone(&Shanghai)
-            .naive_local(),
-    );
+    let last_activity_at = format_naive(now.with_timezone(&Shanghai).naive_local());
 
     insert_parallel_work_prompt_cache_rollup_hourly_row_with_source(
         &state.pool,
@@ -13520,7 +13510,7 @@ async fn upstream_account_activity_all_scope_uses_actual_created_at_for_mixed_so
             "upstream-mixed-all",
             SOURCE_XY,
             format_naive(
-                (current_day_start + ChronoDuration::hours(8))
+                (now - ChronoDuration::seconds(1))
                     .with_timezone(&Shanghai)
                     .naive_local(),
             ),
@@ -13529,11 +13519,7 @@ async fn upstream_account_activity_all_scope_uses_actual_created_at_for_mixed_so
             9_201_i64,
             "upstream-mixed-proxy",
             SOURCE_PROXY,
-            format_naive(
-                (current_day_start + ChronoDuration::hours(9))
-                    .with_timezone(&Shanghai)
-                    .naive_local(),
-            ),
+            format_naive(now.with_timezone(&Shanghai).naive_local()),
         ),
     ] {
         sqlx::query(
