@@ -5593,7 +5593,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         );
     }
 
-    if range.start < retention_cutoff {
+    if include_recent && range.start < retention_cutoff {
         let mut archived_rows = crate::stats::query_completed_invocation_archive_preview_rows(
             &state.pool,
             source_scope,
