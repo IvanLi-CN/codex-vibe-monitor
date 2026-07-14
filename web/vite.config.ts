@@ -39,7 +39,7 @@ export function createAppViteConfig(mode: string): UserConfig {
       hookTimeout: 20_000,
     },
     optimizeDeps: {
-      include: ["@iconify-icons/mdi/compare-horizontal"],
+      include: ["@iconify-icons/mdi/compare-horizontal", "@iconify-icons/mdi/sort-variant"],
     },
     server: {
       host: "127.0.0.1",

@@ -33,12 +33,6 @@ import suite3 from "./UpstreamAccounts.sync-state-isolation.txt?raw";
 type UpstreamAccountsHookValue = ReturnType<
   typeof import("../../hooks/useUpstreamAccounts").useUpstreamAccounts
 >;
-type DeleteRegressionState = Partial<UpstreamAccountsHookValue> & {
-  selectedId: number | null;
-  selectedSummary: UpstreamAccountsHookValue["selectedSummary"] | null;
-  detail: UpstreamAccountsHookValue["detail"] | null;
-  routing: UpstreamAccountsHookValue["routing"];
-};
 
 const UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY =
   "codex-vibe-monitor.account-pool.upstream-accounts.filters";
