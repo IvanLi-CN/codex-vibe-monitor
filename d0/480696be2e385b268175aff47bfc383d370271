@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.29.0",
+  "base_stable_version": "2.28.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-14T06:07:31Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.29.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "fda3ef3a9992540b0895eaed155d9fce0a70913c",
+  "pr_number": 603,
+  "pr_title": "feat(dashboard): progressively load account activity",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.29.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.29.0",
+  "target_sha": "d0480696be2e385b268175aff47bfc383d370271",
+  "type_label": "type:minor"
+}
