@@ -1,8 +1,9 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { StructuredPayloadViewer } from "./StructuredPayloadViewer";
+import * as structuredPayloadModule from "./structuredPayload";
 
 const labels = {
   json: "JSON",
@@ -62,6 +63,7 @@ function parsedViewer() {
 
 describe("StructuredPayloadViewer", () => {
   it("resets large payload parse consent when the payload value changes", async () => {
+    const parseSpy = vi.spyOn(structuredPayloadModule, "parseStructuredPayload");
     const firstPayload = JSON.stringify({ payload: "x".repeat(1024 * 1024) });
     const secondPayload = JSON.stringify({ payload: "y".repeat(1024 * 1024) });
 
@@ -76,9 +78,11 @@ describe("StructuredPayloadViewer", () => {
 
     expect(parsedViewer()?.getAttribute("data-payload-kind")).toBe("json");
     expect(parseButton()).toBeNull();
+    parseSpy.mockClear();
 
     rerender(secondPayload);
 
+    expect(parseSpy).not.toHaveBeenCalled();
     expect(parseButton()?.textContent).toContain(labels.parseLargePayload);
     expect(parsedViewer()).toBeNull();
   });
