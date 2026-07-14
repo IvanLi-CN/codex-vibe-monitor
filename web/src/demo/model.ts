@@ -700,7 +700,9 @@ class DemoModel {
   }
 
   #emit() {
-    this.#listeners.forEach((listener) => listener());
+    this.#listeners.forEach((listener) => {
+      listener();
+    });
   }
 }
 
