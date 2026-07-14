@@ -15,6 +15,7 @@ export type RoutingTimeoutOverrideEnabledState = Partial<Record<RoutingTimeoutFi
 export const ROUTING_TIMEOUT_FIELD_ORDER: RoutingTimeoutFieldKey[] = [
   "responsesFirstByteTimeoutSecs",
   "compactFirstByteTimeoutSecs",
+  "imageFirstByteTimeoutSecs",
   "responsesStreamTimeoutSecs",
   "compactStreamTimeoutSecs",
 ];
@@ -22,6 +23,7 @@ export const ROUTING_TIMEOUT_FIELD_ORDER: RoutingTimeoutFieldKey[] = [
 export const DEFAULT_TIMEOUT_FIELD_SOURCES: EffectiveRoutingTimeoutFieldSources = {
   responsesFirstByteTimeoutSecs: "root",
   compactFirstByteTimeoutSecs: "root",
+  imageFirstByteTimeoutSecs: "root",
   responsesStreamTimeoutSecs: "root",
   compactStreamTimeoutSecs: "root",
 };
@@ -38,6 +40,8 @@ export function buildRoutingTimeoutOverrideDraft(
       override?.compactFirstByteTimeoutSecs != null
         ? String(override.compactFirstByteTimeoutSecs)
         : "",
+    imageFirstByteTimeoutSecs:
+      override?.imageFirstByteTimeoutSecs != null ? String(override.imageFirstByteTimeoutSecs) : "",
     responsesStreamTimeoutSecs:
       override?.responsesStreamTimeoutSecs != null
         ? String(override.responsesStreamTimeoutSecs)

@@ -33,12 +33,6 @@ import suite3 from "./UpstreamAccounts.sync-state-isolation.txt?raw";
 type UpstreamAccountsHookValue = ReturnType<
   typeof import("../../hooks/useUpstreamAccounts").useUpstreamAccounts
 >;
-type DeleteRegressionState = Partial<UpstreamAccountsHookValue> & {
-  selectedId: number | null;
-  selectedSummary: UpstreamAccountsHookValue["selectedSummary"] | null;
-  detail: UpstreamAccountsHookValue["detail"] | null;
-  routing: UpstreamAccountsHookValue["routing"];
-};
 
 const UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY =
   "codex-vibe-monitor.account-pool.upstream-accounts.filters";
@@ -759,7 +753,7 @@ function renderedInvocationAccountNames() {
     .filter((value) => value.length > 0);
 }
 
-function clickSelectOption(matcher: RegExp) {
+function _clickSelectOption(matcher: RegExp) {
   const option = Array.from(document.body.querySelectorAll('[role="option"]')).find(
     (candidate) => candidate instanceof HTMLElement && matcher.test(candidate.textContent || ""),
   );
@@ -1024,6 +1018,7 @@ function mockAccountsPage(options?: {
     timeouts: {
       responsesFirstByteTimeoutSecs: number;
       compactFirstByteTimeoutSecs: number;
+      imageFirstByteTimeoutSecs: number;
       responsesStreamTimeoutSecs: number;
       compactStreamTimeoutSecs: number;
     };
@@ -1106,6 +1101,7 @@ function mockAccountsPage(options?: {
   const routingTimeouts = {
     responsesFirstByteTimeoutSecs: 120,
     compactFirstByteTimeoutSecs: 300,
+    imageFirstByteTimeoutSecs: 300,
     responsesStreamTimeoutSecs: 300,
     compactStreamTimeoutSecs: 300,
   };

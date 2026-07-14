@@ -2388,7 +2388,7 @@ function DrawerPreviewStory({
         window.fetch = originalFetchRef.current;
       }
     };
-  }, [storyMocks, upstreamAccountActivity]);
+  }, [storyMocks, upstreamAccountActivity, buildPromptCacheBindingResponse]);
 
   return (
     <>

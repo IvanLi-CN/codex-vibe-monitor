@@ -316,13 +316,18 @@ pub(crate) struct ProxyErrorResponse {
 pub(crate) const PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE: &str =
     "pool route key missing or invalid";
 pub(crate) fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &str) -> Response {
+    let code = (err.status == StatusCode::GATEWAY_TIMEOUT
+        && err
+            .message
+            .contains(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT))
+    .then_some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT);
     match err.cvm_id {
         Some(cvm_id) => {
-            let mut response = (
-                err.status,
-                Json(json!({ "error": err.message, "cvmId": cvm_id })),
-            )
-                .into_response();
+            let mut payload = json!({ "error": err.message, "cvmId": cvm_id });
+            if let Some(code) = code {
+                payload["code"] = json!(code);
+            }
+            let mut response = (err.status, Json(payload)).into_response();
             if let Ok(header_value) = HeaderValue::from_str(invoke_id) {
                 response
                     .headers_mut()
@@ -338,7 +343,11 @@ pub(crate) fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &st
             response
         }
         None => {
-            let mut response = (err.status, Json(json!({ "error": err.message }))).into_response();
+            let mut payload = json!({ "error": err.message });
+            if let Some(code) = code {
+                payload["code"] = json!(code);
+            }
+            let mut response = (err.status, Json(payload)).into_response();
             if let Some(retry_after_secs) = err.retry_after_secs
                 && let Ok(header_value) = HeaderValue::from_str(&retry_after_secs.to_string())
             {

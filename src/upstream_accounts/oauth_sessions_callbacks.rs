@@ -52,6 +52,10 @@ pub(crate) async fn update_pool_routing_settings(
                     timeouts.compact_first_byte_timeout_secs,
                     "compactFirstByteTimeoutSecs",
                 )?,
+                image_first_byte_timeout_secs: normalize_pool_routing_timeout_secs(
+                    timeouts.image_first_byte_timeout_secs,
+                    "imageFirstByteTimeoutSecs",
+                )?,
                 responses_stream_timeout_secs: normalize_pool_routing_timeout_secs(
                     timeouts.responses_stream_timeout_secs,
                     "responsesStreamTimeoutSecs",
@@ -1755,6 +1759,21 @@ pub(crate) async fn update_upstream_account_inner(
         },
         None => row.policy_status_change_upstream_http_5xx,
     };
+    let policy_image_first_byte_timeout_secs = match payload
+        .routing_rule
+        .as_ref()
+        .and_then(|rule| rule.timeouts.as_ref())
+    {
+        Some(timeouts) => match timeouts.image_first_byte_timeout_secs {
+            OptionalField::Missing => row.policy_image_first_byte_timeout_secs,
+            OptionalField::Null => None,
+            OptionalField::Value(value) => {
+                normalize_pool_routing_timeout_secs(Some(value), "imageFirstByteTimeoutSecs")?
+                    .and_then(|value| i64::try_from(value).ok())
+            }
+        },
+        None => row.policy_image_first_byte_timeout_secs,
+    };
     let now_iso = format_utc_iso(Utc::now());
     let mut tx = state
         .pool
@@ -1816,10 +1835,11 @@ pub(crate) async fn update_upstream_account_inner(
             policy_status_change_upstream_http_5xx = ?33,
             policy_responses_first_byte_timeout_secs = ?34,
             policy_compact_first_byte_timeout_secs = ?35,
-            policy_responses_stream_timeout_secs = ?36,
-            policy_compact_stream_timeout_secs = ?37,
-            bound_proxy_keys_json = ?38,
-            updated_at = ?39
+            policy_image_first_byte_timeout_secs = ?36,
+            policy_responses_stream_timeout_secs = ?37,
+            policy_compact_stream_timeout_secs = ?38,
+            bound_proxy_keys_json = ?39,
+            updated_at = ?40
         WHERE id = ?1
         "#,
     )
@@ -1962,6 +1982,7 @@ pub(crate) async fn update_upstream_account_inner(
         },
         None => row.policy_compact_first_byte_timeout_secs,
     })
+    .bind(policy_image_first_byte_timeout_secs)
     .bind(match payload.routing_rule.as_ref() {
         Some(rule) => match rule
             .timeouts

@@ -15,6 +15,7 @@ pub(crate) fn pool_routing_timeouts_from_config(
         request_read_timeout: config.openai_proxy_request_read_timeout,
         responses_first_byte_timeout: config.pool_upstream_responses_attempt_timeout,
         compact_first_byte_timeout: config.openai_proxy_compact_handshake_timeout,
+        image_first_byte_timeout: config.openai_proxy_image_handshake_timeout,
         responses_stream_timeout: config.pool_upstream_responses_total_timeout,
         compact_stream_timeout: config.pool_upstream_responses_total_timeout,
     }
@@ -56,6 +57,12 @@ pub(crate) fn resolve_pool_routing_timeouts_from_row(
             .filter(|value| *value > 0)
             .map(Duration::from_secs)
             .unwrap_or(defaults.compact_first_byte_timeout),
+        image_first_byte_timeout: row
+            .image_first_byte_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.image_first_byte_timeout),
         responses_stream_timeout: row
             .responses_stream_timeout_secs
             .and_then(|value| u64::try_from(value).ok())
@@ -95,6 +102,7 @@ pub(crate) fn pool_routing_timeouts_response(
     PoolRoutingTimeoutSettingsResponse {
         responses_first_byte_timeout_secs: resolved.responses_first_byte_timeout.as_secs(),
         compact_first_byte_timeout_secs: resolved.compact_first_byte_timeout.as_secs(),
+        image_first_byte_timeout_secs: resolved.image_first_byte_timeout.as_secs(),
         responses_stream_timeout_secs: resolved.responses_stream_timeout.as_secs(),
         compact_stream_timeout_secs: resolved.compact_stream_timeout.as_secs(),
     }
@@ -124,6 +132,7 @@ pub(crate) fn normalize_timeout_override_secs_from_i64(value: Option<i64>) -> Op
 pub(crate) fn routing_timeout_settings_from_columns(
     responses_first_byte_timeout_secs: Option<i64>,
     compact_first_byte_timeout_secs: Option<i64>,
+    image_first_byte_timeout_secs: Option<i64>,
     responses_stream_timeout_secs: Option<i64>,
     compact_stream_timeout_secs: Option<i64>,
 ) -> Option<RoutingTimeoutSettings> {
@@ -134,6 +143,9 @@ pub(crate) fn routing_timeout_settings_from_columns(
         compact_first_byte_timeout_secs: normalize_timeout_override_secs_from_i64(
             compact_first_byte_timeout_secs,
         ),
+        image_first_byte_timeout_secs: normalize_timeout_override_secs_from_i64(
+            image_first_byte_timeout_secs,
+        ),
         responses_stream_timeout_secs: normalize_timeout_override_secs_from_i64(
             responses_stream_timeout_secs,
         ),
@@ -143,6 +155,7 @@ pub(crate) fn routing_timeout_settings_from_columns(
     };
     if settings.responses_first_byte_timeout_secs.is_none()
         && settings.compact_first_byte_timeout_secs.is_none()
+        && settings.image_first_byte_timeout_secs.is_none()
         && settings.responses_stream_timeout_secs.is_none()
         && settings.compact_stream_timeout_secs.is_none()
     {
@@ -162,6 +175,7 @@ pub(crate) fn routing_timeout_overrides_from_settings(
     RoutingTimeoutOverridesResolved {
         responses_first_byte_timeout: duration(settings.responses_first_byte_timeout_secs),
         compact_first_byte_timeout: duration(settings.compact_first_byte_timeout_secs),
+        image_first_byte_timeout: duration(settings.image_first_byte_timeout_secs),
         responses_stream_timeout: duration(settings.responses_stream_timeout_secs),
         compact_stream_timeout: duration(settings.compact_stream_timeout_secs),
     }
@@ -181,12 +195,14 @@ pub(crate) fn resolve_effective_routing_timeout_settings(
     let mut effective = RoutingTimeoutSettings {
         responses_first_byte_timeout_secs: Some(root.responses_first_byte_timeout.as_secs()),
         compact_first_byte_timeout_secs: Some(root.compact_first_byte_timeout.as_secs()),
+        image_first_byte_timeout_secs: Some(root.image_first_byte_timeout.as_secs()),
         responses_stream_timeout_secs: Some(root.responses_stream_timeout.as_secs()),
         compact_stream_timeout_secs: Some(root.compact_stream_timeout.as_secs()),
     };
     let mut sources = RoutingTimeoutFieldSources {
         responses_first_byte_timeout_secs: "root".to_string(),
         compact_first_byte_timeout_secs: "root".to_string(),
+        image_first_byte_timeout_secs: "root".to_string(),
         responses_stream_timeout_secs: "root".to_string(),
         compact_stream_timeout_secs: "root".to_string(),
     };
@@ -204,6 +220,11 @@ pub(crate) fn resolve_effective_routing_timeout_settings(
             overrides.compact_first_byte_timeout_secs = Some(value);
             effective.compact_first_byte_timeout_secs = Some(value);
             sources.compact_first_byte_timeout_secs = source.to_string();
+        }
+        if let Some(value) = settings.image_first_byte_timeout_secs {
+            overrides.image_first_byte_timeout_secs = Some(value);
+            effective.image_first_byte_timeout_secs = Some(value);
+            sources.image_first_byte_timeout_secs = source.to_string();
         }
         if let Some(value) = settings.responses_stream_timeout_secs {
             overrides.responses_stream_timeout_secs = Some(value);
@@ -241,6 +262,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_account(
         group_name: Option<String>,
         policy_responses_first_byte_timeout_secs: Option<i64>,
         policy_compact_first_byte_timeout_secs: Option<i64>,
+        policy_image_first_byte_timeout_secs: Option<i64>,
         policy_responses_stream_timeout_secs: Option<i64>,
         policy_compact_stream_timeout_secs: Option<i64>,
     }
@@ -251,6 +273,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_account(
             group_name,
             policy_responses_first_byte_timeout_secs,
             policy_compact_first_byte_timeout_secs,
+            policy_image_first_byte_timeout_secs,
             policy_responses_stream_timeout_secs,
             policy_compact_stream_timeout_secs
         FROM pool_upstream_accounts
@@ -277,6 +300,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_account(
         struct GroupTimeoutRow {
             policy_responses_first_byte_timeout_secs: Option<i64>,
             policy_compact_first_byte_timeout_secs: Option<i64>,
+            policy_image_first_byte_timeout_secs: Option<i64>,
             policy_responses_stream_timeout_secs: Option<i64>,
             policy_compact_stream_timeout_secs: Option<i64>,
         }
@@ -285,6 +309,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_account(
             SELECT
                 policy_responses_first_byte_timeout_secs,
                 policy_compact_first_byte_timeout_secs,
+                policy_image_first_byte_timeout_secs,
                 policy_responses_stream_timeout_secs,
                 policy_compact_stream_timeout_secs
             FROM pool_upstream_account_group_notes
@@ -299,6 +324,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_account(
             routing_timeout_settings_from_columns(
                 row.policy_responses_first_byte_timeout_secs,
                 row.policy_compact_first_byte_timeout_secs,
+                row.policy_image_first_byte_timeout_secs,
                 row.policy_responses_stream_timeout_secs,
                 row.policy_compact_stream_timeout_secs,
             )
@@ -310,6 +336,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_account(
     let account_settings = routing_timeout_settings_from_columns(
         account_row.policy_responses_first_byte_timeout_secs,
         account_row.policy_compact_first_byte_timeout_secs,
+        account_row.policy_image_first_byte_timeout_secs,
         account_row.policy_responses_stream_timeout_secs,
         account_row.policy_compact_stream_timeout_secs,
     );
@@ -322,6 +349,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_account(
         struct ConversationTimeoutRow {
             responses_first_byte_timeout_secs: Option<i64>,
             compact_first_byte_timeout_secs: Option<i64>,
+            image_first_byte_timeout_secs: Option<i64>,
             responses_stream_timeout_secs: Option<i64>,
             compact_stream_timeout_secs: Option<i64>,
         }
@@ -330,6 +358,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_account(
             SELECT
                 responses_first_byte_timeout_secs,
                 compact_first_byte_timeout_secs,
+                image_first_byte_timeout_secs,
                 responses_stream_timeout_secs,
                 compact_stream_timeout_secs
             FROM prompt_cache_conversation_bindings
@@ -344,6 +373,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_account(
             routing_timeout_settings_from_columns(
                 row.responses_first_byte_timeout_secs,
                 row.compact_first_byte_timeout_secs,
+                row.image_first_byte_timeout_secs,
                 row.responses_stream_timeout_secs,
                 row.compact_stream_timeout_secs,
             )
@@ -377,6 +407,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_group(
             struct GroupTimeoutRow {
                 policy_responses_first_byte_timeout_secs: Option<i64>,
                 policy_compact_first_byte_timeout_secs: Option<i64>,
+                policy_image_first_byte_timeout_secs: Option<i64>,
                 policy_responses_stream_timeout_secs: Option<i64>,
                 policy_compact_stream_timeout_secs: Option<i64>,
             }
@@ -386,6 +417,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_group(
             SELECT
                 policy_responses_first_byte_timeout_secs,
                 policy_compact_first_byte_timeout_secs,
+                policy_image_first_byte_timeout_secs,
                 policy_responses_stream_timeout_secs,
                 policy_compact_stream_timeout_secs
             FROM pool_upstream_account_group_notes
@@ -400,6 +432,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_group(
                 routing_timeout_settings_from_columns(
                     row.policy_responses_first_byte_timeout_secs,
                     row.policy_compact_first_byte_timeout_secs,
+                    row.policy_image_first_byte_timeout_secs,
                     row.policy_responses_stream_timeout_secs,
                     row.policy_compact_stream_timeout_secs,
                 )
@@ -430,6 +463,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_group_and_conversat
             struct GroupTimeoutRow {
                 policy_responses_first_byte_timeout_secs: Option<i64>,
                 policy_compact_first_byte_timeout_secs: Option<i64>,
+                policy_image_first_byte_timeout_secs: Option<i64>,
                 policy_responses_stream_timeout_secs: Option<i64>,
                 policy_compact_stream_timeout_secs: Option<i64>,
             }
@@ -439,6 +473,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_group_and_conversat
             SELECT
                 policy_responses_first_byte_timeout_secs,
                 policy_compact_first_byte_timeout_secs,
+                policy_image_first_byte_timeout_secs,
                 policy_responses_stream_timeout_secs,
                 policy_compact_stream_timeout_secs
             FROM pool_upstream_account_group_notes
@@ -453,6 +488,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_group_and_conversat
                 routing_timeout_settings_from_columns(
                     row.policy_responses_first_byte_timeout_secs,
                     row.policy_compact_first_byte_timeout_secs,
+                    row.policy_image_first_byte_timeout_secs,
                     row.policy_responses_stream_timeout_secs,
                     row.policy_compact_stream_timeout_secs,
                 )
@@ -469,6 +505,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_group_and_conversat
         struct ConversationTimeoutRow {
             responses_first_byte_timeout_secs: Option<i64>,
             compact_first_byte_timeout_secs: Option<i64>,
+            image_first_byte_timeout_secs: Option<i64>,
             responses_stream_timeout_secs: Option<i64>,
             compact_stream_timeout_secs: Option<i64>,
         }
@@ -478,6 +515,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_group_and_conversat
             SELECT
                 responses_first_byte_timeout_secs,
                 compact_first_byte_timeout_secs,
+                image_first_byte_timeout_secs,
                 responses_stream_timeout_secs,
                 compact_stream_timeout_secs
             FROM prompt_cache_conversation_bindings
@@ -492,6 +530,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_group_and_conversat
             routing_timeout_settings_from_columns(
                 row.responses_first_byte_timeout_secs,
                 row.compact_first_byte_timeout_secs,
+                row.image_first_byte_timeout_secs,
                 row.responses_stream_timeout_secs,
                 row.compact_stream_timeout_secs,
             )
@@ -522,6 +561,7 @@ pub(crate) async fn load_pool_routing_settings(
             priority_available_account_cap,
             responses_first_byte_timeout_secs,
             compact_first_byte_timeout_secs,
+            image_first_byte_timeout_secs,
             responses_stream_timeout_secs,
             compact_stream_timeout_secs,
             default_first_byte_timeout_secs,
@@ -735,6 +775,10 @@ pub(crate) async fn save_pool_routing_settings(
         .and_then(|value| value.compact_first_byte_timeout_secs)
         .map(|value| value as i64)
         .or(current.compact_first_byte_timeout_secs);
+    let image_first_byte_timeout_secs = timeout_updates
+        .and_then(|value| value.image_first_byte_timeout_secs)
+        .map(|value| value as i64)
+        .or(current.image_first_byte_timeout_secs);
     let responses_stream_timeout_secs = timeout_updates
         .and_then(|value| value.responses_stream_timeout_secs)
         .map(|value| value as i64)
@@ -758,12 +802,13 @@ pub(crate) async fn save_pool_routing_settings(
             priority_available_account_cap = ?6,
             responses_first_byte_timeout_secs = ?7,
             compact_first_byte_timeout_secs = ?8,
-            responses_stream_timeout_secs = ?9,
-            compact_stream_timeout_secs = ?10,
-            default_first_byte_timeout_secs = ?11,
-            upstream_handshake_timeout_secs = ?12,
-            request_read_timeout_secs = ?13,
-            updated_at = ?14
+            image_first_byte_timeout_secs = ?9,
+            responses_stream_timeout_secs = ?10,
+            compact_stream_timeout_secs = ?11,
+            default_first_byte_timeout_secs = ?12,
+            upstream_handshake_timeout_secs = ?13,
+            request_read_timeout_secs = ?14,
+            updated_at = ?15
         WHERE id = ?1
         "#,
     )
@@ -775,6 +820,7 @@ pub(crate) async fn save_pool_routing_settings(
     .bind(priority_available_account_cap)
     .bind(responses_first_byte_timeout_secs)
     .bind(compact_first_byte_timeout_secs)
+    .bind(image_first_byte_timeout_secs)
     .bind(responses_stream_timeout_secs)
     .bind(compact_stream_timeout_secs)
     .bind(default_first_byte_timeout_secs)

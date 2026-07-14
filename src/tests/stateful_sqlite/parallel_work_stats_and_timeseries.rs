@@ -13415,7 +13415,7 @@ async fn upstream_account_activity_uses_rollup_created_at_when_working_set_row_i
     let Json(activity) = fetch_upstream_account_activity(
         State(state),
         Query(UpstreamAccountActivityQuery {
-            range: "today".to_string(),
+            range: "7d".to_string(),
             recent_limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
         }),
@@ -13562,7 +13562,7 @@ async fn upstream_account_activity_all_scope_uses_actual_created_at_for_mixed_so
     let Json(activity) = fetch_upstream_account_activity(
         State(state),
         Query(UpstreamAccountActivityQuery {
-            range: "today".to_string(),
+            range: "7d".to_string(),
             recent_limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
         }),

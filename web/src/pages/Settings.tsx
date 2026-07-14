@@ -633,7 +633,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
   }, [currentProxy, persistProxy]);
 
   const handleToggleMergeUpstream = useCallback(() => {
-    if (!currentProxy || !currentProxy.hijackEnabled) return;
+    if (!currentProxy?.hijackEnabled) return;
     persistProxy({
       ...currentProxy,
       mergeUpstreamEnabled: !currentProxy.mergeUpstreamEnabled,
@@ -1284,7 +1284,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       setForwardProxyBatchTooltipKey((current) => (current === nodeKey ? null : current));
       setForwardProxyBatchResults((current) => {
         const target = current.find((item) => item.key === nodeKey);
-        if (!target || target.status !== "available") return current;
+        if (target?.status !== "available") return current;
         const nextProxyUrls = appendUniqueItem(forwardProxyUrlsRef.current, target.normalizedValue);
         applyForwardProxyUrls(nextProxyUrls);
         persistForwardProxyDraft({ proxyUrls: nextProxyUrls });

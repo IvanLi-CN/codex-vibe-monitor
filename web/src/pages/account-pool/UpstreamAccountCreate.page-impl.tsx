@@ -1345,7 +1345,7 @@ export default function UpstreamAccountCreatePage() {
         if (cancelled) return;
         if (!status) {
           setOauthMailboxError((current) =>
-            current && current.trim()
+            current?.trim()
               ? current
               : isExpiredIso(refreshableOauthMailboxSession.expiresAt)
                 ? t("accountPool.upstreamAccounts.oauth.mailboxExpired")
@@ -1429,7 +1429,7 @@ export default function UpstreamAccountCreatePage() {
             const nextStatus = bySessionId.get(sessionId) ?? row.mailboxStatus;
             const nextError = bySessionId.has(sessionId)
               ? (bySessionId.get(sessionId)?.error ?? null)
-              : row.mailboxError && row.mailboxError.trim()
+              : row.mailboxError?.trim()
                 ? row.mailboxError
                 : isExpiredIso(row.mailboxSession?.expiresAt)
                   ? t("accountPool.upstreamAccounts.oauth.mailboxExpired")
@@ -1503,12 +1503,11 @@ export default function UpstreamAccountCreatePage() {
                 ...item,
                 mailboxRefreshBusy: false,
                 mailboxNextRefreshAt: Date.now() + MAILBOX_REFRESH_INTERVAL_MS,
-                mailboxError:
-                  item.mailboxError && item.mailboxError.trim()
-                    ? item.mailboxError
-                    : isExpiredIso(item.mailboxSession.expiresAt)
-                      ? t("accountPool.upstreamAccounts.oauth.mailboxExpired")
-                      : t("accountPool.upstreamAccounts.oauth.mailboxStatusUnavailable"),
+                mailboxError: item.mailboxError?.trim()
+                  ? item.mailboxError
+                  : isExpiredIso(item.mailboxSession.expiresAt)
+                    ? t("accountPool.upstreamAccounts.oauth.mailboxExpired")
+                    : t("accountPool.upstreamAccounts.oauth.mailboxStatusUnavailable"),
               };
             }
             const previousCode = item.mailboxStatus?.latestCode?.value ?? null;

@@ -292,6 +292,7 @@ export const defaultRoutingMaintenance: PoolRoutingMaintenanceSettings = {
 export const defaultRoutingTimeouts: PoolRoutingTimeoutSettings = {
   responsesFirstByteTimeoutSecs: 120,
   compactFirstByteTimeoutSecs: 300,
+  imageFirstByteTimeoutSecs: 300,
   responsesStreamTimeoutSecs: 300,
   compactStreamTimeoutSecs: 300,
 };

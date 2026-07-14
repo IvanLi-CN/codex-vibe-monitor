@@ -288,6 +288,7 @@ function DialogHarness({
     timeoutSectionHint: "Leave a field empty to inherit the current default.",
     timeoutResponsesFirstByte: "Standard response first byte timeout",
     timeoutCompactFirstByte: "Compact response first byte timeout",
+    timeoutImageFirstByte: "Image response first byte timeout",
     timeoutResponsesStream: "Standard stream completion timeout",
     timeoutCompactStream: "Compact stream completion timeout",
     timeoutInheritedValue: "Inherited",

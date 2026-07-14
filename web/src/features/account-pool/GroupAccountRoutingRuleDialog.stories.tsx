@@ -31,6 +31,7 @@ function DialogHarness({
   const effectiveTimeouts: PoolRoutingTimeoutSettings = {
     responsesFirstByteTimeoutSecs: 120,
     compactFirstByteTimeoutSecs: 300,
+    imageFirstByteTimeoutSecs: 300,
     responsesStreamTimeoutSecs: 300,
     compactStreamTimeoutSecs: 300,
   };
@@ -59,6 +60,8 @@ function DialogHarness({
               rule?.timeouts?.responsesFirstByteTimeoutSecs != null ? "group" : "root",
             compactFirstByteTimeoutSecs:
               rule?.timeouts?.compactFirstByteTimeoutSecs != null ? "group" : "root",
+            imageFirstByteTimeoutSecs:
+              rule?.timeouts?.imageFirstByteTimeoutSecs != null ? "group" : "root",
             responsesStreamTimeoutSecs:
               rule?.timeouts?.responsesStreamTimeoutSecs != null ? "group" : "root",
             compactStreamTimeoutSecs:
@@ -133,6 +136,7 @@ function DialogHarness({
             timeoutSectionHint: "Leave a field empty to inherit the current upstream default.",
             timeoutResponsesFirstByte: "Standard response first byte timeout",
             timeoutCompactFirstByte: "Compact response first byte timeout",
+            timeoutImageFirstByte: "Image response first byte timeout",
             timeoutResponsesStream: "Standard stream completion timeout",
             timeoutCompactStream: "Compact stream completion timeout",
             timeoutInheritedValue: "Inherited",
@@ -174,6 +178,7 @@ const mixedTimeoutRule: GroupAccountRoutingRule = {
   ...defaultRule,
   timeouts: {
     responsesFirstByteTimeoutSecs: 75,
+    imageFirstByteTimeoutSecs: 420,
     responsesStreamTimeoutSecs: 240,
   },
 };

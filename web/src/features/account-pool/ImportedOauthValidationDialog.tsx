@@ -78,7 +78,6 @@ function computeValidationCounts(
       case "invalid":
         counts.invalid += 1;
         break;
-      case "error":
       default:
         counts.error += 1;
         break;
@@ -101,7 +100,6 @@ function filterKeyForStatus(status: ImportedOauthValidationRow["status"]): Valid
       return "exhausted";
     case "invalid":
       return "invalid";
-    case "error":
     default:
       return "error";
   }
@@ -117,8 +115,6 @@ function rowBadgeVariant(status: ImportedOauthValidationRow["status"]) {
       return "info" as const;
     case "duplicate_in_input":
       return "secondary" as const;
-    case "invalid":
-    case "error":
     default:
       return "error" as const;
   }
@@ -134,8 +130,6 @@ function rowAccentClass(status: ImportedOauthValidationRow["status"]) {
       return "before:bg-info";
     case "duplicate_in_input":
       return "before:bg-base-content/30";
-    case "invalid":
-    case "error":
     default:
       return "before:bg-error";
   }
@@ -151,8 +145,6 @@ function rowSurfaceClass(status: ImportedOauthValidationRow["status"]) {
       return "bg-info/10";
     case "duplicate_in_input":
       return "bg-base-200/40";
-    case "invalid":
-    case "error":
     default:
       return "bg-error/10";
   }
@@ -173,7 +165,6 @@ function formatStatusLabel(
       return t("accountPool.upstreamAccounts.import.validation.status.exhausted");
     case "invalid":
       return t("accountPool.upstreamAccounts.import.validation.status.invalid");
-    case "error":
     default:
       return t("accountPool.upstreamAccounts.import.validation.status.error");
   }
@@ -339,7 +330,7 @@ export function ImportedOauthValidationDialog({
 
   useEffect(() => {
     setPage(1);
-  }, [activeFilter, state?.rows.length]);
+  }, []);
 
   useEffect(() => {
     if (page > totalPages) {

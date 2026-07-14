@@ -39,6 +39,7 @@ The editable inherited policy covers:
 - request-path timeout overrides for:
   - `responsesFirstByteTimeoutSecs`
   - `compactFirstByteTimeoutSecs`
+  - `imageFirstByteTimeoutSecs`
   - `responsesStreamTimeoutSecs`
   - `compactStreamTimeoutSecs`
 
@@ -96,6 +97,8 @@ Timeout inheritance is field-local:
 - clearing one timeout field only clears that field
 
 Tags and system-tag signals never contribute timeout values or timeout sources.
+
+`imageFirstByteTimeoutSecs` applies to `/v1/images/generations` and `/v1/images/edits`, defaults to `300`, and follows the same field-local root -> group -> account -> conversation inheritance contract. Direct-image first-byte timeout is terminal: the proxy must not retry the same account or switch accounts after the image operation may already have started upstream.
 
 Forward-proxy bindings are resolved independently from routing policy and timeout inheritance:
 
@@ -202,6 +205,8 @@ Timeout writes use the same preserve / clear / set contract, but per timeout fie
 - missing field: preserve the stored timeout override
 - `null`: clear that timeout override and inherit
 - positive integer: store that timeout override
+
+Direct-image timeout returns `504 Gateway Timeout` with the additive machine field `code: "upstream_handshake_timeout"`, while preserving the existing `error` and `cvmId` fields.
 
 UI may render `root` as `global`, but the wire/source token remains `root`.
 

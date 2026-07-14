@@ -688,6 +688,46 @@ fn classify_invocation_failure_marks_downstream_closed_as_client_abort() {
 }
 
 #[tokio::test]
+async fn proxy_error_response_exposes_image_timeout_code_only_for_504() {
+    let response = build_proxy_error_response(
+        ProxyErrorResponse {
+            status: StatusCode::GATEWAY_TIMEOUT,
+            message: format!(
+                "[{PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT}] upstream handshake timed out"
+            ),
+            cvm_id: Some("image-timeout-id".to_string()),
+            retry_after_secs: None,
+        },
+        "image-timeout-id",
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read image timeout response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode image timeout response");
+    assert_eq!(
+        payload["code"].as_str(),
+        Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT)
+    );
+    assert_eq!(payload["cvmId"].as_str(), Some("image-timeout-id"));
+
+    let response = build_proxy_error_response(
+        ProxyErrorResponse {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
+            cvm_id: None,
+            retry_after_secs: None,
+        },
+        "unavailable-id",
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read generic proxy error response");
+    let payload: Value =
+        serde_json::from_slice(&body).expect("decode generic proxy error response");
+    assert!(payload.get("code").is_none());
+}
+
+#[tokio::test]
 async fn persist_proxy_capture_runtime_record_preserves_downstream_closed_as_client_abort() {
     #[derive(Debug, sqlx::FromRow)]
     struct InvocationRow {
@@ -1720,6 +1760,9 @@ pub(crate) fn test_config() -> AppConfig {
         ),
         openai_proxy_compact_handshake_timeout: Duration::from_secs(
             DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS,
+        ),
+        openai_proxy_image_handshake_timeout: Duration::from_secs(
+            DEFAULT_OPENAI_PROXY_IMAGE_HANDSHAKE_TIMEOUT_SECS,
         ),
         openai_proxy_request_read_timeout: Duration::from_secs(
             DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS,

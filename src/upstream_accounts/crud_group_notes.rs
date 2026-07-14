@@ -886,6 +886,10 @@ pub(crate) async fn update_upstream_account_group(
             &timeout_patch.compact_first_byte_timeout_secs,
             "compactFirstByteTimeoutSecs",
         )?;
+        let image_first_byte_timeout_secs = normalize_optional_timeout_override_secs(
+            &timeout_patch.image_first_byte_timeout_secs,
+            "imageFirstByteTimeoutSecs",
+        )?;
         let responses_stream_timeout_secs = normalize_optional_timeout_override_secs(
             &timeout_patch.responses_stream_timeout_secs,
             "responsesStreamTimeoutSecs",
@@ -957,8 +961,9 @@ pub(crate) async fn update_upstream_account_group(
                 policy_status_change_upstream_http_5xx = CASE WHEN ?40 != 0 THEN policy_status_change_upstream_http_5xx ELSE ?41 END,
                 policy_responses_first_byte_timeout_secs = CASE WHEN ?42 != 0 THEN policy_responses_first_byte_timeout_secs ELSE ?43 END,
                 policy_compact_first_byte_timeout_secs = CASE WHEN ?44 != 0 THEN policy_compact_first_byte_timeout_secs ELSE ?45 END,
-                policy_responses_stream_timeout_secs = CASE WHEN ?46 != 0 THEN policy_responses_stream_timeout_secs ELSE ?47 END,
-                policy_compact_stream_timeout_secs = CASE WHEN ?48 != 0 THEN policy_compact_stream_timeout_secs ELSE ?49 END
+                policy_image_first_byte_timeout_secs = CASE WHEN ?46 != 0 THEN policy_image_first_byte_timeout_secs ELSE ?47 END,
+                policy_responses_stream_timeout_secs = CASE WHEN ?48 != 0 THEN policy_responses_stream_timeout_secs ELSE ?49 END,
+                policy_compact_stream_timeout_secs = CASE WHEN ?50 != 0 THEN policy_compact_stream_timeout_secs ELSE ?51 END
             WHERE group_name = ?1
             "#,
         )
@@ -1007,6 +1012,8 @@ pub(crate) async fn update_upstream_account_group(
         .bind(responses_first_byte_timeout_secs.flatten())
         .bind(if compact_first_byte_timeout_secs.is_none() { 1_i64 } else { 0_i64 })
         .bind(compact_first_byte_timeout_secs.flatten())
+        .bind(if image_first_byte_timeout_secs.is_none() { 1_i64 } else { 0_i64 })
+        .bind(image_first_byte_timeout_secs.flatten())
         .bind(if responses_stream_timeout_secs.is_none() { 1_i64 } else { 0_i64 })
         .bind(responses_stream_timeout_secs.flatten())
         .bind(if compact_stream_timeout_secs.is_none() { 1_i64 } else { 0_i64 })

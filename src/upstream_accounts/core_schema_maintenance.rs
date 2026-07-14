@@ -71,6 +71,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             policy_status_change_upstream_http_5xx INTEGER,
             policy_responses_first_byte_timeout_secs INTEGER,
             policy_compact_first_byte_timeout_secs INTEGER,
+            policy_image_first_byte_timeout_secs INTEGER,
             policy_responses_stream_timeout_secs INTEGER,
             policy_compact_stream_timeout_secs INTEGER,
             bound_proxy_keys_json TEXT,
@@ -211,6 +212,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     for column in [
         "policy_responses_first_byte_timeout_secs",
         "policy_compact_first_byte_timeout_secs",
+        "policy_image_first_byte_timeout_secs",
         "policy_responses_stream_timeout_secs",
         "policy_compact_stream_timeout_secs",
     ] {
@@ -910,6 +912,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             policy_status_change_upstream_http_5xx INTEGER,
             policy_responses_first_byte_timeout_secs INTEGER,
             policy_compact_first_byte_timeout_secs INTEGER,
+            policy_image_first_byte_timeout_secs INTEGER,
             policy_responses_stream_timeout_secs INTEGER,
             policy_compact_stream_timeout_secs INTEGER,
             created_at TEXT NOT NULL,
@@ -1061,6 +1064,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     for column in [
         "policy_responses_first_byte_timeout_secs",
         "policy_compact_first_byte_timeout_secs",
+        "policy_image_first_byte_timeout_secs",
         "policy_responses_stream_timeout_secs",
         "policy_compact_stream_timeout_secs",
     ] {
@@ -1173,6 +1177,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             priority_available_account_cap INTEGER,
             responses_first_byte_timeout_secs INTEGER,
             compact_first_byte_timeout_secs INTEGER,
+            image_first_byte_timeout_secs INTEGER,
             responses_stream_timeout_secs INTEGER,
             compact_stream_timeout_secs INTEGER,
             default_first_byte_timeout_secs INTEGER,
@@ -1219,6 +1224,13 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_integer_column(
         pool,
         "pool_routing_settings",
+        "image_first_byte_timeout_secs",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.image_first_byte_timeout_secs")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_routing_settings",
         "responses_stream_timeout_secs",
     )
     .await
@@ -1252,12 +1264,13 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             masked_api_key,
             responses_first_byte_timeout_secs,
             compact_first_byte_timeout_secs,
+            image_first_byte_timeout_secs,
             responses_stream_timeout_secs,
             compact_stream_timeout_secs,
             default_first_byte_timeout_secs,
             upstream_handshake_timeout_secs,
             request_read_timeout_secs
-        ) VALUES (?1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+        ) VALUES (?1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
         "#,
     )
     .bind(POOL_SETTINGS_SINGLETON_ID)

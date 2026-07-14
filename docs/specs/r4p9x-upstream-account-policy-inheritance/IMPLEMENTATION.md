@@ -87,7 +87,7 @@ Group routing payloads and account routing payloads now accept `statusChangeReas
 
 Request-path timeout resolution is evaluated after the final target account is known.
 
-- group and account storage now persist nullable timeout overrides for the existing four request-path timeout fields
+- root, group, account, and conversation storage persist nullable timeout overrides for five request-path timeout fields, including `imageFirstByteTimeoutSecs`
 - runtime starts from the global/root pool timeout baseline, then applies `group -> account -> conversation` timeout overrides
 - failover, replay, live HTTP dispatch, capture-target resolution, and WebSocket selection recompute effective timeouts for each newly selected target account
 
@@ -126,6 +126,7 @@ Validation covers:
   - existing account overrides auto-expand on load, available models use the tag-selector control, and upstream 429 retry uses the `0..5` count selector without a separate switch
 - timeout source badges and clear-to-inherit controls work across group, account, and conversation layers without involving tags
 - timeout rows stay collapsed when the current layer does not override them; current-layer timeout overrides expand by default and can be cleared one field at a time without affecting untouched fields
+- direct image endpoints resolve the inherited image first-byte timeout independently from Responses/Compact; the default is 300 seconds
 - account route proxy binding Storybook evidence proves the inline account proxy editor, inherited/effective proxy chips, and removal of the old edit policy button
 - dashboard upstream-account Fast quick policy unit and Storybook coverage verifies `强制Fast` and `不改Fast` labels, Fast rewrite policy tooltip/aria copy, debounce behavior, and persisted visual evidence
 - backend regressions proving disabled reasons suppress account-state side effects for both route and sync paths while still creating neutral account events
