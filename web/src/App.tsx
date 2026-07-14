@@ -22,6 +22,7 @@ function App() {
       <Route path="/" element={<AppLayout />}>
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<DashboardPage />} />
+        <Route path="dashboard/invocations/:invokeId" element={<DashboardPage />} />
         <Route path="stats" element={<StatsPage />} />
         <Route path="live" element={<LivePage />} />
         <Route path="records" element={<RecordsPage />} />

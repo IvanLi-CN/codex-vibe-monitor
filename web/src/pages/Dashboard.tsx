@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useState } from "react";
+import { useMatch, useNavigate } from "react-router-dom";
 import { DashboardActivityOverview } from "../features/dashboard/DashboardActivityOverview";
 import { DashboardInvocationDetailDrawer } from "../features/dashboard/DashboardInvocationDetailDrawer";
 import { DashboardPerformanceDiagnostics } from "../features/dashboard/DashboardPerformanceDiagnostics";
@@ -26,6 +27,9 @@ import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccoun
 
 export default function DashboardPage() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
+  const invocationRouteMatch = useMatch("/dashboard/invocations/:invokeId");
+  const routeInvokeId = invocationRouteMatch?.params.invokeId;
   const isCompactViewport = useCompactViewport();
   const [activeRange, setActiveRange] = useState<DashboardActivityRangeKey>(() =>
     readPersistedDashboardActivityRange(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY),
@@ -75,6 +79,16 @@ export default function DashboardPage() {
   );
 
   useEffect(() => {
+    if (
+      selectedInvocation != null &&
+      routeInvokeId != null &&
+      selectedInvocation.invocation.record.invokeId !== routeInvokeId
+    ) {
+      setSelectedInvocation(null);
+    }
+  }, [routeInvokeId, selectedInvocation]);
+
+  useEffect(() => {
     if (upstreamAccountId != null) {
       setSelectedInvocation(null);
       setSelectedConversation(null);
@@ -106,6 +120,14 @@ export default function DashboardPage() {
   ) => {
     setSelectedInvocation(null);
     setSelectedConversation(null);
+    if (routeInvokeId != null) {
+      const search = new URLSearchParams({ upstreamAccountId: String(Math.trunc(accountId)) });
+      if (options?.tab && options.tab !== "overview") {
+        search.set("upstreamAccountTab", options.tab);
+      }
+      navigate({ pathname: "/dashboard", search: `?${search.toString()}` }, { replace: true });
+      return;
+    }
     openUpstreamAccount(accountId, {
       tab: options?.tab,
       clearPromptCacheConversation: true,
@@ -182,6 +204,16 @@ export default function DashboardPage() {
             key: selection.promptCacheKey,
             label: conversationLabel,
           });
+          if (routeInvokeId != null) {
+            const search = new URLSearchParams({
+              promptCacheConversationKey: selection.promptCacheKey,
+            });
+            navigate(
+              { pathname: "/dashboard", search: `?${search.toString()}` },
+              { replace: true },
+            );
+            return;
+          }
           openPromptCacheConversation(selection.promptCacheKey, {
             clearUpstreamAccount: true,
           });
@@ -191,6 +223,9 @@ export default function DashboardPage() {
           closePromptCacheConversation({ replace: true });
           setSelectedConversation(null);
           setSelectedInvocation(selection);
+          navigate(
+            `/dashboard/invocations/${encodeURIComponent(selection.invocation.record.invokeId)}`,
+          );
         }}
         upstreamAccountActivity={
           dashboardActivity?.accounts
@@ -215,9 +250,13 @@ export default function DashboardPage() {
         }}
       />
       <DashboardInvocationDetailDrawer
-        open={selectedInvocation != null}
+        open={routeInvokeId != null}
+        invocationId={routeInvokeId ?? null}
         selection={selectedInvocation}
-        onClose={() => setSelectedInvocation(null)}
+        onClose={() => {
+          setSelectedInvocation(null);
+          navigate("/dashboard");
+        }}
         onOpenUpstreamAccount={handleOpenUpstreamAccount}
       />
       <PromptCacheConversationHistoryDrawer
