@@ -12018,6 +12018,14 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
     let account = activity.accounts.first().expect("activity account");
     assert_eq!(account.upstream_account_id, 42);
     assert_eq!(account.display_name, "Pool Alpha");
+    assert!(account.latest_conversation_created_at.is_some());
+    assert_eq!(
+        account.last_invocation_at.as_deref(),
+        account
+            .recent_invocations
+            .first()
+            .map(|row| row.occurred_at.as_str())
+    );
     assert_eq!(account.group_name.as_deref(), Some("Primary"));
     assert_eq!(account.plan_type.as_deref(), Some("enterprise"));
     assert!(account.enabled);

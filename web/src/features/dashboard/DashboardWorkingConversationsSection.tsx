@@ -12,6 +12,7 @@ import {
 import { InvocationErrorSummary } from "../../components/InvocationErrorSummary";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
+import { Button } from "../../components/ui/button";
 import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { Spinner } from "../../components/ui/spinner";
 import { Tooltip } from "../../components/ui/tooltip";
@@ -73,6 +74,16 @@ import {
   persistDashboardWorkspaceView,
   readPersistedDashboardWorkspaceView,
 } from "./dashboardActivityRange";
+import {
+  compareDashboardConversationCards,
+  compareDashboardUpstreamAccounts,
+  DASHBOARD_CONVERSATION_SORT_STORAGE_KEY,
+  DASHBOARD_UPSTREAM_ACCOUNT_SORT_STORAGE_KEY,
+  type DashboardWorkspaceSort,
+  nextDashboardWorkspaceSort,
+  persistDashboardWorkspaceSort,
+  readDashboardWorkspaceSort,
+} from "./dashboardWorkspaceSort";
 import { UsageBreakdownTooltip } from "./UsageBreakdownTooltip";
 
 export interface DashboardOpenUpstreamAccountOptions {
@@ -3248,6 +3259,12 @@ export function DashboardWorkingConversationsSection({
   const [preferredView, setPreferredView] = useState<DashboardWorkspaceView>(() =>
     readPersistedDashboardWorkspaceView(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY),
   );
+  const [conversationSort, setConversationSort] = useState<DashboardWorkspaceSort>(() =>
+    readDashboardWorkspaceSort(DASHBOARD_CONVERSATION_SORT_STORAGE_KEY),
+  );
+  const [upstreamAccountSort, setUpstreamAccountSort] = useState<DashboardWorkspaceSort>(() =>
+    readDashboardWorkspaceSort(DASHBOARD_UPSTREAM_ACCOUNT_SORT_STORAGE_KEY),
+  );
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [containerWidth, setContainerWidth] = useState(0);
   const [viewportWidth, setViewportWidth] = useState(() =>
@@ -3369,24 +3386,20 @@ export function DashboardWorkingConversationsSection({
   }, []);
   const upstreamAccounts = useMemo(
     () =>
-      [...(upstreamAccountActivity?.accounts ?? [])].sort((left, right) => {
-        if (right.totalTokens !== left.totalTokens) {
-          return right.totalTokens - left.totalTokens;
-        }
-        const rightRecent = right.recentInvocations[0]?.occurredAt ?? "";
-        const leftRecent = left.recentInvocations[0]?.occurredAt ?? "";
-        const recentCompare = rightRecent.localeCompare(leftRecent);
-        if (recentCompare !== 0) return recentCompare;
-        return (
-          (right.upstreamAccountId ?? Number.MIN_SAFE_INTEGER) -
-          (left.upstreamAccountId ?? Number.MIN_SAFE_INTEGER)
-        );
-      }),
-    [upstreamAccountActivity],
+      [...(upstreamAccountActivity?.accounts ?? [])].sort((left, right) =>
+        compareDashboardUpstreamAccounts(left, right, upstreamAccountSort),
+      ),
+    [upstreamAccountActivity, upstreamAccountSort],
   );
   useEffect(() => {
     persistDashboardWorkspaceView(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY, preferredView);
   }, [preferredView]);
+  useEffect(() => {
+    persistDashboardWorkspaceSort(DASHBOARD_CONVERSATION_SORT_STORAGE_KEY, conversationSort);
+  }, [conversationSort]);
+  useEffect(() => {
+    persistDashboardWorkspaceSort(DASHBOARD_UPSTREAM_ACCOUNT_SORT_STORAGE_KEY, upstreamAccountSort);
+  }, [upstreamAccountSort]);
   const countBadgeValue = totalMatched ?? cards.length;
   const accountCountBadgeValue = upstreamAccounts.length;
   const countBadgeLabel =
@@ -3478,18 +3491,30 @@ export function DashboardWorkingConversationsSection({
       ),
     [containerWidth, upstreamAccounts, viewportWidth],
   );
-  const sectionSubtitle =
-    activeView === "upstreamAccounts"
-      ? t("dashboard.upstreamAccounts.subtitle")
-      : t("dashboard.section.workingConversationsSubtitle");
   const cssColumnCount = resolveDashboardWorkingConversationCssColumnCount(gridElement);
   const columnCount =
     cssColumnCount ??
     resolveDashboardWorkingConversationColumnCount(Math.max(containerWidth, viewportWidth));
-  const rows = useMemo(
-    () => chunkDashboardWorkingConversationRows(cards, columnCount),
-    [cards, columnCount],
+  const sortedCards = useMemo(
+    () =>
+      [...cards].sort((left, right) =>
+        compareDashboardConversationCards(left, right, conversationSort),
+      ),
+    [cards, conversationSort],
   );
+  const rows = useMemo(
+    () => chunkDashboardWorkingConversationRows(sortedCards, columnCount),
+    [columnCount, sortedCards],
+  );
+  const activeSort = activeView === "conversations" ? conversationSort : upstreamAccountSort;
+  const activeSortLabel = t(`dashboard.workspaceSort.${activeSort}`);
+  const cycleSort = () => {
+    if (activeView === "conversations") {
+      setConversationSort((current) => nextDashboardWorkspaceSort(current));
+    } else {
+      setUpstreamAccountSort((current) => nextDashboardWorkspaceSort(current));
+    }
+  };
   const rowVirtualizer = useWindowVirtualizer({
     count: rows.length,
     estimateSize: () => 360,
@@ -3681,60 +3706,66 @@ export function DashboardWorkingConversationsSection({
       data-testid="dashboard-working-conversations"
     >
       <div className="surface-panel-body gap-5 desktop:!p-5">
-        <div className="flex flex-col gap-3 desktop:flex-row desktop:items-start">
-          <div className="section-heading min-w-0 desktop:flex-1">
-            <h2 className="section-title">{t("dashboard.section.workingConversationsTitle")}</h2>
-            <p className="section-description">{sectionSubtitle}</p>
-          </div>
+        <div
+          className="flex min-w-0 flex-col gap-2 desktop:flex-row desktop:items-center"
+          data-testid="dashboard-working-conversations-controls"
+        >
           <div
-            className="flex min-w-0 flex-col items-stretch gap-2 desktop:ml-auto desktop:flex-row desktop:items-center desktop:justify-end"
-            data-testid="dashboard-working-conversations-controls"
+            className="flex min-w-0 flex-wrap items-center gap-2 desktop:justify-end"
+            data-testid="dashboard-working-conversations-badges"
           >
-            <div
-              className="flex min-w-0 flex-wrap items-center gap-2 desktop:justify-end"
-              data-testid="dashboard-working-conversations-badges"
+            <Badge
+              variant="default"
+              className="w-fit rounded-full px-3 py-1 font-mono text-xs font-semibold"
             >
-              <Badge
-                variant="default"
-                className="w-fit rounded-full px-3 py-1 font-mono text-xs font-semibold"
-              >
-                {countBadgeLabel}
-              </Badge>
-              {shouldReserveUpstreamAccountRefreshChip ? (
-                <DashboardUpstreamAccountRefreshChip
-                  label={t("dashboard.upstreamAccounts.refreshing")}
-                  visibleLabel={t("dashboard.upstreamAccounts.refreshingShort")}
-                  visible={shouldShowUpstreamAccountRefreshChip}
-                />
-              ) : null}
-            </div>
-            <SegmentedControl
-              size="compact"
-              className="w-full desktop:w-auto"
-              role="tablist"
-              aria-label="Dashboard workspace view"
-            >
-              <SegmentedControlItem
-                active={activeView === "conversations"}
-                role="tab"
-                aria-selected={activeView === "conversations"}
-                className="h-11 flex-1 px-3.5 text-[0.95rem]"
-                onClick={() => setPreferredView("conversations")}
-              >
-                对话
-              </SegmentedControlItem>
-              <SegmentedControlItem
-                active={activeView === "upstreamAccounts"}
-                role="tab"
-                aria-selected={activeView === "upstreamAccounts"}
-                disabled={upstreamAccountsDisabled}
-                className="h-11 flex-1 px-3.5 text-[0.95rem]"
-                onClick={() => setPreferredView("upstreamAccounts")}
-              >
-                上游账号
-              </SegmentedControlItem>
-            </SegmentedControl>
+              {countBadgeLabel}
+            </Badge>
+            {shouldReserveUpstreamAccountRefreshChip ? (
+              <DashboardUpstreamAccountRefreshChip
+                label={t("dashboard.upstreamAccounts.refreshing")}
+                visibleLabel={t("dashboard.upstreamAccounts.refreshingShort")}
+                visible={shouldShowUpstreamAccountRefreshChip}
+              />
+            ) : null}
           </div>
+          <SegmentedControl
+            size="compact"
+            className="w-full desktop:w-auto"
+            role="tablist"
+            aria-label="Dashboard workspace view"
+          >
+            <SegmentedControlItem
+              active={activeView === "conversations"}
+              role="tab"
+              aria-selected={activeView === "conversations"}
+              className="h-11 flex-1 px-3.5 text-[0.95rem]"
+              onClick={() => setPreferredView("conversations")}
+            >
+              对话
+            </SegmentedControlItem>
+            <SegmentedControlItem
+              active={activeView === "upstreamAccounts"}
+              role="tab"
+              aria-selected={activeView === "upstreamAccounts"}
+              disabled={upstreamAccountsDisabled}
+              className="h-11 flex-1 px-3.5 text-[0.95rem]"
+              onClick={() => setPreferredView("upstreamAccounts")}
+            >
+              上游账号
+            </SegmentedControlItem>
+          </SegmentedControl>
+          <Button
+            type="button"
+            variant="ghost"
+            className="h-11 min-w-0 gap-2 px-2.5 text-sm text-base-content/75 hover:bg-base-200/70 hover:text-base-content desktop:w-auto"
+            onClick={cycleSort}
+            title={t("dashboard.workspaceSort.tooltip", { current: activeSortLabel })}
+            aria-label={t("dashboard.workspaceSort.ariaLabel", { current: activeSortLabel })}
+            data-testid="dashboard-workspace-sort-button"
+          >
+            <AppIcon name="sort-variant" className="h-4 w-4 shrink-0" aria-hidden="true" />
+            <span className="truncate">{activeSortLabel}</span>
+          </Button>
         </div>
 
         {error && cards.length > 0 ? (

@@ -3607,6 +3607,8 @@ pub(crate) struct UpstreamAccountActivityAccumulator {
     in_progress_wait_sample_count: i64,
     in_progress_wait_sum_ms: f64,
     last_occurred_at_epoch_ms: i64,
+    latest_conversation_created_at: Option<String>,
+    last_invocation_at: Option<String>,
     rate_usage_events: Vec<UpstreamAccountRateUsageEvent>,
     recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
     usage_breakdown: UsageBreakdownAccumulator,
@@ -4039,6 +4041,8 @@ pub(crate) fn compute_upstream_account_activity_tail_rate(
 #[derive(Debug, FromRow)]
 struct UpstreamAccountActivityAggregateRow {
     upstream_account_id: Option<i64>,
+    latest_conversation_created_at: Option<String>,
+    last_invocation_at: Option<String>,
     request_count: i64,
     success_count: i64,
     failure_count: i64,
@@ -4108,10 +4112,13 @@ async fn query_live_upstream_account_activity_aggregate_rows(
           AND ({failure_class_sql}) <> 'none'))"
     );
     let first_response_byte_total_sql = "COALESCE(t_req_read_ms, 0) + COALESCE(t_req_parse_ms, 0) + COALESCE(t_upstream_connect_ms, 0) + COALESCE(t_upstream_ttfb_ms, 0)";
+    let prompt_cache_key_sql = INVOCATION_PROMPT_CACHE_KEY_SQL;
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
             {upstream_account_id_sql} AS upstream_account_id,
+            MAX((SELECT CASE WHEN source_scope_proxy_only = 1 THEN COALESCE(proxy_created_at, created_at) ELSE created_at END FROM prompt_cache_working_set_live WHERE prompt_cache_key = {prompt_cache_key_sql})) AS latest_conversation_created_at,
+            MAX(occurred_at) AS last_invocation_at,
             COUNT(*) AS request_count,
             SUM(CASE WHEN {success_sql} THEN 1 ELSE 0 END) AS success_count,
             SUM(CASE WHEN {failure_sql} THEN 1 ELSE 0 END) AS failure_count,
@@ -4384,6 +4391,17 @@ fn add_upstream_account_activity_preview_row(
     entry.last_occurred_at_epoch_ms = entry
         .last_occurred_at_epoch_ms
         .max(occurred_at.timestamp_millis());
+    entry.last_invocation_at = Some(match entry.last_invocation_at.take() {
+        Some(current) => current.max(row.occurred_at.clone()),
+        None => row.occurred_at.clone(),
+    });
+    if let Some(created_at) = row.conversation_created_at.as_ref() {
+        entry.latest_conversation_created_at =
+            Some(match entry.latest_conversation_created_at.take() {
+                Some(current) => current.max(created_at.clone()),
+                None => created_at.clone(),
+            });
+    }
     if entry.display_name_hint.is_none() {
         entry.display_name_hint =
             normalize_trimmed_optional_string_local(row.upstream_account_name.clone());
@@ -4480,7 +4498,9 @@ async fn query_live_upstream_account_activity_preview_rows_with_limit(
     let mut query = QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, ");
     query
         .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
-        .push(" AS prompt_cache_key, occurred_at, ")
+        .push(" AS prompt_cache_key, occurred_at, (SELECT CASE WHEN source_scope_proxy_only = 1 THEN COALESCE(proxy_created_at, created_at) ELSE created_at END FROM prompt_cache_working_set_live WHERE prompt_cache_key = ")
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(") AS conversation_created_at, ")
         .push(invocation_display_status_sql())
         .push(" AS status, ")
         .push(invocation_live_phase_sql("codex_invocations"))
@@ -4683,6 +4703,7 @@ fn runtime_upstream_account_activity_preview_row_with_terminal(
         invoke_id: record.invoke_id,
         prompt_cache_key: record.prompt_cache_key,
         occurred_at: record.occurred_at,
+        conversation_created_at: None,
         status: record.status.unwrap_or_else(|| "running".to_string()),
         live_phase,
         failure_class: record.failure_class,
@@ -5510,6 +5531,8 @@ pub(crate) async fn load_dashboard_activity_snapshot(
             .await?
     {
         let entry = account_activity.entry(row.upstream_account_id).or_default();
+        entry.latest_conversation_created_at = row.latest_conversation_created_at;
+        entry.last_invocation_at = row.last_invocation_at;
         entry.request_count += row.request_count;
         entry.success_count += row.success_count;
         entry.failure_count += row.failure_count;
@@ -5886,6 +5909,8 @@ pub(crate) async fn load_dashboard_activity_snapshot(
                     })
                     .unwrap_or_else(|| "未分配上游账号".to_string()),
                 is_unassigned,
+                latest_conversation_created_at: aggregate.latest_conversation_created_at,
+                last_invocation_at: aggregate.last_invocation_at,
                 group_name: normalize_trimmed_optional_string_local(
                     meta.and_then(|row| row.group_name.clone()),
                 ),
@@ -6003,6 +6028,8 @@ pub(crate) fn dashboard_account_to_upstream_account(
     Some(UpstreamAccountActivityAccountResponse {
         upstream_account_id,
         display_name: account.display_name,
+        latest_conversation_created_at: account.latest_conversation_created_at,
+        last_invocation_at: account.last_invocation_at,
         group_name: account.group_name,
         plan_type: account.plan_type,
         enabled: account.enabled.unwrap_or(true),

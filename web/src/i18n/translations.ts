@@ -1677,6 +1677,13 @@ const baseTranslations = {
     "dashboard.upstreamAccounts.countLoading": "Loading accounts",
     "dashboard.upstreamAccounts.subtitle":
       "Shows upstream accounts with activity in the selected overview range plus a dynamic recent invocation window for each account.",
+    "dashboard.workspaceSort.createdAt": "Conversation created",
+    "dashboard.workspaceSort.lastInvocation": "Latest invocation",
+    "dashboard.workspaceSort.cost": "Cost",
+    "dashboard.workspaceSort.tokens": "Tokens",
+    "dashboard.workspaceSort.tooltip": "Current sort: {{current}}. Click for the next option.",
+    "dashboard.workspaceSort.ariaLabel":
+      "Sort dashboard cards by {{current}}; activate for next option",
     "dashboard.upstreamAccounts.empty": "No active upstream accounts in the selected range.",
     "dashboard.upstreamAccounts.refreshing": "Updating account summary",
     "dashboard.upstreamAccounts.refreshingShort": "Refreshing",
@@ -3912,6 +3919,12 @@ const baseTranslations = {
     "dashboard.upstreamAccounts.countLoading": "账号加载中",
     "dashboard.upstreamAccounts.subtitle":
       "展示当前总览范围内有调用的上游账号，以及每个账号的动态最近调用窗口。",
+    "dashboard.workspaceSort.createdAt": "对话创建",
+    "dashboard.workspaceSort.lastInvocation": "最新调用",
+    "dashboard.workspaceSort.cost": "成本",
+    "dashboard.workspaceSort.tokens": "Token",
+    "dashboard.workspaceSort.tooltip": "当前排序：{{current}}。点击切换下一项。",
+    "dashboard.workspaceSort.ariaLabel": "Dashboard 卡片按{{current}}排序，按下切换下一项",
     "dashboard.upstreamAccounts.empty": "当前范围内暂无活动上游账号。",
     "dashboard.upstreamAccounts.refreshing": "正在更新账号汇总",
     "dashboard.upstreamAccounts.refreshingShort": "刷新中",
