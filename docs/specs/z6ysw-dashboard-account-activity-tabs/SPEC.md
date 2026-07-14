@@ -73,8 +73,8 @@
 - 单账号卡四组周期统计浮层的补充数据最多 3 项，且只能来自账号活动接口已有字段或前端可安全计算值；不得为了 tooltip 新增后端字段、接口或改变聚合口径。
 - 四组周期统计与顶部实时指标中的所有数值必须使用 Dashboard 既有滚动数字效果。
 - 工作区在 `对话 / 上游账号` tabs 右侧必须显示当前排序名称的循环按钮；点击按 `createdAt -> lastInvocation -> cost -> tokens` 循环。两个视图分别使用独立 localStorage key，首次均默认 `createdAt`，切换视图不得覆盖另一视图的选择。
-- 对话的 `createdAt` 与 `lastInvocation` 按时间倒序，`cost` 与 `tokens` 按数值正序；缺失时间置后，最终以 `promptCacheKey` 作为稳定次级排序。
-- 账号活动响应必须返回 `latestConversationCreatedAt` 与 `lastInvocationAt`。前者取账号关联对话中最新的真实 conversation `createdAt`，后者取账号关联调用的最新 `occurredAt`；不得用账号创建时间或 recent preview 的截断结果替代。账号排序使用这两个时间字段倒序，成本/Token 使用既有聚合值正序，最终以 `accountKey` / 账号 ID 稳定排序。
+- 对话的 `createdAt`、`lastInvocation`、`cost` 与 `tokens` 必须全部按倒序排列；缺失时间置后，最终以 `promptCacheKey` 作为稳定次级排序。
+- 账号活动响应必须返回 `latestConversationCreatedAt` 与 `lastInvocationAt`。前者取账号关联对话中最新的真实 conversation `createdAt`，后者取账号关联调用的最新 `occurredAt`；不得用账号创建时间或 recent preview 的截断结果替代。账号排序使用这两个时间字段与成本/Token 全部按倒序排列，最终以 `accountKey` / 账号 ID 稳定排序；其中 `isUnassigned=true` 或 `upstreamAccountId=null` 的 `unassigned` 聚合项必须统一排在所有已分配账号之后，再在未分配项内部应用当前倒序规则。
 - 排序只能从现有 SSE patch 或账号活动快照派生，不得新增请求或改变 refresh cadence；重排后继续复用既有虚拟列表锚定逻辑。
 - 摘要区不得加入低价值说明型文案；“按调用计数，不按对话去重”、“仍在重试链路中的调用”、“账号状态说明条”之类解释性文字不得出现在卡面常驻内容里。
 - 请求数、成本与 Token 附加分解摘要在卡面常驻态只显示色点与数值；不得出现任何可见文字标签（包括单字、缩写、短标签）。完整 `label + value` 只通过 hover / title 暴露，不得额外占用版面。
@@ -197,7 +197,8 @@
 - Given 查看账号卡四组周期统计，When 卡片常驻态渲染完成，Then 卡内分解段落不再各自创建独立 tooltip trigger，避免和整卡浮层形成嵌套触发区域。
 - Given 两个工作区视图分别选择了不同排序，When 切换标签或刷新页面，Then 每个标签恢复自己的选择，并显示对应排序名称。
 - Given 多个对话或账号收到 SSE patch / 活动快照更新，When 当前排序字段发生变化，Then 卡片立即按当前模式重排，且不产生额外刷新请求。
-- Given 账号存在多条关联对话和调用，When 分别选择“对话创建”与“最新调用”，Then 使用 `latestConversationCreatedAt` 与 `lastInvocationAt` 倒序排列；缺失时间置后且平局稳定。
+- Given 账号或对话存在多个候选项，When 选择 `createdAt / lastInvocation / cost / tokens` 任一排序模式，Then 4 种模式都按倒序排列；时间缺失项继续置后且平局稳定。
+- Given 账号列表中同时存在已分配账号和 `未分配上游账号` 聚合项，When 切换任意工作区排序模式，Then `未分配上游账号` 始终排在所有已分配账号之后，并只在未分配项内部继续应用当前倒序规则。
 - Given 某账号有至少 4 条范围内调用，When 查看账号卡底部，Then 只显示最近 4 条，按 `occurredAt DESC` 排序。
 - Given 某账号 recent 调用记录存在真实 `promptCacheKey`，When 查看请求标识主行，Then 可见基于该键计算出的对话短 ID、分隔图标与完整请求 ID，且短 ID 展示值不带 `WC-` 前缀。
 - Given 某账号 recent 调用记录渲染主标识行，When 查看对话短 ID，Then 它表现为轻量短码 chip，且颜色来自稳定离散辅助色槽位，而不是单独的状态样式圆点。
@@ -260,6 +261,14 @@
 PR: include
 
 ![Dashboard workspace sorting controls](./assets/dashboard-workspace-controls-focused.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-sort-descending-order`
+  scenario: `workspace sort modes descend, unassigned account stays last`
+  evidence_note: 验证 Dashboard `上游账号` tab 在工作区排序切到 `Token` 时，已分配账号仍按倒序排在前，`未分配上游账号` 聚合卡固定落在最后；同一 story 的 play 与浏览器 DOM 验证覆盖 `createdAt / lastInvocation / cost / tokens` 四种倒序模式。
+  image:
+  PR: include
+  ![Dashboard 上游账号排序倒序与未分配置后证据](./assets/upstream-account-sort-desc-all.png)
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--error-summary-tooltips`
