@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.33.2",
+  "base_stable_version": "2.33.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-14T19:07:05Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.33.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e0b4a9e674e52afd14a22234b25817a281de1fcd",
+  "pr_number": 612,
+  "pr_title": "fix: keep workspace sorts descending",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.33.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.33.2",
+  "target_sha": "b5626000ea3466f9217ea68b59d5d43c4756a4eb",
+  "type_label": "type:patch"
+}
