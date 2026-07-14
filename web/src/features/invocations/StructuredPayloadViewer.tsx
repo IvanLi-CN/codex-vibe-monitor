@@ -101,7 +101,6 @@ export function StructuredPayloadViewer({
   useEffect(() => {
     setParseLargePayload(false);
   }, [value]);
-
   const parsed = useMemo(
     () => (isLarge && !parseLargePayload ? null : parseStructuredPayload(value)),
     [isLarge, parseLargePayload, value],
