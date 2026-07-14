@@ -155,7 +155,6 @@ function sortRecords(
       case "status":
         result = (left.status ?? "").localeCompare(right.status ?? "");
         break;
-      case "occurredAt":
       default:
         result = Date.parse(left.occurredAt) - Date.parse(right.occurredAt);
         break;

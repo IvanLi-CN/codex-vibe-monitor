@@ -3575,7 +3575,7 @@ export function DashboardWorkingConversationsSection({
           index,
           start: scrollMargin + index * 360,
         }));
-  const hasVirtualizedRowsAbove = renderedRows.length > 0 ? renderedRows[0]!.index > 0 : false;
+  const hasVirtualizedRowsAbove = renderedRows.length > 0 ? renderedRows[0]?.index > 0 : false;
   const visibleAnchorTarget = useMemo<DashboardVisibleAnchorTarget>(
     () =>
       activeView === "conversations"

@@ -2394,6 +2394,35 @@ fn pool_upstream_first_chunk_timeout_uses_responses_budget_for_responses_route()
 }
 
 #[test]
+fn image_routes_use_dedicated_send_and_first_chunk_budget() {
+    let mut config = test_config();
+    config.request_timeout = Duration::from_millis(200);
+    config.openai_proxy_image_handshake_timeout = Duration::from_millis(900);
+    let timeouts = pool_routing_timeouts_from_config(&config);
+
+    for (path, target) in [
+        (
+            "/v1/images/generations",
+            ProxyCaptureTarget::ImageGenerations,
+        ),
+        ("/v1/images/edits", ProxyCaptureTarget::ImageEdits),
+    ] {
+        assert_eq!(
+            proxy_upstream_send_timeout_for_capture_target(&timeouts, Some(target)),
+            Duration::from_millis(900),
+        );
+        assert_eq!(
+            pool_upstream_first_chunk_timeout(
+                &timeouts,
+                &path.parse().expect("valid image uri"),
+                &Method::POST,
+            ),
+            Duration::from_millis(900),
+        );
+    }
+}
+
+#[test]
 fn pool_upstream_send_timeout_uses_responses_budget_for_responses_route() {
     let handshake_timeout = Duration::from_millis(100);
     let responses_timeout = Duration::from_millis(1200);
@@ -2481,6 +2510,7 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
     config.pool_upstream_responses_total_timeout = Duration::from_secs(301);
     config.openai_proxy_handshake_timeout = Duration::from_secs(71);
     config.openai_proxy_compact_handshake_timeout = Duration::from_secs(305);
+    config.openai_proxy_image_handshake_timeout = Duration::from_secs(306);
     config.openai_proxy_request_read_timeout = Duration::from_secs(181);
     let state = test_state_from_config(config.clone(), true).await;
 
@@ -2489,14 +2519,25 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
         .expect("load initial pool routing settings");
     assert_eq!(initial.timeouts.responses_first_byte_timeout_secs, 121);
     assert_eq!(initial.timeouts.compact_first_byte_timeout_secs, 305);
+    assert_eq!(initial.timeouts.image_first_byte_timeout_secs, 306);
     assert_eq!(initial.timeouts.responses_stream_timeout_secs, 301);
     assert_eq!(initial.timeouts.compact_stream_timeout_secs, 301);
 
-    let persisted = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
+    let persisted = sqlx::query_as::<
+        _,
+        (
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+        ),
+    >(
         r#"
         SELECT
             responses_first_byte_timeout_secs,
             compact_first_byte_timeout_secs,
+            image_first_byte_timeout_secs,
             responses_stream_timeout_secs,
             compact_stream_timeout_secs
         FROM pool_routing_settings
@@ -2510,6 +2551,7 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
     assert_eq!(persisted.1, None);
     assert_eq!(persisted.2, None);
     assert_eq!(persisted.3, None);
+    assert_eq!(persisted.4, None);
 
     let payload = UpdatePoolRoutingSettingsRequest {
         api_key: None,
@@ -2517,6 +2559,7 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: Some(135),
             compact_first_byte_timeout_secs: Some(325),
+            image_first_byte_timeout_secs: Some(300),
             responses_stream_timeout_secs: Some(405),
             compact_stream_timeout_secs: Some(505),
         }),
@@ -2527,6 +2570,7 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
             .expect("update pool routing timeouts");
     assert_eq!(updated.timeouts.responses_first_byte_timeout_secs, 135);
     assert_eq!(updated.timeouts.compact_first_byte_timeout_secs, 325);
+    assert_eq!(updated.timeouts.image_first_byte_timeout_secs, 300);
     assert_eq!(updated.timeouts.responses_stream_timeout_secs, 405);
     assert_eq!(updated.timeouts.compact_stream_timeout_secs, 505);
 
@@ -2542,6 +2586,7 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
         resolved.compact_first_byte_timeout,
         Duration::from_secs(325)
     );
+    assert_eq!(resolved.image_first_byte_timeout, Duration::from_secs(300));
     assert_eq!(resolved.responses_stream_timeout, Duration::from_secs(405));
     assert_eq!(resolved.compact_stream_timeout, Duration::from_secs(505));
     assert_eq!(resolved.default_send_timeout, Duration::from_secs(71));
@@ -2564,6 +2609,7 @@ async fn pool_routing_settings_timeout_updates_succeed_without_crypto_key() {
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: None,
             compact_first_byte_timeout_secs: None,
+            image_first_byte_timeout_secs: None,
             responses_stream_timeout_secs: Some(375),
             compact_stream_timeout_secs: None,
         }),
@@ -2603,6 +2649,7 @@ async fn pool_routing_settings_timeout_updates_tolerate_invalid_cached_api_key_c
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: None,
             compact_first_byte_timeout_secs: None,
+            image_first_byte_timeout_secs: None,
             responses_stream_timeout_secs: Some(375),
             compact_stream_timeout_secs: None,
         }),
@@ -2662,6 +2709,7 @@ async fn pool_routing_settings_reject_timeouts_above_i64_max() {
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: None,
             compact_first_byte_timeout_secs: None,
+            image_first_byte_timeout_secs: None,
             responses_stream_timeout_secs: Some(i64::MAX as u64 + 1),
             compact_stream_timeout_secs: None,
         }),
@@ -2682,6 +2730,7 @@ async fn proxy_request_timeouts_only_apply_pool_overrides_to_pool_routes() {
     config.pool_upstream_responses_total_timeout = Duration::from_secs(301);
     config.openai_proxy_handshake_timeout = Duration::from_secs(71);
     config.openai_proxy_compact_handshake_timeout = Duration::from_secs(305);
+    config.openai_proxy_image_handshake_timeout = Duration::from_secs(306);
     config.openai_proxy_request_read_timeout = Duration::from_secs(181);
     let state = test_state_from_config(config.clone(), true).await;
 
@@ -2691,6 +2740,7 @@ async fn proxy_request_timeouts_only_apply_pool_overrides_to_pool_routes() {
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: Some(135),
             compact_first_byte_timeout_secs: Some(325),
+            image_first_byte_timeout_secs: Some(326),
             responses_stream_timeout_secs: Some(405),
             compact_stream_timeout_secs: Some(505),
         }),
@@ -2717,6 +2767,10 @@ async fn proxy_request_timeouts_only_apply_pool_overrides_to_pool_routes() {
     assert_eq!(
         direct_timeouts.compact_first_byte_timeout,
         Duration::from_secs(305)
+    );
+    assert_eq!(
+        direct_timeouts.image_first_byte_timeout,
+        Duration::from_secs(306)
     );
     assert_eq!(
         direct_timeouts.responses_stream_timeout,
@@ -2746,6 +2800,10 @@ async fn proxy_request_timeouts_only_apply_pool_overrides_to_pool_routes() {
     assert_eq!(
         pool_timeouts.compact_first_byte_timeout,
         Duration::from_secs(325)
+    );
+    assert_eq!(
+        pool_timeouts.image_first_byte_timeout,
+        Duration::from_secs(326)
     );
     assert_eq!(
         pool_timeouts.responses_stream_timeout,

@@ -973,7 +973,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   const accountRecordsAnchorScrollGuardUntilRef = useRef(0);
   useEffect(() => {
     setFocusedAttemptId(null);
-  }, [accountId]);
+  }, []);
   const draftSessionKeyRef = useRef<string | null>(null);
   const activeDraftSessionKeyRef = useRef<string | null>(null);
   const draftBaselineRef = useRef<AccountDraft>(buildDraft(null));
@@ -1042,7 +1042,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   useEffect(() => {
     if (!open) return;
     setDetailTab(initialTab);
-  }, [initialTab, open, selectedId]);
+  }, [initialTab, open]);
 
   useEffect(() => {
     const nextBaseline = removeAccountDraftTagIds(
@@ -1152,7 +1152,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   useEffect(() => {
     setDetailTab(initialTab);
     setExpandedStickyKeys([]);
-  }, [accountId, initialTab]);
+  }, [initialTab]);
 
   useEffect(() => {
     setGroupDraftNotes((current) => {
@@ -1779,7 +1779,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     accountRecordsPrependScrollRef.current = null;
     detailDrawerBodyElement.scrollTop =
       pending.scrollTop + (detailDrawerBodyElement.scrollHeight - pending.scrollHeight);
-  }, [accountRecords, detailDrawerBodyElement]);
+  }, [detailDrawerBodyElement]);
 
   useLayoutEffect(() => {
     if (!accountRecordsLocateError) return;
@@ -1801,8 +1801,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     previousAccountRecordsContextRef.current = next;
 
     const leftRecordsSurface =
-      previous != null &&
-      previous.open &&
+      previous?.open &&
       previous.accountId != null &&
       previous.detailTab === "records" &&
       (!open || accountId == null || detailTab !== "records");

@@ -37,6 +37,7 @@ export function buildRoutingDraft(
     priorityAvailableAccountCap: String(maintenance.priorityAvailableAccountCap),
     responsesFirstByteTimeoutSecs: String(timeouts.responsesFirstByteTimeoutSecs),
     compactFirstByteTimeoutSecs: String(timeouts.compactFirstByteTimeoutSecs),
+    imageFirstByteTimeoutSecs: String(timeouts.imageFirstByteTimeoutSecs),
     responsesStreamTimeoutSecs: String(timeouts.responsesStreamTimeoutSecs),
     compactStreamTimeoutSecs: String(timeouts.compactStreamTimeoutSecs),
   };

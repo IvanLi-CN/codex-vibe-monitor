@@ -1213,7 +1213,7 @@ export function validateImportedOauthCredentialLocally(
   if (!idTokenResult.ok) errors.push(idTokenResult.error);
 
   if (
-    Object.prototype.hasOwnProperty.call(record, "expired") &&
+    Object.hasOwn(record, "expired") &&
     record.expired != null &&
     typeof record.expired !== "string"
   ) {
@@ -1866,7 +1866,7 @@ export function DuplicateWarningPopover({
 
   useEffect(() => {
     setOpen(true);
-  }, [duplicateWarning.accountId, summaryTitle, summaryBody]);
+  }, []);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>

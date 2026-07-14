@@ -79,6 +79,7 @@ export function RoutingTimeoutOverridesEditor({
   const resolvedEffective: PoolRoutingTimeoutSettings = {
     responsesFirstByteTimeoutSecs: effective?.responsesFirstByteTimeoutSecs ?? 120,
     compactFirstByteTimeoutSecs: effective?.compactFirstByteTimeoutSecs ?? 300,
+    imageFirstByteTimeoutSecs: effective?.imageFirstByteTimeoutSecs ?? 300,
     responsesStreamTimeoutSecs: effective?.responsesStreamTimeoutSecs ?? 300,
     compactStreamTimeoutSecs: effective?.compactStreamTimeoutSecs ?? 300,
   };

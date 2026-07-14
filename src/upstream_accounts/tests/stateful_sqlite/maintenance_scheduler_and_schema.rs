@@ -314,12 +314,14 @@ fn test_effective_routing_rule(concurrency_limit: i64) -> EffectiveRoutingRule {
         timeouts: RoutingTimeoutSettings {
             responses_first_byte_timeout_secs: Some(120),
             compact_first_byte_timeout_secs: Some(300),
+            image_first_byte_timeout_secs: Some(300),
             responses_stream_timeout_secs: Some(300),
             compact_stream_timeout_secs: Some(300),
         },
         timeout_field_sources: RoutingTimeoutFieldSources {
             responses_first_byte_timeout_secs: "root".to_string(),
             compact_first_byte_timeout_secs: "root".to_string(),
+            image_first_byte_timeout_secs: "root".to_string(),
             responses_stream_timeout_secs: "root".to_string(),
             compact_stream_timeout_secs: "root".to_string(),
         },
@@ -4298,6 +4300,7 @@ async fn update_upstream_account_patches_one_timeout_without_clearing_other_over
             UPDATE pool_upstream_accounts
             SET policy_responses_first_byte_timeout_secs = 180,
                 policy_compact_first_byte_timeout_secs = 300,
+                policy_image_first_byte_timeout_secs = 360,
                 policy_responses_stream_timeout_secs = 1800,
                 policy_compact_stream_timeout_secs = 300
             WHERE id = ?1
@@ -4307,6 +4310,14 @@ async fn update_upstream_account_patches_one_timeout_without_clearing_other_over
     .execute(&state.pool)
     .await
     .expect("seed account timeout overrides");
+    assert_eq!(
+        load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load seeded account")
+            .expect("seeded account exists")
+            .policy_image_first_byte_timeout_secs,
+        Some(360)
+    );
 
     let detail = state
         .upstream_accounts
@@ -4347,6 +4358,7 @@ async fn update_upstream_account_patches_one_timeout_without_clearing_other_over
                     timeouts: Some(UpdateRoutingTimeoutSettingsRequest {
                         responses_first_byte_timeout_secs: OptionalField::Missing,
                         compact_first_byte_timeout_secs: OptionalField::Missing,
+                        image_first_byte_timeout_secs: OptionalField::Missing,
                         responses_stream_timeout_secs: OptionalField::Value(1900),
                         compact_stream_timeout_secs: OptionalField::Missing,
                     }),
@@ -4356,6 +4368,15 @@ async fn update_upstream_account_patches_one_timeout_without_clearing_other_over
         .await
         .expect("patch one account timeout field");
 
+    let stored_image_timeout: Option<i64> = sqlx::query_scalar(
+        "SELECT policy_image_first_byte_timeout_secs FROM pool_upstream_accounts WHERE id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load stored image timeout override");
+    assert_eq!(stored_image_timeout, Some(360));
+
     let response_rule = detail.summary.effective_routing_rule;
     assert_eq!(
         response_rule.timeouts.responses_first_byte_timeout_secs,
@@ -4364,6 +4385,10 @@ async fn update_upstream_account_patches_one_timeout_without_clearing_other_over
     assert_eq!(
         response_rule.timeouts.compact_first_byte_timeout_secs,
         Some(300)
+    );
+    assert_eq!(
+        response_rule.timeouts.image_first_byte_timeout_secs,
+        Some(360)
     );
     assert_eq!(
         response_rule.timeouts.responses_stream_timeout_secs,
@@ -4386,14 +4411,17 @@ async fn update_upstream_account_patches_one_timeout_without_clearing_other_over
         "account"
     );
 
-    let stored = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
-            "SELECT policy_responses_first_byte_timeout_secs, policy_compact_first_byte_timeout_secs, policy_responses_stream_timeout_secs, policy_compact_stream_timeout_secs FROM pool_upstream_accounts WHERE id = ?1",
+    let stored = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
+            "SELECT policy_responses_first_byte_timeout_secs, policy_compact_first_byte_timeout_secs, policy_image_first_byte_timeout_secs, policy_responses_stream_timeout_secs, policy_compact_stream_timeout_secs FROM pool_upstream_accounts WHERE id = ?1",
         )
         .bind(account_id)
         .fetch_one(&state.pool)
         .await
         .expect("load stored timeout policy");
-    assert_eq!(stored, (Some(180), Some(300), Some(1900), Some(300)));
+    assert_eq!(
+        stored,
+        (Some(180), Some(300), Some(360), Some(1900), Some(300))
+    );
 
     let reloaded_rule = load_effective_routing_rule_for_account(&state.pool, account_id)
         .await
@@ -4405,6 +4433,10 @@ async fn update_upstream_account_patches_one_timeout_without_clearing_other_over
     assert_eq!(
         reloaded_rule.timeouts.compact_first_byte_timeout_secs,
         Some(300)
+    );
+    assert_eq!(
+        reloaded_rule.timeouts.image_first_byte_timeout_secs,
+        Some(360)
     );
     assert_eq!(
         reloaded_rule.timeouts.responses_stream_timeout_secs,
@@ -4883,6 +4915,7 @@ async fn load_upstream_account_detail_with_actual_usage_populates_root_timeout_v
             UPDATE pool_routing_settings
             SET responses_first_byte_timeout_secs = 41,
                 compact_first_byte_timeout_secs = 42,
+                image_first_byte_timeout_secs = 45,
                 responses_stream_timeout_secs = 43,
                 compact_stream_timeout_secs = 44
             WHERE id = ?1
@@ -4901,6 +4934,7 @@ async fn load_upstream_account_detail_with_actual_usage_populates_root_timeout_v
 
     assert_eq!(rule.timeouts.responses_first_byte_timeout_secs, Some(41));
     assert_eq!(rule.timeouts.compact_first_byte_timeout_secs, Some(42));
+    assert_eq!(rule.timeouts.image_first_byte_timeout_secs, Some(45));
     assert_eq!(rule.timeouts.responses_stream_timeout_secs, Some(43));
     assert_eq!(rule.timeouts.compact_stream_timeout_secs, Some(44));
     assert_eq!(
@@ -4909,6 +4943,10 @@ async fn load_upstream_account_detail_with_actual_usage_populates_root_timeout_v
     );
     assert_eq!(
         rule.timeout_field_sources.compact_first_byte_timeout_secs,
+        "root"
+    );
+    assert_eq!(
+        rule.timeout_field_sources.image_first_byte_timeout_secs,
         "root"
     );
     assert_eq!(

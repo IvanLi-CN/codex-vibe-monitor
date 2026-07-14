@@ -1388,6 +1388,7 @@ export interface PromptCacheConversationBindingResponse {
 export type PromptCacheConversationBindingTimeoutPatch = {
   responsesFirstByteTimeoutSecs?: number | null;
   compactFirstByteTimeoutSecs?: number | null;
+  imageFirstByteTimeoutSecs?: number | null;
   responsesStreamTimeoutSecs?: number | null;
   compactStreamTimeoutSecs?: number | null;
 };
@@ -2476,6 +2477,7 @@ function normalizePoolRoutingTimeoutSettings(raw: unknown): PoolRoutingTimeoutSe
       normalizeFiniteNumber(payload.compactFirstByteTimeoutSecs) ??
       normalizeFiniteNumber(payload.compactUpstreamHandshakeTimeoutSecs) ??
       300,
+    imageFirstByteTimeoutSecs: normalizeFiniteNumber(payload.imageFirstByteTimeoutSecs) ?? 300,
     responsesStreamTimeoutSecs: normalizeFiniteNumber(payload.responsesStreamTimeoutSecs) ?? 300,
     compactStreamTimeoutSecs: normalizeFiniteNumber(payload.compactStreamTimeoutSecs) ?? 300,
   };
@@ -2488,6 +2490,7 @@ function normalizeRoutingTimeoutFieldSources(raw: unknown): EffectiveRoutingTime
   return {
     responsesFirstByteTimeoutSecs: normalizeSource(payload.responsesFirstByteTimeoutSecs),
     compactFirstByteTimeoutSecs: normalizeSource(payload.compactFirstByteTimeoutSecs),
+    imageFirstByteTimeoutSecs: normalizeSource(payload.imageFirstByteTimeoutSecs),
     responsesStreamTimeoutSecs: normalizeSource(payload.responsesStreamTimeoutSecs),
     compactStreamTimeoutSecs: normalizeSource(payload.compactStreamTimeoutSecs),
   };

@@ -1793,6 +1793,7 @@ describe("account pool frontend API helpers", () => {
       timeouts: {
         responsesFirstByteTimeoutSecs: 120,
         compactFirstByteTimeoutSecs: 300,
+        imageFirstByteTimeoutSecs: 300,
         responsesStreamTimeoutSecs: 300,
         compactStreamTimeoutSecs: 300,
       },
@@ -1814,6 +1815,7 @@ describe("account pool frontend API helpers", () => {
               timeouts: {
                 responsesFirstByteTimeoutSecs: 180,
                 compactFirstByteTimeoutSecs: 420,
+                imageFirstByteTimeoutSecs: 480,
                 responsesStreamTimeoutSecs: 360,
                 compactStreamTimeoutSecs: 540,
               },
@@ -1830,6 +1832,7 @@ describe("account pool frontend API helpers", () => {
     expect(response.routing?.timeouts).toEqual({
       responsesFirstByteTimeoutSecs: 180,
       compactFirstByteTimeoutSecs: 420,
+      imageFirstByteTimeoutSecs: 480,
       responsesStreamTimeoutSecs: 360,
       compactStreamTimeoutSecs: 540,
     });
@@ -2501,6 +2504,7 @@ describe("account pool frontend API helpers", () => {
         timeouts: {
           responsesFirstByteTimeoutSecs: 180,
           compactFirstByteTimeoutSecs: 420,
+          imageFirstByteTimeoutSecs: 480,
           responsesStreamTimeoutSecs: 360,
           compactStreamTimeoutSecs: 540,
         },
@@ -2517,6 +2521,7 @@ describe("account pool frontend API helpers", () => {
           timeouts: {
             responsesFirstByteTimeoutSecs: 180,
             compactFirstByteTimeoutSecs: 420,
+            imageFirstByteTimeoutSecs: 480,
             responsesStreamTimeoutSecs: 360,
             compactStreamTimeoutSecs: 540,
           },
@@ -2531,6 +2536,7 @@ describe("account pool frontend API helpers", () => {
       timeouts: {
         responsesFirstByteTimeoutSecs: 180,
         compactFirstByteTimeoutSecs: 420,
+        imageFirstByteTimeoutSecs: 480,
         responsesStreamTimeoutSecs: 360,
         compactStreamTimeoutSecs: 540,
       },
@@ -2547,6 +2553,7 @@ describe("account pool frontend API helpers", () => {
     expect(response.timeouts).toEqual({
       responsesFirstByteTimeoutSecs: 180,
       compactFirstByteTimeoutSecs: 420,
+      imageFirstByteTimeoutSecs: 480,
       responsesStreamTimeoutSecs: 360,
       compactStreamTimeoutSecs: 540,
     });

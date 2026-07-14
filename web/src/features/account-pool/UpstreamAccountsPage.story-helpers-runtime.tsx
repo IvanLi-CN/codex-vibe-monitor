@@ -60,28 +60,28 @@ function applyRoutingRulePatchToEffectiveRule(
     ...(patch.availableModels == null ? {} : { availableModels: patch.availableModels }),
     fieldSources: {
       ...fieldSources,
-      ...(Object.prototype.hasOwnProperty.call(patch, "allowCutOut")
+      ...(Object.hasOwn(patch, "allowCutOut")
         ? { allowCutOut: patch.allowCutOut == null ? "root" : "account" }
         : {}),
-      ...(Object.prototype.hasOwnProperty.call(patch, "allowCutIn")
+      ...(Object.hasOwn(patch, "allowCutIn")
         ? { allowCutIn: patch.allowCutIn == null ? "root" : "account" }
         : {}),
-      ...(Object.prototype.hasOwnProperty.call(patch, "priorityTier")
+      ...(Object.hasOwn(patch, "priorityTier")
         ? { priorityTier: patch.priorityTier == null ? "root" : "account" }
         : {}),
-      ...(Object.prototype.hasOwnProperty.call(patch, "fastModeRewriteMode")
+      ...(Object.hasOwn(patch, "fastModeRewriteMode")
         ? { fastModeRewriteMode: patch.fastModeRewriteMode == null ? "root" : "account" }
         : {}),
-      ...(Object.prototype.hasOwnProperty.call(patch, "imageToolRewriteMode")
+      ...(Object.hasOwn(patch, "imageToolRewriteMode")
         ? { imageToolRewriteMode: patch.imageToolRewriteMode == null ? "root" : "account" }
         : {}),
-      ...(Object.prototype.hasOwnProperty.call(patch, "concurrencyLimit")
+      ...(Object.hasOwn(patch, "concurrencyLimit")
         ? { concurrencyLimit: patch.concurrencyLimit == null ? "root" : "account" }
         : {}),
-      ...(Object.prototype.hasOwnProperty.call(patch, "upstream429RetryEnabled")
+      ...(Object.hasOwn(patch, "upstream429RetryEnabled")
         ? { upstream429Retry: patch.upstream429RetryEnabled == null ? "root" : "account" }
         : {}),
-      ...(Object.prototype.hasOwnProperty.call(patch, "availableModels")
+      ...(Object.hasOwn(patch, "availableModels")
         ? { availableModels: patch.availableModels == null ? "root" : "account" }
         : {}),
     },
@@ -660,6 +660,10 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
                     body.timeouts.compactFirstByteTimeoutSecs ??
                     store.routing.timeouts?.compactFirstByteTimeoutSecs ??
                     defaultRoutingTimeouts.compactFirstByteTimeoutSecs,
+                  imageFirstByteTimeoutSecs:
+                    body.timeouts.imageFirstByteTimeoutSecs ??
+                    store.routing.timeouts?.imageFirstByteTimeoutSecs ??
+                    defaultRoutingTimeouts.imageFirstByteTimeoutSecs,
                   responsesStreamTimeoutSecs:
                     body.timeouts.responsesStreamTimeoutSecs ??
                     store.routing.timeouts?.responsesStreamTimeoutSecs ??
@@ -1178,13 +1182,11 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         const detail = store.details[accountId];
         if (!detail) return jsonResponse({ message: "missing mock account" }, 404);
         const body = parseBody<UpdateUpstreamAccountPayload>(init?.body, {});
-        const nextEmail = Object.prototype.hasOwnProperty.call(body, "email")
-          ? (body.email ?? null)
-          : detail.email;
+        const nextEmail = Object.hasOwn(body, "email") ? (body.email ?? null) : detail.email;
         const nextEffectiveRoutingRule = body.routingRule
           ? applyRoutingRulePatchToEffectiveRule(detail.effectiveRoutingRule, body.routingRule)
           : detail.effectiveRoutingRule;
-        const nextBoundProxyKeys = Object.prototype.hasOwnProperty.call(body, "boundProxyKeys")
+        const nextBoundProxyKeys = Object.hasOwn(body, "boundProxyKeys")
           ? Array.isArray(body.boundProxyKeys)
             ? Array.from(new Set(body.boundProxyKeys.map((value) => value.trim()).filter(Boolean)))
             : []
@@ -1199,8 +1201,7 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
           isMother: body.isMother ?? detail.isMother,
           note: body.note ?? detail.note,
           upstreamBaseUrl:
-            detail.kind === "api_key_codex" &&
-            Object.prototype.hasOwnProperty.call(body, "upstreamBaseUrl")
+            detail.kind === "api_key_codex" && Object.hasOwn(body, "upstreamBaseUrl")
               ? (body.upstreamBaseUrl ?? null)
               : detail.upstreamBaseUrl,
           enabled: body.enabled ?? detail.enabled,

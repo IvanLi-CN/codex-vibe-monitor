@@ -119,6 +119,7 @@ pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> Effect
         timeout_field_sources: RoutingTimeoutFieldSources {
             responses_first_byte_timeout_secs: "root".to_string(),
             compact_first_byte_timeout_secs: "root".to_string(),
+            image_first_byte_timeout_secs: "root".to_string(),
             responses_stream_timeout_secs: "root".to_string(),
             compact_stream_timeout_secs: "root".to_string(),
         },
@@ -154,6 +155,7 @@ pub(crate) struct RoutingPolicyOverrideRow {
     policy_status_change_upstream_http_5xx: Option<i64>,
     policy_responses_first_byte_timeout_secs: Option<i64>,
     policy_compact_first_byte_timeout_secs: Option<i64>,
+    policy_image_first_byte_timeout_secs: Option<i64>,
     policy_responses_stream_timeout_secs: Option<i64>,
     policy_compact_stream_timeout_secs: Option<i64>,
 }
@@ -186,6 +188,7 @@ pub(crate) struct GroupRoutingPolicyOverrideRow {
     policy_status_change_upstream_http_5xx: Option<i64>,
     policy_responses_first_byte_timeout_secs: Option<i64>,
     policy_compact_first_byte_timeout_secs: Option<i64>,
+    policy_image_first_byte_timeout_secs: Option<i64>,
     policy_responses_stream_timeout_secs: Option<i64>,
     policy_compact_stream_timeout_secs: Option<i64>,
 }
@@ -205,6 +208,10 @@ pub(crate) fn apply_routing_timeout_override(
     if let Some(value) = settings.compact_first_byte_timeout_secs {
         rule.timeouts.compact_first_byte_timeout_secs = Some(value);
         rule.timeout_field_sources.compact_first_byte_timeout_secs = source.to_string();
+    }
+    if let Some(value) = settings.image_first_byte_timeout_secs {
+        rule.timeouts.image_first_byte_timeout_secs = Some(value);
+        rule.timeout_field_sources.image_first_byte_timeout_secs = source.to_string();
     }
     if let Some(value) = settings.responses_stream_timeout_secs {
         rule.timeouts.responses_stream_timeout_secs = Some(value);
@@ -246,6 +253,10 @@ pub(crate) fn apply_root_routing_timeout_defaults(
         rule.timeouts.compact_first_byte_timeout_secs =
             Some(root.compact_first_byte_timeout.as_secs());
         rule.timeout_field_sources.compact_first_byte_timeout_secs = "root".to_string();
+    }
+    if rule.timeouts.image_first_byte_timeout_secs.is_none() {
+        rule.timeouts.image_first_byte_timeout_secs = Some(root.image_first_byte_timeout.as_secs());
+        rule.timeout_field_sources.image_first_byte_timeout_secs = "root".to_string();
     }
     if rule.timeouts.responses_stream_timeout_secs.is_none() {
         rule.timeouts.responses_stream_timeout_secs = Some(root.responses_stream_timeout.as_secs());
@@ -359,6 +370,7 @@ pub(crate) async fn load_group_routing_policy_override_map(
             policy_status_change_upstream_http_5xx,
             policy_responses_first_byte_timeout_secs,
             policy_compact_first_byte_timeout_secs,
+            policy_image_first_byte_timeout_secs,
             policy_responses_stream_timeout_secs,
             policy_compact_stream_timeout_secs
         FROM pool_upstream_account_group_notes
@@ -415,6 +427,7 @@ pub(crate) async fn load_account_routing_policy_override_map(
             policy_status_change_upstream_http_5xx,
             policy_responses_first_byte_timeout_secs,
             policy_compact_first_byte_timeout_secs,
+            policy_image_first_byte_timeout_secs,
             policy_responses_stream_timeout_secs,
             policy_compact_stream_timeout_secs
         FROM pool_upstream_accounts
@@ -538,6 +551,7 @@ pub(crate) fn apply_group_routing_policy_override(
         routing_timeout_settings_from_columns(
             row.policy_responses_first_byte_timeout_secs,
             row.policy_compact_first_byte_timeout_secs,
+            row.policy_image_first_byte_timeout_secs,
             row.policy_responses_stream_timeout_secs,
             row.policy_compact_stream_timeout_secs,
         ),
@@ -613,6 +627,12 @@ pub(crate) fn apply_tag_layer_routing_policy(
             inherited_timeouts.compact_first_byte_timeout_secs;
         rule.timeout_field_sources.compact_first_byte_timeout_secs =
             inherited_timeout_field_sources.compact_first_byte_timeout_secs;
+    }
+    if tag_rule.timeouts.image_first_byte_timeout_secs.is_none() {
+        rule.timeouts.image_first_byte_timeout_secs =
+            inherited_timeouts.image_first_byte_timeout_secs;
+        rule.timeout_field_sources.image_first_byte_timeout_secs =
+            inherited_timeout_field_sources.image_first_byte_timeout_secs;
     }
     if tag_rule.timeouts.responses_stream_timeout_secs.is_none() {
         rule.timeouts.responses_stream_timeout_secs =
@@ -716,6 +736,7 @@ pub(crate) fn apply_account_routing_policy_override(
         routing_timeout_settings_from_columns(
             row.policy_responses_first_byte_timeout_secs,
             row.policy_compact_first_byte_timeout_secs,
+            row.policy_image_first_byte_timeout_secs,
             row.policy_responses_stream_timeout_secs,
             row.policy_compact_stream_timeout_secs,
         ),

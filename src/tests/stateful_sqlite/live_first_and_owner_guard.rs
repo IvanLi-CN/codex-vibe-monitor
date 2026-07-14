@@ -5598,6 +5598,105 @@ async fn proxy_openai_v1_direct_image_pool_runtime_exposes_direct_image_intent()
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_direct_image_timeout_returns_504_without_retry() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_upstream = attempts.clone();
+    let app = Router::new().route(
+        "/v1/images/generations",
+        post(move |body: Bytes| {
+            let attempts = attempts_for_upstream.clone();
+            async move {
+                if !body
+                    .windows(b"draw a cat".len())
+                    .any(|window| window == b"draw a cat")
+                {
+                    return (StatusCode::OK, Json(json!({ "data": [] }))).into_response();
+                }
+                attempts.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                (StatusCode::OK, Json(json!({ "data": [] }))).into_response()
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind slow direct image upstream");
+    let upstream_base = format!("http://{}", listener.local_addr().expect("local addr"));
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("slow direct image upstream should run");
+    });
+    let mut state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    )
+    .await;
+    Arc::get_mut(&mut state)
+        .expect("test state is uniquely owned")
+        .config
+        .openai_proxy_image_handshake_timeout = Duration::from_millis(50);
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Direct Image Timeout",
+        "upstream-direct-image-timeout",
+        None,
+        None,
+        None,
+    )
+    .await;
+    attempts.store(0, Ordering::SeqCst);
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let err = proxy_openai_v1_via_pool(
+        state.clone(),
+        7044,
+        &"/v1/images/generations".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(r#"{"model":"gpt-image-1","prompt":"draw a cat"}"#),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect_err("slow direct image request should time out");
+
+    assert_eq!(err.0, StatusCode::GATEWAY_TIMEOUT);
+    assert!(err.1.contains(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT));
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    let persisted_attempts: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_request_attempts WHERE invoke_id = 'pool-via-7044'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count direct image attempts");
+    assert_eq!(persisted_attempts, 1);
+    assert!(
+        state
+            .pool_routing_reservations
+            .lock()
+            .expect("lock routing reservations")
+            .is_empty(),
+        "timed-out direct image request must release its routing reservation"
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_responses_pool_runtime_image_intent_survives_disabled_request_body_logging()
  {
     let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;

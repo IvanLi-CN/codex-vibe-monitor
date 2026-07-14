@@ -73,6 +73,7 @@ type EditablePolicyField =
   | "availableModels"
   | "timeoutResponsesFirstByte"
   | "timeoutCompactFirstByte"
+  | "timeoutImageFirstByte"
   | "timeoutResponsesStream"
   | "timeoutCompactStream"
   | "statusChangeReasons"
@@ -205,6 +206,7 @@ interface EffectiveRoutingRuleCardProps {
     timeoutOverrideValue?: string;
     timeoutResponsesFirstByte?: string;
     timeoutCompactFirstByte?: string;
+    timeoutImageFirstByte?: string;
     timeoutResponsesStream?: string;
     timeoutCompactStream?: string;
     sourceRoot?: string;
@@ -265,12 +267,14 @@ function defaultRule(rule?: EffectiveRoutingRule | null): EffectiveRoutingRule {
       timeouts: {
         responsesFirstByteTimeoutSecs: 120,
         compactFirstByteTimeoutSecs: 300,
+        imageFirstByteTimeoutSecs: 300,
         responsesStreamTimeoutSecs: 300,
         compactStreamTimeoutSecs: 300,
       },
       timeoutFieldSources: {
         responsesFirstByteTimeoutSecs: "root",
         compactFirstByteTimeoutSecs: "root",
+        imageFirstByteTimeoutSecs: "root",
         responsesStreamTimeoutSecs: "root",
         compactStreamTimeoutSecs: "root",
       },
@@ -530,6 +534,7 @@ function localStatusChangeOverrideFields(
 const timeoutFieldToInlineField: Record<RoutingTimeoutFieldKey, EditablePolicyField> = {
   responsesFirstByteTimeoutSecs: "timeoutResponsesFirstByte",
   compactFirstByteTimeoutSecs: "timeoutCompactFirstByte",
+  imageFirstByteTimeoutSecs: "timeoutImageFirstByte",
   responsesStreamTimeoutSecs: "timeoutResponsesStream",
   compactStreamTimeoutSecs: "timeoutCompactStream",
 };
@@ -590,6 +595,7 @@ export function EffectiveRoutingRuleCard({
       resolvedRule.timeoutFieldSources ?? {
         responsesFirstByteTimeoutSecs: "root",
         compactFirstByteTimeoutSecs: "root",
+        imageFirstByteTimeoutSecs: "root",
         responsesStreamTimeoutSecs: "root",
         compactStreamTimeoutSecs: "root",
       },
@@ -600,6 +606,7 @@ export function EffectiveRoutingRuleCard({
       resolvedRule.timeouts ?? {
         responsesFirstByteTimeoutSecs: 120,
         compactFirstByteTimeoutSecs: 300,
+        imageFirstByteTimeoutSecs: 300,
         responsesStreamTimeoutSecs: 300,
         compactStreamTimeoutSecs: 300,
       },
@@ -751,21 +758,23 @@ export function EffectiveRoutingRuleCard({
   );
   const timeoutRows = ROUTING_TIMEOUT_FIELD_ORDER.map((key) => {
     const field = timeoutFieldToInlineField[key];
-    const source = timeoutSources[key];
+    const source = timeoutSources[key] ?? "root";
     const label =
       key === "responsesFirstByteTimeoutSecs"
         ? (labels.timeoutResponsesFirstByte ?? "Standard response first byte timeout")
         : key === "compactFirstByteTimeoutSecs"
           ? (labels.timeoutCompactFirstByte ?? "Compact response first byte timeout")
-          : key === "responsesStreamTimeoutSecs"
-            ? (labels.timeoutResponsesStream ?? "Standard stream completion timeout")
-            : (labels.timeoutCompactStream ?? "Compact stream completion timeout");
+          : key === "imageFirstByteTimeoutSecs"
+            ? (labels.timeoutImageFirstByte ?? "Image response first byte timeout")
+            : key === "responsesStreamTimeoutSecs"
+              ? (labels.timeoutResponsesStream ?? "Standard stream completion timeout")
+              : (labels.timeoutCompactStream ?? "Compact stream completion timeout");
     return {
       key,
       field,
       label,
       source,
-      value: `${timeoutValues[key]}s`,
+      value: `${timeoutValues[key] ?? 300}s`,
       clearPayload: {
         timeouts: {
           [key]: null,
@@ -1439,6 +1448,8 @@ function fieldToSource(
       return timeoutSources.responsesFirstByteTimeoutSecs;
     case "timeoutCompactFirstByte":
       return timeoutSources.compactFirstByteTimeoutSecs;
+    case "timeoutImageFirstByte":
+      return timeoutSources.imageFirstByteTimeoutSecs ?? "root";
     case "timeoutResponsesStream":
       return timeoutSources.responsesStreamTimeoutSecs;
     case "timeoutCompactStream":

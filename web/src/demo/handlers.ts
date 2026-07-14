@@ -1269,6 +1269,7 @@ function accountList() {
       timeouts: {
         responsesFirstByteTimeoutSecs: 30,
         compactFirstByteTimeoutSecs: 45,
+        imageFirstByteTimeoutSecs: 300,
         responsesStreamTimeoutSecs: 300,
         compactStreamTimeoutSecs: 420,
       },
@@ -1734,12 +1735,14 @@ async function handleRequest(request: Request) {
       timeouts: {
         responsesFirstByteTimeoutSecs: 30,
         compactFirstByteTimeoutSecs: 45,
+        imageFirstByteTimeoutSecs: 300,
         responsesStreamTimeoutSecs: 300,
         compactStreamTimeoutSecs: 420,
       },
       timeoutFieldSources: {
         responsesFirstByteTimeoutSecs: "root",
         compactFirstByteTimeoutSecs: "root",
+        imageFirstByteTimeoutSecs: "root",
         responsesStreamTimeoutSecs: "root",
         compactStreamTimeoutSecs: "root",
       },
@@ -2068,6 +2071,7 @@ async function handleRequest(request: Request) {
       timeouts: {
         responsesFirstByteTimeoutSecs: 30,
         compactFirstByteTimeoutSecs: 45,
+        imageFirstByteTimeoutSecs: 300,
         responsesStreamTimeoutSecs: 300,
         compactStreamTimeoutSecs: 420,
       },
