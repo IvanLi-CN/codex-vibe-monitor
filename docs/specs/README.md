@@ -34,6 +34,7 @@
 | 97dds | GPT-5.6 系列定价、缓存写入计费与模型入口支持                              | active    | `97dds-gpt-5-6-series-pricing-support/SPEC.md`             | `97dds-gpt-5-6-series-pricing-support/IMPLEMENTATION.md`             | topic anchor: pricing / proxy models / cache billing        |
 | ykhfu | 全产品路由 Web Demo                                                       | active    | `ykhfu-web-demo/SPEC.md`                                   | `ykhfu-web-demo/IMPLEMENTATION.md`                                   | topic anchor: mock runtime / Pages / UI evidence            |
 | hnu7b | 移动优先导航与浮层收口                                                    | active    | `hnu7b-mobile-first-navigation-and-overlays/SPEC.md`       | `hnu7b-mobile-first-navigation-and-overlays/IMPLEMENTATION.md`       | topic anchor: mobile navigation / responsive overlays       |
+| dqstf | 调用详情可分享路由与结构化响应体查看器                                    | active    | `dqstf-invocation-detail-routing-payload-viewer/SPEC.md`   | `dqstf-invocation-detail-routing-payload-viewer/IMPLEMENTATION.md`   | topic anchor: invocation details / routing / payload viewer |
 
 ## Archived Sources
 

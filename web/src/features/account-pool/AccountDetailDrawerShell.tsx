@@ -146,7 +146,7 @@ export function AccountDetailDrawerShell({
         <div
           ref={handleBodyRef}
           className={cn(
-            "drawer-body min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5 sm:py-5 desktop:px-6 desktop:py-6",
+            "drawer-body min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-4 sm:px-5 sm:py-5 desktop:px-6 desktop:py-6",
             bodyClassName,
           )}
         >

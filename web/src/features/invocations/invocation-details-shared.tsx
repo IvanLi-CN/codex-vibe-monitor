@@ -35,6 +35,7 @@ import {
   getReasoningEffortTone,
   REASONING_EFFORT_TONE_CLASSNAMES,
 } from "./invocation-table-reasoning";
+import { StructuredPayloadViewer } from "./StructuredPayloadViewer";
 
 export const FALLBACK_CELL = "—";
 export const INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME =
@@ -1872,7 +1873,10 @@ function DetailSection({
 }) {
   return (
     <section
-      className={cn("rounded-xl border border-base-300/70 bg-base-100/52 p-3", className)}
+      className={cn(
+        "min-w-0 max-w-full rounded-xl border border-base-300/70 bg-base-100/52 p-3",
+        className,
+      )}
       data-testid={testId}
     >
       <h4 className="text-xs font-semibold text-base-content/82">{title}</h4>
@@ -1997,7 +2001,7 @@ function DetailErrorText({ label, children }: { label: string; children: string 
       <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/60">
         {label}
       </span>
-      <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-5 text-base-content/84">
+      <pre className="min-w-0 max-w-full whitespace-pre-wrap break-words font-mono text-sm leading-5 text-base-content/84 [overflow-wrap:anywhere]">
         {children}
       </pre>
     </div>
@@ -2197,12 +2201,23 @@ export function InvocationExpandedDetails({
             </div>
           ) : abnormalResponseBody?.available && abnormalResponseBody.previewText ? (
             <>
-              <pre
-                className="max-h-72 overflow-auto rounded-lg border border-base-300/70 bg-base-100/70 p-3 whitespace-pre-wrap break-words font-mono text-sm"
-                data-testid="invocation-response-body-preview"
-              >
-                {abnormalResponseBody.previewText}
-              </pre>
+              <div data-testid="invocation-response-body-preview" className="min-w-0 max-w-full">
+                <StructuredPayloadViewer
+                  value={abnormalResponseBody.previewText}
+                  labels={{
+                    json: t("table.responseBody.format.json"),
+                    ndjson: t("table.responseBody.format.ndjson"),
+                    sse: t("table.responseBody.format.sse"),
+                    text: t("table.responseBody.format.text"),
+                    largePayload: t("table.responseBody.largePayload"),
+                    parseLargePayload: t("table.responseBody.parseLargePayload"),
+                    event: t("table.responseBody.event"),
+                    data: t("table.responseBody.data"),
+                    expand: t("table.responseBody.expand"),
+                    collapse: t("table.responseBody.collapse"),
+                  }}
+                />
+              </div>
               {abnormalResponseBody.hasMore ? (
                 <p className="text-xs text-base-content/60">
                   {t("table.responseBody.previewTruncated")}

@@ -175,6 +175,15 @@ describe("demo MSW handlers", () => {
     );
     expect(selectedRecord).toBeDefined();
 
+    const locatedResponse = await fetch(
+      `http://demo.invalid/api/invocations?requestId=${encodeURIComponent(selectedRecord?.invokeId ?? "")}&pageSize=1`,
+    );
+    const located = (await locatedResponse.json()) as {
+      records: Array<{ invokeId: string }>;
+    };
+    expect(located.records).toHaveLength(1);
+    expect(located.records[0]?.invokeId).toBe(selectedRecord?.invokeId);
+
     const [detailResponse, attemptsResponse, accountResponse] = await Promise.all([
       fetch(`http://demo.invalid/api/invocations/${selectedRecord?.id}/detail`),
       fetch(`http://demo.invalid/api/invocations/${selectedRecord?.invokeId}/pool-attempts`),
