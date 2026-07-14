@@ -665,6 +665,7 @@ export function TodayStatsOverview({
   const rateUnavailable = !loading && !rateLoading && rateError != null;
   const tokensPerMinuteUnavailable = rateUnavailable || rate?.available === false;
   const modelPerformanceAvailable = modelPerformance?.available === true;
+  const performanceComparisonUnavailable = modelPerformanceAvailable;
   const performanceFirstByteMs = modelPerformanceAvailable
     ? (modelPerformance?.total.avgFirstResponseByteTotalMs ?? null)
     : null;
@@ -811,20 +812,28 @@ export function TodayStatsOverview({
             topRightItem={{
               label: comparisonLabel,
               valueSpec: buildPercentValueSpec(
-                tokensPerMinuteUnavailable ? null : tpmDailyDelta,
+                tokensPerMinuteUnavailable || performanceComparisonUnavailable
+                  ? null
+                  : tpmDailyDelta,
                 localeTag,
                 {
-                signDisplay: "exceptZero",
+                  signDisplay: "exceptZero",
                 },
               ),
-              toneClass: comparisonTone(tokensPerMinuteUnavailable ? null : tpmDailyDelta),
+              toneClass: comparisonTone(
+                tokensPerMinuteUnavailable || performanceComparisonUnavailable
+                  ? null
+                  : tpmDailyDelta,
+              ),
               valueTestId: "today-stats-secondary-tpm-delta",
             }}
             secondaryItems={[
               {
                 label: t("dashboard.today.secondary.dayAverage"),
                 valueSpec: buildNumberValueSpec(
-                  tokensPerMinuteUnavailable ? null : activeAverages.tokensPerMinute,
+                  tokensPerMinuteUnavailable || performanceComparisonUnavailable
+                    ? null
+                    : activeAverages.tokensPerMinute,
                   localeTag,
                   0,
                 ),
@@ -974,27 +983,33 @@ export function TodayStatsOverview({
             iconName="timer-outline"
             valueTestId="today-stats-value-response-time"
             displaySpec={buildLatencyValueSpec(
-              responseTimeCurrentUnavailable
-                ? null
-                : responseTimeCurrentValue,
+              responseTimeCurrentUnavailable ? null : responseTimeCurrentValue,
               localeTag,
             )}
             subdued={responseTimeCurrentUnavailable}
             topRightItem={{
               label: comparisonLabel,
               valueSpec: buildPercentValueSpec(
-                rateUnavailable ? null : responseTimeDailyDelta,
+                responseTimeCurrentUnavailable || performanceComparisonUnavailable
+                  ? null
+                  : responseTimeDailyDelta,
                 localeTag,
                 { signDisplay: "exceptZero" },
               ),
-              toneClass: latencyComparisonTone(rateUnavailable ? null : responseTimeDailyDelta),
+              toneClass: latencyComparisonTone(
+                responseTimeCurrentUnavailable || performanceComparisonUnavailable
+                  ? null
+                  : responseTimeDailyDelta,
+              ),
               valueTestId: "today-stats-secondary-response-time-delta",
             }}
             secondaryItems={[
               {
                 label: t("dashboard.today.secondary.dayAverage"),
                 valueSpec: buildLatencyValueSpec(
-                  rateUnavailable ? null : (responseTimeSnapshot?.dayAverageMs ?? null),
+                  responseTimeCurrentUnavailable || performanceComparisonUnavailable
+                    ? null
+                    : (responseTimeSnapshot?.dayAverageMs ?? null),
                   localeTag,
                 ),
                 valueTestId: "today-stats-secondary-response-time-day-average",

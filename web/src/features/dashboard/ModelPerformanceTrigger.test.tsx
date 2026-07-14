@@ -114,7 +114,26 @@ describe("ModelPerformanceTrigger", () => {
     const dialog = document.body.querySelector('[role="dialog"]');
     expect(dialog?.textContent).toContain("Model performance");
     expect(dialog?.querySelector("table")).toBeNull();
-    expect(dialog?.querySelector('[data-testid="model-performance-drawer-content"]')).not.toBeNull();
+    expect(
+      dialog?.querySelector('[data-testid="model-performance-drawer-content"]'),
+    ).not.toBeNull();
+  });
+
+  it("normalizes rounded usage durations at the next hour boundary", async () => {
+    compactViewport = true;
+    await renderTrigger({
+      ...modelPerformance,
+      total: { ...modelPerformance.total, usageDurationMs: 7_199_500 },
+      models: [{ ...modelPerformance.models[0], usageDurationMs: 7_199_500 }],
+    });
+    const trigger = host?.querySelector('[aria-label="Open model performance details"]');
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain("2 h");
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).not.toContain("1 h 60 min");
   });
 
   it("renders explicit empty and unavailable states", async () => {
@@ -139,6 +158,8 @@ describe("ModelPerformanceTrigger", () => {
       unavailableTrigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await Promise.resolve();
     });
-    expect(document.body.querySelector('[data-testid="model-performance-unavailable"]')).not.toBeNull();
+    expect(
+      document.body.querySelector('[data-testid="model-performance-unavailable"]'),
+    ).not.toBeNull();
   });
 });

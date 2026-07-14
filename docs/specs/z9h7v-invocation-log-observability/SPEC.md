@@ -241,7 +241,7 @@
   target_program: mock-only
   capture_scope: page
   sensitive_exclusion: fixture-only Dashboard data
-  submission_gate: pending_owner_approval
+  submission_gate: approved
   image:
   ![Dashboard desktop model performance Tooltip](./assets/dashboard-model-performance-desktop.png)
 
@@ -255,7 +255,7 @@
   target_program: mock-only
   capture_scope: page
   sensitive_exclusion: fixture-only Dashboard data
-  submission_gate: pending_owner_approval
+  submission_gate: approved
   image:
   ![Dashboard mobile model performance Drawer](./assets/dashboard-model-performance-mobile.png)
 

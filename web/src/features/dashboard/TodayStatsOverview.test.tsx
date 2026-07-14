@@ -281,9 +281,7 @@ describe("TodayStatsOverview", () => {
       host?.querySelector('[data-testid="today-stats-value-response-time"]')?.textContent,
     ).toMatch(/1\.5|1,5/);
 
-    const tpmTrigger = host?.querySelector(
-      '[aria-label="TPM dashboard.modelPerformance.title"]',
-    );
+    const tpmTrigger = host?.querySelector('[aria-label="TPM dashboard.modelPerformance.title"]');
     act(() => {
       tpmTrigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -1222,9 +1220,9 @@ describe("TodayStatsOverview", () => {
     );
 
     expect(host?.querySelector('[data-testid="today-stats-value-tpm"]')?.textContent).toBe("—");
-    expect(host?.querySelector('[data-testid="today-stats-value-spend-rate"]')?.textContent).toContain(
-      "0.10",
-    );
+    expect(
+      host?.querySelector('[data-testid="today-stats-value-spend-rate"]')?.textContent,
+    ).toContain("0.10");
   });
 
   it("switches to compact notation when the full metric value would overflow", () => {

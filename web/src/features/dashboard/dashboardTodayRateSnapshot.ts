@@ -46,7 +46,10 @@ export function buildDashboardTodayRateSnapshot(
     };
   }
 
-  const pointMap = new Map<number, { bucketEndMs: number; totalTokens: number; totalCost: number }>();
+  const pointMap = new Map<
+    number,
+    { bucketEndMs: number; totalTokens: number; totalCost: number }
+  >();
 
   for (const point of response.points ?? []) {
     const bucketStart = parseDateInput(point.bucketStart);

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import type { ModelPerformance } from "../../lib/api";
 import { useTranslation } from "../../i18n";
+import type { ModelPerformance } from "../../lib/api";
 import { cn } from "../../lib/utils";
 
 export interface ModelPerformanceDetailsProps {
@@ -19,8 +19,12 @@ function formatDuration(value: number | null | undefined, localeTag: string) {
   if (milliseconds < 1_000) return `${formatNumber(milliseconds, localeTag, 0)} ms`;
   if (milliseconds < 60_000) return `${formatNumber(milliseconds / 1_000, localeTag, 2)} s`;
   if (milliseconds < 3_600_000) return `${formatNumber(milliseconds / 60_000, localeTag, 1)} min`;
-  const hours = Math.floor(milliseconds / 3_600_000);
-  const minutes = Math.round((milliseconds % 3_600_000) / 60_000);
+  let hours = Math.floor(milliseconds / 3_600_000);
+  let minutes = Math.round((milliseconds % 3_600_000) / 60_000);
+  if (minutes === 60) {
+    hours += 1;
+    minutes = 0;
+  }
   return minutes > 0 ? `${hours} h ${minutes} min` : `${hours} h`;
 }
 
@@ -94,16 +98,27 @@ export function ModelPerformanceDetails({
         <p className="text-sm leading-6 text-base-content/70">
           {t("dashboard.modelPerformance.description")}
         </p>
-        <ModelPerformanceMetricGrid label={t("dashboard.modelPerformance.total")} values={valuesFor(performance.total)} labels={labels} />
+        <ModelPerformanceMetricGrid
+          label={t("dashboard.modelPerformance.total")}
+          values={valuesFor(performance.total)}
+          labels={labels}
+        />
         {performance.models.map((model) => (
           <section
             key={`${model.model}:${model.reasoningEffort ?? ""}`}
             className="border-t border-base-300/70 pt-3.5 first:border-t-0 first:pt-0"
           >
             <div className="min-w-0">
-              <p className="break-all font-mono text-sm font-semibold text-base-content">{model.model}</p>
+              <p className="break-all font-mono text-sm font-semibold text-base-content">
+                {model.model}
+              </p>
               <p className="mt-1 text-xs text-base-content/62">
-                {t("dashboard.modelPerformance.reasoningEffort")}: {effortLabel(model.reasoningEffort, effortLabels, t("dashboard.modelPerformance.effort.unspecified"))}
+                {t("dashboard.modelPerformance.reasoningEffort")}:{" "}
+                {effortLabel(
+                  model.reasoningEffort,
+                  effortLabels,
+                  t("dashboard.modelPerformance.effort.unspecified"),
+                )}
               </p>
             </div>
             <div className="mt-3">
@@ -131,25 +146,44 @@ export function ModelPerformanceDetails({
               <th scope="col" className="w-[23%] px-2 py-2 text-left font-semibold">
                 {t("dashboard.modelPerformance.model")}
               </th>
-              {[labels.tpm, labels.streamingRate, labels.response, labels.firstByte, labels.usageDuration].map(
-                (label) => (
-                  <th key={label} scope="col" className="border-l border-base-300/35 px-1.5 py-2 text-right font-semibold">
-                    {label}
-                  </th>
-                ),
-              )}
+              {[
+                labels.tpm,
+                labels.streamingRate,
+                labels.response,
+                labels.firstByte,
+                labels.usageDuration,
+              ].map((label) => (
+                <th
+                  key={label}
+                  scope="col"
+                  className="border-l border-base-300/35 px-1.5 py-2 text-right font-semibold"
+                >
+                  {label}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
-            <ModelPerformanceTableRow label={t("dashboard.modelPerformance.total")} values={valuesFor(performance.total)} emphasized />
+            <ModelPerformanceTableRow
+              label={t("dashboard.modelPerformance.total")}
+              values={valuesFor(performance.total)}
+              emphasized
+            />
             {performance.models.map((model) => (
               <ModelPerformanceTableRow
                 key={`${model.model}:${model.reasoningEffort ?? ""}`}
                 label={
                   <span className="flex min-w-0 flex-col gap-0.5">
-                    <span className="break-all font-mono font-semibold text-base-content/85">{model.model}</span>
+                    <span className="break-all font-mono font-semibold text-base-content/85">
+                      {model.model}
+                    </span>
                     <span className="text-[9px] font-normal leading-3 text-base-content/58">
-                      {t("dashboard.modelPerformance.reasoningEffort")}: {effortLabel(model.reasoningEffort, effortLabels, t("dashboard.modelPerformance.effort.unspecified"))}
+                      {t("dashboard.modelPerformance.reasoningEffort")}:{" "}
+                      {effortLabel(
+                        model.reasoningEffort,
+                        effortLabels,
+                        t("dashboard.modelPerformance.effort.unspecified"),
+                      )}
                     </span>
                   </span>
                 }
@@ -173,12 +207,17 @@ function ModelPerformanceTableRow({
   emphasized?: boolean;
 }) {
   return (
-    <tr className={cn("border-b border-base-300/35 last:border-b-0", emphasized && "bg-base-100/50")}>
+    <tr
+      className={cn("border-b border-base-300/35 last:border-b-0", emphasized && "bg-base-100/50")}
+    >
       <th scope="row" className="px-2 py-2 text-left font-medium text-base-content/80">
         {label}
       </th>
       {values.map((value, index) => (
-        <td key={`${value}:${index}`} className="border-l border-base-300/30 px-1.5 py-2 text-right font-mono font-semibold tabular-nums text-base-content whitespace-nowrap">
+        <td
+          key={`${value}:${index}`}
+          className="border-l border-base-300/30 px-1.5 py-2 text-right font-mono font-semibold tabular-nums text-base-content whitespace-nowrap"
+        >
           {value}
         </td>
       ))}

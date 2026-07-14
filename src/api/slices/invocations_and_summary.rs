@@ -4205,9 +4205,11 @@ impl ModelPerformanceAccumulator {
     fn metrics(&self, range: ExactUtcRange) -> ModelPerformanceMetricsResponse {
         let range_minutes = (range.end - range.start).num_milliseconds() as f64 / 60_000.0;
         ModelPerformanceMetricsResponse {
-            tokens_per_minute: (range_minutes > 0.0)
-                .then_some(self.total_tokens as f64 / range_minutes)
-                .unwrap_or(0.0),
+            tokens_per_minute: if range_minutes > 0.0 {
+                self.total_tokens as f64 / range_minutes
+            } else {
+                0.0
+            },
             streaming_response_rate: (self.stream_duration_ms > 0.0)
                 .then_some(self.stream_output_tokens as f64 / (self.stream_duration_ms / 1_000.0)),
             avg_response_ms: (self.response_sample_count > 0)
@@ -5852,7 +5854,9 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         start: range_window.start,
         end: range_window.end,
     };
-    if !include_accounts {
+    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
+    let model_performance_available = range.start >= retention_cutoff;
+    if !include_accounts && range.start < retention_cutoff {
         return load_dashboard_activity_summary_only_snapshot(
             state,
             range_name,
@@ -6217,8 +6221,12 @@ pub(crate) async fn load_dashboard_activity_snapshot(
             let meta = upstream_account_id.and_then(|id| account_meta.get(&id));
             let status_fields =
                 meta.map(|row| build_upstream_account_activity_status_fields(row, Utc::now()));
-            let model_performance = aggregate.model_performance.into_response(range, true);
-            let tokens_per_minute = Some(model_performance.total.tokens_per_minute);
+            let model_performance = aggregate
+                .model_performance
+                .into_response(range, model_performance_available);
+            let tokens_per_minute = model_performance
+                .available
+                .then_some(model_performance.total.tokens_per_minute);
             let spend_rate = compute_dashboard_range_rate(aggregate.total_cost, range);
             let (in_progress_invocation_count, in_progress_phase_counts, retry_invocation_count) =
                 if range_name == "yesterday" {
@@ -6358,7 +6366,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     let summary = build_dashboard_activity_summary(
         &accounts,
         range_name != "yesterday",
-        model_performance.into_response(range, true),
+        model_performance.into_response(range, model_performance_available),
     );
     Ok(DashboardActivitySnapshot {
         range: range_name.to_string(),

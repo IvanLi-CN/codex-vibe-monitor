@@ -73,7 +73,10 @@ export function ModelPerformanceTrigger({
     <>
       <button
         type="button"
-        className={cn("inline-flex min-w-0 cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary", className)}
+        className={cn(
+          "inline-flex min-w-0 cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+          className,
+        )}
         aria-label={ariaLabel}
         onClick={() => setOpen(true)}
       >
@@ -86,7 +89,11 @@ export function ModelPerformanceTrigger({
             <DialogCloseIcon aria-label={t("dashboard.modelPerformance.close")} />
           </div>
           <div className="max-h-[calc(min(100dvh-1rem,46rem)-4.5rem)] overflow-y-auto px-4 py-4 sm:px-5">
-            <ModelPerformanceDetails title={title} performance={performance} presentation="drawer" />
+            <ModelPerformanceDetails
+              title={title}
+              performance={performance}
+              presentation="drawer"
+            />
           </div>
         </DialogContent>
       </Dialog>

@@ -85,8 +85,8 @@ import {
   persistDashboardWorkspaceSort,
   readDashboardWorkspaceSort,
 } from "./dashboardWorkspaceSort";
-import { UsageBreakdownTooltip } from "./UsageBreakdownTooltip";
 import { ModelPerformanceTrigger } from "./ModelPerformanceTrigger";
+import { UsageBreakdownTooltip } from "./UsageBreakdownTooltip";
 
 export interface DashboardOpenUpstreamAccountOptions {
   tab?: "overview" | "routing" | "healthEvents";
