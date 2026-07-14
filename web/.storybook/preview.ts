@@ -39,6 +39,11 @@ const COMMON_VIEWPORTS = {
     styles: { width: "1660px", height: "960px" },
     type: "desktop",
   },
+  desktop1920: {
+    name: "Desktop 1920",
+    styles: { width: "1920px", height: "1080px" },
+    type: "desktop",
+  },
 };
 
 function StorybookThemeBridge({ themeMode }: { themeMode: ThemeMode }) {

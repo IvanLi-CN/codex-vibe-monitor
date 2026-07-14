@@ -124,7 +124,7 @@ type ConversationActivityDragAxis = "pending" | "horizontal" | "vertical" | "fre
 type ConversationBindingDraftKind = PromptCacheConversationBindingKind;
 export type PromptCacheConversationDrawerTab = "overview" | "calls" | "settings";
 type OptionalBooleanDraft = "inherit" | "true" | "false";
-type RewriteModeDraft = "inherit" | PromptCacheConversationRewriteMode;
+type RewriteModeDraft = PromptCacheConversationRewriteMode;
 type ConversationPolicyField =
   | "allowSwitchUpstream"
   | "fastModeRewriteMode"
@@ -209,8 +209,8 @@ function applyBindingPolicyDraft(
         ? "true"
         : "false",
   );
-  setters.setFastModeDraft(nextBinding.fastModeRewriteMode ?? "inherit");
-  setters.setImageToolDraft(nextBinding.imageToolRewriteMode ?? "inherit");
+  setters.setFastModeDraft(nextBinding.fastModeRewriteMode ?? "keep_original");
+  setters.setImageToolDraft(nextBinding.imageToolRewriteMode ?? "keep_original");
   setters.setAvailableModelsMode(nextBinding.availableModels == null ? "inherit" : "override");
   setters.setAvailableModelsDraft((nextBinding.availableModels ?? []).join(", "));
   setters.setForwardProxyKeysDraft(normalizeConversationProxyKeys(nextBinding.forwardProxyKeys));
@@ -1964,8 +1964,8 @@ export function PromptCacheConversationHistoryDrawer({
     useState<RoutingTimeoutOverrideEnabledState>({});
   const [allowSwitchUpstreamDraft, setAllowSwitchUpstreamDraft] =
     useState<OptionalBooleanDraft>("inherit");
-  const [fastModeDraft, setFastModeDraft] = useState<RewriteModeDraft>("inherit");
-  const [imageToolDraft, setImageToolDraft] = useState<RewriteModeDraft>("inherit");
+  const [fastModeDraft, setFastModeDraft] = useState<RewriteModeDraft>("keep_original");
+  const [imageToolDraft, setImageToolDraft] = useState<RewriteModeDraft>("keep_original");
   const [availableModelsMode, setAvailableModelsMode] = useState<"inherit" | "override">("inherit");
   const [availableModelsDraft, setAvailableModelsDraft] = useState("");
   const [forwardProxyKeysDraft, setForwardProxyKeysDraft] = useState<string[]>([]);
@@ -2221,8 +2221,8 @@ export function PromptCacheConversationHistoryDrawer({
       setBindingTimeoutDraft({});
       setBindingTimeoutEnabledFields({});
       setAllowSwitchUpstreamDraft("inherit");
-      setFastModeDraft("inherit");
-      setImageToolDraft("inherit");
+      setFastModeDraft("keep_original");
+      setImageToolDraft("keep_original");
       setAvailableModelsMode("inherit");
       setAvailableModelsDraft("");
       setForwardProxyKeysDraft([]);
@@ -2459,10 +2459,6 @@ export function PromptCacheConversationHistoryDrawer({
   ];
   const rewriteModeOptions = [
     {
-      value: "inherit",
-      label: t("live.conversations.drawer.policy.inherit"),
-    },
-    {
       value: "force_remove",
       label: t("live.conversations.drawer.policy.rewrite.forceRemove"),
     },
@@ -2493,6 +2489,7 @@ export function PromptCacheConversationHistoryDrawer({
     async (
       field: ConversationPolicyField,
       value: boolean | PromptCacheConversationRewriteMode | string | string[] | null,
+      keepExpanded = false,
     ) => {
       if (!conversationKey || !binding || policySavingField) return;
       if (field === "availableModels" && Array.isArray(value) && value.length === 0) {
@@ -2534,7 +2531,7 @@ export function PromptCacheConversationHistoryDrawer({
           setAvailableModelsDraft,
           setForwardProxyKeysDraft,
         });
-        setExpandedPolicyField(null);
+        if (!keepExpanded) setExpandedPolicyField(null);
       } catch (err) {
         setBindingError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -2732,11 +2729,11 @@ export function PromptCacheConversationHistoryDrawer({
                   size="sm"
                   options={rewriteModeOptions}
                   onValueChange={(value) => {
-                    if (value === "inherit") return;
                     setFastModeDraft(value as RewriteModeDraft);
                     void savePolicyField(
                       "fastModeRewriteMode",
                       value as PromptCacheConversationRewriteMode,
+                      true,
                     );
                   }}
                 />,
@@ -2753,11 +2750,11 @@ export function PromptCacheConversationHistoryDrawer({
                   size="sm"
                   options={rewriteModeOptions}
                   onValueChange={(value) => {
-                    if (value === "inherit") return;
                     setImageToolDraft(value as RewriteModeDraft);
                     void savePolicyField(
                       "imageToolRewriteMode",
                       value as PromptCacheConversationRewriteMode,
+                      true,
                     );
                   }}
                 />,

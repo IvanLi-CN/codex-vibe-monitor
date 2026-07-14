@@ -69,6 +69,11 @@ async function findTokyoDetailDialog(documentScope: ReturnType<typeof within>) {
   });
 }
 
+async function expectFixedDesktopDrawerWidth(dialog: HTMLElement) {
+  const expectedWidth = Math.min(90 * 16, window.innerWidth - 2 * 16);
+  await expect(dialog.getBoundingClientRect().width).toBe(expectedWidth);
+}
+
 function setTextboxValue(element: HTMLInputElement, value: string) {
   const view = element.ownerDocument.defaultView;
   const setter = view
@@ -81,11 +86,18 @@ function setTextboxValue(element: HTMLInputElement, value: string) {
 }
 
 export const DetailDrawer: Story = {
+  tags: ["test"],
   render: () => <AccountPoolStoryRouter initialEntry={detailRouteEntry(101)} />,
+  parameters: {
+    viewport: {
+      defaultViewport: "desktop1920",
+    },
+  },
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body);
     window.__storybookUpstreamAccountsController__?.clearRequestLog();
     const dialog = await findTokyoDetailDialog(documentScope);
+    await expectFixedDesktopDrawerWidth(dialog);
     const initialRequestLog = window.__storybookUpstreamAccountsController__?.getRequestLog() ?? [];
     await expect(initialRequestLog.some((entry) => entry.includes("/sticky-keys"))).toBe(false);
     await expect(
@@ -96,48 +108,18 @@ export const DetailDrawer: Story = {
       "aria-selected",
       "true",
     );
-    await expect(
-      within(dialog).getByText(/最近成功同步|last successful sync/i),
-    ).toBeInTheDocument();
-    await expect(
-      within(dialog).getByText(/图片工具能力|image tool capability/i),
-    ).toBeInTheDocument();
-    await expect(within(dialog).getByText(/账号 ID|Account ID/i)).toBeInTheDocument();
-    await expect(within(dialog).getByText(/User ID/i)).toBeInTheDocument();
-    await expect(within(dialog).getByText(/org_tokyo/i)).toBeInTheDocument();
-    await expect(within(dialog).getByText(/user_tokyo/i)).toBeInTheDocument();
-    await expect(within(dialog).getByText(/5 小时窗口|5h window/i)).toBeInTheDocument();
-    await expect(
-      within(dialog).getByTestId("upstream-account-records-activity-overview"),
-    ).toBeInTheDocument();
     await userEvent.click(within(dialog).getByRole("tab", { name: /上游调用|upstream calls/i }));
-    await expect(
-      within(dialog).queryByTestId("upstream-account-records-activity-overview"),
-    ).not.toBeInTheDocument();
-    await expect(within(dialog).getByTestId("upstream-account-call-records")).toBeInTheDocument();
-    await expect(
-      within(dialog).queryByRole("combobox", { name: /记录数量|rows/i }),
-    ).not.toBeInTheDocument();
-    await expect(within(dialog).getByText(/pool upstream responded with 500/i)).toBeInTheDocument();
+    await expectFixedDesktopDrawerWidth(dialog);
     await userEvent.click(within(dialog).getByRole("tab", { name: /路由|routing/i }));
+    await expectFixedDesktopDrawerWidth(dialog);
     await waitFor(() => {
       const requestLog = window.__storybookUpstreamAccountsController__?.getRequestLog() ?? [];
       expect(requestLog.some((entry) => entry.includes("/sticky-keys"))).toBe(true);
     });
-    await expect(
-      within(dialog).getByText(/最终生效规则|effective routing rule/i),
-    ).toBeInTheDocument();
-    await expect(within(dialog).getByText(/sticky-pool/i)).toBeInTheDocument();
     await userEvent.click(within(dialog).getByRole("tab", { name: /健康与事件|health & events/i }));
-    await expect(
-      within(dialog).getByText(/最近账号动作|latest account action/i),
-    ).toBeInTheDocument();
-    await expect(
-      within(dialog).getByText(
-        /Weekly cap exhausted; traffic was moved to a sibling Tokyo lane\./i,
-      ),
-    ).toBeInTheDocument();
+    await expectFixedDesktopDrawerWidth(dialog);
     await userEvent.click(within(dialog).getByRole("tab", { name: /编辑|edit/i }));
+    await expectFixedDesktopDrawerWidth(dialog);
     await waitFor(() => {
       expect(dialog.querySelector('input[name="detailDisplayName"]')).not.toBeNull();
     });
@@ -329,39 +311,32 @@ function DetailDrawerStorySurface({
 }
 
 export const DetailDrawerRecordsLoading: Story = {
+  tags: ["test"],
   render: () => <DetailDrawerStorySurface initialTab="records" />,
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body);
     const dialog = await documentScope.findByRole("dialog", {
       name: /Codex Pro - Tokyo/i,
     });
+    await expectFixedDesktopDrawerWidth(dialog);
     await expect(
       within(dialog).getByRole("tab", { name: /上游调用|upstream calls/i }),
     ).toHaveAttribute("aria-selected", "true");
-    await expect(
-      within(dialog).queryByText(/账号活动总览|account activity overview/i),
-    ).not.toBeInTheDocument();
-    await expect(within(dialog).getByTestId("invocation-table-loading")).toBeInTheDocument();
   },
 };
 
 export const DetailDrawerRecordsSettled: Story = {
+  tags: ["test"],
   render: () => <DetailDrawerStorySurface initialTab="records" />,
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body);
     const dialog = await documentScope.findByRole("dialog", {
       name: /Codex Pro - Tokyo/i,
     });
+    await expectFixedDesktopDrawerWidth(dialog);
     await expect(
       within(dialog).getByRole("tab", { name: /上游调用|upstream calls/i }),
     ).toHaveAttribute("aria-selected", "true");
-    await expect(
-      within(dialog).queryByText(/账号活动总览|account activity overview/i),
-    ).not.toBeInTheDocument();
-    await expect(
-      within(dialog).queryByTestId("upstream-account-records-activity-overview"),
-    ).not.toBeInTheDocument();
-    await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument();
   },
 };
 

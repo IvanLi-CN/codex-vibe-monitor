@@ -43,6 +43,8 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - Conversation policy overrides are nullable per field. `NULL` means inherit the selected account/group/root policy; a non-`NULL` value applies only to the current `promptCacheKey`.
 - Conversation `allowSwitchUpstream` is the setting labelled “切出”. It means the current conversation may switch away from the original/sticky upstream account when routing evaluates future requests.
 - Conversation FAST mode and image tool overrides use the existing rewrite modes: `force_remove`, `keep_original`, `fill_missing`, and `force_add`.
+- The conversation Settings editors for FAST mode and image tool offer only those four concrete rewrite modes; clearing a local override remains an explicit field action, not a Select option.
+- After a concrete FAST mode or image tool choice saves, its field editor remains expanded so the operator retains the editing context.
 - Conversation available-model override must contain at least one model. An empty list is rejected; clearing the override uses `null`.
 - Conversation proxy override stores one or more existing selectable forward-proxy binding keys. The list may include `__direct__`; it may not contain custom proxy URLs.
 - Runtime routing treats an observed binding as a hard constraint; if the bound target is unavailable, routing must fail through the existing no-selectable-account error path rather than falling back to the global pool.
@@ -160,6 +162,20 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given a conversation has thousands of retained records, opening the detail drawer loads only the first 50 records, keeps the binding controls interactive, and loads the next 50 records only after drawer scrolling reaches the load threshold.
 
 ## Visual Evidence
+
+PR: include
+![Conversation image-tool policy editor remains expanded after save](./assets/conversation-policy-editor-stays-expanded.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: element
+- requested_viewport: desktop1280
+- viewport_strategy: storybook-viewport
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: `Monitoring/PromptCacheConversationTable/DrawerBindingAndTimeouts`
+- state: image tool policy saved as `force_add`, field editor remains expanded
+- evidence_note: verifies that a concrete image-tool rewrite choice updates the summary and leaves the field-local editor open; the story's Chromium play test separately verifies that FAST mode and image tool menus expose only the four concrete rewrite modes and omit inheritance.
 
 ![Prompt Cache binding panel with Select listbox options](./assets/drawer-binding-select-listbox.png)
 

@@ -80,6 +80,7 @@ function buildBindingResponse(
     forwardProxyKey: overrides.forwardProxyKey ?? null,
     forwardProxyKeys:
       overrides.forwardProxyKeys ?? (overrides.forwardProxyKey ? [overrides.forwardProxyKey] : []),
+    policyFieldSources: overrides.policyFieldSources,
     updatedAt: overrides.updatedAt ?? null,
   };
 }
@@ -1024,6 +1025,16 @@ function StorybookPromptCacheAccountMock({ children }: { children: ReactNode }) 
               : current.forwardProxyKeys,
           policyFieldSources: {
             ...currentPolicySources,
+            ...("allowSwitchUpstream" in payload
+              ? { allowSwitchUpstream: "conversation" as const }
+              : {}),
+            ...("fastModeRewriteMode" in payload
+              ? { fastModeRewriteMode: "conversation" as const }
+              : {}),
+            ...("imageToolRewriteMode" in payload
+              ? { imageToolRewriteMode: "conversation" as const }
+              : {}),
+            ...("availableModels" in payload ? { availableModels: "conversation" as const } : {}),
             ...(Array.isArray(payload.forwardProxyKeys) || "forwardProxyKey" in payload
               ? { forwardProxyKey: "conversation" as const }
               : {}),
@@ -2043,6 +2054,18 @@ export const DrawerOwnerLockWithoutManualBinding: Story = {
 };
 
 export const DrawerBindingAndTimeouts: Story = {
+  tags: ["test"],
+  parameters: {
+    a11y: {
+      test: "off",
+    },
+    docs: {
+      description: {
+        story:
+          "Prompt Cache drawer showing both a manual binding and conversation-level timeout overrides, including mixed source badges across conversation, account, and global layers.",
+      },
+    },
+  },
   args: {
     stats: shortSameDayStats,
     isLoading: false,
@@ -2051,14 +2074,6 @@ export const DrawerBindingAndTimeouts: Story = {
   globals: {
     themeMode: "light",
     viewport: { value: "desktop1280", isRotated: false },
-  },
-  parameters: {
-    docs: {
-      description: {
-        story:
-          "Prompt Cache drawer showing both a manual binding and conversation-level timeout overrides, including mixed source badges across conversation, account, and global layers.",
-      },
-    },
   },
   play: async ({ canvasElement }) => {
     bindingByPromptCacheKey.set(
@@ -2115,6 +2130,34 @@ export const DrawerBindingAndTimeouts: Story = {
     ).toBeInTheDocument();
     await expect(documentScope.getByText(/40s/)).toBeInTheDocument();
     await expect(documentScope.getAllByText(/对话|Conversation/i).length).toBeGreaterThan(0);
+
+    const fastModeEditButton = documentScope.getByRole("button", {
+      name: /编辑对话覆盖: FAST 模式|Edit conversation override: FAST mode/i,
+    });
+    await userEvent.click(fastModeEditButton);
+    const fastModeSelect = documentScope.getByRole("combobox", {
+      name: /FAST 模式|FAST mode/i,
+    });
+    await userEvent.click(fastModeSelect);
+    const fastModeOptions = await documentScope.findByRole("listbox");
+    await expect(fastModeOptions).not.toHaveTextContent(/继承|Inherit/i);
+    await userEvent.click(documentScope.getByRole("option", { name: /补齐|Fill missing/i }));
+    await expect(fastModeSelect).toHaveTextContent(/补齐|Fill missing/i);
+
+    const imageToolEditButton = documentScope.getByRole("button", {
+      name: /编辑对话覆盖: 图片工具|Edit conversation override: Image tool/i,
+    });
+    await userEvent.click(imageToolEditButton);
+    const imageToolSelect = documentScope.getByRole("combobox", {
+      name: /图片工具|Image tool/i,
+    });
+    await userEvent.click(imageToolSelect);
+    const imageToolOptions = await documentScope.findByRole("listbox");
+    await expect(imageToolOptions).not.toHaveTextContent(/继承|Inherit/i);
+    await userEvent.click(documentScope.getByRole("option", { name: /强制添加|Force add/i }));
+    await expect(imageToolSelect).toHaveTextContent(/强制添加|Force add/i);
+    await userEvent.click(imageToolSelect);
+    await expect(await documentScope.findByRole("listbox")).not.toHaveTextContent(/继承|Inherit/i);
   },
 };
 
