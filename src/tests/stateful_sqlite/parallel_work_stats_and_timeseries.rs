@@ -13085,6 +13085,14 @@ async fn dashboard_activity_progressive_summary_keeps_archived_account_aggregate
     assert_eq!(account.failure_count, 1);
     assert_eq!(account.total_tokens, 30);
     assert_f64_close(account.total_cost, 0.30);
+    assert_eq!(
+        account.latest_conversation_created_at.as_deref(),
+        Some(failure_at.as_str())
+    );
+    assert_eq!(
+        account.last_invocation_at.as_deref(),
+        Some(failure_at.as_str())
+    );
     assert!(account.recent_invocations.is_empty());
 
     let Json(compatible_response) = fetch_dashboard_activity(
@@ -13108,6 +13116,107 @@ async fn dashboard_activity_progressive_summary_keeps_archived_account_aggregate
     assert_eq!(compatible_account.request_count, 2);
     assert_eq!(compatible_account.total_tokens, 30);
     assert_eq!(compatible_account.recent_invocations.len(), 2);
+}
+
+#[tokio::test]
+async fn dashboard_activity_progressive_summary_keeps_archive_created_at_across_batches() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 1;
+    let state = test_state_from_config(config, true).await;
+    let archived_hour = (Utc::now().with_timezone(&Shanghai).naive_local()
+        - ChronoDuration::days(3))
+    .with_minute(0)
+    .and_then(|value| value.with_second(0))
+    .expect("valid archived hour");
+    let first_at = format_naive(
+        archived_hour
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived time"),
+    );
+    let second_at = format_naive(
+        archived_hour
+            .checked_add_signed(ChronoDuration::hours(5))
+            .and_then(|value| value.checked_add_signed(ChronoDuration::minutes(10)))
+            .expect("second archived time"),
+    );
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "dashboard-progressive-archive-created-at-early",
+        &[SeedInvocationArchiveBatchRow {
+            id: 92_001,
+            invoke_id: "dashboard-progressive-archive-created-at-early",
+            occurred_at: first_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 10,
+            cost: 0.10,
+            ttfb_ms: Some(100.0),
+            payload: Some(
+                r#"{"promptCacheKey":"pck-dashboard-progressive-archive-created-at","upstreamAccountId":42,"upstreamAccountName":"Archive Alpha"}"#,
+            ),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "dashboard-progressive-archive-created-at-late",
+        &[SeedInvocationArchiveBatchRow {
+            id: 92_002,
+            invoke_id: "dashboard-progressive-archive-created-at-late",
+            occurred_at: second_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 20,
+            cost: 0.20,
+            ttfb_ms: Some(120.0),
+            payload: Some(
+                r#"{"promptCacheKey":"pck-dashboard-progressive-archive-created-at","upstreamAccountId":42,"upstreamAccountName":"Archive Alpha"}"#,
+            ),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+
+    let Json(response) = fetch_dashboard_activity(
+        State(state),
+        Query(DashboardActivityQuery {
+            range: "7d".to_string(),
+            recent_limit: Some(4),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: true,
+            include_recent: Some(false),
+        }),
+    )
+    .await
+    .expect("fetch progressive dashboard activity with cross-batch created_at");
+    let account = response
+        .accounts
+        .expect("accounts included")
+        .into_iter()
+        .find(|account| account.upstream_account_id == Some(42))
+        .expect("archived account summary");
+    assert_eq!(
+        account.latest_conversation_created_at.as_deref(),
+        Some(first_at.as_str())
+    );
+    assert_eq!(
+        account.last_invocation_at.as_deref(),
+        Some(second_at.as_str())
+    );
 }
 
 #[tokio::test]

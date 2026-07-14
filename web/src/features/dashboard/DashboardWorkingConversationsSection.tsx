@@ -2846,7 +2846,11 @@ function DashboardUpstreamAccountActivityCard({
     totalTokenValue,
   ]);
   return (
-    <article data-testid="dashboard-upstream-account-card" className={ACCOUNT_CARD_CLASS_NAME}>
+    <article
+      data-testid="dashboard-upstream-account-card"
+      data-account-key={account.accountKey ?? account.upstreamAccountId ?? "unassigned"}
+      className={ACCOUNT_CARD_CLASS_NAME}
+    >
       <div
         data-testid="dashboard-upstream-account-header-row"
         className="flex flex-wrap items-start justify-between gap-4"
@@ -3194,6 +3198,15 @@ interface DashboardWorkingConversationAnchorCardElement extends HTMLElement {
   __dashboardWorkingConversationAnchorKey?: string;
 }
 
+type DashboardVisibleAnchorKind = "conversation" | "upstreamAccount";
+
+interface DashboardVisibleAnchorTarget {
+  hasHiddenContentAbove: boolean;
+  kind: DashboardVisibleAnchorKind;
+  selector: string;
+  readAnchorKey: (card: HTMLElement) => string;
+}
+
 function readDashboardWorkingConversationAnchorKey(card: HTMLElement) {
   return (
     (card as DashboardWorkingConversationAnchorCardElement)
@@ -3201,15 +3214,17 @@ function readDashboardWorkingConversationAnchorKey(card: HTMLElement) {
   ).trim();
 }
 
-function captureVisibleCardAnchor(container: HTMLDivElement, hasVirtualizedRowsAbove = false) {
+function readDashboardUpstreamAccountAnchorKey(card: HTMLElement) {
+  return (card.getAttribute("data-account-key") ?? "").trim();
+}
+
+function captureVisibleCardAnchor(container: HTMLDivElement, target: DashboardVisibleAnchorTarget) {
   const containerRect = container.getBoundingClientRect();
   const topBoundary = Math.max(0, containerRect.top);
   const viewportBottom =
     typeof window === "undefined" ? Number.POSITIVE_INFINITY : window.innerHeight;
-  const cards = Array.from(
-    container.querySelectorAll<HTMLElement>('[data-testid="dashboard-working-conversation-card"]'),
-  );
-  let hasHiddenContentAbove = hasVirtualizedRowsAbove;
+  const cards = Array.from(container.querySelectorAll<HTMLElement>(target.selector));
+  let hasHiddenContentAbove = target.hasHiddenContentAbove;
   for (const card of cards) {
     const rect = card.getBoundingClientRect();
     if (rect.top < topBoundary) {
@@ -3219,9 +3234,10 @@ function captureVisibleCardAnchor(container: HTMLDivElement, hasVirtualizedRowsA
       continue;
     }
     if (rect.top >= viewportBottom) continue;
-    const anchorKey = readDashboardWorkingConversationAnchorKey(card);
+    const anchorKey = target.readAnchorKey(card);
     if (!anchorKey) continue;
     return {
+      kind: target.kind,
       anchorKey,
       top: rect.top - topBoundary,
       hasHiddenContentAbove,
@@ -3273,6 +3289,7 @@ export function DashboardWorkingConversationsSection({
   const [gridElement, setGridElement] = useState<HTMLDivElement | null>(null);
   const [scrollMargin, setScrollMargin] = useState(0);
   const visibleAnchorRef = useRef<{
+    kind: DashboardVisibleAnchorKind;
     anchorKey: string;
     top: number;
   } | null>(null);
@@ -3535,6 +3552,23 @@ export function DashboardWorkingConversationsSection({
           start: scrollMargin + index * 360,
         }));
   const hasVirtualizedRowsAbove = renderedRows.length > 0 ? renderedRows[0]!.index > 0 : false;
+  const visibleAnchorTarget = useMemo<DashboardVisibleAnchorTarget>(
+    () =>
+      activeView === "conversations"
+        ? {
+            hasHiddenContentAbove: hasVirtualizedRowsAbove,
+            kind: "conversation",
+            selector: '[data-testid="dashboard-working-conversation-card"]',
+            readAnchorKey: readDashboardWorkingConversationAnchorKey,
+          }
+        : {
+            hasHiddenContentAbove: false,
+            kind: "upstreamAccount",
+            selector: '[data-testid="dashboard-upstream-account-card"]',
+            readAnchorKey: readDashboardUpstreamAccountAnchorKey,
+          },
+    [activeView, hasVirtualizedRowsAbove],
+  );
   const totalSize = virtualRows.length > 0 ? rowVirtualizer.getTotalSize() : rows.length * 360;
   const refreshTargetCount = useMemo(() => {
     if (cards.length === 0) {
@@ -3609,7 +3643,25 @@ export function DashboardWorkingConversationsSection({
   }, [gridElement]);
 
   useEffect(() => {
+    const container = gridElement;
+    if (!container) {
+      visibleAnchorRef.current = null;
+      return;
+    }
+    const updateAnchor = () => {
+      const nextAnchor = captureVisibleCardAnchor(container, visibleAnchorTarget);
+      visibleAnchorRef.current = nextAnchor?.hasHiddenContentAbove ? nextAnchor : null;
+    };
+    updateAnchor();
+    window.addEventListener("scroll", updateAnchor, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", updateAnchor);
+    };
+  }, [gridElement, visibleAnchorTarget]);
+
+  useEffect(() => {
     if (
+      activeView !== "conversations" ||
       !hasMore ||
       previousRowsLengthRef.current !== rows.length ||
       (previousLoadingMoreRef.current && !isLoadingMore)
@@ -3618,11 +3670,11 @@ export function DashboardWorkingConversationsSection({
     }
     previousRowsLengthRef.current = rows.length;
     previousLoadingMoreRef.current = isLoadingMore;
-  }, [hasMore, isLoadingMore, rows.length]);
+  }, [activeView, hasMore, isLoadingMore, rows.length]);
 
   useEffect(() => {
     const container = gridElement;
-    if (!container || !hasMore || !onLoadMore) return;
+    if (activeView !== "conversations" || !container || !hasMore || !onLoadMore) return;
     const maybeLoadMore = (trigger: "mount" | "scroll") => {
       if (isLoadingMore || loadMoreRequestPendingRef.current) return;
       if (typeof window === "undefined") return;
@@ -3641,13 +3693,9 @@ export function DashboardWorkingConversationsSection({
       }
     };
     const mountTimer = window.setTimeout(() => {
-      const nextAnchor = captureVisibleCardAnchor(container, hasVirtualizedRowsAbove);
-      visibleAnchorRef.current = nextAnchor?.hasHiddenContentAbove ? nextAnchor : null;
       maybeLoadMore("mount");
     }, 0);
     const handleScroll = () => {
-      const nextAnchor = captureVisibleCardAnchor(container, hasVirtualizedRowsAbove);
-      visibleAnchorRef.current = nextAnchor?.hasHiddenContentAbove ? nextAnchor : null;
       maybeLoadMore("scroll");
     };
     window.addEventListener("scroll", handleScroll, { passive: true });
@@ -3655,7 +3703,15 @@ export function DashboardWorkingConversationsSection({
       window.clearTimeout(mountTimer);
       window.removeEventListener("scroll", handleScroll);
     };
-  }, [gridElement, hasMore, hasVirtualizedRowsAbove, isLoadingMore, onLoadMore, rows.length]);
+  }, [
+    activeView,
+    gridElement,
+    hasMore,
+    hasVirtualizedRowsAbove,
+    isLoadingMore,
+    onLoadMore,
+    rows.length,
+  ]);
 
   useEffect(() => {
     setRefreshTargetCount?.(refreshTargetCount);
@@ -3664,12 +3720,10 @@ export function DashboardWorkingConversationsSection({
   useLayoutEffect(() => {
     const container = gridElement;
     const pendingAnchor = visibleAnchorRef.current;
-    if (container && pendingAnchor?.anchorKey) {
+    if (container && pendingAnchor?.anchorKey && pendingAnchor.kind === visibleAnchorTarget.kind) {
       const anchoredCard = Array.from(
-        container.querySelectorAll<HTMLElement>(
-          '[data-testid="dashboard-working-conversation-card"]',
-        ),
-      ).find((card) => readDashboardWorkingConversationAnchorKey(card) === pendingAnchor.anchorKey);
+        container.querySelectorAll<HTMLElement>(visibleAnchorTarget.selector),
+      ).find((card) => visibleAnchorTarget.readAnchorKey(card) === pendingAnchor.anchorKey);
       if (anchoredCard) {
         const containerTopBoundary = Math.max(0, container.getBoundingClientRect().top);
         const nextTop = anchoredCard.getBoundingClientRect().top - containerTopBoundary;
@@ -3679,11 +3733,9 @@ export function DashboardWorkingConversationsSection({
         }
       }
     }
-    const nextAnchor = container
-      ? captureVisibleCardAnchor(container, hasVirtualizedRowsAbove)
-      : null;
+    const nextAnchor = container ? captureVisibleCardAnchor(container, visibleAnchorTarget) : null;
     visibleAnchorRef.current = nextAnchor?.hasHiddenContentAbove ? nextAnchor : null;
-  }, [cards, columnCount, gridElement, hasVirtualizedRowsAbove, rows]);
+  }, [cards, columnCount, gridElement, rows, upstreamAccounts, visibleAnchorTarget]);
 
   if (error && cards.length === 0) {
     return (
@@ -3792,6 +3844,7 @@ export function DashboardWorkingConversationsSection({
             {upstreamAccounts.length > 0 ? (
               <div
                 data-testid="dashboard-upstream-account-grid"
+                ref={setGridContainerRef}
                 className="grid grid-cols-1 gap-4 desktop1660:grid-cols-[repeat(2,minmax(0,1fr))]"
               >
                 {upstreamAccountRows.flat().map((account) => (

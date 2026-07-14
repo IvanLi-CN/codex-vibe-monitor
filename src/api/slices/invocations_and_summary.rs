@@ -3909,6 +3909,16 @@ pub(crate) fn build_upstream_account_activity_status_fields(
     }
 }
 
+fn merge_latest_optional_timestamp(current: &mut Option<String>, candidate: Option<String>) {
+    let Some(candidate) = candidate else {
+        return;
+    };
+    *current = Some(match current.take() {
+        Some(existing) => existing.max(candidate),
+        None => candidate,
+    });
+}
+
 pub(crate) fn invocation_upstream_account_id_with_attempt_fallback_sql(
     invocation_ref: &str,
 ) -> String {
@@ -4115,6 +4125,13 @@ struct UpstreamAccountActivityAggregateRow {
 }
 
 #[derive(Debug, FromRow)]
+struct UpstreamAccountPromptCacheCreatedAtRow {
+    upstream_account_id: Option<i64>,
+    prompt_cache_key: String,
+    first_occurred_at: String,
+}
+
+#[derive(Debug, FromRow)]
 struct UpstreamAccountUsageBreakdownAggregateRow {
     upstream_account_id: Option<i64>,
     model: String,
@@ -4166,17 +4183,64 @@ async fn query_live_upstream_account_activity_aggregate_rows(
     );
     let first_response_byte_total_sql = "COALESCE(t_req_read_ms, 0) + COALESCE(t_req_parse_ms, 0) + COALESCE(t_upstream_connect_ms, 0) + COALESCE(t_upstream_ttfb_ms, 0)";
     let prompt_cache_key_sql = INVOCATION_PROMPT_CACHE_KEY_SQL;
-    let conversation_created_at_sql = if use_attempt_fallback {
-        prompt_cache_conversation_created_at_sql(prompt_cache_key_sql, source_scope)
+    let filtered_prompt_cache_key_sql = "filtered_invocations.prompt_cache_key";
+    let preaggregated_conversation_created_at_sql = if use_attempt_fallback {
+        prompt_cache_conversation_created_at_sql(filtered_prompt_cache_key_sql, source_scope)
     } else {
-        invocation_history_conversation_created_at_sql(prompt_cache_key_sql, source_scope)
+        invocation_history_conversation_created_at_sql(filtered_prompt_cache_key_sql, source_scope)
     };
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
+        WITH filtered_invocations AS (
+            SELECT
+                occurred_at,
+                status,
+                total_tokens,
+                cost,
+                cache_input_tokens,
+                payload,
+                error_message,
+                failure_kind,
+                failure_class,
+                is_actionable,
+                t_req_read_ms,
+                t_req_parse_ms,
+                t_upstream_connect_ms,
+                t_upstream_ttfb_ms,
+                t_total_ms,
+                {upstream_account_id_sql} AS upstream_account_id,
+                {prompt_cache_key_sql} AS prompt_cache_key
+            FROM codex_invocations
+            WHERE occurred_at >=
+        "#,
+    ));
+    query
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(range.end));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')");
+    query.push(format!(
+        r#"
+        ),
+        conversation_created_at_by_key AS (
+            SELECT
+                filtered_invocations.prompt_cache_key AS prompt_cache_key,
+                COALESCE(
+                    {preaggregated_conversation_created_at_sql},
+                    MIN(filtered_invocations.occurred_at)
+                ) AS conversation_created_at
+            FROM filtered_invocations
+            WHERE filtered_invocations.prompt_cache_key IS NOT NULL
+              AND filtered_invocations.prompt_cache_key <> ''
+            GROUP BY filtered_invocations.prompt_cache_key
+        )
         SELECT
-            {upstream_account_id_sql} AS upstream_account_id,
-            MAX({conversation_created_at_sql}) AS latest_conversation_created_at,
-            MAX(occurred_at) AS last_invocation_at,
+            filtered_invocations.upstream_account_id AS upstream_account_id,
+            MAX(COALESCE(conversation_created_at_by_key.conversation_created_at, filtered_invocations.occurred_at)) AS latest_conversation_created_at,
+            MAX(filtered_invocations.occurred_at) AS last_invocation_at,
             COUNT(*) AS request_count,
             SUM(CASE WHEN {success_sql} THEN 1 ELSE 0 END) AS success_count,
             SUM(CASE WHEN {failure_sql} THEN 1 ELSE 0 END) AS failure_count,
@@ -4193,19 +4257,12 @@ async fn query_live_upstream_account_activity_aggregate_rows(
             CAST(COALESCE(SUM(CASE WHEN {success_sql} AND t_upstream_ttfb_ms > 0 THEN {first_response_byte_total_sql} ELSE 0 END), 0) AS REAL) AS first_response_byte_total_sum_ms,
             SUM(CASE WHEN {success_sql} AND t_total_ms >= 0 THEN 1 ELSE 0 END) AS total_latency_sample_count,
             CAST(COALESCE(SUM(CASE WHEN {success_sql} AND t_total_ms >= 0 THEN t_total_ms ELSE 0 END), 0) AS REAL) AS total_latency_sum_ms
-        FROM codex_invocations
-        WHERE occurred_at >=
+        FROM filtered_invocations
+        LEFT JOIN conversation_created_at_by_key
+          ON conversation_created_at_by_key.prompt_cache_key = filtered_invocations.prompt_cache_key
         "#,
     ));
-    query
-        .push_bind(db_occurred_at_lower_bound(range.start))
-        .push(" AND occurred_at < ")
-        .push_bind(db_occurred_at_upper_bound(range.end));
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
-    }
-    query.push(" AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')");
-    query.push(" GROUP BY upstream_account_id");
+    query.push(" GROUP BY filtered_invocations.upstream_account_id");
 
     let rows = query
         .build_query_as::<UpstreamAccountActivityAggregateRow>()
@@ -4225,6 +4282,46 @@ async fn query_live_upstream_account_activity_aggregate_rows(
         );
     }
     Ok(rows)
+}
+
+async fn query_live_upstream_account_prompt_cache_created_at_rows(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    use_attempt_fallback: bool,
+) -> Result<Vec<UpstreamAccountPromptCacheCreatedAtRow>, ApiError> {
+    let upstream_account_id_sql = if use_attempt_fallback {
+        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations")
+    } else {
+        INVOCATION_UPSTREAM_ACCOUNT_ID_SQL.to_string()
+    };
+    let prompt_cache_key_sql = INVOCATION_PROMPT_CACHE_KEY_SQL;
+    let normalized_status_sql = INVOCATION_STATUS_NORMALIZED_SQL;
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
+    query
+        .push(upstream_account_id_sql.as_str())
+        .push(" AS upstream_account_id, ")
+        .push(prompt_cache_key_sql)
+        .push(" AS prompt_cache_key, MIN(occurred_at) AS first_occurred_at FROM codex_invocations WHERE occurred_at >= ")
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(range.end))
+        .push(" AND ")
+        .push(normalized_status_sql)
+        .push(" NOT IN ('running', 'pending') AND ")
+        .push(prompt_cache_key_sql)
+        .push(" IS NOT NULL AND ")
+        .push(prompt_cache_key_sql)
+        .push(" <> ''");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" GROUP BY upstream_account_id, prompt_cache_key");
+    query
+        .build_query_as::<UpstreamAccountPromptCacheCreatedAtRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
 }
 
 async fn query_live_upstream_account_usage_breakdown_rows(
@@ -4342,6 +4439,8 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
     .await?;
     let mut aggregates = Vec::new();
     let mut usage_breakdowns = Vec::new();
+    let mut earliest_created_at_by_prompt_cache_key = HashMap::<String, String>::new();
+    let mut prompt_cache_keys_by_account = HashMap::<Option<i64>, HashSet<String>>::new();
     for archive_row in archive_rows {
         let Some((archive_pool, temp_cleanup)) = crate::stats::open_invocation_archive_batch_pool(
             &archive_row,
@@ -4363,6 +4462,32 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
             )
             .await?,
         );
+        for row in query_live_upstream_account_prompt_cache_created_at_rows(
+            &archive_pool,
+            source_scope,
+            range,
+            false,
+        )
+        .await?
+        {
+            let UpstreamAccountPromptCacheCreatedAtRow {
+                upstream_account_id,
+                prompt_cache_key,
+                first_occurred_at,
+            } = row;
+            earliest_created_at_by_prompt_cache_key
+                .entry(prompt_cache_key.clone())
+                .and_modify(|current| {
+                    if first_occurred_at < *current {
+                        *current = first_occurred_at.clone();
+                    }
+                })
+                .or_insert(first_occurred_at);
+            prompt_cache_keys_by_account
+                .entry(upstream_account_id)
+                .or_default()
+                .insert(prompt_cache_key);
+        }
         usage_breakdowns.extend(
             query_live_upstream_account_usage_breakdown_rows(
                 &archive_pool,
@@ -4375,6 +4500,28 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
         );
         archive_pool.close().await;
         drop(temp_cleanup);
+    }
+    let mut latest_created_at_by_account = HashMap::<Option<i64>, String>::new();
+    for (upstream_account_id, prompt_cache_keys) in prompt_cache_keys_by_account {
+        let mut latest_created_at = None;
+        for prompt_cache_key in prompt_cache_keys {
+            merge_latest_optional_timestamp(
+                &mut latest_created_at,
+                earliest_created_at_by_prompt_cache_key
+                    .get(&prompt_cache_key)
+                    .cloned(),
+            );
+        }
+        if let Some(latest_created_at) = latest_created_at {
+            latest_created_at_by_account.insert(upstream_account_id, latest_created_at);
+        }
+    }
+    for aggregate in &mut aggregates {
+        if let Some(latest_created_at) =
+            latest_created_at_by_account.get(&aggregate.upstream_account_id)
+        {
+            aggregate.latest_conversation_created_at = Some(latest_created_at.clone());
+        }
     }
     Ok((aggregates, usage_breakdowns))
 }
@@ -4449,17 +4596,11 @@ fn add_upstream_account_activity_preview_row(
     entry.last_occurred_at_epoch_ms = entry
         .last_occurred_at_epoch_ms
         .max(occurred_at.timestamp_millis());
-    entry.last_invocation_at = Some(match entry.last_invocation_at.take() {
-        Some(current) => current.max(row.occurred_at.clone()),
-        None => row.occurred_at.clone(),
-    });
-    if let Some(created_at) = row.conversation_created_at.as_ref() {
-        entry.latest_conversation_created_at =
-            Some(match entry.latest_conversation_created_at.take() {
-                Some(current) => current.max(created_at.clone()),
-                None => created_at.clone(),
-            });
-    }
+    merge_latest_optional_timestamp(&mut entry.last_invocation_at, Some(row.occurred_at.clone()));
+    merge_latest_optional_timestamp(
+        &mut entry.latest_conversation_created_at,
+        row.conversation_created_at.clone(),
+    );
     if entry.display_name_hint.is_none() {
         entry.display_name_hint =
             normalize_trimmed_optional_string_local(row.upstream_account_name.clone());
@@ -4553,8 +4694,10 @@ async fn query_live_upstream_account_activity_preview_rows_with_limit(
     let started_at = Instant::now();
     let resolved_upstream_account_id_sql =
         invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
-    let conversation_created_at_sql =
-        prompt_cache_conversation_created_at_sql(INVOCATION_PROMPT_CACHE_KEY_SQL, source_scope);
+    let conversation_created_at_sql = format!(
+        "COALESCE({}, occurred_at)",
+        prompt_cache_conversation_created_at_sql(INVOCATION_PROMPT_CACHE_KEY_SQL, source_scope)
+    );
     let mut query = QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, ");
     query
         .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
@@ -5575,8 +5718,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         start: range_window.start,
         end: range_window.end,
     };
-    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
-    if !include_accounts && range.start < retention_cutoff {
+    if !include_accounts {
         return load_dashboard_activity_summary_only_snapshot(
             state,
             range_name,
@@ -5585,14 +5727,18 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         )
         .await;
     }
+    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
     let mut account_activity = HashMap::<Option<i64>, UpstreamAccountActivityAccumulator>::new();
     for row in
         query_live_upstream_account_activity_aggregate_rows(&state.pool, source_scope, range, true)
             .await?
     {
         let entry = account_activity.entry(row.upstream_account_id).or_default();
-        entry.latest_conversation_created_at = row.latest_conversation_created_at;
-        entry.last_invocation_at = row.last_invocation_at;
+        merge_latest_optional_timestamp(
+            &mut entry.latest_conversation_created_at,
+            row.latest_conversation_created_at,
+        );
+        merge_latest_optional_timestamp(&mut entry.last_invocation_at, row.last_invocation_at);
         entry.request_count += row.request_count;
         entry.success_count += row.success_count;
         entry.failure_count += row.failure_count;
@@ -5635,6 +5781,11 @@ pub(crate) async fn load_dashboard_activity_snapshot(
             .await?;
         for row in archived_aggregates {
             let entry = account_activity.entry(row.upstream_account_id).or_default();
+            merge_latest_optional_timestamp(
+                &mut entry.latest_conversation_created_at,
+                row.latest_conversation_created_at,
+            );
+            merge_latest_optional_timestamp(&mut entry.last_invocation_at, row.last_invocation_at);
             entry.request_count += row.request_count;
             entry.success_count += row.success_count;
             entry.failure_count += row.failure_count;

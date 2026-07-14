@@ -2569,6 +2569,90 @@ describe("DashboardWorkingConversationsSection", () => {
     vi.useRealTimers();
   });
 
+  it("does not load more hidden conversations from the upstream-account tab", () => {
+    vi.useFakeTimers();
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(900);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
+        return {
+          x: 0,
+          y: 0,
+          top: 0,
+          bottom: 1_360,
+          left: 0,
+          right: 1200,
+          width: 1200,
+          height: 1_360,
+          toJSON: () => ({}),
+        } satisfies DOMRect;
+      }
+      if (this.getAttribute("data-testid") === "dashboard-upstream-account-grid") {
+        return {
+          x: 0,
+          y: 0,
+          top: 0,
+          bottom: 640,
+          left: 0,
+          right: 1200,
+          width: 1200,
+          height: 640,
+          toJSON: () => ({}),
+        } satisfies DOMRect;
+      }
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        bottom: 0,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: 0,
+        toJSON: () => ({}),
+      } satisfies DOMRect;
+    });
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+    const onLoadMore = vi.fn();
+
+    renderSection(
+      createResponse(
+        Array.from({ length: 4 }, (_, index) =>
+          createConversation(`pck-hidden-${index + 1}`, [
+            createPreview({
+              id: index + 1,
+              invokeId: `invoke-hidden-${index + 1}`,
+              occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+              status: "completed",
+            }),
+          ]),
+        ),
+      ),
+      {
+        hasMore: true,
+        onLoadMore,
+      },
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+      vi.runAllTimers();
+      window.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(onLoadMore).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
   it("falls back to downstream-facing diagnostics in the dashboard card summary", () => {
     renderSection(
       createResponse([
@@ -3895,6 +3979,104 @@ describe("DashboardWorkingConversationsSection", () => {
     });
 
     renderSection(conversations);
+
+    const sortButton = host?.querySelector('[data-testid="dashboard-workspace-sort-button"]');
+    if (!(sortButton instanceof HTMLButtonElement)) {
+      throw new Error("missing workspace sort button");
+    }
+
+    const scrollBy = vi.spyOn(window, "scrollBy");
+
+    act(() => {
+      fireEvent.click(sortButton);
+    });
+
+    expect(scrollBy).toHaveBeenCalledWith(0, 180);
+  });
+
+  it("preserves the page-scroll anchor when cycling account sort reorders the visible cards", () => {
+    const baseAccount = createUpstreamAccountActivityResponse().accounts[0]!;
+    upstreamAccountActivityMock.data = {
+      ...createUpstreamAccountActivityResponse(),
+      accounts: [
+        {
+          ...baseAccount,
+          upstreamAccountId: 101,
+          displayName: "Pool Alpha",
+          latestConversationCreatedAt: "2026-04-04T10:03:00Z",
+          lastInvocationAt: "2026-04-04T10:04:00Z",
+        },
+        {
+          ...baseAccount,
+          upstreamAccountId: 102,
+          displayName: "Pool Beta",
+          latestConversationCreatedAt: "2026-04-04T10:02:00Z",
+          lastInvocationAt: "2026-04-04T10:03:00Z",
+        },
+        {
+          ...baseAccount,
+          upstreamAccountId: 103,
+          displayName: "Pool Gamma",
+          latestConversationCreatedAt: "2026-04-04T10:01:00Z",
+          lastInvocationAt: "2026-04-04T10:05:00Z",
+        },
+      ],
+    };
+
+    const rectFor = (top: number, height = 160) =>
+      ({
+        x: 0,
+        y: top,
+        top,
+        bottom: top + height,
+        left: 0,
+        right: 1200,
+        width: 1200,
+        height,
+        toJSON: () => ({}),
+      }) satisfies DOMRect;
+
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.getAttribute("data-testid") === "dashboard-upstream-account-grid") {
+        return rectFor(0, 600);
+      }
+      if (this.getAttribute("data-testid") === "dashboard-upstream-account-card") {
+        const cards = Array.from(
+          this.ownerDocument.querySelectorAll<HTMLElement>(
+            '[data-testid="dashboard-upstream-account-card"]',
+          ),
+        );
+        const cardIndex = cards.indexOf(this);
+        return rectFor(-220 + cardIndex * 180);
+      }
+      return rectFor(0, 0);
+    });
+
+    renderSection(
+      createResponse([
+        createConversation("account-sort-anchor-a", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-account-sort-anchor-a",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+        ]),
+      ]),
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
 
     const sortButton = host?.querySelector('[data-testid="dashboard-workspace-sort-button"]');
     if (!(sortButton instanceof HTMLButtonElement)) {
