@@ -3783,27 +3783,9 @@ export function DashboardWorkingConversationsSection({
     >
       <div className="surface-panel-body gap-5 desktop:!p-5">
         <div
-          className="flex min-w-0 flex-col gap-2 desktop:flex-row desktop:items-center"
+          className="flex min-w-0 flex-col gap-2 desktop:flex-row desktop:items-center desktop:justify-between"
           data-testid="dashboard-working-conversations-controls"
         >
-          <div
-            className="flex min-w-0 flex-wrap items-center gap-2 desktop:justify-end"
-            data-testid="dashboard-working-conversations-badges"
-          >
-            <Badge
-              variant="default"
-              className="w-fit rounded-full px-3 py-1 font-mono text-xs font-semibold"
-            >
-              {countBadgeLabel}
-            </Badge>
-            {shouldReserveUpstreamAccountRefreshChip ? (
-              <DashboardUpstreamAccountRefreshChip
-                label={t("dashboard.upstreamAccounts.refreshing")}
-                visibleLabel={t("dashboard.upstreamAccounts.refreshingShort")}
-                visible={shouldShowUpstreamAccountRefreshChip}
-              />
-            ) : null}
-          </div>
           <SegmentedControl
             size="compact"
             className="w-full desktop:w-auto"
@@ -3830,18 +3812,41 @@ export function DashboardWorkingConversationsSection({
               上游账号
             </SegmentedControlItem>
           </SegmentedControl>
-          <Button
-            type="button"
-            variant="ghost"
-            className="h-11 min-w-0 gap-2 px-2.5 text-sm text-base-content/75 hover:bg-base-200/70 hover:text-base-content desktop:w-auto"
-            onClick={cycleSort}
-            title={t("dashboard.workspaceSort.tooltip", { current: activeSortLabel })}
-            aria-label={t("dashboard.workspaceSort.ariaLabel", { current: activeSortLabel })}
-            data-testid="dashboard-workspace-sort-button"
+          <div
+            className="flex min-w-0 flex-wrap items-center gap-2 desktop:justify-end"
+            data-testid="dashboard-working-conversations-actions"
           >
-            <AppIcon name="sort-variant" className="h-4 w-4 shrink-0" aria-hidden="true" />
-            <span className="truncate">{activeSortLabel}</span>
-          </Button>
+            <div
+              className="flex min-w-0 flex-wrap items-center gap-2 desktop:justify-end"
+              data-testid="dashboard-working-conversations-badges"
+            >
+              <Badge
+                variant="default"
+                className="w-fit rounded-full px-3 py-1 font-mono text-xs font-semibold"
+              >
+                {countBadgeLabel}
+              </Badge>
+              {shouldReserveUpstreamAccountRefreshChip ? (
+                <DashboardUpstreamAccountRefreshChip
+                  label={t("dashboard.upstreamAccounts.refreshing")}
+                  visibleLabel={t("dashboard.upstreamAccounts.refreshingShort")}
+                  visible={shouldShowUpstreamAccountRefreshChip}
+                />
+              ) : null}
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-11 min-w-0 gap-2 px-2.5 text-sm text-base-content/75 hover:bg-base-200/70 hover:text-base-content desktop:w-auto"
+              onClick={cycleSort}
+              title={t("dashboard.workspaceSort.tooltip", { current: activeSortLabel })}
+              aria-label={t("dashboard.workspaceSort.ariaLabel", { current: activeSortLabel })}
+              data-testid="dashboard-workspace-sort-button"
+            >
+              <AppIcon name="sort-variant" className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <span className="truncate">{activeSortLabel}</span>
+            </Button>
+          </div>
         </div>
 
         {error && cards.length > 0 ? (
