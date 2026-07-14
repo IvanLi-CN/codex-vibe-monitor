@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.33.1",
+  "base_stable_version": "2.33.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-14T18:47:18Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.33.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "87613aa8553941b548f5c56c00577fcd53d2f7db",
+  "pr_number": 611,
+  "pr_title": "fix(web): gate large payload consent by value",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.33.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.33.1",
+  "target_sha": "1177f82b13387886d5b929f1ab7ea6e924c4acd1",
+  "type_label": "type:patch"
+}
