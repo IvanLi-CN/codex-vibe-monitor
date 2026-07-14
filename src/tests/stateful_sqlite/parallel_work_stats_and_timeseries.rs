@@ -12789,6 +12789,11 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             .iter()
             .all(|account| account.recent_invocations.is_empty())
     );
+    assert!(
+        progressive_accounts
+            .iter()
+            .any(|account| account.account_key == "upstream:88")
+    );
     let Json(recent_response) = fetch_dashboard_activity_recent(
         State(state.clone()),
         Query(DashboardActivityRecentQuery {

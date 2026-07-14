@@ -5475,7 +5475,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     );
     let mut runtime_recent_rows =
         HashMap::<Option<i64>, Vec<UpstreamAccountInvocationPreviewRow>>::new();
-    if include_accounts && include_recent {
+    if include_accounts {
         let mut runtime_recent_by_key =
             HashMap::<(String, String), UpstreamAccountInvocationPreviewRow>::new();
         for row in &runtime_rows {
