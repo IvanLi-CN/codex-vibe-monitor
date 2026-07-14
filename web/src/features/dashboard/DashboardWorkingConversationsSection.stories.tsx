@@ -1957,6 +1957,10 @@ function DrawerPreviewStory({
   conversationPresentation = "overlay",
   historyInvocationsByPromptCacheKey,
   upstreamAccountActivity,
+  upstreamAccountActivityLoading,
+  upstreamAccountActivityRefreshing,
+  upstreamAccountRecentLoading,
+  upstreamAccountRecentError,
   recentPreviewLimit = 4,
   theme,
 }: {
@@ -1970,6 +1974,10 @@ function DrawerPreviewStory({
   conversationPresentation?: "overlay" | "page";
   historyInvocationsByPromptCacheKey?: Map<string, PromptCacheConversationInvocationPreview[]>;
   upstreamAccountActivity?: UpstreamAccountActivityResponse | null;
+  upstreamAccountActivityLoading?: boolean;
+  upstreamAccountActivityRefreshing?: boolean;
+  upstreamAccountRecentLoading?: boolean;
+  upstreamAccountRecentError?: string | null;
   recentPreviewLimit?: number;
   theme?: "vibe-light" | "vibe-dark";
 }) {
@@ -2391,6 +2399,12 @@ function DrawerPreviewStory({
           cards={cards}
           isLoading={false}
           error={null}
+          upstreamAccountActivity={upstreamAccountActivity}
+          upstreamAccountActivityLoading={upstreamAccountActivityLoading}
+          upstreamAccountActivityRefreshing={upstreamAccountActivityRefreshing}
+          upstreamAccountRecentLoading={upstreamAccountRecentLoading}
+          upstreamAccountRecentError={upstreamAccountRecentError}
+          onRetryUpstreamAccountRecent={() => undefined}
           onOpenUpstreamAccount={(
             accountId: number,
             accountLabel: string,
@@ -3201,6 +3215,128 @@ export const UpstreamAccountTab: Story = {
         story:
           "Dashboard workspace section switched to the upstream-account tab, showing one enlarged active-account card with account-level KPIs and the dynamic recent invocation window in the selected range, including lightweight short conversation identity chips and request/response model mismatch rows.",
       },
+    },
+  },
+};
+
+export const UpstreamAccountInitialSkeleton: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <ForcedWorkspaceViewStory view="upstreamAccounts">
+      <DrawerPreviewStory
+        response={createResponse([])}
+        upstreamAccountActivity={null}
+        upstreamAccountActivityLoading
+      />
+    </ForcedWorkspaceViewStory>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId("dashboard-upstream-account-grid-skeleton")).toBeVisible();
+    await expect(canvas.getByText("账号加载中")).toBeInTheDocument();
+    await expect(canvas.queryByText("当前范围内暂无活动上游账号。")).toBeNull();
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: { story: "Initial account-view frame with a layout-stable card skeleton." },
+    },
+  },
+};
+
+export const UpstreamAccountSummaryWithRecentLoading: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <ForcedWorkspaceViewStory view="upstreamAccounts">
+      <DrawerPreviewStory
+        response={createResponse([])}
+        upstreamAccountActivity={createUpstreamAccountActivityStoryResponse()}
+        upstreamAccountRecentLoading
+      />
+    </ForcedWorkspaceViewStory>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId("dashboard-upstream-account-card")).toBeVisible();
+    await expect(canvas.getAllByTestId("dashboard-upstream-account-recent-skeleton")).toHaveLength(
+      4,
+    );
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: { description: { story: "Account summary cards remain usable while recent rows load." } },
+  },
+};
+
+export const UpstreamAccountRecentFailure: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <ForcedWorkspaceViewStory view="upstreamAccounts">
+      <DrawerPreviewStory
+        response={createResponse([])}
+        upstreamAccountActivity={createUpstreamAccountActivityStoryResponse()}
+        upstreamAccountRecentError="recent request failed"
+      />
+    </ForcedWorkspaceViewStory>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("最近调用加载失败。")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "重试最近调用" })).toBeVisible();
+    await expect(canvas.getByTestId("dashboard-upstream-account-card")).toBeVisible();
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: { description: { story: "Recent-row failure is local to each retained summary card." } },
+  },
+};
+
+export const UpstreamAccountRefreshing: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <ForcedWorkspaceViewStory view="upstreamAccounts">
+      <DrawerPreviewStory
+        response={createResponse([])}
+        upstreamAccountActivity={createUpstreamAccountActivityStoryResponse()}
+        upstreamAccountActivityRefreshing
+      />
+    </ForcedWorkspaceViewStory>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("正在更新账号汇总")).toBeVisible();
+    await expect(canvas.getByTestId("dashboard-upstream-account-card")).toBeVisible();
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: { story: "Range refresh keeps the previous cards visible until replacement." },
+    },
+  },
+};
+
+export const UpstreamAccountEmpty: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <ForcedWorkspaceViewStory view="upstreamAccounts">
+      <DrawerPreviewStory
+        response={createResponse([])}
+        upstreamAccountActivity={{
+          ...createUpstreamAccountActivityStoryResponse(),
+          accounts: [],
+        }}
+      />
+    </ForcedWorkspaceViewStory>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("当前范围内暂无活动上游账号。")).toBeVisible();
+    await expect(canvas.queryByTestId("dashboard-upstream-account-grid-skeleton")).toBeNull();
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: { story: "True empty state after a successful zero-account summary response." },
     },
   },
 };

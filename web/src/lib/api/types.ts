@@ -31,6 +31,7 @@ export type {
   DashboardActivityLiveAccount,
   DashboardActivityLiveSnapshot,
   DashboardActivityRateWindow,
+  DashboardActivityRecentResponse,
   DashboardActivityResponse,
   DashboardActivitySummary,
   EffectiveRoutingRule,

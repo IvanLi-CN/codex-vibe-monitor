@@ -55,6 +55,29 @@ describe("demo MSW handlers", () => {
     ]);
   });
 
+  it("serves dashboard account summaries and snapshot-bound recent rows in separate phases", async () => {
+    const summaryResponse = await fetch(
+      "http://demo.invalid/api/stats/dashboard-activity?range=today&includeAccounts=true&includeRecent=false",
+    );
+    const summary = (await summaryResponse.json()) as {
+      snapshotId: number;
+      rangeStart: string;
+      rangeEnd: string;
+      accounts: Array<{ recentInvocations: unknown[] }>;
+    };
+    const recentResponse = await fetch(
+      `http://demo.invalid/api/stats/dashboard-activity/recent?rangeStart=${encodeURIComponent(summary.rangeStart)}&rangeEnd=${encodeURIComponent(summary.rangeEnd)}&snapshotId=${summary.snapshotId}&recentLimit=4`,
+    );
+    const recent = (await recentResponse.json()) as {
+      snapshotId: number;
+      accounts: Array<{ recentInvocations: unknown[] }>;
+    };
+
+    expect(summary.accounts.every((account) => account.recentInvocations.length === 0)).toBe(true);
+    expect(recent.snapshotId).toBe(summary.snapshotId);
+    expect(recent.accounts[0]?.recentInvocations.length).toBeGreaterThan(0);
+  });
+
   it("accepts Pages-scoped API paths so requests remain inside the demo worker scope", async () => {
     const response = await fetch(
       "http://demo.invalid/codex-vibe-monitor/demo/api/stats/dashboard-activity?range=today",

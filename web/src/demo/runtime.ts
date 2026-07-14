@@ -1,8 +1,19 @@
-export type DemoScene = "operational" | "attention" | "empty" | "network-failure";
+export type DemoScene =
+  | "operational"
+  | "attention"
+  | "empty"
+  | "progressive-loading"
+  | "network-failure";
 export type DemoTheme = "light" | "dark";
 
 const RUNTIME_VALUES = new Set(["live", "demo"]);
-const SCENE_VALUES = new Set<DemoScene>(["operational", "attention", "empty", "network-failure"]);
+const SCENE_VALUES = new Set<DemoScene>([
+  "operational",
+  "attention",
+  "empty",
+  "progressive-loading",
+  "network-failure",
+]);
 const THEME_VALUES = new Set<DemoTheme>(["light", "dark"]);
 
 export function appRuntime(): "live" | "demo" {

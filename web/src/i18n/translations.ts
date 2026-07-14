@@ -1674,9 +1674,13 @@ const baseTranslations = {
     "dashboard.section.recentLiveTitle": "Latest {{count}} live records",
     "dashboard.workingConversations.countBadge": "{{count}} conversations",
     "dashboard.upstreamAccounts.countBadge": "{{count}} active accounts",
+    "dashboard.upstreamAccounts.countLoading": "Loading accounts",
     "dashboard.upstreamAccounts.subtitle":
       "Shows upstream accounts with activity in the selected overview range plus a dynamic recent invocation window for each account.",
     "dashboard.upstreamAccounts.empty": "No active upstream accounts in the selected range.",
+    "dashboard.upstreamAccounts.refreshing": "Updating account summary",
+    "dashboard.upstreamAccounts.recentError": "Recent invocations could not be loaded.",
+    "dashboard.upstreamAccounts.retryRecent": "Retry recent invocations",
     "dashboard.upstreamAccounts.recentInvocations": "Latest {{count}} invocations",
     "dashboard.upstreamAccounts.channelName": "Channel {{name}}",
     "dashboard.workingConversations.empty":
@@ -3904,9 +3908,13 @@ const baseTranslations = {
     "dashboard.section.recentLiveTitle": "最近 {{count}} 条实况",
     "dashboard.workingConversations.countBadge": "当前对话 {{count}} 条",
     "dashboard.upstreamAccounts.countBadge": "当前活动账号 {{count}} 个",
+    "dashboard.upstreamAccounts.countLoading": "账号加载中",
     "dashboard.upstreamAccounts.subtitle":
       "展示当前总览范围内有调用的上游账号，以及每个账号的动态最近调用窗口。",
     "dashboard.upstreamAccounts.empty": "当前范围内暂无活动上游账号。",
+    "dashboard.upstreamAccounts.refreshing": "正在更新账号汇总",
+    "dashboard.upstreamAccounts.recentError": "最近调用加载失败。",
+    "dashboard.upstreamAccounts.retryRecent": "重试最近调用",
     "dashboard.upstreamAccounts.recentInvocations": "最近 {{count}} 条调用",
     "dashboard.upstreamAccounts.channelName": "渠道 {{name}}",
     "dashboard.workingConversations.empty":

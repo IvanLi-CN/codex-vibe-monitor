@@ -4,6 +4,8 @@
 
 ## Decision Trace
 
+- 2026-07-13：确认账号视图数秒首屏等待来自 `includeAccounts=true` 路径对活动账号逐个 `await` recent query；冻结为按需激活、汇总优先、快照绑定的单次批量 recent 补齐。UI 必须区分首次骨架、真实空态、后台刷新与 recent 局部失败，不能用全页等待或错误空态掩盖慢读路径。
+
 - 2026-07-13：生产诊断确认账号卡把 records SSE 降级成重型 `dashboard-activity` HTTP 重查通知，慢查询叠加 5 秒节流可造成超过 10 秒的过时状态；改为后端内存运行态生成版本化 `dashboardActivityLive` 快照，前端只合并权威结果，HTTP 保留历史校准职责。
 
 - 2026-06-26：创建 active spec，冻结 Dashboard 工作区双 tabs、账号活动跟随总览 range、以及 `usage` 下 disabled 回退的交互边界。

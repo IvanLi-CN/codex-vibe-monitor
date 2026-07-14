@@ -12466,7 +12466,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     state.proxy_runtime_invocations.upsert(runtime_before_today);
 
     let activity =
-        load_dashboard_activity_snapshot(state.as_ref(), "today", Shanghai, 4, true, None)
+        load_dashboard_activity_snapshot(state.as_ref(), "today", Shanghai, 4, true, true, None)
             .await
             .expect("load dashboard activity snapshot");
 
@@ -12561,6 +12561,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             recent_limit: Some(4),
             time_zone: Some("Asia/Shanghai".to_string()),
             include_accounts: false,
+            include_recent: None,
         }),
     )
     .await
@@ -12611,6 +12612,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             recent_limit: Some(4),
             time_zone: Some("Asia/Shanghai".to_string()),
             include_accounts: true,
+            include_recent: None,
         }),
     )
     .await
@@ -12629,6 +12631,76 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
         ),
     );
 
+    let progressive_started_at = std::time::Instant::now();
+    let Json(progressive_response) = fetch_dashboard_activity(
+        State(state.clone()),
+        Query(DashboardActivityQuery {
+            range: "today".to_string(),
+            recent_limit: Some(2),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: true,
+            include_recent: Some(false),
+        }),
+    )
+    .await
+    .expect("fetch progressive dashboard activity summary");
+    assert!(
+        progressive_started_at.elapsed() < std::time::Duration::from_secs(1),
+        "progressive dashboard activity summary should complete within one second for the local fixture"
+    );
+    let progressive_accounts = progressive_response
+        .accounts
+        .as_ref()
+        .expect("progressive response accounts included");
+    assert!(
+        progressive_accounts
+            .iter()
+            .all(|account| account.recent_invocations.is_empty())
+    );
+    let Json(recent_response) = fetch_dashboard_activity_recent(
+        State(state.clone()),
+        Query(DashboardActivityRecentQuery {
+            range_start: progressive_response.range_start.clone(),
+            range_end: progressive_response.range_end.clone(),
+            snapshot_id: progressive_response.snapshot_id,
+            recent_limit: Some(2),
+        }),
+    )
+    .await
+    .expect("fetch dashboard activity recent batch");
+    assert_eq!(
+        recent_response.snapshot_id,
+        progressive_response.snapshot_id
+    );
+    assert_eq!(
+        recent_response.range_start,
+        progressive_response.range_start
+    );
+    assert_eq!(recent_response.range_end, progressive_response.range_end);
+    assert!(
+        recent_response
+            .accounts
+            .iter()
+            .all(|account| account.recent_invocations.len() <= 2)
+    );
+    assert!(
+        recent_response
+            .accounts
+            .iter()
+            .any(|account| account.account_key == "upstream:42")
+    );
+    let wide_recent_result = fetch_dashboard_activity_recent(
+        State(state.clone()),
+        Query(DashboardActivityRecentQuery {
+            range_start: (Utc::now() - ChronoDuration::days(8)).to_rfc3339(),
+            range_end: Utc::now().to_rfc3339(),
+            snapshot_id: Utc::now().timestamp_millis(),
+            recent_limit: Some(2),
+        }),
+    )
+    .await;
+    assert!(wide_recent_result.is_err());
+
     let Json(yesterday_activity) = fetch_dashboard_activity(
         State(state),
         Query(DashboardActivityQuery {
@@ -12636,6 +12708,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             recent_limit: Some(4),
             time_zone: Some("Asia/Shanghai".to_string()),
             include_accounts: true,
+            include_recent: None,
         }),
     )
     .await

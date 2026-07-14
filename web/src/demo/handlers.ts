@@ -1542,6 +1542,13 @@ async function handleRequest(request: Request) {
   if (pathname === "/api/stats" || pathname === "/api/stats/summary") return json(demoSummary());
   if (pathname === "/api/stats/dashboard-activity") {
     const includeAccounts = url.searchParams.get("includeAccounts") === "true";
+    const includeRecent = url.searchParams.get("includeRecent") !== "false";
+    if (includeAccounts && demoModel.snapshot.scene === "progressive-loading") {
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+    const accounts = demoDashboardActivityAccounts().map((account) =>
+      includeRecent ? account : { ...account, recentInvocations: [] },
+    );
     return json({
       range: url.searchParams.get("range") ?? "today",
       snapshotId: 901,
@@ -1558,7 +1565,21 @@ async function handleRequest(request: Request) {
         tokensPerMinute: 46_041,
         spendRate: 19.41,
       },
-      accounts: includeAccounts ? demoDashboardActivityAccounts() : undefined,
+      accounts: includeAccounts ? accounts : undefined,
+    });
+  }
+  if (pathname === "/api/stats/dashboard-activity/recent") {
+    if (demoModel.snapshot.scene === "progressive-loading") {
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+    }
+    return json({
+      rangeStart: url.searchParams.get("rangeStart") ?? "2026-07-10T00:00:00Z",
+      rangeEnd: url.searchParams.get("rangeEnd") ?? demoNow(),
+      snapshotId: Number(url.searchParams.get("snapshotId") ?? 901),
+      accounts: demoDashboardActivityAccounts().map((account) => ({
+        accountKey: account.accountKey,
+        recentInvocations: account.recentInvocations,
+      })),
     });
   }
   if (pathname === "/api/stats/upstream-account-activity") {

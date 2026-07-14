@@ -5241,6 +5241,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     reporting_tz: Tz,
     recent_limit: usize,
     include_accounts: bool,
+    include_recent: bool,
     in_progress_counts_override: Option<HashMap<Option<i64>, UpstreamAccountInProgressSummary>>,
 ) -> Result<DashboardActivitySnapshot, ApiError> {
     let range_window = resolve_range_window(range_name, reporting_tz).map_err(ApiError::from)?;
@@ -5326,7 +5327,12 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         .map(|row| row.id)
         .collect::<HashSet<_>>();
     for row in runtime_rows {
-        add_upstream_account_activity_preview_row(&mut account_activity, row, recent_limit, false);
+        add_upstream_account_activity_preview_row(
+            &mut account_activity,
+            row,
+            recent_limit,
+            include_accounts && include_recent,
+        );
     }
 
     if range.start < retention_cutoff {
@@ -5348,31 +5354,41 @@ pub(crate) async fn load_dashboard_activity_snapshot(
                 &mut account_activity,
                 row,
                 recent_limit,
-                include_accounts,
+                include_accounts && include_recent,
             );
         }
     }
 
-    if include_accounts {
-        let account_keys = account_activity.keys().copied().collect::<Vec<_>>();
-        for account_id in account_keys {
-            let rows = query_live_upstream_account_activity_preview_rows_with_limit(
-                &state.pool,
-                source_scope,
-                range,
-                Some(account_id),
-                Some(recent_limit),
-                false,
-            )
-            .await?;
-            let mut recent_invocations = rows
-                .into_iter()
-                .map(upstream_account_invocation_preview_from_row)
-                .collect::<Vec<_>>();
-            let entry = account_activity.entry(account_id).or_default();
-            recent_invocations.append(&mut entry.recent_invocations);
-            recent_invocations.truncate(recent_limit);
-            entry.recent_invocations = recent_invocations;
+    if include_accounts && include_recent {
+        let rows = query_live_upstream_account_activity_preview_rows_with_limit(
+            &state.pool,
+            source_scope,
+            range,
+            None,
+            None,
+            false,
+        )
+        .await?;
+        let mut full_rows_by_account = HashMap::<Option<i64>, Vec<_>>::new();
+        for row in rows {
+            full_rows_by_account
+                .entry(row.upstream_account_id)
+                .or_default()
+                .push(upstream_account_invocation_preview_from_row(row));
+        }
+        for (upstream_account_id, mut full_rows) in full_rows_by_account {
+            let entry = account_activity.entry(upstream_account_id).or_default();
+            full_rows.append(&mut entry.recent_invocations);
+            let mut seen_ids = HashSet::with_capacity(full_rows.len());
+            full_rows.retain(|invocation| seen_ids.insert(invocation.id));
+            full_rows.sort_by(|left, right| {
+                right
+                    .occurred_at
+                    .cmp(&left.occurred_at)
+                    .then_with(|| right.id.cmp(&left.id))
+            });
+            full_rows.truncate(recent_limit);
+            entry.recent_invocations = full_rows;
         }
     }
 
@@ -5630,6 +5646,7 @@ pub(crate) async fn fetch_dashboard_activity(
         reporting_tz,
         recent_limit,
         params.include_accounts,
+        params.include_recent.unwrap_or(true),
         live.as_ref()
             .map(dashboard_live_snapshot_in_progress_counts),
     )
@@ -5662,8 +5679,8 @@ pub(crate) async fn fetch_dashboard_activity(
     let rate_window_start = snapshot
         .range_start
         .max(snapshot.range_end - ChronoDuration::minutes(DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES));
-    let range_start = format_utc_iso(snapshot.range_start);
-    let range_end = format_utc_iso(snapshot.range_end);
+    let range_start = format_utc_iso_millis(snapshot.range_start);
+    let range_end = format_utc_iso_millis(snapshot.range_end);
     let accounts = params.include_accounts.then_some(snapshot.accounts);
 
     Ok(Json(DashboardActivityResponse {
@@ -5673,12 +5690,100 @@ pub(crate) async fn fetch_dashboard_activity(
         snapshot_id: snapshot.range_end.timestamp_millis(),
         live_revision,
         rate_window: DashboardActivityRateWindowResponse {
-            start: format_utc_iso(rate_window_start),
+            start: format_utc_iso_millis(rate_window_start),
             end: range_end,
             window_minutes: DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES,
             mode: "account_active_tail_sum".to_string(),
         },
         summary: snapshot.summary,
+        accounts,
+    }))
+}
+
+pub(crate) async fn fetch_dashboard_activity_recent(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<DashboardActivityRecentQuery>,
+) -> Result<Json<DashboardActivityRecentResponse>, ApiError> {
+    let recent_limit = validate_dashboard_activity_params(
+        "dashboard-activity/recent",
+        "today",
+        params.recent_limit,
+    )?;
+    let range_start = parse_to_utc_datetime(&params.range_start)
+        .ok_or_else(|| ApiError::bad_request(anyhow!("invalid rangeStart")))?;
+    let range_end = parse_to_utc_datetime(&params.range_end)
+        .ok_or_else(|| ApiError::bad_request(anyhow!("invalid rangeEnd")))?;
+    if range_start >= range_end
+        || range_end - range_start > ChronoDuration::days(7)
+        || params.snapshot_id != range_end.timestamp_millis()
+    {
+        return Err(ApiError::bad_request(anyhow!(
+            "snapshotId must match rangeEnd and range must be between 0 and 7 days"
+        )));
+    }
+    let range = ExactUtcRange {
+        start: range_start,
+        end: range_end,
+    };
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let mut rows = query_live_upstream_account_activity_preview_rows_with_limit(
+        &state.pool,
+        source_scope,
+        range,
+        None,
+        None,
+        false,
+    )
+    .await?;
+    overlay_runtime_upstream_account_activity_preview_rows(
+        state.as_ref(),
+        &mut rows,
+        source_scope,
+        range,
+    );
+    let live_ids = rows.iter().map(|row| row.id).collect::<HashSet<_>>();
+    if range.start < shanghai_retention_cutoff(state.config.invocation_max_days) {
+        rows.extend(
+            crate::stats::query_completed_invocation_archive_preview_rows(
+                &state.pool,
+                source_scope,
+                range,
+                Some(&live_ids),
+            )
+            .await?,
+        );
+    }
+    rows.sort_by(|left, right| {
+        right
+            .occurred_at
+            .cmp(&left.occurred_at)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    let mut grouped =
+        HashMap::<Option<i64>, Vec<PromptCacheConversationInvocationPreviewResponse>>::new();
+    for row in rows {
+        let invocations = grouped.entry(row.upstream_account_id).or_default();
+        if invocations.len() < recent_limit {
+            invocations.push(upstream_account_invocation_preview_from_row(row));
+        }
+    }
+    let mut accounts = grouped
+        .into_iter()
+        .map(
+            |(account_id, recent_invocations)| DashboardActivityRecentAccountResponse {
+                account_key: account_id
+                    .map(|id| format!("upstream:{id}"))
+                    .unwrap_or_else(|| "unassigned".to_string()),
+                recent_invocations,
+            },
+        )
+        .collect::<Vec<_>>();
+    accounts.sort_by(|left, right| left.account_key.cmp(&right.account_key));
+
+    Ok(Json(DashboardActivityRecentResponse {
+        range_start: format_utc_iso_millis(range.start),
+        range_end: format_utc_iso_millis(range.end),
+        snapshot_id: params.snapshot_id,
         accounts,
     }))
 }
@@ -5698,6 +5803,7 @@ pub(crate) async fn fetch_upstream_account_activity(
         params.range.as_str(),
         reporting_tz,
         recent_limit,
+        true,
         true,
         None,
     )

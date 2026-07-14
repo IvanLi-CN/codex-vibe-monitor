@@ -22,4 +22,12 @@ describe("demo runtime selection", () => {
     expect(sceneFromLocation(location)).toBe("network-failure");
     expect(themeFromLocation(location)).toBe("dark");
   });
+
+  it("accepts the progressive account loading scene", () => {
+    const location = new URL(
+      "https://demo.invalid/#/dashboard?demoScene=progressive-loading",
+    ) as unknown as Location;
+
+    expect(sceneFromLocation(location)).toBe("progressive-loading");
+  });
 });
