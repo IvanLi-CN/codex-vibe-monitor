@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { defaultStyles, JsonView } from "react-json-view-lite";
 import "react-json-view-lite/dist/index.css";
 import { Button } from "../../components/ui/button";
@@ -97,6 +97,11 @@ export function StructuredPayloadViewer({
   const byteLength = useMemo(() => getUtf8ByteLength(value), [value]);
   const isLarge = byteLength > STRUCTURED_PAYLOAD_AUTO_PARSE_LIMIT_BYTES;
   const [parseLargePayload, setParseLargePayload] = useState(false);
+
+  useEffect(() => {
+    setParseLargePayload(false);
+  }, [value]);
+
   const parsed = useMemo(
     () => (isLarge && !parseLargePayload ? null : parseStructuredPayload(value)),
     [isLarge, parseLargePayload, value],
