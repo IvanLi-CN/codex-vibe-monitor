@@ -381,6 +381,7 @@
   scenario: `desktop progressive summary skeleton`
   evidence_note: mock-only demo 将账号汇总请求延迟，切换到上游账号后下一帧显示与双列布局匹配的骨架；计数显示“账号加载中”，不会误显 0 或“暂无活动”。
   image:
+  PR: include
   ![Dashboard 上游账号渐进加载桌面骨架](./assets/dashboard-progressive-skeleton-desktop.png)
 
 - source_type: ui_demo
@@ -388,6 +389,7 @@
   scenario: `desktop summary complete and recent batch complete`
   evidence_note: mock-only demo 完成两阶段请求后显示 12 张账号汇总卡与批量 recent 行；账号卡保持可操作，recent 数据按快照边界补齐。
   image:
+  PR: include
   ![Dashboard 上游账号渐进加载桌面完成态](./assets/dashboard-progressive-complete-desktop.png)
 
 - source_type: ui_demo
@@ -395,6 +397,7 @@
   scenario: `mobile upstream account complete`
   evidence_note: 移动视口下账号区收敛为单列卡片，保留汇总指标、recent 记录和页头 tab 操作，不出现横向溢出。
   image:
+  PR: include
   ![Dashboard 上游账号渐进加载移动完成态](./assets/dashboard-progressive-complete-mobile.png)
 
 ## Related PRs
