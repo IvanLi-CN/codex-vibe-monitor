@@ -842,6 +842,39 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(controls.querySelectorAll('[role="tab"]')[1]?.className).toContain("flex-1");
   });
 
+  it("keeps workspace tabs before badge and sort controls", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-header-order", [
+          createPreview({
+            id: 71,
+            invokeId: "invoke-header-order",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    const controls = host?.querySelector(
+      '[data-testid="dashboard-working-conversations-controls"]',
+    );
+    if (!(controls instanceof HTMLElement)) {
+      throw new Error("missing workspace controls");
+    }
+
+    const firstChild = controls.firstElementChild;
+    const secondChild = controls.children.item(1);
+    expect(firstChild?.getAttribute("role")).toBe("tablist");
+    expect(secondChild?.getAttribute("data-testid")).toBe(
+      "dashboard-working-conversations-actions",
+    );
+    expect(
+      secondChild?.querySelector('[data-testid="dashboard-workspace-sort-button"]'),
+    ).not.toBeNull();
+    expect(secondChild?.textContent).toContain("当前对话 1 条");
+  });
+
   it("lazy-loads upstream account activity only after the account tab is opened", () => {
     upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
 
