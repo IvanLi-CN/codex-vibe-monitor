@@ -60,9 +60,13 @@ export default function DashboardPage() {
   const {
     data: dashboardActivity,
     isLoading: dashboardActivityLoading,
+    isRefreshing: dashboardActivityRefreshing,
+    recentLoading: dashboardActivityRecentLoading,
+    recentError: dashboardActivityRecentError,
     error: dashboardActivityError,
     recentInvocationLimit: upstreamAccountRecentPreviewLimit,
     reload: reloadDashboardActivity,
+    retryRecent: retryDashboardActivityRecent,
   } = useDashboardActivitySnapshot(
     activeRange,
     dashboardActivityEnabled,
@@ -199,7 +203,11 @@ export default function DashboardPage() {
             : null
         }
         upstreamAccountActivityLoading={dashboardActivityLoading}
+        upstreamAccountActivityRefreshing={dashboardActivityRefreshing}
         upstreamAccountActivityError={dashboardActivityError}
+        upstreamAccountRecentLoading={dashboardActivityRecentLoading}
+        upstreamAccountRecentError={dashboardActivityRecentError}
+        onRetryUpstreamAccountRecent={retryDashboardActivityRecent}
         upstreamAccountRecentPreviewLimit={upstreamAccountRecentPreviewLimit}
         onUpstreamAccountActivityEnabledChange={setIncludeUpstreamAccountActivity}
         onUpstreamAccountPolicyChanged={() => {

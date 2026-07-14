@@ -4,6 +4,7 @@ import {
   createOauthMailboxSession,
   DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS,
   fetchDashboardActivity,
+  fetchDashboardActivityRecent,
   fetchForwardProxyBindingNodes,
   fetchForwardProxyLiveStats,
   fetchForwardProxyTimeseries,
@@ -414,6 +415,54 @@ describe("fetchDashboardActivity", () => {
     expect(response.accounts?.[0]?.accountKey).toBe("unassigned");
     expect(response.accounts?.[0]?.upstreamAccountId).toBeNull();
     expect(response.accounts?.[0]?.isUnassigned).toBe(true);
+  });
+
+  it("serializes progressive options and normalizes the recent batch", async () => {
+    const requestedUrls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        requestedUrls.push(String(input));
+        return new Response(
+          JSON.stringify({
+            rangeStart: "2026-07-05T00:00:00.000Z",
+            rangeEnd: "2026-07-05T12:00:00.000Z",
+            snapshotId: 1783233600000,
+            accounts: [
+              {
+                accountKey: "upstream:42",
+                recentInvocations: [
+                  {
+                    id: 1,
+                    invokeId: "recent-1",
+                    occurredAt: "2026-07-05T11:59:00Z",
+                    status: "success",
+                    totalTokens: 12,
+                  },
+                ],
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    await fetchDashboardActivity("today", {
+      includeAccounts: true,
+      includeRecent: false,
+    });
+    const response = await fetchDashboardActivityRecent({
+      rangeStart: "2026-07-05T00:00:00.000Z",
+      rangeEnd: "2026-07-05T12:00:00.000Z",
+      snapshotId: 1783233600000,
+      recentLimit: 4,
+    });
+
+    expect(requestedUrls[0]).toContain("includeRecent=false");
+    expect(requestedUrls[1]).toContain("/api/stats/dashboard-activity/recent?");
+    expect(requestedUrls[1]).toContain("snapshotId=1783233600000");
+    expect(response.accounts[0]?.recentInvocations[0]?.invokeId).toBe("recent-1");
   });
 });
 

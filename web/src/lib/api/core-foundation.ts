@@ -710,6 +710,16 @@ export interface DashboardActivityResponse {
   accounts?: UpstreamAccountActivityAccount[];
 }
 
+export interface DashboardActivityRecentResponse {
+  rangeStart: string;
+  rangeEnd: string;
+  snapshotId: number;
+  accounts: Array<{
+    accountKey: string;
+    recentInvocations: PromptCacheConversationInvocationPreview[];
+  }>;
+}
+
 export interface StatsMaintenanceResponse {
   rawCompressionBacklog?: RawCompressionBacklogResponse;
   startupBackfill?: StartupBackfillResponse;
@@ -2740,6 +2750,28 @@ function normalizeDashboardActivityResponse(raw: unknown): DashboardActivityResp
   };
 }
 
+function normalizeDashboardActivityRecentResponse(raw: unknown): DashboardActivityRecentResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
+    rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
+    snapshotId: normalizeFiniteNumber(payload.snapshotId) ?? 0,
+    accounts: Array.isArray(payload.accounts)
+      ? payload.accounts.map((entry) => {
+          const account = (entry ?? {}) as Record<string, unknown>;
+          return {
+            accountKey: typeof account.accountKey === "string" ? account.accountKey : "",
+            recentInvocations: Array.isArray(account.recentInvocations)
+              ? account.recentInvocations
+                  .map(normalizePromptCacheConversationInvocationPreview)
+                  .filter((item): item is PromptCacheConversationInvocationPreview => item != null)
+              : [],
+          };
+        })
+      : [],
+  };
+}
+
 function normalizeSettingsPayload(raw: unknown): SettingsPayload {
   const payload = (raw ?? {}) as Record<string, unknown>;
   return {
@@ -3057,6 +3089,7 @@ export async function fetchDashboardActivity(
     recentLimit?: number;
     timeZone?: string;
     includeAccounts?: boolean;
+    includeRecent?: boolean;
     signal?: AbortSignal;
   },
 ) {
@@ -3069,10 +3102,35 @@ export async function fetchDashboardActivity(
   if (options?.includeAccounts !== undefined) {
     search.set("includeAccounts", options.includeAccounts ? "true" : "false");
   }
+  if (options?.includeRecent !== undefined) {
+    search.set("includeRecent", options.includeRecent ? "true" : "false");
+  }
   const response = await fetchJson<unknown>(`/api/stats/dashboard-activity?${search.toString()}`, {
     signal: options?.signal,
   });
   return normalizeDashboardActivityResponse(response);
+}
+
+export async function fetchDashboardActivityRecent(options: {
+  rangeStart: string;
+  rangeEnd: string;
+  snapshotId: number;
+  recentLimit?: number;
+  signal?: AbortSignal;
+}) {
+  const search = new URLSearchParams({
+    rangeStart: options.rangeStart,
+    rangeEnd: options.rangeEnd,
+    snapshotId: String(options.snapshotId),
+  });
+  if (options.recentLimit !== undefined) {
+    search.set("recentLimit", String(options.recentLimit));
+  }
+  const response = await fetchJson<unknown>(
+    `/api/stats/dashboard-activity/recent?${search.toString()}`,
+    { signal: options.signal },
+  );
+  return normalizeDashboardActivityRecentResponse(response);
 }
 
 export async function fetchForwardProxyLiveStats() {

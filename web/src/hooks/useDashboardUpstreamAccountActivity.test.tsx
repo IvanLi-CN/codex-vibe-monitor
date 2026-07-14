@@ -2,9 +2,10 @@
 import type React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   BroadcastPayload,
+  DashboardActivityRecentResponse,
   DashboardActivityResponse,
   PromptCacheConversationInvocationPreview,
 } from "../lib/api";
@@ -28,9 +29,20 @@ const apiMocks = vi.hoisted(() => ({
           recentLimit?: number;
           timeZone?: string;
           includeAccounts?: boolean;
+          includeRecent?: boolean;
           signal?: AbortSignal;
         },
       ) => Promise<DashboardActivityResponse>
+    >(),
+  fetchDashboardActivityRecent:
+    vi.fn<
+      (options: {
+        rangeStart: string;
+        rangeEnd: string;
+        snapshotId: number;
+        recentLimit?: number;
+        signal?: AbortSignal;
+      }) => Promise<DashboardActivityRecentResponse>
     >(),
 }));
 
@@ -43,6 +55,7 @@ vi.mock("../lib/api", async () => {
   return {
     ...actual,
     fetchDashboardActivity: apiMocks.fetchDashboardActivity,
+    fetchDashboardActivityRecent: apiMocks.fetchDashboardActivityRecent,
   };
 });
 
@@ -75,6 +88,15 @@ afterEach(() => {
   host = null;
   root = null;
   vi.clearAllMocks();
+});
+
+beforeEach(() => {
+  apiMocks.fetchDashboardActivityRecent.mockResolvedValue({
+    rangeStart: "2026-04-04T10:00:00Z",
+    rangeEnd: "2026-04-04T10:05:00Z",
+    snapshotId: 1,
+    accounts: [],
+  });
 });
 
 function render(ui: React.ReactNode) {
@@ -192,6 +214,7 @@ function createAccountResponse(
     },
     accounts: [
       {
+        accountKey: "upstream:42",
         upstreamAccountId: 42,
         displayName: "Pool Alpha",
         groupName: "Primary",
@@ -243,6 +266,8 @@ function Probe({
     data,
     isLoading,
     error,
+    recentLoading,
+    recentError,
     recentInvocationLimit: visibleLimit,
   } = useDashboardUpstreamAccountActivity(range, enabled, recentInvocationLimit);
 
@@ -250,6 +275,8 @@ function Probe({
     <div>
       <div data-testid="loading">{isLoading ? "true" : "false"}</div>
       <div data-testid="error">{error ?? ""}</div>
+      <div data-testid="recent-loading">{recentLoading ? "true" : "false"}</div>
+      <div data-testid="recent-error">{recentError ?? ""}</div>
       <div data-testid="visible-limit">{String(visibleLimit)}</div>
       <div data-testid="recent-count">
         {String(data?.accounts[0]?.recentInvocations.length ?? 0)}
@@ -316,6 +343,66 @@ describe("resolveUpstreamAccountRecentPreviewLimit", () => {
 });
 
 describe("useDashboardUpstreamAccountActivity", () => {
+  it("reloads when the account tab activates after the summary was already loaded", async () => {
+    const first = deferred<DashboardActivityResponse>();
+    const second = deferred<DashboardActivityResponse>();
+    apiMocks.fetchDashboardActivity
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+
+    render(<SnapshotProbe includeAccounts={false} />);
+    first.resolve(createAccountResponse(0, []));
+    await flushAsync();
+    expect(apiMocks.fetchDashboardActivity).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root?.render(<SnapshotProbe includeAccounts />);
+    });
+    await flushAsync();
+    expect(apiMocks.fetchDashboardActivity).toHaveBeenCalledTimes(2);
+    expect(apiMocks.fetchDashboardActivity.mock.calls[1]?.[1]).toEqual(
+      expect.objectContaining({ includeAccounts: true, includeRecent: false }),
+    );
+    second.resolve(createAccountResponse(0, []));
+    await flushAsync();
+  });
+
+  it("publishes the summary before the snapshot-bound recent batch completes", async () => {
+    const summary = deferred<DashboardActivityResponse>();
+    const recent = deferred<DashboardActivityRecentResponse>();
+    const preview = createPreview({
+      id: 11,
+      invokeId: "progressive-recent",
+      occurredAt: "2026-04-04T10:04:00Z",
+      status: "success",
+    });
+    apiMocks.fetchDashboardActivity.mockReturnValue(summary.promise);
+    apiMocks.fetchDashboardActivityRecent.mockReturnValue(recent.promise);
+
+    render(<Probe />);
+    expect(text("loading")).toBe("true");
+    expect(apiMocks.fetchDashboardActivityRecent).not.toHaveBeenCalled();
+
+    summary.resolve(createAccountResponse(0, []));
+    await flushAsync();
+    expect(text("loading")).toBe("false");
+    expect(text("recent-loading")).toBe("true");
+    expect(text("recent-count")).toBe("0");
+    expect(apiMocks.fetchDashboardActivity).toHaveBeenCalledWith(
+      "today",
+      expect.objectContaining({ includeAccounts: true, includeRecent: false }),
+    );
+
+    recent.resolve({
+      rangeStart: "2026-04-04T10:00:00Z",
+      rangeEnd: "2026-04-04T10:05:00Z",
+      snapshotId: 1,
+      accounts: [{ accountKey: "upstream:42", recentInvocations: [preview] }],
+    });
+    await flushAsync();
+    expect(text("recent-loading")).toBe("false");
+    expect(text("recent-count")).toBe("1");
+  });
   it("adds SSE-only live accounts so the visible breakdown matches the total", () => {
     const merged = mergeDashboardActivityLiveSnapshot(createAccountResponse(0, []), {
       revision: 8,
@@ -511,7 +598,7 @@ describe("useDashboardUpstreamAccountActivity", () => {
 
     expect(apiMocks.fetchDashboardActivity).toHaveBeenCalledTimes(1);
     expect(apiMocks.fetchDashboardActivity.mock.calls[0]?.[1]).toEqual(
-      expect.objectContaining({ recentLimit: 4, includeAccounts: false }),
+      expect.objectContaining({ recentLimit: 4, includeAccounts: false, includeRecent: false }),
     );
     expect(text("snapshot-accounts")).toBe("0");
   });
@@ -528,30 +615,33 @@ describe("useDashboardUpstreamAccountActivity", () => {
         }),
       ),
     );
-    const second = createAccountResponse(
-      9,
-      Array.from({ length: 9 }, (_, index) =>
-        createPreview({
-          id: 200 + index,
-          invokeId: `expanded-${index + 1}`,
-          occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
-          status: index < 7 ? "running" : "success",
-        }),
-      ),
+    const expanded = Array.from({ length: 9 }, (_, index) =>
+      createPreview({
+        id: 200 + index,
+        invokeId: `expanded-${index + 1}`,
+        occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+        status: index < 7 ? "running" : "success",
+      }),
     );
 
-    apiMocks.fetchDashboardActivity.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    apiMocks.fetchDashboardActivity.mockResolvedValueOnce(first);
+    apiMocks.fetchDashboardActivityRecent.mockResolvedValueOnce({
+      rangeStart: first.rangeStart,
+      rangeEnd: first.rangeEnd,
+      snapshotId: first.snapshotId,
+      accounts: [{ accountKey: "upstream:42", recentInvocations: expanded }],
+    });
 
     render(<Probe />);
     await flushAsync();
     await flushAsync();
 
-    expect(apiMocks.fetchDashboardActivity).toHaveBeenCalledTimes(2);
+    expect(apiMocks.fetchDashboardActivity).toHaveBeenCalledTimes(1);
     expect(apiMocks.fetchDashboardActivity.mock.calls[0]?.[1]).toEqual(
       expect.objectContaining({ recentLimit: 4, includeAccounts: true }),
     );
-    expect(apiMocks.fetchDashboardActivity.mock.calls[1]?.[1]).toEqual(
-      expect.objectContaining({ recentLimit: 9, includeAccounts: true }),
+    expect(apiMocks.fetchDashboardActivityRecent).toHaveBeenCalledWith(
+      expect.objectContaining({ recentLimit: 9, snapshotId: first.snapshotId }),
     );
     expect(text("visible-limit")).toBe("9");
     expect(text("recent-count")).toBe("9");
@@ -559,19 +649,29 @@ describe("useDashboardUpstreamAccountActivity", () => {
   });
 
   it("does not shrink below an already discovered larger account limit", async () => {
-    apiMocks.fetchDashboardActivity.mockResolvedValue(
-      createAccountResponse(
-        9,
-        Array.from({ length: 9 }, (_, index) =>
-          createPreview({
-            id: 300 + index,
-            invokeId: `stable-${index + 1}`,
-            occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
-            status: "running",
-          }),
-        ),
+    const response = createAccountResponse(
+      9,
+      Array.from({ length: 9 }, (_, index) =>
+        createPreview({
+          id: 300 + index,
+          invokeId: `stable-${index + 1}`,
+          occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+          status: "running",
+        }),
       ),
     );
+    apiMocks.fetchDashboardActivity.mockResolvedValue(response);
+    apiMocks.fetchDashboardActivityRecent.mockResolvedValue({
+      rangeStart: response.rangeStart,
+      rangeEnd: response.rangeEnd,
+      snapshotId: response.snapshotId,
+      accounts: [
+        {
+          accountKey: "upstream:42",
+          recentInvocations: response.accounts?.[0]?.recentInvocations ?? [],
+        },
+      ],
+    });
 
     render(<Probe recentInvocationLimit={7} />);
     await flushAsync();
@@ -581,19 +681,29 @@ describe("useDashboardUpstreamAccountActivity", () => {
   });
 
   it("does not shrink below the requested seed limit when the response resolves smaller", async () => {
-    apiMocks.fetchDashboardActivity.mockResolvedValue(
-      createAccountResponse(
-        3,
-        Array.from({ length: 7 }, (_, index) =>
-          createPreview({
-            id: 350 + index,
-            invokeId: `seed-stable-${index + 1}`,
-            occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
-            status: index < 3 ? "running" : "success",
-          }),
-        ),
+    const response = createAccountResponse(
+      3,
+      Array.from({ length: 7 }, (_, index) =>
+        createPreview({
+          id: 350 + index,
+          invokeId: `seed-stable-${index + 1}`,
+          occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+          status: index < 3 ? "running" : "success",
+        }),
       ),
     );
+    apiMocks.fetchDashboardActivity.mockResolvedValue(response);
+    apiMocks.fetchDashboardActivityRecent.mockResolvedValue({
+      rangeStart: response.rangeStart,
+      rangeEnd: response.rangeEnd,
+      snapshotId: response.snapshotId,
+      accounts: [
+        {
+          accountKey: "upstream:42",
+          recentInvocations: response.accounts?.[0]?.recentInvocations ?? [],
+        },
+      ],
+    });
 
     render(<Probe recentInvocationLimit={7} />);
     await flushAsync();
@@ -607,44 +717,68 @@ describe("useDashboardUpstreamAccountActivity", () => {
     expect(text("recent-count")).toBe("7");
   });
 
-  it("ignores stale smaller responses after a larger limit reload is queued", async () => {
-    const first = deferred<DashboardActivityResponse>();
-    const second = deferred<DashboardActivityResponse>();
-    apiMocks.fetchDashboardActivity
-      .mockImplementationOnce(async () => first.promise)
-      .mockImplementationOnce(async () => second.promise);
+  it("lets an active recent hydration finish before loading the newest summary snapshot", async () => {
+    const firstRecent = deferred<DashboardActivityRecentResponse>();
+    const secondRecent = deferred<DashboardActivityRecentResponse>();
+    const first = createAccountResponse(4, []);
+    const second = {
+      ...createAccountResponse(9, []),
+      snapshotId: 2,
+      rangeEnd: "2026-04-04T10:10:00Z",
+    };
+    apiMocks.fetchDashboardActivity.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    apiMocks.fetchDashboardActivityRecent
+      .mockReturnValueOnce(firstRecent.promise)
+      .mockReturnValueOnce(secondRecent.promise);
 
-    render(<Probe />);
+    render(<Probe range="today" />);
     await flushAsync();
-
-    first.resolve(
-      createAccountResponse(
-        9,
-        Array.from({ length: 4 }, (_, index) =>
-          createPreview({
-            id: 400 + index,
-            invokeId: `deferred-seed-${index + 1}`,
-            occurredAt: `2026-04-04T10:0${4 - index}:00Z`,
-            status: "running",
-          }),
-        ),
-      ),
-    );
+    act(() => {
+      sseMocks.listener?.({ type: "records", records: [] });
+    });
     await flushAsync();
+    expect(apiMocks.fetchDashboardActivityRecent).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchDashboardActivityRecent.mock.calls[0]?.[0].signal?.aborted).toBe(false);
 
-    second.resolve(
-      createAccountResponse(
-        9,
-        Array.from({ length: 9 }, (_, index) =>
-          createPreview({
-            id: 500 + index,
-            invokeId: `deferred-expanded-${index + 1}`,
-            occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
-            status: "running",
-          }),
-        ),
-      ),
-    );
+    firstRecent.resolve({
+      rangeStart: first.rangeStart,
+      rangeEnd: first.rangeEnd,
+      snapshotId: first.snapshotId,
+      accounts: [
+        {
+          accountKey: "upstream:42",
+          recentInvocations: [
+            createPreview({
+              id: 400,
+              invokeId: "stale",
+              occurredAt: "2026-04-04T10:04:00Z",
+              status: "success",
+            }),
+          ],
+        },
+      ],
+    });
+    await flushAsync();
+    expect(apiMocks.fetchDashboardActivityRecent).toHaveBeenCalledTimes(2);
+
+    secondRecent.resolve({
+      rangeStart: second.rangeStart,
+      rangeEnd: second.rangeEnd,
+      snapshotId: second.snapshotId,
+      accounts: [
+        {
+          accountKey: "upstream:42",
+          recentInvocations: Array.from({ length: 9 }, (_, index) =>
+            createPreview({
+              id: 500 + index,
+              invokeId: `new-${index}`,
+              occurredAt: "2026-04-04T10:09:00Z",
+              status: "running",
+            }),
+          ),
+        },
+      ],
+    });
     await flushAsync();
 
     expect(text("visible-limit")).toBe("9");

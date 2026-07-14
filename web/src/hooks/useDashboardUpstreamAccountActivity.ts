@@ -3,6 +3,7 @@ import {
   type DashboardActivityLiveSnapshot,
   type DashboardActivityResponse,
   fetchDashboardActivity,
+  fetchDashboardActivityRecent,
   type UpstreamAccountActivityAccount,
 } from "../lib/api";
 import { normalizeEffectiveRoutingRule } from "../lib/api/core-upstream";
@@ -21,6 +22,11 @@ export const DASHBOARD_UPSTREAM_ACCOUNT_ACTIVITY_OPEN_RESYNC_COOLDOWN_MS = 5_000
 
 interface LoadOptions {
   silent?: boolean;
+}
+
+interface RecentLoadRequest {
+  summary: DashboardActivityResponse;
+  recentLimit: number;
 }
 
 function buildLiveOnlyAccount(
@@ -168,6 +174,9 @@ export function useDashboardActivitySnapshot(
   const initialRecentInvocationLimit = clampRecentInvocationLimit(recentInvocationLimit);
   const [data, setData] = useState<DashboardActivityResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [recentLoading, setRecentLoading] = useState(false);
+  const [recentError, setRecentError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [visibleRecentInvocationLimit, setVisibleRecentInvocationLimit] = useState(
     initialRecentInvocationLimit,
@@ -186,6 +195,10 @@ export function useDashboardActivitySnapshot(
   const lastRefreshAtRef = useRef(0);
   const lastOpenResyncAtRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const recentAbortControllerRef = useRef<AbortController | null>(null);
+  const pendingRecentLoadRef = useRef<RecentLoadRequest | null>(null);
+  const loadRecentRef = useRef<((request: RecentLoadRequest) => Promise<void>) | null>(null);
+  const latestSummaryRef = useRef<DashboardActivityResponse | null>(null);
   const latestLiveSnapshotRef = useRef<DashboardActivityLiveSnapshot | null>(null);
 
   useEffect(() => {
@@ -223,88 +236,178 @@ export function useDashboardActivitySnapshot(
   const invalidateCurrentRequest = useCallback(() => {
     requestSeqRef.current += 1;
     abortControllerRef.current?.abort();
+    recentAbortControllerRef.current?.abort();
     abortControllerRef.current = null;
+    recentAbortControllerRef.current = null;
+    pendingRecentLoadRef.current = null;
     inFlightRef.current = false;
     pendingLoadRef.current = null;
+    setRecentLoading(false);
   }, []);
 
-  const runLoad = useCallback(async ({ silent = false }: LoadOptions = {}) => {
-    if (!enabledRef.current) {
+  const loadRecent = useCallback(async ({ summary, recentLimit }: RecentLoadRequest) => {
+    if (!includeAccountsRef.current || !enabledRef.current) return;
+    if (recentAbortControllerRef.current) {
+      pendingRecentLoadRef.current = { summary, recentLimit };
       return;
     }
-    inFlightRef.current = true;
-    const requestSeq = requestSeqRef.current + 1;
-    requestSeqRef.current = requestSeq;
-    const requestedRange = rangeRef.current;
-    const requestedRecentLimit = recentInvocationLimitRef.current;
     const controller = new AbortController();
-    abortControllerRef.current = controller;
-    const shouldShowLoading = !(silent && hasHydratedRef.current);
-    if (shouldShowLoading) setIsLoading(true);
+    recentAbortControllerRef.current = controller;
+    const requestSeq = requestSeqRef.current;
+    setRecentLoading(true);
+    setRecentError(null);
     try {
-      const requestedIncludeAccounts = includeAccountsRef.current;
-      const response = await fetchDashboardActivity(requestedRange, {
-        recentLimit: requestedRecentLimit,
-        includeAccounts: requestedIncludeAccounts,
+      const recent = await fetchDashboardActivityRecent({
+        rangeStart: summary.rangeStart,
+        rangeEnd: summary.rangeEnd,
+        snapshotId: summary.snapshotId,
+        recentLimit,
         signal: controller.signal,
       });
       if (
         requestSeq !== requestSeqRef.current ||
-        rangeRef.current !== requestedRange ||
-        includeAccountsRef.current !== requestedIncludeAccounts ||
-        recentInvocationLimitRef.current !== requestedRecentLimit ||
-        !enabledRef.current
+        latestSummaryRef.current?.snapshotId !== recent.snapshotId ||
+        latestSummaryRef.current?.rangeStart !== recent.rangeStart ||
+        latestSummaryRef.current?.rangeEnd !== recent.rangeEnd
       ) {
         return;
       }
-      const resolvedRecentInvocationLimit = requestedIncludeAccounts
-        ? resolveUpstreamAccountRecentPreviewLimit(response.accounts ?? [])
-        : requestedRecentLimit;
-      const nextRecentInvocationLimit = Math.max(
-        requestedRecentLimit,
-        resolvedRecentInvocationLimit,
+      const byAccount = new Map(
+        recent.accounts.map((account) => [account.accountKey, account.recentInvocations]),
       );
-      const needsExpandedReload =
-        requestedIncludeAccounts && nextRecentInvocationLimit > requestedRecentLimit;
-      recentInvocationLimitRef.current = nextRecentInvocationLimit;
-      setVisibleRecentInvocationLimit(
-        needsExpandedReload ? requestedRecentLimit : nextRecentInvocationLimit,
-      );
-      const latestLiveSnapshot = latestLiveSnapshotRef.current;
-      setData(
-        requestedRange !== "yesterday" &&
-          latestLiveSnapshot &&
-          latestLiveSnapshot.revision > (response.liveRevision ?? 0)
-          ? mergeDashboardActivityLiveSnapshot(response, latestLiveSnapshot)
-          : response,
-      );
-      recordUpstreamAccountActivityRefresh();
-      hasHydratedRef.current = true;
-      setError(null);
-      if (needsExpandedReload) {
-        pendingLoadRef.current = {
-          silent: pendingLoadRef.current?.silent ?? true,
+      const latestSummary = latestSummaryRef.current;
+      if (latestSummary?.snapshotId === recent.snapshotId) {
+        latestSummaryRef.current = {
+          ...latestSummary,
+          accounts: latestSummary.accounts?.map((account) => ({
+            ...account,
+            recentInvocations: byAccount.get(account.accountKey ?? "") ?? [],
+          })),
         };
       }
+      setData((current) => {
+        if (!current || current.snapshotId !== recent.snapshotId) return current;
+        return {
+          ...current,
+          accounts: current.accounts?.map((account) => ({
+            ...account,
+            recentInvocations: byAccount.get(account.accountKey ?? "") ?? [],
+          })),
+        };
+      });
+      setVisibleRecentInvocationLimit(recentLimit);
     } catch (err) {
       if (isAbortError(err)) return;
-      if (requestSeq !== requestSeqRef.current) return;
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
       if (requestSeq === requestSeqRef.current) {
-        abortControllerRef.current = null;
-        inFlightRef.current = false;
+        setRecentError(err instanceof Error ? err.message : String(err));
       }
-      if (requestSeq === requestSeqRef.current && shouldShowLoading) {
-        setIsLoading(false);
-      }
-      const pendingLoad = pendingLoadRef.current;
-      if (requestSeq === requestSeqRef.current && pendingLoad) {
-        pendingLoadRef.current = null;
-        void runLoad(pendingLoad);
+    } finally {
+      if (recentAbortControllerRef.current === controller) {
+        recentAbortControllerRef.current = null;
+        const pendingRequest = pendingRecentLoadRef.current;
+        pendingRecentLoadRef.current = null;
+        if (pendingRequest && includeAccountsRef.current && enabledRef.current) {
+          void loadRecentRef.current?.(pendingRequest);
+        } else {
+          setRecentLoading(false);
+        }
       }
     }
   }, []);
+  loadRecentRef.current = loadRecent;
+
+  const runLoad = useCallback(
+    async ({ silent = false }: LoadOptions = {}) => {
+      if (!enabledRef.current) {
+        return;
+      }
+      inFlightRef.current = true;
+      const requestSeq = requestSeqRef.current + 1;
+      requestSeqRef.current = requestSeq;
+      const requestedRange = rangeRef.current;
+      const requestedRecentLimit = recentInvocationLimitRef.current;
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      const shouldShowLoading = !(silent && hasHydratedRef.current);
+      if (shouldShowLoading) setIsLoading(true);
+      if (!shouldShowLoading) setIsRefreshing(true);
+      try {
+        const requestedIncludeAccounts = includeAccountsRef.current;
+        const response = await fetchDashboardActivity(requestedRange, {
+          recentLimit: requestedRecentLimit,
+          includeAccounts: requestedIncludeAccounts,
+          includeRecent: false,
+          signal: controller.signal,
+        });
+        if (
+          requestSeq !== requestSeqRef.current ||
+          rangeRef.current !== requestedRange ||
+          includeAccountsRef.current !== requestedIncludeAccounts ||
+          recentInvocationLimitRef.current !== requestedRecentLimit ||
+          !enabledRef.current
+        ) {
+          return;
+        }
+        const resolvedRecentInvocationLimit = requestedIncludeAccounts
+          ? resolveUpstreamAccountRecentPreviewLimit(response.accounts ?? [])
+          : requestedRecentLimit;
+        const nextRecentInvocationLimit = Math.max(
+          requestedRecentLimit,
+          resolvedRecentInvocationLimit,
+        );
+        recentInvocationLimitRef.current = nextRecentInvocationLimit;
+        if (!requestedIncludeAccounts) setVisibleRecentInvocationLimit(nextRecentInvocationLimit);
+        const latestLiveSnapshot = latestLiveSnapshotRef.current;
+        const nextData =
+          requestedRange !== "yesterday" &&
+          latestLiveSnapshot &&
+          latestLiveSnapshot.revision > (response.liveRevision ?? 0)
+            ? mergeDashboardActivityLiveSnapshot(response, latestLiveSnapshot)
+            : response;
+        const previousData = latestSummaryRef.current;
+        const nextDataWithRetainedRecent =
+          silent && requestedIncludeAccounts && previousData?.range === nextData.range
+            ? {
+                ...nextData,
+                accounts: nextData.accounts?.map((account) => ({
+                  ...account,
+                  recentInvocations:
+                    previousData.accounts?.find(
+                      (previousAccount) => previousAccount.accountKey === account.accountKey,
+                    )?.recentInvocations ?? account.recentInvocations,
+                })),
+              }
+            : nextData;
+        latestSummaryRef.current = nextDataWithRetainedRecent;
+        setData(nextDataWithRetainedRecent);
+        recordUpstreamAccountActivityRefresh();
+        hasHydratedRef.current = true;
+        setError(null);
+        if (requestedIncludeAccounts) {
+          void loadRecent({ summary: nextData, recentLimit: nextRecentInvocationLimit });
+        }
+      } catch (err) {
+        if (isAbortError(err)) return;
+        if (requestSeq !== requestSeqRef.current) return;
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (requestSeq === requestSeqRef.current) {
+          abortControllerRef.current = null;
+          inFlightRef.current = false;
+        }
+        if (requestSeq === requestSeqRef.current && shouldShowLoading) {
+          setIsLoading(false);
+        }
+        if (requestSeq === requestSeqRef.current) setIsRefreshing(false);
+        const pendingLoad = pendingLoadRef.current;
+        if (requestSeq === requestSeqRef.current && pendingLoad) {
+          pendingLoadRef.current = null;
+          void runLoad(pendingLoad);
+        }
+      }
+    },
+    [loadRecent],
+  );
 
   const load = useCallback(
     async (options: LoadOptions = {}) => {
@@ -329,7 +432,7 @@ export function useDashboardActivitySnapshot(
     }
     hasActivatedRef.current = true;
     void load({ silent: hasHydratedRef.current });
-  }, [clearPendingRefreshTimer, enabled, invalidateCurrentRequest, load, range]);
+  }, [clearPendingRefreshTimer, enabled, includeAccounts, invalidateCurrentRequest, load, range]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -399,9 +502,18 @@ export function useDashboardActivitySnapshot(
   return {
     data,
     isLoading,
+    isRefreshing,
+    recentLoading,
+    recentError,
     error,
     recentInvocationLimit: visibleRecentInvocationLimit,
     hasActivated: hasActivatedRef.current,
     reload: load,
+    retryRecent: () => {
+      const summary = latestSummaryRef.current;
+      if (summary) {
+        void loadRecent({ summary, recentLimit: recentInvocationLimitRef.current });
+      }
+    },
   };
 }

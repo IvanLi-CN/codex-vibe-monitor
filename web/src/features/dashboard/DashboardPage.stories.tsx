@@ -1315,6 +1315,23 @@ function createDashboardRequestHandler(scenario: DashboardScenario = "default") 
       return jsonResponse(buildDashboardActivityResponse({ range, summary, includeAccounts }));
     }
 
+    if (url.pathname === "/api/stats/dashboard-activity/recent") {
+      const response = buildDashboardActivityResponse({
+        range: "today",
+        summary: responses.today,
+        includeAccounts: true,
+      });
+      return jsonResponse({
+        rangeStart: url.searchParams.get("rangeStart") ?? response.rangeStart,
+        rangeEnd: url.searchParams.get("rangeEnd") ?? response.rangeEnd,
+        snapshotId: Number(url.searchParams.get("snapshotId") ?? response.snapshotId),
+        accounts: (response.accounts ?? []).map((account) => ({
+          accountKey: account.accountKey,
+          recentInvocations: account.recentInvocations,
+        })),
+      });
+    }
+
     if (url.pathname === "/api/stats/timeseries") {
       const range = url.searchParams.get("range");
       if (range === "today") return jsonResponse(responses.timeseriesToday);

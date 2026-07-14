@@ -4087,10 +4087,14 @@ async fn query_live_upstream_account_activity_aggregate_rows(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
+    use_attempt_fallback: bool,
 ) -> Result<Vec<UpstreamAccountActivityAggregateRow>, ApiError> {
     let started_at = Instant::now();
-    let upstream_account_id_sql =
-        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let upstream_account_id_sql = if use_attempt_fallback {
+        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations")
+    } else {
+        INVOCATION_UPSTREAM_ACCOUNT_ID_SQL.to_string()
+    };
     let failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
     let success_sql = format!(
         "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') AND ({failure_class_sql}) = 'none'"
@@ -4162,16 +4166,50 @@ async fn query_live_upstream_account_usage_breakdown_rows(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
+    has_cost_breakdown_columns: bool,
+    use_attempt_fallback: bool,
 ) -> Result<Vec<UpstreamAccountUsageBreakdownAggregateRow>, ApiError> {
     let started_at = Instant::now();
-    let upstream_account_id_sql =
-        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let upstream_account_id_sql = if use_attempt_fallback {
+        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations")
+    } else {
+        INVOCATION_UPSTREAM_ACCOUNT_ID_SQL.to_string()
+    };
     let model_sql = format!(
         "COALESCE(NULLIF(TRIM({}), ''), NULLIF(TRIM(model), ''), 'unknown')",
         INVOCATION_RESPONSE_MODEL_SQL
     );
     let reasoning_effort_sql = INVOCATION_REASONING_EFFORT_SQL;
-    let cost_complete_sql = "cost_input IS NOT NULL AND cost_cache_write IS NOT NULL AND cost_cache_read IS NOT NULL AND cost_output IS NOT NULL AND cost_reasoning IS NOT NULL";
+    let cost_complete_sql = if has_cost_breakdown_columns {
+        "cost_input IS NOT NULL AND cost_cache_write IS NOT NULL AND cost_cache_read IS NOT NULL AND cost_output IS NOT NULL AND cost_reasoning IS NOT NULL"
+    } else {
+        "0"
+    };
+    let cost_input_sql = if has_cost_breakdown_columns {
+        "cost_input"
+    } else {
+        "0"
+    };
+    let cost_cache_write_sql = if has_cost_breakdown_columns {
+        "cost_cache_write"
+    } else {
+        "0"
+    };
+    let cost_cache_read_sql = if has_cost_breakdown_columns {
+        "cost_cache_read"
+    } else {
+        "0"
+    };
+    let cost_output_sql = if has_cost_breakdown_columns {
+        "cost_output"
+    } else {
+        "0"
+    };
+    let cost_reasoning_sql = if has_cost_breakdown_columns {
+        "cost_reasoning"
+    } else {
+        "0"
+    };
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
@@ -4181,11 +4219,11 @@ async fn query_live_upstream_account_usage_breakdown_rows(
             COALESCE(SUM(MAX(COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0), 0)), 0) AS cache_write_tokens,
             COALESCE(SUM(COALESCE(cache_input_tokens, 0)), 0) AS cache_read_tokens,
             COALESCE(SUM(COALESCE(output_tokens, 0)), 0) AS output_tokens,
-            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN cost_input ELSE 0 END), 0) AS REAL) AS cost_input,
-            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN cost_cache_write ELSE 0 END), 0) AS REAL) AS cost_cache_write,
-            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN cost_cache_read ELSE 0 END), 0) AS REAL) AS cost_cache_read,
-            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN cost_output ELSE 0 END), 0) AS REAL) AS cost_output,
-            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN cost_reasoning ELSE 0 END), 0) AS REAL) AS cost_reasoning,
+            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN {cost_input_sql} ELSE 0 END), 0) AS REAL) AS cost_input,
+            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN {cost_cache_write_sql} ELSE 0 END), 0) AS REAL) AS cost_cache_write,
+            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN {cost_cache_read_sql} ELSE 0 END), 0) AS REAL) AS cost_cache_read,
+            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN {cost_output_sql} ELSE 0 END), 0) AS REAL) AS cost_output,
+            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN {cost_reasoning_sql} ELSE 0 END), 0) AS REAL) AS cost_reasoning,
             CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND NOT ({cost_complete_sql}) THEN cost ELSE 0 END), 0) AS REAL) AS cost_unknown,
             SUM(CASE WHEN cost IS NOT NULL THEN 1 ELSE 0 END) AS has_cost
         FROM codex_invocations
@@ -4219,6 +4257,61 @@ async fn query_live_upstream_account_usage_breakdown_rows(
         );
     }
     Ok(rows)
+}
+
+async fn query_completed_invocation_archive_activity_aggregate_rows(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+) -> Result<
+    (
+        Vec<UpstreamAccountActivityAggregateRow>,
+        Vec<UpstreamAccountUsageBreakdownAggregateRow>,
+    ),
+    ApiError,
+> {
+    let archive_rows = crate::stats::load_completed_invocation_archive_paths_in_range(
+        pool,
+        Some((range.start, range.end)),
+    )
+    .await?;
+    let mut aggregates = Vec::new();
+    let mut usage_breakdowns = Vec::new();
+    for archive_row in archive_rows {
+        let Some((archive_pool, temp_cleanup)) = crate::stats::open_invocation_archive_batch_pool(
+            &archive_row,
+            "dashboard-activity-summary",
+        )
+        .await?
+        else {
+            continue;
+        };
+        let has_cost_breakdown_columns =
+            crate::stats::sqlite_table_has_column(&archive_pool, "codex_invocations", "cost_input")
+                .await?;
+        aggregates.extend(
+            query_live_upstream_account_activity_aggregate_rows(
+                &archive_pool,
+                source_scope,
+                range,
+                false,
+            )
+            .await?,
+        );
+        usage_breakdowns.extend(
+            query_live_upstream_account_usage_breakdown_rows(
+                &archive_pool,
+                source_scope,
+                range,
+                has_cost_breakdown_columns,
+                false,
+            )
+            .await?,
+        );
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+    Ok((aggregates, usage_breakdowns))
 }
 
 #[derive(Debug, FromRow)]
@@ -4685,6 +4778,82 @@ pub(crate) fn overlay_runtime_upstream_account_activity_preview_rows(
             "overlayed memory runtime invocation rows into upstream account activity"
         );
     }
+}
+
+async fn overlay_runtime_terminal_upstream_account_activity_preview_rows(
+    state: &AppState,
+    rows: &mut Vec<UpstreamAccountInvocationPreviewRow>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+) -> Result<(), ApiError> {
+    let mut terminal_rows = Vec::new();
+    for record in state.proxy_runtime_invocations.snapshot() {
+        if matches!(
+            normalized_runtime_text(record.status.as_deref()).as_str(),
+            "running" | "pending"
+        ) {
+            continue;
+        }
+        let Some(row) =
+            runtime_upstream_account_activity_preview_row_with_terminal(record, source_scope, true)
+        else {
+            continue;
+        };
+        let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
+            continue;
+        };
+        if occurred_at >= range.start && occurred_at < range.end {
+            terminal_rows.push(row);
+        }
+    }
+    if terminal_rows.is_empty() {
+        return Ok(());
+    }
+
+    let fallback_keys = terminal_rows
+        .iter()
+        .filter(|row| row.upstream_account_id.is_none())
+        .map(|row| (row.invoke_id.clone(), row.occurred_at.clone()))
+        .collect::<HashSet<_>>();
+    let fallback_rows =
+        query_runtime_recent_account_fallback_rows(&state.pool, source_scope, &fallback_keys)
+            .await?
+            .into_iter()
+            .map(|row| ((row.invoke_id.clone(), row.occurred_at.clone()), row))
+            .collect::<HashMap<_, _>>();
+
+    let mut rows_by_key = rows
+        .drain(..)
+        .map(|row| ((row.invoke_id.clone(), row.occurred_at.clone()), row))
+        .collect::<HashMap<_, _>>();
+    for mut row in terminal_rows {
+        let key = (row.invoke_id.clone(), row.occurred_at.clone());
+        if let Some(existing) = rows_by_key.get(&key) {
+            if row.upstream_account_id.is_none() {
+                row.upstream_account_id = existing.upstream_account_id;
+            }
+            if row.upstream_account_name.is_none() {
+                row.upstream_account_name = existing.upstream_account_name.clone();
+            }
+            if row.upstream_account_plan_type.is_none() {
+                row.upstream_account_plan_type = existing.upstream_account_plan_type.clone();
+            }
+        }
+        if let Some(fallback) = fallback_rows.get(&key) {
+            if row.upstream_account_id.is_none() {
+                row.upstream_account_id = fallback.upstream_account_id;
+            }
+            if row.upstream_account_name.is_none() {
+                row.upstream_account_name = fallback.upstream_account_name.clone();
+            }
+            if row.upstream_account_plan_type.is_none() {
+                row.upstream_account_plan_type = fallback.upstream_account_plan_type.clone();
+            }
+        }
+        rows_by_key.insert(key, row);
+    }
+    rows.extend(rows_by_key.into_values());
+    Ok(())
 }
 
 pub(crate) async fn load_usage_breakdown_for_range(
@@ -5316,6 +5485,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     reporting_tz: Tz,
     recent_limit: usize,
     include_accounts: bool,
+    include_recent: bool,
     in_progress_counts_override: Option<HashMap<Option<i64>, UpstreamAccountInProgressSummary>>,
 ) -> Result<DashboardActivitySnapshot, ApiError> {
     let range_window = resolve_range_window(range_name, reporting_tz).map_err(ApiError::from)?;
@@ -5335,8 +5505,9 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         .await;
     }
     let mut account_activity = HashMap::<Option<i64>, UpstreamAccountActivityAccumulator>::new();
-    for row in query_live_upstream_account_activity_aggregate_rows(&state.pool, source_scope, range)
-        .await?
+    for row in
+        query_live_upstream_account_activity_aggregate_rows(&state.pool, source_scope, range, true)
+            .await?
     {
         let entry = account_activity.entry(row.upstream_account_id).or_default();
         entry.request_count += row.request_count;
@@ -5356,14 +5527,56 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         entry.total_latency_sample_count += row.total_latency_sample_count;
         entry.total_latency_sum_ms += row.total_latency_sum_ms;
     }
-    for row in
-        query_live_upstream_account_usage_breakdown_rows(&state.pool, source_scope, range).await?
+    for row in query_live_upstream_account_usage_breakdown_rows(
+        &state.pool,
+        source_scope,
+        range,
+        true,
+        true,
+    )
+    .await?
     {
         account_activity
             .entry(row.upstream_account_id)
             .or_default()
             .usage_breakdown
             .add_aggregate_row(&row);
+    }
+    if range.start < retention_cutoff {
+        let (archived_aggregates, archived_usage_breakdowns) =
+            query_completed_invocation_archive_activity_aggregate_rows(
+                &state.pool,
+                source_scope,
+                range,
+            )
+            .await?;
+        for row in archived_aggregates {
+            let entry = account_activity.entry(row.upstream_account_id).or_default();
+            entry.request_count += row.request_count;
+            entry.success_count += row.success_count;
+            entry.failure_count += row.failure_count;
+            entry.non_success_count += row.non_success_count;
+            entry.total_tokens += row.total_tokens;
+            entry.success_tokens += row.success_tokens;
+            entry.non_success_tokens += row.non_success_tokens;
+            entry.failure_tokens += row.failure_tokens;
+            entry.failure_cost += row.failure_cost;
+            entry.non_success_cost += row.non_success_cost;
+            entry.cache_input_tokens += row.cache_input_tokens;
+            entry.total_cost += row.total_cost;
+            entry.first_response_byte_total_sample_count +=
+                row.first_response_byte_total_sample_count;
+            entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
+            entry.total_latency_sample_count += row.total_latency_sample_count;
+            entry.total_latency_sum_ms += row.total_latency_sum_ms;
+        }
+        for row in archived_usage_breakdowns {
+            account_activity
+                .entry(row.upstream_account_id)
+                .or_default()
+                .usage_breakdown
+                .add_aggregate_row(&row);
+        }
     }
     for row in
         query_live_upstream_account_activity_rate_rows(&state.pool, source_scope, range).await?
@@ -5508,10 +5721,15 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         .map(|row| row.id)
         .collect::<HashSet<_>>();
     for row in runtime_rows {
-        add_upstream_account_activity_preview_row(&mut account_activity, row, recent_limit, false);
+        add_upstream_account_activity_preview_row(
+            &mut account_activity,
+            row,
+            recent_limit,
+            include_accounts && include_recent,
+        );
     }
 
-    if range.start < retention_cutoff {
+    if include_recent && range.start < retention_cutoff {
         let mut archived_rows = crate::stats::query_completed_invocation_archive_preview_rows(
             &state.pool,
             source_scope,
@@ -5526,65 +5744,72 @@ pub(crate) async fn load_dashboard_activity_snapshot(
                 .then_with(|| right.id.cmp(&left.id))
         });
         for row in archived_rows {
-            add_upstream_account_activity_preview_row(
-                &mut account_activity,
-                row,
-                recent_limit,
-                include_accounts,
-            );
+            let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
+                continue;
+            };
+            let entry = account_activity.entry(row.upstream_account_id).or_default();
+            entry.last_occurred_at_epoch_ms = entry
+                .last_occurred_at_epoch_ms
+                .max(occurred_at.timestamp_millis());
+            if entry.display_name_hint.is_none() {
+                entry.display_name_hint =
+                    normalize_trimmed_optional_string_local(row.upstream_account_name.clone());
+            }
+            if entry.plan_type_hint.is_none() {
+                entry.plan_type_hint =
+                    normalize_trimmed_optional_string_local(row.upstream_account_plan_type.clone());
+            }
+            if entry.recent_invocations.len() < recent_limit {
+                entry
+                    .recent_invocations
+                    .push(upstream_account_invocation_preview_from_row(row));
+            }
         }
     }
 
-    if include_accounts {
-        let account_keys = account_activity.keys().copied().collect::<Vec<_>>();
-        for account_id in account_keys {
-            let persisted_rows = query_live_upstream_account_activity_preview_rows_with_limit(
-                &state.pool,
-                source_scope,
-                range,
-                Some(account_id),
-                Some(recent_limit),
-                false,
-            )
-            .await?;
-            let mut rows = runtime_recent_rows.remove(&account_id).unwrap_or_default();
-            let runtime_keys = rows
-                .iter()
-                .map(|row| (row.invoke_id.clone(), row.occurred_at.clone()))
-                .collect::<HashSet<_>>();
-            rows.extend(persisted_rows.into_iter().filter(|row| {
-                !runtime_keys.contains(&(row.invoke_id.clone(), row.occurred_at.clone()))
-            }));
-            rows.sort_by(|left, right| {
+    if include_accounts && include_recent {
+        let rows = query_live_upstream_account_activity_preview_rows_with_limit(
+            &state.pool,
+            source_scope,
+            range,
+            None,
+            None,
+            false,
+        )
+        .await?;
+        let mut recent_rows_by_account =
+            HashMap::<Option<i64>, Vec<PromptCacheConversationInvocationPreviewResponse>>::new();
+        for (upstream_account_id, runtime_rows) in runtime_recent_rows {
+            recent_rows_by_account
+                .entry(upstream_account_id)
+                .or_default()
+                .extend(
+                    runtime_rows
+                        .into_iter()
+                        .map(upstream_account_invocation_preview_from_row),
+                );
+        }
+        for row in rows {
+            recent_rows_by_account
+                .entry(row.upstream_account_id)
+                .or_default()
+                .push(upstream_account_invocation_preview_from_row(row));
+        }
+        for (upstream_account_id, mut recent_rows) in recent_rows_by_account {
+            let entry = account_activity.entry(upstream_account_id).or_default();
+            recent_rows.append(&mut entry.recent_invocations);
+            let mut seen_keys = HashSet::with_capacity(recent_rows.len());
+            recent_rows.retain(|invocation| {
+                seen_keys.insert((invocation.invoke_id.clone(), invocation.occurred_at.clone()))
+            });
+            recent_rows.sort_by(|left, right| {
                 right
                     .occurred_at
                     .cmp(&left.occurred_at)
                     .then_with(|| right.id.cmp(&left.id))
             });
-            rows.truncate(recent_limit);
-            let mut recent_invocations = rows
-                .into_iter()
-                .map(upstream_account_invocation_preview_from_row)
-                .collect::<Vec<_>>();
-            let entry = account_activity.entry(account_id).or_default();
-            let mut recent_by_key = recent_invocations
-                .drain(..)
-                .map(|row| ((row.invoke_id.clone(), row.occurred_at.clone()), row))
-                .collect::<HashMap<_, _>>();
-            for row in entry.recent_invocations.drain(..) {
-                recent_by_key
-                    .entry((row.invoke_id.clone(), row.occurred_at.clone()))
-                    .or_insert(row);
-            }
-            recent_invocations = recent_by_key.into_values().collect();
-            recent_invocations.sort_by(|left, right| {
-                right
-                    .occurred_at
-                    .cmp(&left.occurred_at)
-                    .then_with(|| right.id.cmp(&left.id))
-            });
-            recent_invocations.truncate(recent_limit);
-            entry.recent_invocations = recent_invocations;
+            recent_rows.truncate(recent_limit);
+            entry.recent_invocations = recent_rows;
         }
     }
 
@@ -5842,6 +6067,7 @@ pub(crate) async fn fetch_dashboard_activity(
         reporting_tz,
         recent_limit,
         params.include_accounts,
+        params.include_recent.unwrap_or(true),
         live.as_ref()
             .map(dashboard_live_snapshot_in_progress_counts),
     )
@@ -5874,8 +6100,8 @@ pub(crate) async fn fetch_dashboard_activity(
     let rate_window_start = snapshot
         .range_start
         .max(snapshot.range_end - ChronoDuration::minutes(DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES));
-    let range_start = format_utc_iso(snapshot.range_start);
-    let range_end = format_utc_iso(snapshot.range_end);
+    let range_start = format_utc_iso_precise(snapshot.range_start);
+    let range_end = format_utc_iso_precise(snapshot.range_end);
     let accounts = params.include_accounts.then_some(snapshot.accounts);
 
     Ok(Json(DashboardActivityResponse {
@@ -5885,12 +6111,107 @@ pub(crate) async fn fetch_dashboard_activity(
         snapshot_id: snapshot.range_end.timestamp_millis(),
         live_revision,
         rate_window: DashboardActivityRateWindowResponse {
-            start: format_utc_iso(rate_window_start),
+            start: format_utc_iso_millis(rate_window_start),
             end: range_end,
             window_minutes: DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES,
             mode: "account_active_tail_sum".to_string(),
         },
         summary: snapshot.summary,
+        accounts,
+    }))
+}
+
+pub(crate) async fn fetch_dashboard_activity_recent(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<DashboardActivityRecentQuery>,
+) -> Result<Json<DashboardActivityRecentResponse>, ApiError> {
+    let recent_limit = validate_dashboard_activity_params(
+        "dashboard-activity/recent",
+        "today",
+        params.recent_limit,
+    )?;
+    let range_start = parse_to_utc_datetime(&params.range_start)
+        .ok_or_else(|| ApiError::bad_request(anyhow!("invalid rangeStart")))?;
+    let range_end = parse_to_utc_datetime(&params.range_end)
+        .ok_or_else(|| ApiError::bad_request(anyhow!("invalid rangeEnd")))?;
+    if range_start >= range_end
+        || range_end - range_start > ChronoDuration::days(7)
+        || params.snapshot_id != range_end.timestamp_millis()
+    {
+        return Err(ApiError::bad_request(anyhow!(
+            "snapshotId must match rangeEnd and range must be between 0 and 7 days"
+        )));
+    }
+    let range = ExactUtcRange {
+        start: range_start,
+        end: range_end,
+    };
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let mut rows = query_live_upstream_account_activity_preview_rows_with_limit(
+        &state.pool,
+        source_scope,
+        range,
+        None,
+        None,
+        false,
+    )
+    .await?;
+    overlay_runtime_upstream_account_activity_preview_rows(
+        state.as_ref(),
+        &mut rows,
+        source_scope,
+        range,
+    );
+    overlay_runtime_terminal_upstream_account_activity_preview_rows(
+        state.as_ref(),
+        &mut rows,
+        source_scope,
+        range,
+    )
+    .await?;
+    let live_ids = rows.iter().map(|row| row.id).collect::<HashSet<_>>();
+    if range.start < shanghai_retention_cutoff(state.config.invocation_max_days) {
+        rows.extend(
+            crate::stats::query_completed_invocation_archive_preview_rows(
+                &state.pool,
+                source_scope,
+                range,
+                Some(&live_ids),
+            )
+            .await?,
+        );
+    }
+    rows.sort_by(|left, right| {
+        right
+            .occurred_at
+            .cmp(&left.occurred_at)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    let mut grouped =
+        HashMap::<Option<i64>, Vec<PromptCacheConversationInvocationPreviewResponse>>::new();
+    for row in rows {
+        let invocations = grouped.entry(row.upstream_account_id).or_default();
+        if invocations.len() < recent_limit {
+            invocations.push(upstream_account_invocation_preview_from_row(row));
+        }
+    }
+    let mut accounts = grouped
+        .into_iter()
+        .map(
+            |(account_id, recent_invocations)| DashboardActivityRecentAccountResponse {
+                account_key: account_id
+                    .map(|id| format!("upstream:{id}"))
+                    .unwrap_or_else(|| "unassigned".to_string()),
+                recent_invocations,
+            },
+        )
+        .collect::<Vec<_>>();
+    accounts.sort_by(|left, right| left.account_key.cmp(&right.account_key));
+
+    Ok(Json(DashboardActivityRecentResponse {
+        range_start: format_utc_iso_precise(range.start),
+        range_end: format_utc_iso_precise(range.end),
+        snapshot_id: params.snapshot_id,
         accounts,
     }))
 }
@@ -5910,6 +6231,7 @@ pub(crate) async fn fetch_upstream_account_activity(
         params.range.as_str(),
         reporting_tz,
         recent_limit,
+        true,
         true,
         None,
     )

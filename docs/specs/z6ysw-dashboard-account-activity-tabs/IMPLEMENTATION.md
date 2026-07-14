@@ -4,11 +4,14 @@
 
 ## Current Status
 
-- Implementation: 已实现
+- Implementation: 已实现，待提交收口
 - Lifecycle: active
 - Catalog note: dashboard workspace dual tabs, account activity aggregation, invocation-based in-progress semantics
 
 ## Coverage / rollout summary
+
+- 已实现：Dashboard 上游账号视图拆为汇总优先与快照绑定的 recent 批量补齐；首屏使用局部骨架，范围刷新保留旧卡片，recent 失败保留汇总并局部重试。
+- 已实现：`includeRecent=false` 的第一阶段对保留期外数据执行 archive 内部分组聚合，只返回账号指标而不读取、排序或传输 invocation preview；兼容 combined 响应与第二阶段 recent 接口继续按相同精确快照边界读取 bounded preview。
 
 - 已实现：Dashboard 页面提升并共享顶部 range 状态，工作区 section 接入 `对话 / 上游账号` 双 tabs，并保留既有对话 working-set 行为。
 - 已实现：Dashboard 工作区 tabs 额外持久化用户上次主动选择的视图；重新打开 Dashboard 或切回总览页时，在当前 range 允许的前提下恢复该视图；`usage` 仅临时强制回退到 `对话`，不会覆盖已记住的 `上游账号` 偏好。
@@ -61,7 +64,7 @@
 
 ## Remaining Gaps
 
-- 无已知功能缺口；后续仅保留常规回归与数据量增长下的聚合性能观察。
+- 无功能性缺口。提交前仅需完成最终 review、测试收口与截图提交授权确认。
 
 ## Related Changes
 

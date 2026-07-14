@@ -8,6 +8,7 @@
 - 顶部总览已经拥有 `today / yesterday / 1d / 7d / usage` 的范围切换，但工作区部分没有共享这套状态，导致账号级视图无法与总览范围保持一致。
 - Dashboard / account-scoped summary 现有 `inProgressConversationCount` / `inProgressRetryConversationCount` 仍沿用“按对话去重”的旧语义，与 owner-facing 认知中的“进行中的调用数”不一致。
 - Dashboard 顶部实时 KPI 与工作区上游账号卡片必须共享同一个当前活动快照；同一屏内可见的 `TPM`、`消费速率` 与 `进行中调用` 不得分别由前端 timeseries rate 和后端 account-activity rate 两套算法生成。
+- 上游账号完整快照会为每个账号读取 recent invocation；逐账号串行读取会让账号卡片整体等待数秒，并在激活请求建立前短暂误显真实空态。
 
 ## 目标 / 非目标
 
@@ -103,6 +104,11 @@
 
 - 当前进行中、重试和阶段计数必须由后端基于一次 runtime store 读取生成版本化 `dashboardActivityLive` SSE 快照；前端不得从 recent/records 自行推导。历史聚合、recent 与账号元数据继续沿用 5 秒 HTTP reconcile budget。
 - `dashboardActivityLive.revision` 必须单调递增；其快照由 SQLite live read model 与 runtime overlay 的同一合并算法生成。`GET /api/stats/dashboard-activity.liveRevision` 标识 HTTP 返回的实时字段版本。前端不得用较旧 HTTP 或 SSE revision 覆盖较新的实时字段，SSE 重连必须立即下发当前快照。
+- Dashboard 默认 `对话` 视图不得预取账号活动；进入 `上游账号` 后必须按“账号卡骨架 -> 汇总卡片 -> recent 调用”渐进展示。只有汇总请求成功且账号数组确实为空时才允许显示真实空态。
+- `GET /api/stats/dashboard-activity` 新增可选 `includeRecent`；省略时默认 `true` 保持兼容。Dashboard 第一阶段必须发送 `includeAccounts=true&includeRecent=false`，使账号身份、状态、策略和聚合指标不等待 recent invocation。
+- `GET /api/stats/dashboard-activity/recent` 必须接收第一阶段响应的 `rangeStart/rangeEnd/snapshotId` 与 `recentLimit`，用一次批量读取返回所有活动账号的 bounded recent rows；不得逐账号发 SQL，也不得以并发 N 个 SQL 伪装批量读取。响应必须回显快照边界，前端只合并当前请求序列与当前快照一致的结果。
+- 首次账号汇总加载时计数 badge 不得显示误导性的 `0`；范围切换与静默校准应保留旧卡片并标注更新中。新汇总原子替换后，其 recent 区域独立加载；recent 失败不得撤销汇总卡片，必须提供局部错误与重试。
+- 账号视图切换后的下一次绘制必须出现稳定骨架；固定多账号本地 fixture 下，第一阶段账号汇总应在 1 秒内完成，且第一阶段 SQL 数量不得随账号数量线性增长。
 - 当前实现中，账号视图与 current summary 一样统一收口到 `5s` reconcile/open-resync 预算；任何更激进的 cadence 变更都必须先补充 slow-path 证据。
 - 共享 range 状态应继续使用现有 localStorage key，避免打断用户已保存的 Dashboard 偏好。
 - 账号卡内的最近调用记录应复用已有 invocation 语义 helper，保证状态、模型、耗时与账号 badge 文案一致。
@@ -141,6 +147,7 @@
 | 接口（Name）                                           | 类型（Kind）        | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                       | 备注（Notes）                                                |
 | ------------------------------------------------------ | ------------------- | ------------- | -------------- | ------------------------ | --------------- | ----------------------------------------- | ------------------------------------------------------------ |
 | `GET /api/stats/dashboard-activity`                    | http-endpoint       | external      | Add            | None                     | backend/stats   | Dashboard top KPI, account activity tab   | 同一快照返回 summary 与可选 accounts；顶部实时 KPI 事实源    |
+| `GET /api/stats/dashboard-activity/recent`             | http-endpoint       | external      | Add            | None                     | backend/stats   | Dashboard account activity tab            | 绑定 summary snapshot 的批量 bounded recent rows             |
 | `GET /api/stats/upstream-account-activity`             | http-endpoint       | external      | Add            | None                     | backend/stats   | Dashboard account activity tab            | range 聚合 + effective routing rule + recent 4 bounded query |
 | `StatsResponse.inProgressConversationCount`            | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail | wire name 保留，语义改为 invocation-based                    |
 | `StatsResponse.inProgressRetryConversationCount`       | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail | wire name 保留，语义改为 invocation-based retry              |
@@ -201,6 +208,11 @@
 - Given 已收到 revision 更高的 `dashboardActivityLive`，When 较旧 HTTP reconcile 或乱序 SSE 到达，Then 顶部与账号卡保持较新 live 数值且不会回退为 0。
 - Given 同一个 mock/fixture 返回 `dashboard-activity` full snapshot，When 同屏渲染顶部 KPI 与账号卡片，Then `top.tokensPerMinute === sum(accounts.tokensPerMinute)`，允许仅因小数格式化产生显示级差异。
 - Given 同一个 mock/fixture 返回 `dashboard-activity` full snapshot，When 同屏渲染顶部 KPI 与账号卡片，Then `top.spendRate === sum(accounts.spendRate)`，允许仅因货币格式化产生显示级差异。
+- Given 账号视图首次激活且汇总尚未返回，When UI 渲染工作区，Then 下一次绘制显示与最终 grid 尺寸一致的账号卡骨架，计数不显示 `0`，且不出现“暂无活动”。
+- Given 第一阶段汇总已返回，When recent 批量请求仍在进行，Then 汇总卡片立即可操作且每张卡的 recent 区显示局部骨架。
+- Given recent 批量请求失败，When 汇总卡片仍存在，Then 卡片保留并在 recent 区显示可重试错误；重试成功后只替换同一快照的 recent 数据。
+- Given 已有账号卡片并切换 range，When 新汇总尚未返回，Then 保留旧卡片并显示更新中；旧 range 或旧 snapshot 的迟到响应不得覆盖当前状态。
+- Given N 个活动账号，When 第一阶段使用 `includeRecent=false`，Then 不执行 recent query；When 第二阶段加载 recent，Then 使用一次批量读取并把每账号结果限制到 `recentLimit`。
 - Given 账号 tab 尚未打开，When Dashboard 顶部需要当前活动 KPI，Then 前端只请求 `includeAccounts=false` 的 summary-only 快照，不请求账号明细。
 - Given 账号 tab 打开，When Dashboard 同屏显示顶部 KPI 与账号卡片，Then 两者来自同一个 `snapshotId/rangeEnd` 的 full snapshot。
 - Given 图表趋势与顶部瞬时 KPI 数值不同，When 审查 UI 口径，Then 该差异被接受，因为 chart 是趋势展示，顶部 KPI 是活动快照事实源。
@@ -363,6 +375,30 @@
   evidence_note: 验证 Dashboard 工作区右上 tabs 右贴边呈现；当浏览器已记住用户上次主动切到 `上游账号` 时，重新进入总览页会恢复该视图，且 `usage` 下的临时回退不会抹掉该偏好。
   image:
   ![Dashboard 工作区视图记忆与右贴边证据](./assets/dashboard-workspace-view-memory.png)
+
+- source_type: ui_demo
+  story_id_or_title: `#/dashboard?demoScene=progressive-loading&demoTheme=dark`
+  scenario: `desktop progressive summary skeleton`
+  evidence_note: mock-only demo 将账号汇总请求延迟，切换到上游账号后下一帧显示与双列布局匹配的骨架；计数显示“账号加载中”，不会误显 0 或“暂无活动”。
+  image:
+  PR: include
+  ![Dashboard 上游账号渐进加载桌面骨架](./assets/dashboard-progressive-skeleton-desktop.png)
+
+- source_type: ui_demo
+  story_id_or_title: `#/dashboard?demoScene=progressive-loading&demoTheme=dark`
+  scenario: `desktop summary complete and recent batch complete`
+  evidence_note: mock-only demo 完成两阶段请求后显示 12 张账号汇总卡与批量 recent 行；账号卡保持可操作，recent 数据按快照边界补齐。
+  image:
+  PR: include
+  ![Dashboard 上游账号渐进加载桌面完成态](./assets/dashboard-progressive-complete-desktop.png)
+
+- source_type: ui_demo
+  story_id_or_title: `#/dashboard?demoScene=progressive-loading&demoTheme=dark`
+  scenario: `mobile upstream account complete`
+  evidence_note: 移动视口下账号区收敛为单列卡片，保留汇总指标、recent 记录和页头 tab 操作，不出现横向溢出。
+  image:
+  PR: include
+  ![Dashboard 上游账号渐进加载移动完成态](./assets/dashboard-progressive-complete-mobile.png)
 
 ## Related PRs
 

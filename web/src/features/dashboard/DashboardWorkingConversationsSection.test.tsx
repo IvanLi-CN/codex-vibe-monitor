@@ -68,6 +68,9 @@ vi.mock("@tanstack/react-virtual", () => ({
 const upstreamAccountActivityMock = vi.hoisted(() => ({
   data: null as UpstreamAccountActivityResponse | null,
   isLoading: false,
+  isRefreshing: false,
+  recentLoading: false,
+  recentError: null as string | null,
   error: null as string | null,
   resolvedRecentInvocationLimit: null as number | null,
   calls: [] as Array<{
@@ -91,6 +94,9 @@ vi.mock("../../hooks/useDashboardUpstreamAccountActivity", () => ({
     return {
       data: upstreamAccountActivityMock.data,
       isLoading: upstreamAccountActivityMock.isLoading,
+      isRefreshing: upstreamAccountActivityMock.isRefreshing,
+      recentLoading: upstreamAccountActivityMock.recentLoading,
+      recentError: upstreamAccountActivityMock.recentError,
       error: upstreamAccountActivityMock.error,
       recentInvocationLimit:
         upstreamAccountActivityMock.resolvedRecentInvocationLimit ??
@@ -99,6 +105,7 @@ vi.mock("../../hooks/useDashboardUpstreamAccountActivity", () => ({
         4,
       hasActivated: enabled,
       reload: vi.fn(),
+      retryRecent: vi.fn(),
     };
   },
 }));
@@ -418,6 +425,9 @@ afterEach(() => {
   virtualizerMocks.customVirtualItems = null;
   upstreamAccountActivityMock.data = null;
   upstreamAccountActivityMock.isLoading = false;
+  upstreamAccountActivityMock.isRefreshing = false;
+  upstreamAccountActivityMock.recentLoading = false;
+  upstreamAccountActivityMock.recentError = null;
   upstreamAccountActivityMock.error = null;
   upstreamAccountActivityMock.resolvedRecentInvocationLimit = null;
   upstreamAccountActivityMock.calls = [];
@@ -625,6 +635,51 @@ function rerenderSectionWithCards(
 }
 
 describe("DashboardWorkingConversationsSection", () => {
+  it("shows account skeletons immediately without flashing the empty state", () => {
+    upstreamAccountActivityMock.data = null;
+    upstreamAccountActivityMock.isLoading = false;
+
+    renderSection(createResponse([]));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-upstream-account-grid-skeleton"]'),
+    ).not.toBeNull();
+    expect(host?.textContent).toContain("账号加载中");
+    expect(host?.textContent).not.toContain("当前范围内暂无活动上游账号");
+  });
+
+  it("keeps hydrated recent rows visible while a background recent refresh is pending", () => {
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+    upstreamAccountActivityMock.recentLoading = true;
+
+    renderSection(createResponse([]));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    expect(host?.textContent).toContain("acct-invoke-1");
+    expect(
+      host?.querySelector('[data-testid="dashboard-upstream-account-recent-skeleton"]'),
+    ).toBeNull();
+  });
+
   it("stacks workspace controls below the description on compact screens", () => {
     renderSection(
       createResponse([

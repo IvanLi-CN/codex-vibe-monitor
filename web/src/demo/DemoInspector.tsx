@@ -19,6 +19,7 @@ const sceneOptions: Array<{ value: DemoScene; label: string }> = [
   { value: "operational", label: "正常" },
   { value: "attention", label: "告警" },
   { value: "empty", label: "空态" },
+  { value: "progressive-loading", label: "渐进加载" },
   { value: "network-failure", label: "网络失败" },
 ];
 

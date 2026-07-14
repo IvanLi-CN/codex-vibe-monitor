@@ -1512,6 +1512,16 @@ pub(crate) struct DashboardActivityQuery {
     pub(crate) time_zone: Option<String>,
     #[serde(default)]
     pub(crate) include_accounts: bool,
+    pub(crate) include_recent: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardActivityRecentQuery {
+    pub(crate) range_start: String,
+    pub(crate) range_end: String,
+    pub(crate) snapshot_id: i64,
+    pub(crate) recent_limit: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1569,6 +1579,22 @@ pub(crate) struct DashboardActivityResponse {
     pub(crate) summary: DashboardActivitySummaryResponse,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) accounts: Option<Vec<DashboardActivityAccountResponse>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardActivityRecentAccountResponse {
+    pub(crate) account_key: String,
+    pub(crate) recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardActivityRecentResponse {
+    pub(crate) range_start: String,
+    pub(crate) range_end: String,
+    pub(crate) snapshot_id: i64,
+    pub(crate) accounts: Vec<DashboardActivityRecentAccountResponse>,
 }
 
 #[derive(Debug, Clone, Serialize)]

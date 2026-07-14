@@ -16,6 +16,7 @@ import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segm
 import { Spinner } from "../../components/ui/spinner";
 import { Tooltip } from "../../components/ui/tooltip";
 import { useDashboardUpstreamAccountActivity } from "../../hooks/useDashboardUpstreamAccountActivity";
+import { DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX } from "../../hooks/useDashboardWorkingConversations";
 import type { TranslationKey } from "../../i18n";
 import { useTranslation } from "../../i18n";
 import type {
@@ -98,7 +99,11 @@ interface DashboardWorkingConversationsSectionProps {
   onOpenInvocation?: (selection: DashboardWorkingConversationInvocationSelection) => void;
   upstreamAccountActivity?: UpstreamAccountActivityResponse | null;
   upstreamAccountActivityLoading?: boolean;
+  upstreamAccountActivityRefreshing?: boolean;
   upstreamAccountActivityError?: string | null;
+  upstreamAccountRecentLoading?: boolean;
+  upstreamAccountRecentError?: string | null;
+  onRetryUpstreamAccountRecent?: () => void;
   upstreamAccountRecentPreviewLimit?: number;
   onUpstreamAccountActivityEnabledChange?: (enabled: boolean) => void;
   onUpstreamAccountPolicyChanged?: () => void;
@@ -114,6 +119,23 @@ const ACCOUNT_CARD_CLASS_NAME =
 
 const ACCOUNT_CARD_INNER_BORDER_CLASS_NAME = "border-[rgba(148,163,184,0.22)]";
 const ACCOUNT_CARD_INNER_RING_CLASS_NAME = "ring-[rgba(148,163,184,0.22)]";
+const DASHBOARD_RECENT_SKELETON_IDS = Array.from(
+  { length: DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX },
+  (_, index) => `recent-skeleton-${index + 1}`,
+);
+const DASHBOARD_ACCOUNT_SKELETON_IDS = ["account-skeleton-primary", "account-skeleton-secondary"];
+const DASHBOARD_ACCOUNT_METRIC_SKELETON_IDS = [
+  "metric-requests",
+  "metric-success",
+  "metric-tokens",
+  "metric-cost",
+];
+const DASHBOARD_ACCOUNT_RECENT_SKELETON_IDS = [
+  "recent-row-1",
+  "recent-row-2",
+  "recent-row-3",
+  "recent-row-4",
+];
 
 type StatusMeta = {
   badgeVariant: "default" | "secondary" | "success" | "warning" | "error" | "info";
@@ -2277,6 +2299,9 @@ function DashboardUpstreamAccountActivityCard({
   onOpenConversation,
   onOpenInvocation,
   onPolicyChanged,
+  recentLoading = false,
+  recentError,
+  onRetryRecent,
 }: {
   account: UpstreamAccountActivityAccount;
   locale: "zh" | "en";
@@ -2291,6 +2316,9 @@ function DashboardUpstreamAccountActivityCard({
   onOpenConversation?: (selection: DashboardWorkingConversationSelection) => void;
   onOpenInvocation?: (selection: DashboardWorkingConversationInvocationSelection) => void;
   onPolicyChanged?: () => void;
+  recentLoading?: boolean;
+  recentError?: string | null;
+  onRetryRecent?: () => void;
 }) {
   const { t } = useTranslation();
   const serverPolicyDraft = useMemo(() => accountPolicyDraftFromRule(account), [account]);
@@ -3031,21 +3059,79 @@ function DashboardUpstreamAccountActivityCard({
             ) : null}
           </div>
         </div>
-        <div className="grid flex-1 auto-rows-fr gap-1.5">
-          {recentInvocations.map((invocation: DashboardWorkingConversationInvocationModel) => (
-            <AccountRecentInvocationRow
-              key={`${invocation.record.invokeId}:${invocation.record.occurredAt}:${invocation.record.id}`}
-              invocation={invocation}
-              locale={locale}
-              nowMs={nowMs}
-              onOpenUpstreamAccount={onOpenUpstreamAccount}
-              onOpenConversation={onOpenConversation}
-              onOpenInvocation={onOpenInvocation}
-            />
-          ))}
+        <div className="grid flex-1 auto-rows-fr gap-1.5" aria-live="polite">
+          {recentLoading && recentInvocations.length === 0
+            ? DASHBOARD_RECENT_SKELETON_IDS.slice(0, recentPreviewLimit).map((skeletonId) => (
+                <div
+                  key={skeletonId}
+                  data-testid="dashboard-upstream-account-recent-skeleton"
+                  className="min-h-12 rounded-xl bg-base-200/65 p-2.5"
+                >
+                  <div className="h-2.5 w-28 animate-pulse rounded bg-base-300/75" />
+                  <div className="mt-2 h-2 w-3/4 animate-pulse rounded bg-base-300/55" />
+                </div>
+              ))
+            : null}
+          {!recentLoading && recentError ? (
+            <div className="flex min-h-24 flex-col items-start justify-center gap-2 rounded-xl bg-error/8 px-3 py-2 text-xs text-base-content/72">
+              <span>{t("dashboard.upstreamAccounts.recentError")}</span>
+              <button
+                type="button"
+                className="font-semibold text-error underline decoration-error/45 underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                onClick={onRetryRecent}
+              >
+                {t("dashboard.upstreamAccounts.retryRecent")}
+              </button>
+            </div>
+          ) : null}
+          {!recentError && (!recentLoading || recentInvocations.length > 0)
+            ? recentInvocations.map((invocation: DashboardWorkingConversationInvocationModel) => (
+                <AccountRecentInvocationRow
+                  key={`${invocation.record.invokeId}:${invocation.record.occurredAt}:${invocation.record.id}`}
+                  invocation={invocation}
+                  locale={locale}
+                  nowMs={nowMs}
+                  onOpenUpstreamAccount={onOpenUpstreamAccount}
+                  onOpenConversation={onOpenConversation}
+                  onOpenInvocation={onOpenInvocation}
+                />
+              ))
+            : null}
         </div>
       </div>
     </article>
+  );
+}
+
+function DashboardUpstreamAccountGridSkeleton() {
+  return (
+    <div
+      data-testid="dashboard-upstream-account-grid-skeleton"
+      className="grid grid-cols-1 gap-4 desktop1660:grid-cols-[repeat(2,minmax(0,1fr))]"
+      aria-busy="true"
+    >
+      {DASHBOARD_ACCOUNT_SKELETON_IDS.map((cardId) => (
+        <div key={cardId} className={ACCOUNT_CARD_CLASS_NAME}>
+          <div className="flex items-center justify-between gap-4">
+            <div className="h-5 w-36 animate-pulse rounded bg-base-300/75" />
+            <div className="h-7 w-28 animate-pulse rounded-full bg-base-300/55" />
+          </div>
+          <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {DASHBOARD_ACCOUNT_METRIC_SKELETON_IDS.map((metricId) => (
+              <div key={metricId} className="h-20 animate-pulse rounded-xl bg-base-200/72" />
+            ))}
+          </div>
+          <div className="mt-4 border-t border-base-300/45 pt-3">
+            <div className="mb-3 h-3 w-28 animate-pulse rounded bg-base-300/65" />
+            <div className="grid gap-1.5">
+              {DASHBOARD_ACCOUNT_RECENT_SKELETON_IDS.map((rowId) => (
+                <div key={rowId} className="h-12 animate-pulse rounded-xl bg-base-200/65" />
+              ))}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -3105,7 +3191,11 @@ export function DashboardWorkingConversationsSection({
   onOpenInvocation,
   upstreamAccountActivity: externalUpstreamAccountActivity,
   upstreamAccountActivityLoading: externalUpstreamAccountActivityLoading,
+  upstreamAccountActivityRefreshing: externalUpstreamAccountActivityRefreshing,
   upstreamAccountActivityError: externalUpstreamAccountActivityError,
+  upstreamAccountRecentLoading: externalUpstreamAccountRecentLoading,
+  upstreamAccountRecentError: externalUpstreamAccountRecentError,
+  onRetryUpstreamAccountRecent,
   upstreamAccountRecentPreviewLimit: externalUpstreamAccountRecentPreviewLimit,
   onUpstreamAccountActivityEnabledChange,
   onUpstreamAccountPolicyChanged,
@@ -3180,9 +3270,27 @@ export function DashboardWorkingConversationsSection({
   const upstreamAccountActivityLoading = hasExternalUpstreamAccountActivity
     ? externalUpstreamAccountActivityLoading === true
     : hookUpstreamAccountActivity.isLoading;
+  const upstreamAccountActivityRefreshing = hasExternalUpstreamAccountActivity
+    ? externalUpstreamAccountActivityRefreshing === true
+    : hookUpstreamAccountActivity.isRefreshing;
+  const upstreamAccountRecentLoading = hasExternalUpstreamAccountActivity
+    ? externalUpstreamAccountRecentLoading === true
+    : hookUpstreamAccountActivity.recentLoading;
+  const upstreamAccountRecentError = hasExternalUpstreamAccountActivity
+    ? (externalUpstreamAccountRecentError ?? null)
+    : hookUpstreamAccountActivity.recentError;
+  const retryUpstreamAccountRecent = hasExternalUpstreamAccountActivity
+    ? onRetryUpstreamAccountRecent
+    : hookUpstreamAccountActivity.retryRecent;
   const upstreamAccountActivityError = hasExternalUpstreamAccountActivity
     ? (externalUpstreamAccountActivityError ?? null)
     : hookUpstreamAccountActivity.error;
+  const upstreamAccountActivityPending =
+    upstreamAccountActivityEnabled &&
+    upstreamAccountActivity == null &&
+    upstreamAccountActivityError == null;
+  const showUpstreamAccountActivityLoading =
+    upstreamAccountActivityLoading || upstreamAccountActivityPending;
   const upstreamAccountRecentPreviewLimit = hasExternalUpstreamAccountActivity
     ? (externalUpstreamAccountRecentPreviewLimit ?? recentPreviewLimit)
     : hookUpstreamAccountActivity.recentInvocationLimit;
@@ -3227,9 +3335,11 @@ export function DashboardWorkingConversationsSection({
       ? t("dashboard.workingConversations.countBadge", {
           count: countBadgeValue,
         })
-      : t("dashboard.upstreamAccounts.countBadge", {
-          count: accountCountBadgeValue,
-        });
+      : showUpstreamAccountActivityLoading && upstreamAccounts.length === 0
+        ? t("dashboard.upstreamAccounts.countLoading")
+        : t("dashboard.upstreamAccounts.countBadge", {
+            count: accountCountBadgeValue,
+          });
   const upstreamAccountRows = useMemo(
     () =>
       chunkDashboardUpstreamAccountRows(
@@ -3493,18 +3603,24 @@ export function DashboardWorkingConversationsSection({
 
         {activeView === "upstreamAccounts" ? (
           <>
+            {upstreamAccountActivityRefreshing && upstreamAccounts.length > 0 ? (
+              <div
+                className="flex items-center gap-2 text-xs font-medium text-base-content/62"
+                role="status"
+              >
+                <Spinner size="sm" aria-hidden />
+                <span>{t("dashboard.upstreamAccounts.refreshing")}</span>
+              </div>
+            ) : null}
             {upstreamAccountActivityError ? (
               <Alert variant="error">
                 <span>{upstreamAccountActivityError}</span>
               </Alert>
             ) : null}
-            {upstreamAccountActivityLoading && upstreamAccounts.length === 0 ? (
-              <div className="flex min-h-44 items-center justify-center gap-3 rounded-2xl border border-dashed border-base-300/75 bg-base-100/45">
-                <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
-                <span className="text-sm text-base-content/70">{t("chart.loadingDetailed")}</span>
-              </div>
+            {showUpstreamAccountActivityLoading && upstreamAccounts.length === 0 ? (
+              <DashboardUpstreamAccountGridSkeleton />
             ) : null}
-            {!upstreamAccountActivityLoading && upstreamAccounts.length === 0 ? (
+            {!showUpstreamAccountActivityLoading && upstreamAccounts.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-base-300/75 bg-base-100/45 px-5 py-8 text-sm text-base-content/65">
                 {t("dashboard.upstreamAccounts.empty")}
               </div>
@@ -3526,6 +3642,9 @@ export function DashboardWorkingConversationsSection({
                     onOpenConversation={onOpenConversation}
                     onOpenInvocation={onOpenInvocation}
                     onPolicyChanged={refreshUpstreamAccountActivity}
+                    recentLoading={upstreamAccountRecentLoading}
+                    recentError={upstreamAccountRecentError}
+                    onRetryRecent={retryUpstreamAccountRecent}
                   />
                 ))}
               </div>
