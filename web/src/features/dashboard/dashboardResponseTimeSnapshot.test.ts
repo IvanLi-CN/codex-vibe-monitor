@@ -32,7 +32,7 @@ function buildResponse(points: TimeseriesResponse["points"]): TimeseriesResponse
 }
 
 describe("buildDashboardResponseTimeSnapshot", () => {
-  it("uses the latest five-minute rolling window and a sample-weighted day average", () => {
+  it("uses the complete selected range for a sample-weighted first-byte average", () => {
     const snapshot = buildDashboardResponseTimeSnapshot(
       buildResponse([
         buildPoint(0, 500, 2),
@@ -43,27 +43,27 @@ describe("buildDashboardResponseTimeSnapshot", () => {
       { now: new Date("2026-04-10T00:08:00.000Z") },
     );
 
-    expect(snapshot?.responseTimeMs).toBeCloseTo(2400, 6);
+    expect(snapshot?.responseTimeMs).toBeCloseTo(1857.142857, 6);
     expect(snapshot?.dayAverageMs).toBeCloseTo(1857.142857, 6);
   });
 
-  it("drops zero-call latency samples and reports no current value when the recent window is empty", () => {
+  it("drops zero-call latency samples from the complete selected range", () => {
     const snapshot = buildDashboardResponseTimeSnapshot(
       buildResponse([buildPoint(0, 500, 2), buildPoint(6, 2400, 3, 0)]),
       { now: new Date("2026-04-10T00:08:00.000Z") },
     );
 
-    expect(snapshot?.responseTimeMs).toBeNull();
+    expect(snapshot?.responseTimeMs).toBeCloseTo(500, 6);
     expect(snapshot?.dayAverageMs).toBeCloseTo(500, 6);
   });
 
-  it("does not fall back to older same-day latency when the active tail is empty", () => {
+  it("keeps older valid range samples when the final minutes are quiet", () => {
     const snapshot = buildDashboardResponseTimeSnapshot(
       buildResponse([buildPoint(1, 600, 2), buildPoint(2, 800, 2)]),
       { now: new Date("2026-04-10T00:12:00.000Z") },
     );
 
-    expect(snapshot?.responseTimeMs).toBeNull();
+    expect(snapshot?.responseTimeMs).toBeCloseTo(700, 6);
     expect(snapshot?.dayAverageMs).toBeCloseTo(700, 6);
   });
 });

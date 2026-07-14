@@ -2,7 +2,6 @@ import type { TimeseriesResponse } from "../../lib/api";
 import { parseDateInput, resolveClosedNaturalDayEnd } from "./dashboardNaturalDayWindow";
 
 const MINUTE_MS = 60_000;
-const DEFAULT_WINDOW_MINUTES = 5;
 
 interface LatencyBucket {
   bucketStartMs: number;
@@ -19,13 +18,12 @@ export interface DashboardResponseTimeSnapshot {
 
 export function buildDashboardResponseTimeSnapshot(
   response: TimeseriesResponse | null,
-  options?: { now?: Date; targetWindowMinutes?: number; closedNaturalDay?: boolean },
+  options?: { now?: Date; closedNaturalDay?: boolean },
 ): DashboardResponseTimeSnapshot | null {
   if (!response) {
     return null;
   }
 
-  const targetWindowMinutes = Math.max(1, options?.targetWindowMinutes ?? DEFAULT_WINDOW_MINUTES);
   const fallbackNow = options?.now ?? new Date();
   const closedNaturalDayEnd = resolveClosedNaturalDayEnd(
     response,
@@ -33,15 +31,11 @@ export function buildDashboardResponseTimeSnapshot(
   );
   const responseEnd = parseDateInput(response.rangeEnd);
   const anchor = closedNaturalDayEnd ?? resolveLiveNaturalDayAnchor(responseEnd, fallbackNow);
-  const start = closedNaturalDayEnd
-    ? floorToMinute(
-        parseDateInput(response.rangeStart) ??
-          new Date(closedNaturalDayEnd.getTime() - 24 * 60 * MINUTE_MS),
-      )
-    : startOfLocalDay(anchor);
+  const start = floorToMinute(
+    parseDateInput(response.rangeStart) ?? new Date(anchor.getTime() - 24 * 60 * MINUTE_MS),
+  );
   const startMs = start.getTime();
   const anchorMs = anchor.getTime();
-  const windowStartMs = Math.max(startMs, anchorMs - targetWindowMinutes * MINUTE_MS);
 
   if (anchorMs <= startMs) {
     return {
@@ -89,22 +83,10 @@ export function buildDashboardResponseTimeSnapshot(
   );
 
   return {
-    responseTimeMs: computeActiveTailAverage(buckets, anchorMs, windowStartMs),
+    responseTimeMs: computeWeightedAverage(buckets, startMs, anchorMs),
     dayAverageMs: computeWeightedAverage(buckets, startMs, anchorMs),
     available: true,
   };
-}
-
-function computeActiveTailAverage(
-  buckets: LatencyBucket[],
-  anchorMs: number,
-  windowStartMs: number,
-) {
-  const firstActiveBucket = buckets.find((bucket) => bucket.sampleCount > 0);
-  if (!firstActiveBucket) return null;
-
-  const activeStartMs = Math.max(windowStartMs, firstActiveBucket.bucketStartMs);
-  return computeWeightedAverage(buckets, activeStartMs, anchorMs);
 }
 
 function computeWeightedAverage(buckets: LatencyBucket[], startMs: number, endMs: number) {
@@ -121,12 +103,6 @@ function computeWeightedAverage(buckets: LatencyBucket[], startMs: number, endMs
 
   if (sampleCount <= 0) return null;
   return totalWeightedMs / sampleCount;
-}
-
-function startOfLocalDay(date: Date) {
-  const next = new Date(date);
-  next.setHours(0, 0, 0, 0);
-  return next;
 }
 
 function resolveLiveNaturalDayAnchor(responseEnd: Date | null, now: Date) {

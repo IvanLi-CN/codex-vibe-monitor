@@ -12411,6 +12411,74 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     }
     sqlx::query(
         r#"
+        UPDATE codex_invocations
+        SET payload = ?1,
+            output_tokens = ?2,
+            t_req_read_ms = ?3,
+            t_req_parse_ms = ?4,
+            t_upstream_connect_ms = ?5,
+            t_upstream_stream_ms = ?6,
+            t_total_ms = ?7
+        WHERE invoke_id = ?8
+        "#,
+    )
+    .bind(
+        json!({
+            "promptCacheKey": "pck-dashboard-activity-alpha-success",
+            "upstreamAccountId": 42_i64,
+            "responseModel": "gpt-5.6-performance",
+            "reasoningEffort": "high",
+        })
+        .to_string(),
+    )
+    .bind(600_i64)
+    .bind(10.0_f64)
+    .bind(20.0_f64)
+    .bind(30.0_f64)
+    .bind(2_000.0_f64)
+    .bind(2_300.0_f64)
+    .bind("dashboard-activity-alpha-success")
+    .execute(&state.pool)
+    .await
+    .expect("add alpha performance samples");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, source, status, total_tokens, output_tokens, cost,
+            t_upstream_ttfb_ms, t_upstream_stream_ms, t_total_ms, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "#,
+    )
+    .bind(8_007_i64)
+    .bind("dashboard-activity-alpha-zero-cost")
+    .bind(format_naive(
+        base_local
+            .checked_sub_signed(ChronoDuration::seconds(5))
+            .expect("valid zero-cost dashboard activity time"),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(400_i64)
+    .bind(120_i64)
+    .bind(0.0_f64)
+    .bind(40.0_f64)
+    .bind(400.0_f64)
+    .bind(500.0_f64)
+    .bind(
+        json!({
+            "promptCacheKey": "pck-dashboard-activity-alpha-zero-cost",
+            "upstreamAccountId": 42_i64,
+            "responseModel": "gpt-5.6-zero",
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert zero-cost billed dashboard activity invocation");
+    sqlx::query(
+        r#"
         INSERT INTO codex_invocations (
             id,
             invoke_id,
@@ -12727,7 +12795,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             .map(|account| account.total_tokens)
             .sum::<i64>(),
     );
-    assert_eq!(activity.summary().stats.total_tokens, 16_499);
+    assert_eq!(activity.summary().stats.total_tokens, 16_899);
     assert_f64_close(
         activity.summary().stats.total_cost,
         accounts
@@ -12777,6 +12845,64 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             .map(|account| account.spend_rate.unwrap_or(0.0))
             .sum::<f64>(),
     );
+    let performance = &activity.summary().model_performance;
+    assert!(performance.available);
+    assert_eq!(performance.models.len(), 2);
+    assert_eq!(performance.models[0].model, "gpt-5.6-performance");
+    assert_eq!(
+        performance.models[0].reasoning_effort.as_deref(),
+        Some("high")
+    );
+    assert_eq!(performance.models[1].model, "gpt-5.6-zero");
+    let range_minutes = (activity.exact_range().end - activity.exact_range().start)
+        .num_milliseconds() as f64
+        / 60_000.0;
+    assert_f64_close(performance.total.tokens_per_minute, 1_400.0 / range_minutes);
+    assert_f64_close(
+        activity
+            .summary()
+            .tokens_per_minute
+            .expect("performance-backed summary token rate"),
+        performance.total.tokens_per_minute,
+    );
+    assert_f64_close(
+        performance
+            .total
+            .streaming_response_rate
+            .expect("streaming response rate"),
+        300.0,
+    );
+    assert_f64_close(
+        performance
+            .total
+            .avg_response_ms
+            .expect("response duration"),
+        1_200.0,
+    );
+    assert_f64_close(
+        performance
+            .total
+            .avg_first_response_byte_total_ms
+            .expect("first byte duration"),
+        100.0,
+    );
+    assert_f64_close(
+        performance.total.usage_duration_ms.expect("usage duration"),
+        2_800.0,
+    );
+    let alpha = accounts
+        .iter()
+        .find(|account| account.upstream_account_id == Some(42))
+        .expect("alpha account");
+    assert_f64_close(
+        alpha.tokens_per_minute.expect("alpha performance tpm"),
+        performance.total.tokens_per_minute,
+    );
+    assert_eq!(alpha.model_performance.models.len(), 2);
+    assert_eq!(
+        alpha.model_performance.models[0].model,
+        "gpt-5.6-performance"
+    );
     let source_scope = resolve_default_source_scope(&state.pool)
         .await
         .expect("resolve source scope");
@@ -12789,6 +12915,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     .await
     .expect("load summary-only dashboard activity snapshot");
     assert!(summary_only_activity.accounts().is_empty());
+    assert!(!summary_only_activity.summary().model_performance.available);
     let Json(summary_only_response) = fetch_dashboard_activity(
         State(state.clone()),
         Query(DashboardActivityQuery {
@@ -12819,25 +12946,14 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             .stats
             .in_progress_retry_conversation_count,
     );
-    assert_f64_close(
-        summary_only_activity
-            .summary()
-            .tokens_per_minute
-            .expect("summary-only token rate"),
-        activity
-            .summary()
-            .tokens_per_minute
-            .expect("full snapshot token rate"),
-    );
+    assert_eq!(summary_only_activity.summary().tokens_per_minute, None);
+    assert!(summary_only_response.summary.tokens_per_minute.is_some());
     assert_f64_close(
         summary_only_activity
             .summary()
             .spend_rate
             .expect("summary-only spend rate"),
-        activity
-            .summary()
-            .spend_rate
-            .expect("full snapshot spend rate"),
+        summary_only_activity.summary().stats.total_cost / range_minutes,
     );
 
     let Json(full_response) = fetch_dashboard_activity(

@@ -116,6 +116,80 @@ const EMPTY_USAGE_BREAKDOWN = {
   models: [],
 };
 
+const DEMO_MODEL_PERFORMANCE_MODELS = [
+  {
+    model: "gpt-5.6-sol",
+    reasoningEffort: "high",
+    tokensPerMinute: 22_480,
+    streamingResponseRate: 71.4,
+    avgResponseMs: 3_280,
+    avgFirstResponseByteTotalMs: 820,
+    usageDurationMs: 10_482_000,
+  },
+  {
+    model: "gpt-5.6-sol",
+    reasoningEffort: "medium",
+    tokensPerMinute: 15_920,
+    streamingResponseRate: 64.8,
+    avgResponseMs: 2_680,
+    avgFirstResponseByteTotalMs: 694,
+    usageDurationMs: 7_246_000,
+  },
+  {
+    model: "gpt-5.6-terra",
+    reasoningEffort: null,
+    tokensPerMinute: 7_641,
+    streamingResponseRate: 46.2,
+    avgResponseMs: 4_910,
+    avgFirstResponseByteTotalMs: 1_104,
+    usageDurationMs: 4_038_000,
+  },
+] as const;
+
+function demoModelPerformanceForModels(modelIndexes: number[]) {
+  const models =
+    demoModel.snapshot.scene === "empty"
+      ? []
+      : modelIndexes
+          .map((index) => DEMO_MODEL_PERFORMANCE_MODELS[index])
+          .filter((model) => model != null);
+  if (models.length === 0) {
+    return {
+      available: true,
+      total: {
+        tokensPerMinute: 0,
+        streamingResponseRate: null,
+        avgResponseMs: null,
+        avgFirstResponseByteTotalMs: null,
+        usageDurationMs: null,
+      },
+      models: [],
+    };
+  }
+  const usageDurationMs = models.reduce((total, model) => total + model.usageDurationMs, 0);
+  return {
+    available: true,
+    total: {
+      tokensPerMinute: models.reduce((total, model) => total + model.tokensPerMinute, 0),
+      streamingResponseRate:
+        models.reduce(
+          (total, model) => total + model.streamingResponseRate * model.usageDurationMs,
+          0,
+        ) / usageDurationMs,
+      avgResponseMs:
+        models.reduce((total, model) => total + model.avgResponseMs * model.usageDurationMs, 0) /
+        usageDurationMs,
+      avgFirstResponseByteTotalMs:
+        models.reduce(
+          (total, model) => total + model.avgFirstResponseByteTotalMs * model.usageDurationMs,
+          0,
+        ) / usageDurationMs,
+      usageDurationMs,
+    },
+    models,
+  };
+}
+
 function demoUsageBreakdown() {
   return demoModel.snapshot.scene === "empty" ? EMPTY_USAGE_BREAKDOWN : DEMO_USAGE_BREAKDOWN;
 }
@@ -872,6 +946,7 @@ function demoDashboardActivityAccounts() {
         failureCost: Number((totalCost * 0.032).toFixed(2)),
         totalCost,
         usageBreakdown: demoUsageBreakdownForModels(modelIndexes),
+        modelPerformance: demoModelPerformanceForModels(modelIndexes),
         cacheHitRate: Number((0.814 - index * 0.012).toFixed(3)),
         tokensPerMinute: Math.max(2_100, 37_852 - index * 3_710),
         spendRate: Number(Math.max(1.1, 15.82 - index * 1.43).toFixed(2)),
@@ -1555,15 +1630,16 @@ async function handleRequest(request: Request) {
       rangeStart: "2026-07-10T00:00:00Z",
       rangeEnd: demoNow(),
       rateWindow: {
-        start: "2026-07-10T09:00:00Z",
+        start: "2026-07-10T00:00:00Z",
         end: demoNow(),
-        windowMinutes: 30,
-        mode: "rolling",
+        windowMinutes: 720,
+        mode: "range_average",
       },
       summary: {
         stats: demoSummary(),
         tokensPerMinute: 46_041,
         spendRate: 19.41,
+        modelPerformance: demoModelPerformanceForModels([0, 1, 2]),
       },
       accounts: includeAccounts ? accounts : undefined,
     });

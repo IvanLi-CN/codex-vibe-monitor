@@ -269,7 +269,7 @@ function DashboardNaturalDayTodaySummaryOverviewSnapshotBacked({
         tokensPerMinute: dashboardActivity.summary.tokensPerMinute ?? 0,
         spendRate: dashboardActivity.summary.spendRate ?? 0,
         windowMinutes: dashboardActivity.rateWindow.windowMinutes,
-        available: true,
+        available: dashboardActivity.summary.tokensPerMinute != null,
       }}
       rateLoading={false}
       rateError={null}
@@ -285,6 +285,7 @@ function DashboardNaturalDayTodaySummaryOverviewSnapshotBacked({
       showSurface={false}
       showHeader={false}
       showDayBadge={false}
+      modelPerformance={dashboardActivity.summary.modelPerformance}
     />
   );
 }
@@ -354,9 +355,10 @@ function DashboardNaturalDayTodaySummaryOverviewFallback({
           tokensPerMinute: dashboardActivity.summary.tokensPerMinute ?? 0,
           spendRate: dashboardActivity.summary.spendRate ?? 0,
           windowMinutes: dashboardActivity.rateWindow.windowMinutes,
-          available: true,
+          available: dashboardActivity.summary.tokensPerMinute != null,
         }
       : null;
+  const snapshotActive = upstreamAccountId == null && dashboardActivity?.range === "today";
 
   return (
     <TodayStatsOverview
@@ -378,6 +380,7 @@ function DashboardNaturalDayTodaySummaryOverviewFallback({
       showSurface={false}
       showHeader={false}
       showDayBadge={false}
+      modelPerformance={snapshotActive ? dashboardActivity?.summary.modelPerformance : null}
     />
   );
 }
@@ -460,7 +463,7 @@ function DashboardNaturalDayYesterdaySummaryOverviewSnapshotBacked({
         tokensPerMinute: dashboardActivity.summary.tokensPerMinute ?? 0,
         spendRate: dashboardActivity.summary.spendRate ?? 0,
         windowMinutes: dashboardActivity.rateWindow.windowMinutes,
-        available: true,
+        available: dashboardActivity.summary.tokensPerMinute != null,
       }}
       rateLoading={false}
       rateError={null}
@@ -476,6 +479,7 @@ function DashboardNaturalDayYesterdaySummaryOverviewSnapshotBacked({
       showSurface={false}
       showHeader={false}
       showDayBadge={false}
+      modelPerformance={dashboardActivity.summary.modelPerformance}
     />
   );
 }
@@ -535,9 +539,10 @@ function DashboardNaturalDayYesterdaySummaryOverviewFallback({
           tokensPerMinute: dashboardActivity.summary.tokensPerMinute ?? 0,
           spendRate: dashboardActivity.summary.spendRate ?? 0,
           windowMinutes: dashboardActivity.rateWindow.windowMinutes,
-          available: true,
+          available: dashboardActivity.summary.tokensPerMinute != null,
         }
       : null;
+  const snapshotActive = upstreamAccountId == null && dashboardActivity?.range === "yesterday";
 
   return (
     <TodayStatsOverview
@@ -559,6 +564,7 @@ function DashboardNaturalDayYesterdaySummaryOverviewFallback({
       showSurface={false}
       showHeader={false}
       showDayBadge={false}
+      modelPerformance={snapshotActive ? dashboardActivity?.summary.modelPerformance : null}
     />
   );
 }

@@ -623,6 +623,25 @@ export interface UsageBreakdown {
   models: UsageBreakdownModel[];
 }
 
+export interface ModelPerformanceMetrics {
+  tokensPerMinute: number;
+  streamingResponseRate?: number | null;
+  avgResponseMs?: number | null;
+  avgFirstResponseByteTotalMs?: number | null;
+  usageDurationMs?: number | null;
+}
+
+export interface ModelPerformanceModel extends ModelPerformanceMetrics {
+  model: string;
+  reasoningEffort?: string | null;
+}
+
+export interface ModelPerformance {
+  available: boolean;
+  total: ModelPerformanceMetrics;
+  models: ModelPerformanceModel[];
+}
+
 export interface UpstreamAccountActivityAccount {
   accountKey?: string;
   upstreamAccountId: number | null;
@@ -651,6 +670,7 @@ export interface UpstreamAccountActivityAccount {
   failureCost: number;
   totalCost: number;
   usageBreakdown: UsageBreakdown;
+  modelPerformance?: ModelPerformance | null;
   cacheHitRate?: number | null;
   tokensPerMinute?: number | null;
   spendRate?: number | null;
@@ -682,6 +702,7 @@ export interface DashboardActivitySummary {
   stats: StatsResponse;
   tokensPerMinute?: number | null;
   spendRate?: number | null;
+  modelPerformance?: ModelPerformance | null;
 }
 
 export interface DashboardActivityLiveAccount {
@@ -2674,6 +2695,7 @@ function normalizeUpstreamAccountActivityAccount(
       costs: null,
       models: [],
     },
+    modelPerformance: normalizeModelPerformance(payload.modelPerformance),
     cacheHitRate: normalizeFiniteNumber(payload.cacheHitRate),
     tokensPerMinute: normalizeFiniteNumber(payload.tokensPerMinute),
     spendRate: normalizeFiniteNumber(payload.spendRate),
@@ -2685,6 +2707,43 @@ function normalizeUpstreamAccountActivityAccount(
     retryInvocationCount: normalizeFiniteNumber(payload.retryInvocationCount),
     effectiveRoutingRule: normalizeEffectiveRoutingRule(payload.effectiveRoutingRule),
     recentInvocations,
+  };
+}
+
+function normalizeModelPerformanceMetrics(raw: unknown): ModelPerformanceMetrics {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    tokensPerMinute: normalizeFiniteNumber(payload.tokensPerMinute) ?? 0,
+    streamingResponseRate: normalizeFiniteNumber(payload.streamingResponseRate),
+    avgResponseMs: normalizeFiniteNumber(payload.avgResponseMs),
+    avgFirstResponseByteTotalMs: normalizeFiniteNumber(payload.avgFirstResponseByteTotalMs),
+    usageDurationMs: normalizeFiniteNumber(payload.usageDurationMs),
+  };
+}
+
+function normalizeModelPerformance(raw: unknown): ModelPerformance {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const models = Array.isArray(payload.models)
+    ? payload.models.flatMap((item) => {
+        const modelPayload = item as Record<string, unknown>;
+        const model = typeof modelPayload.model === "string" ? modelPayload.model.trim() : "";
+        if (!model) return [];
+        return [
+          {
+            model,
+            reasoningEffort:
+              typeof modelPayload.reasoningEffort === "string"
+                ? modelPayload.reasoningEffort.trim() || null
+                : null,
+            ...normalizeModelPerformanceMetrics(modelPayload),
+          },
+        ];
+      })
+    : [];
+  return {
+    available: payload.available === true,
+    total: normalizeModelPerformanceMetrics(payload.total),
+    models,
   };
 }
 
@@ -2743,6 +2802,7 @@ function normalizeDashboardActivityResponse(raw: unknown): DashboardActivityResp
       stats: normalizeStatsResponse(summaryPayload.stats),
       tokensPerMinute: normalizeFiniteNumber(summaryPayload.tokensPerMinute),
       spendRate: normalizeFiniteNumber(summaryPayload.spendRate),
+      modelPerformance: normalizeModelPerformance(summaryPayload.modelPerformance),
     },
     accounts: Array.isArray(payload.accounts)
       ? payload.accounts

@@ -2,7 +2,12 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useEffect, useMemo, useState } from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
-import type { ParallelWorkStatsResponse, StatsResponse, TimeseriesResponse } from "../../lib/api";
+import type {
+  ModelPerformance,
+  ParallelWorkStatsResponse,
+  StatsResponse,
+  TimeseriesResponse,
+} from "../../lib/api";
 import type { DashboardTodayRateSnapshot } from "./dashboardTodayRateSnapshot";
 import { TodayStatsOverview } from "./TodayStatsOverview";
 
@@ -126,6 +131,37 @@ const sampleRate: DashboardTodayRateSnapshot = {
   spendRate: 0.1,
   windowMinutes: 5,
   available: true,
+};
+
+const sampleModelPerformance: ModelPerformance = {
+  available: true,
+  total: {
+    tokensPerMinute: 1200,
+    streamingResponseRate: 148.2,
+    avgResponseMs: 4100,
+    avgFirstResponseByteTotalMs: 980,
+    usageDurationMs: 168000,
+  },
+  models: [
+    {
+      model: "gpt-5.6",
+      reasoningEffort: "high",
+      tokensPerMinute: 760,
+      streamingResponseRate: 162.4,
+      avgResponseMs: 4500,
+      avgFirstResponseByteTotalMs: 1100,
+      usageDurationMs: 107000,
+    },
+    {
+      model: "gpt-5.4-mini",
+      reasoningEffort: null,
+      tokensPerMinute: 440,
+      streamingResponseRate: null,
+      avgResponseMs: null,
+      avgFirstResponseByteTotalMs: 860,
+      usageDurationMs: 61000,
+    },
+  ],
 };
 
 const comparisonStats: StatsResponse = {
@@ -307,6 +343,7 @@ export const Populated: Story = {
   args: {
     stats: sampleStats,
     rate: sampleRate,
+    modelPerformance: sampleModelPerformance,
     ...comparisonArgs,
     parallelWorkStats: sampleParallelWorkStats,
     comparisonParallelWorkStats,
@@ -316,7 +353,9 @@ export const Populated: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: /tokens per minute|每分钟 tokens/i }));
-    await expect(within(document.body).getByRole("tooltip")).toBeInTheDocument();
+    await expect(within(document.body).getByRole("tooltip")).toHaveTextContent(
+      /Model performance|模型性能/,
+    );
     await userEvent.click(canvas.getByRole("button", { name: /time to first byte|首字用时/i }));
     await expect(within(document.body).getByRole("tooltip")).toBeInTheDocument();
     await expect(canvas.getByTestId("today-stats-value-spend-rate")).toHaveTextContent("0.10");

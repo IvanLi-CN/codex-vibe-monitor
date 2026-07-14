@@ -203,6 +203,18 @@ beforeAll(() => {
       return 0;
     },
   });
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    writable: true,
+    value: vi.fn(() => ({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
 });
 
 afterEach(() => {
@@ -226,6 +238,58 @@ function render(ui: React.ReactNode) {
 }
 
 describe("TodayStatsOverview", () => {
+  it("uses the successful billed model-performance total for TPM and first-byte card values", () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 12,
+          successCount: 10,
+          failureCount: 2,
+          totalCost: 1.2,
+          totalTokens: 9999,
+        }}
+        rate={{
+          tokensPerMinute: 9999,
+          spendRate: 0.1,
+          windowMinutes: 60,
+          available: true,
+        }}
+        modelPerformance={{
+          available: true,
+          total: {
+            tokensPerMinute: 1200,
+            avgFirstResponseByteTotalMs: 1500,
+          },
+          models: [
+            {
+              model: "gpt-5.6",
+              reasoningEffort: null,
+              tokensPerMinute: 1200,
+              avgFirstResponseByteTotalMs: 1500,
+            },
+          ],
+        }}
+        loading={false}
+        error={null}
+      />,
+    );
+
+    expect(host?.querySelector('[data-testid="today-stats-value-tpm"]')?.textContent).toContain(
+      "1,200",
+    );
+    expect(
+      host?.querySelector('[data-testid="today-stats-value-response-time"]')?.textContent,
+    ).toMatch(/1\.5|1,5/);
+
+    const tpmTrigger = host?.querySelector('[aria-label="TPM dashboard.modelPerformance.title"]');
+    act(() => {
+      tpmTrigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(document.body.querySelector('[role="tooltip"]')?.textContent).toContain(
+      "dashboard.modelPerformance.total",
+    );
+  });
+
   it("keeps the original in-progress tile and adds the queued value before success", () => {
     render(
       <TodayStatsOverview
@@ -1131,6 +1195,36 @@ describe("TodayStatsOverview", () => {
     );
   });
 
+  it("shows an unavailable TPM when the selected range lacks billed-success detail", () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 88,
+          successCount: 80,
+          failureCount: 8,
+          totalCost: 2.1,
+          totalTokens: 8000,
+        }}
+        rate={{
+          tokensPerMinute: 0,
+          spendRate: 0.1,
+          windowMinutes: 60,
+          available: false,
+        }}
+        loading={false}
+        rateLoading={false}
+        rateError={null}
+        timeseries={buildTimeseriesWithLatency()}
+        error={null}
+      />,
+    );
+
+    expect(host?.querySelector('[data-testid="today-stats-value-tpm"]')?.textContent).toBe("—");
+    expect(
+      host?.querySelector('[data-testid="today-stats-value-spend-rate"]')?.textContent,
+    ).toContain("0.10");
+  });
+
   it("switches to compact notation when the full metric value would overflow", () => {
     metricContainerWidth = 180;
 
@@ -1494,7 +1588,7 @@ describe("TodayStatsOverview", () => {
     expect(host?.textContent).toContain("Time to first byte");
   });
 
-  it("keeps response-time day average visible when the recent window is idle", () => {
+  it("uses the complete-range first-byte average when the latest window is idle", () => {
     render(
       <TodayStatsOverview
         stats={{
@@ -1535,7 +1629,7 @@ describe("TodayStatsOverview", () => {
 
     expect(
       host?.querySelector('[data-testid="today-stats-value-response-time"]')?.textContent,
-    ).toBe("—");
+    ).toBe("500 ms");
     expect(
       host?.querySelector('[data-testid="today-stats-secondary-response-time-day-average"]')
         ?.textContent,
@@ -1583,7 +1677,7 @@ describe("TodayStatsOverview", () => {
     ).toContain("—");
   });
 
-  it("recomputes the response-time recent window when now changes without falling back to older samples", () => {
+  it("keeps the complete-range first-byte average stable when now changes", () => {
     const timeseries: TimeseriesResponse = {
       rangeStart: "2026-04-10T00:00:00.000Z",
       rangeEnd: "2026-04-10T00:03:00.000Z",
@@ -1637,7 +1731,7 @@ describe("TodayStatsOverview", () => {
 
     expect(
       host?.querySelector('[data-testid="today-stats-value-response-time"]')?.textContent,
-    ).toBe("—");
+    ).toBe("500 ms");
     expect(
       host?.querySelector('[data-testid="today-stats-secondary-response-time-day-average"]')
         ?.textContent,

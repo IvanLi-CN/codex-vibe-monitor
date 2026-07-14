@@ -21,6 +21,7 @@ import { DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX } from "../../hooks/
 import type { TranslationKey } from "../../i18n";
 import { useTranslation } from "../../i18n";
 import type {
+  ModelPerformance,
   TagFastModeRewriteMode,
   TagPriorityTier,
   UpdateGroupAccountRoutingRulePayload,
@@ -84,6 +85,7 @@ import {
   persistDashboardWorkspaceSort,
   readDashboardWorkspaceSort,
 } from "./dashboardWorkspaceSort";
+import { ModelPerformanceTrigger } from "./ModelPerformanceTrigger";
 import { UsageBreakdownTooltip } from "./UsageBreakdownTooltip";
 
 export interface DashboardOpenUpstreamAccountOptions {
@@ -1242,11 +1244,15 @@ function AccountInlineMetric({
   value,
   tone,
   iconName,
+  modelPerformance,
+  modelPerformanceTitle,
 }: {
   label: string;
   value: string;
   tone: AccountMetricTone;
   iconName: AppIconName;
+  modelPerformance?: ModelPerformance | null;
+  modelPerformanceTitle?: string;
 }) {
   const valueClassName =
     value === FALLBACK_CELL ? "text-base-content/55" : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[tone];
@@ -1269,6 +1275,19 @@ function AccountInlineMetric({
       </span>
     </span>
   );
+
+  if (modelPerformance && modelPerformanceTitle) {
+    return (
+      <ModelPerformanceTrigger
+        title={modelPerformanceTitle}
+        ariaLabel={`${label} ${modelPerformanceTitle}`}
+        performance={modelPerformance}
+        className="rounded-md"
+      >
+        {metric}
+      </ModelPerformanceTrigger>
+    );
+  }
 
   return (
     <Tooltip
@@ -2845,6 +2864,7 @@ function DashboardUpstreamAccountActivityCard({
     localeTag,
     totalTokenValue,
   ]);
+  const modelPerformanceTitle = `${account.displayName} · ${t("dashboard.modelPerformance.title")}`;
   return (
     <article
       data-testid="dashboard-upstream-account-card"
@@ -2926,12 +2946,16 @@ function DashboardUpstreamAccountActivityCard({
             value={formatAccountNumberValue(account.tokensPerMinute, localeTag, 0)}
             tone="primary"
             iconName="speedometer"
+            modelPerformance={account.modelPerformance}
+            modelPerformanceTitle={modelPerformanceTitle}
           />
           <AccountInlineMetric
             label={t("dashboard.today.spendRate")}
             value={formatAccountCurrencyAmountValue(account.spendRate, localeTag, 2)}
             tone="warning"
             iconName="cash-clock"
+            modelPerformance={account.modelPerformance}
+            modelPerformanceTitle={modelPerformanceTitle}
           />
           <button
             type="button"
