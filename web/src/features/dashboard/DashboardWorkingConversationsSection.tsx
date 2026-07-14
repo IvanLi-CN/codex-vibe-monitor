@@ -3683,7 +3683,7 @@ export function DashboardWorkingConversationsSection({
       ? captureVisibleCardAnchor(container, hasVirtualizedRowsAbove)
       : null;
     visibleAnchorRef.current = nextAnchor?.hasHiddenContentAbove ? nextAnchor : null;
-  }, [cards, columnCount, gridElement, hasVirtualizedRowsAbove]);
+  }, [cards, columnCount, gridElement, hasVirtualizedRowsAbove, rows]);
 
   if (error && cards.length === 0) {
     return (

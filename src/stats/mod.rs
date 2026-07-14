@@ -1423,6 +1423,10 @@ where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     let mut query = QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, ");
+    let conversation_created_at_sql = crate::api::invocation_history_conversation_created_at_sql(
+        crate::api::INVOCATION_PROMPT_CACHE_KEY_SQL,
+        source_scope,
+    );
     let cost_breakdown_columns = if has_cost_breakdown_columns {
         "cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning"
     } else {
@@ -1431,6 +1435,8 @@ where
     query
         .push(crate::api::INVOCATION_PROMPT_CACHE_KEY_SQL)
         .push(" AS prompt_cache_key, occurred_at, ")
+        .push(conversation_created_at_sql.as_str())
+        .push(" AS conversation_created_at, ")
         .push(crate::api::invocation_display_status_sql())
         .push(" AS status, ")
         .push("NULL AS live_phase, ")

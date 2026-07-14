@@ -3927,6 +3927,59 @@ pub(crate) fn invocation_upstream_account_id_with_attempt_fallback_sql(
     )
 }
 
+pub(crate) fn invocation_prompt_cache_key_sql(invocation_ref: &str) -> String {
+    format!(
+        "CASE WHEN json_valid({invocation_ref}.payload) \
+           THEN TRIM(CAST(json_extract({invocation_ref}.payload, '$.promptCacheKey') AS TEXT)) \
+         END"
+    )
+}
+
+pub(crate) fn invocation_history_conversation_created_at_sql(
+    prompt_cache_key_sql: &str,
+    source_scope: InvocationSourceScope,
+) -> String {
+    let history_prompt_cache_key_sql = invocation_prompt_cache_key_sql("conversation_history");
+    let source_filter = match source_scope {
+        InvocationSourceScope::All => String::new(),
+        InvocationSourceScope::ProxyOnly => {
+            format!(" AND conversation_history.source = '{SOURCE_PROXY}'")
+        }
+    };
+    format!(
+        "(SELECT MIN(conversation_history.occurred_at) \
+            FROM codex_invocations conversation_history \
+           WHERE ({history_prompt_cache_key_sql}) = ({prompt_cache_key_sql}){source_filter})"
+    )
+}
+
+pub(crate) fn prompt_cache_conversation_created_at_sql(
+    prompt_cache_key_sql: &str,
+    source_scope: InvocationSourceScope,
+) -> String {
+    let rollup_source_filter = match source_scope {
+        InvocationSourceScope::All => String::new(),
+        InvocationSourceScope::ProxyOnly => format!(" AND source = '{SOURCE_PROXY}'"),
+    };
+    let working_set_created_at_sql = match source_scope {
+        InvocationSourceScope::All => "created_at",
+        InvocationSourceScope::ProxyOnly => "COALESCE(proxy_created_at, created_at)",
+    };
+    let invocation_history_created_at_sql =
+        invocation_history_conversation_created_at_sql(prompt_cache_key_sql, source_scope);
+    format!(
+        "COALESCE(\
+            (SELECT MIN(first_seen_at) \
+               FROM prompt_cache_rollup_hourly \
+              WHERE prompt_cache_key = {prompt_cache_key_sql}{rollup_source_filter}), \
+            (SELECT {working_set_created_at_sql} \
+               FROM prompt_cache_working_set_live \
+              WHERE prompt_cache_key = {prompt_cache_key_sql}), \
+            {invocation_history_created_at_sql}\
+         )"
+    )
+}
+
 pub(crate) fn invocation_account_retry_after_failure_with_attempt_fallback_sql(
     current_upstream_account_id_sql: &str,
     source_scope: InvocationSourceScope,
@@ -4113,11 +4166,13 @@ async fn query_live_upstream_account_activity_aggregate_rows(
     );
     let first_response_byte_total_sql = "COALESCE(t_req_read_ms, 0) + COALESCE(t_req_parse_ms, 0) + COALESCE(t_upstream_connect_ms, 0) + COALESCE(t_upstream_ttfb_ms, 0)";
     let prompt_cache_key_sql = INVOCATION_PROMPT_CACHE_KEY_SQL;
+    let conversation_created_at_sql =
+        prompt_cache_conversation_created_at_sql(prompt_cache_key_sql, source_scope);
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
             {upstream_account_id_sql} AS upstream_account_id,
-            MAX((SELECT CASE WHEN source_scope_proxy_only = 1 THEN COALESCE(proxy_created_at, created_at) ELSE created_at END FROM prompt_cache_working_set_live WHERE prompt_cache_key = {prompt_cache_key_sql})) AS latest_conversation_created_at,
+            MAX({conversation_created_at_sql}) AS latest_conversation_created_at,
             MAX(occurred_at) AS last_invocation_at,
             COUNT(*) AS request_count,
             SUM(CASE WHEN {success_sql} THEN 1 ELSE 0 END) AS success_count,
@@ -4495,12 +4550,14 @@ async fn query_live_upstream_account_activity_preview_rows_with_limit(
     let started_at = Instant::now();
     let resolved_upstream_account_id_sql =
         invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let conversation_created_at_sql =
+        prompt_cache_conversation_created_at_sql(INVOCATION_PROMPT_CACHE_KEY_SQL, source_scope);
     let mut query = QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, ");
     query
         .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
-        .push(" AS prompt_cache_key, occurred_at, (SELECT CASE WHEN source_scope_proxy_only = 1 THEN COALESCE(proxy_created_at, created_at) ELSE created_at END FROM prompt_cache_working_set_live WHERE prompt_cache_key = ")
-        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
-        .push(") AS conversation_created_at, ")
+        .push(" AS prompt_cache_key, occurred_at, ")
+        .push(conversation_created_at_sql.as_str())
+        .push(" AS conversation_created_at, ")
         .push(invocation_display_status_sql())
         .push(" AS status, ")
         .push(invocation_live_phase_sql("codex_invocations"))
