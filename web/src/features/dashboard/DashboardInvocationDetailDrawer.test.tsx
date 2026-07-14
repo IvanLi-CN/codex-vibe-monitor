@@ -362,6 +362,14 @@ describe("DashboardInvocationDetailDrawer", () => {
     expect(drawer.textContent ?? "").toContain("AB364A");
     expect(drawer.textContent ?? "").not.toContain("WC-AB364A");
     expect(drawer.textContent ?? "").toContain("019d5ea7-519d-7312-a2e8-ef07abb7c09f");
+
+    const drawerBody = drawer.closest("section")?.querySelector(".drawer-body");
+    expect(drawerBody?.classList.contains("overflow-x-hidden")).toBe(true);
+    expect(drawerBody?.classList.contains("overflow-y-auto")).toBe(true);
+
+    const summaryGrid = drawerBody?.querySelector(".grid-cols-1");
+    expect(summaryGrid?.classList.contains("min-w-0")).toBe(true);
+    expect(summaryGrid?.classList.contains("max-w-full")).toBe(true);
   });
 
   it("renders interrupted status with the dedicated recovery badge", async () => {

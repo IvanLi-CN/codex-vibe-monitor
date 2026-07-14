@@ -248,11 +248,13 @@ vi.mock("../features/prompt-cache/PromptCacheConversationTable", () => ({
 vi.mock("../features/dashboard/DashboardInvocationDetailDrawer", () => ({
   DashboardInvocationDetailDrawer: ({
     open,
+    invocationId,
     selection,
     onClose,
     onOpenUpstreamAccount,
   }: {
     open: boolean;
+    invocationId?: string | null;
     selection: { invocation: { record: { invokeId: string } } } | null;
     onClose: () => void;
     onOpenUpstreamAccount?: (
@@ -266,6 +268,7 @@ vi.mock("../features/dashboard/DashboardInvocationDetailDrawer", () => ({
         <span data-testid="dashboard-invocation-drawer-selection">
           {selection?.invocation.record.invokeId ?? "none"}
         </span>
+        <span data-testid="dashboard-invocation-drawer-route-id">{invocationId ?? "none"}</span>
         <button type="button" data-testid="dashboard-invocation-drawer-close" onClick={onClose}>
           close invocation drawer
         </button>
@@ -349,7 +352,12 @@ let root: Root | null = null;
 
 function LocationProbe() {
   const location = useLocation();
-  return <div data-testid="dashboard-location-search">{location.search}</div>;
+  return (
+    <>
+      <div data-testid="dashboard-location-search">{location.search}</div>
+      <div data-testid="dashboard-location-path">{location.pathname}</div>
+    </>
+  );
 }
 
 beforeAll(() => {
@@ -498,6 +506,39 @@ function createWorkingConversationCard(options?: {
 }
 
 describe("DashboardPage", () => {
+  it("opens the invocation drawer from a shareable route without card context", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [],
+      totalMatched: 0,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />, "/dashboard/invocations/shared-invoke-42");
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-invocation-detail-drawer-mock"]'),
+    ).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="dashboard-invocation-drawer-route-id"]')?.textContent,
+    ).toBe("shared-invoke-42");
+    expect(
+      host?.querySelector('[data-testid="dashboard-invocation-drawer-selection"]')?.textContent,
+    ).toBe("none");
+
+    const closeButton = host?.querySelector('[data-testid="dashboard-invocation-drawer-close"]');
+    if (!(closeButton instanceof HTMLButtonElement)) throw new Error("missing close button");
+    act(() => closeButton.click());
+    expect(host?.querySelector('[data-testid="dashboard-location-path"]')?.textContent).toBe(
+      "/dashboard",
+    );
+  });
+
   it("keeps today inside the shared overview card instead of as a standalone top card", () => {
     installSummaryMocks();
     const setRefreshTargetCount = vi.fn();

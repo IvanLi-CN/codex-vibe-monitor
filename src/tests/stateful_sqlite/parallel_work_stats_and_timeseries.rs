@@ -63,21 +63,6 @@ async fn insert_parallel_work_prompt_cache_rollup_hourly_row_with_source(
     .expect("insert prompt cache hourly rollup row");
 }
 
-fn truncate_shanghai_hour_to_utc(ts: DateTime<Utc>) -> DateTime<Utc> {
-    let local_hour = ts
-        .with_timezone(&Shanghai)
-        .naive_local()
-        .with_minute(0)
-        .and_then(|value| value.with_second(0))
-        .and_then(|value| value.with_nanosecond(0))
-        .expect("valid local hour");
-    Shanghai
-        .from_local_datetime(&local_hour)
-        .single()
-        .expect("unique Shanghai local hour")
-        .with_timezone(&Utc)
-}
-
 async fn insert_prompt_cache_working_set_live_row(
     pool: &SqlitePool,
     prompt_cache_key: &str,
@@ -13379,7 +13364,8 @@ async fn upstream_account_activity_uses_rollup_created_at_when_working_set_row_i
     .await
     .expect("insert upstream account");
 
-    let rollup_bucket_start = truncate_shanghai_hour_to_utc(Utc::now() - ChronoDuration::hours(6));
+    let now = Utc::now();
+    let rollup_bucket_start = now - ChronoDuration::seconds(3);
     let expected_created_at =
         format_naive(rollup_bucket_start.with_timezone(&Shanghai).naive_local());
     insert_parallel_work_prompt_cache_rollup_hourly_row(
@@ -13408,11 +13394,7 @@ async fn upstream_account_activity_uses_rollup_created_at_when_working_set_row_i
     )
     .bind(9_100_i64)
     .bind("upstream-history-only")
-    .bind(format_naive(
-        (Utc::now() - ChronoDuration::minutes(10))
-            .with_timezone(&Shanghai)
-            .naive_local(),
-    ))
+    .bind(format_naive(now.with_timezone(&Shanghai).naive_local()))
     .bind(SOURCE_PROXY)
     .bind("completed")
     .bind(120_i64)
@@ -13480,10 +13462,9 @@ async fn upstream_account_activity_all_scope_uses_actual_created_at_for_mixed_so
     .await
     .expect("insert upstream account");
 
-    let all_created_bucket_start =
-        truncate_shanghai_hour_to_utc(Utc::now() - ChronoDuration::hours(30));
-    let proxy_created_bucket_start =
-        truncate_shanghai_hour_to_utc(Utc::now() - ChronoDuration::hours(6));
+    let now = Utc::now();
+    let all_created_bucket_start = now - ChronoDuration::seconds(4);
+    let proxy_created_bucket_start = now - ChronoDuration::seconds(3);
     let all_created_at = format_naive(
         all_created_bucket_start
             .with_timezone(&Shanghai)
@@ -13494,11 +13475,7 @@ async fn upstream_account_activity_all_scope_uses_actual_created_at_for_mixed_so
             .with_timezone(&Shanghai)
             .naive_local(),
     );
-    let last_activity_at = format_naive(
-        (Utc::now() - ChronoDuration::hours(4))
-            .with_timezone(&Shanghai)
-            .naive_local(),
-    );
+    let last_activity_at = format_naive(now.with_timezone(&Shanghai).naive_local());
 
     insert_parallel_work_prompt_cache_rollup_hourly_row_with_source(
         &state.pool,
@@ -13533,7 +13510,7 @@ async fn upstream_account_activity_all_scope_uses_actual_created_at_for_mixed_so
             "upstream-mixed-all",
             SOURCE_XY,
             format_naive(
-                (Utc::now() - ChronoDuration::hours(5))
+                (now - ChronoDuration::seconds(1))
                     .with_timezone(&Shanghai)
                     .naive_local(),
             ),
@@ -13542,11 +13519,7 @@ async fn upstream_account_activity_all_scope_uses_actual_created_at_for_mixed_so
             9_201_i64,
             "upstream-mixed-proxy",
             SOURCE_PROXY,
-            format_naive(
-                (Utc::now() - ChronoDuration::hours(4))
-                    .with_timezone(&Shanghai)
-                    .naive_local(),
-            ),
+            format_naive(now.with_timezone(&Shanghai).naive_local()),
         ),
     ] {
         sqlx::query(

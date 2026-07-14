@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { appRuntime, sceneFromLocation, themeFromLocation } from "./runtime";
+import {
+  appRuntime,
+  isEmbeddedDemoViewport,
+  sceneFromLocation,
+  themeFromLocation,
+  viewportFromLocation,
+} from "./runtime";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -29,5 +35,19 @@ describe("demo runtime selection", () => {
     ) as unknown as Location;
 
     expect(sceneFromLocation(location)).toBe("progressive-loading");
+  });
+
+  it("parses the mobile viewport wrapper state from hash query params", () => {
+    const outerLocation = new URL(
+      "https://demo.invalid/#/dashboard/invocations/demo-invocation-9002?demoScene=attention&demoViewport=mobile390",
+    ) as unknown as Location;
+    const embeddedLocation = new URL(
+      "https://demo.invalid/#/dashboard/invocations/demo-invocation-9002?demoScene=attention&demoEmbed=1",
+    ) as unknown as Location;
+
+    expect(viewportFromLocation(outerLocation)).toBe("mobile390");
+    expect(isEmbeddedDemoViewport(outerLocation)).toBe(false);
+    expect(viewportFromLocation(embeddedLocation)).toBe("default");
+    expect(isEmbeddedDemoViewport(embeddedLocation)).toBe(true);
   });
 });
