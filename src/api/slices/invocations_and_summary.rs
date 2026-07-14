@@ -4087,10 +4087,14 @@ async fn query_live_upstream_account_activity_aggregate_rows(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
+    use_attempt_fallback: bool,
 ) -> Result<Vec<UpstreamAccountActivityAggregateRow>, ApiError> {
     let started_at = Instant::now();
-    let upstream_account_id_sql =
-        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let upstream_account_id_sql = if use_attempt_fallback {
+        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations")
+    } else {
+        INVOCATION_UPSTREAM_ACCOUNT_ID_SQL.to_string()
+    };
     let failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
     let success_sql = format!(
         "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') AND ({failure_class_sql}) = 'none'"
@@ -4162,16 +4166,50 @@ async fn query_live_upstream_account_usage_breakdown_rows(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
+    has_cost_breakdown_columns: bool,
+    use_attempt_fallback: bool,
 ) -> Result<Vec<UpstreamAccountUsageBreakdownAggregateRow>, ApiError> {
     let started_at = Instant::now();
-    let upstream_account_id_sql =
-        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let upstream_account_id_sql = if use_attempt_fallback {
+        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations")
+    } else {
+        INVOCATION_UPSTREAM_ACCOUNT_ID_SQL.to_string()
+    };
     let model_sql = format!(
         "COALESCE(NULLIF(TRIM({}), ''), NULLIF(TRIM(model), ''), 'unknown')",
         INVOCATION_RESPONSE_MODEL_SQL
     );
     let reasoning_effort_sql = INVOCATION_REASONING_EFFORT_SQL;
-    let cost_complete_sql = "cost_input IS NOT NULL AND cost_cache_write IS NOT NULL AND cost_cache_read IS NOT NULL AND cost_output IS NOT NULL AND cost_reasoning IS NOT NULL";
+    let cost_complete_sql = if has_cost_breakdown_columns {
+        "cost_input IS NOT NULL AND cost_cache_write IS NOT NULL AND cost_cache_read IS NOT NULL AND cost_output IS NOT NULL AND cost_reasoning IS NOT NULL"
+    } else {
+        "0"
+    };
+    let cost_input_sql = if has_cost_breakdown_columns {
+        "cost_input"
+    } else {
+        "0"
+    };
+    let cost_cache_write_sql = if has_cost_breakdown_columns {
+        "cost_cache_write"
+    } else {
+        "0"
+    };
+    let cost_cache_read_sql = if has_cost_breakdown_columns {
+        "cost_cache_read"
+    } else {
+        "0"
+    };
+    let cost_output_sql = if has_cost_breakdown_columns {
+        "cost_output"
+    } else {
+        "0"
+    };
+    let cost_reasoning_sql = if has_cost_breakdown_columns {
+        "cost_reasoning"
+    } else {
+        "0"
+    };
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
@@ -4181,11 +4219,11 @@ async fn query_live_upstream_account_usage_breakdown_rows(
             COALESCE(SUM(MAX(COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0), 0)), 0) AS cache_write_tokens,
             COALESCE(SUM(COALESCE(cache_input_tokens, 0)), 0) AS cache_read_tokens,
             COALESCE(SUM(COALESCE(output_tokens, 0)), 0) AS output_tokens,
-            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN cost_input ELSE 0 END), 0) AS REAL) AS cost_input,
-            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN cost_cache_write ELSE 0 END), 0) AS REAL) AS cost_cache_write,
-            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN cost_cache_read ELSE 0 END), 0) AS REAL) AS cost_cache_read,
-            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN cost_output ELSE 0 END), 0) AS REAL) AS cost_output,
-            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN cost_reasoning ELSE 0 END), 0) AS REAL) AS cost_reasoning,
+            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN {cost_input_sql} ELSE 0 END), 0) AS REAL) AS cost_input,
+            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN {cost_cache_write_sql} ELSE 0 END), 0) AS REAL) AS cost_cache_write,
+            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN {cost_cache_read_sql} ELSE 0 END), 0) AS REAL) AS cost_cache_read,
+            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN {cost_output_sql} ELSE 0 END), 0) AS REAL) AS cost_output,
+            CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND {cost_complete_sql} THEN {cost_reasoning_sql} ELSE 0 END), 0) AS REAL) AS cost_reasoning,
             CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND NOT ({cost_complete_sql}) THEN cost ELSE 0 END), 0) AS REAL) AS cost_unknown,
             SUM(CASE WHEN cost IS NOT NULL THEN 1 ELSE 0 END) AS has_cost
         FROM codex_invocations
@@ -4219,6 +4257,61 @@ async fn query_live_upstream_account_usage_breakdown_rows(
         );
     }
     Ok(rows)
+}
+
+async fn query_completed_invocation_archive_activity_aggregate_rows(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+) -> Result<
+    (
+        Vec<UpstreamAccountActivityAggregateRow>,
+        Vec<UpstreamAccountUsageBreakdownAggregateRow>,
+    ),
+    ApiError,
+> {
+    let archive_rows = crate::stats::load_completed_invocation_archive_paths_in_range(
+        pool,
+        Some((range.start, range.end)),
+    )
+    .await?;
+    let mut aggregates = Vec::new();
+    let mut usage_breakdowns = Vec::new();
+    for archive_row in archive_rows {
+        let Some((archive_pool, temp_cleanup)) = crate::stats::open_invocation_archive_batch_pool(
+            &archive_row,
+            "dashboard-activity-summary",
+        )
+        .await?
+        else {
+            continue;
+        };
+        let has_cost_breakdown_columns =
+            crate::stats::sqlite_table_has_column(&archive_pool, "codex_invocations", "cost_input")
+                .await?;
+        aggregates.extend(
+            query_live_upstream_account_activity_aggregate_rows(
+                &archive_pool,
+                source_scope,
+                range,
+                false,
+            )
+            .await?,
+        );
+        usage_breakdowns.extend(
+            query_live_upstream_account_usage_breakdown_rows(
+                &archive_pool,
+                source_scope,
+                range,
+                has_cost_breakdown_columns,
+                false,
+            )
+            .await?,
+        );
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+    Ok((aggregates, usage_breakdowns))
 }
 
 #[derive(Debug, FromRow)]
@@ -5412,8 +5505,9 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         .await;
     }
     let mut account_activity = HashMap::<Option<i64>, UpstreamAccountActivityAccumulator>::new();
-    for row in query_live_upstream_account_activity_aggregate_rows(&state.pool, source_scope, range)
-        .await?
+    for row in
+        query_live_upstream_account_activity_aggregate_rows(&state.pool, source_scope, range, true)
+            .await?
     {
         let entry = account_activity.entry(row.upstream_account_id).or_default();
         entry.request_count += row.request_count;
@@ -5433,14 +5527,56 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         entry.total_latency_sample_count += row.total_latency_sample_count;
         entry.total_latency_sum_ms += row.total_latency_sum_ms;
     }
-    for row in
-        query_live_upstream_account_usage_breakdown_rows(&state.pool, source_scope, range).await?
+    for row in query_live_upstream_account_usage_breakdown_rows(
+        &state.pool,
+        source_scope,
+        range,
+        true,
+        true,
+    )
+    .await?
     {
         account_activity
             .entry(row.upstream_account_id)
             .or_default()
             .usage_breakdown
             .add_aggregate_row(&row);
+    }
+    if range.start < retention_cutoff {
+        let (archived_aggregates, archived_usage_breakdowns) =
+            query_completed_invocation_archive_activity_aggregate_rows(
+                &state.pool,
+                source_scope,
+                range,
+            )
+            .await?;
+        for row in archived_aggregates {
+            let entry = account_activity.entry(row.upstream_account_id).or_default();
+            entry.request_count += row.request_count;
+            entry.success_count += row.success_count;
+            entry.failure_count += row.failure_count;
+            entry.non_success_count += row.non_success_count;
+            entry.total_tokens += row.total_tokens;
+            entry.success_tokens += row.success_tokens;
+            entry.non_success_tokens += row.non_success_tokens;
+            entry.failure_tokens += row.failure_tokens;
+            entry.failure_cost += row.failure_cost;
+            entry.non_success_cost += row.non_success_cost;
+            entry.cache_input_tokens += row.cache_input_tokens;
+            entry.total_cost += row.total_cost;
+            entry.first_response_byte_total_sample_count +=
+                row.first_response_byte_total_sample_count;
+            entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
+            entry.total_latency_sample_count += row.total_latency_sample_count;
+            entry.total_latency_sum_ms += row.total_latency_sum_ms;
+        }
+        for row in archived_usage_breakdowns {
+            account_activity
+                .entry(row.upstream_account_id)
+                .or_default()
+                .usage_breakdown
+                .add_aggregate_row(&row);
+        }
     }
     for row in
         query_live_upstream_account_activity_rate_rows(&state.pool, source_scope, range).await?
@@ -5608,12 +5744,26 @@ pub(crate) async fn load_dashboard_activity_snapshot(
                 .then_with(|| right.id.cmp(&left.id))
         });
         for row in archived_rows {
-            add_upstream_account_activity_preview_row(
-                &mut account_activity,
-                row,
-                recent_limit,
-                include_accounts && include_recent,
-            );
+            let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
+                continue;
+            };
+            let entry = account_activity.entry(row.upstream_account_id).or_default();
+            entry.last_occurred_at_epoch_ms = entry
+                .last_occurred_at_epoch_ms
+                .max(occurred_at.timestamp_millis());
+            if entry.display_name_hint.is_none() {
+                entry.display_name_hint =
+                    normalize_trimmed_optional_string_local(row.upstream_account_name.clone());
+            }
+            if entry.plan_type_hint.is_none() {
+                entry.plan_type_hint =
+                    normalize_trimmed_optional_string_local(row.upstream_account_plan_type.clone());
+            }
+            if entry.recent_invocations.len() < recent_limit {
+                entry
+                    .recent_invocations
+                    .push(upstream_account_invocation_preview_from_row(row));
+            }
         }
     }
 
@@ -6059,8 +6209,8 @@ pub(crate) async fn fetch_dashboard_activity_recent(
     accounts.sort_by(|left, right| left.account_key.cmp(&right.account_key));
 
     Ok(Json(DashboardActivityRecentResponse {
-        range_start: format_utc_iso_millis(range.start),
-        range_end: format_utc_iso_millis(range.end),
+        range_start: format_utc_iso_precise(range.start),
+        range_end: format_utc_iso_precise(range.end),
         snapshot_id: params.snapshot_id,
         accounts,
     }))

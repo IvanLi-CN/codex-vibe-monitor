@@ -342,7 +342,7 @@ async fn parallel_work_stats_counts_distinct_prompt_cache_keys_per_bucket() {
     .await;
 
     let Json(response) = fetch_parallel_work_stats(
-        State(state),
+        State(state.clone()),
         Query(ParallelWorkStatsQuery {
             range: "7d".to_string(),
             bucket: Some("1m".to_string()),
@@ -12894,6 +12894,117 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             .iter()
             .all(|account| account.retry_invocation_count.is_none())
     );
+}
+
+#[tokio::test]
+async fn dashboard_activity_progressive_summary_keeps_archived_account_aggregates() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 1;
+    let state = test_state_from_config(config, true).await;
+    let archived_hour = (Utc::now().with_timezone(&Shanghai).naive_local()
+        - ChronoDuration::days(3))
+    .with_minute(0)
+    .and_then(|value| value.with_second(0))
+    .expect("valid archived hour");
+    let success_at = format_naive(
+        archived_hour
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived success time"),
+    );
+    let failure_at = format_naive(
+        archived_hour
+            .checked_add_signed(ChronoDuration::minutes(15))
+            .expect("archived failure time"),
+    );
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "dashboard-progressive-archive-aggregate",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 91_001,
+                invoke_id: "dashboard-progressive-archive-success",
+                occurred_at: success_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 10,
+                cost: 0.10,
+                ttfb_ms: Some(100.0),
+                payload: Some(r#"{"upstreamAccountId":42,"upstreamAccountName":"Archive Alpha"}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 91_002,
+                invoke_id: "dashboard-progressive-archive-failure",
+                occurred_at: failure_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "failed",
+                total_tokens: 20,
+                cost: 0.20,
+                ttfb_ms: Some(120.0),
+                payload: Some(r#"{"upstreamAccountId":42,"upstreamAccountName":"Archive Alpha"}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: Some("HTTP 429 too many requests"),
+                failure_kind: Some("upstream_response_failed"),
+                failure_class: Some("service_failure"),
+                is_actionable: Some(1),
+            },
+        ],
+    )
+    .await;
+
+    let Json(response) = fetch_dashboard_activity(
+        State(state.clone()),
+        Query(DashboardActivityQuery {
+            range: "7d".to_string(),
+            recent_limit: Some(4),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: true,
+            include_recent: Some(false),
+        }),
+    )
+    .await
+    .expect("fetch progressive dashboard activity with archived aggregates");
+    let account = response
+        .accounts
+        .expect("accounts included")
+        .into_iter()
+        .find(|account| account.upstream_account_id == Some(42))
+        .expect("archived account summary");
+    assert_eq!(account.request_count, 2);
+    assert_eq!(account.success_count, 1);
+    assert_eq!(account.failure_count, 1);
+    assert_eq!(account.total_tokens, 30);
+    assert_f64_close(account.total_cost, 0.30);
+    assert!(account.recent_invocations.is_empty());
+
+    let Json(compatible_response) = fetch_dashboard_activity(
+        State(state),
+        Query(DashboardActivityQuery {
+            range: "7d".to_string(),
+            recent_limit: Some(4),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: true,
+            include_recent: None,
+        }),
+    )
+    .await
+    .expect("fetch compatible dashboard activity with archived recent rows");
+    let compatible_account = compatible_response
+        .accounts
+        .expect("compatible accounts included")
+        .into_iter()
+        .find(|account| account.upstream_account_id == Some(42))
+        .expect("compatible archived account summary");
+    assert_eq!(compatible_account.request_count, 2);
+    assert_eq!(compatible_account.total_tokens, 30);
+    assert_eq!(compatible_account.recent_invocations.len(), 2);
 }
 
 #[tokio::test]
