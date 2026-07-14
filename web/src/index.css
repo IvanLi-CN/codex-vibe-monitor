@@ -459,6 +459,10 @@ body {
     padding-bottom: max(env(safe-area-inset-bottom), 1rem);
   }
 
+  .drawer-shell--detail-wide {
+    width: 100%;
+  }
+
   @media (min-width: 769px) {
     .drawer-shell {
       border-top: none;
@@ -470,6 +474,10 @@ body {
 
     .drawer-body {
       padding-bottom: 0;
+    }
+
+    .drawer-shell--detail-wide {
+      width: min(90rem, calc(100vw - 2rem));
     }
   }
 

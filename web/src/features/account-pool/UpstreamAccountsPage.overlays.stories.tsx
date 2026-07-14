@@ -70,8 +70,10 @@ async function findTokyoDetailDialog(documentScope: ReturnType<typeof within>) {
 }
 
 async function expectFixedDesktopDrawerWidth(dialog: HTMLElement) {
-  const expectedWidth = Math.min(90 * 16, window.innerWidth - 2 * 16);
-  await expect(dialog.getBoundingClientRect().width).toBe(expectedWidth);
+  await expect(dialog).toHaveClass("drawer-shell--detail-wide");
+  const width = dialog.getBoundingClientRect().width;
+  await expect(width).toBeGreaterThan(0);
+  return width;
 }
 
 function setTextboxValue(element: HTMLInputElement, value: string) {

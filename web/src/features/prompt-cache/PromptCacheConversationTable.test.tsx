@@ -1279,7 +1279,6 @@ describe("PromptCacheConversationTable", () => {
     expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith("pck-binding", {
       bindingKind: "upstreamAccount",
       upstreamAccountId: 77,
-      timeouts: {},
     });
     expect(document.body.textContent).toContain("当前：账号 Pool Beta");
   });
@@ -1368,24 +1367,37 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).toContain("当前：分组 prod");
   });
 
-  it("saves conversation routing policy overrides from the settings tab", async () => {
+  it("renders the wide drawer shell and conversation-scoped routing form in the settings tab", async () => {
     apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
-      promptCacheKey: "pck-policy",
+      promptCacheKey: "pck-policy-layout",
       bindingKind: "none",
       groupName: null,
       upstreamAccountId: null,
       upstreamAccountName: null,
-      allowSwitchUpstream: null,
-      fastModeRewriteMode: "keep_original",
-      imageToolRewriteMode: null,
-      availableModels: null,
-      forwardProxyKey: null,
+      allowSwitchUpstream: false,
+      fastModeRewriteMode: "force_add",
+      imageToolRewriteMode: "force_remove",
+      availableModels: [],
+      forwardProxyKey: "__direct__",
+      forwardProxyKeys: ["__direct__"],
+      timeouts: {
+        responsesFirstByteTimeoutSecs: 45,
+        compactFirstByteTimeoutSecs: 180,
+        responsesStreamTimeoutSecs: 225,
+        compactStreamTimeoutSecs: 300,
+      },
+      timeoutFieldSources: {
+        responsesFirstByteTimeoutSecs: "conversation",
+        compactFirstByteTimeoutSecs: "account",
+        responsesStreamTimeoutSecs: "conversation",
+        compactStreamTimeoutSecs: "root",
+      },
       policyFieldSources: {
-        allowSwitchUpstream: "account",
-        fastModeRewriteMode: "account",
-        imageToolRewriteMode: "account",
-        availableModels: "account",
-        forwardProxyKey: "account",
+        allowSwitchUpstream: "conversation",
+        fastModeRewriteMode: "conversation",
+        imageToolRewriteMode: "conversation",
+        availableModels: "conversation",
+        forwardProxyKey: "conversation",
       },
       updatedAt: "2026-03-02T12:00:00Z",
     });
@@ -1412,29 +1424,262 @@ describe("PromptCacheConversationTable", () => {
       metrics: { total: 1, oauth: 0, apiKey: 1, attention: 0 },
       routing: null,
     });
-    apiMocks.updatePromptCacheConversationBinding.mockImplementation(
-      async (_promptCacheKey, payload) => ({
-        promptCacheKey: "pck-policy",
-        bindingKind: "none",
-        groupName: null,
-        upstreamAccountId: null,
-        upstreamAccountName: null,
-        allowSwitchUpstream: "allowSwitchUpstream" in payload ? payload.allowSwitchUpstream : null,
-        fastModeRewriteMode:
-          "fastModeRewriteMode" in payload ? payload.fastModeRewriteMode : "keep_original",
-        imageToolRewriteMode:
-          "imageToolRewriteMode" in payload ? payload.imageToolRewriteMode : null,
-        availableModels: "availableModels" in payload ? payload.availableModels : null,
-        forwardProxyKey: "forwardProxyKey" in payload ? payload.forwardProxyKey : null,
-        policyFieldSources: {
-          allowSwitchUpstream: "allowSwitchUpstream" in payload ? "conversation" : "account",
-          fastModeRewriteMode: "fastModeRewriteMode" in payload ? "conversation" : "account",
-          imageToolRewriteMode: "imageToolRewriteMode" in payload ? "conversation" : "account",
-          availableModels: "availableModels" in payload ? "conversation" : "account",
-          forwardProxyKey: "forwardProxyKey" in payload ? "conversation" : "account",
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 1,
+      total: 0,
+      page: 1,
+      pageSize: 200,
+      records: [],
+    });
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-policy-layout",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+    await clickDrawerTab("设置");
+
+    const drawerShell = document.querySelector(".drawer-shell");
+    expect(drawerShell?.className).toContain("drawer-shell--detail-wide");
+    expect(document.body.textContent).toContain("路由绑定");
+    expect(document.body.textContent).toContain("当前对话覆盖");
+    expect(document.body.textContent).toContain("切出");
+    expect(document.body.textContent).toContain("FAST 模式");
+    expect(document.body.textContent).toContain("图片工具");
+    expect(document.body.textContent).toContain("可用模型");
+    expect(document.body.textContent).toContain("代理");
+    expect(document.body.textContent).toContain("一般请求响应体首字超时");
+    expect(document.body.textContent).toContain("压缩请求流结束超时");
+    expect(document.body.textContent).not.toContain("优先级");
+    expect(document.body.textContent).not.toContain("切入");
+    expect(document.body.textContent).not.toContain("并发限制");
+    expect(document.body.textContent).not.toContain("上游 429 重试");
+    expect(document.body.textContent).not.toContain("系统拒绝模型");
+    expect(document.querySelector('[role="switch"][aria-label="切出"]')).not.toBeNull();
+    expect(document.querySelector('[role="radiogroup"][aria-label="FAST 模式"]')).not.toBeNull();
+    expect(document.querySelector('[role="radiogroup"][aria-label="图片工具"]')).not.toBeNull();
+    expect(document.querySelector('button[role="combobox"][aria-label="可用模型"]')).not.toBeNull();
+    expect(
+      document.querySelector<HTMLInputElement>('input[name="responsesFirstByteTimeoutSecs"]'),
+    ).not.toBeNull();
+    expect(
+      document.querySelector<HTMLInputElement>('input[name="responsesStreamTimeoutSecs"]'),
+    ).not.toBeNull();
+    expect(document.body.textContent).toContain("无可用模型");
+    expect(document.body.textContent).toContain("对话");
+  });
+
+  it("saves and clears conversation routing policy overrides from the settings tab", async () => {
+    let currentBinding: PromptCacheConversationBindingResponse = {
+      promptCacheKey: "pck-policy",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      allowSwitchUpstream: null,
+      fastModeRewriteMode: "keep_original",
+      imageToolRewriteMode: null,
+      availableModels: null,
+      forwardProxyKey: null,
+      forwardProxyKeys: [],
+      timeouts: {
+        responsesFirstByteTimeoutSecs: 120,
+        compactFirstByteTimeoutSecs: 300,
+        responsesStreamTimeoutSecs: 300,
+        compactStreamTimeoutSecs: 300,
+      },
+      timeoutFieldSources: {
+        responsesFirstByteTimeoutSecs: "account",
+        compactFirstByteTimeoutSecs: "account",
+        responsesStreamTimeoutSecs: "account",
+        compactStreamTimeoutSecs: "root",
+      },
+      policyFieldSources: {
+        allowSwitchUpstream: "account",
+        fastModeRewriteMode: "account",
+        imageToolRewriteMode: "account",
+        availableModels: "account",
+        forwardProxyKey: "account",
+      },
+      updatedAt: "2026-03-02T12:00:00Z",
+    };
+    apiMocks.fetchPromptCacheConversationBinding.mockImplementation(async () => currentBinding);
+    apiMocks.fetchUpstreamAccounts.mockResolvedValue({
+      writesEnabled: true,
+      items: [createUpstreamAccountSummary(42, "Pool Alpha", "prod")],
+      groups: [{ groupName: "prod", accountCount: 1 }],
+      forwardProxyNodes: [
+        {
+          key: "__direct__",
+          aliasKeys: [],
+          source: "direct",
+          displayName: "直连",
+          protocolLabel: "DIRECT",
+          penalized: false,
+          selectable: true,
+          last24h: [],
         },
-        updatedAt: "2026-03-02T12:01:00Z",
-      }),
+      ],
+      hasUngroupedAccounts: false,
+      total: 1,
+      page: 1,
+      pageSize: 500,
+      metrics: { total: 1, oauth: 0, apiKey: 1, attention: 0 },
+      routing: null,
+    });
+    apiMocks.updatePromptCacheConversationBinding.mockImplementation(
+      async (_promptCacheKey, payload) => {
+        const baseTimeouts = {
+          responsesFirstByteTimeoutSecs: 120,
+          compactFirstByteTimeoutSecs: 300,
+          responsesStreamTimeoutSecs: 300,
+          compactStreamTimeoutSecs: 300,
+        };
+        const timeoutPatch = payload.timeouts ?? {};
+        currentBinding = {
+          ...currentBinding,
+          bindingKind: payload.bindingKind,
+          allowSwitchUpstream:
+            "allowSwitchUpstream" in payload
+              ? (payload.allowSwitchUpstream ?? null)
+              : currentBinding.allowSwitchUpstream,
+          fastModeRewriteMode:
+            "fastModeRewriteMode" in payload
+              ? (payload.fastModeRewriteMode ?? null)
+              : currentBinding.fastModeRewriteMode,
+          imageToolRewriteMode:
+            "imageToolRewriteMode" in payload
+              ? (payload.imageToolRewriteMode ?? null)
+              : currentBinding.imageToolRewriteMode,
+          availableModels:
+            "availableModels" in payload
+              ? (payload.availableModels ?? null)
+              : currentBinding.availableModels,
+          forwardProxyKey: Array.isArray(payload.forwardProxyKeys)
+            ? (payload.forwardProxyKeys[0] ?? null)
+            : "forwardProxyKey" in payload
+              ? (payload.forwardProxyKey ?? null)
+              : currentBinding.forwardProxyKey,
+          forwardProxyKeys: Array.isArray(payload.forwardProxyKeys)
+            ? payload.forwardProxyKeys
+            : "forwardProxyKey" in payload && payload.forwardProxyKey
+              ? [payload.forwardProxyKey]
+              : currentBinding.forwardProxyKeys,
+          timeouts: {
+            ...currentBinding.timeouts,
+            responsesFirstByteTimeoutSecs:
+              "responsesFirstByteTimeoutSecs" in timeoutPatch
+                ? timeoutPatch.responsesFirstByteTimeoutSecs == null
+                  ? baseTimeouts.responsesFirstByteTimeoutSecs
+                  : timeoutPatch.responsesFirstByteTimeoutSecs
+                : currentBinding.timeouts.responsesFirstByteTimeoutSecs,
+            compactFirstByteTimeoutSecs:
+              "compactFirstByteTimeoutSecs" in timeoutPatch
+                ? timeoutPatch.compactFirstByteTimeoutSecs == null
+                  ? baseTimeouts.compactFirstByteTimeoutSecs
+                  : timeoutPatch.compactFirstByteTimeoutSecs
+                : currentBinding.timeouts.compactFirstByteTimeoutSecs,
+            responsesStreamTimeoutSecs:
+              "responsesStreamTimeoutSecs" in timeoutPatch
+                ? timeoutPatch.responsesStreamTimeoutSecs == null
+                  ? baseTimeouts.responsesStreamTimeoutSecs
+                  : timeoutPatch.responsesStreamTimeoutSecs
+                : currentBinding.timeouts.responsesStreamTimeoutSecs,
+            compactStreamTimeoutSecs:
+              "compactStreamTimeoutSecs" in timeoutPatch
+                ? timeoutPatch.compactStreamTimeoutSecs == null
+                  ? baseTimeouts.compactStreamTimeoutSecs
+                  : timeoutPatch.compactStreamTimeoutSecs
+                : currentBinding.timeouts.compactStreamTimeoutSecs,
+          },
+          timeoutFieldSources: {
+            ...currentBinding.timeoutFieldSources,
+            responsesFirstByteTimeoutSecs:
+              "responsesFirstByteTimeoutSecs" in timeoutPatch
+                ? timeoutPatch.responsesFirstByteTimeoutSecs == null
+                  ? "account"
+                  : "conversation"
+                : currentBinding.timeoutFieldSources.responsesFirstByteTimeoutSecs,
+            compactFirstByteTimeoutSecs:
+              "compactFirstByteTimeoutSecs" in timeoutPatch
+                ? timeoutPatch.compactFirstByteTimeoutSecs == null
+                  ? "account"
+                  : "conversation"
+                : currentBinding.timeoutFieldSources.compactFirstByteTimeoutSecs,
+            responsesStreamTimeoutSecs:
+              "responsesStreamTimeoutSecs" in timeoutPatch
+                ? timeoutPatch.responsesStreamTimeoutSecs == null
+                  ? "account"
+                  : "conversation"
+                : currentBinding.timeoutFieldSources.responsesStreamTimeoutSecs,
+            compactStreamTimeoutSecs:
+              "compactStreamTimeoutSecs" in timeoutPatch
+                ? timeoutPatch.compactStreamTimeoutSecs == null
+                  ? "root"
+                  : "conversation"
+                : currentBinding.timeoutFieldSources.compactStreamTimeoutSecs,
+          },
+          policyFieldSources: {
+            ...currentBinding.policyFieldSources,
+            ...("allowSwitchUpstream" in payload
+              ? {
+                  allowSwitchUpstream:
+                    payload.allowSwitchUpstream == null ? "account" : ("conversation" as const),
+                }
+              : {}),
+            ...("fastModeRewriteMode" in payload
+              ? {
+                  fastModeRewriteMode:
+                    payload.fastModeRewriteMode == null ? "account" : ("conversation" as const),
+                }
+              : {}),
+            ...("imageToolRewriteMode" in payload
+              ? {
+                  imageToolRewriteMode:
+                    payload.imageToolRewriteMode == null ? "account" : ("conversation" as const),
+                }
+              : {}),
+            ...("availableModels" in payload
+              ? {
+                  availableModels:
+                    payload.availableModels == null ? "account" : ("conversation" as const),
+                }
+              : {}),
+            ...(Array.isArray(payload.forwardProxyKeys) || "forwardProxyKey" in payload
+              ? {
+                  forwardProxyKey:
+                    (Array.isArray(payload.forwardProxyKeys) &&
+                      payload.forwardProxyKeys.length === 0) ||
+                    ("forwardProxyKey" in payload && payload.forwardProxyKey == null)
+                      ? "account"
+                      : ("conversation" as const),
+                }
+              : {}),
+          },
+          updatedAt: "2026-03-02T12:01:00Z",
+        };
+        return currentBinding;
+      },
     );
     apiMocks.fetchInvocationRecords.mockResolvedValue({
       snapshotId: 1,
@@ -1473,61 +1718,83 @@ describe("PromptCacheConversationTable", () => {
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     await user.click(findButtonByAriaLabel("编辑对话覆盖: 切出")!);
-    await user.click(document.querySelector('[role="combobox"][aria-label="切出"]') as HTMLElement);
-    await user.click(findSelectOption("允许换上游")!);
+    await user.click(document.querySelector('[role="switch"][aria-label="切出"]') as HTMLElement);
     await flushInteractive();
     await vi.waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(1),
     );
-    await vi.waitFor(() =>
-      expect(findButtonByAriaLabel("编辑对话覆盖: FAST 模式")?.disabled).toBe(false),
-    );
-    await user.click(findButtonByAriaLabel("编辑对话覆盖: FAST 模式")!);
-    await user.click(
-      document.querySelector('[role="combobox"][aria-label="FAST 模式"]') as HTMLElement,
-    );
-    expect(document.querySelector('[role="listbox"]')?.textContent).not.toContain("继承");
-    await user.click(findSelectOption("强制添加")!);
+
+    await user.click(findButtonByAriaLabel("清除对话覆盖: 切出")!);
     await flushInteractive();
     await vi.waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(2),
     );
-    await vi.waitFor(() =>
-      expect(
-        document.querySelector('[role="combobox"][aria-label="FAST 模式"]')?.textContent,
-      ).toContain("强制添加"),
-    );
-    await user.click(findButtonByAriaLabel("编辑对话覆盖: 图片工具")!);
-    await user.click(
-      document.querySelector('[role="combobox"][aria-label="图片工具"]') as HTMLElement,
-    );
-    expect(document.querySelector('[role="listbox"]')?.textContent).not.toContain("继承");
-    await user.click(findSelectOption("强制移除")!);
+
+    await user.click(findButtonByAriaLabel("编辑对话覆盖: FAST 模式")!);
+    const fastModeGroup = document.querySelector(
+      '[role="radiogroup"][aria-label="FAST 模式"]',
+    ) as HTMLElement | null;
+    expect(fastModeGroup?.textContent).not.toContain("继承");
+    const forceAddOption = Array.from(
+      fastModeGroup?.querySelectorAll<HTMLButtonElement>('button[role="radio"]') ?? [],
+    ).find((button) => button.textContent?.includes("强制添加"));
+    await user.click(forceAddOption!);
     await flushInteractive();
     await vi.waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(3),
     );
+
+    await user.click(findButtonByAriaLabel("编辑对话覆盖: 图片工具")!);
+    const imageToolGroup = document.querySelector(
+      '[role="radiogroup"][aria-label="图片工具"]',
+    ) as HTMLElement | null;
+    expect(imageToolGroup?.textContent).not.toContain("继承");
+    const forceRemoveOption = Array.from(
+      imageToolGroup?.querySelectorAll<HTMLButtonElement>('button[role="radio"]') ?? [],
+    ).find((button) => button.textContent?.includes("强制移除"));
+    await user.click(forceRemoveOption!);
+    await flushInteractive();
     await vi.waitFor(() =>
-      expect(
-        document.querySelector('[role="combobox"][aria-label="图片工具"]')?.textContent,
-      ).toContain("强制移除"),
+      expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(4),
     );
+
     await user.click(findButtonByAriaLabel("编辑对话覆盖: 代理")!);
     await user.click(document.querySelector('[role="combobox"][aria-label="代理"]') as HTMLElement);
     await user.click(findSelectOption("直连 · DIRECT")!);
     await flushInteractive();
     await vi.waitFor(() =>
-      expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(4),
+      expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(5),
     );
+
     await user.click(findButtonByAriaLabel("编辑对话覆盖: 可用模型")!);
-    await vi.waitFor(() => expect(findInputByAriaLabel("可用模型")).toBeTruthy());
-    const availableModelsInput = findInputByAriaLabel("可用模型")!;
-    await user.clear(availableModelsInput);
-    await user.type(availableModelsInput, "gpt-5.1-codex-max, gpt-5.1-codex-mini");
-    await user.click(findButtonByAriaLabel("应用覆盖")!);
+    await user.click(
+      document.querySelector('button[role="combobox"][aria-label="可用模型"]') as HTMLElement,
+    );
+    const availableModelsInput = document.querySelector(
+      'input[placeholder="用逗号分隔模型名"]',
+    ) as HTMLInputElement | null;
+    expect(availableModelsInput).not.toBeNull();
+    await user.type(availableModelsInput!, "gpt-5.1-codex-max");
+    const customModelOption = Array.from(
+      document.querySelectorAll<HTMLElement>("[cmdk-item]"),
+    ).find((item) => item.textContent?.includes("gpt-5.1-codex-max"));
+    await user.click(customModelOption!);
     await flushInteractive();
     await vi.waitFor(() =>
-      expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(5),
+      expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(6),
+    );
+
+    await user.click(findButtonByAriaLabel("编辑对话覆盖: 一般请求响应体首字超时")!);
+    const timeoutInput = document.querySelector<HTMLInputElement>(
+      'input[name="responsesFirstByteTimeoutSecs"]',
+    );
+    expect(timeoutInput).not.toBeNull();
+    await user.clear(timeoutInput!);
+    await user.type(timeoutInput!, "180");
+    timeoutInput?.blur();
+    await flushInteractive();
+    await vi.waitFor(() =>
+      expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(7),
     );
 
     const policyPatchCalls = apiMocks.updatePromptCacheConversationBinding.mock.calls
@@ -1536,7 +1803,11 @@ describe("PromptCacheConversationTable", () => {
     expect(policyPatchCalls).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          allowSwitchUpstream: true,
+          allowSwitchUpstream: false,
+          bindingKind: "none",
+        }),
+        expect.objectContaining({
+          allowSwitchUpstream: null,
           bindingKind: "none",
         }),
         expect.objectContaining({
@@ -1552,11 +1823,111 @@ describe("PromptCacheConversationTable", () => {
           forwardProxyKeys: ["__direct__"],
         }),
         expect.objectContaining({
-          availableModels: ["gpt-5.1-codex-max", "gpt-5.1-codex-mini"],
+          availableModels: ["gpt-5.1-codex-max"],
           bindingKind: "none",
+        }),
+        expect.objectContaining({
+          bindingKind: "none",
+          timeouts: {
+            responsesFirstByteTimeoutSecs: 180,
+          },
         }),
       ]),
     );
+    expect(document.body.textContent).toContain("gpt-5.1-codex-max");
+    expect(document.body.textContent).toContain("180s");
+  });
+
+  it("shows inline field errors when a conversation override save fails", async () => {
+    apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-policy-error",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      allowSwitchUpstream: null,
+      fastModeRewriteMode: "keep_original",
+      imageToolRewriteMode: null,
+      availableModels: null,
+      forwardProxyKey: null,
+      forwardProxyKeys: [],
+      timeouts: {
+        responsesFirstByteTimeoutSecs: 120,
+        compactFirstByteTimeoutSecs: 300,
+        responsesStreamTimeoutSecs: 300,
+        compactStreamTimeoutSecs: 300,
+      },
+      timeoutFieldSources: {
+        responsesFirstByteTimeoutSecs: "account",
+        compactFirstByteTimeoutSecs: "account",
+        responsesStreamTimeoutSecs: "account",
+        compactStreamTimeoutSecs: "root",
+      },
+      policyFieldSources: {
+        allowSwitchUpstream: "account",
+        fastModeRewriteMode: "account",
+        imageToolRewriteMode: "account",
+        availableModels: "account",
+        forwardProxyKey: "account",
+      },
+      updatedAt: "2026-03-02T12:00:00Z",
+    });
+    apiMocks.fetchUpstreamAccounts.mockResolvedValue({
+      writesEnabled: true,
+      items: [createUpstreamAccountSummary(42, "Pool Alpha", "prod")],
+      groups: [{ groupName: "prod", accountCount: 1 }],
+      forwardProxyNodes: [],
+      hasUngroupedAccounts: false,
+      total: 1,
+      page: 1,
+      pageSize: 500,
+      metrics: { total: 1, oauth: 0, apiKey: 1, attention: 0 },
+      routing: null,
+    });
+    apiMocks.updatePromptCacheConversationBinding.mockRejectedValueOnce(
+      new Error("override update failed"),
+    );
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 1,
+      total: 0,
+      page: 1,
+      pageSize: 200,
+      records: [],
+    });
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-policy-error",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+    await clickDrawerTab("设置");
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(findButtonByAriaLabel("编辑对话覆盖: 切出")!);
+    await user.click(document.querySelector('[role="switch"][aria-label="切出"]') as HTMLElement);
+    await flushInteractive();
+
+    await vi.waitFor(() => expect(document.body.textContent).toContain("override update failed"));
   });
 
   it("does not allow saving a default binding draft after load failure", async () => {
@@ -1887,7 +2258,6 @@ describe("PromptCacheConversationTable", () => {
     expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith("pck-binding", {
       bindingKind: "group",
       groupName: "prod",
-      timeouts: {},
     });
   });
 
@@ -1987,7 +2357,6 @@ describe("PromptCacheConversationTable", () => {
       "pck-binding-clear",
       {
         bindingKind: "none",
-        timeouts: {},
       },
     );
   });

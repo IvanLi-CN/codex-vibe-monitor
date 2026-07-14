@@ -190,9 +190,9 @@ PR: include
 
 The Storybook `DrawerBindingAndTimeouts` scenario renders the conversation drawer with an upstream-account binding plus mixed conversation/account/root timeout sources. The timeout subpanel now follows the same summary-row + field-local expansion contract as the effective routing rule card: inherited rows stay collapsed, conversation-owned timeout rows expand when edited, and timeout-only persistence remains visible even when `bindingKind='none'`.
 
-![Conversation detail settings with policy overrides](./assets/conversation-detail-settings-overrides-20260702-trimmed.png)
+![Conversation detail settings with wide drawer and shared routing form](./assets/conversation-settings-wide-drawer-story.png)
 
-The Storybook `DrawerBindingAndTimeouts` scenario now also renders the conversation detail Settings tab with conversation-level policy overrides visible: 切出 allows switching upstream, FAST mode is forced on, image tool is forced off, available models are explicitly overridden with a non-empty list, and the proxy selector remains constrained to existing binding nodes. The drawer title is “对话详情”.
+The Storybook `DrawerBindingAndTimeouts` scenario now also renders the widened conversation detail drawer on the Settings tab with the same summary-row and field-local editing skeleton used by account routing: the separate route-binding block remains intact, conversation-owned rows and timeouts are expanded by default, account-only routing rows stay hidden, available models and proxy bindings render as the shared chip-based controls, and the drawer width remains fixed while the account-style routing form grows vertically.
 
 PR: include
 ![Conversation settings multi proxy](./assets/conversation-settings-multi-proxy-story.png)

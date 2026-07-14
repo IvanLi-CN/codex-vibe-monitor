@@ -1929,6 +1929,8 @@ const baseTranslations = {
     "live.conversations.drawer.binding.currentAccount": "Current: account {{account}}",
     "live.conversations.drawer.binding.encryptedOwner": "Encrypted session owner: {{owner}}",
     "live.conversations.drawer.policy.title": "Conversation overrides",
+    "live.conversations.drawer.policy.description":
+      "Shows the effective routing policy for this conversation. Conversation overrides apply last.",
     "live.conversations.drawer.policy.inherit": "Inherit",
     "live.conversations.drawer.policy.override": "Override",
     "live.conversations.drawer.policy.cutOut": "Switch out",
@@ -4184,6 +4186,8 @@ const baseTranslations = {
     "live.conversations.drawer.binding.currentAccount": "当前：账号 {{account}}",
     "live.conversations.drawer.binding.encryptedOwner": "加密会话 owner：{{owner}}",
     "live.conversations.drawer.policy.title": "当前对话覆盖",
+    "live.conversations.drawer.policy.description":
+      "这里展示当前对话参与路由判定的有效策略，对话级覆盖会最后生效。",
     "live.conversations.drawer.policy.inherit": "继承",
     "live.conversations.drawer.policy.override": "覆盖",
     "live.conversations.drawer.policy.cutOut": "切出",
