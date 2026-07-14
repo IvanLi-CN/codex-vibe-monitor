@@ -4166,8 +4166,11 @@ async fn query_live_upstream_account_activity_aggregate_rows(
     );
     let first_response_byte_total_sql = "COALESCE(t_req_read_ms, 0) + COALESCE(t_req_parse_ms, 0) + COALESCE(t_upstream_connect_ms, 0) + COALESCE(t_upstream_ttfb_ms, 0)";
     let prompt_cache_key_sql = INVOCATION_PROMPT_CACHE_KEY_SQL;
-    let conversation_created_at_sql =
-        prompt_cache_conversation_created_at_sql(prompt_cache_key_sql, source_scope);
+    let conversation_created_at_sql = if use_attempt_fallback {
+        prompt_cache_conversation_created_at_sql(prompt_cache_key_sql, source_scope)
+    } else {
+        invocation_history_conversation_created_at_sql(prompt_cache_key_sql, source_scope)
+    };
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
