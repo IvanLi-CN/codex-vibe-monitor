@@ -3,7 +3,12 @@ import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
 import { Tooltip } from "../../components/ui/tooltip";
 import { useTranslation } from "../../i18n";
-import type { ParallelWorkStatsResponse, StatsResponse, TimeseriesResponse } from "../../lib/api";
+import type {
+  ModelPerformance,
+  ParallelWorkStatsResponse,
+  StatsResponse,
+  TimeseriesResponse,
+} from "../../lib/api";
 import { getBrowserTimeZone } from "../../lib/timeZone";
 import { cn } from "../../lib/utils";
 import { AdaptiveDisplayValue, AdaptiveMetricValue } from "../shared/AdaptiveMetricValue";
@@ -34,6 +39,7 @@ import {
 import { parseDateInput, resolveClosedNaturalDayEnd } from "./dashboardNaturalDayWindow";
 import { buildDashboardResponseTimeSnapshot } from "./dashboardResponseTimeSnapshot";
 import type { DashboardTodayRateSnapshot } from "./dashboardTodayRateSnapshot";
+import { ModelPerformanceTrigger } from "./ModelPerformanceTrigger";
 import { UsageBreakdownTooltip } from "./UsageBreakdownTooltip";
 
 const RATE_UNAVAILABLE_PLACEHOLDER = "—";
@@ -59,6 +65,7 @@ export interface TodayStatsOverviewProps {
   showSurface?: boolean;
   showHeader?: boolean;
   showDayBadge?: boolean;
+  modelPerformance?: ModelPerformance | null;
 }
 
 interface MetricTileSecondaryItem {
@@ -97,6 +104,11 @@ interface MetricTileProps {
   secondaryItems?: MetricTileSecondaryItem[];
   className?: string;
   metricTooltipContent?: ReactNode;
+  metricDetails?: {
+    title: string;
+    ariaLabel: string;
+    performance: ModelPerformance;
+  } | null;
 }
 
 function MetricTile({
@@ -120,6 +132,7 @@ function MetricTile({
   secondaryItems = [],
   className,
   metricTooltipContent,
+  metricDetails,
 }: MetricTileProps) {
   const handleLabelKeyDown = (event: KeyboardEvent<HTMLSpanElement>) => {
     if (event.key !== "Enter" && event.key !== " ") return;
@@ -215,6 +228,47 @@ function MetricTile({
         />
       </div>
     ) : null;
+  const labelContent = (
+    <span
+      data-testid={labelTestId}
+      className={cn(
+        "block min-w-0 max-w-full cursor-help overflow-hidden text-ellipsis whitespace-nowrap text-left text-xs font-semibold tracking-[0.14em] text-base-content/65 underline decoration-dotted underline-offset-4 transition-colors hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+        preserveLabelCase ? "normal-case tracking-normal" : "uppercase",
+      )}
+    >
+      {label}
+    </span>
+  );
+  const labelTrigger = metricDetails ? (
+    <ModelPerformanceTrigger
+      title={metricDetails.title}
+      ariaLabel={metricDetails.ariaLabel}
+      performance={metricDetails.performance}
+      className="min-w-0 flex-1"
+    >
+      {labelContent}
+    </ModelPerformanceTrigger>
+  ) : (
+    <Tooltip
+      className="min-w-0 flex-1"
+      content={metricTooltipContent ?? description}
+      contentClassName={
+        metricTooltipContent
+          ? "max-w-[min(42rem,calc(100vw-1rem))] w-[min(42rem,calc(100vw-1rem))] px-3.5 py-3"
+          : undefined
+      }
+      clickToOpen
+      side="bottom"
+      sideOffset={8}
+      triggerProps={{
+        role: "button",
+        tabIndex: 0,
+        onKeyDown: handleLabelKeyDown,
+      }}
+    >
+      {labelContent}
+    </Tooltip>
+  );
 
   return (
     <div
@@ -227,33 +281,7 @@ function MetricTile({
       )}
     >
       <div className="flex min-w-0 items-start justify-between gap-3">
-        <Tooltip
-          className="min-w-0 flex-1"
-          content={metricTooltipContent ?? description}
-          contentClassName={
-            metricTooltipContent
-              ? "max-w-[min(42rem,calc(100vw-1rem))] w-[min(42rem,calc(100vw-1rem))] px-3.5 py-3"
-              : undefined
-          }
-          clickToOpen
-          side="bottom"
-          sideOffset={8}
-          triggerProps={{
-            role: "button",
-            tabIndex: 0,
-            onKeyDown: handleLabelKeyDown,
-          }}
-        >
-          <span
-            data-testid={labelTestId}
-            className={cn(
-              "block min-w-0 max-w-full cursor-help overflow-hidden text-ellipsis whitespace-nowrap text-left text-xs font-semibold tracking-[0.14em] text-base-content/65 underline decoration-dotted underline-offset-4 transition-colors hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
-              preserveLabelCase ? "normal-case tracking-normal" : "uppercase",
-            )}
-          >
-            {label}
-          </span>
-        </Tooltip>
+        {labelTrigger}
         {!stackMeta && topRightItem ? (
           <div className="flex min-w-0 items-baseline justify-end gap-1 text-right text-[11px] leading-5">
             <span className="shrink-0 whitespace-nowrap text-base-content/52">
@@ -544,6 +572,7 @@ export function TodayStatsOverview({
   showSurface = true,
   showHeader = true,
   showDayBadge = true,
+  modelPerformance = null,
 }: TodayStatsOverviewProps) {
   const { t, locale } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
@@ -634,9 +663,19 @@ export function TodayStatsOverview({
     : t("dashboard.today.parallelConversationsDescription");
 
   const rateUnavailable = !loading && !rateLoading && rateError != null;
-  const responseTimeCurrentUnavailable =
-    rateUnavailable || responseTimeSnapshot?.responseTimeMs == null;
-  const tokensPerMinute = rate?.tokensPerMinute ?? 0;
+  const tokensPerMinuteUnavailable = rateUnavailable || rate?.available === false;
+  const modelPerformanceAvailable = modelPerformance?.available === true;
+  const performanceComparisonUnavailable = modelPerformanceAvailable;
+  const performanceFirstByteMs = modelPerformanceAvailable
+    ? (modelPerformance?.total.avgFirstResponseByteTotalMs ?? null)
+    : null;
+  const responseTimeCurrentValue = modelPerformanceAvailable
+    ? performanceFirstByteMs
+    : (responseTimeSnapshot?.responseTimeMs ?? null);
+  const responseTimeCurrentUnavailable = rateUnavailable || responseTimeCurrentValue == null;
+  const tokensPerMinute = modelPerformanceAvailable
+    ? (modelPerformance?.total.tokensPerMinute ?? 0)
+    : (rate?.tokensPerMinute ?? 0);
   const spendRate = rate?.spendRate ?? 0;
   const perConversationTpm = dividePerConversation(
     tokensPerMinute,
@@ -656,6 +695,7 @@ export function TodayStatsOverview({
   const comparisonLabel = isToday
     ? t("dashboard.today.secondary.vsYesterday")
     : t("dashboard.today.secondary.comparison");
+  const modelPerformanceTitle = t("dashboard.modelPerformance.title");
   const successComparisonRatio = isToday
     ? ratioOfCurrentToBaseline(
         successCount,
@@ -767,28 +807,57 @@ export function TodayStatsOverview({
             toneClass="text-primary"
             iconName="speedometer"
             valueTestId="today-stats-value-tpm"
-            displayText={rateUnavailable ? RATE_UNAVAILABLE_PLACEHOLDER : undefined}
-            subdued={rateUnavailable}
+            displayText={tokensPerMinuteUnavailable ? RATE_UNAVAILABLE_PLACEHOLDER : undefined}
+            subdued={tokensPerMinuteUnavailable}
             topRightItem={{
               label: comparisonLabel,
-              valueSpec: buildPercentValueSpec(tpmDailyDelta, localeTag, {
-                signDisplay: "exceptZero",
-              }),
-              toneClass: comparisonTone(tpmDailyDelta),
+              valueSpec: buildPercentValueSpec(
+                tokensPerMinuteUnavailable || performanceComparisonUnavailable
+                  ? null
+                  : tpmDailyDelta,
+                localeTag,
+                {
+                  signDisplay: "exceptZero",
+                },
+              ),
+              toneClass: comparisonTone(
+                tokensPerMinuteUnavailable || performanceComparisonUnavailable
+                  ? null
+                  : tpmDailyDelta,
+              ),
               valueTestId: "today-stats-secondary-tpm-delta",
             }}
             secondaryItems={[
               {
                 label: t("dashboard.today.secondary.dayAverage"),
-                valueSpec: buildNumberValueSpec(activeAverages.tokensPerMinute, localeTag, 0),
+                valueSpec: buildNumberValueSpec(
+                  tokensPerMinuteUnavailable || performanceComparisonUnavailable
+                    ? null
+                    : activeAverages.tokensPerMinute,
+                  localeTag,
+                  0,
+                ),
                 valueTestId: "today-stats-secondary-tpm-day-average",
               },
               {
                 label: t("dashboard.today.secondary.perConversation"),
-                valueSpec: buildNumberValueSpec(perConversationTpm, localeTag, 0),
+                valueSpec: buildNumberValueSpec(
+                  tokensPerMinuteUnavailable ? null : perConversationTpm,
+                  localeTag,
+                  0,
+                ),
                 valueTestId: "today-stats-secondary-tpm-per-conversation",
               },
             ]}
+            metricDetails={
+              modelPerformance
+                ? {
+                    title: modelPerformanceTitle,
+                    ariaLabel: `${t("dashboard.today.tokensPerMinute")} ${modelPerformanceTitle}`,
+                    performance: modelPerformance,
+                  }
+                : null
+            }
           />
           <MetricTile
             label={t("dashboard.today.spendRate")}
@@ -914,27 +983,33 @@ export function TodayStatsOverview({
             iconName="timer-outline"
             valueTestId="today-stats-value-response-time"
             displaySpec={buildLatencyValueSpec(
-              responseTimeCurrentUnavailable
-                ? null
-                : (responseTimeSnapshot?.responseTimeMs ?? null),
+              responseTimeCurrentUnavailable ? null : responseTimeCurrentValue,
               localeTag,
             )}
             subdued={responseTimeCurrentUnavailable}
             topRightItem={{
               label: comparisonLabel,
               valueSpec: buildPercentValueSpec(
-                rateUnavailable ? null : responseTimeDailyDelta,
+                responseTimeCurrentUnavailable || performanceComparisonUnavailable
+                  ? null
+                  : responseTimeDailyDelta,
                 localeTag,
                 { signDisplay: "exceptZero" },
               ),
-              toneClass: latencyComparisonTone(rateUnavailable ? null : responseTimeDailyDelta),
+              toneClass: latencyComparisonTone(
+                responseTimeCurrentUnavailable || performanceComparisonUnavailable
+                  ? null
+                  : responseTimeDailyDelta,
+              ),
               valueTestId: "today-stats-secondary-response-time-delta",
             }}
             secondaryItems={[
               {
                 label: t("dashboard.today.secondary.dayAverage"),
                 valueSpec: buildLatencyValueSpec(
-                  rateUnavailable ? null : (responseTimeSnapshot?.dayAverageMs ?? null),
+                  responseTimeCurrentUnavailable || performanceComparisonUnavailable
+                    ? null
+                    : (responseTimeSnapshot?.dayAverageMs ?? null),
                   localeTag,
                 ),
                 valueTestId: "today-stats-secondary-response-time-day-average",
@@ -951,6 +1026,15 @@ export function TodayStatsOverview({
                 valueTestId: "today-stats-secondary-response-time-avg-total",
               },
             ]}
+            metricDetails={
+              modelPerformance
+                ? {
+                    title: modelPerformanceTitle,
+                    ariaLabel: `${t("dashboard.today.firstResponseTime")} ${modelPerformanceTitle}`,
+                    performance: modelPerformance,
+                  }
+                : null
+            }
           />
           <MetricTile
             label={t("stats.cards.success")}

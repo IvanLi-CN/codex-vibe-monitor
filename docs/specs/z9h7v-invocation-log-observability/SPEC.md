@@ -36,11 +36,12 @@
 - 尝试详情必须提供到 `/records?requestId=...` 的全局调用总览入口，并自动展开该最终调用的完整尝试链。
 - 账号详情调用记录中的 `invokeId` 必须使用等宽字体单行完整展示，不得换行或截断；该表面可使用专用列宽回收用时、输入与输出列空间，但不得改变其他共享调用列表的默认布局。
 - 号池调用处于 `running` / `pending` 且已携带 `upstreamAccountName` 或 `upstreamAccountId` 时，所有共享 invocation 展示面必须用当前上游账号替代“号池路由中”fallback，并以蓝色呼吸文本表达正在路由中。
+- Dashboard 当前时间范围新增按“响应模型 / 思考程度”分组的性能明细，覆盖 TPM、流式响应速率、平均响应时长、平均首字用时与累计使用时长；明细及对应 TPM、首字卡面仅统计成功且已计费调用。
 
 ### Non-goals
 
 - 不新增独立请求详情页。
-- 不改现有统计聚合口径与时序聚合逻辑。
+- 不改费用、token 明细和既有时序聚合的归集语义；仅 Dashboard 活动快照的 TPM、首字卡面及模型性能明细采用本规格定义的成功已计费完整周期口径。
 - 不新增“总日志开关”。
 - 不对历史 `.gz` / raw 文件做立即删除、迁移或重压缩。
 
@@ -55,10 +56,12 @@
 - `web/src/i18n/translations.ts` 新增中英文文案键。
 - `proxy_model_settings` 单例新增 request/response body logging 持久化字段与 settings 页面双开关 UI。
 - request raw / response raw / response preview 按设置开关 fail-soft 退化，详情页与历史回填接受“新记录没有 raw body”为正常状态。
+- `GET /api/stats/dashboard-activity` 的全局与账号活动返回模型性能分组；Dashboard 总览与账号卡复用同一个桌面浮层/窄屏抽屉入口。
 
 ### Out of scope
 
 - 除账户事件新增可空 `attempt_id` 外的数据库 schema 变更。
+- Dashboard “历史”日历视图、模型筛选、导出与性能趋势图。
 - 采集敏感头（如 `Authorization`）或原文脱敏策略重构。
 - 统计页图表结构改造。
 
@@ -91,6 +94,10 @@
 - 运行态号池账号提示只在 `routeMode=pool`、状态为 `running` / `pending`、且存在非空账号名或有限数值账号 ID 时成立；显示值只允许为账号名或 `账号 #<id>`，不得添加“路由中”前缀。
 - 运行态号池账号提示必须复用现有账号点击路径；存在账号 ID 时，Live、Records、Dashboard working conversations 与 Dashboard 调用详情抽屉中的账号文本仍可打开上游账号详情。
 - 运行态号池账号提示必须是 text-only 蓝色语义状态，动画周期在 1500-2200ms 内；`prefers-reduced-motion: reduce` 下关闭呼吸动画但保留蓝色文本。
+- Dashboard 模型性能明细的样本资格固定为：状态为 `success` 或 `completed`、失败分类为 `none`、且 `cost` 非空；`cost=0` 仍属于已计费。模型取 `responseModel`，思考程度为空时显示“未指定”。
+- TPM 为合格调用总 token 除以当前完整选择范围的分钟数；流式响应速率为输出 token 除以上游流式响应时长；响应时长为首字至流结束的平均值；首字用时为收到调用请求至上游首字的平均值；使用时长为端到端时长之和。缺少有效样本的单项显示 `—`。
+- Dashboard 全局和账号 TPM 卡面必须使用对应模型性能总计；费用速率继续使用既有费用归集，但以完整选择范围为分母。
+- 桌面端性能明细触发器必须支持 hover、键盘聚焦与点击保留；窄屏点击打开无横向滚动的详情抽屉。总计行置顶，模型行按累计使用时长降序。
 - `GET /api/invocations/locate` 必须按 `upstreamAccountId + requestId` 在 retained live records 与当前 runtime overlay 中精确定位，固定采用 `occurredAt DESC, id DESC`，返回目标所在的单个分页窗口、稳定 `snapshotId`、短生命周期 `anchorId`、`targetIndex` 与 `targetAbsoluteIndex`。
 - 锚点定位未命中时必须返回结构化 `404`；不得为了定位查询 archive，也不得返回或预加载目标页之外的调用记录。
 
@@ -109,6 +116,8 @@
 
 - 请求进入 `/v1/chat/completions` 或 `/v1/responses` 采集路径时，后端提取 IP 与 prompt cache key，并随 payload 一并落库。
 - `/api/invocations` 通过 `json_extract(payload, ...)` 投影扩展字段，不依赖新增列。
+- Dashboard 活动快照从 retained live 调用按响应模型与思考程度聚合成功已计费性能样本，同时分别生成全局和账号级总计；原始费用、token 明细和调用列表聚合保持不变。
+- Dashboard TPM、首字卡及每张账号卡的 TPM/费用速率均以当前选择范围完整周期计算。性能明细在桌面使用可保留的浮层，在窄屏使用详情抽屉；两个入口展示相同总计与模型行。
 - 前端表格默认显示关键字段（token/cost/latency），用户展开后看到请求元信息与阶段耗时明细。
 - 前端展开详情时隐藏 `source` 行，避免把来源分类误读成出站代理。
 - `/api/invocations/{invoke_id}/pool-attempts` 读取 `pool_upstream_request_attempts.proxy_binding_key_snapshot` 并作为 `proxyBindingKeySnapshot` 返回。
@@ -213,12 +222,42 @@
 - Given 号池调用仍处于 `running` 或 `pending` 且已有 `upstreamAccountName`，When Live、Records、Dashboard working conversations 或 Dashboard 调用详情抽屉渲染该 invocation，Then 账号位置显示该账号名并使用蓝色呼吸文本，不显示“号池路由中”。
 - Given 号池运行态调用没有 `upstreamAccountName` 或 `upstreamAccountId`，When owner-facing 调用界面渲染，Then 继续显示既有“号池路由中”fallback，且不伪造账号、不启用呼吸状态。
 - Given 号池调用已进入成功或失败等终态，When owner-facing 调用界面渲染其账号字段，Then 保持普通账号显示与点击行为，不启用运行态呼吸状态。
+- Given 当前 Dashboard 范围内同时存在成功已计费、失败、运行中和未计费调用，When 请求模型性能明细，Then 仅成功已计费调用进入总计和模型行，且 `cost=0` 的成功调用仍保留；模型按响应模型归属，空思考程度显示“未指定”。
+- Given owner 在桌面 hover、键盘聚焦或点击 Dashboard TPM、首字、账号 TPM 或费用速率入口，When 性能明细打开，Then 显示置顶总计与按累计使用时长降序的模型行，缺失指标显示 `—`；Given 窄屏点击同一入口，Then 以无横向滚动的抽屉展示同一数据。
 
 ### Manual verification
 
 - 启动 backend/frontend 后打开 `/dashboard` 与 `/#/live`，验证新增列与详情展开可用。
 
 ## Visual Evidence
+
+- source_type: ui_demo
+  route: '#/dashboard'
+  state: desktop model-performance Tooltip opened from the Dashboard TPM card
+  requested_viewport: 1440x1024
+  viewport_strategy: browser-viewport
+  evidence_note: verifies the desktop Dashboard exposes a complete-range, successful-billed model and reasoning-effort table with a pinned total row through the TPM card Tooltip.
+  PR: include
+  target_program: mock-only
+  capture_scope: page
+  sensitive_exclusion: fixture-only Dashboard data
+  submission_gate: approved
+  image:
+  ![Dashboard desktop model performance Tooltip](./assets/dashboard-model-performance-desktop.png)
+
+- source_type: ui_demo
+  route: '#/dashboard'
+  state: mobile model-performance Drawer opened from the Dashboard TPM card
+  requested_viewport: 390x844
+  viewport_strategy: browser-viewport
+  evidence_note: verifies the compact Dashboard opens a scrollable Drawer whose total and model rows use a stacked metric layout instead of a horizontally scrolling table.
+  PR: include
+  target_program: mock-only
+  capture_scope: page
+  sensitive_exclusion: fixture-only Dashboard data
+  submission_gate: approved
+  image:
+  ![Dashboard mobile model performance Drawer](./assets/dashboard-model-performance-mobile.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays/DetailDrawer

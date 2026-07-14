@@ -23,12 +23,26 @@ describe("demo MSW handlers", () => {
             models: Array<{ model: string; reasoningEffort: string | null }>;
           };
         };
+        modelPerformance: {
+          available: boolean;
+          total: { tokensPerMinute: number };
+          models: Array<{ model: string; reasoningEffort: string | null }>;
+        };
       };
     };
 
     expect(response.ok).toBe(true);
     expect(payload.summary.stats.totalCount).toBe(12_846);
     expect(payload.summary.stats.usageBreakdown.models).toEqual([
+      expect.objectContaining({ model: "gpt-5.6-sol", reasoningEffort: "high" }),
+      expect.objectContaining({ model: "gpt-5.6-sol", reasoningEffort: "medium" }),
+      expect.objectContaining({ model: "gpt-5.6-terra", reasoningEffort: null }),
+    ]);
+    expect(payload.summary.modelPerformance).toMatchObject({
+      available: true,
+      total: { tokensPerMinute: expect.any(Number) },
+    });
+    expect(payload.summary.modelPerformance.models).toEqual([
       expect.objectContaining({ model: "gpt-5.6-sol", reasoningEffort: "high" }),
       expect.objectContaining({ model: "gpt-5.6-sol", reasoningEffort: "medium" }),
       expect.objectContaining({ model: "gpt-5.6-terra", reasoningEffort: null }),
@@ -43,6 +57,7 @@ describe("demo MSW handlers", () => {
       accounts: Array<{
         displayName: string;
         usageBreakdown: { models: Array<{ model: string; reasoningEffort: string | null }> };
+        modelPerformance: { models: Array<{ model: string; reasoningEffort: string | null }> };
       }>;
     };
 
@@ -50,6 +65,10 @@ describe("demo MSW handlers", () => {
     expect(payload.accounts).toHaveLength(12);
     expect(payload.accounts[0]).toMatchObject({ displayName: "alpha@demo.invalid" });
     expect(payload.accounts[0]?.usageBreakdown.models).toEqual([
+      expect.objectContaining({ model: "gpt-5.6-sol", reasoningEffort: "high" }),
+      expect.objectContaining({ model: "gpt-5.6-sol", reasoningEffort: "medium" }),
+    ]);
+    expect(payload.accounts[0]?.modelPerformance.models).toEqual([
       expect.objectContaining({ model: "gpt-5.6-sol", reasoningEffort: "high" }),
       expect.objectContaining({ model: "gpt-5.6-sol", reasoningEffort: "medium" }),
     ]);

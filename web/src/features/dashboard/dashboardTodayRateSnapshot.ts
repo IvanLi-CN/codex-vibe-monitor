@@ -2,8 +2,6 @@ import type { TimeseriesResponse } from "../../lib/api";
 import { parseDateInput, resolveClosedNaturalDayEnd } from "./dashboardNaturalDayWindow";
 
 const MINUTE_MS = 60_000;
-const DEFAULT_WINDOW_MINUTES = 5;
-
 interface RateBucket {
   bucketStartMs: number;
   bucketEndMs: number;
@@ -20,13 +18,12 @@ export interface DashboardTodayRateSnapshot {
 
 export function buildDashboardTodayRateSnapshot(
   response: TimeseriesResponse | null,
-  options?: { now?: Date; targetWindowMinutes?: number; closedNaturalDay?: boolean },
+  options?: { now?: Date; closedNaturalDay?: boolean },
 ): DashboardTodayRateSnapshot | null {
   if (!response) {
     return null;
   }
 
-  const targetWindowMinutes = Math.max(1, options?.targetWindowMinutes ?? DEFAULT_WINDOW_MINUTES);
   const fallbackNow = options?.now ?? new Date();
   const closedNaturalDayEnd = resolveClosedNaturalDayEnd(
     response,
@@ -34,15 +31,11 @@ export function buildDashboardTodayRateSnapshot(
   );
   const responseEnd = parseDateInput(response.rangeEnd);
   const anchor = closedNaturalDayEnd ?? resolveLiveNaturalDayAnchor(responseEnd, fallbackNow);
-  const start = closedNaturalDayEnd
-    ? floorToMinute(
-        parseDateInput(response.rangeStart) ??
-          new Date(closedNaturalDayEnd.getTime() - 24 * 60 * MINUTE_MS),
-      )
-    : startOfLocalDay(anchor);
+  const start = floorToMinute(
+    parseDateInput(response.rangeStart) ?? new Date(anchor.getTime() - 24 * 60 * MINUTE_MS),
+  );
   const startMs = start.getTime();
   const anchorMs = anchor.getTime();
-  const windowStartMs = Math.max(startMs, anchorMs - targetWindowMinutes * MINUTE_MS);
 
   if (anchorMs <= startMs) {
     return {
@@ -55,11 +48,7 @@ export function buildDashboardTodayRateSnapshot(
 
   const pointMap = new Map<
     number,
-    {
-      bucketEndMs: number;
-      totalTokens: number;
-      totalCost: number;
-    }
+    { bucketEndMs: number; totalTokens: number; totalCost: number }
   >();
 
   for (const point of response.points ?? []) {
@@ -69,7 +58,7 @@ export function buildDashboardTodayRateSnapshot(
 
     const bucketStartMs = floorToMinute(bucketStart).getTime();
     const bucketEndMs = bucketEnd.getTime();
-    if (bucketStartMs >= anchorMs || bucketEndMs <= windowStartMs) continue;
+    if (bucketStartMs >= anchorMs || bucketEndMs <= startMs) continue;
 
     const current = pointMap.get(bucketStartMs) ?? {
       bucketEndMs,
@@ -85,16 +74,16 @@ export function buildDashboardTodayRateSnapshot(
   const buckets = [...pointMap.entries()]
     .map(([bucketStartMs, bucket]) => ({ bucketStartMs, ...bucket }))
     .sort((a, b) => a.bucketStartMs - b.bucketStartMs);
-  const tokensRate = computeActiveTailRate({
+  const tokensRate = computeRangeRate({
     buckets,
     anchorMs,
-    windowStartMs,
+    startMs,
     value: (bucket) => bucket.totalTokens,
   });
-  const costRate = computeActiveTailRate({
+  const costRate = computeRangeRate({
     buckets,
     anchorMs,
-    windowStartMs,
+    startMs,
     value: (bucket) => bucket.totalCost,
   });
 
@@ -104,12 +93,6 @@ export function buildDashboardTodayRateSnapshot(
     windowMinutes: Math.max(tokensRate.windowMinutes, costRate.windowMinutes),
     available: true,
   };
-}
-
-function startOfLocalDay(date: Date) {
-  const next = new Date(date);
-  next.setHours(0, 0, 0, 0);
-  return next;
 }
 
 function resolveLiveNaturalDayAnchor(responseEnd: Date | null, now: Date) {
@@ -128,30 +111,21 @@ function isSameLocalDay(left: Date, right: Date) {
   );
 }
 
-function computeActiveTailRate({
+function computeRangeRate({
   buckets,
   anchorMs,
-  windowStartMs,
+  startMs,
   value,
 }: {
   buckets: RateBucket[];
   anchorMs: number;
-  windowStartMs: number;
+  startMs: number;
   value: (bucket: RateBucket) => number;
 }) {
-  const firstActiveBucket = buckets.find((bucket) => value(bucket) > 0);
-  if (!firstActiveBucket) {
-    return {
-      rate: 0,
-      windowMinutes: Math.max(0, (anchorMs - windowStartMs) / MINUTE_MS),
-    };
-  }
-
-  const activeStartMs = Math.max(windowStartMs, firstActiveBucket.bucketStartMs);
-  const windowMinutes = Math.max((anchorMs - activeStartMs) / MINUTE_MS, 0);
+  const windowMinutes = Math.max((anchorMs - startMs) / MINUTE_MS, 0);
   let total = 0;
   for (const bucket of buckets) {
-    if (bucket.bucketEndMs <= activeStartMs || bucket.bucketStartMs >= anchorMs) continue;
+    if (bucket.bucketEndMs <= startMs || bucket.bucketStartMs >= anchorMs) continue;
     total += value(bucket);
   }
 
