@@ -12821,6 +12821,20 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             .iter()
             .any(|account| account.account_key == "upstream:42")
     );
+    assert!(recent_response.accounts.iter().any(|account| {
+        account.account_key == "upstream:42"
+            && account
+                .recent_invocations
+                .iter()
+                .any(|row| row.invoke_id == "dashboard-activity-runtime-terminal")
+    }));
+    assert!(recent_response.accounts.iter().any(|account| {
+        account.account_key == "upstream:88"
+            && account
+                .recent_invocations
+                .iter()
+                .any(|row| row.invoke_id == "dashboard-activity-runtime-terminal-only-account")
+    }));
     let wide_recent_result = fetch_dashboard_activity_recent(
         State(state.clone()),
         Query(DashboardActivityRecentQuery {

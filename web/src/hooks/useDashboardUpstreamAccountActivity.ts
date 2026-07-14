@@ -264,6 +264,16 @@ export function useDashboardActivitySnapshot(
         const byAccount = new Map(
           recent.accounts.map((account) => [account.accountKey, account.recentInvocations]),
         );
+        const latestSummary = latestSummaryRef.current;
+        if (latestSummary?.snapshotId === recent.snapshotId) {
+          latestSummaryRef.current = {
+            ...latestSummary,
+            accounts: latestSummary.accounts?.map((account) => ({
+              ...account,
+              recentInvocations: byAccount.get(account.accountKey ?? "") ?? [],
+            })),
+          };
+        }
         setData((current) => {
           if (!current || current.snapshotId !== recent.snapshotId) return current;
           return {
@@ -338,8 +348,22 @@ export function useDashboardActivitySnapshot(
           latestLiveSnapshot.revision > (response.liveRevision ?? 0)
             ? mergeDashboardActivityLiveSnapshot(response, latestLiveSnapshot)
             : response;
-        latestSummaryRef.current = nextData;
-        setData(nextData);
+        const previousData = latestSummaryRef.current;
+        const nextDataWithRetainedRecent =
+          silent && requestedIncludeAccounts && previousData?.range === nextData.range
+            ? {
+                ...nextData,
+                accounts: nextData.accounts?.map((account) => ({
+                  ...account,
+                  recentInvocations:
+                    previousData.accounts?.find(
+                      (previousAccount) => previousAccount.accountKey === account.accountKey,
+                    )?.recentInvocations ?? account.recentInvocations,
+                })),
+              }
+            : nextData;
+        latestSummaryRef.current = nextDataWithRetainedRecent;
+        setData(nextDataWithRetainedRecent);
         recordUpstreamAccountActivityRefresh();
         hasHydratedRef.current = true;
         setError(null);

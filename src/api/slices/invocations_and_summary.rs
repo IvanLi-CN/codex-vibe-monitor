@@ -4687,6 +4687,82 @@ pub(crate) fn overlay_runtime_upstream_account_activity_preview_rows(
     }
 }
 
+async fn overlay_runtime_terminal_upstream_account_activity_preview_rows(
+    state: &AppState,
+    rows: &mut Vec<UpstreamAccountInvocationPreviewRow>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+) -> Result<(), ApiError> {
+    let mut terminal_rows = Vec::new();
+    for record in state.proxy_runtime_invocations.snapshot() {
+        if matches!(
+            normalized_runtime_text(record.status.as_deref()).as_str(),
+            "running" | "pending"
+        ) {
+            continue;
+        }
+        let Some(row) =
+            runtime_upstream_account_activity_preview_row_with_terminal(record, source_scope, true)
+        else {
+            continue;
+        };
+        let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
+            continue;
+        };
+        if occurred_at >= range.start && occurred_at < range.end {
+            terminal_rows.push(row);
+        }
+    }
+    if terminal_rows.is_empty() {
+        return Ok(());
+    }
+
+    let fallback_keys = terminal_rows
+        .iter()
+        .filter(|row| row.upstream_account_id.is_none())
+        .map(|row| (row.invoke_id.clone(), row.occurred_at.clone()))
+        .collect::<HashSet<_>>();
+    let fallback_rows =
+        query_runtime_recent_account_fallback_rows(&state.pool, source_scope, &fallback_keys)
+            .await?
+            .into_iter()
+            .map(|row| ((row.invoke_id.clone(), row.occurred_at.clone()), row))
+            .collect::<HashMap<_, _>>();
+
+    let mut rows_by_key = rows
+        .drain(..)
+        .map(|row| ((row.invoke_id.clone(), row.occurred_at.clone()), row))
+        .collect::<HashMap<_, _>>();
+    for mut row in terminal_rows {
+        let key = (row.invoke_id.clone(), row.occurred_at.clone());
+        if let Some(existing) = rows_by_key.get(&key) {
+            if row.upstream_account_id.is_none() {
+                row.upstream_account_id = existing.upstream_account_id;
+            }
+            if row.upstream_account_name.is_none() {
+                row.upstream_account_name = existing.upstream_account_name.clone();
+            }
+            if row.upstream_account_plan_type.is_none() {
+                row.upstream_account_plan_type = existing.upstream_account_plan_type.clone();
+            }
+        }
+        if let Some(fallback) = fallback_rows.get(&key) {
+            if row.upstream_account_id.is_none() {
+                row.upstream_account_id = fallback.upstream_account_id;
+            }
+            if row.upstream_account_name.is_none() {
+                row.upstream_account_name = fallback.upstream_account_name.clone();
+            }
+            if row.upstream_account_plan_type.is_none() {
+                row.upstream_account_plan_type = fallback.upstream_account_plan_type.clone();
+            }
+        }
+        rows_by_key.insert(key, row);
+    }
+    rows.extend(rows_by_key.into_values());
+    Ok(())
+}
+
 pub(crate) async fn load_usage_breakdown_for_range(
     state: &AppState,
     source_scope: InvocationSourceScope,
@@ -5936,6 +6012,13 @@ pub(crate) async fn fetch_dashboard_activity_recent(
         source_scope,
         range,
     );
+    overlay_runtime_terminal_upstream_account_activity_preview_rows(
+        state.as_ref(),
+        &mut rows,
+        source_scope,
+        range,
+    )
+    .await?;
     let live_ids = rows.iter().map(|row| row.id).collect::<HashSet<_>>();
     if range.start < shanghai_retention_cutoff(state.config.invocation_max_days) {
         rows.extend(

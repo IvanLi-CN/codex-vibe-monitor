@@ -3060,7 +3060,7 @@ function DashboardUpstreamAccountActivityCard({
           </div>
         </div>
         <div className="grid flex-1 auto-rows-fr gap-1.5" aria-live="polite">
-          {recentLoading
+          {recentLoading && recentInvocations.length === 0
             ? DASHBOARD_RECENT_SKELETON_IDS.slice(0, recentPreviewLimit).map((skeletonId) => (
                 <div
                   key={skeletonId}
@@ -3084,7 +3084,7 @@ function DashboardUpstreamAccountActivityCard({
               </button>
             </div>
           ) : null}
-          {!recentLoading && !recentError
+          {!recentError && (!recentLoading || recentInvocations.length > 0)
             ? recentInvocations.map((invocation: DashboardWorkingConversationInvocationModel) => (
                 <AccountRecentInvocationRow
                   key={`${invocation.record.invokeId}:${invocation.record.occurredAt}:${invocation.record.id}`}

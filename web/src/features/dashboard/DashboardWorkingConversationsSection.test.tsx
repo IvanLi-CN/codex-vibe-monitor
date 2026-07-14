@@ -658,6 +658,28 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(host?.textContent).not.toContain("当前范围内暂无活动上游账号");
   });
 
+  it("keeps hydrated recent rows visible while a background recent refresh is pending", () => {
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+    upstreamAccountActivityMock.recentLoading = true;
+
+    renderSection(createResponse([]));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    expect(host?.textContent).toContain("acct-invoke-1");
+    expect(
+      host?.querySelector('[data-testid="dashboard-upstream-account-recent-skeleton"]'),
+    ).toBeNull();
+  });
+
   it("stacks workspace controls below the description on compact screens", () => {
     renderSection(
       createResponse([
