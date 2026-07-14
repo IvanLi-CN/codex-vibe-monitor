@@ -63,6 +63,21 @@ async fn insert_parallel_work_prompt_cache_rollup_hourly_row_with_source(
     .expect("insert prompt cache hourly rollup row");
 }
 
+fn truncate_shanghai_hour_to_utc(ts: DateTime<Utc>) -> DateTime<Utc> {
+    let local_hour = ts
+        .with_timezone(&Shanghai)
+        .naive_local()
+        .with_minute(0)
+        .and_then(|value| value.with_second(0))
+        .and_then(|value| value.with_nanosecond(0))
+        .expect("valid local hour");
+    Shanghai
+        .from_local_datetime(&local_hour)
+        .single()
+        .expect("unique Shanghai local hour")
+        .with_timezone(&Utc)
+}
+
 async fn insert_prompt_cache_working_set_live_row(
     pool: &SqlitePool,
     prompt_cache_key: &str,
@@ -13364,9 +13379,7 @@ async fn upstream_account_activity_uses_rollup_created_at_when_working_set_row_i
     .await
     .expect("insert upstream account");
 
-    let current_day_start =
-        local_midnight_utc(Utc::now().with_timezone(&Shanghai).date_naive(), Shanghai);
-    let rollup_bucket_start = current_day_start + ChronoDuration::hours(1);
+    let rollup_bucket_start = truncate_shanghai_hour_to_utc(Utc::now() - ChronoDuration::hours(6));
     let expected_created_at =
         format_naive(rollup_bucket_start.with_timezone(&Shanghai).naive_local());
     insert_parallel_work_prompt_cache_rollup_hourly_row(
@@ -13396,7 +13409,7 @@ async fn upstream_account_activity_uses_rollup_created_at_when_working_set_row_i
     .bind(9_100_i64)
     .bind("upstream-history-only")
     .bind(format_naive(
-        (current_day_start + ChronoDuration::hours(6))
+        (Utc::now() - ChronoDuration::minutes(10))
             .with_timezone(&Shanghai)
             .naive_local(),
     ))
@@ -13420,7 +13433,7 @@ async fn upstream_account_activity_uses_rollup_created_at_when_working_set_row_i
     let Json(activity) = fetch_upstream_account_activity(
         State(state),
         Query(UpstreamAccountActivityQuery {
-            range: "today".to_string(),
+            range: "7d".to_string(),
             recent_limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
         }),
@@ -13467,10 +13480,10 @@ async fn upstream_account_activity_all_scope_uses_actual_created_at_for_mixed_so
     .await
     .expect("insert upstream account");
 
-    let current_day_start =
-        local_midnight_utc(Utc::now().with_timezone(&Shanghai).date_naive(), Shanghai);
-    let all_created_bucket_start = current_day_start + ChronoDuration::hours(1);
-    let proxy_created_bucket_start = current_day_start + ChronoDuration::hours(4);
+    let all_created_bucket_start =
+        truncate_shanghai_hour_to_utc(Utc::now() - ChronoDuration::hours(30));
+    let proxy_created_bucket_start =
+        truncate_shanghai_hour_to_utc(Utc::now() - ChronoDuration::hours(6));
     let all_created_at = format_naive(
         all_created_bucket_start
             .with_timezone(&Shanghai)
@@ -13482,7 +13495,7 @@ async fn upstream_account_activity_all_scope_uses_actual_created_at_for_mixed_so
             .naive_local(),
     );
     let last_activity_at = format_naive(
-        (current_day_start + ChronoDuration::hours(9))
+        (Utc::now() - ChronoDuration::hours(4))
             .with_timezone(&Shanghai)
             .naive_local(),
     );
@@ -13520,7 +13533,7 @@ async fn upstream_account_activity_all_scope_uses_actual_created_at_for_mixed_so
             "upstream-mixed-all",
             SOURCE_XY,
             format_naive(
-                (current_day_start + ChronoDuration::hours(8))
+                (Utc::now() - ChronoDuration::hours(5))
                     .with_timezone(&Shanghai)
                     .naive_local(),
             ),
@@ -13530,7 +13543,7 @@ async fn upstream_account_activity_all_scope_uses_actual_created_at_for_mixed_so
             "upstream-mixed-proxy",
             SOURCE_PROXY,
             format_naive(
-                (current_day_start + ChronoDuration::hours(9))
+                (Utc::now() - ChronoDuration::hours(4))
                     .with_timezone(&Shanghai)
                     .naive_local(),
             ),
@@ -13576,7 +13589,7 @@ async fn upstream_account_activity_all_scope_uses_actual_created_at_for_mixed_so
     let Json(activity) = fetch_upstream_account_activity(
         State(state),
         Query(UpstreamAccountActivityQuery {
-            range: "today".to_string(),
+            range: "7d".to_string(),
             recent_limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
         }),
