@@ -7,6 +7,23 @@ async fn insert_parallel_work_prompt_cache_rollup_hourly_row(
     prompt_cache_key: &str,
     request_count: i64,
 ) {
+    insert_parallel_work_prompt_cache_rollup_hourly_row_with_source(
+        pool,
+        bucket_start,
+        prompt_cache_key,
+        SOURCE_PROXY,
+        request_count,
+    )
+    .await;
+}
+
+async fn insert_parallel_work_prompt_cache_rollup_hourly_row_with_source(
+    pool: &SqlitePool,
+    bucket_start: DateTime<Utc>,
+    prompt_cache_key: &str,
+    source: &str,
+    request_count: i64,
+) {
     let first_seen_at = format_naive(bucket_start.with_timezone(&Shanghai).naive_local());
     let last_seen_at = format_naive(
         (bucket_start + ChronoDuration::minutes(30))
@@ -32,7 +49,7 @@ async fn insert_parallel_work_prompt_cache_rollup_hourly_row(
         "#,
     )
     .bind(bucket_start.timestamp())
-    .bind(SOURCE_PROXY)
+    .bind(source)
     .bind(prompt_cache_key)
     .bind(request_count)
     .bind(request_count)
@@ -44,6 +61,84 @@ async fn insert_parallel_work_prompt_cache_rollup_hourly_row(
     .execute(pool)
     .await
     .expect("insert prompt cache hourly rollup row");
+}
+
+async fn insert_prompt_cache_working_set_live_row(
+    pool: &SqlitePool,
+    prompt_cache_key: &str,
+    created_at: &str,
+    last_activity_at: &str,
+    proxy_created_at: Option<&str>,
+    proxy_last_activity_at: Option<&str>,
+    source_scope_proxy_only: bool,
+) {
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_working_set_live (
+            prompt_cache_key,
+            source_scope_all,
+            source_scope_proxy_only,
+            created_at,
+            last_activity_at,
+            last_terminal_at,
+            last_in_flight_at,
+            sort_anchor_at,
+            request_count,
+            total_tokens,
+            total_cost,
+            proxy_created_at,
+            proxy_last_activity_at,
+            proxy_last_terminal_at,
+            proxy_last_in_flight_at,
+            proxy_sort_anchor_at,
+            proxy_request_count,
+            proxy_total_tokens,
+            proxy_total_cost
+        )
+        VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
+            ?19
+        )
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(1_i64)
+    .bind(if source_scope_proxy_only {
+        1_i64
+    } else {
+        0_i64
+    })
+    .bind(created_at)
+    .bind(last_activity_at)
+    .bind(Some(last_activity_at))
+    .bind(Option::<&str>::None)
+    .bind(last_activity_at)
+    .bind(1_i64)
+    .bind(100_i64)
+    .bind(0.01_f64)
+    .bind(proxy_created_at)
+    .bind(proxy_last_activity_at)
+    .bind(proxy_last_activity_at)
+    .bind(Option::<&str>::None)
+    .bind(proxy_last_activity_at)
+    .bind(if proxy_created_at.is_some() {
+        1_i64
+    } else {
+        0_i64
+    })
+    .bind(if proxy_created_at.is_some() {
+        100_i64
+    } else {
+        0_i64
+    })
+    .bind(if proxy_created_at.is_some() {
+        0.01_f64
+    } else {
+        0.0_f64
+    })
+    .execute(pool)
+    .await
+    .expect("insert prompt cache working-set row");
 }
 
 async fn insert_parallel_work_prompt_cache_upstream_account_hourly_row(
@@ -12018,6 +12113,14 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
     let account = activity.accounts.first().expect("activity account");
     assert_eq!(account.upstream_account_id, 42);
     assert_eq!(account.display_name, "Pool Alpha");
+    assert!(account.latest_conversation_created_at.is_some());
+    assert_eq!(
+        account.last_invocation_at.as_deref(),
+        account
+            .recent_invocations
+            .first()
+            .map(|row| row.occurred_at.as_str())
+    );
     assert_eq!(account.group_name.as_deref(), Some("Primary"));
     assert_eq!(account.plan_type.as_deref(), Some("enterprise"));
     assert!(account.enabled);
@@ -12982,6 +13085,14 @@ async fn dashboard_activity_progressive_summary_keeps_archived_account_aggregate
     assert_eq!(account.failure_count, 1);
     assert_eq!(account.total_tokens, 30);
     assert_f64_close(account.total_cost, 0.30);
+    assert_eq!(
+        account.latest_conversation_created_at.as_deref(),
+        Some(failure_at.as_str())
+    );
+    assert_eq!(
+        account.last_invocation_at.as_deref(),
+        Some(failure_at.as_str())
+    );
     assert!(account.recent_invocations.is_empty());
 
     let Json(compatible_response) = fetch_dashboard_activity(
@@ -13005,6 +13116,365 @@ async fn dashboard_activity_progressive_summary_keeps_archived_account_aggregate
     assert_eq!(compatible_account.request_count, 2);
     assert_eq!(compatible_account.total_tokens, 30);
     assert_eq!(compatible_account.recent_invocations.len(), 2);
+}
+
+#[tokio::test]
+async fn dashboard_activity_progressive_summary_keeps_archive_created_at_across_batches() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 1;
+    let state = test_state_from_config(config, true).await;
+    let archived_hour = (Utc::now().with_timezone(&Shanghai).naive_local()
+        - ChronoDuration::days(3))
+    .with_minute(0)
+    .and_then(|value| value.with_second(0))
+    .expect("valid archived hour");
+    let first_at = format_naive(
+        archived_hour
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived time"),
+    );
+    let second_at = format_naive(
+        archived_hour
+            .checked_add_signed(ChronoDuration::hours(5))
+            .and_then(|value| value.checked_add_signed(ChronoDuration::minutes(10)))
+            .expect("second archived time"),
+    );
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "dashboard-progressive-archive-created-at-early",
+        &[SeedInvocationArchiveBatchRow {
+            id: 92_001,
+            invoke_id: "dashboard-progressive-archive-created-at-early",
+            occurred_at: first_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 10,
+            cost: 0.10,
+            ttfb_ms: Some(100.0),
+            payload: Some(
+                r#"{"promptCacheKey":"pck-dashboard-progressive-archive-created-at","upstreamAccountId":42,"upstreamAccountName":"Archive Alpha"}"#,
+            ),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "dashboard-progressive-archive-created-at-late",
+        &[SeedInvocationArchiveBatchRow {
+            id: 92_002,
+            invoke_id: "dashboard-progressive-archive-created-at-late",
+            occurred_at: second_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 20,
+            cost: 0.20,
+            ttfb_ms: Some(120.0),
+            payload: Some(
+                r#"{"promptCacheKey":"pck-dashboard-progressive-archive-created-at","upstreamAccountId":42,"upstreamAccountName":"Archive Alpha"}"#,
+            ),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+
+    let Json(response) = fetch_dashboard_activity(
+        State(state),
+        Query(DashboardActivityQuery {
+            range: "7d".to_string(),
+            recent_limit: Some(4),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: true,
+            include_recent: Some(false),
+        }),
+    )
+    .await
+    .expect("fetch progressive dashboard activity with cross-batch created_at");
+    let account = response
+        .accounts
+        .expect("accounts included")
+        .into_iter()
+        .find(|account| account.upstream_account_id == Some(42))
+        .expect("archived account summary");
+    assert_eq!(
+        account.latest_conversation_created_at.as_deref(),
+        Some(first_at.as_str())
+    );
+    assert_eq!(
+        account.last_invocation_at.as_deref(),
+        Some(second_at.as_str())
+    );
+}
+
+#[tokio::test]
+async fn upstream_account_activity_uses_rollup_created_at_when_working_set_row_is_missing() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, group_name, plan_type, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(42_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Pool Alpha")
+    .bind("Primary")
+    .bind("enterprise")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert upstream account");
+
+    let current_day_start =
+        local_midnight_utc(Utc::now().with_timezone(&Shanghai).date_naive(), Shanghai);
+    let rollup_bucket_start = current_day_start + ChronoDuration::hours(1);
+    let expected_created_at =
+        format_naive(rollup_bucket_start.with_timezone(&Shanghai).naive_local());
+    insert_parallel_work_prompt_cache_rollup_hourly_row(
+        &state.pool,
+        rollup_bucket_start,
+        "pck-upstream-history-only",
+        1,
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(9_100_i64)
+    .bind("upstream-history-only")
+    .bind(format_naive(
+        (current_day_start + ChronoDuration::hours(6))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind("completed")
+    .bind(120_i64)
+    .bind(0.12_f64)
+    .bind(
+        json!({
+            "promptCacheKey": "pck-upstream-history-only",
+            "upstreamAccountId": 42,
+            "upstreamAccountName": "Pool Alpha"
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert upstream account invocation");
+
+    let Json(activity) = fetch_upstream_account_activity(
+        State(state),
+        Query(UpstreamAccountActivityQuery {
+            range: "today".to_string(),
+            recent_limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch upstream account activity");
+
+    assert_eq!(activity.accounts.len(), 1);
+    assert_eq!(
+        activity.accounts[0]
+            .latest_conversation_created_at
+            .as_deref(),
+        Some(expected_created_at.as_str())
+    );
+}
+
+#[tokio::test]
+async fn upstream_account_activity_all_scope_uses_actual_created_at_for_mixed_source_conversations()
+{
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, group_name, plan_type, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(42_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Pool Alpha")
+    .bind("Primary")
+    .bind("enterprise")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert upstream account");
+
+    let current_day_start =
+        local_midnight_utc(Utc::now().with_timezone(&Shanghai).date_naive(), Shanghai);
+    let all_created_bucket_start = current_day_start + ChronoDuration::hours(1);
+    let proxy_created_bucket_start = current_day_start + ChronoDuration::hours(4);
+    let all_created_at = format_naive(
+        all_created_bucket_start
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let proxy_created_at = format_naive(
+        proxy_created_bucket_start
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let last_activity_at = format_naive(
+        (current_day_start + ChronoDuration::hours(9))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    insert_parallel_work_prompt_cache_rollup_hourly_row_with_source(
+        &state.pool,
+        all_created_bucket_start,
+        "pck-upstream-mixed",
+        SOURCE_XY,
+        1,
+    )
+    .await;
+    insert_parallel_work_prompt_cache_rollup_hourly_row_with_source(
+        &state.pool,
+        proxy_created_bucket_start,
+        "pck-upstream-mixed",
+        SOURCE_PROXY,
+        1,
+    )
+    .await;
+    insert_prompt_cache_working_set_live_row(
+        &state.pool,
+        "pck-upstream-mixed",
+        &all_created_at,
+        &last_activity_at,
+        Some(&proxy_created_at),
+        Some(&last_activity_at),
+        true,
+    )
+    .await;
+
+    for (id, invoke_id, source, occurred_at) in [
+        (
+            9_200_i64,
+            "upstream-mixed-all",
+            SOURCE_XY,
+            format_naive(
+                (current_day_start + ChronoDuration::hours(8))
+                    .with_timezone(&Shanghai)
+                    .naive_local(),
+            ),
+        ),
+        (
+            9_201_i64,
+            "upstream-mixed-proxy",
+            SOURCE_PROXY,
+            format_naive(
+                (current_day_start + ChronoDuration::hours(9))
+                    .with_timezone(&Shanghai)
+                    .naive_local(),
+            ),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                total_tokens,
+                cost,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(source)
+        .bind("completed")
+        .bind(120_i64)
+        .bind(0.12_f64)
+        .bind(
+            json!({
+                "promptCacheKey": "pck-upstream-mixed",
+                "upstreamAccountId": 42,
+                "upstreamAccountName": "Pool Alpha"
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert mixed-source upstream account invocation");
+    }
+
+    let Json(activity) = fetch_upstream_account_activity(
+        State(state),
+        Query(UpstreamAccountActivityQuery {
+            range: "today".to_string(),
+            recent_limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch mixed-source upstream account activity");
+
+    assert_eq!(activity.accounts.len(), 1);
+    assert_eq!(
+        activity.accounts[0]
+            .latest_conversation_created_at
+            .as_deref(),
+        Some(all_created_at.as_str())
+    );
 }
 
 #[tokio::test]

@@ -88,3 +88,10 @@
 
 - `./SPEC.md`
 - `./HISTORY.md`
+
+### Dashboard workspace card sorting
+
+- Implemented independent persisted sort state for conversations and upstream accounts with a four-step cycle: created time, latest invocation, cost, and tokens.
+- Added stable secondary keys, missing-time-last handling, accessible cycle control, and immediate derived reordering without changing SSE or reconcile cadence.
+- Dashboard activity API now exposes `latestConversationCreatedAt` and `lastInvocationAt` from aggregate data for account sorting.
+- Verification: Rust aggregation test, Dashboard hook/unit tests, Storybook test suite, and web production build pass.

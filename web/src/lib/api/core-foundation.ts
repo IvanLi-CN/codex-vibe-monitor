@@ -627,6 +627,8 @@ export interface UpstreamAccountActivityAccount {
   accountKey?: string;
   upstreamAccountId: number | null;
   displayName: string;
+  latestConversationCreatedAt?: string | null;
+  lastInvocationAt?: string | null;
   isUnassigned?: boolean;
   groupName?: string | null;
   planType?: string | null;

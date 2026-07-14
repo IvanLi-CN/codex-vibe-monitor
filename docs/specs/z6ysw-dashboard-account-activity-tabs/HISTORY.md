@@ -53,3 +53,8 @@
 
 - `./SPEC.md`
 - `./IMPLEMENTATION.md`
+
+### 2026-07-13 - Workspace card sorting
+
+- Added independent conversation/account sort preferences and a compact keyboard-accessible cycle control.
+- Account ordering now uses aggregate conversation creation and invocation timestamps rather than account metadata or truncated recent previews.

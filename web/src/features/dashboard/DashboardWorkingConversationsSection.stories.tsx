@@ -355,6 +355,8 @@ function createUpstreamAccountActivityStoryResponse(
       {
         upstreamAccountId: 42,
         displayName: "Pool Alpha",
+        latestConversationCreatedAt: "2026-04-04T10:04:00Z",
+        lastInvocationAt: "2026-04-04T10:05:00Z",
         groupName: "Primary",
         planType: "enterprise",
         enabled: true,
@@ -3122,6 +3124,16 @@ export const UpstreamAccountTab: Story = {
     const canvas = within(canvasElement);
     const accountTab = await canvas.findByRole("tab", { name: "上游账号" });
     await userEvent.click(accountTab);
+    const sortButton = canvas.getByTestId("dashboard-workspace-sort-button");
+    await expect(sortButton).toHaveTextContent(/对话创建|Conversation created/);
+    await userEvent.click(sortButton);
+    await expect(sortButton).toHaveTextContent(/最新调用|Latest invocation/);
+    await userEvent.click(sortButton);
+    await expect(sortButton).toHaveTextContent(/成本|Cost/);
+    await userEvent.click(sortButton);
+    await expect(sortButton).toHaveTextContent(/Token|Tokens/);
+    await userEvent.click(sortButton);
+    await expect(sortButton).toHaveTextContent(/对话创建|Conversation created/);
     await expect(canvas.getByText("当前活动账号 1 个")).toBeInTheDocument();
     await expect(canvas.getByText("最近 4 条调用")).toBeInTheDocument();
     await expect(canvas.getByTestId("dashboard-upstream-account-header-row")).not.toHaveTextContent(

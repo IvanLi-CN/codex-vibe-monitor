@@ -1318,6 +1318,7 @@ pub(crate) struct UpstreamAccountInvocationPreviewRow {
     pub(crate) invoke_id: String,
     pub(crate) prompt_cache_key: Option<String>,
     pub(crate) occurred_at: String,
+    pub(crate) conversation_created_at: Option<String>,
     pub(crate) status: String,
     pub(crate) live_phase: Option<String>,
     pub(crate) failure_class: Option<String>,
@@ -1605,6 +1606,10 @@ pub(crate) struct DashboardActivityAccountResponse {
     pub(crate) display_name: String,
     pub(crate) is_unassigned: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) latest_conversation_created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_invocation_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) group_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) plan_type: Option<String>,
@@ -1669,6 +1674,10 @@ pub(crate) struct DashboardActivityAccountResponse {
 pub(crate) struct UpstreamAccountActivityAccountResponse {
     pub(crate) upstream_account_id: i64,
     pub(crate) display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) latest_conversation_created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_invocation_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) group_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
