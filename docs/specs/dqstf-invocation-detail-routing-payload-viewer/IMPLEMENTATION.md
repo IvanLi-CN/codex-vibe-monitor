@@ -21,7 +21,7 @@
 - `cd web && bun run test -- --reporter=dot src/demo/runtime.test.ts src/features/invocations/structuredPayload.test.ts src/features/dashboard/DashboardInvocationDetailDrawer.test.tsx src/demo/handlers.test.ts`: 4 files passed，25 tests passed。
 - `cd web && bun run build`: passed。
 - `cd web && bun run demo:build`: passed。
-- Chrome Control mock-only Web Demo proof: `http://127.0.0.1:34490/#/dashboard/invocations/demo-invocation-9002?demoScene=attention` 与 `&demoViewport=mobile390` 均可稳定打开，并已把 `异常响应体 / SSE 事件流` 证据写入 spec `## Visual Evidence`。
+- Chrome Control mock-only Web Demo proof: `#/dashboard/invocations/demo-invocation-9002?demoScene=attention` 与 `&demoViewport=mobile390` 均可稳定打开；桌面 `1440px` 与移动 `390px` 的 document、dialog 和 drawer body 均无页面级横向溢出，SSE viewer 保留独立横向滚动，并已把证据写入 spec `## Visual Evidence`。
 
 ## Remaining Delivery Gate
 
