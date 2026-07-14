@@ -268,6 +268,7 @@ describe("UpstreamAccountsPage duplicates", () => {
         timeouts: {
           responsesFirstByteTimeoutSecs: 120,
           compactFirstByteTimeoutSecs: 300,
+          imageFirstByteTimeoutSecs: 300,
           responsesStreamTimeoutSecs: 300,
           compactStreamTimeoutSecs: 300,
         },
@@ -351,6 +352,7 @@ describe("UpstreamAccountsPage duplicates", () => {
         timeouts: {
           responsesFirstByteTimeoutSecs: 120,
           compactFirstByteTimeoutSecs: 300,
+          imageFirstByteTimeoutSecs: 300,
           responsesStreamTimeoutSecs: 300,
           compactStreamTimeoutSecs: 300,
         },
@@ -421,6 +423,7 @@ describe("UpstreamAccountsPage duplicates", () => {
         timeouts: {
           responsesFirstByteTimeoutSecs: 120,
           compactFirstByteTimeoutSecs: 300,
+          imageFirstByteTimeoutSecs: 300,
           responsesStreamTimeoutSecs: 300,
           compactStreamTimeoutSecs: 300,
         },
@@ -453,6 +456,7 @@ describe("UpstreamAccountsPage duplicates", () => {
         timeouts: {
           responsesFirstByteTimeoutSecs: 120,
           compactFirstByteTimeoutSecs: 300,
+          imageFirstByteTimeoutSecs: 300,
           responsesStreamTimeoutSecs: 300,
           compactStreamTimeoutSecs: 300,
         },
@@ -472,6 +476,7 @@ describe("UpstreamAccountsPage duplicates", () => {
         timeouts: {
           responsesFirstByteTimeoutSecs: 150,
           compactFirstByteTimeoutSecs: 360,
+          imageFirstByteTimeoutSecs: 300,
           responsesStreamTimeoutSecs: 330,
           compactStreamTimeoutSecs: 360,
         },

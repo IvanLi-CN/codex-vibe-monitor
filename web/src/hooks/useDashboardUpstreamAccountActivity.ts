@@ -432,7 +432,7 @@ export function useDashboardActivitySnapshot(
     }
     hasActivatedRef.current = true;
     void load({ silent: hasHydratedRef.current });
-  }, [clearPendingRefreshTimer, enabled, includeAccounts, invalidateCurrentRequest, load, range]);
+  }, [clearPendingRefreshTimer, enabled, invalidateCurrentRequest, load]);
 
   useEffect(() => {
     if (!enabled) return;

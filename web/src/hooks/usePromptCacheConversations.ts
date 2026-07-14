@@ -241,7 +241,7 @@ export function usePromptCacheConversations(selection: PromptCacheConversationSe
     setLiveRecordsByKey({});
     setError(null);
     void load();
-  }, [invalidateCurrentRequest, load, selection]);
+  }, [invalidateCurrentRequest, load]);
 
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {

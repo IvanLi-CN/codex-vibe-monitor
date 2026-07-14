@@ -759,7 +759,7 @@ function renderedInvocationAccountNames() {
     .filter((value) => value.length > 0);
 }
 
-function clickSelectOption(matcher: RegExp) {
+function _clickSelectOption(matcher: RegExp) {
   const option = Array.from(document.body.querySelectorAll('[role="option"]')).find(
     (candidate) => candidate instanceof HTMLElement && matcher.test(candidate.textContent || ""),
   );
@@ -1024,6 +1024,7 @@ function mockAccountsPage(options?: {
     timeouts: {
       responsesFirstByteTimeoutSecs: number;
       compactFirstByteTimeoutSecs: number;
+      imageFirstByteTimeoutSecs: number;
       responsesStreamTimeoutSecs: number;
       compactStreamTimeoutSecs: number;
     };
@@ -1106,6 +1107,7 @@ function mockAccountsPage(options?: {
   const routingTimeouts = {
     responsesFirstByteTimeoutSecs: 120,
     compactFirstByteTimeoutSecs: 300,
+    imageFirstByteTimeoutSecs: 300,
     responsesStreamTimeoutSecs: 300,
     compactStreamTimeoutSecs: 300,
   };

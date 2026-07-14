@@ -410,8 +410,6 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
     void search();
   }, [search]);
 
-  const summarySnapshotId = summary?.snapshotId ?? null;
-
   useEffect(() => {
     if (!appliedRef.current || isSearching || !summary) return;
     const activeSnapshotId = appliedRef.current.snapshotId;
@@ -442,7 +440,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
         });
     }, RECORDS_NEW_COUNT_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [isSearching, records?.snapshotId, summary, summarySnapshotId]);
+  }, [isSearching, records?.snapshotId, summary]);
 
   const reloadCurrentView = useCallback(() => {
     const applied = appliedRef.current;

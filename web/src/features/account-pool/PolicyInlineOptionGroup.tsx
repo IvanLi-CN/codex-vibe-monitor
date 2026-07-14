@@ -26,10 +26,8 @@ export function PolicyInlineOptionGroup<T extends string | number>({
   );
 
   return (
-    <div
+    <fieldset
       className="policy-inline-radio"
-      role="radiogroup"
-      aria-label={ariaLabel}
       style={
         {
           "--option-count": options.length,
@@ -37,13 +35,13 @@ export function PolicyInlineOptionGroup<T extends string | number>({
         } as CSSProperties
       }
     >
+      <legend className="sr-only">{ariaLabel}</legend>
       <span className="policy-inline-radio-indicator" aria-hidden />
       {options.map((option) => (
         <button
           key={String(option.value)}
           type="button"
-          role="radio"
-          aria-checked={option.value === value}
+          aria-pressed={option.value === value}
           disabled={disabled}
           className="policy-inline-radio-item"
           data-active={option.value === value}
@@ -52,6 +50,6 @@ export function PolicyInlineOptionGroup<T extends string | number>({
           {option.label}
         </button>
       ))}
-    </div>
+    </fieldset>
   );
 }

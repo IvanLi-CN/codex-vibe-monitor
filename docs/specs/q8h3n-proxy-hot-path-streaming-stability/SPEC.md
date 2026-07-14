@@ -53,6 +53,7 @@
 - `PROXY_REQUEST_CONCURRENCY_*` 不得再参与 raw writer sizing、部署卡 owner-facing 并发控制语义、配置展示或新请求失败分类；历史 `proxy_concurrency_limit` failure kind 仅可用于旧记录统计兼容。
 - 对 tracked `/v1/*` POST，请求分配 `invokeId + occurredAt` 后必须立即进入 runtime store 的 `running` 可见态；该可见性不得等待 body read、route context、账号选择、upstream attempt 或 SQLite record enqueue。
 - 号池路由只能把近期 `transport_failure` 且 failure kind 属于 `upstream_handshake_timeout`、`failed_contact_upstream` 或 `upstream_stream_error` 的 `upstream_route_key + proxy_binding_key_snapshot` 组合纳入短期降权；同组合后续成功应清除该短期惩罚，认证、配额、402 等账号级硬失败不得混入组合降权。
+- `/v1/images/generations` 与 `/v1/images/edits` 的首字节超时必须视为可能已产生上游副作用的终态：只保留一次 upstream attempt，不做同账号重试或切号，并返回 `504` + `upstream_handshake_timeout`，不得改写成 `pool_no_available_account`。
 - capture 入口不得为了提速跳过完整 raw、usage、failure、prompt-cache/encrypted owner 与 body rewrite 语义。可证明安全前，capture 请求必须先使用 replay snapshot 控制面读取：小体积保留内存，大体积落 file-backed replay；日志必须给出 `body_read_done`、`body_size_bucket`、`request_body_snapshot_kind` 与 `live_first_reason`，说明为何未启用 live-first。
 - capture response streaming 必须先向下游转发 chunk，再异步收敛 raw/record；日志应能区分 `downstream_first_byte_elapsed` 与 `raw_response_write_elapsed`，避免把原始响应落盘耗时误判为上游首字节慢。
 - 任何从完整 `Bytes` / `Vec<u8>` 构造 pool failover replay snapshot 的路径都必须经过统一阈值 helper：`<=1MiB` 才允许 `memory`，超过阈值必须优先写 `cvm-pool-replay-*` 临时文件并返回 `file` snapshot。只有临时文件创建、写入或 flush 失败时才允许 fail-soft 回退 `memory`，且必须产生日志证据。
@@ -77,6 +78,7 @@
 - raw writer 并发上限使用独立默认值/配置，不得从已移除的 `PROXY_REQUEST_CONCURRENCY_*` 配置面推导。
 - started/admitted/running-shell 观测应能证明本地 admission reject 为 0，且 `max_proxy_in_flight_observed` 可以超过旧配置值。
 - Given 某 `upstream_route_key + proxy_binding_key_snapshot` 近期发生超时/传输失败，When 号池还有其它可路由组合，Then 路由排序优先尝试其它组合；若只有该组合可用，仍允许回退使用而不是直接报无账号。
+- Given direct-image 上游超过有效 `imageFirstByteTimeoutSecs`，When 请求终止，Then 调用方收到单次 `504`、`code=upstream_handshake_timeout` 与 `cvmId`，attempt 数为 1，且账号 reservation 已释放。
 
 ## 参考
 

@@ -15,6 +15,7 @@ pub(crate) struct PromptCacheConversationBindingRow {
     pub(crate) upstream_account_name: Option<String>,
     pub(crate) responses_first_byte_timeout_secs: Option<i64>,
     pub(crate) compact_first_byte_timeout_secs: Option<i64>,
+    pub(crate) image_first_byte_timeout_secs: Option<i64>,
     pub(crate) responses_stream_timeout_secs: Option<i64>,
     pub(crate) compact_stream_timeout_secs: Option<i64>,
     pub(crate) allow_switch_upstream: Option<i64>,
@@ -579,6 +580,7 @@ where
             account.display_name AS upstream_account_name,
             binding.responses_first_byte_timeout_secs,
             binding.compact_first_byte_timeout_secs,
+            binding.image_first_byte_timeout_secs,
             binding.responses_stream_timeout_secs,
             binding.compact_stream_timeout_secs,
             binding.allow_switch_upstream,
@@ -1359,6 +1361,11 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
         "compactFirstByteTimeoutSecs",
     )
     .map_err(|(_, message)| ApiError::bad_request(anyhow!(message)))?;
+    let image_first_byte_timeout_secs = normalize_optional_timeout_override_secs(
+        &timeout_patch.image_first_byte_timeout_secs,
+        "imageFirstByteTimeoutSecs",
+    )
+    .map_err(|(_, message)| ApiError::bad_request(anyhow!(message)))?;
     let responses_stream_timeout_secs = normalize_optional_timeout_override_secs(
         &timeout_patch.responses_stream_timeout_secs,
         "responsesStreamTimeoutSecs",
@@ -1407,6 +1414,12 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
         existing_row
             .as_ref()
             .and_then(|row| row.compact_first_byte_timeout_secs),
+    );
+    let next_image_first_byte_timeout_secs = next_optional_value(
+        image_first_byte_timeout_secs,
+        existing_row
+            .as_ref()
+            .and_then(|row| row.image_first_byte_timeout_secs),
     );
     let next_responses_stream_timeout_secs = next_optional_value(
         responses_stream_timeout_secs,
@@ -1468,6 +1481,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
         });
     let next_timeouts_all_clear = next_responses_first_byte_timeout_secs.is_none()
         && next_compact_first_byte_timeout_secs.is_none()
+        && next_image_first_byte_timeout_secs.is_none()
         && next_responses_stream_timeout_secs.is_none()
         && next_compact_stream_timeout_secs.is_none();
     let next_policy_all_clear = next_allow_switch_upstream.is_none()
@@ -1496,6 +1510,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                         upstream_account_id,
                         responses_first_byte_timeout_secs,
                         compact_first_byte_timeout_secs,
+                        image_first_byte_timeout_secs,
                         responses_stream_timeout_secs,
                         compact_stream_timeout_secs,
                         allow_switch_upstream,
@@ -1507,13 +1522,14 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                         created_at,
                         updated_at
                     )
-                    VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'), datetime('now'))
+                    VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now'), datetime('now'))
                     ON CONFLICT(prompt_cache_key) DO UPDATE SET
                         binding_kind = excluded.binding_kind,
                         group_name = NULL,
                         upstream_account_id = NULL,
                         responses_first_byte_timeout_secs = excluded.responses_first_byte_timeout_secs,
                         compact_first_byte_timeout_secs = excluded.compact_first_byte_timeout_secs,
+                        image_first_byte_timeout_secs = excluded.image_first_byte_timeout_secs,
                         responses_stream_timeout_secs = excluded.responses_stream_timeout_secs,
                         compact_stream_timeout_secs = excluded.compact_stream_timeout_secs,
                         allow_switch_upstream = excluded.allow_switch_upstream,
@@ -1529,6 +1545,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                 .bind(PROMPT_CACHE_BINDING_KIND_NONE)
                 .bind(next_responses_first_byte_timeout_secs)
                 .bind(next_compact_first_byte_timeout_secs)
+                .bind(next_image_first_byte_timeout_secs)
                 .bind(next_responses_stream_timeout_secs)
                 .bind(next_compact_stream_timeout_secs)
                 .bind(next_allow_switch_upstream)
@@ -1585,6 +1602,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                     upstream_account_id,
                     responses_first_byte_timeout_secs,
                     compact_first_byte_timeout_secs,
+                    image_first_byte_timeout_secs,
                     responses_stream_timeout_secs,
                     compact_stream_timeout_secs,
                     allow_switch_upstream,
@@ -1596,13 +1614,14 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                     created_at,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now'), datetime('now'))
+                VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, datetime('now'), datetime('now'))
                 ON CONFLICT(prompt_cache_key) DO UPDATE SET
                     binding_kind = excluded.binding_kind,
                     group_name = excluded.group_name,
                     upstream_account_id = NULL,
                     responses_first_byte_timeout_secs = excluded.responses_first_byte_timeout_secs,
                     compact_first_byte_timeout_secs = excluded.compact_first_byte_timeout_secs,
+                    image_first_byte_timeout_secs = excluded.image_first_byte_timeout_secs,
                     responses_stream_timeout_secs = excluded.responses_stream_timeout_secs,
                     compact_stream_timeout_secs = excluded.compact_stream_timeout_secs,
                     allow_switch_upstream = excluded.allow_switch_upstream,
@@ -1619,6 +1638,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
             .bind(&group_name)
             .bind(next_responses_first_byte_timeout_secs)
             .bind(next_compact_first_byte_timeout_secs)
+            .bind(next_image_first_byte_timeout_secs)
             .bind(next_responses_stream_timeout_secs)
             .bind(next_compact_stream_timeout_secs)
             .bind(next_allow_switch_upstream)
@@ -1663,6 +1683,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                     upstream_account_id,
                     responses_first_byte_timeout_secs,
                     compact_first_byte_timeout_secs,
+                    image_first_byte_timeout_secs,
                     responses_stream_timeout_secs,
                     compact_stream_timeout_secs,
                     allow_switch_upstream,
@@ -1674,13 +1695,14 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                     created_at,
                     updated_at
                 )
-                VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now'), datetime('now'))
+                VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, datetime('now'), datetime('now'))
                 ON CONFLICT(prompt_cache_key) DO UPDATE SET
                     binding_kind = excluded.binding_kind,
                     group_name = NULL,
                     upstream_account_id = excluded.upstream_account_id,
                     responses_first_byte_timeout_secs = excluded.responses_first_byte_timeout_secs,
                     compact_first_byte_timeout_secs = excluded.compact_first_byte_timeout_secs,
+                    image_first_byte_timeout_secs = excluded.image_first_byte_timeout_secs,
                     responses_stream_timeout_secs = excluded.responses_stream_timeout_secs,
                     compact_stream_timeout_secs = excluded.compact_stream_timeout_secs,
                     allow_switch_upstream = excluded.allow_switch_upstream,
@@ -1697,6 +1719,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
             .bind(upstream_account_id)
             .bind(next_responses_first_byte_timeout_secs)
             .bind(next_compact_first_byte_timeout_secs)
+            .bind(next_image_first_byte_timeout_secs)
             .bind(next_responses_stream_timeout_secs)
             .bind(next_compact_stream_timeout_secs)
             .bind(next_allow_switch_upstream)

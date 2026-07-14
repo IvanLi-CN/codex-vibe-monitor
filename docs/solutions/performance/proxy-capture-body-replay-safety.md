@@ -41,6 +41,7 @@ The capture path historically used one full in-memory request body as both routi
 - Keep response streaming ordered as “forward chunk downstream first, finish raw writer later”; log `downstream_first_byte_elapsed` and `raw_response_write_elapsed` separately.
 - Make production evidence thresholded: large or slow request body reads, slow downstream first byte, and slow or large raw response writes should be visible at `info`; ordinary small requests can remain `debug`.
 - Enable live-first for capture only when tests prove encrypted owner binding, prompt-cache binding, body rewrite, failover replay, raw completeness, and terminal record fields remain identical to fallback behavior.
+- Treat direct-image replay as evidence retention, not permission to retry. Image generation/edit may have started before the first response byte, so a first-byte timeout must terminate after one attempt and preserve the real timeout classification.
 
 ## Guardrails / Reuse notes
 
@@ -50,6 +51,7 @@ The capture path historically used one full in-memory request body as both routi
 - Do not drop or truncate raw payload as a performance optimization. If raw writer fails, log and classify it, but keep business response semantics separate.
 - Keep fallback reason values stable enough for production log comparison.
 - Treat `snapshot_kind="memory"` on multi-MiB requests as a regression unless the same log window shows a temp-file create/write/flush warning explaining the fail-soft fallback.
+- Do not convert a terminal direct-image timeout into a generic no-account result; return a traceable gateway timeout and release the account reservation without replaying the body.
 
 ## References
 

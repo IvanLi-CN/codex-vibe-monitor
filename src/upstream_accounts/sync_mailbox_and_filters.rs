@@ -1761,6 +1761,7 @@ pub(crate) fn group_routing_rule_from_columns(
     policy_status_change_upstream_http_5xx: Option<i64>,
     policy_responses_first_byte_timeout_secs: Option<i64>,
     policy_compact_first_byte_timeout_secs: Option<i64>,
+    policy_image_first_byte_timeout_secs: Option<i64>,
     policy_responses_stream_timeout_secs: Option<i64>,
     policy_compact_stream_timeout_secs: Option<i64>,
 ) -> GroupAccountRoutingRule {
@@ -1803,6 +1804,7 @@ pub(crate) fn group_routing_rule_from_columns(
         timeouts: routing_timeout_settings_from_columns(
             policy_responses_first_byte_timeout_secs,
             policy_compact_first_byte_timeout_secs,
+            policy_image_first_byte_timeout_secs,
             policy_responses_stream_timeout_secs,
             policy_compact_stream_timeout_secs,
         ),
@@ -1840,6 +1842,7 @@ pub(crate) async fn load_group_routing_rule(
         policy_status_change_upstream_http_5xx: Option<i64>,
         policy_responses_first_byte_timeout_secs: Option<i64>,
         policy_compact_first_byte_timeout_secs: Option<i64>,
+        policy_image_first_byte_timeout_secs: Option<i64>,
         policy_responses_stream_timeout_secs: Option<i64>,
         policy_compact_stream_timeout_secs: Option<i64>,
     }
@@ -1871,6 +1874,7 @@ pub(crate) async fn load_group_routing_rule(
             policy_status_change_upstream_http_5xx,
             policy_responses_first_byte_timeout_secs,
             policy_compact_first_byte_timeout_secs,
+            policy_image_first_byte_timeout_secs,
             policy_responses_stream_timeout_secs,
             policy_compact_stream_timeout_secs
         FROM pool_upstream_account_group_notes
@@ -1884,7 +1888,7 @@ pub(crate) async fn load_group_routing_rule(
     let Some(row) = row else {
         return Ok(group_routing_rule_from_columns(
             0, false, 0, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
         ));
     };
     let upstream_429_retry_enabled =
@@ -1919,6 +1923,7 @@ pub(crate) async fn load_group_routing_rule(
         row.policy_status_change_upstream_http_5xx,
         row.policy_responses_first_byte_timeout_secs,
         row.policy_compact_first_byte_timeout_secs,
+        row.policy_image_first_byte_timeout_secs,
         row.policy_responses_stream_timeout_secs,
         row.policy_compact_stream_timeout_secs,
     ))

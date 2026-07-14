@@ -3575,7 +3575,7 @@ export function DashboardWorkingConversationsSection({
           index,
           start: scrollMargin + index * 360,
         }));
-  const hasVirtualizedRowsAbove = renderedRows.length > 0 ? renderedRows[0]!.index > 0 : false;
+  const hasVirtualizedRowsAbove = renderedRows.length > 0 ? renderedRows[0]?.index > 0 : false;
   const visibleAnchorTarget = useMemo<DashboardVisibleAnchorTarget>(
     () =>
       activeView === "conversations"
@@ -3622,7 +3622,7 @@ export function DashboardWorkingConversationsSection({
 
   useEffect(() => {
     setNowMs(Date.now());
-  }, [cards]);
+  }, []);
 
   useEffect(() => {
     const updateLayoutMetrics = () => {
@@ -3727,15 +3727,7 @@ export function DashboardWorkingConversationsSection({
       window.clearTimeout(mountTimer);
       window.removeEventListener("scroll", handleScroll);
     };
-  }, [
-    activeView,
-    gridElement,
-    hasMore,
-    hasVirtualizedRowsAbove,
-    isLoadingMore,
-    onLoadMore,
-    rows.length,
-  ]);
+  }, [activeView, gridElement, hasMore, isLoadingMore, onLoadMore]);
 
   useEffect(() => {
     setRefreshTargetCount?.(refreshTargetCount);
@@ -3759,7 +3751,7 @@ export function DashboardWorkingConversationsSection({
     }
     const nextAnchor = container ? captureVisibleCardAnchor(container, visibleAnchorTarget) : null;
     visibleAnchorRef.current = nextAnchor?.hasHiddenContentAbove ? nextAnchor : null;
-  }, [cards, columnCount, gridElement, rows, upstreamAccounts, visibleAnchorTarget]);
+  }, [gridElement, visibleAnchorTarget]);
 
   if (error && cards.length === 0) {
     return (

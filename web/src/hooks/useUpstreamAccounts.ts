@@ -697,7 +697,7 @@ export function useUpstreamAccounts(
       return;
     }
     void hydrateWindowUsage([selectedId]);
-  }, [currentListQueryKey, hydrateWindowUsage, listDataQueryKey, query, rosterItems, selectedId]);
+  }, [currentListQueryKey, hydrateWindowUsage, listDataQueryKey, query, selectedId]);
 
   const refreshCurrentSelectedDetail = useCallback(
     async (skipAccountId?: number | null, options: LoadOptions = {}) => {

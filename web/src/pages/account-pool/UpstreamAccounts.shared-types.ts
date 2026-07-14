@@ -8,6 +8,7 @@ export type RoutingDraft = {
   priorityAvailableAccountCap: string;
   responsesFirstByteTimeoutSecs: string;
   compactFirstByteTimeoutSecs: string;
+  imageFirstByteTimeoutSecs: string;
   responsesStreamTimeoutSecs: string;
   compactStreamTimeoutSecs: string;
 };
@@ -15,6 +16,7 @@ export type RoutingDraft = {
 export const DEFAULT_ROUTING_TIMEOUTS: PoolRoutingTimeoutSettings = {
   responsesFirstByteTimeoutSecs: 120,
   compactFirstByteTimeoutSecs: 300,
+  imageFirstByteTimeoutSecs: 300,
   responsesStreamTimeoutSecs: 300,
   compactStreamTimeoutSecs: 300,
 };

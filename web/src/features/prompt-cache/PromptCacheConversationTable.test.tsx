@@ -1475,17 +1475,20 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).not.toContain("并发限制");
     expect(document.body.textContent).not.toContain("上游 429 重试");
     expect(document.body.textContent).not.toContain("系统拒绝模型");
-    expect(document.querySelector('[role="switch"][aria-label="切出"]')).not.toBeNull();
-    expect(document.querySelector('[role="radiogroup"][aria-label="FAST 模式"]')).not.toBeNull();
-    expect(document.querySelector('[role="radiogroup"][aria-label="图片工具"]')).not.toBeNull();
-    expect(document.querySelector('button[role="combobox"][aria-label="可用模型"]')).not.toBeNull();
+    expect(findButtonByAriaLabel("清除对话覆盖: 切出")).not.toBeNull();
+    expect(findButtonByAriaLabel("清除对话覆盖: FAST 模式")).not.toBeNull();
+    expect(findButtonByAriaLabel("清除对话覆盖: 图片工具")).not.toBeNull();
+    expect(findButtonByAriaLabel("清除对话覆盖: 代理")).not.toBeNull();
+    expect(findButtonByAriaLabel("清除对话覆盖: 可用模型")).not.toBeNull();
+    expect(findButtonByAriaLabel("清除账号覆盖: 一般请求响应体首字超时")).not.toBeNull();
+    expect(findButtonByAriaLabel("清除账号覆盖: 一般请求流结束超时")).not.toBeNull();
     expect(
       document.querySelector<HTMLInputElement>('input[name="responsesFirstByteTimeoutSecs"]'),
     ).not.toBeNull();
     expect(
       document.querySelector<HTMLInputElement>('input[name="responsesStreamTimeoutSecs"]'),
     ).not.toBeNull();
-    expect(document.body.textContent).toContain("无可用模型");
+    expect(document.body.textContent).toContain("继承 / 不限");
     expect(document.body.textContent).toContain("对话");
   });
 
@@ -1718,7 +1721,8 @@ describe("PromptCacheConversationTable", () => {
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     await user.click(findButtonByAriaLabel("编辑对话覆盖: 切出")!);
-    await user.click(document.querySelector('[role="switch"][aria-label="切出"]') as HTMLElement);
+    await user.click(document.querySelector('[role="combobox"][aria-label="切出"]') as HTMLElement);
+    await user.click(findSelectOption("保持当前上游")!);
     await flushInteractive();
     await vi.waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(1),
@@ -1731,28 +1735,20 @@ describe("PromptCacheConversationTable", () => {
     );
 
     await user.click(findButtonByAriaLabel("编辑对话覆盖: FAST 模式")!);
-    const fastModeGroup = document.querySelector(
-      '[role="radiogroup"][aria-label="FAST 模式"]',
-    ) as HTMLElement | null;
-    expect(fastModeGroup?.textContent).not.toContain("继承");
-    const forceAddOption = Array.from(
-      fastModeGroup?.querySelectorAll<HTMLButtonElement>('button[role="radio"]') ?? [],
-    ).find((button) => button.textContent?.includes("强制添加"));
-    await user.click(forceAddOption!);
+    await user.click(
+      document.querySelector('[role="combobox"][aria-label="FAST 模式"]') as HTMLElement,
+    );
+    await user.click(findSelectOption("强制添加")!);
     await flushInteractive();
     await vi.waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(3),
     );
 
     await user.click(findButtonByAriaLabel("编辑对话覆盖: 图片工具")!);
-    const imageToolGroup = document.querySelector(
-      '[role="radiogroup"][aria-label="图片工具"]',
-    ) as HTMLElement | null;
-    expect(imageToolGroup?.textContent).not.toContain("继承");
-    const forceRemoveOption = Array.from(
-      imageToolGroup?.querySelectorAll<HTMLButtonElement>('button[role="radio"]') ?? [],
-    ).find((button) => button.textContent?.includes("强制移除"));
-    await user.click(forceRemoveOption!);
+    await user.click(
+      document.querySelector('[role="combobox"][aria-label="图片工具"]') as HTMLElement,
+    );
+    await user.click(findSelectOption("强制移除")!);
     await flushInteractive();
     await vi.waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(4),
@@ -1767,31 +1763,23 @@ describe("PromptCacheConversationTable", () => {
     );
 
     await user.click(findButtonByAriaLabel("编辑对话覆盖: 可用模型")!);
-    await user.click(
-      document.querySelector('button[role="combobox"][aria-label="可用模型"]') as HTMLElement,
-    );
-    const availableModelsInput = document.querySelector(
-      'input[placeholder="用逗号分隔模型名"]',
-    ) as HTMLInputElement | null;
+    const availableModelsInput = findInputByAriaLabel("可用模型");
     expect(availableModelsInput).not.toBeNull();
     await user.type(availableModelsInput!, "gpt-5.1-codex-max");
-    const customModelOption = Array.from(
-      document.querySelectorAll<HTMLElement>("[cmdk-item]"),
-    ).find((item) => item.textContent?.includes("gpt-5.1-codex-max"));
-    await user.click(customModelOption!);
+    await user.click(findButtonByAriaLabel("应用覆盖")!);
     await flushInteractive();
     await vi.waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(6),
     );
 
-    await user.click(findButtonByAriaLabel("编辑对话覆盖: 一般请求响应体首字超时")!);
+    await user.click(findButtonByAriaLabel("清空并继承: 一般请求响应体首字超时")!);
     const timeoutInput = document.querySelector<HTMLInputElement>(
       'input[name="responsesFirstByteTimeoutSecs"]',
     );
     expect(timeoutInput).not.toBeNull();
     await user.clear(timeoutInput!);
     await user.type(timeoutInput!, "180");
-    timeoutInput?.blur();
+    await user.click(findButtonByAriaLabel("保存")!);
     await flushInteractive();
     await vi.waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(7),
@@ -1924,7 +1912,8 @@ describe("PromptCacheConversationTable", () => {
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     await user.click(findButtonByAriaLabel("编辑对话覆盖: 切出")!);
-    await user.click(document.querySelector('[role="switch"][aria-label="切出"]') as HTMLElement);
+    await user.click(document.querySelector('[role="combobox"][aria-label="切出"]') as HTMLElement);
+    await user.click(findSelectOption("保持当前上游")!);
     await flushInteractive();
 
     await vi.waitFor(() => expect(document.body.textContent).toContain("override update failed"));

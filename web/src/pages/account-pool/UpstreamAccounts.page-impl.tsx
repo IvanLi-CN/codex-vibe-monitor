@@ -393,10 +393,6 @@ export default function UpstreamAccountsPage() {
       new Set(visibleGroupedAccountIds.filter((accountId) => visibleRosterIdSet.has(accountId))),
     );
   }, [rosterViewMode, visibleGroupedAccountIds, visibleRosterItems]);
-  const visibleHydrationAccountIdsKey = useMemo(
-    () => [...visibleHydrationAccountIds].sort((left, right) => left - right).join(","),
-    [visibleHydrationAccountIds],
-  );
   const effectiveMetrics = listMetrics ?? {
     total: items.length,
     oauth: items.filter((item) => item.kind === "oauth_codex").length,
@@ -463,7 +459,6 @@ export default function UpstreamAccountsPage() {
     listState.hasCurrentQueryData,
     showBlockingRosterState,
     visibleHydrationAccountIds,
-    visibleHydrationAccountIdsKey,
   ]);
   const handleWorkStatusFilterChange = useCallback(
     (value: string[]) => {
@@ -548,6 +543,7 @@ export default function UpstreamAccountsPage() {
     routing?.maintenance?.priorityAvailableAccountCap,
     routing?.timeouts?.responsesFirstByteTimeoutSecs,
     routing?.timeouts?.compactFirstByteTimeoutSecs,
+    routing?.timeouts?.imageFirstByteTimeoutSecs,
     routing?.timeouts?.responsesStreamTimeoutSecs,
     routing?.timeouts?.compactStreamTimeoutSecs,
   ]);
@@ -625,7 +621,7 @@ export default function UpstreamAccountsPage() {
     }, UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS);
 
     return () => window.clearTimeout(timer);
-  }, [listState.dataQueryKey, listState.loadingState, listState.queryKey]);
+  }, [listState.loadingState]);
 
   useLayoutEffect(() => {
     if (hideRosterDerivedUi) return;
@@ -634,17 +630,7 @@ export default function UpstreamAccountsPage() {
     const nextHeight = Math.ceil(region.getBoundingClientRect().height);
     if (!(nextHeight > 0)) return;
     setLastStableRosterRegionHeight((current) => (current === nextHeight ? current : nextHeight));
-  }, [
-    bulkActionError,
-    bulkActionMessage,
-    hideRosterDerivedUi,
-    page,
-    pageCount,
-    pageSize,
-    selectedAccountIds.length,
-    visibleListWarning,
-    visibleRosterItems,
-  ]);
+  }, [hideRosterDerivedUi]);
 
   useEffect(() => {
     if (
@@ -856,6 +842,8 @@ export default function UpstreamAccountsPage() {
       String(resolvedRoutingTimeouts.responsesFirstByteTimeoutSecs) ||
     routingDraft.compactFirstByteTimeoutSecs.trim() !==
       String(resolvedRoutingTimeouts.compactFirstByteTimeoutSecs) ||
+    routingDraft.imageFirstByteTimeoutSecs.trim() !==
+      String(resolvedRoutingTimeouts.imageFirstByteTimeoutSecs) ||
     routingDraft.responsesStreamTimeoutSecs.trim() !==
       String(resolvedRoutingTimeouts.responsesStreamTimeoutSecs) ||
     routingDraft.compactStreamTimeoutSecs.trim() !==
@@ -1116,6 +1104,11 @@ export default function UpstreamAccountsPage() {
         routingDraft.compactFirstByteTimeoutSecs,
       ],
       [
+        "imageFirstByteTimeoutSecs",
+        t("accountPool.upstreamAccounts.routing.timeout.imageFirstByte"),
+        routingDraft.imageFirstByteTimeoutSecs,
+      ],
+      [
         "responsesStreamTimeoutSecs",
         t("accountPool.upstreamAccounts.routing.timeout.responsesStream"),
         routingDraft.responsesStreamTimeoutSecs,
@@ -1366,7 +1359,6 @@ export default function UpstreamAccountsPage() {
     closeBulkSyncEventSource,
     getBulkSyncJob,
     isBulkSyncBusy,
-    refresh,
     selectedAccountIds,
     startBulkSyncJob,
   ]);
@@ -2258,6 +2250,16 @@ export default function UpstreamAccountsPage() {
               setRoutingDraft((current) => ({
                 ...current,
                 compactFirstByteTimeoutSecs: value,
+              })),
+          },
+          {
+            key: "imageFirstByteTimeoutSecs",
+            label: t("accountPool.upstreamAccounts.routing.timeout.imageFirstByte"),
+            value: routingDraft.imageFirstByteTimeoutSecs,
+            onChange: (value) =>
+              setRoutingDraft((current) => ({
+                ...current,
+                imageFirstByteTimeoutSecs: value,
               })),
           },
           {

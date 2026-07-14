@@ -37,7 +37,7 @@ export function AccountDetailDrawerShell({
   bodyClassName,
 }: AccountDetailDrawerShellProps) {
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [sectionElement, setSectionElement] = useState<HTMLElement | null>(null);
+  const [sectionElement, setSectionElement] = useState<HTMLDivElement | null>(null);
   const onCloseRef = useRef(onClose);
   const closeDisabledRef = useRef(closeDisabled);
   const hasAutofocusedForOpenRef = useRef(false);
@@ -51,7 +51,7 @@ export function AccountDetailDrawerShell({
   }, [closeDisabled]);
 
   const handleSectionRef = useCallback(
-    (node: HTMLElement | null) => {
+    (node: HTMLDivElement | null) => {
       setSectionElement(node);
       onPortalContainerChange?.(node);
     },
@@ -111,10 +111,10 @@ export function AccountDetailDrawerShell({
   if (!open) return null;
 
   const shell = (
-    <section
+    // biome-ignore lint/a11y/useAriaPropsSupportedByRole: the shell uses an explicit dialog role on a generic container for shared overlay/page layouts.
+    <div
       ref={handleSectionRef}
       role={presentation === "page" ? "region" : "dialog"}
-      aria-modal={presentation === "overlay" ? "true" : undefined}
       aria-labelledby={labelledBy}
       className={cn(
         "drawer-shell flex w-full flex-col overflow-hidden",
@@ -124,7 +124,6 @@ export function AccountDetailDrawerShell({
         "desktop:h-full desktop:rounded-none desktop:border-0",
         shellClassName,
       )}
-      onClick={(event) => event.stopPropagation()}
     >
       <OverlayHostProvider value={sectionElement ?? undefined}>
         <div className="drawer-header px-4 py-4 sm:px-5 desktop:px-6 desktop:py-4">
@@ -153,7 +152,7 @@ export function AccountDetailDrawerShell({
           {children}
         </div>
       </OverlayHostProvider>
-    </section>
+    </div>
   );
 
   if (presentation === "page") {
@@ -169,10 +168,7 @@ export function AccountDetailDrawerShell({
         className="absolute inset-0 bg-neutral/50 backdrop-blur-sm"
         onClick={closeDisabled ? undefined : onClose}
       />
-      <div
-        className="absolute inset-x-0 bottom-0 top-0 flex items-end justify-end desktop:inset-y-0 desktop:left-auto desktop:right-0 desktop:items-stretch desktop:pl-8"
-        onClick={closeDisabled ? undefined : onClose}
-      >
+      <div className="absolute inset-x-0 bottom-0 top-0 flex items-end justify-end desktop:inset-y-0 desktop:left-auto desktop:right-0 desktop:items-stretch desktop:pl-8">
         {shell}
       </div>
     </div>,

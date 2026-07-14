@@ -869,9 +869,7 @@ export function buildLatestActionSummary(
   if (Number.isFinite(item.lastActionHttpStatus ?? NaN)) {
     parts.push(`HTTP ${item.lastActionHttpStatus}`);
   }
-  const compact = parts
-    .filter((value): value is string => Boolean(value && value.trim()))
-    .join(" · ");
+  const compact = parts.filter((value): value is string => Boolean(value?.trim())).join(" · ");
   if (!compact) return formatDateTime(item.lastActionAt, labels.never);
   const timestamp = formatDateTime(item.lastActionAt, labels.never);
   return timestamp === labels.never ? compact : `${compact} · ${timestamp}`;
@@ -1081,9 +1079,6 @@ export function UpstreamAccountsTable({
           return (
             <article
               key={`mobile-${item.id}`}
-              role="button"
-              tabIndex={0}
-              aria-pressed={selected}
               onClick={() => onSelect(item.id)}
               onKeyDown={(event) => handleRowKeyDown(event, item.id, onSelect)}
               className={cn(
@@ -1318,6 +1313,7 @@ export function UpstreamAccountsTable({
               const showPlanBadge = shouldShowPlanBadge(item.planType);
               const planBadge = showPlanBadge ? upstreamPlanBadgeRecipe(item.planType) : null;
               return (
+                // biome-ignore lint/a11y/useSemanticElements: the table row owns nested checkbox interaction, so wrapping it in a native button is not valid.
                 <tr
                   key={item.id}
                   role="button"

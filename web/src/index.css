@@ -403,7 +403,7 @@ body {
       border: 0;
       border-radius: 0;
       background-color: transparent;
-      box-shadow: none !important;
+      box-shadow: none;
     }
 
     .mobile-flat-surface-header,

@@ -2572,6 +2572,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.timeout.sectionTitle": "请求链路超时（秒）",
     "accountPool.upstreamAccounts.routing.timeout.responsesFirstByte": "一般请求响应体首字超时",
     "accountPool.upstreamAccounts.routing.timeout.compactFirstByte": "压缩请求响应体首字超时",
+    "accountPool.upstreamAccounts.routing.timeout.imageFirstByte": "图片请求响应体首字超时",
     "accountPool.upstreamAccounts.routing.timeout.responsesStream": "一般请求流结束超时",
     "accountPool.upstreamAccounts.routing.timeout.compactStream": "压缩请求流结束超时",
     "accountPool.upstreamAccounts.actions.refresh": "刷新列表",

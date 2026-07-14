@@ -292,6 +292,7 @@ pub(crate) struct AppConfig {
     pub(crate) pool_upstream_responses_total_timeout: Duration,
     pub(crate) openai_proxy_handshake_timeout: Duration,
     pub(crate) openai_proxy_compact_handshake_timeout: Duration,
+    pub(crate) openai_proxy_image_handshake_timeout: Duration,
     pub(crate) openai_proxy_request_read_timeout: Duration,
     pub(crate) openai_proxy_max_request_body_bytes: usize,
     pub(crate) openai_proxy_websocket_enabled: bool,
@@ -411,6 +412,15 @@ impl AppConfig {
                 .map(Duration::from_secs)
                 .unwrap_or_else(|| {
                     Duration::from_secs(DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS)
+                });
+        let openai_proxy_image_handshake_timeout =
+            env::var("OPENAI_PROXY_IMAGE_HANDSHAKE_TIMEOUT_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|&v| v > 0)
+                .map(Duration::from_secs)
+                .unwrap_or_else(|| {
+                    Duration::from_secs(DEFAULT_OPENAI_PROXY_IMAGE_HANDSHAKE_TIMEOUT_SECS)
                 });
         let openai_proxy_request_read_timeout = env::var("OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS")
             .ok()
@@ -688,6 +698,7 @@ impl AppConfig {
             pool_upstream_responses_total_timeout,
             openai_proxy_handshake_timeout,
             openai_proxy_compact_handshake_timeout,
+            openai_proxy_image_handshake_timeout,
             openai_proxy_request_read_timeout,
             openai_proxy_max_request_body_bytes,
             openai_proxy_websocket_enabled,
