@@ -1557,6 +1557,46 @@ const createdAtDescendingOrderKeys = [...createdAtDescendingOrderResponse.conver
   )
   .map((conversation) => conversation.promptCacheKey);
 
+const upstreamAccountSortBaseResponse = createUpstreamAccountActivityStoryResponse(2);
+const upstreamAccountSortOrderingResponse: UpstreamAccountActivityResponse = {
+  ...upstreamAccountSortBaseResponse,
+  accounts: [
+    {
+      ...upstreamAccountSortBaseResponse.accounts[0]!,
+      accountKey: "assigned-mid",
+      upstreamAccountId: 101,
+      isUnassigned: false,
+      displayName: "Pool Mid",
+      latestConversationCreatedAt: "2026-04-04T10:03:00Z",
+      lastInvocationAt: "2026-04-04T10:03:30Z",
+      totalCost: 6,
+      totalTokens: 600,
+    },
+    {
+      ...upstreamAccountSortBaseResponse.accounts[0]!,
+      accountKey: "unassigned",
+      upstreamAccountId: null,
+      isUnassigned: true,
+      displayName: "未分配上游账号",
+      latestConversationCreatedAt: "2026-04-04T10:05:00Z",
+      lastInvocationAt: "2026-04-04T10:05:00Z",
+      totalCost: 999,
+      totalTokens: 99_999,
+    },
+    {
+      ...upstreamAccountSortBaseResponse.accounts[0]!,
+      accountKey: "assigned-high",
+      upstreamAccountId: 102,
+      isUnassigned: false,
+      displayName: "Pool High",
+      latestConversationCreatedAt: "2026-04-04T10:04:00Z",
+      lastInvocationAt: "2026-04-04T10:04:30Z",
+      totalCost: 9,
+      totalTokens: 900,
+    },
+  ],
+};
+
 function getStorySequenceIdForPromptCacheKey(promptCacheKey: string) {
   return formatDashboardWorkingConversationSequenceId(
     `WC-${hashDashboardWorkingConversationKey(promptCacheKey).slice(0, 6)}`,
@@ -4267,5 +4307,58 @@ export const CreatedAtDescendingOrder: Story = {
     expect(cards.map((card) => card.getAttribute("data-conversation-sequence-id"))).toEqual(
       createdAtDescendingOrderKeys.map(getStorySequenceIdForPromptCacheKey),
     );
+  },
+};
+
+export const UpstreamAccountSortDescendingOrder: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <DrawerPreviewStory
+      response={createResponse([
+        createConversation("pck-story-upstream-account-sort-ordering", [
+          createPreview({
+            id: 98_201,
+            invokeId: "story-working-upstream-sort-ordering",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "completed",
+            upstreamAccountId: 102,
+            upstreamAccountName: "Pool High",
+          }),
+        ]),
+      ])}
+      upstreamAccountActivity={upstreamAccountSortOrderingResponse}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const accountTab = await canvas.findByRole("tab", { name: "上游账号" });
+    await userEvent.click(accountTab);
+
+    const readOrder = () =>
+      Array.from(
+        canvasElement.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-upstream-account-card"]',
+        ),
+      ).map((card) => card.getAttribute("data-account-key"));
+
+    await waitFor(() => {
+      expect(readOrder()).toEqual(["assigned-high", "assigned-mid", "unassigned"]);
+    });
+
+    const sortButton = canvas.getByTestId("dashboard-workspace-sort-button");
+    await userEvent.click(sortButton);
+    await waitFor(() => {
+      expect(readOrder()).toEqual(["assigned-high", "assigned-mid", "unassigned"]);
+    });
+
+    await userEvent.click(sortButton);
+    await waitFor(() => {
+      expect(readOrder()).toEqual(["assigned-high", "assigned-mid", "unassigned"]);
+    });
+
+    await userEvent.click(sortButton);
+    await waitFor(() => {
+      expect(readOrder()).toEqual(["assigned-high", "assigned-mid", "unassigned"]);
+    });
   },
 };

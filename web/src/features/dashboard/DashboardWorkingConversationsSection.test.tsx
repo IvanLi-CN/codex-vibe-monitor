@@ -4125,6 +4125,100 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(scrollBy).toHaveBeenCalledWith(0, 180);
   });
 
+  it("sorts upstream account cards by descending modes and keeps unassigned rows last", () => {
+    const baseAccount = createUpstreamAccountActivityResponse().accounts[0]!;
+    upstreamAccountActivityMock.data = {
+      ...createUpstreamAccountActivityResponse(),
+      accounts: [
+        {
+          ...baseAccount,
+          accountKey: "assigned-mid",
+          upstreamAccountId: 101,
+          isUnassigned: false,
+          displayName: "Pool Mid",
+          latestConversationCreatedAt: "2026-04-04T10:03:00Z",
+          lastInvocationAt: "2026-04-04T10:03:30Z",
+          totalCost: 6,
+          totalTokens: 600,
+        },
+        {
+          ...baseAccount,
+          accountKey: "unassigned",
+          upstreamAccountId: null,
+          isUnassigned: true,
+          displayName: "未分配上游账号",
+          latestConversationCreatedAt: "2026-04-04T10:05:00Z",
+          lastInvocationAt: "2026-04-04T10:05:00Z",
+          totalCost: 999,
+          totalTokens: 99_999,
+        },
+        {
+          ...baseAccount,
+          accountKey: "assigned-high",
+          upstreamAccountId: 102,
+          isUnassigned: false,
+          displayName: "Pool High",
+          latestConversationCreatedAt: "2026-04-04T10:04:00Z",
+          lastInvocationAt: "2026-04-04T10:04:30Z",
+          totalCost: 9,
+          totalTokens: 900,
+        },
+      ],
+    };
+
+    renderSection(
+      createResponse([
+        createConversation("account-sort-ordering", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-account-sort-ordering",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "completed",
+          }),
+        ]),
+      ]),
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const readOrder = () =>
+      Array.from(
+        host?.querySelectorAll<HTMLElement>('[data-testid="dashboard-upstream-account-card"]') ??
+          [],
+      ).map((card) => card.getAttribute("data-account-key"));
+
+    expect(readOrder()).toEqual(["assigned-high", "assigned-mid", "unassigned"]);
+
+    const sortButton = host?.querySelector('[data-testid="dashboard-workspace-sort-button"]');
+    if (!(sortButton instanceof HTMLButtonElement)) {
+      throw new Error("missing workspace sort button");
+    }
+
+    act(() => {
+      fireEvent.click(sortButton);
+    });
+    expect(readOrder()).toEqual(["assigned-high", "assigned-mid", "unassigned"]);
+
+    act(() => {
+      fireEvent.click(sortButton);
+    });
+    expect(readOrder()).toEqual(["assigned-high", "assigned-mid", "unassigned"]);
+
+    act(() => {
+      fireEvent.click(sortButton);
+    });
+    expect(readOrder()).toEqual(["assigned-high", "assigned-mid", "unassigned"]);
+  });
+
   it("does not preserve an anchor when new cards arrive while the list top is still visible", () => {
     const baseCards = mapPromptCacheConversationsToDashboardCards(
       createResponse([

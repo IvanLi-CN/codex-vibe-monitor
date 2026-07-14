@@ -33,6 +33,10 @@ function compareOptionalEpochDesc(left: number | null, right: number | null) {
   return right - left;
 }
 
+function compareNumberDesc(left: number, right: number) {
+  return right - left;
+}
+
 function parseEpoch(value: string | null | undefined) {
   if (!value) return null;
   const epoch = Date.parse(value);
@@ -53,8 +57,8 @@ export function compareDashboardConversationCards(
             right.currentInvocation.occurredAtEpoch,
           )
         : sort === "cost"
-          ? left.totalCost - right.totalCost
-          : left.totalTokens - right.totalTokens;
+          ? compareNumberDesc(left.totalCost, right.totalCost)
+          : compareNumberDesc(left.totalTokens, right.totalTokens);
   return primary || left.promptCacheKey.localeCompare(right.promptCacheKey);
 }
 
@@ -63,6 +67,11 @@ export function compareDashboardUpstreamAccounts(
   right: UpstreamAccountActivityAccount,
   sort: DashboardWorkspaceSort,
 ) {
+  const leftUnassigned = left.isUnassigned === true || left.upstreamAccountId == null;
+  const rightUnassigned = right.isUnassigned === true || right.upstreamAccountId == null;
+  if (leftUnassigned !== rightUnassigned) {
+    return leftUnassigned ? 1 : -1;
+  }
   const primary =
     sort === "createdAt"
       ? compareOptionalEpochDesc(
@@ -75,8 +84,8 @@ export function compareDashboardUpstreamAccounts(
             parseEpoch(right.lastInvocationAt),
           )
         : sort === "cost"
-          ? left.totalCost - right.totalCost
-          : left.totalTokens - right.totalTokens;
+          ? compareNumberDesc(left.totalCost, right.totalCost)
+          : compareNumberDesc(left.totalTokens, right.totalTokens);
   const leftKey = left.accountKey ?? String(left.upstreamAccountId ?? "unassigned");
   const rightKey = right.accountKey ?? String(right.upstreamAccountId ?? "unassigned");
   return primary || leftKey.localeCompare(rightKey);
