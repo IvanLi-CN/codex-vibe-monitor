@@ -106,6 +106,7 @@ const labels = {
   sourceGroup: "Group",
   sourceTag: "Tag",
   sourceAccount: "Account",
+  sourceConversation: "Conversation",
   sourceSystem: "System",
   overrideEdit: "Edit account override",
   overrideClear: "Clear account override",
@@ -679,5 +680,62 @@ describe("EffectiveRoutingRuleCard", () => {
     expect(
       document.querySelector('button[aria-label="Edit account override: System denied models"]'),
     ).toBeNull();
+  });
+
+  it("expands conversation-owned rows by default when conversation is the local override source", () => {
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          fastModeRewriteMode: "force_add",
+          imageToolRewriteMode: "force_remove",
+          availableModels: [],
+          fieldSources: {
+            ...buildRule().fieldSources,
+            fastModeRewriteMode: "conversation",
+            imageToolRewriteMode: "conversation",
+            availableModels: "conversation",
+          },
+          timeouts: {
+            responsesFirstByteTimeoutSecs: 45,
+            compactFirstByteTimeoutSecs: 300,
+            responsesStreamTimeoutSecs: 225,
+            compactStreamTimeoutSecs: 300,
+          },
+          timeoutFieldSources: {
+            responsesFirstByteTimeoutSecs: "conversation",
+            compactFirstByteTimeoutSecs: "root",
+            responsesStreamTimeoutSecs: "conversation",
+            compactStreamTimeoutSecs: "root",
+          },
+        })}
+        labels={labels}
+        editablePolicy={{ onChange: vi.fn() }}
+        localOverrideSource="conversation"
+        visibleRows={[
+          "allowCutOut",
+          "fastModeRewriteMode",
+          "imageToolRewriteMode",
+          "availableModels",
+        ]}
+        visibleSections={{
+          statusChangeReasons: false,
+          sourceTags: false,
+        }}
+      />,
+    );
+
+    expect(document.querySelector('[role="radiogroup"][aria-label="FAST mode"]')).not.toBeNull();
+    expect(document.querySelector('[role="radiogroup"][aria-label="Image tools"]')).not.toBeNull();
+    expect(
+      document.querySelector<HTMLInputElement>('input[name="responsesFirstByteTimeoutSecs"]'),
+    ).not.toBeNull();
+    expect(
+      document.querySelector<HTMLInputElement>('input[name="responsesStreamTimeoutSecs"]'),
+    ).not.toBeNull();
+    expect(document.body.textContent).toContain("Conversation");
+    expect(document.body.textContent).toContain("No models allowed");
+    expect(document.body.textContent).not.toContain("Status change trigger reasons");
+    expect(document.body.textContent).not.toContain("Source tags");
+    expect(document.body.textContent).not.toContain("Cut in");
   });
 });

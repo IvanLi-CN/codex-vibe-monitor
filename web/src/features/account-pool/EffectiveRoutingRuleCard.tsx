@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
@@ -79,6 +79,20 @@ type EditablePolicyField =
   | "proxyBindings"
   | StatusChangeEditablePolicyField;
 
+type EffectiveRoutingRuleCardRowKey =
+  | "priorityTier"
+  | "allowCutOut"
+  | "allowCutIn"
+  | "fastModeRewriteMode"
+  | "imageToolRewriteMode"
+  | "concurrencyLimit"
+  | "upstream429Retry"
+  | "availableModels"
+  | "systemDeniedModels"
+  | "proxyBindings";
+
+type EffectiveRoutingRuleCardSectionKey = "statusChangeReasons" | "sourceTags";
+
 type FieldSourceMap = NonNullable<EffectiveRoutingRule["fieldSources"]>;
 
 const editableFieldSourceKeys: Array<[EditablePolicyField, keyof FieldSourceMap]> = [
@@ -111,10 +125,11 @@ interface EffectiveProxyBindingItem {
 }
 
 interface EffectiveProxyBindingConfig {
-  source: "account" | "group";
+  source: EffectiveRoutingRuleSource;
   items: EffectiveProxyBindingItem[];
   busy?: boolean;
   disabled?: boolean;
+  editor?: ReactNode;
   onEdit?: () => void;
   onClear?: () => void;
   onRemove?: (key: string) => void;
@@ -133,6 +148,9 @@ interface EffectiveRoutingRuleCardProps {
   identityKey?: string | number | null;
   editablePolicy?: EditablePolicyConfig;
   proxyBindings?: EffectiveProxyBindingConfig;
+  localOverrideSource?: EffectiveRoutingRuleSource;
+  visibleRows?: EffectiveRoutingRuleCardRowKey[];
+  visibleSections?: Partial<Record<EffectiveRoutingRuleCardSectionKey, boolean>>;
   labels: {
     title: string;
     description: string;
@@ -491,18 +509,22 @@ function ProxyBindingMultiSelectTrigger({
   );
 }
 
-function accountOverrideFields(fieldSources: FieldSourceMap): EditablePolicyField[] {
+function localOverrideFields(
+  fieldSources: FieldSourceMap,
+  localOverrideSource: EffectiveRoutingRuleSource,
+): EditablePolicyField[] {
   return editableFieldSourceKeys
-    .filter(([, sourceKey]) => fieldSources[sourceKey] === "account")
+    .filter(([, sourceKey]) => fieldSources[sourceKey] === localOverrideSource)
     .map(([field]) => field);
 }
 
-function accountStatusChangeOverrideFields(
+function localStatusChangeOverrideFields(
   reasonSources: StatusChangeReasonFieldSources,
+  localOverrideSource: EffectiveRoutingRuleSource,
 ): EditablePolicyField[] {
-  return STATUS_CHANGE_REASON_CODES.filter((reason) => reasonSources[reason] === "account").map(
-    (reason) => statusChangeReasonFieldKey(reason),
-  );
+  return STATUS_CHANGE_REASON_CODES.filter(
+    (reason) => reasonSources[reason] === localOverrideSource,
+  ).map((reason) => statusChangeReasonFieldKey(reason));
 }
 
 const timeoutFieldToInlineField: Record<RoutingTimeoutFieldKey, EditablePolicyField> = {
@@ -512,12 +534,13 @@ const timeoutFieldToInlineField: Record<RoutingTimeoutFieldKey, EditablePolicyFi
   compactStreamTimeoutSecs: "timeoutCompactStream",
 };
 
-function accountTimeoutOverrideFields(
+function localTimeoutOverrideFields(
   timeoutSources: EffectiveRoutingTimeoutFieldSources,
+  localOverrideSource: EffectiveRoutingRuleSource,
 ): EditablePolicyField[] {
-  return ROUTING_TIMEOUT_FIELD_ORDER.filter((key) => timeoutSources[key] === "account").map(
-    (key) => timeoutFieldToInlineField[key],
-  );
+  return ROUTING_TIMEOUT_FIELD_ORDER.filter(
+    (key) => timeoutSources[key] === localOverrideSource,
+  ).map((key) => timeoutFieldToInlineField[key]);
 }
 
 function normalizeModelIds(values: string[]) {
@@ -530,6 +553,12 @@ function normalizeModelIds(values: string[]) {
     normalized.push(trimmed);
   }
   return normalized;
+}
+
+function availableModelsSourceDeniesAll(source: EffectiveRoutingRuleSource | undefined) {
+  return (
+    source === "group" || source === "tag" || source === "account" || source === "conversation"
+  );
 }
 
 function formatUpstream429RetryCount(
@@ -546,6 +575,9 @@ export function EffectiveRoutingRuleCard({
   labels,
   editablePolicy,
   proxyBindings,
+  localOverrideSource = "account",
+  visibleRows,
+  visibleSections,
 }: EffectiveRoutingRuleCardProps) {
   const resolvedRule = defaultRule(rule);
   const isEditable = editablePolicy != null;
@@ -581,12 +613,32 @@ export function EffectiveRoutingRuleCard({
     () => resolveStatusChangeReasonFieldSources(resolvedRule.statusChangeReasonFieldSources),
     [resolvedRule.statusChangeReasonFieldSources],
   );
+  const visibleRowSet = useMemo(
+    () =>
+      new Set<EffectiveRoutingRuleCardRowKey>(
+        visibleRows ?? [
+          "priorityTier",
+          "allowCutOut",
+          "allowCutIn",
+          "fastModeRewriteMode",
+          "imageToolRewriteMode",
+          "concurrencyLimit",
+          "upstream429Retry",
+          "availableModels",
+          "systemDeniedModels",
+          "proxyBindings",
+        ],
+      ),
+    [visibleRows],
+  );
+  const showStatusChangeReasons = visibleSections?.statusChangeReasons ?? true;
+  const showSourceTags = visibleSections?.sourceTags ?? true;
   const defaultExpandedFields = isEditable
     ? [
-        ...accountOverrideFields(fieldSources),
-        ...accountStatusChangeOverrideFields(statusChangeReasonSources),
-        ...accountTimeoutOverrideFields(timeoutSources),
-        ...(proxyBindings?.source === "account" ? (["proxyBindings"] as const) : []),
+        ...localOverrideFields(fieldSources, localOverrideSource),
+        ...localStatusChangeOverrideFields(statusChangeReasonSources, localOverrideSource),
+        ...localTimeoutOverrideFields(timeoutSources, localOverrideSource),
+        ...(proxyBindings?.source === localOverrideSource ? (["proxyBindings"] as const) : []),
       ]
     : [];
   const [expandedFields, setExpandedFields] =
@@ -609,19 +661,19 @@ export function EffectiveRoutingRuleCard({
     }
 
     const nextDefaultExpandedFields = [
-      ...accountOverrideFields(fieldSources),
-      ...accountStatusChangeOverrideFields(statusChangeReasonSources),
-      ...accountTimeoutOverrideFields(timeoutSources),
-      ...(proxyBindings?.source === "account" ? (["proxyBindings"] as const) : []),
+      ...localOverrideFields(fieldSources, localOverrideSource),
+      ...localStatusChangeOverrideFields(statusChangeReasonSources, localOverrideSource),
+      ...localTimeoutOverrideFields(timeoutSources, localOverrideSource),
+      ...(proxyBindings?.source === localOverrideSource ? (["proxyBindings"] as const) : []),
     ];
     setExpandedFields((current) => {
       if (userTouchedExpansionRef.current) return current;
       if (
         current.some((field) =>
           field === "proxyBindings"
-            ? proxyBindings?.source === "account"
+            ? proxyBindings?.source === localOverrideSource
             : fieldToSource(field, fieldSources, timeoutSources, statusChangeReasonSources) ===
-              "account",
+              localOverrideSource,
         )
       )
         return current;
@@ -631,6 +683,7 @@ export function EffectiveRoutingRuleCard({
     isEditable,
     identityKey,
     fieldSources,
+    localOverrideSource,
     statusChangeReasonSources,
     timeoutSources,
     proxyBindings?.source,
@@ -666,7 +719,8 @@ export function EffectiveRoutingRuleCard({
   ) => {
     userTouchedExpansionRef.current = true;
     const active =
-      fieldToSource(field, fieldSources, timeoutSources, statusChangeReasonSources) === "account";
+      fieldToSource(field, fieldSources, timeoutSources, statusChangeReasonSources) ===
+      localOverrideSource;
     if (active) {
       clearField(field, clearPayload);
       return;
@@ -722,6 +776,7 @@ export function EffectiveRoutingRuleCard({
 
   const fieldRows = [
     {
+      key: "priorityTier" as const,
       field: "priorityTier" as const,
       label: labels.fieldPriority ?? "Priority",
       value: priorityTierBadgeLabel(resolvedRule.priorityTier, labels),
@@ -743,6 +798,7 @@ export function EffectiveRoutingRuleCard({
       ),
     },
     {
+      key: "allowCutOut" as const,
       field: "allowCutOut" as const,
       label: labels.cutOutLabel ?? labels.fieldAllowCutOut ?? "Cut out",
       value: resolvedRule.allowCutOut ? labels.allowCutOut : labels.denyCutOut,
@@ -758,6 +814,7 @@ export function EffectiveRoutingRuleCard({
       ),
     },
     {
+      key: "allowCutIn" as const,
       field: "allowCutIn" as const,
       label: labels.cutInLabel ?? labels.fieldAllowCutIn ?? "Cut in",
       value: resolvedRule.allowCutIn ? labels.allowCutIn : labels.denyCutIn,
@@ -773,6 +830,7 @@ export function EffectiveRoutingRuleCard({
       ),
     },
     {
+      key: "fastModeRewriteMode" as const,
       field: "fastModeRewriteMode" as const,
       label: labels.fieldFastMode ?? "FAST mode",
       value: fastModeRewriteBadgeLabel(resolvedRule.fastModeRewriteMode, labels),
@@ -794,6 +852,7 @@ export function EffectiveRoutingRuleCard({
       ),
     },
     {
+      key: "imageToolRewriteMode" as const,
       field: "imageToolRewriteMode" as const,
       label: labels.fieldImageToolRewriteMode ?? "Image tools",
       value:
@@ -822,6 +881,7 @@ export function EffectiveRoutingRuleCard({
       ),
     },
     {
+      key: "concurrencyLimit" as const,
       field: "concurrencyLimit" as const,
       label: labels.fieldConcurrency ?? "Concurrency",
       value: resolvedRule.concurrencyLimit
@@ -841,6 +901,7 @@ export function EffectiveRoutingRuleCard({
       ),
     },
     {
+      key: "upstream429Retry" as const,
       field: "upstream429Retry" as const,
       label: labels.fieldUpstream429 ?? "Upstream 429 retry",
       value: formatUpstream429RetryCount(upstream429RetryCount, labels),
@@ -864,14 +925,13 @@ export function EffectiveRoutingRuleCard({
       ),
     },
     {
+      key: "availableModels" as const,
       field: "availableModels" as const,
       label: labels.fieldAvailableModels ?? "Available models",
       value:
         availableModelsValue.length > 0
           ? availableModelsValue.join(", ")
-          : fieldSources.availableModels === "account" ||
-              fieldSources.availableModels === "group" ||
-              fieldSources.availableModels === "tag"
+          : availableModelsSourceDeniesAll(fieldSources.availableModels)
             ? (labels.availableModelsNoneAllowed ?? "No models allowed")
             : (labels.availableModelsInherited ?? "Inherited / unrestricted"),
       source: fieldSources.availableModels ?? "root",
@@ -883,9 +943,7 @@ export function EffectiveRoutingRuleCard({
           options={availableModelOptions}
           inputValue={availableModelInput}
           emptyValueLabel={
-            fieldSources.availableModels === "account" ||
-            fieldSources.availableModels === "group" ||
-            fieldSources.availableModels === "tag"
+            availableModelsSourceDeniesAll(fieldSources.availableModels)
               ? (labels.availableModelsNoneAllowed ?? "No models allowed")
               : (labels.availableModelsInherited ?? "Inherited / unrestricted")
           }
@@ -898,6 +956,7 @@ export function EffectiveRoutingRuleCard({
       ),
     },
     {
+      key: "systemDeniedModels" as const,
       field: null,
       label: labels.fieldSystemDeniedModels ?? "System denied models",
       value:
@@ -911,6 +970,7 @@ export function EffectiveRoutingRuleCard({
           : null,
     },
   ];
+  const visibleFieldRows = fieldRows.filter((row) => visibleRowSet.has(row.key));
   const statusChangeReasonRows = STATUS_CHANGE_REASON_CODES.map((reason) => {
     const field = statusChangeReasonFieldKey(reason);
     return {
@@ -927,21 +987,22 @@ export function EffectiveRoutingRuleCard({
     };
   });
   const totalEnabledStatusChangeReasons = countEnabledStatusChangeReasons(statusChangeReasons);
-  const statusChangeReasonAccountOverrideReasons = STATUS_CHANGE_REASON_CODES.filter(
-    (reason) => statusChangeReasonSources[reason] === "account",
+  const statusChangeReasonLocalOverrideReasons = STATUS_CHANGE_REASON_CODES.filter(
+    (reason) => statusChangeReasonSources[reason] === localOverrideSource,
   );
-  const statusChangeReasonHasAccountOverrides = statusChangeReasonAccountOverrideReasons.length > 0;
+  const statusChangeReasonHasLocalOverrides = statusChangeReasonLocalOverrideReasons.length > 0;
   const statusChangeReasonResetBusy = isBusy("statusChangeReasons");
-  const statusChangeReasonResetPayload = statusChangeReasonHasAccountOverrides
+  const statusChangeReasonResetPayload = statusChangeReasonHasLocalOverrides
     ? ({
         statusChangeReasons: Object.fromEntries(
-          statusChangeReasonAccountOverrideReasons.map((reason) => [reason, null]),
+          statusChangeReasonLocalOverrideReasons.map((reason) => [reason, null]),
         ),
       } satisfies UpdateGroupAccountRoutingRulePayload)
     : null;
   const statusChangeReasonSectionError = editablePolicy?.errorByField?.statusChangeReasons ?? null;
   const proxyBindingsSource = proxyBindings?.source ?? "group";
-  const proxyBindingsActiveOverride = proxyBindingsSource === "account";
+  const proxyBindingsVisible = proxyBindings != null && visibleRowSet.has("proxyBindings");
+  const proxyBindingsActiveOverride = proxyBindingsSource === localOverrideSource;
   const proxyBindingsExpanded = expandedFields.includes("proxyBindings");
   const toggleProxyBindingsRow = () => {
     if (!proxyBindings || proxyBindings.busy) return;
@@ -949,6 +1010,14 @@ export function EffectiveRoutingRuleCard({
     if (proxyBindingsActiveOverride) {
       proxyBindings.onClear?.();
       setExpandedFields((current) => current.filter((value) => value !== "proxyBindings"));
+      return;
+    }
+    if (!proxyBindings.onEdit) {
+      setExpandedFields((current) =>
+        current.includes("proxyBindings")
+          ? current.filter((value) => value !== "proxyBindings")
+          : [...current, "proxyBindings"],
+      );
       return;
     }
     proxyBindings.onEdit?.();
@@ -961,159 +1030,171 @@ export function EffectiveRoutingRuleCard({
         <CardDescription>{labels.description}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
-          <p className="metric-label">{labels.sourceBreakdownTitle ?? "Field source breakdown"}</p>
-          <div className="mt-3 overflow-hidden rounded-xl border border-base-300/70">
-            {fieldRows.map((row) => {
-              const editable = row.field != null && editablePolicy != null;
-              const activeOverride = row.field != null && row.source === "account";
-              const expanded = row.field != null && expandedFields.includes(row.field);
-              const error = row.field != null ? editablePolicy?.errorByField?.[row.field] : null;
-              const busy = row.field != null && isBusy(row.field);
-              return (
-                <div key={row.label} className="border-b border-base-300/60 last:border-b-0">
+        {visibleFieldRows.length > 0 || proxyBindingsVisible ? (
+          <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
+            <p className="metric-label">
+              {labels.sourceBreakdownTitle ?? "Field source breakdown"}
+            </p>
+            <div className="mt-3 overflow-hidden rounded-xl border border-base-300/70">
+              {visibleFieldRows.map((row) => {
+                const editable = row.field != null && editablePolicy != null;
+                const activeOverride = row.field != null && row.source === localOverrideSource;
+                const expanded = row.field != null && expandedFields.includes(row.field);
+                const error = row.field != null ? editablePolicy?.errorByField?.[row.field] : null;
+                const busy = row.field != null && isBusy(row.field);
+                return (
+                  <div key={row.label} className="border-b border-base-300/60 last:border-b-0">
+                    <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-3">
+                      <span className="font-medium text-base-content/80">{row.label}</span>
+                      {row.valueBadges ? (
+                        <ValueBadgeList
+                          field={row.field}
+                          values={row.valueBadges}
+                          labels={labels}
+                        />
+                      ) : (
+                        <ValueBadge field={row.field} value={row.value} labels={labels} />
+                      )}
+                      <Badge
+                        className="w-fit sm:justify-self-end"
+                        variant={sourceVariant(row.source)}
+                      >
+                        {sourceLabel(row.source, labels)}
+                      </Badge>
+                      {editable && row.field ? (
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant={activeOverride || expanded ? "default" : "ghost"}
+                          className={cn(
+                            "h-8 w-8 justify-self-start rounded-full sm:justify-self-end",
+                            activeOverride || expanded
+                              ? "text-primary-content"
+                              : "text-base-content/65",
+                          )}
+                          disabled={busy}
+                          aria-pressed={activeOverride || expanded}
+                          aria-label={`${activeOverride ? (labels.overrideClear ?? "Clear override") : (labels.overrideEdit ?? "Edit override")}: ${row.label}`}
+                          onClick={() => toggleExpanded(row.field, row.clearPayload)}
+                        >
+                          <AppIcon
+                            name={
+                              busy
+                                ? "loading"
+                                : activeOverride || expanded
+                                  ? "check-decagram-outline"
+                                  : "pencil-outline"
+                            }
+                            className={cn("h-4 w-4", busy ? "animate-spin" : "")}
+                            aria-hidden
+                          />
+                        </Button>
+                      ) : (
+                        <span aria-hidden />
+                      )}
+                    </div>
+                    {expanded && row.field ? (
+                      <div className="border-t border-base-300/50 bg-base-100/55 px-3 py-3">
+                        <div className="grid grid-cols-1 gap-y-2 sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-x-3">
+                          <p className="text-sm font-semibold text-base-content">{row.label}</p>
+                          <div className="min-w-0 sm:col-span-3">{row.editor}</div>
+                          {busy ? (
+                            <p className="text-xs text-base-content/60 sm:col-start-2 sm:col-span-3">
+                              {labels.overrideSaving ?? "Saving..."}
+                            </p>
+                          ) : null}
+                          {error ? (
+                            <p className="text-xs font-medium text-error sm:col-start-2 sm:col-span-3">
+                              {error}
+                            </p>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : error ? (
+                      <p className="px-3 pb-2 text-xs font-medium text-error">{error}</p>
+                    ) : null}
+                  </div>
+                );
+              })}
+              {proxyBindingsVisible ? (
+                <div className="border-b border-base-300/60 last:border-b-0">
                   <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-3">
-                    <span className="font-medium text-base-content/80">{row.label}</span>
-                    {row.valueBadges ? (
-                      <ValueBadgeList field={row.field} values={row.valueBadges} labels={labels} />
-                    ) : (
-                      <ValueBadge field={row.field} value={row.value} labels={labels} />
-                    )}
+                    <span className="font-medium text-base-content/80">
+                      {labels.fieldProxyBindings ?? proxyBindings.labels.field}
+                    </span>
+                    <ProxyBindingChips
+                      items={proxyBindings.items}
+                      labels={proxyBindings.labels}
+                      disabled={proxyBindings.busy || proxyBindings.disabled}
+                    />
                     <Badge
                       className="w-fit sm:justify-self-end"
-                      variant={sourceVariant(row.source)}
+                      variant={sourceVariant(proxyBindingsSource)}
                     >
-                      {sourceLabel(row.source, labels)}
+                      {sourceLabel(proxyBindingsSource, labels)}
                     </Badge>
-                    {editable && row.field ? (
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant={activeOverride || expanded ? "default" : "ghost"}
-                        className={cn(
-                          "h-8 w-8 justify-self-start rounded-full sm:justify-self-end",
-                          activeOverride || expanded
-                            ? "text-primary-content"
-                            : "text-base-content/65",
-                        )}
-                        disabled={busy}
-                        aria-pressed={activeOverride || expanded}
-                        aria-label={`${activeOverride ? (labels.overrideClear ?? "Clear override") : (labels.overrideEdit ?? "Edit override")}: ${row.label}`}
-                        onClick={() => toggleExpanded(row.field, row.clearPayload)}
-                      >
-                        <AppIcon
-                          name={
-                            busy
-                              ? "loading"
-                              : activeOverride || expanded
-                                ? "check-decagram-outline"
-                                : "pencil-outline"
-                          }
-                          className={cn("h-4 w-4", busy ? "animate-spin" : "")}
-                          aria-hidden
-                        />
-                      </Button>
-                    ) : (
-                      <span aria-hidden />
-                    )}
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant={proxyBindingsActiveOverride ? "default" : "ghost"}
+                      className={cn(
+                        "h-8 w-8 justify-self-start rounded-full sm:justify-self-end",
+                        proxyBindingsActiveOverride
+                          ? "text-primary-content"
+                          : "text-base-content/65",
+                      )}
+                      disabled={proxyBindings.busy || proxyBindings.disabled}
+                      aria-pressed={proxyBindingsActiveOverride}
+                      aria-label={`${proxyBindingsActiveOverride ? (labels.overrideClear ?? "Clear override") : (labels.overrideEdit ?? "Edit override")}: ${proxyBindings.labels.field}`}
+                      onClick={toggleProxyBindingsRow}
+                    >
+                      <AppIcon
+                        name={
+                          proxyBindings.busy
+                            ? "loading"
+                            : proxyBindingsActiveOverride
+                              ? "check-decagram-outline"
+                              : "pencil-outline"
+                        }
+                        className={cn("h-4 w-4", proxyBindings.busy ? "animate-spin" : "")}
+                        aria-hidden
+                      />
+                    </Button>
                   </div>
-                  {expanded && row.field ? (
+                  {proxyBindingsExpanded ? (
                     <div className="border-t border-base-300/50 bg-base-100/55 px-3 py-3">
-                      <div className="grid grid-cols-1 gap-y-2 sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-x-3">
-                        <p className="text-sm font-semibold text-base-content">{row.label}</p>
-                        <div className="min-w-0 sm:col-span-3">{row.editor}</div>
-                        {busy ? (
-                          <p className="text-xs text-base-content/60 sm:col-start-2 sm:col-span-3">
-                            {labels.overrideSaving ?? "Saving..."}
+                      <div className="grid grid-cols-1 gap-y-3 sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-start sm:gap-x-3">
+                        <p className="text-sm font-semibold text-base-content">
+                          {proxyBindings.labels.field}
+                        </p>
+                        <div className="min-w-0 space-y-3 sm:col-span-3">
+                          {proxyBindings.editor ?? (
+                            <ProxyBindingMultiSelectTrigger
+                              items={proxyBindings.items}
+                              labels={proxyBindings.labels}
+                              disabled={proxyBindings.busy || proxyBindings.disabled}
+                              onOpen={proxyBindings.onEdit}
+                              onRemove={proxyBindings.onRemove}
+                            />
+                          )}
+                          <p className="text-xs leading-5 text-base-content/65">
+                            {proxyBindings.labels.hint}
                           </p>
-                        ) : null}
-                        {error ? (
-                          <p className="text-xs font-medium text-error sm:col-start-2 sm:col-span-3">
-                            {error}
-                          </p>
-                        ) : null}
+                        </div>
                       </div>
                     </div>
-                  ) : error ? (
-                    <p className="px-3 pb-2 text-xs font-medium text-error">{error}</p>
                   ) : null}
                 </div>
-              );
-            })}
-            {proxyBindings ? (
-              <div className="border-b border-base-300/60 last:border-b-0">
-                <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-3">
-                  <span className="font-medium text-base-content/80">
-                    {labels.fieldProxyBindings ?? proxyBindings.labels.field}
-                  </span>
-                  <ProxyBindingChips
-                    items={proxyBindings.items}
-                    labels={proxyBindings.labels}
-                    disabled={proxyBindings.busy || proxyBindings.disabled}
-                  />
-                  <Badge
-                    className="w-fit sm:justify-self-end"
-                    variant={sourceVariant(proxyBindingsSource)}
-                  >
-                    {sourceLabel(proxyBindingsSource, labels)}
-                  </Badge>
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant={proxyBindingsActiveOverride ? "default" : "ghost"}
-                    className={cn(
-                      "h-8 w-8 justify-self-start rounded-full sm:justify-self-end",
-                      proxyBindingsActiveOverride ? "text-primary-content" : "text-base-content/65",
-                    )}
-                    disabled={proxyBindings.busy || proxyBindings.disabled}
-                    aria-pressed={proxyBindingsActiveOverride}
-                    aria-label={`${proxyBindingsActiveOverride ? (labels.overrideClear ?? "Clear override") : (labels.overrideEdit ?? "Edit override")}: ${proxyBindings.labels.field}`}
-                    onClick={toggleProxyBindingsRow}
-                  >
-                    <AppIcon
-                      name={
-                        proxyBindings.busy
-                          ? "loading"
-                          : proxyBindingsActiveOverride
-                            ? "check-decagram-outline"
-                            : "pencil-outline"
-                      }
-                      className={cn("h-4 w-4", proxyBindings.busy ? "animate-spin" : "")}
-                      aria-hidden
-                    />
-                  </Button>
-                </div>
-                {proxyBindingsActiveOverride && proxyBindingsExpanded ? (
-                  <div className="border-t border-base-300/50 bg-base-100/55 px-3 py-3">
-                    <div className="grid grid-cols-1 gap-y-3 sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-start sm:gap-x-3">
-                      <p className="text-sm font-semibold text-base-content">
-                        {proxyBindings.labels.field}
-                      </p>
-                      <div className="min-w-0 space-y-3 sm:col-span-3">
-                        <ProxyBindingMultiSelectTrigger
-                          items={proxyBindings.items}
-                          labels={proxyBindings.labels}
-                          disabled={proxyBindings.busy || proxyBindings.disabled}
-                          onOpen={proxyBindings.onEdit}
-                          onRemove={proxyBindings.onRemove}
-                        />
-                        <p className="text-xs leading-5 text-base-content/65">
-                          {proxyBindings.labels.hint}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
+              ) : null}
+            </div>
           </div>
-        </div>
+        ) : null}
 
         <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
           <p className="metric-label">{labels.timeoutSectionTitle ?? "Request path timeouts"}</p>
           <div className="mt-3 overflow-hidden rounded-xl border border-base-300/70">
             {timeoutRows.map((row) => {
-              const activeOverride = row.source === "account";
+              const activeOverride = row.source === localOverrideSource;
               const expanded = expandedFields.includes(row.field);
               const busy = isBusy(row.field);
               const error = editablePolicy?.errorByField?.[row.field] ?? null;
@@ -1216,102 +1297,112 @@ export function EffectiveRoutingRuleCard({
           ) : null}
         </div>
 
-        <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <p className="metric-label">
-                {labels.statusChangeReasonSectionTitle ?? "Status change trigger reasons"}
-              </p>
-              {labels.statusChangeReasonSectionHint ? (
-                <p className="mt-1 text-xs leading-5 text-base-content/65">
-                  {labels.statusChangeReasonSectionHint}
+        {showStatusChangeReasons ? (
+          <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="metric-label">
+                  {labels.statusChangeReasonSectionTitle ?? "Status change trigger reasons"}
                 </p>
-              ) : null}
-            </div>
-            <div className="flex items-center gap-2 self-start">
-              {editablePolicy && statusChangeReasonHasAccountOverrides ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="h-8 rounded-full border border-base-300/80 bg-base-100/92 px-3 text-xs font-semibold text-base-content/72 shadow-none hover:bg-base-100 hover:text-base-content"
-                  disabled={statusChangeReasonResetBusy}
-                  aria-label={
-                    labels.statusChangeReasonResetAction ?? "Reset status change trigger reasons"
-                  }
-                  onClick={() => {
-                    if (!statusChangeReasonResetPayload) return;
-                    changeField("statusChangeReasons", statusChangeReasonResetPayload);
-                  }}
-                >
-                  {statusChangeReasonResetBusy ? (
-                    <AppIcon name="loading" className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden />
-                  ) : null}
-                  {labels.statusChangeReasonResetAction ?? "Reset"}
-                </Button>
-              ) : null}
-              <Badge variant="secondary" className="w-fit">
-                {labels.statusChangeReasonSummary?.(
-                  totalEnabledStatusChangeReasons,
-                  STATUS_CHANGE_REASON_CODES.length,
-                ) ?? `${totalEnabledStatusChangeReasons}/${STATUS_CHANGE_REASON_CODES.length}`}
-              </Badge>
-            </div>
-          </div>
-          <div className="mt-3 grid gap-2 md:auto-rows-fr md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
-            {statusChangeReasonRows.map((row) => {
-              const busy = isBusy(row.field);
-              const error = editablePolicy?.errorByField?.[row.field] ?? null;
-              return (
-                <div key={row.reason} className="flex h-full flex-col gap-1.5">
-                  <div className="flex flex-1">
-                    <StatusChangeToggleButton
-                      title={row.label}
-                      iconName={statusChangeReasonIconName(row.reason)}
-                      pressed={row.enabled}
-                      disabled={editablePolicy ? busy : undefined}
-                      interactive={editablePolicy != null}
-                      activeLabel={labels.statusChangeReasonToggleEnabled}
-                      inactiveLabel={labels.statusChangeReasonToggleDisabled}
-                      onPressedChange={(checked) =>
-                        changeField(row.field, {
-                          statusChangeReasons: {
-                            [row.reason]: checked,
-                          },
-                        })
-                      }
-                      ariaLabel={row.label}
-                      className="h-full min-h-[4rem] flex-1"
-                    />
-                  </div>
-                  {busy ? (
-                    <p className="text-xs text-base-content/60">
-                      {labels.overrideSaving ?? "Saving..."}
-                    </p>
-                  ) : null}
-                  {error ? <p className="text-xs font-medium text-error">{error}</p> : null}
-                </div>
-              );
-            })}
-          </div>
-          {statusChangeReasonSectionError ? (
-            <p className="mt-3 text-xs font-medium text-error">{statusChangeReasonSectionError}</p>
-          ) : null}
-        </div>
-
-        <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
-          <p className="metric-label">{labels.sourceTags}</p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {resolvedRule.sourceTagNames.length === 0 ? (
-              <span className="text-sm text-base-content/60">{labels.noTags}</span>
-            ) : (
-              resolvedRule.sourceTagNames.map((name) => (
-                <Badge key={name} variant="secondary">
-                  {name}
+                {labels.statusChangeReasonSectionHint ? (
+                  <p className="mt-1 text-xs leading-5 text-base-content/65">
+                    {labels.statusChangeReasonSectionHint}
+                  </p>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-2 self-start">
+                {editablePolicy && statusChangeReasonHasLocalOverrides ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="h-8 rounded-full border border-base-300/80 bg-base-100/92 px-3 text-xs font-semibold text-base-content/72 shadow-none hover:bg-base-100 hover:text-base-content"
+                    disabled={statusChangeReasonResetBusy}
+                    aria-label={
+                      labels.statusChangeReasonResetAction ?? "Reset status change trigger reasons"
+                    }
+                    onClick={() => {
+                      if (!statusChangeReasonResetPayload) return;
+                      changeField("statusChangeReasons", statusChangeReasonResetPayload);
+                    }}
+                  >
+                    {statusChangeReasonResetBusy ? (
+                      <AppIcon
+                        name="loading"
+                        className="mr-1 h-3.5 w-3.5 animate-spin"
+                        aria-hidden
+                      />
+                    ) : null}
+                    {labels.statusChangeReasonResetAction ?? "Reset"}
+                  </Button>
+                ) : null}
+                <Badge variant="secondary" className="w-fit">
+                  {labels.statusChangeReasonSummary?.(
+                    totalEnabledStatusChangeReasons,
+                    STATUS_CHANGE_REASON_CODES.length,
+                  ) ?? `${totalEnabledStatusChangeReasons}/${STATUS_CHANGE_REASON_CODES.length}`}
                 </Badge>
-              ))
-            )}
+              </div>
+            </div>
+            <div className="mt-3 grid gap-2 md:auto-rows-fr md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
+              {statusChangeReasonRows.map((row) => {
+                const busy = isBusy(row.field);
+                const error = editablePolicy?.errorByField?.[row.field] ?? null;
+                return (
+                  <div key={row.reason} className="flex h-full flex-col gap-1.5">
+                    <div className="flex flex-1">
+                      <StatusChangeToggleButton
+                        title={row.label}
+                        iconName={statusChangeReasonIconName(row.reason)}
+                        pressed={row.enabled}
+                        disabled={editablePolicy ? busy : undefined}
+                        interactive={editablePolicy != null}
+                        activeLabel={labels.statusChangeReasonToggleEnabled}
+                        inactiveLabel={labels.statusChangeReasonToggleDisabled}
+                        onPressedChange={(checked) =>
+                          changeField(row.field, {
+                            statusChangeReasons: {
+                              [row.reason]: checked,
+                            },
+                          })
+                        }
+                        ariaLabel={row.label}
+                        className="h-full min-h-[4rem] flex-1"
+                      />
+                    </div>
+                    {busy ? (
+                      <p className="text-xs text-base-content/60">
+                        {labels.overrideSaving ?? "Saving..."}
+                      </p>
+                    ) : null}
+                    {error ? <p className="text-xs font-medium text-error">{error}</p> : null}
+                  </div>
+                );
+              })}
+            </div>
+            {statusChangeReasonSectionError ? (
+              <p className="mt-3 text-xs font-medium text-error">
+                {statusChangeReasonSectionError}
+              </p>
+            ) : null}
           </div>
-        </div>
+        ) : null}
+
+        {showSourceTags ? (
+          <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
+            <p className="metric-label">{labels.sourceTags}</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {resolvedRule.sourceTagNames.length === 0 ? (
+                <span className="text-sm text-base-content/60">{labels.noTags}</span>
+              ) : (
+                resolvedRule.sourceTagNames.map((name) => (
+                  <Badge key={name} variant="secondary">
+                    {name}
+                  </Badge>
+                ))
+              )}
+            </div>
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );

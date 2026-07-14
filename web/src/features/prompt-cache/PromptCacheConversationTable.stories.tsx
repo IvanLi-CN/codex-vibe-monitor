@@ -2062,7 +2062,7 @@ export const DrawerBindingAndTimeouts: Story = {
     docs: {
       description: {
         story:
-          "Prompt Cache drawer showing both a manual binding and conversation-level timeout overrides, including mixed source badges across conversation, account, and global layers.",
+          "Prompt Cache drawer showing the widened conversation detail panel plus the account-style routing form for conversation overrides, with mixed conversation/account/root sources across policy rows and timeouts.",
       },
     },
   },
@@ -2105,6 +2105,13 @@ export const DrawerBindingAndTimeouts: Story = {
         availableModels: ["gpt-5.1-codex-max", "gpt-5.1-codex-mini"],
         forwardProxyKey: "__direct__",
         forwardProxyKeys: ["__direct__", "tokyo-edge-01"],
+        policyFieldSources: {
+          allowSwitchUpstream: "conversation",
+          fastModeRewriteMode: "conversation",
+          imageToolRewriteMode: "conversation",
+          availableModels: "conversation",
+          forwardProxyKey: "conversation",
+        },
         updatedAt: "2026-05-13T23:42:00.000Z",
       }),
     );
@@ -2115,6 +2122,9 @@ export const DrawerBindingAndTimeouts: Story = {
 
     await userEvent.click(historyButton);
     await userEvent.click(await documentScope.findByRole("tab", { name: /设置|Settings/i }));
+    await expect(canvasElement.ownerDocument.body.querySelector(".drawer-shell")).toHaveClass(
+      "drawer-shell--detail-wide",
+    );
     await expect(await documentScope.findByText(/路由绑定|Route binding/i)).toBeInTheDocument();
     await expect(
       documentScope.getByText(/当前对话覆盖|Conversation overrides/i),
@@ -2122,42 +2132,31 @@ export const DrawerBindingAndTimeouts: Story = {
     await expect(
       documentScope.getByText(/允许换上游|Allow switching upstream/i),
     ).toBeInTheDocument();
-    await expect(documentScope.getByText(/强制添加|Force add/i)).toBeInTheDocument();
-    await expect(documentScope.getByText(/强制移除|Force remove/i)).toBeInTheDocument();
+    await expect(documentScope.getAllByText(/强制添加|Force add/i).length).toBeGreaterThan(0);
+    await expect(documentScope.getAllByText(/强制移除|Force remove/i).length).toBeGreaterThan(0);
     await expect(documentScope.getAllByText(/对话|Conversation/i).length).toBeGreaterThan(0);
-    await expect(
-      documentScope.getByText(/gpt-5\.1-codex-max, gpt-5\.1-codex-mini/i),
-    ).toBeInTheDocument();
+    await expect(documentScope.getAllByText(/gpt-5\.1-codex-max/i).length).toBeGreaterThan(0);
+    await expect(documentScope.getAllByText(/gpt-5\.1-codex-mini/i).length).toBeGreaterThan(0);
     await expect(documentScope.getByText(/40s/)).toBeInTheDocument();
     await expect(documentScope.getAllByText(/对话|Conversation/i).length).toBeGreaterThan(0);
+    await expect(documentScope.queryByText(/优先级|Priority/i)).not.toBeInTheDocument();
+    await expect(documentScope.queryByText(/切入|Cut in/i)).not.toBeInTheDocument();
 
-    const fastModeEditButton = documentScope.getByRole("button", {
-      name: /编辑对话覆盖: FAST 模式|Edit conversation override: FAST mode/i,
-    });
-    await userEvent.click(fastModeEditButton);
-    const fastModeSelect = documentScope.getByRole("combobox", {
+    const fastModeGroup = documentScope.getByRole("radiogroup", {
       name: /FAST 模式|FAST mode/i,
     });
-    await userEvent.click(fastModeSelect);
-    const fastModeOptions = await documentScope.findByRole("listbox");
-    await expect(fastModeOptions).not.toHaveTextContent(/继承|Inherit/i);
-    await userEvent.click(documentScope.getByRole("option", { name: /补齐|Fill missing/i }));
-    await expect(fastModeSelect).toHaveTextContent(/补齐|Fill missing/i);
+    await expect(fastModeGroup).not.toHaveTextContent(/继承|Inherit/i);
+    await userEvent.click(within(fastModeGroup).getByRole("radio", { name: /补齐|Fill missing/i }));
+    await expect(fastModeGroup).toHaveTextContent(/补齐|Fill missing/i);
 
-    const imageToolEditButton = documentScope.getByRole("button", {
-      name: /编辑对话覆盖: 图片工具|Edit conversation override: Image tool/i,
-    });
-    await userEvent.click(imageToolEditButton);
-    const imageToolSelect = documentScope.getByRole("combobox", {
+    const imageToolGroup = documentScope.getByRole("radiogroup", {
       name: /图片工具|Image tool/i,
     });
-    await userEvent.click(imageToolSelect);
-    const imageToolOptions = await documentScope.findByRole("listbox");
-    await expect(imageToolOptions).not.toHaveTextContent(/继承|Inherit/i);
-    await userEvent.click(documentScope.getByRole("option", { name: /强制添加|Force add/i }));
-    await expect(imageToolSelect).toHaveTextContent(/强制添加|Force add/i);
-    await userEvent.click(imageToolSelect);
-    await expect(await documentScope.findByRole("listbox")).not.toHaveTextContent(/继承|Inherit/i);
+    await expect(imageToolGroup).not.toHaveTextContent(/继承|Inherit/i);
+    await userEvent.click(
+      within(imageToolGroup).getByRole("radio", { name: /强制添加|Force add/i }),
+    );
+    await expect(imageToolGroup).toHaveTextContent(/强制添加|Force add/i);
   },
 };
 
