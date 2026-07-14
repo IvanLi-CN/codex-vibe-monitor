@@ -5950,8 +5950,8 @@ pub(crate) async fn fetch_dashboard_activity(
     let rate_window_start = snapshot
         .range_start
         .max(snapshot.range_end - ChronoDuration::minutes(DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES));
-    let range_start = format_utc_iso_millis(snapshot.range_start);
-    let range_end = format_utc_iso_millis(snapshot.range_end);
+    let range_start = format_utc_iso_precise(snapshot.range_start);
+    let range_end = format_utc_iso_precise(snapshot.range_end);
     let accounts = params.include_accounts.then_some(snapshot.accounts);
 
     Ok(Json(DashboardActivityResponse {
