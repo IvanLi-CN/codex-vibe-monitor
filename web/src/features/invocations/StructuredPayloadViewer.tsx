@@ -96,7 +96,8 @@ export function StructuredPayloadViewer({
 }: StructuredPayloadViewerProps) {
   const byteLength = useMemo(() => getUtf8ByteLength(value), [value]);
   const isLarge = byteLength > STRUCTURED_PAYLOAD_AUTO_PARSE_LIMIT_BYTES;
-  const [parseLargePayload, setParseLargePayload] = useState(false);
+  const [largePayloadConsentValue, setLargePayloadConsentValue] = useState<string | null>(null);
+  const parseLargePayload = largePayloadConsentValue === value;
   const parsed = useMemo(
     () => (isLarge && !parseLargePayload ? null : parseStructuredPayload(value)),
     [isLarge, parseLargePayload, value],
@@ -111,7 +112,7 @@ export function StructuredPayloadViewer({
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => setParseLargePayload(true)}
+            onClick={() => setLargePayloadConsentValue(value)}
           >
             {labels.parseLargePayload}
           </Button>
