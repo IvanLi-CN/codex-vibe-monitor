@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.31.1",
+  "base_stable_version": "2.31.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-14T13:57:53Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.31.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e670c0f398f1edf67b0c40f5a2bc8ac8d4da68a5",
+  "pr_number": 607,
+  "pr_title": "fix(web): align conversation detail routing drawer",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.31.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.31.1",
+  "target_sha": "7f74dce749ab378e730f0ff8f99f2059dc51715d",
+  "type_label": "type:patch"
+}
