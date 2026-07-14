@@ -320,7 +320,7 @@ export function useDashboardActivitySnapshot(
         const response = await fetchDashboardActivity(requestedRange, {
           recentLimit: requestedRecentLimit,
           includeAccounts: requestedIncludeAccounts,
-          includeRecent: !requestedIncludeAccounts,
+          includeRecent: false,
           signal: controller.signal,
         });
         if (

@@ -598,7 +598,7 @@ describe("useDashboardUpstreamAccountActivity", () => {
 
     expect(apiMocks.fetchDashboardActivity).toHaveBeenCalledTimes(1);
     expect(apiMocks.fetchDashboardActivity.mock.calls[0]?.[1]).toEqual(
-      expect.objectContaining({ recentLimit: 4, includeAccounts: false }),
+      expect.objectContaining({ recentLimit: 4, includeAccounts: false, includeRecent: false }),
     );
     expect(text("snapshot-accounts")).toBe("0");
   });
