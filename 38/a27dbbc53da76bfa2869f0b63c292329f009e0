@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.34.6",
+  "base_stable_version": "2.34.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-15T05:09:33Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.34.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "aaf29045d0a2089b959f14278652566d37a6a3ba",
+  "pr_number": 619,
+  "pr_title": "fix(web): tighten upstream refresh status layout",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.34.6",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.34.6",
+  "target_sha": "38a27dbbc53da76bfa2869f0b63c292329f009e0",
+  "type_label": "type:patch"
+}
