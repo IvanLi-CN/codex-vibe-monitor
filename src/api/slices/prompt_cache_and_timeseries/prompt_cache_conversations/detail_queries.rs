@@ -379,6 +379,47 @@ pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries(
         .map_err(Into::into)
 }
 
+pub(crate) async fn query_prompt_cache_conversation_manual_binding_summaries(
+    pool: &Pool<Sqlite>,
+    selected_keys: &[String],
+) -> Result<Vec<PromptCacheConversationManualBindingSummaryRow>> {
+    if selected_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT binding.prompt_cache_key, \
+             binding.binding_kind, \
+             binding.group_name, \
+             binding.upstream_account_id, \
+             account.display_name AS upstream_account_name \
+         FROM prompt_cache_conversation_bindings AS binding \
+         LEFT JOIN pool_upstream_accounts AS account \
+           ON account.id = binding.upstream_account_id \
+         WHERE binding.prompt_cache_key IN (",
+    );
+
+    {
+        let mut separated = query.separated(", ");
+        for key in selected_keys {
+            separated.push_bind(key);
+        }
+    }
+
+    query
+        .push(") AND binding.binding_kind IN (")
+        .push_bind(PROMPT_CACHE_BINDING_KIND_GROUP)
+        .push(", ")
+        .push_bind(PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT)
+        .push(") ORDER BY binding.prompt_cache_key ASC");
+
+    query
+        .build_query_as::<PromptCacheConversationManualBindingSummaryRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
 pub(crate) async fn query_prompt_cache_conversation_encrypted_owner_summaries(
     pool: &Pool<Sqlite>,
     selected_keys: &[String],

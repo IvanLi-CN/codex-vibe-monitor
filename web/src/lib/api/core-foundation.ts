@@ -1277,6 +1277,15 @@ export interface PromptCacheConversationUpstreamAccount {
   lastActivityAt: string;
 }
 
+export type PromptCacheConversationManualBindingKind = "group" | "upstreamAccount";
+
+export interface PromptCacheConversationManualBinding {
+  bindingKind: PromptCacheConversationManualBindingKind;
+  groupName: string | null;
+  upstreamAccountId: number | null;
+  upstreamAccountName: string | null;
+}
+
 export interface PromptCacheConversationInvocationPreview {
   id: number;
   invokeId: string;
@@ -1345,6 +1354,7 @@ export interface PromptCacheConversation {
   encryptedOwnerAccountId?: number | null;
   encryptedOwnerAccountName?: string | null;
   encryptedOwnerGroupName?: string | null;
+  manualBinding?: PromptCacheConversationManualBinding | null;
   upstreamAccounts: PromptCacheConversationUpstreamAccount[];
   recentInvocations: PromptCacheConversationInvocationPreview[];
   last24hRequests: PromptCacheConversationRequestPoint[];
@@ -2344,6 +2354,7 @@ function normalizePromptCacheConversation(raw: unknown): PromptCacheConversation
       typeof payload.encryptedOwnerGroupName === "string" && payload.encryptedOwnerGroupName.trim()
         ? payload.encryptedOwnerGroupName.trim()
         : null,
+    manualBinding: normalizePromptCacheConversationManualBinding(payload.manualBinding),
     upstreamAccounts: upstreamAccountsRaw
       .map(normalizePromptCacheConversationUpstreamAccount)
       .filter((item): item is PromptCacheConversationUpstreamAccount => item != null),
@@ -2353,6 +2364,46 @@ function normalizePromptCacheConversation(raw: unknown): PromptCacheConversation
     last24hRequests: requestsRaw
       .map(normalizePromptCacheConversationRequestPoint)
       .filter((item): item is PromptCacheConversationRequestPoint => item != null),
+  };
+}
+
+function normalizePromptCacheConversationManualBinding(
+  raw: unknown,
+): PromptCacheConversationManualBinding | null {
+  if (!raw || typeof raw !== "object") return null;
+  const payload = raw as Record<string, unknown>;
+  const bindingKind =
+    payload.bindingKind === "group" || payload.bindingKind === "upstreamAccount"
+      ? payload.bindingKind
+      : null;
+  if (!bindingKind) return null;
+
+  const groupName =
+    typeof payload.groupName === "string" && payload.groupName.trim()
+      ? payload.groupName.trim()
+      : null;
+  const upstreamAccountId = normalizeFiniteNumber(payload.upstreamAccountId) ?? null;
+  const upstreamAccountName =
+    typeof payload.upstreamAccountName === "string" && payload.upstreamAccountName.trim()
+      ? payload.upstreamAccountName.trim()
+      : null;
+
+  if (bindingKind === "group" && !groupName) {
+    return null;
+  }
+  if (
+    bindingKind === "upstreamAccount" &&
+    upstreamAccountId == null &&
+    upstreamAccountName == null
+  ) {
+    return null;
+  }
+
+  return {
+    bindingKind,
+    groupName,
+    upstreamAccountId,
+    upstreamAccountName,
   };
 }
 

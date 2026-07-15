@@ -736,9 +736,20 @@ pub(crate) struct PromptCacheConversationResponse {
     pub(crate) encrypted_owner_account_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) encrypted_owner_group_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) manual_binding: Option<PromptCacheConversationManualBindingResponse>,
     pub(crate) upstream_accounts: Vec<PromptCacheConversationUpstreamAccountResponse>,
     pub(crate) recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
     pub(crate) last24h_requests: Vec<PromptCacheConversationRequestPointResponse>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptCacheConversationManualBindingResponse {
+    pub(crate) binding_kind: String,
+    pub(crate) group_name: Option<String>,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) upstream_account_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1383,6 +1394,15 @@ pub(crate) struct PromptCacheConversationEncryptedOwnerSummaryRow {
     pub(crate) owner_upstream_account_id: i64,
     pub(crate) owner_upstream_account_name: Option<String>,
     pub(crate) owner_group_name: Option<String>,
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub(crate) struct PromptCacheConversationManualBindingSummaryRow {
+    pub(crate) prompt_cache_key: String,
+    pub(crate) binding_kind: String,
+    pub(crate) group_name: Option<String>,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) upstream_account_name: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
