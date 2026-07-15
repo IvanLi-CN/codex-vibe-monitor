@@ -1897,6 +1897,7 @@ async fn pool_openai_v1_responses_fast_fill_missing_transport_failure_persists_r
             .expect("failed large fast payload should exist"),
     )
     .expect("decode failed large fast payload");
+    assert_eq!(payload["requestModel"].as_str(), Some("gpt-5.4"));
     assert_eq!(payload["requestedServiceTier"].as_str(), Some("priority"));
     assert_eq!(
         payload["failureKind"].as_str(),
