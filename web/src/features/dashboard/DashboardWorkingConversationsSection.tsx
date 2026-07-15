@@ -184,6 +184,9 @@ const UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME =
 const UPSTREAM_ACCOUNT_RECENT_IDENTITY_CHIP_CLASS_NAME =
   "inline-flex h-[1.2rem] max-w-[4.8rem] shrink-0 items-center rounded-full border px-1.5 font-mono text-[10px] font-semibold leading-none tracking-[0.04em]";
 
+const ACCOUNT_HEADER_BADGE_CLASS_NAME =
+  "inline-flex h-6 shrink-0 items-center rounded-full border px-2.5 text-[11px] font-semibold leading-none";
+
 const UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES = [
   "dashboard-upstream-account-identity-chip--tone-sky",
   "dashboard-upstream-account-identity-chip--tone-cyan",
@@ -938,7 +941,7 @@ function AccountAttentionBadges({
           data-testid="dashboard-upstream-account-attention-badge"
           title={badge.title ?? badge.label}
           className={cn(
-            "inline-flex h-5 shrink-0 items-center rounded-full border px-2 leading-none",
+            ACCOUNT_HEADER_BADGE_CLASS_NAME,
             badge.tone === "error"
               ? "border-error/38 bg-error/10 text-error"
               : badge.tone === "warning"
@@ -2905,7 +2908,7 @@ function DashboardUpstreamAccountActivityCard({
                 variant={upstreamPlanBadgeRecipe(account.planType)?.variant ?? "secondary"}
                 data-plan={upstreamPlanBadgeRecipe(account.planType)?.dataPlan}
                 className={cn(
-                  "h-5 px-2 py-0 text-[10px] font-semibold",
+                  ACCOUNT_HEADER_BADGE_CLASS_NAME,
                   upstreamPlanBadgeRecipe(account.planType)?.className,
                 )}
               >
