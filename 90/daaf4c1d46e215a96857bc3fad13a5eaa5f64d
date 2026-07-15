@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.36.4",
+  "base_stable_version": "2.36.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-15T16:06:16Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.36.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "261dda19e49ab72bd74a573c36b5cd4e2feae1df",
+  "pr_number": 628,
+  "pr_title": "fix(dashboard): expose wall-clock model performance durations",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.36.4",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.36.4",
+  "target_sha": "90daaf4c1d46e215a96857bc3fad13a5eaa5f64d",
+  "type_label": "type:patch"
+}
