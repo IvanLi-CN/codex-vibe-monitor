@@ -673,6 +673,7 @@ export interface ImportedOauthValidationRow {
   fileName: string;
   email?: string | null;
   chatgptAccountId?: string | null;
+  chatgptUserId?: string | null;
   displayName?: string | null;
   tokenExpiresAt?: string | null;
   matchedAccount?: ImportedOauthMatchSummary | null;
@@ -1497,6 +1498,7 @@ function normalizeImportedOauthValidationRow(raw: unknown): ImportedOauthValidat
     email: typeof payload.email === "string" ? payload.email : null,
     chatgptAccountId:
       typeof payload.chatgptAccountId === "string" ? payload.chatgptAccountId : null,
+    chatgptUserId: typeof payload.chatgptUserId === "string" ? payload.chatgptUserId : null,
     displayName: typeof payload.displayName === "string" ? payload.displayName : null,
     tokenExpiresAt: typeof payload.tokenExpiresAt === "string" ? payload.tokenExpiresAt : null,
     matchedAccount: normalizeImportedOauthMatchSummary(payload.matchedAccount),

@@ -142,6 +142,8 @@ function buildStoryImportedOauthValidationRow(
   const email = typeof candidate.email === "string" ? candidate.email.trim() : "";
   const chatgptAccountId =
     typeof candidate.account_id === "string" ? candidate.account_id.trim() : "";
+  const chatgptUserId =
+    typeof candidate.chatgpt_user_id === "string" ? candidate.chatgpt_user_id.trim() : "";
   const forcedStatus =
     typeof candidate._storybookStatus === "string" ? candidate._storybookStatus : null;
   const detail = typeof candidate._storybookDetail === "string" ? candidate._storybookDetail : null;
@@ -152,6 +154,7 @@ function buildStoryImportedOauthValidationRow(
       fileName: item.fileName,
       email: email || null,
       chatgptAccountId: chatgptAccountId || null,
+      chatgptUserId: chatgptUserId || null,
       displayName: email || null,
       tokenExpiresAt: null,
       matchedAccount: null,
@@ -166,6 +169,7 @@ function buildStoryImportedOauthValidationRow(
     fileName: item.fileName,
     email,
     chatgptAccountId,
+    chatgptUserId: chatgptUserId || null,
     displayName: email,
     tokenExpiresAt:
       typeof candidate.expired === "string" && candidate.expired.trim()
@@ -186,13 +190,16 @@ export function buildStoryImportedOauthValidationResponse(
   const seenKeys = new Set<string>();
   const dedupedRows = rows.map((row) => {
     if (row.status === "pending") return row;
+    const normalizedUserId = row.chatgptUserId?.trim().toLowerCase();
     const normalizedAccountId = row.chatgptAccountId?.trim().toLowerCase();
     const normalizedEmail = row.email?.trim().toLowerCase();
-    const matchKey = normalizedAccountId
-      ? `account:${normalizedAccountId}`
-      : normalizedEmail
-        ? `email:${normalizedEmail}`
-        : null;
+    const matchKey = normalizedUserId
+      ? `user:${normalizedUserId}`
+      : normalizedAccountId
+        ? `account:${normalizedAccountId}`
+        : normalizedEmail
+          ? `email:${normalizedEmail}`
+          : null;
     if (!matchKey) return row;
     if (seenKeys.has(matchKey)) {
       return {

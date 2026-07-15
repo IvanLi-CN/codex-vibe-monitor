@@ -1387,6 +1387,58 @@ fn normalize_imported_oauth_credentials_accepts_non_codex_or_missing_type() {
 }
 
 #[test]
+fn normalize_imported_oauth_credentials_accepts_sub2api_oauth_account_objects() {
+    let item = ImportOauthCredentialFileRequest {
+        source_id: "sub2api-oauth".to_string(),
+        file_name: "sub2api-oauth.json".to_string(),
+        content: json!({
+            "platform": "openai",
+            "type": "oauth",
+            "credentials": {
+                "email": "student@example.com",
+                "chatgpt_account_id": "acct_shared_k12",
+                "chatgpt_user_id": "user_student",
+                "plan_type": "k12",
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "id_token": test_id_token(
+                    "student@example.com",
+                    Some("acct_shared_k12"),
+                    Some("user_student"),
+                    Some("k12"),
+                ),
+                "expires_at": "2026-03-20T00:00:00Z"
+            }
+        })
+        .to_string(),
+    };
+
+    let normalized = normalize_imported_oauth_credentials(&item)
+        .expect("normalize imported sub2api oauth account");
+
+    assert_eq!(normalized.email, "student@example.com");
+    assert_eq!(normalized.chatgpt_account_id, "acct_shared_k12");
+    assert_eq!(normalized.chatgpt_user_id.as_deref(), Some("user_student"));
+    assert_eq!(normalized.claims.chatgpt_plan_type.as_deref(), Some("k12"));
+}
+
+#[test]
+fn imported_match_key_prefers_chatgpt_user_id_before_email_or_account_id() {
+    assert_eq!(
+        imported_match_key(Some("user_member"), "member@example.com", "acct_shared"),
+        "user:user_member"
+    );
+    assert_eq!(
+        imported_match_key(None, "member@example.com", "acct_shared"),
+        "account:acct_shared"
+    );
+    assert_eq!(
+        imported_match_key(None, "", "acct_shared"),
+        "account:acct_shared"
+    );
+}
+
+#[test]
 fn normalize_imported_oauth_credentials_accepts_missing_or_blank_refresh_token() {
     for (name, refresh_token) in [
         ("missing", None),
@@ -1706,6 +1758,7 @@ async fn imported_oauth_validation_job_caches_successful_probe_for_import_reuse(
                 file_name: "alpha.json".to_string(),
                 email: None,
                 chatgpt_account_id: None,
+                chatgpt_user_id: None,
                 display_name: None,
                 token_expires_at: None,
                 matched_account: None,
@@ -1722,6 +1775,7 @@ async fn imported_oauth_validation_job_caches_successful_probe_for_import_reuse(
         email: "alpha@duckmail.sbs".to_string(),
         display_name: "alpha@duckmail.sbs".to_string(),
         chatgpt_account_id: "acct_alpha".to_string(),
+        chatgpt_user_id: Some("user_alpha".to_string()),
         token_expires_at: "2026-03-20T00:00:00Z".to_string(),
         credentials: StoredOauthCredentials {
             access_token: "access-token".to_string(),
@@ -1754,6 +1808,7 @@ async fn imported_oauth_validation_job_caches_successful_probe_for_import_reuse(
             file_name: "alpha.json".to_string(),
             email: Some("alpha@duckmail.sbs".to_string()),
             chatgpt_account_id: Some("acct_alpha".to_string()),
+            chatgpt_user_id: Some("user_alpha".to_string()),
             display_name: Some("alpha@duckmail.sbs".to_string()),
             token_expires_at: Some("2026-03-20T00:00:00Z".to_string()),
             matched_account: None,

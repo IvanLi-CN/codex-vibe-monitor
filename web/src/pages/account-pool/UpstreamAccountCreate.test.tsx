@@ -23,6 +23,7 @@ import suite5 from "./UpstreamAccountCreate.oauth-mailbox.txt?raw";
 import suite8 from "./UpstreamAccountCreate.relink-detail.txt?raw";
 import {
   convertImportedWebSessionDocumentLocally,
+  parseImportedOauthCredentialDocumentLocally,
   validateImportedOauthCredentialLocally,
 } from "./UpstreamAccountCreate.shared";
 
@@ -1067,6 +1068,12 @@ describe("imported OAuth local validation", () => {
     if (key === "accountPool.upstreamAccounts.import.local.missingExpiry") {
       return "expired is required when token exp is unavailable.";
     }
+    if (key === "accountPool.upstreamAccounts.import.local.unsupportedSub2apiAccount") {
+      return "Only sub2api accounts with platform=openai and type=oauth are supported.";
+    }
+    if (key === "accountPool.upstreamAccounts.import.local.noSupportedSub2apiAccounts") {
+      return "No supported OpenAI OAuth accounts were found in the sub2api export.";
+    }
     return key;
   };
 
@@ -1122,9 +1129,83 @@ describe("imported OAuth local validation", () => {
         "access_token is required.",
         "expired must be a valid RFC3339 timestamp.",
         "id_token must be a valid JWT.",
+        "expired is required when token exp is unavailable.",
       ]);
       expect(result.error).toBe(result.errors.join("\n"));
       expect(result.error).not.toContain("type must be codex");
+    }
+  });
+
+  it("uses chatgpt_user_id ahead of shared account_id for local imported OAuth match keys", () => {
+    const result = validateImportedOauthCredentialLocally(
+      JSON.stringify({
+        type: "auth0",
+        email: "member@example.com",
+        account_id: "acct_shared",
+        access_token: "access-token",
+        id_token:
+          "e30.eyJleHAiOjE3Nzc3Nzc3NzcsImVtYWlsIjoibWVtYmVyQGV4YW1wbGUuY29tIiwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImFjY3Rfc2hhcmVkIiwiY2hhdGdwdF91c2VyX2lkIjoidXNlcl9tZW1iZXIifX0.sig",
+      }),
+      t,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.chatgptUserId).toBe("user_member");
+      expect(result.matchKey).toBe("user:user_member");
+    }
+  });
+
+  it("expands sub2api-data exports into supported OAuth candidates", () => {
+    const result = parseImportedOauthCredentialDocumentLocally(
+      JSON.stringify({
+        type: "sub2api-data",
+        accounts: [
+          {
+            platform: "openai",
+            type: "oauth",
+            credentials: {
+              email: "student-one@example.com",
+              chatgpt_account_id: "acct_shared_k12",
+              chatgpt_user_id: "user_student_one",
+              access_token: "access-token",
+              refresh_token: "refresh-token",
+              id_token:
+                "e30.eyJleHAiOjE3Nzc3Nzc3NzcsImVtYWlsIjoic3R1ZGVudC1vbmVAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF9zaGFyZWRfazEyIiwiY2hhdGdwdF91c2VyX2lkIjoidXNlcl9zdHVkZW50X29uZSIsImNoYXRncHRfcGxhbl90eXBlIjoiazEyIn19.sig",
+              expires_at: "2026-08-06T14:29:36.155Z",
+              plan_type: "k12",
+            },
+          },
+          {
+            platform: "openai",
+            type: "api_key",
+            credentials: {
+              email: "skip@example.com",
+            },
+          },
+        ],
+      }),
+      t,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.candidates).toHaveLength(1);
+      expect(result.rejected).toEqual([
+        {
+          sourceLabel: "skip@example.com",
+          reason: "Only sub2api accounts with platform=openai and type=oauth are supported.",
+        },
+      ]);
+      expect(result.candidates[0]?.chatgptUserId).toBe("user_student_one");
+      expect(result.candidates[0]?.matchKey).toBe("user:user_student_one");
+      expect(JSON.parse(result.candidates[0]?.normalizedContent ?? "{}")).toMatchObject({
+        type: "codex",
+        email: "student-one@example.com",
+        account_id: "acct_shared_k12",
+        chatgpt_user_id: "user_student_one",
+        plan_type: "k12",
+      });
     }
   });
 
@@ -1153,7 +1234,7 @@ describe("imported OAuth local validation", () => {
     });
     expect(converted.refresh_token).toBeUndefined();
     expect(typeof converted.id_token).toBe("string");
-    expect(result.items[0].matchKey).toBe("account:acct_session");
+    expect(result.items[0].matchKey).toBe("user:user_session");
   });
 
   it("finds nested ChatGPT Web session arrays", () => {

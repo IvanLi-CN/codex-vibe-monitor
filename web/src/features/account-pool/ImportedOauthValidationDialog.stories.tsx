@@ -82,6 +82,43 @@ const mixedResultsState: ImportedOauthValidationDialogState = {
   importError: null,
 };
 
+const sharedAccountDistinctMembersState: ImportedOauthValidationDialogState = {
+  inputFiles: 2,
+  uniqueInInput: 2,
+  duplicateInInput: 0,
+  checking: false,
+  importing: false,
+  rows: [
+    {
+      sourceId: "member-one",
+      fileName: "member-one@school.edu.json",
+      email: "member-one@school.edu",
+      chatgptAccountId: "acct_shared_k12",
+      chatgptUserId: "user_member_one",
+      displayName: "member-one@school.edu",
+      tokenExpiresAt: "2026-03-19T10:30:00.000Z",
+      status: "ok",
+      detail: null,
+      attempts: 1,
+      matchedAccount: null,
+    },
+    {
+      sourceId: "member-two",
+      fileName: "member-two@school.edu.json",
+      email: "member-two@school.edu",
+      chatgptAccountId: "acct_shared_k12",
+      chatgptUserId: "user_member_two",
+      displayName: "member-two@school.edu",
+      tokenExpiresAt: "2026-03-19T10:30:00.000Z",
+      status: "ok",
+      detail: null,
+      attempts: 1,
+      matchedAccount: null,
+    },
+  ],
+  importError: null,
+};
+
 const meta = {
   title: "Account Pool/Components/Imported OAuth Validation Dialog",
   component: ImportedOauthValidationDialog,
@@ -179,5 +216,11 @@ export const ImportBlockedByGroupProxy: Story = {
       canvas.getByText(/group "staging" does not have any selectable bound proxy nodes\./i),
     ).toBeInTheDocument();
     await expect(canvas.getByRole("button", { name: /import valid/i })).toBeDisabled();
+  },
+};
+
+export const SharedAccountDifferentMembers: Story = {
+  args: {
+    state: sharedAccountDistinctMembersState,
   },
 };

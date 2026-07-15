@@ -1578,16 +1578,10 @@ pub(crate) fn is_team_plan_type(plan_type: Option<&str>) -> bool {
 }
 
 pub(crate) fn should_flag_duplicate_identity_pair(
-    current_plan_type: Option<&str>,
-    peer_plan_type: Option<&str>,
+    _current_plan_type: Option<&str>,
+    _peer_plan_type: Option<&str>,
 ) -> bool {
-    match (
-        normalize_plan_type(current_plan_type),
-        normalize_plan_type(peer_plan_type),
-    ) {
-        (Some(current), Some(peer)) => current.eq_ignore_ascii_case(&peer),
-        _ => true,
-    }
+    true
 }
 
 pub(crate) fn is_team_shared_org_cluster_member(
@@ -1606,6 +1600,23 @@ pub(crate) fn is_team_shared_org_peer_pair(
         && is_team_shared_org_cluster_member(peer)
         && current.group_name == peer.group_name
         && current.chatgpt_user_id != peer.chatgpt_user_id
+}
+
+pub(crate) fn should_flag_shared_account_id_duplicate_pair(
+    current: &UpstreamAccountIdentityClusterMember,
+    peer: &UpstreamAccountIdentityClusterMember,
+) -> bool {
+    if is_team_shared_org_peer_pair(current, peer) {
+        return false;
+    }
+    !matches!(
+        (
+        current.chatgpt_user_id.as_deref(),
+        peer.chatgpt_user_id.as_deref(),
+    ),
+        (Some(current_user_id), Some(peer_user_id))
+            if !current_user_id.eq_ignore_ascii_case(peer_user_id)
+    )
 }
 
 pub(crate) fn resolve_effective_plan_type(
@@ -1754,22 +1765,14 @@ pub(crate) async fn load_duplicate_info_map(
         {
             for member in cluster {
                 if member.id != row.id
-                    && !is_team_shared_org_peer_pair(&current_member, member)
-                    && should_flag_duplicate_identity_pair(
-                        current_member.plan_type.as_deref(),
-                        member.plan_type.as_deref(),
-                    )
+                    && should_flag_shared_account_id_duplicate_pair(&current_member, member)
                 {
                     peer_ids.insert(member.id);
                 }
             }
             if cluster.iter().any(|member| {
                 member.id != row.id
-                    && !is_team_shared_org_peer_pair(&current_member, member)
-                    && should_flag_duplicate_identity_pair(
-                        current_member.plan_type.as_deref(),
-                        member.plan_type.as_deref(),
-                    )
+                    && should_flag_shared_account_id_duplicate_pair(&current_member, member)
             }) {
                 reasons.push(DuplicateReason::SharedChatgptAccountId);
             }
@@ -1958,11 +1961,7 @@ pub(crate) async fn load_duplicate_info_for_account(
                 group_name: normalize_legacy_ungrouped_group_name(row.group_name.clone()),
                 plan_type: normalize_plan_type(row.plan_type.as_deref()),
             };
-            !is_team_shared_org_peer_pair(&current_member, &peer)
-                && should_flag_duplicate_identity_pair(
-                    current_member.plan_type.as_deref(),
-                    peer.plan_type.as_deref(),
-                )
+            should_flag_shared_account_id_duplicate_pair(&current_member, &peer)
         }) {
             reasons.push(DuplicateReason::SharedChatgptAccountId);
         }
@@ -1973,12 +1972,7 @@ pub(crate) async fn load_duplicate_info_for_account(
                 group_name: normalize_legacy_ungrouped_group_name(row.group_name.clone()),
                 plan_type: normalize_plan_type(row.plan_type.as_deref()),
             };
-            if !is_team_shared_org_peer_pair(&current_member, &peer)
-                && should_flag_duplicate_identity_pair(
-                    current_member.plan_type.as_deref(),
-                    peer.plan_type.as_deref(),
-                )
-            {
+            if should_flag_shared_account_id_duplicate_pair(&current_member, &peer) {
                 peer_ids.insert(row.id);
             }
         }

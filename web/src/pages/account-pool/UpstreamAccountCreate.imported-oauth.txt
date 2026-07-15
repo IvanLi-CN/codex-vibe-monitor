@@ -13,18 +13,21 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     overrides?: Partial<{
       email: string;
       accountId: string;
+      userId: string;
       expired: string;
       idToken: string;
     }>,
   ) {
     const email = overrides?.email ?? `mailbox-${index}@duckmail.sbs`;
     const accountId = overrides?.accountId ?? `acct_${index}`;
+    const userId = overrides?.userId ?? null;
     const fileName = `${email}.json`;
     const content = JSON.stringify({
       type: "codex",
       email,
       account_id: accountId,
-      expired: overrides?.expired ?? "2026-03-20T00:00:00.000Z",
+      chatgpt_account_id: accountId,
+      chatgpt_user_id: userId ?? undefined,
       access_token: "access",
       refresh_token: "refresh",
       id_token:
@@ -33,8 +36,10 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
           email,
           auth: {
             chatgpt_account_id: accountId,
+            chatgpt_user_id: userId ?? undefined,
           },
         }),
+      expired: overrides?.expired ?? "2026-03-20T00:00:00.000Z",
     });
     const file = new File([content], fileName, {
       type: "application/json",
@@ -46,6 +51,7 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
       fileName,
       email,
       chatgptAccountId: accountId,
+      chatgptUserId: userId,
     };
   }
 
@@ -68,12 +74,14 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
       | "error"
       | "duplicate_in_input" = "ok",
     detail: string | null = null,
+    userId: string | null = null,
   ) {
     return {
       sourceId,
       fileName,
       email,
       chatgptAccountId: accountId,
+      chatgptUserId: userId,
       displayName: email,
       tokenExpiresAt: "2026-03-20T00:00:00.000Z",
       matchedAccount: null,
@@ -101,6 +109,7 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
         fileName: item.fileName,
         email: null,
         chatgptAccountId: null,
+        chatgptUserId: null,
         displayName: null,
         tokenExpiresAt: null,
         matchedAccount: null,
@@ -451,7 +460,7 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
 
     expect(runImportedOauthValidation).not.toHaveBeenCalled();
     expect(pageTextContent()).toContain(
-      "Paste exactly one credential JSON object.",
+      "Paste exactly one credential JSON object or one sub2api-data export object.",
     );
     expect(pasteField.value).toBe('[{"type":"codex"}]');
   });
@@ -588,7 +597,7 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
 
     expect(pageTextContent()).toContain(firstFixture.fileName);
     expect(pageTextContent()).toContain(
-      `Skipped duplicate credential "${secondFixture.fileName}" because the same account is already queued.`,
+      `Skipped duplicate credential "${secondFixture.fileName}" because the same member is already queued.`,
     );
 
     clickButton(/validate and review/i);
@@ -605,6 +614,80 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
           sourceId: firstSourceId,
           fileName: firstFixture.fileName,
           content: firstFixture.content,
+        }),
+      ],
+    });
+  });
+
+  it("keeps shared account ids with different chatgpt user ids as separate queued imports", async () => {
+    const firstFixture = createImportedOauthFixture(1, {
+      email: "member-one@duckmail.sbs",
+      accountId: "acct_shared_k12",
+      userId: "user_member_one",
+    });
+    const secondFixture = createImportedOauthFixture(2, {
+      email: "member-two@duckmail.sbs",
+      accountId: "acct_shared_k12",
+      userId: "user_member_two",
+    });
+    const firstSourceId = getImportedOauthSourceId(firstFixture, 0);
+    const secondSourceId = getImportedOauthSourceId(secondFixture, 1);
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: {
+          [firstSourceId]: buildImportedOauthRow(
+            firstSourceId,
+            firstFixture.fileName,
+            firstFixture.email,
+            firstFixture.chatgptAccountId,
+            "ok",
+            null,
+            firstFixture.chatgptUserId,
+          ),
+          [secondSourceId]: buildImportedOauthRow(
+            secondSourceId,
+            secondFixture.fileName,
+            secondFixture.email,
+            secondFixture.chatgptAccountId,
+            "ok",
+            null,
+            secondFixture.chatgptUserId,
+          ),
+        },
+      });
+    mockUpstreamAccounts({ startImportedOauthValidationJob });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(fileInput, [firstFixture.file, secondFixture.file]);
+    await flushAsync();
+    await flushAsync();
+
+    expect(pageTextContent()).toContain(firstFixture.fileName);
+    expect(pageTextContent()).toContain(secondFixture.fileName);
+    expect(pageTextContent()).not.toContain("same member is already queued");
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
+
+    expect(startImportedOauthValidationJob).toHaveBeenCalledWith({
+      ...expectedGroupSelection(TEST_REQUIRED_GROUP_NAME, {
+        includeConcurrencyLimit: false,
+      }),
+      items: [
+        expect.objectContaining({
+          sourceId: firstSourceId,
+          fileName: firstFixture.fileName,
+        }),
+        expect.objectContaining({
+          sourceId: secondSourceId,
+          fileName: secondFixture.fileName,
         }),
       ],
     });

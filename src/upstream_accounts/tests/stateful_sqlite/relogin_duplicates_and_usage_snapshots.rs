@@ -640,7 +640,7 @@ async fn upsert_oauth_account_preserves_route_cooldown_state_for_existing_accoun
 }
 
 #[tokio::test]
-async fn same_plan_type_accounts_with_shared_account_id_are_flagged_as_duplicates() {
+async fn distinct_members_with_shared_account_id_are_not_flagged_as_duplicates() {
     let pool = test_pool().await;
 
     let mut tx = pool.begin().await.expect("begin tx 1");
@@ -659,7 +659,12 @@ async fn same_plan_type_accounts_with_shared_account_id_are_flagged_as_duplicate
             note: None,
             tag_ids: vec![],
             requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
-            claims: &test_claims("first@example.com", Some("org_shared"), Some("user_1")),
+            claims: &test_claims_with_plan_type(
+                "first@example.com",
+                Some("org_shared"),
+                Some("user_1"),
+                Some("k12"),
+            ),
             encrypted_credentials: "encrypted-1".to_string(),
             has_refresh_token: true,
             token_expires_at: "2026-03-14T00:00:00Z",
@@ -686,7 +691,12 @@ async fn same_plan_type_accounts_with_shared_account_id_are_flagged_as_duplicate
             note: None,
             tag_ids: vec![],
             requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
-            claims: &test_claims("second@example.com", Some("org_shared"), Some("user_2")),
+            claims: &test_claims_with_plan_type(
+                "second@example.com",
+                Some("org_shared"),
+                Some("user_2"),
+                Some("k12"),
+            ),
             encrypted_credentials: "encrypted-2".to_string(),
             has_refresh_token: true,
             token_expires_at: "2026-03-14T00:00:00Z",
@@ -709,18 +719,8 @@ async fn same_plan_type_accounts_with_shared_account_id_are_flagged_as_duplicate
     let duplicate_info = load_duplicate_info_map(&pool)
         .await
         .expect("load duplicate info");
-    assert!(matches!(
-        duplicate_info
-            .get(&first_id)
-            .map(|info| info.reasons.as_slice()),
-        Some([DuplicateReason::SharedChatgptAccountId])
-    ));
-    assert!(matches!(
-        duplicate_info
-            .get(&second_id)
-            .map(|info| info.reasons.as_slice()),
-        Some([DuplicateReason::SharedChatgptAccountId])
-    ));
+    assert!(!duplicate_info.contains_key(&first_id));
+    assert!(!duplicate_info.contains_key(&second_id));
 
     let summaries = load_upstream_account_summaries(
         &pool,
@@ -732,13 +732,7 @@ async fn same_plan_type_accounts_with_shared_account_id_are_flagged_as_duplicate
         summaries
             .iter()
             .filter(|summary| summary.id == first_id || summary.id == second_id)
-            .all(|summary| matches!(
-                summary
-                    .duplicate_info
-                    .as_ref()
-                    .map(|info| info.reasons.as_slice()),
-                Some([DuplicateReason::SharedChatgptAccountId])
-            ))
+            .all(|summary| summary.duplicate_info.is_none())
     );
 
     let first_detail = load_upstream_account_detail(&pool, first_id)
@@ -749,22 +743,8 @@ async fn same_plan_type_accounts_with_shared_account_id_are_flagged_as_duplicate
         .await
         .expect("load second detail")
         .expect("second detail exists");
-    assert!(matches!(
-        first_detail
-            .summary
-            .duplicate_info
-            .as_ref()
-            .map(|info| info.reasons.as_slice()),
-        Some([DuplicateReason::SharedChatgptAccountId])
-    ));
-    assert!(matches!(
-        second_detail
-            .summary
-            .duplicate_info
-            .as_ref()
-            .map(|info| info.reasons.as_slice()),
-        Some([DuplicateReason::SharedChatgptAccountId])
-    ));
+    assert!(first_detail.summary.duplicate_info.is_none());
+    assert!(second_detail.summary.duplicate_info.is_none());
 }
 
 #[tokio::test]
@@ -790,7 +770,7 @@ async fn load_duplicate_info_for_account_matches_global_duplicate_result() {
             claims: &test_claims(
                 "scoped-1@example.com",
                 Some("scoped_shared_org"),
-                Some("scoped_user_1"),
+                Some("scoped_user_shared"),
             ),
             encrypted_credentials: "encrypted-scoped-1".to_string(),
             has_refresh_token: true,
@@ -821,7 +801,7 @@ async fn load_duplicate_info_for_account_matches_global_duplicate_result() {
             claims: &test_claims(
                 "scoped-2@example.com",
                 Some("scoped_shared_org"),
-                Some("scoped_user_2"),
+                Some("scoped_user_shared"),
             ),
             encrypted_credentials: "encrypted-scoped-2".to_string(),
             has_refresh_token: true,
@@ -1082,7 +1062,7 @@ async fn new_oauth_accounts_with_shared_user_id_are_preserved_and_flagged() {
 }
 
 #[tokio::test]
-async fn mixed_plan_type_accounts_with_shared_account_id_are_not_flagged() {
+async fn legacy_shared_account_id_duplicates_ignore_mixed_plan_types() {
     let pool = test_pool().await;
 
     for (display_name, email, plan_type) in [
@@ -1120,7 +1100,11 @@ async fn mixed_plan_type_accounts_with_shared_account_id_are_not_flagged() {
     let duplicate_info = load_duplicate_info_map(&pool)
         .await
         .expect("load duplicate info");
-    assert!(duplicate_info.is_empty());
+    assert!(
+        duplicate_info
+            .values()
+            .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
+    );
 
     let summaries = load_upstream_account_summaries(
         &pool,
@@ -1128,23 +1112,32 @@ async fn mixed_plan_type_accounts_with_shared_account_id_are_not_flagged() {
     )
     .await
     .expect("load summaries");
-    assert!(
-        summaries
-            .iter()
-            .all(|summary| summary.duplicate_info.is_none())
-    );
+    assert!(summaries.iter().all(|summary| matches!(
+                summary
+                    .duplicate_info
+                    .as_ref()
+                    .map(|info| info.reasons.as_slice()),
+                Some([DuplicateReason::SharedChatgptAccountId])
+            )));
 
     for summary in summaries {
         let detail = load_upstream_account_detail(&pool, summary.id)
             .await
             .expect("load detail")
             .expect("detail exists");
-        assert!(detail.summary.duplicate_info.is_none());
+        assert!(matches!(
+            detail
+                .summary
+                .duplicate_info
+                .as_ref()
+                .map(|info| info.reasons.as_slice()),
+            Some([DuplicateReason::SharedChatgptAccountId])
+        ));
     }
 }
 
 #[tokio::test]
-async fn mixed_plan_type_accounts_with_shared_user_id_are_not_flagged() {
+async fn shared_user_id_duplicates_ignore_mixed_plan_types() {
     let pool = test_pool().await;
 
     for (display_name, email, account_id, plan_type) in [
@@ -1192,7 +1185,11 @@ async fn mixed_plan_type_accounts_with_shared_user_id_are_not_flagged() {
     let duplicate_info = load_duplicate_info_map(&pool)
         .await
         .expect("load duplicate info");
-    assert!(duplicate_info.is_empty());
+    assert!(
+        duplicate_info
+            .values()
+            .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptUserId])
+    );
 
     let summaries = load_upstream_account_summaries(
         &pool,
@@ -1200,18 +1197,27 @@ async fn mixed_plan_type_accounts_with_shared_user_id_are_not_flagged() {
     )
     .await
     .expect("load summaries");
-    assert!(
-        summaries
-            .iter()
-            .all(|summary| summary.duplicate_info.is_none())
-    );
+    assert!(summaries.iter().all(|summary| matches!(
+                summary
+                    .duplicate_info
+                    .as_ref()
+                    .map(|info| info.reasons.as_slice()),
+                Some([DuplicateReason::SharedChatgptUserId])
+            )));
 
     for summary in summaries {
         let detail = load_upstream_account_detail(&pool, summary.id)
             .await
             .expect("load detail")
             .expect("detail exists");
-        assert!(detail.summary.duplicate_info.is_none());
+        assert!(matches!(
+            detail
+                .summary
+                .duplicate_info
+                .as_ref()
+                .map(|info| info.reasons.as_slice()),
+            Some([DuplicateReason::SharedChatgptUserId])
+        ));
     }
 }
 
@@ -1334,7 +1340,7 @@ async fn latest_usage_sample_plan_type_restores_same_plan_duplicate_flags() {
 }
 
 #[tokio::test]
-async fn latest_usage_sample_plan_type_clears_mixed_plan_duplicate_flags() {
+async fn latest_usage_sample_plan_type_does_not_clear_legacy_shared_account_duplicates() {
     let pool = test_pool().await;
 
     let mut inserted_ids = Vec::new();
@@ -1397,7 +1403,11 @@ async fn latest_usage_sample_plan_type_clears_mixed_plan_duplicate_flags() {
     let duplicate_info = load_duplicate_info_map(&pool)
         .await
         .expect("load duplicate info");
-    assert!(duplicate_info.is_empty());
+    assert!(
+        duplicate_info
+            .values()
+            .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
+    );
 }
 
 #[tokio::test]

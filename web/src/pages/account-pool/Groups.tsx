@@ -56,6 +56,8 @@ export default function GroupsPage() {
       switch (normalized) {
         case "free":
           return t("accountPool.upstreamAccounts.plan.free");
+        case "k12":
+          return t("accountPool.upstreamAccounts.plan.k12");
         case "pro":
           return t("accountPool.upstreamAccounts.plan.plus");
         case "team":
