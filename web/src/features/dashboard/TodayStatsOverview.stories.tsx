@@ -129,8 +129,10 @@ const sampleStats: StatsResponse = {
 const sampleRate: DashboardTodayRateSnapshot = {
   tokensPerMinute: 1000.6,
   spendRate: 0.1,
-  windowMinutes: 5,
+  windowMinutes: 1,
   available: true,
+  currentFirstResponseByteTotalAvgMs: 980,
+  currentAvgTotalMs: 4100,
 };
 
 const sampleModelPerformance: ModelPerformance = {
@@ -813,7 +815,7 @@ export const Desktop1280PrecisionGuard: Story = {
     rate: {
       tokensPerMinute: 1_049_600,
       spendRate: 8.31,
-      windowMinutes: 5,
+      windowMinutes: 1,
       available: true,
     },
     ...comparisonArgs,
@@ -863,7 +865,7 @@ export const Desktop1280LabelGuard: Story = {
     rate: {
       tokensPerMinute: 1_049_600,
       spendRate: 8.31,
-      windowMinutes: 5,
+      windowMinutes: 1,
       available: true,
     },
     ...comparisonArgs,
@@ -955,7 +957,7 @@ export const RatePrecisionGuard: Story = {
     rate: {
       tokensPerMinute: 4200,
       spendRate: 1,
-      windowMinutes: 5,
+      windowMinutes: 1,
       available: true,
     },
     timeseries: ratePrecisionTimeseries,
@@ -1008,7 +1010,7 @@ export const NarrowTileMetaStackGuard: Story = {
     rate: {
       tokensPerMinute: 1_049_600,
       spendRate: 8.31,
-      windowMinutes: 5,
+      windowMinutes: 1,
       available: true,
     },
     ...comparisonArgs,
@@ -1136,8 +1138,10 @@ function buildAnimatedRate(step: number): DashboardTodayRateSnapshot {
   return {
     tokensPerMinute: 1000 + step * 27,
     spendRate: Number((0.1 + step * 0.006).toFixed(3)),
-    windowMinutes: 5,
+    windowMinutes: 1,
     available: true,
+    currentFirstResponseByteTotalAvgMs: 980 + step * 18,
+    currentAvgTotalMs: 4100 + step * 85,
   };
 }
 

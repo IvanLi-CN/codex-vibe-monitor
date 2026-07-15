@@ -1627,6 +1627,10 @@ pub(crate) struct DashboardActivitySummaryResponse {
     pub(crate) stats: StatsResponse,
     pub(crate) tokens_per_minute: Option<f64>,
     pub(crate) spend_rate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) current_first_response_byte_total_avg_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) current_avg_total_ms: Option<f64>,
     pub(crate) model_performance: ModelPerformanceResponse,
 }
 

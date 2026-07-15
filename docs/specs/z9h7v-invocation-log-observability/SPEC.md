@@ -37,12 +37,12 @@
 - 尝试详情必须提供到 `/records?attemptId=...` 的全局调用总览入口，并自动展开该最终调用的完整尝试链；旧 `requestId` 型入口只保留兼容读取，不再作为新 UI 的 attempt 跳转合同。
 - 账号详情调用记录中的 owner-facing 主入口必须显示 `attemptId` 而不是 `invokeId`；`invokeId` 如保留只能降级为诊断上下文，不能继续承担 attempt 主标识角色。
 - 号池调用处于 `running` / `pending` 且已携带 `upstreamAccountName` 或 `upstreamAccountId` 时，所有共享 invocation 展示面必须用当前上游账号替代“号池路由中”fallback，并以蓝色呼吸文本表达正在路由中。
-- Dashboard 当前时间范围新增按“响应模型 / 思考程度”分组的性能明细，覆盖 TPM、流式响应速率、平均响应时长、平均首字用时与累计使用时长；明细及对应 TPM、首字卡面仅统计成功且已计费调用。
+- Dashboard 当前时间范围新增按“响应模型 / 思考程度”分组的性能明细，覆盖 TPM、流式响应速率、平均响应时长、平均首字用时与累计使用时长；这些明细仅统计成功且已计费调用。
 
 ### Non-goals
 
 - 不新增独立请求详情页。
-- 不改费用、token 明细和既有时序聚合的归集语义；仅 Dashboard 活动快照的 TPM、首字卡面及模型性能明细采用本规格定义的成功已计费完整周期口径。
+- 不改费用、token 明细和既有时序聚合的归集语义；本规格只定义 `modelPerformance` 的成功已计费完整周期口径，以及该口径在 Dashboard 性能明细入口中的展示语义，不再驱动顶部实时 KPI。
 - 不新增“总日志开关”。
 - 不对历史 `.gz` / raw 文件做立即删除、迁移或重压缩。
 
@@ -97,7 +97,7 @@
 - 运行态号池账号提示必须是 text-only 蓝色语义状态，动画周期在 1500-2200ms 内；`prefers-reduced-motion: reduce` 下关闭呼吸动画但保留蓝色文本。
 - Dashboard 模型性能明细的样本资格固定为：状态为 `success` 或 `completed`、失败分类为 `none`、且 `cost` 非空；`cost=0` 仍属于已计费。模型取 `responseModel`，思考程度为空时显示“未指定”。
 - TPM 为合格调用总 token 除以当前完整选择范围的分钟数；流式响应速率为输出 token 除以上游流式响应时长；响应时长为首字至流结束的平均值；首字用时为收到调用请求至上游首字的平均值；模型行使用时长继续为各自行的端到端时长之和，总计行使用时长改为将同一范围内全部合格调用按 `intersection([occurred_at, occurred_at + t_total_ms), [range.start, range.end))` 取时间并集。缺少有效样本的单项显示 `—`。
-- Dashboard 全局和账号 TPM 卡面必须使用对应模型性能总计；费用速率继续使用既有费用归集，但以完整选择范围为分母。
+- `modelPerformance.total.tokensPerMinute` 与账号级模型性能总计继续使用本规格定义的成功已计费完整范围分母；Dashboard 顶部实时 `TPM / 消费速率 / 首字用时 / 响应时间` 的 owner-facing 当前值由 `z6ysw` 的 `last_complete_1m_sma` 合同负责，不复用这些完整范围总计。
 - 桌面端性能明细触发器必须支持 hover、键盘聚焦与点击保留；窄屏点击打开无横向滚动的详情抽屉。总计行置顶，模型行按累计使用时长降序；总计行允许小于模型行 `使用时长` 的算术和。
 - `GET /api/invocations/locate` 必须按 `upstreamAccountId + requestId` 在 retained live records 与当前 runtime overlay 中精确定位，固定采用 `occurredAt DESC, id DESC`，返回目标所在的单个分页窗口、稳定 `snapshotId`、短生命周期 `anchorId`、`targetIndex` 与 `targetAbsoluteIndex`。
 - 锚点定位未命中时必须返回结构化 `404`；不得为了定位查询 archive，也不得返回或预加载目标页之外的调用记录。
@@ -117,8 +117,8 @@
 
 - 请求进入 `/v1/chat/completions` 或 `/v1/responses` 采集路径时，后端提取 IP 与 prompt cache key，并随 payload 一并落库。
 - `/api/invocations` 通过 `json_extract(payload, ...)` 投影扩展字段，不依赖新增列。
-- Dashboard 活动快照从 retained live 调用按响应模型与思考程度聚合成功已计费性能样本，同时分别生成全局和账号级总计；原始费用、token 明细和调用列表聚合保持不变。
-- Dashboard TPM、首字卡及每张账号卡的 TPM/费用速率均以当前选择范围完整周期计算。性能明细在桌面使用可保留的浮层，在窄屏使用详情抽屉；两个入口展示相同总计与模型行。
+- Dashboard 活动快照从 retained live 调用按响应模型与思考程度聚合成功已计费性能样本，同时分别生成全局和账号级 `modelPerformance` 总计；原始费用、token 明细和调用列表聚合保持不变。
+- Dashboard 性能明细入口继续展示当前选择范围的完整周期总计；顶部实时 KPI 与账号标题实时指标改由 `z6ysw` 的最近完整 1 分钟 bucket 提供，不再把 `modelPerformance` 总计当作当前值。
 - 前端表格默认显示关键字段（token/cost/latency），用户展开后看到请求元信息与阶段耗时明细。
 - 前端展开详情时隐藏 `source` 行，避免把来源分类误读成出站代理。
 - `/api/invocations/{invoke_id}/pool-attempts` 读取 `pool_upstream_request_attempts.proxy_binding_key_snapshot` 并作为 `proxyBindingKeySnapshot` 返回。
@@ -225,7 +225,7 @@
 - Given 号池运行态调用没有 `upstreamAccountName` 或 `upstreamAccountId`，When owner-facing 调用界面渲染，Then 继续显示既有“号池路由中”fallback，且不伪造账号、不启用呼吸状态。
 - Given 号池调用已进入成功或失败等终态，When owner-facing 调用界面渲染其账号字段，Then 保持普通账号显示与点击行为，不启用运行态呼吸状态。
 - Given 当前 Dashboard 范围内同时存在成功已计费、失败、运行中和未计费调用，When 请求模型性能明细，Then 仅成功已计费调用进入总计和模型行，且 `cost=0` 的成功调用仍保留；模型按响应模型归属，空思考程度显示“未指定”。
-- Given owner 在桌面 hover、键盘聚焦或点击 Dashboard TPM、首字、账号 TPM 或费用速率入口，When 性能明细打开，Then 显示置顶总计与按累计使用时长降序的模型行，且总计 `使用时长` 按范围内合格调用的时间并集计算、可以小于模型行加总，缺失指标显示 `—`；Given 窄屏点击同一入口，Then 以无横向滚动的抽屉展示同一数据。
+- Given owner 在桌面 hover、键盘聚焦或点击 Dashboard 的模型性能入口，When 性能明细打开，Then 显示置顶总计与按累计使用时长降序的模型行，且总计 `使用时长` 按范围内合格调用的时间并集计算、可以小于模型行加总，缺失指标显示 `—`；Given 窄屏点击同一入口，Then 以无横向滚动的抽屉展示同一数据。
 
 ### Manual verification
 

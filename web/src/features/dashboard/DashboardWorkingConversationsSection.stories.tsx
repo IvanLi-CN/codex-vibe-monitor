@@ -2422,8 +2422,8 @@ function DrawerPreviewStory({
           rateWindow: {
             start: activity.rangeStart,
             end: activity.rangeEnd,
-            windowMinutes: 5,
-            mode: "story",
+            windowMinutes: 1,
+            mode: "last_complete_1m_sma",
           },
           summary: {
             stats: {
@@ -2715,7 +2715,10 @@ export const WarningSuccessConversationCard: Story = {
     if (!(statusNode instanceof HTMLElement)) {
       throw new Error("missing warning success status node");
     }
-    await expect(statusNode.getAttribute("title") ?? "").toContain("警告成功");
+    await expect(statusNode.getAttribute("title")).toBeNull();
+    await expect(statusNode.getAttribute("aria-label") ?? "").toContain("警告成功");
+    await userEvent.hover(statusNode);
+    await expect(within(document.body).getByRole("tooltip")).toHaveTextContent("警告成功");
     await expect(canvasElement.textContent ?? "").toContain("Pool Alpha");
   },
 };
@@ -3489,7 +3492,10 @@ export const UpstreamAccountWarningSuccess: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("当前活动账号 1 个")).toBeInTheDocument();
     const statusNode = await canvas.findByTestId("dashboard-inline-invocation-status");
-    await expect(statusNode.getAttribute("title") ?? "").toContain("警告成功");
+    await expect(statusNode.getAttribute("title")).toBeNull();
+    await expect(statusNode.getAttribute("aria-label") ?? "").toContain("警告成功");
+    await userEvent.hover(statusNode);
+    await expect(within(document.body).getByRole("tooltip")).toHaveTextContent("警告成功");
     await expect(canvas.getByText("story-account-1")).toBeInTheDocument();
   },
   parameters: {

@@ -79,7 +79,7 @@ interface TooltipProps {
   open?: boolean;
   clickToOpen?: boolean;
   triggerElement?: "span" | "div";
-  triggerProps?: React.HTMLAttributes<HTMLElement>;
+  triggerProps?: React.HTMLAttributes<HTMLElement> & Record<string, unknown>;
 }
 
 export function Tooltip({

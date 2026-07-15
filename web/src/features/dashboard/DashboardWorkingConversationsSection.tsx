@@ -546,26 +546,48 @@ function InlineInvocationStatus({
 }) {
   const toneClassName = statusInlineToneClassName(meta.badgeVariant);
   const assistiveLabel = buildStatusAssistiveLabel(label, detail);
+  if (!showLabel) {
+    return (
+      <Tooltip
+        side="bottom"
+        sideOffset={8}
+        className={cn(
+          "h-5 w-5 items-center justify-center rounded-full bg-base-100/12",
+          toneClassName,
+          className,
+        )}
+        content={assistiveLabel}
+        contentClassName="max-w-[min(32rem,calc(100vw-1rem))] whitespace-pre-wrap break-words"
+        triggerProps={{
+          "data-testid": "dashboard-inline-invocation-status",
+          "aria-label": assistiveLabel,
+          role: "img",
+        }}
+      >
+        <AppIcon
+          name={meta.icon}
+          className={cn("h-3.5 w-3.5 shrink-0", meta.icon === "loading" && "animate-spin")}
+          aria-hidden
+        />
+      </Tooltip>
+    );
+  }
+
   return (
     <span
       data-testid="dashboard-inline-invocation-status"
       className={cn(
-        showLabel
-          ? "inline-flex items-center gap-1 whitespace-nowrap text-[11px] font-semibold leading-none"
-          : "inline-flex h-5 w-5 items-center justify-center rounded-full bg-base-100/12",
+        "inline-flex items-center gap-1 whitespace-nowrap text-[11px] font-semibold leading-none",
         toneClassName,
         className,
       )}
-      aria-label={showLabel ? undefined : assistiveLabel}
-      title={showLabel ? undefined : assistiveLabel}
-      role={showLabel ? undefined : "img"}
     >
       <AppIcon
         name={meta.icon}
         className={cn("h-3.5 w-3.5 shrink-0", meta.icon === "loading" && "animate-spin")}
         aria-hidden
       />
-      {showLabel ? <span>{label}</span> : null}
+      <span>{label}</span>
     </span>
   );
 }

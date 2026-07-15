@@ -57,6 +57,7 @@
 - `上游账号` 视图仅支持 `today / yesterday / 1d / 7d`；当共享 range 为 `usage` 时，该 tab 必须 disabled，且若当前停留在账号 tab，必须自动回退到 `对话`。
 - 账号活动接口必须一次返回每个账号的 `upstreamAccountId`、`displayName`、`groupName`、`planType`、`enabled`、`displayStatus`、`enableStatus`、`workStatus`、`healthStatus`、`syncState`、`lastError`、`lastActionReasonMessage`、`requestCount`、`successCount`、`failureCount`、`nonSuccessCount`、`totalTokens`、`successTokens`、`nonSuccessTokens`、`failureTokens`、`cacheHitRate`、`tokensPerMinute`、`spendRate`、`totalCost`、`failureCost`、`firstByteAvgMs`、`avgTotalMs`、`inProgressInvocationCount`、`inProgressPhaseCounts`、`retryInvocationCount`、`effectiveRoutingRule` 与 `recentInvocations[4]`。
 - Future-only status note: 仅对未来新写入的 `pure_downstream_closed`，账号活动聚合必须把 `warning_success` 计入 `successCount/successTokens/totalCost/totalTokens/latency`，并排除出 `failureCount/nonSuccessCount/failureTokens/failureCost`；`recentInvocations` 仍要明确显示独立状态“警告成功”，普通 `success` 筛选不混入该状态。
+- `warning_success` 的紧凑状态位在 Dashboard 对话卡片与上游账号 recent 行中可以继续只显示 warning 图标，但 hover / focus / long-press 后必须通过共享 UI tooltip 披露完整状态文案与诊断；不得退回浏览器原生 `title` 黑框提示。
 - `recentInvocations` 必须限制在当前所选范围内，按 `occurredAt DESC` 排序，并使用后端 bounded query 返回；尚未完成 SQLite batch flush 的 runtime running / pending / terminal 记录必须参与 recent 候选，与 SQLite 行按 `(invokeId, occurredAt)` 去重后再截断到 `recentLimit`，不得等待后续调用事件才能显示。
 - `recentInvocations[]` 必须额外返回真实 `promptCacheKey?: string | null`，供账号卡 recent 行生成稳定的对话短 ID 与详情抽屉 selection。
 - 账号卡不是折叠卡，也不是 `2 x 2` 小格子；它是单张放大卡片，桌面宽屏 `>=1660px` 时每行 2 张，其余断点为 1 列。
@@ -66,7 +67,8 @@
 - 账号卡标题行的快捷策略 chip 必须固定展示账号级快速操作入口：优先级、Fast 模式、`禁出`、`禁入`；优先级入口按 `普通 → 兜底 → 主力 → 禁新 → 普通` 轮换，并分别写账号级 `priorityTier=normal|fallback|primary|no_new`；Fast 模式按 `不改Fast → 补Fast → 强制Fast → 禁Fast → 不改Fast` 轮换，并写账号级 `fastModeRewriteMode=keep_original|fill_missing|force_add|force_remove`；`禁出 / 禁入` 分别切换账号级 `allowCutOut / allowCutIn`。Dashboard 快捷入口不得清除账号覆盖或恢复继承。
 - Dashboard 快捷策略保存必须使用乐观 UI 与 1 秒 debounce；debounce 窗口内只提交最终值，失败时回滚到最近已提交状态，并在账号卡内暴露可见错误。保存复用 `PATCH /api/pool/upstream-accounts/:id` 的 `routingRule` payload，不新增 mutation endpoint。
 - 账号卡右侧必须提供齿轮 icon button；点击后打开当前账号详情的 `routing` 标签页。
-- 账号活动接口中的 `tokensPerMinute` 与 `spendRate` 必须使用响应窗口末端最近 5 分钟活跃尾段口径：以当前响应 `rangeEnd` 为 anchor，仅看最近 5 分钟，跳过窗口前置空闲分钟，并分别以第一个有 Token / Cost 的分钟作为有效分母起点；`requestCount`、`totalTokens`、`totalCost`、recent 调用与排序继续使用所选 range 的总量口径。
+- Dashboard 实时 KPI 与账号标题行里的 `tokensPerMinute` / `spendRate` 必须统一使用后端 `last_complete_1m_sma` 合同：以响应 `rangeEnd` 对齐最近 1 个完整分钟 bucket，严格排除当前未闭合分钟；`TPM` 分子仅累加成功、失败分类为 `none` 且 `cost` 非空的合格调用 token，`cost=0` 仍计入；`消费速率` 直接使用该分钟 cost 聚合；最近完整分钟空桶时必须返回 `TPM=0`、`消费速率=0`。`requestCount`、`totalTokens`、`totalCost`、recent 调用与排序继续使用所选 range 的总量口径。
+- Dashboard 顶部实时 `首字用时` 与 `响应时间` 必须由后端同一个最近完整 1 分钟 bucket 统一给出：`currentFirstResponseByteTotalAvgMs` 只统计成功态且 `t_upstream_ttfb_ms > 0` 的样本，并沿用首字总耗时 `RQ + PARSE + CONNECT + TTFB` 口径；`currentAvgTotalMs` 只统计成功态且 `t_total_ms >= 0` 的样本。最近完整分钟没有各自有效样本时必须返回 `null`，前端显示 `—`，不得回填更早分钟旧值。
 - 已选中上游账号的 pool running 调用必须在账号活动 live rows、账号卡 `inProgressInvocationCount` / `retryInvocationCount` 与 account-scoped summary 中归属到该账号；当 invocation payload 尚未写入 `upstreamAccountId` 时，可以用同 `invokeId` 的 `pool_upstream_request_attempts.upstream_account_id` 作为读侧 fallback，并且账号级 retry 计数必须基于该 fallback 后的账号重新判定。
 - 单账号卡周期统计必须改为四组：`首字用时 + 响应时间`、`请求数 + 成功 / 失败 / 其他`、`成本 + 失败 / 失败成本比率(%)`、`Token + 缓存命中率 / 失败`。前者为主参数，后者为附加参数；成本组里的失败成本比率必须按 `failureCost / totalCost` 计算，不得复用请求失败率。
 - 单账号卡四组周期统计必须以整张统计卡作为 hover / focus / click / long-press 的浮层触发区域；浮层顶部展示该卡主字段和值，下方按“当前字段 / 相关数据”分组明确列出字段名和值，不得只展示裸数值。
@@ -103,7 +105,7 @@
 - `dashboard-activity.accounts[]` 必须包含真实上游账号聚合项；如果存在无法归属到账号的活动流量，必须返回明确的 `unassigned` 聚合项，而不是让顶部总数无法被明细解释。
 - `dashboard-activity.accounts[]` 与 `upstream-account-activity.accounts[]` 必须携带最小账号状态快照字段：`enabled/displayStatus/enableStatus/workStatus/healthStatus/syncState/lastError/lastActionReasonMessage`；这些字段只服务 Dashboard 状态 badge 与健康入口，不改变账号活动聚合口径。
 - `includeAccounts=false` 必须支持顶部轻量使用，只返回同源 `summary` 与快照元数据；该路径不得先构建、排序完整账号 preview/archive 明细再丢弃，只能读取 summary/read-model、live overlay 与短尾速率窗口所需数据；账号 tab 首次打开后升级为 `includeAccounts=true`，并用该 full snapshot 同步刷新顶部和账号卡片。
-- `DashboardActivityOverview` 不得再用 `buildDashboardTodayRateSnapshot` 作为顶部当前 KPI 的事实来源；该前端 timeseries rate 只能作为无活动快照上下文下的兼容回退或图表趋势辅助。
+- `DashboardActivityOverview` 与 `TodayStatsOverview` 不得再用 `buildDashboardTodayRateSnapshot`、timeseries recent snapshot 或 `modelPerformance.total.*` 驱动顶部当前 KPI；顶部实时卡与账号标题当前值只允许读取 `dashboard-activity.summary` / `accounts[]` 的同源后端字段。
 
 ### SHOULD
 
@@ -173,9 +175,9 @@
 - `GET /api/stats/upstream-account-activity.accounts[].effectiveRoutingRule` 与 `GET /api/stats/dashboard-activity.accounts[].effectiveRoutingRule` 复用账号池现有 `EffectiveRoutingRule` wire shape，用于 Dashboard 标题区固定快捷策略 chip 的初始状态；普通系统 tag 仍不在账号活动接口中展示。
 - `GET /api/stats/upstream-account-activity.accounts[]` 与 `GET /api/stats/dashboard-activity.accounts[]` 的状态字段复用账号池状态模型：`enabled/displayStatus/enableStatus/workStatus/healthStatus/syncState/lastError/lastActionReasonMessage`，前端只把异常/注意态渲染为状态 badge。
 - Dashboard 快捷策略写入复用 `PATCH /api/pool/upstream-accounts/:id`，payload 仅包含 `routingRule` 中被触碰过的账号级覆盖字段；该入口不支持恢复继承。
-- `GET /api/stats/dashboard-activity.summary` 复用 `StatsResponse` wire shape，并额外返回 `tokensPerMinute` / `spendRate`；`accounts[]` 复用账号活动卡片所需字段，并允许 `upstreamAccountId: null` 的 `isUnassigned` 聚合项。
+- `GET /api/stats/dashboard-activity.summary` 复用 `StatsResponse` wire shape，并额外返回 `tokensPerMinute`、`spendRate`、`currentFirstResponseByteTotalAvgMs` 与 `currentAvgTotalMs`；`accounts[]` 复用账号活动卡片所需字段，并允许 `upstreamAccountId: null` 的 `isUnassigned` 聚合项。
 - SSE `dashboardActivityLive` 返回 `revision/generatedAt`、总览进行中/重试/阶段计数和按 `accountKey` 分组的相同计数；账号无 live 项时其实时字段归零。
-- `GET /api/stats/dashboard-activity.rateWindow.mode` 固定描述当前速率算法来源；当前值为账号活跃尾段求和，不代表 timeseries 图上任一 bucket 的事实。
+- `GET /api/stats/dashboard-activity.rateWindow` 固定描述当前速率算法来源；当前 owner-facing 合同为 `mode=last_complete_1m_sma`、`windowMinutes=1`，`start/end` 必须落在最近完整分钟边界，不代表 timeseries 图上任一 bucket 的历史事实。
 - 前端共享 `PromptCacheConversationInvocationPreview` 合同同步包含 `promptCacheKey?: string | null`；`DashboardWorkingConversationInvocationSelection.promptCacheKey` 语义不变，仍表示真实对话键。
 
 ## 验收标准（Acceptance Criteria）
@@ -216,6 +218,7 @@
 - Given 已收到 revision 更高的 `dashboardActivityLive`，When 较旧 HTTP reconcile 或乱序 SSE 到达，Then 顶部与账号卡保持较新 live 数值且不会回退为 0。
 - Given 同一个 mock/fixture 返回 `dashboard-activity` full snapshot，When 同屏渲染顶部 KPI 与账号卡片，Then `top.tokensPerMinute === sum(accounts.tokensPerMinute)`，允许仅因小数格式化产生显示级差异。
 - Given 同一个 mock/fixture 返回 `dashboard-activity` full snapshot，When 同屏渲染顶部 KPI 与账号卡片，Then `top.spendRate === sum(accounts.spendRate)`，允许仅因货币格式化产生显示级差异。
+- Given 最近完整分钟完全空桶，When `dashboard-activity` 返回 summary，Then `tokensPerMinute=0`、`spendRate=0`、`currentFirstResponseByteTotalAvgMs=null`、`currentAvgTotalMs=null`，且前端必须显示 `TPM 0`、`消费速率 0`、`首字用时 —`、`响应时间 —`。
 - Given 账号视图首次激活且汇总尚未返回，When UI 渲染工作区，Then 下一次绘制显示与最终 grid 尺寸一致的账号卡骨架，计数不显示 `0`，且不出现“暂无活动”。
 - Given 第一阶段汇总已返回，When recent 批量请求仍在进行，Then 汇总卡片立即可操作且每张卡的 recent 区显示局部骨架。
 - Given recent 批量请求失败，When 汇总卡片仍存在，Then 卡片保留并在 recent 区显示可重试错误；重试成功后只替换同一快照的 recent 数据。
@@ -262,6 +265,14 @@
 PR: include
 
 ![Dashboard workspace sorting controls](./assets/dashboard-workspace-controls-focused.png)
+
+- source_type: demo_runtime
+  story_id_or_title: `dashboard?demoScene=attention`
+  scenario: `top realtime KPI and account headers share the same last complete 1m bucket`
+  evidence_note: 验证顶部实时 `TPM / 消费速率 / 首字用时` 与账号标题行实时 `TPM / 消费速率` 已统一切到后端 `last_complete_1m_sma`。画面中顶部 `TPM 46,040`、`消费速率 19.41`、`首字用时 1.28s` 与账号标题行同屏共存，不再由 timeseries recent snapshot 或 `modelPerformance.total.*` 混算当前值；当前未闭合分钟被排除，空桶路径由后端显式返回 `0 / null`。
+  image:
+  PR: include
+  ![Dashboard 最近完整 1 分钟实时 KPI 证据](./assets/dashboard-last-complete-1m-sma-demo.png)
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-sort-descending-order`
@@ -445,6 +456,34 @@ PR: include
   image:
   PR: include
   ![Dashboard 上游账号 warning-success recent 证据](./assets/dashboard-upstream-account-warning-success.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--warning-success-conversation-card`
+  scenario: `warning_success current invocation tooltip`
+  evidence_note: 验证 Dashboard 对话卡片的紧凑 warning-success 状态位 hover 后会打开共享 UI tooltip，并完整披露“警告成功 + downstream_closed 诊断”；不再出现浏览器原生黑框 `title` 提示。
+  requested_viewport: `1200x500`
+  viewport_strategy: `browser-viewport`
+  target_program: `mock-only`
+  capture_scope: `page-clip`
+  sensitive_exclusion: `fixture-only Dashboard data`
+  submission_gate: `approved`
+  image:
+  PR: include
+  ![Dashboard 对话卡片 warning-success tooltip 证据](./assets/dashboard-warning-success-tooltip-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-warning-success`
+  scenario: `warning_success recent invocation tooltip`
+  evidence_note: 验证 Dashboard 上游账号 recent 行的紧凑 warning-success 状态位 hover 后同样改为共享 UI tooltip，保留成功侧排布但完整显示 downstream 诊断，不再依赖浏览器原生 `title`。
+  requested_viewport: `1660x1100`
+  viewport_strategy: `browser-viewport`
+  target_program: `mock-only`
+  capture_scope: `element`
+  sensitive_exclusion: `fixture-only Dashboard data`
+  submission_gate: `approved`
+  image:
+  PR: include
+  ![Dashboard 上游账号 warning-success tooltip 证据](./assets/dashboard-upstream-account-warning-success-tooltip-storybook.png)
 
 - source_type: ui_demo
   story_id_or_title: `#/dashboard?demoScene=progressive-loading&demoTheme=dark`

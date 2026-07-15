@@ -4,6 +4,8 @@
 
 ## Decision Trace
 
+- 2026-07-15：收敛 Dashboard 顶部实时 KPI 的 owner-facing 合同。此前 `TPM / 消费速率 / 首字用时` 混用了完整范围平均、前端 timeseries 快照和 `modelPerformance` 总计，导致同屏 summary 与账号标题存在口径漂移。本轮固定为后端统一计算的 `last_complete_1m_sma`：`TPM` 继续沿用成功且已计费的合格 token 分子，`消费速率`、`首字总耗时` 与 `响应时间` 全部取最近 1 个完整分钟 bucket，严格空桶不回填旧值；`z9h7v` 同步收窄为完整范围模型性能明细规范。
+
 - 2026-07-15：收紧 Dashboard `上游账号` 视图的 background refresh 表达。旧实现把状态渲染成带占位的头部 chip，导致 idle 时仍在“当前活动账号”左侧保留固定空白；本轮改为桌面端非 badge 的 spinner + `刷新中` 文本、移动端 spinner-only，并保留既有 `300ms` 延迟显示与 `600ms` 最短可见时长。
 
 - 2026-07-15：调整 Dashboard 工作区排序语义。此前 spec 把 `cost / tokens` 定义为正序，实际运营更需要和 `createdAt / lastInvocation` 一样按倒序扫描，因此本轮将 4 种 workspace sort 全部统一为倒序；同时冻结 `未分配上游账号` 聚合项在账号视图中始终后置，避免它凭借高失败量或空账号流量抢占已分配账号前排。
@@ -48,6 +50,7 @@
 - 2026-07-11：修正长错误载荷仍可经账号双列 grid 的默认最小内容宽度撑开父卡的问题；宽屏 track、账号卡、recent 行与共享错误 trigger 均冻结为可缩小链，并将回归覆盖迁移到现役 `features/dashboard` 渲染树。
 - 2026-07-10：生产诊断确认活动总览“进行中调用”虚高来自已终结但未清理的 `pool-via-*` synthetic runtime snapshot；修复锁定在既有 cleanup guard 的生命周期终态收口，不增加查询端年龄过滤，以免掩盖生命周期泄漏或误排除真实长时请求。
 - 2026-07-13：修正 Dashboard 账号 recent reconcile 仅从 SQLite 读取调用、遗漏尚未 batch flush 的 runtime running / pending / terminal 记录的问题；recent 候选改为合并 runtime 与 SQLite 并按稳定调用键去重，统计聚合继续以持久化 terminal 事实为准。
+- 2026-07-15：修正 Dashboard `warning_success` 紧凑状态位仍走浏览器原生 `title` 的漏网点；对话卡片与上游账号 recent 行统一改用共享 UI tooltip 披露“警告成功 + downstream 诊断”。
 
 ## Key Reasons / Replacements
 

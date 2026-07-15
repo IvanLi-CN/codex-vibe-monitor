@@ -4133,11 +4133,11 @@ const baseTranslations = {
     "dashboard.today.todayTokens": "今日 Token",
     "dashboard.today.yesterdayTokens": "昨日 Token",
     "dashboard.today.tokensPerMinuteDescription":
-      "每分钟 Tokens，按当前所选时间范围的完整周期计算均值。",
+      "每分钟 Tokens，按最近 1 个完整分钟聚合；当前未闭合分钟不计入，空桶显示 0。",
     "dashboard.today.spendRateDescription":
-      "每分钟消费金额，按当前所选时间范围的完整周期计算均值。",
+      "每分钟消费金额，按最近 1 个完整分钟聚合；当前未闭合分钟不计入，空桶显示 0。",
     "dashboard.today.responseTimeDescription":
-      "首字总耗时均值，按当前所选时间范围的完整周期计算；无完整样本时显示为空。",
+      "首字总耗时与响应时间按最近 1 个完整分钟的成功样本计算；空桶或无有效样本时显示为空。",
     "dashboard.modelPerformance.title": "模型性能",
     "dashboard.modelPerformance.description":
       "仅统计成功且已计费调用，按响应模型与思考程度汇总当前范围完整周期的指标。",
