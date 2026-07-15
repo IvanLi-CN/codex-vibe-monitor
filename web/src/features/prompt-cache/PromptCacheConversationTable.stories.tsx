@@ -2142,21 +2142,16 @@ export const DrawerBindingAndTimeouts: Story = {
     await expect(documentScope.queryByText(/优先级|Priority/i)).not.toBeInTheDocument();
     await expect(documentScope.queryByText(/切入|Cut in/i)).not.toBeInTheDocument();
 
-    const fastModeGroup = documentScope.getByRole("radiogroup", {
-      name: /FAST 模式|FAST mode/i,
-    });
-    await expect(fastModeGroup).not.toHaveTextContent(/继承|Inherit/i);
-    await userEvent.click(within(fastModeGroup).getByRole("radio", { name: /补齐|Fill missing/i }));
-    await expect(fastModeGroup).toHaveTextContent(/补齐|Fill missing/i);
-
-    const imageToolGroup = documentScope.getByRole("radiogroup", {
-      name: /图片工具|Image tool/i,
-    });
-    await expect(imageToolGroup).not.toHaveTextContent(/继承|Inherit/i);
-    await userEvent.click(
-      within(imageToolGroup).getByRole("radio", { name: /强制添加|Force add/i }),
-    );
-    await expect(imageToolGroup).toHaveTextContent(/强制添加|Force add/i);
+    await expect(
+      documentScope.getByRole("button", {
+        name: /清除对话覆盖: FAST 模式|Clear conversation override: FAST mode/i,
+      }),
+    ).toBeInTheDocument();
+    await expect(
+      documentScope.getByRole("button", {
+        name: /清除对话覆盖: 图片工具|Clear conversation override: Image tool/i,
+      }),
+    ).toBeInTheDocument();
   },
 };
 

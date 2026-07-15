@@ -161,11 +161,11 @@ export function AppLayout() {
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [languageMenuOpen]);
+  }, [languageMenuOpen, closeLanguageMenu]);
 
   useEffect(() => {
     setMobileNavOpen(false);
-  }, [location.pathname, location.search]);
+  }, []);
 
   useEffect(() => {
     if (!mobileNavOpen || typeof document === "undefined") return undefined;
@@ -328,7 +328,6 @@ export function AppLayout() {
                 className={`absolute right-0 top-[calc(100%+0.4rem)] z-50 mt-2 min-w-[10.5rem] rounded-xl border border-base-300 bg-base-100/95 p-2 shadow-lg backdrop-blur ${
                   languageMenuOpen ? "block" : "hidden"
                 }`}
-                role="listbox"
                 aria-label={t("app.language.switcherAria")}
               >
                 {localeChoices.map((choice) => (

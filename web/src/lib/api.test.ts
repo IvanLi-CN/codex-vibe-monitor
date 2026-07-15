@@ -1793,6 +1793,7 @@ describe("account pool frontend API helpers", () => {
       timeouts: {
         responsesFirstByteTimeoutSecs: 120,
         compactFirstByteTimeoutSecs: 300,
+        imageFirstByteTimeoutSecs: 300,
         responsesStreamTimeoutSecs: 300,
         compactStreamTimeoutSecs: 300,
       },
@@ -1814,6 +1815,7 @@ describe("account pool frontend API helpers", () => {
               timeouts: {
                 responsesFirstByteTimeoutSecs: 180,
                 compactFirstByteTimeoutSecs: 420,
+                imageFirstByteTimeoutSecs: 480,
                 responsesStreamTimeoutSecs: 360,
                 compactStreamTimeoutSecs: 540,
               },
@@ -1830,6 +1832,7 @@ describe("account pool frontend API helpers", () => {
     expect(response.routing?.timeouts).toEqual({
       responsesFirstByteTimeoutSecs: 180,
       compactFirstByteTimeoutSecs: 420,
+      imageFirstByteTimeoutSecs: 480,
       responsesStreamTimeoutSecs: 360,
       compactStreamTimeoutSecs: 540,
     });
@@ -2501,6 +2504,7 @@ describe("account pool frontend API helpers", () => {
         timeouts: {
           responsesFirstByteTimeoutSecs: 180,
           compactFirstByteTimeoutSecs: 420,
+          imageFirstByteTimeoutSecs: 480,
           responsesStreamTimeoutSecs: 360,
           compactStreamTimeoutSecs: 540,
         },
@@ -2517,6 +2521,7 @@ describe("account pool frontend API helpers", () => {
           timeouts: {
             responsesFirstByteTimeoutSecs: 180,
             compactFirstByteTimeoutSecs: 420,
+            imageFirstByteTimeoutSecs: 480,
             responsesStreamTimeoutSecs: 360,
             compactStreamTimeoutSecs: 540,
           },
@@ -2531,6 +2536,7 @@ describe("account pool frontend API helpers", () => {
       timeouts: {
         responsesFirstByteTimeoutSecs: 180,
         compactFirstByteTimeoutSecs: 420,
+        imageFirstByteTimeoutSecs: 480,
         responsesStreamTimeoutSecs: 360,
         compactStreamTimeoutSecs: 540,
       },
@@ -2547,6 +2553,7 @@ describe("account pool frontend API helpers", () => {
     expect(response.timeouts).toEqual({
       responsesFirstByteTimeoutSecs: 180,
       compactFirstByteTimeoutSecs: 420,
+      imageFirstByteTimeoutSecs: 480,
       responsesStreamTimeoutSecs: 360,
       compactStreamTimeoutSecs: 540,
     });
@@ -2665,6 +2672,12 @@ describe("account pool frontend API helpers", () => {
               totalCost: 0.12,
               createdAt: "2026-03-10T22:00:00Z",
               lastActivityAt: "2026-03-10T23:00:00Z",
+              manualBinding: {
+                bindingKind: "upstreamAccount",
+                groupName: null,
+                upstreamAccountId: 42,
+                upstreamAccountName: "Pool Alpha",
+              },
               upstreamAccounts: [
                 {
                   upstreamAccountId: 42,
@@ -2735,6 +2748,12 @@ describe("account pool frontend API helpers", () => {
     expect(response.implicitFilter.kind).toBe("cappedTo50");
     expect(response.implicitFilter.filteredCount).toBe(7);
     expect(response.conversations[0]?.promptCacheKey).toBe("pck-001");
+    expect(response.conversations[0]?.manualBinding).toEqual({
+      bindingKind: "upstreamAccount",
+      groupName: null,
+      upstreamAccountId: 42,
+      upstreamAccountName: "Pool Alpha",
+    });
     expect(response.conversations[0]?.upstreamAccounts[0]?.upstreamAccountName).toBe("Pool Alpha");
     expect(response.conversations[0]?.recentInvocations[0]?.invokeId).toBe("invoke-17");
     expect(response.conversations[0]?.recentInvocations[0]?.failureClass).toBe("none");

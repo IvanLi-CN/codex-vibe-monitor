@@ -1269,6 +1269,7 @@ function accountList() {
       timeouts: {
         responsesFirstByteTimeoutSecs: 30,
         compactFirstByteTimeoutSecs: 45,
+        imageFirstByteTimeoutSecs: 300,
         responsesStreamTimeoutSecs: 300,
         compactStreamTimeoutSecs: 420,
       },
@@ -1734,12 +1735,14 @@ async function handleRequest(request: Request) {
       timeouts: {
         responsesFirstByteTimeoutSecs: 30,
         compactFirstByteTimeoutSecs: 45,
+        imageFirstByteTimeoutSecs: 300,
         responsesStreamTimeoutSecs: 300,
         compactStreamTimeoutSecs: 420,
       },
       timeoutFieldSources: {
         responsesFirstByteTimeoutSecs: "root",
         compactFirstByteTimeoutSecs: "root",
+        imageFirstByteTimeoutSecs: "root",
         responsesStreamTimeoutSecs: "root",
         compactStreamTimeoutSecs: "root",
       },
@@ -1775,11 +1778,13 @@ async function handleRequest(request: Request) {
     const model = url.searchParams.get("model");
     const status = url.searchParams.get("status");
     const endpoint = url.searchParams.get("endpoint");
+    const requestId = url.searchParams.get("requestId");
     const upstreamAccountId = Number(url.searchParams.get("upstreamAccountId"));
     const keyword = url.searchParams.get("keyword")?.toLowerCase();
     if (model) records = records.filter((record) => record.model === model);
     if (status) records = records.filter((record) => record.status === status);
     if (endpoint) records = records.filter((record) => record.endpoint === endpoint);
+    if (requestId) records = records.filter((record) => record.invokeId === requestId);
     if (Number.isFinite(upstreamAccountId) && upstreamAccountId > 0)
       records = records.filter((record) => record.upstreamAccountId === upstreamAccountId);
     if (keyword)
@@ -1848,17 +1853,48 @@ async function handleRequest(request: Request) {
       isFailure
         ? {
             available: true,
-            bodyText: JSON.stringify(
-              {
-                error: {
-                  message: record?.errorMessage,
-                  type: record?.failureKind,
-                  request_id: `req_demo_${id}`,
-                },
-              },
-              null,
-              2,
-            ),
+            bodyText:
+              id === 9002
+                ? [
+                    ": keepalive",
+                    "",
+                    "event: response.output_item.done",
+                    `data: ${JSON.stringify({
+                      type: "response.output_item.done",
+                      output_index: 0,
+                      item: {
+                        id: "msg_demo_9002",
+                        type: "message",
+                        content: [
+                          {
+                            type: "output_text",
+                            text: "A long streamed response remains contained inside the payload inspector without widening the invocation drawer.",
+                          },
+                        ],
+                      },
+                    })}`,
+                    "",
+                    "event: response.failed",
+                    `data: ${JSON.stringify({
+                      type: "response.failed",
+                      error: {
+                        message: record?.errorMessage,
+                        type: record?.failureKind,
+                        request_id: `req_demo_${id}`,
+                      },
+                    })}`,
+                  ].join("\n")
+                : JSON.stringify(
+                    {
+                      error: {
+                        message: record?.errorMessage,
+                        type: record?.failureKind,
+                        request_id: `req_demo_${id}`,
+                      },
+                    },
+                    null,
+                    2,
+                  ),
             unavailableReason: null,
           }
         : {
@@ -2035,6 +2071,7 @@ async function handleRequest(request: Request) {
       timeouts: {
         responsesFirstByteTimeoutSecs: 30,
         compactFirstByteTimeoutSecs: 45,
+        imageFirstByteTimeoutSecs: 300,
         responsesStreamTimeoutSecs: 300,
         compactStreamTimeoutSecs: 420,
       },

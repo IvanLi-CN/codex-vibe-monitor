@@ -498,7 +498,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
   };
 
   const handleConfirmOauthIdentityOverwrite = async () => {
-    if (!session || session.status !== "needs_identity_confirmation") return;
+    if (session?.status !== "needs_identity_confirmation") return;
     setActionError(null);
     setBusyAction("oauth-confirm-identity");
     try {
@@ -1143,7 +1143,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
 
   const handleBatchConfirmOauthIdentityOverwrite = async (rowId: string) => {
     const row = batchRows.find((item: BatchOauthRow) => item.id === rowId);
-    if (!row?.session || row.session.status !== "needs_identity_confirmation") return;
+    if (row.session?.status !== "needs_identity_confirmation") return;
 
     updateBatchRow(rowId, (current: BatchOauthRow) => ({
       ...current,

@@ -387,6 +387,82 @@ body {
     box-shadow: var(--dialog-surface-shadow);
   }
 
+  .structured-payload-scroll {
+    @apply max-h-96 min-w-0 max-w-full overflow-auto rounded-lg border border-base-300/70 bg-base-100/70 p-3;
+    overscroll-behavior: contain;
+  }
+
+  .structured-payload-raw {
+    @apply max-h-72 min-w-0 max-w-full overflow-auto whitespace-pre-wrap rounded-lg border border-base-300/70 bg-base-100/70 p-3 font-mono text-sm leading-5 text-base-content/80;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    overscroll-behavior: contain;
+  }
+
+  .structured-payload-json {
+    @apply min-w-max bg-transparent font-mono text-xs leading-5 text-base-content/80;
+  }
+
+  .structured-payload-json-child {
+    @apply whitespace-pre;
+  }
+
+  .structured-payload-json-children {
+    @apply m-0 pl-4;
+  }
+
+  .structured-payload-json-key {
+    @apply mr-1 font-semibold text-primary;
+  }
+
+  .structured-payload-json-clickable {
+    @apply cursor-pointer rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-primary/70;
+  }
+
+  .structured-payload-json-string {
+    @apply text-success;
+  }
+
+  .structured-payload-json-number {
+    @apply text-warning;
+  }
+
+  .structured-payload-json-boolean {
+    @apply text-secondary;
+  }
+
+  .structured-payload-json-null,
+  .structured-payload-json-other,
+  .structured-payload-json-punctuation,
+  .structured-payload-json-collapsed {
+    @apply text-base-content/60;
+  }
+
+  .structured-payload-json-expand::after {
+    content: "\25B8";
+  }
+
+  .structured-payload-json-collapse::after {
+    content: "\25BE";
+  }
+
+  .structured-payload-json-expand,
+  .structured-payload-json-collapse {
+    @apply mr-1 inline-block w-3 select-none text-base-content/60;
+  }
+
+  .structured-payload-json-collapsed::after {
+    content: "...";
+  }
+
+  .structured-payload-entry {
+    @apply min-w-max rounded-lg border border-base-300/60 bg-base-200/30 p-3;
+  }
+
+  .structured-payload-entry-label {
+    @apply mb-1 text-[11px] font-semibold text-base-content/60;
+  }
+
   .surface-panel {
     @apply rounded-xl border text-base-content;
     border-color: var(--app-surface-border);
@@ -418,7 +494,7 @@ body {
       border: 0;
       border-radius: 0;
       background-color: transparent;
-      box-shadow: none !important;
+      box-shadow: none;
     }
 
     .mobile-flat-surface-header,

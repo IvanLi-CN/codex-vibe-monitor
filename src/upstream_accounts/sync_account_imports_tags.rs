@@ -34,6 +34,7 @@ pub(crate) const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
     policy_status_change_upstream_server_overloaded,
     policy_status_change_upstream_http_5xx,
     policy_responses_first_byte_timeout_secs, policy_compact_first_byte_timeout_secs,
+    policy_image_first_byte_timeout_secs,
     policy_responses_stream_timeout_secs, policy_compact_stream_timeout_secs,
     bound_proxy_keys_json,
     upstream_base_url, external_client_id, external_source_account_id,
@@ -2470,6 +2471,7 @@ pub(crate) async fn load_upstream_account_groups(
             notes.policy_status_change_upstream_http_5xx,
             notes.policy_responses_first_byte_timeout_secs,
             notes.policy_compact_first_byte_timeout_secs,
+            notes.policy_image_first_byte_timeout_secs,
             notes.policy_responses_stream_timeout_secs,
             notes.policy_compact_stream_timeout_secs
         FROM catalog_groups
@@ -2523,6 +2525,7 @@ pub(crate) async fn load_upstream_account_groups(
             row.policy_status_change_upstream_http_5xx,
             row.policy_responses_first_byte_timeout_secs,
             row.policy_compact_first_byte_timeout_secs,
+            row.policy_image_first_byte_timeout_secs,
             row.policy_responses_stream_timeout_secs,
             row.policy_compact_stream_timeout_secs,
         );

@@ -357,6 +357,10 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
     let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
     let mut reservation_guard =
         PoolRoutingReservationDropGuard::new(state.clone(), reservation_key.clone());
+    let direct_image_request = matches!(
+        capture_target_for_request(original_uri.path(), &method),
+        Some(ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits)
+    );
     let uses_timeout_route_failover =
         pool_uses_responses_timeout_failover_policy(original_uri, &method);
     let responses_total_timeout =
@@ -1526,16 +1530,27 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 error = %err,
                                 "pool upstream request send failed before response"
                             );
-                            let message = format!("failed to contact upstream: {err}");
+                            let direct_image_handshake_timeout =
+                                direct_image_request && err.is_timeout();
+                            let failure_kind = if direct_image_handshake_timeout {
+                                PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
+                            } else {
+                                PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
+                            };
+                            let message = if direct_image_handshake_timeout {
+                                format!(
+                                    "[{PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT}] failed to contact upstream: {err}"
+                                )
+                            } else {
+                                format!("failed to contact upstream: {err}")
+                            };
                             let compact_support_observation = classify_compact_support_observation(
                                 original_uri,
                                 None,
                                 Some(message.as_str()),
                             );
-                            let timeout_shaped_failure = pool_failure_is_timeout_shaped(
-                                PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                                &message,
-                            );
+                            let timeout_shaped_failure =
+                                pool_failure_is_timeout_shaped(failure_kind, &message);
                             let should_timeout_route_failover =
                                 uses_timeout_route_failover && timeout_shaped_failure;
                             let finished_at = shanghai_now_string();
@@ -1547,7 +1562,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
                                     None,
                                     None,
-                                    Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
+                                    Some(failure_kind),
                                     Some(message.as_str()),
                                     None,
                                     Some(elapsed_ms(connect_started)),
@@ -1582,8 +1597,9 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     "failed to broadcast pool transport attempt snapshot"
                                 );
                             }
-                            let has_retry_budget =
-                                same_account_attempt + 1 < same_account_attempt_budget;
+                            let has_retry_budget = same_account_attempt + 1
+                                < same_account_attempt_budget
+                                && !direct_image_handshake_timeout;
                             if has_retry_budget && !should_timeout_route_failover {
                                 let retry_delay = fallback_proxy_429_retry_delay(
                                     u32::from(same_account_attempt) + 1,
@@ -1617,12 +1633,18 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 &mut preserve_sticky_owner_terminal_error,
                                 PoolUpstreamError {
                                     account: Some(account.clone()),
-                                    status: StatusCode::BAD_GATEWAY,
+                                    status: if direct_image_handshake_timeout {
+                                        StatusCode::GATEWAY_TIMEOUT
+                                    } else {
+                                        StatusCode::BAD_GATEWAY
+                                    },
                                     message: message.clone(),
                                     canonical_error_message: None,
-                                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                                    failure_kind,
                                     connect_latency_ms: elapsed_ms(connect_started),
-                                    upstream_error_code: None,
+                                    upstream_error_code: direct_image_handshake_timeout.then(
+                                        || PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT.to_string(),
+                                    ),
                                     upstream_error_message: None,
                                     downstream_error_message: None,
                                     upstream_request_id: None,
@@ -1635,6 +1657,20 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                         .clone(),
                                 },
                             );
+                            if direct_image_handshake_timeout {
+                                let mut final_error = last_error.take().expect(
+                                    "direct-image timeout stores a terminal upstream error",
+                                );
+                                final_error.attempt_summary = pool_attempt_summary(
+                                    attempt_count,
+                                    distinct_account_count,
+                                    Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT.to_string()),
+                                );
+                                disarm_pool_early_phase_cleanup_guard(
+                                    &mut early_phase_cleanup_guard,
+                                );
+                                return Err(final_error);
+                            }
                             exhausted_accounts_all_rate_limited = false;
                             if should_timeout_route_failover {
                                 excluded_upstream_route_keys.insert(upstream_route_key.clone());
@@ -1773,8 +1809,9 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 );
                                 return Err(final_error);
                             }
-                            let has_retry_budget =
-                                same_account_attempt + 1 < same_account_attempt_budget;
+                            let has_retry_budget = same_account_attempt + 1
+                                < same_account_attempt_budget
+                                && !direct_image_request;
                             if has_retry_budget && !should_timeout_route_failover {
                                 let retry_delay = fallback_proxy_429_retry_delay(
                                     u32::from(same_account_attempt) + 1,
@@ -1808,12 +1845,24 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 &mut preserve_sticky_owner_terminal_error,
                                 PoolUpstreamError {
                                     account: Some(account.clone()),
-                                    status: StatusCode::BAD_GATEWAY,
-                                    message: message.clone(),
+                                    status: if direct_image_request {
+                                        StatusCode::GATEWAY_TIMEOUT
+                                    } else {
+                                        StatusCode::BAD_GATEWAY
+                                    },
+                                    message: if direct_image_request {
+                                        format!(
+                                            "[{PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT}] {message}"
+                                        )
+                                    } else {
+                                        message.clone()
+                                    },
                                     canonical_error_message: None,
                                     failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
                                     connect_latency_ms: elapsed_ms(connect_started),
-                                    upstream_error_code: None,
+                                    upstream_error_code: direct_image_request.then(|| {
+                                        PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT.to_string()
+                                    }),
                                     upstream_error_message: None,
                                     downstream_error_message: None,
                                     upstream_request_id: None,
@@ -1826,6 +1875,20 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                         .clone(),
                                 },
                             );
+                            if direct_image_request {
+                                let mut final_error = last_error.take().expect(
+                                    "direct-image timeout stores a terminal upstream error",
+                                );
+                                final_error.attempt_summary = pool_attempt_summary(
+                                    attempt_count,
+                                    distinct_account_count,
+                                    Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT.to_string()),
+                                );
+                                disarm_pool_early_phase_cleanup_guard(
+                                    &mut early_phase_cleanup_guard,
+                                );
+                                return Err(final_error);
+                            }
                             exhausted_accounts_all_rate_limited = false;
                             if should_timeout_route_failover {
                                 excluded_upstream_route_keys.insert(upstream_route_key.clone());
@@ -2387,19 +2450,22 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     && pool_failure_is_timeout_shaped(failure_kind, &message);
                 let should_timeout_route_failover =
                     uses_timeout_route_failover && timeout_shaped_failure;
-                let retry_delay = (has_retry_budget
+                let direct_image_handshake_timeout = direct_image_request
+                    && failure_kind == PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT;
+                let should_schedule_retry = has_retry_budget
                     && !compact_support_is_unsupported
                     && !should_timeout_route_failover
+                    && !direct_image_handshake_timeout
                     && status.is_server_error()
-                    && status != StatusCode::TOO_MANY_REQUESTS)
-                    .then(|| {
-                        retry_after_header
-                            .as_ref()
-                            .and_then(parse_retry_after_delay)
-                            .unwrap_or_else(|| {
-                                fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1)
-                            })
-                    });
+                    && status != StatusCode::TOO_MANY_REQUESTS;
+                let retry_delay = should_schedule_retry.then(|| {
+                    retry_after_header
+                        .as_ref()
+                        .and_then(parse_retry_after_delay)
+                        .unwrap_or_else(|| {
+                            fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1)
+                        })
+                });
                 let finished_at = shanghai_now_string();
                 if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                     && let Err(record_err) = finalize_pool_upstream_request_attempt(
@@ -2573,6 +2639,26 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         request_body_for_capture: attempted_request_body_for_capture.clone(),
                     },
                 );
+                if direct_image_request && failure_kind == PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
+                {
+                    let mut final_error = last_error
+                        .take()
+                        .expect("direct-image timeout stores a terminal upstream error");
+                    final_error.status = StatusCode::GATEWAY_TIMEOUT;
+                    final_error.message = format!(
+                        "[{PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT}] {}",
+                        final_error.message
+                    );
+                    final_error.upstream_error_code =
+                        Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT.to_string());
+                    final_error.attempt_summary = pool_attempt_summary(
+                        attempt_count,
+                        distinct_account_count,
+                        Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT.to_string()),
+                    );
+                    disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                    return Err(final_error);
+                }
                 exhausted_accounts_all_rate_limited &= status == StatusCode::TOO_MANY_REQUESTS;
                 if should_timeout_route_failover {
                     excluded_upstream_route_keys.insert(upstream_route_key.clone());

@@ -118,12 +118,14 @@ pub(crate) fn test_summary_with_statuses(
             timeouts: RoutingTimeoutSettings {
                 responses_first_byte_timeout_secs: Some(120),
                 compact_first_byte_timeout_secs: Some(300),
+                image_first_byte_timeout_secs: Some(300),
                 responses_stream_timeout_secs: Some(300),
                 compact_stream_timeout_secs: Some(300),
             },
             timeout_field_sources: RoutingTimeoutFieldSources {
                 responses_first_byte_timeout_secs: "root".to_string(),
                 compact_first_byte_timeout_secs: "root".to_string(),
+                image_first_byte_timeout_secs: "root".to_string(),
                 responses_stream_timeout_secs: "root".to_string(),
                 compact_stream_timeout_secs: "root".to_string(),
             },
@@ -3177,6 +3179,7 @@ async fn resolve_pool_account_upstream_base_url_only_overrides_api_key_accounts(
             last_action_reason_message: None,
             policy_responses_first_byte_timeout_secs: None,
             policy_compact_first_byte_timeout_secs: None,
+            policy_image_first_byte_timeout_secs: None,
             policy_responses_stream_timeout_secs: None,
             policy_compact_stream_timeout_secs: None,
             last_action_http_status: None,
@@ -3343,6 +3346,9 @@ pub(crate) fn usage_snapshot_test_config(base_url: &str, user_agent: &str) -> Ap
         ),
         openai_proxy_compact_handshake_timeout: Duration::from_secs(
             DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS,
+        ),
+        openai_proxy_image_handshake_timeout: Duration::from_secs(
+            DEFAULT_OPENAI_PROXY_IMAGE_HANDSHAKE_TIMEOUT_SECS,
         ),
         openai_proxy_request_read_timeout: Duration::from_secs(
             DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS,

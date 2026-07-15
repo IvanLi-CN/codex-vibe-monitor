@@ -95,6 +95,8 @@ pub(crate) struct UpstreamAccountRow {
     #[sqlx(default)]
     pub(crate) policy_compact_first_byte_timeout_secs: Option<i64>,
     #[sqlx(default)]
+    pub(crate) policy_image_first_byte_timeout_secs: Option<i64>,
+    #[sqlx(default)]
     pub(crate) policy_responses_stream_timeout_secs: Option<i64>,
     #[sqlx(default)]
     pub(crate) policy_compact_stream_timeout_secs: Option<i64>,
@@ -135,6 +137,7 @@ pub(crate) struct PoolRoutingSettingsRow {
     pub(crate) priority_available_account_cap: Option<i64>,
     pub(crate) responses_first_byte_timeout_secs: Option<i64>,
     pub(crate) compact_first_byte_timeout_secs: Option<i64>,
+    pub(crate) image_first_byte_timeout_secs: Option<i64>,
     pub(crate) responses_stream_timeout_secs: Option<i64>,
     pub(crate) compact_stream_timeout_secs: Option<i64>,
     pub(crate) default_first_byte_timeout_secs: Option<i64>,
@@ -547,6 +550,8 @@ pub(crate) struct UpstreamAccountGroupListRow {
     pub(crate) policy_responses_first_byte_timeout_secs: Option<i64>,
     #[sqlx(default)]
     pub(crate) policy_compact_first_byte_timeout_secs: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) policy_image_first_byte_timeout_secs: Option<i64>,
     #[sqlx(default)]
     pub(crate) policy_responses_stream_timeout_secs: Option<i64>,
     #[sqlx(default)]

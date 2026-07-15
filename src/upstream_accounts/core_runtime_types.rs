@@ -1277,6 +1277,7 @@ pub(crate) struct EffectiveRoutingRuleFieldSources {
 pub(crate) struct RoutingTimeoutFieldSources {
     pub(crate) responses_first_byte_timeout_secs: String,
     pub(crate) compact_first_byte_timeout_secs: String,
+    pub(crate) image_first_byte_timeout_secs: String,
     pub(crate) responses_stream_timeout_secs: String,
     pub(crate) compact_stream_timeout_secs: String,
 }
@@ -1288,6 +1289,8 @@ pub(crate) struct RoutingTimeoutSettings {
     pub(crate) responses_first_byte_timeout_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) compact_first_byte_timeout_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) image_first_byte_timeout_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) responses_stream_timeout_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1597,6 +1600,7 @@ pub(crate) struct CompactSupportState {
 pub(crate) struct PoolRoutingTimeoutSettingsResponse {
     pub(crate) responses_first_byte_timeout_secs: u64,
     pub(crate) compact_first_byte_timeout_secs: u64,
+    pub(crate) image_first_byte_timeout_secs: u64,
     pub(crate) responses_stream_timeout_secs: u64,
     pub(crate) compact_stream_timeout_secs: u64,
 }
@@ -1605,6 +1609,7 @@ pub(crate) struct PoolRoutingTimeoutSettingsResponse {
 pub(crate) struct RoutingTimeoutOverridesResolved {
     pub(crate) responses_first_byte_timeout: Option<Duration>,
     pub(crate) compact_first_byte_timeout: Option<Duration>,
+    pub(crate) image_first_byte_timeout: Option<Duration>,
     pub(crate) responses_stream_timeout: Option<Duration>,
     pub(crate) compact_stream_timeout: Option<Duration>,
 }
@@ -1616,6 +1621,7 @@ pub(crate) struct PoolRoutingTimeoutSettingsResolved {
     pub(crate) request_read_timeout: Duration,
     pub(crate) responses_first_byte_timeout: Duration,
     pub(crate) compact_first_byte_timeout: Duration,
+    pub(crate) image_first_byte_timeout: Duration,
     pub(crate) responses_stream_timeout: Duration,
     pub(crate) compact_stream_timeout: Duration,
 }
@@ -1635,6 +1641,9 @@ impl PoolRoutingTimeoutSettingsResolved {
             compact_first_byte_timeout: overrides
                 .compact_first_byte_timeout
                 .unwrap_or(self.compact_first_byte_timeout),
+            image_first_byte_timeout: overrides
+                .image_first_byte_timeout
+                .unwrap_or(self.image_first_byte_timeout),
             responses_stream_timeout: overrides
                 .responses_stream_timeout
                 .unwrap_or(self.responses_stream_timeout),
@@ -1682,6 +1691,8 @@ pub(crate) struct UpdateRoutingTimeoutSettingsRequest {
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     pub(crate) compact_first_byte_timeout_secs: OptionalField<u64>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(crate) image_first_byte_timeout_secs: OptionalField<u64>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
     pub(crate) responses_stream_timeout_secs: OptionalField<u64>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     pub(crate) compact_stream_timeout_secs: OptionalField<u64>,
@@ -1693,6 +1704,7 @@ impl UpdateRoutingTimeoutSettingsRequest {
             self.responses_first_byte_timeout_secs,
             OptionalField::Missing
         ) && matches!(self.compact_first_byte_timeout_secs, OptionalField::Missing)
+            && matches!(self.image_first_byte_timeout_secs, OptionalField::Missing)
             && matches!(self.responses_stream_timeout_secs, OptionalField::Missing)
             && matches!(self.compact_stream_timeout_secs, OptionalField::Missing)
     }
@@ -1717,6 +1729,8 @@ pub(crate) struct UpdatePoolRoutingTimeoutSettingsRequest {
     #[serde(default)]
     #[serde(alias = "compactUpstreamHandshakeTimeoutSecs")]
     pub(crate) compact_first_byte_timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub(crate) image_first_byte_timeout_secs: Option<u64>,
     #[serde(default)]
     pub(crate) responses_stream_timeout_secs: Option<u64>,
     #[serde(default)]

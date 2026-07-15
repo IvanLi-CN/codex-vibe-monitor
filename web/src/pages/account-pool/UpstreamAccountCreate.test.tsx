@@ -8,11 +8,6 @@ import ts from "typescript";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SystemNotificationProvider } from "../../components/ui/system-notifications";
 import { I18nProvider } from "../../i18n";
-import type {
-  ImportedOauthValidationResponse,
-  ImportedOauthValidationRow,
-  LoginSessionStatusResponse,
-} from "../../lib/api";
 import {
   UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY,
   UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY,
@@ -160,7 +155,6 @@ function buildImportedOauthValidationCounts(rows: Array<{ status: string }>) {
       case "invalid":
         counts.invalid += 1;
         break;
-      case "error":
       default:
         counts.error += 1;
         break;

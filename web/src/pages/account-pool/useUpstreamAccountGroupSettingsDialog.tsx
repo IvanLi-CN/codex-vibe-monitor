@@ -86,7 +86,7 @@ export function mergeRoutingRulePatch(
   if (patch.statusChangeReasons) {
     for (const group of STATUS_CHANGE_REASON_GROUPS) {
       for (const reason of group.reasonCodes) {
-        if (!Object.prototype.hasOwnProperty.call(patch.statusChangeReasons, reason)) {
+        if (!Object.hasOwn(patch.statusChangeReasons, reason)) {
           continue;
         }
         const value = patch.statusChangeReasons[reason];
@@ -407,6 +407,7 @@ export function useUpstreamAccountGroupSettingsDialog(
         "accountPool.upstreamAccounts.routing.timeout.responsesFirstByte",
       ),
       timeoutCompactFirstByte: t("accountPool.upstreamAccounts.routing.timeout.compactFirstByte"),
+      timeoutImageFirstByte: t("accountPool.upstreamAccounts.routing.timeout.imageFirstByte"),
       timeoutResponsesStream: t("accountPool.upstreamAccounts.routing.timeout.responsesStream"),
       timeoutCompactStream: t("accountPool.upstreamAccounts.routing.timeout.compactStream"),
       timeoutInheritedValue: t("accountPool.upstreamAccounts.timeoutEditor.inherited"),

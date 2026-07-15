@@ -1230,6 +1230,7 @@ pub(crate) async fn save_group_metadata_record_conn(
             policy_status_change_upstream_http_5xx = pool_upstream_account_group_notes.policy_status_change_upstream_http_5xx,
             policy_responses_first_byte_timeout_secs = pool_upstream_account_group_notes.policy_responses_first_byte_timeout_secs,
             policy_compact_first_byte_timeout_secs = pool_upstream_account_group_notes.policy_compact_first_byte_timeout_secs,
+            policy_image_first_byte_timeout_secs = pool_upstream_account_group_notes.policy_image_first_byte_timeout_secs,
             policy_responses_stream_timeout_secs = pool_upstream_account_group_notes.policy_responses_stream_timeout_secs,
             policy_compact_stream_timeout_secs = pool_upstream_account_group_notes.policy_compact_stream_timeout_secs,
             updated_at = excluded.updated_at

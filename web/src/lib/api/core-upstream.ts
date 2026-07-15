@@ -135,6 +135,7 @@ export function buildDefaultStatusChangeReasonFieldSources(
 export interface PoolRoutingTimeoutSettings {
   responsesFirstByteTimeoutSecs: number;
   compactFirstByteTimeoutSecs: number;
+  imageFirstByteTimeoutSecs?: number;
   responsesStreamTimeoutSecs: number;
   compactStreamTimeoutSecs: number;
 }
@@ -160,6 +161,7 @@ export interface EffectiveRoutingRuleFieldSources {
 export interface EffectiveRoutingTimeoutFieldSources {
   responsesFirstByteTimeoutSecs: EffectiveRoutingRuleSource;
   compactFirstByteTimeoutSecs: EffectiveRoutingRuleSource;
+  imageFirstByteTimeoutSecs?: EffectiveRoutingRuleSource;
   responsesStreamTimeoutSecs: EffectiveRoutingRuleSource;
   compactStreamTimeoutSecs: EffectiveRoutingRuleSource;
 }
@@ -795,6 +797,7 @@ export interface UpdateGroupAccountRoutingRulePayload {
   timeouts?: {
     responsesFirstByteTimeoutSecs?: NullableRoutingRuleValue<number>;
     compactFirstByteTimeoutSecs?: NullableRoutingRuleValue<number>;
+    imageFirstByteTimeoutSecs?: NullableRoutingRuleValue<number>;
     responsesStreamTimeoutSecs?: NullableRoutingRuleValue<number>;
     compactStreamTimeoutSecs?: NullableRoutingRuleValue<number>;
   };
@@ -921,6 +924,7 @@ function normalizePoolRoutingTimeoutSettings(raw: unknown): PoolRoutingTimeoutSe
       normalizeFiniteNumber(payload.compactFirstByteTimeoutSecs) ??
       normalizeFiniteNumber(payload.compactUpstreamHandshakeTimeoutSecs) ??
       300,
+    imageFirstByteTimeoutSecs: normalizeFiniteNumber(payload.imageFirstByteTimeoutSecs) ?? 300,
     responsesStreamTimeoutSecs: normalizeFiniteNumber(payload.responsesStreamTimeoutSecs) ?? 300,
     compactStreamTimeoutSecs: normalizeFiniteNumber(payload.compactStreamTimeoutSecs) ?? 300,
   };
@@ -936,6 +940,7 @@ function normalizeOptionalPoolRoutingTimeoutSettings(
     payload.responsesFirstByteTimeoutSecs,
   );
   const compactFirstByteTimeoutSecs = normalizeFiniteNumber(payload.compactFirstByteTimeoutSecs);
+  const imageFirstByteTimeoutSecs = normalizeFiniteNumber(payload.imageFirstByteTimeoutSecs);
   const responsesStreamTimeoutSecs = normalizeFiniteNumber(payload.responsesStreamTimeoutSecs);
   const compactStreamTimeoutSecs = normalizeFiniteNumber(payload.compactStreamTimeoutSecs);
   if (responsesFirstByteTimeoutSecs != null) {
@@ -943,6 +948,9 @@ function normalizeOptionalPoolRoutingTimeoutSettings(
   }
   if (compactFirstByteTimeoutSecs != null) {
     next.compactFirstByteTimeoutSecs = compactFirstByteTimeoutSecs;
+  }
+  if (imageFirstByteTimeoutSecs != null) {
+    next.imageFirstByteTimeoutSecs = imageFirstByteTimeoutSecs;
   }
   if (responsesStreamTimeoutSecs != null) {
     next.responsesStreamTimeoutSecs = responsesStreamTimeoutSecs;
@@ -960,6 +968,7 @@ function normalizeRoutingTimeoutFieldSources(raw: unknown): EffectiveRoutingTime
   return {
     responsesFirstByteTimeoutSecs: normalizeSource(payload.responsesFirstByteTimeoutSecs),
     compactFirstByteTimeoutSecs: normalizeSource(payload.compactFirstByteTimeoutSecs),
+    imageFirstByteTimeoutSecs: normalizeSource(payload.imageFirstByteTimeoutSecs),
     responsesStreamTimeoutSecs: normalizeSource(payload.responsesStreamTimeoutSecs),
     compactStreamTimeoutSecs: normalizeSource(payload.compactStreamTimeoutSecs),
   };
@@ -1055,6 +1064,7 @@ export function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRul
       compactFirstByteTimeoutSecs: normalizeSource(
         rawTimeoutFieldSources.compactFirstByteTimeoutSecs,
       ),
+      imageFirstByteTimeoutSecs: normalizeSource(rawTimeoutFieldSources.imageFirstByteTimeoutSecs),
       responsesStreamTimeoutSecs: normalizeSource(
         rawTimeoutFieldSources.responsesStreamTimeoutSecs,
       ),

@@ -233,6 +233,7 @@ bun run worktree:setup
 | `HTTP_BIND`                                            | 服务监听地址                                                                                                                        |
 | `DATABASE_PATH`                                        | SQLite 主库路径                                                                                                                     |
 | `OPENAI_UPSTREAM_BASE_URL`                             | OpenAI 兼容上游地址                                                                                                                 |
+| `OPENAI_PROXY_IMAGE_HANDSHAKE_TIMEOUT_SECS`            | 图片生成与编辑等待上游首字节的初始化默认值，默认 300 秒；之后可由 root/group/account/conversation timeout 设置覆盖                  |
 | `OPENAI_PROXY_WEBSOCKET_ENABLED`                       | 是否允许下游连接 `/v1/*` WebSocket 的首次初始化默认值，默认关闭；之后以设置页全局开关为准                                           |
 | `OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED`      | 是否默认允许本服务连接上游 WebSocket 的首次初始化默认值，默认关闭；之后以设置页全局开关为准，带系统标签 `不支持 WS` 的账号仍走 HTTP |
 | `OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED` | 加密对话路由绑定的首次初始化默认值，默认关闭；仅在数据库中的该设置尚未初始化时生效，之后以设置页全局开关为准                        |

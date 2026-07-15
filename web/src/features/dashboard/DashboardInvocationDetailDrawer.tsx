@@ -33,6 +33,7 @@ import { AppIcon } from "../shared/AppIcon";
 
 interface DashboardInvocationDetailDrawerProps {
   open: boolean;
+  invocationId?: string | null;
   selection: DashboardWorkingConversationInvocationSelection | null;
   onClose: () => void;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
@@ -109,7 +110,7 @@ function formatOccurredAtLabel(value: string, formatter: Intl.DateTimeFormat) {
 
 function SummaryCard({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-base-300/70 bg-base-100/65 p-3">
+    <div className="min-w-0 max-w-full rounded-xl border border-base-300/70 bg-base-100/65 p-3">
       <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/60">
         {label}
       </div>
@@ -120,6 +121,7 @@ function SummaryCard({ label, children }: { label: string; children: React.React
 
 export function DashboardInvocationDetailDrawer({
   open,
+  invocationId,
   selection,
   onClose,
   onOpenUpstreamAccount,
@@ -138,6 +140,7 @@ export function DashboardInvocationDetailDrawer({
   const [responseBody, setResponseBody] = useState<ApiInvocationResponseBodyResponse | null>(null);
   const [responseBodyLoading, setResponseBodyLoading] = useState(false);
   const [responseBodyError, setResponseBodyError] = useState<string | null>(null);
+  const effectiveInvocationId = invocationId ?? selection?.invocation.record.invokeId ?? null;
 
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
   const currencyFormatter = useMemo(
@@ -164,7 +167,7 @@ export function DashboardInvocationDetailDrawer({
   );
 
   useEffect(() => {
-    if (!open || !selection) {
+    if (!open || !effectiveInvocationId) {
       requestSeqRef.current += 1;
       abnormalSeqRef.current += 1;
       setFullRecord(null);
@@ -192,7 +195,7 @@ export function DashboardInvocationDetailDrawer({
     setResponseBodyError(null);
 
     void fetchInvocationRecords({
-      requestId: selection.invocation.record.invokeId,
+      requestId: effectiveInvocationId,
       pageSize: 1,
       sortBy: "occurredAt",
       sortOrder: "desc",
@@ -200,9 +203,7 @@ export function DashboardInvocationDetailDrawer({
       .then((response) => {
         if (requestSeq !== requestSeqRef.current) return;
         const exactRecord =
-          response.records.find(
-            (record) => record.invokeId === selection.invocation.record.invokeId,
-          ) ?? null;
+          response.records.find((record) => record.invokeId === effectiveInvocationId) ?? null;
         setFullRecord(exactRecord);
       })
       .catch((error) => {
@@ -214,7 +215,7 @@ export function DashboardInvocationDetailDrawer({
           setIsLoading(false);
         }
       });
-  }, [open, selection]);
+  }, [effectiveInvocationId, open]);
 
   useEffect(() => {
     if (!open || !fullRecord || !isAbnormalRecord(fullRecord) || fullRecord.id <= 0) {
@@ -268,7 +269,11 @@ export function DashboardInvocationDetailDrawer({
       });
   }, [fullRecord, open]);
 
-  const recordForHeader = fullRecord ?? selection?.invocation.record ?? null;
+  const selectionRecord =
+    selection?.invocation.record.invokeId === effectiveInvocationId
+      ? selection.invocation.record
+      : null;
+  const recordForHeader = fullRecord ?? selectionRecord;
   const statusMeta = resolveStatusMeta(
     recordForHeader != null
       ? resolveInvocationDisplayStatus(recordForHeader)
@@ -277,10 +282,11 @@ export function DashboardInvocationDetailDrawer({
   const statusLabel = statusMeta.labelKey
     ? t(statusMeta.labelKey as Parameters<typeof t>[0])
     : (statusMeta.label ?? t("table.status.unknown"));
-  const slotLabel =
-    selection?.slotKind === "previous"
+  const slotLabel = selection
+    ? selection.slotKind === "previous"
       ? t("dashboard.workingConversations.previousInvocation")
-      : t("dashboard.workingConversations.currentInvocation");
+      : t("dashboard.workingConversations.currentInvocation")
+    : t("dashboard.workingConversations.invocation");
   const occurredAtLabel =
     recordForHeader != null
       ? formatOccurredAtLabel(recordForHeader.occurredAt, dateTimeFormatter)
@@ -341,9 +347,10 @@ export function DashboardInvocationDetailDrawer({
         unavailableReason: responseBody.unavailableReason ?? null,
       }
     : (recordDetail?.abnormalResponseBody ?? null);
-  const displaySequenceId = selection
-    ? formatDashboardWorkingConversationSequenceId(selection.conversationSequenceId)
-    : null;
+  const displaySequenceId =
+    selection?.invocation.record.invokeId === effectiveInvocationId
+      ? formatDashboardWorkingConversationSequenceId(selection.conversationSequenceId)
+      : null;
   const abnormalResponseBodyLoading =
     (recordDetailLoading || responseBodyLoading) && abnormalResponseBody == null;
   const abnormalResponseBodyError =
@@ -374,10 +381,10 @@ export function DashboardInvocationDetailDrawer({
           </div>
           <div className="space-y-1">
             <p className="break-all font-mono text-sm text-base-content/75">
-              {selection?.promptCacheKey ?? FALLBACK_CELL}
+              {recordForHeader?.promptCacheKey ?? selection?.promptCacheKey ?? FALLBACK_CELL}
             </p>
             <p className="break-all font-mono text-xs text-base-content/58">
-              {recordForHeader?.invokeId ?? FALLBACK_CELL}
+              {recordForHeader?.invokeId ?? effectiveInvocationId ?? FALLBACK_CELL}
             </p>
           </div>
         </div>
@@ -417,8 +424,8 @@ export function DashboardInvocationDetailDrawer({
           </p>
         </div>
       ) : (
-        <div className="grid gap-4">
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid min-w-0 max-w-full grid-cols-1 gap-4">
+          <div className="grid min-w-0 max-w-full grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
             <SummaryCard label={t("table.details.account")}>
               <div className="text-sm font-medium">
                 {renderAccountValue(

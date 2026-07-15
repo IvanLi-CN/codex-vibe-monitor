@@ -239,6 +239,7 @@ function GroupMemberRow({
   const selectionEnabled = selectionMode === "multi" && typeof onToggleSelected === "function";
 
   return (
+    // biome-ignore lint/a11y/useSemanticElements: the row wraps an interactive checkbox, so a native button container is not valid here.
     <div
       role="button"
       tabIndex={0}
@@ -432,6 +433,7 @@ function GroupMemberGridCard({
       : null;
 
   return (
+    // biome-ignore lint/a11y/useSemanticElements: the card wraps nested interactive controls and cannot be represented as a native button.
     <div
       role="button"
       tabIndex={0}
@@ -754,7 +756,7 @@ export function UpstreamAccountsGroupedRoster({
 
   useEffect(() => {
     groupVirtualizer.measure();
-  }, [groupVirtualizer, groups, memberLayout, effectiveMemberViewportWidth]);
+  }, [groupVirtualizer]);
 
   useEffect(() => {
     const updateMetrics = () => {
@@ -823,7 +825,7 @@ export function UpstreamAccountsGroupedRoster({
       observer.disconnect();
       window.removeEventListener("resize", updateMetrics);
     };
-  }, [containerElement, spacerElement, memberElement, memberLayout, selectionEnabled]);
+  }, [containerElement, spacerElement, memberElement, memberLayout]);
 
   const virtualGroups = groupVirtualizer.getVirtualItems();
   const renderedGroups =
@@ -835,16 +837,16 @@ export function UpstreamAccountsGroupedRoster({
     virtualGroups.length > 0
       ? Math.max(0, groupVirtualizer.getTotalSize())
       : groups.reduce((sum, _, index) => sum + estimateSize(index), 0);
-  const paddingTop = normalizedVirtualGroups.length > 0 ? normalizedVirtualGroups[0]!.start : 0;
+  const paddingTop = normalizedVirtualGroups.length > 0 ? normalizedVirtualGroups[0]?.start : 0;
   const paddingBottom =
     normalizedVirtualGroups.length > 0
       ? Math.max(
           0,
-          totalMeasuredSize - normalizedVirtualGroups[normalizedVirtualGroups.length - 1]!.end,
+          totalMeasuredSize - normalizedVirtualGroups[normalizedVirtualGroups.length - 1]?.end,
         )
       : 0;
   const firstRenderedGroupIndex =
-    normalizedVirtualGroups.length > 0 ? normalizedVirtualGroups[0]!.index : null;
+    normalizedVirtualGroups.length > 0 ? normalizedVirtualGroups[0]?.index : null;
 
   if (isLoading && groups.length === 0) {
     return (

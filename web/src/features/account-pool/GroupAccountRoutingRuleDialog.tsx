@@ -311,6 +311,7 @@ export interface GroupAccountRoutingRuleLabels {
   timeoutSectionHint?: string;
   timeoutResponsesFirstByte: string;
   timeoutCompactFirstByte: string;
+  timeoutImageFirstByte: string;
   timeoutResponsesStream: string;
   timeoutCompactStream: string;
   timeoutInheritedValue: string;
@@ -414,6 +415,7 @@ export function GroupAccountRoutingRuleEditor({
     () => ({
       responsesFirstByteTimeoutSecs: labels.timeoutResponsesFirstByte,
       compactFirstByteTimeoutSecs: labels.timeoutCompactFirstByte,
+      imageFirstByteTimeoutSecs: labels.timeoutImageFirstByte,
       responsesStreamTimeoutSecs: labels.timeoutResponsesStream,
       compactStreamTimeoutSecs: labels.timeoutCompactStream,
     }),
@@ -551,6 +553,10 @@ export function GroupAccountRoutingRuleEditor({
             {
               key: "compactFirstByteTimeoutSecs",
               label: labels.timeoutCompactFirstByte,
+            },
+            {
+              key: "imageFirstByteTimeoutSecs",
+              label: labels.timeoutImageFirstByte,
             },
             {
               key: "responsesStreamTimeoutSecs",

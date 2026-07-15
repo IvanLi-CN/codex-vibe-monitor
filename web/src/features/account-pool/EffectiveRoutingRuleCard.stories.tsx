@@ -120,12 +120,14 @@ const relaxedRule: EffectiveRoutingRule = {
   timeouts: {
     responsesFirstByteTimeoutSecs: 120,
     compactFirstByteTimeoutSecs: 300,
+    imageFirstByteTimeoutSecs: 300,
     responsesStreamTimeoutSecs: 300,
     compactStreamTimeoutSecs: 300,
   },
   timeoutFieldSources: {
     responsesFirstByteTimeoutSecs: "root",
     compactFirstByteTimeoutSecs: "root",
+    imageFirstByteTimeoutSecs: "root",
     responsesStreamTimeoutSecs: "root",
     compactStreamTimeoutSecs: "root",
   },
@@ -168,12 +170,14 @@ const strictRule: EffectiveRoutingRule = {
   timeouts: {
     responsesFirstByteTimeoutSecs: 45,
     compactFirstByteTimeoutSecs: 300,
+    imageFirstByteTimeoutSecs: 360,
     responsesStreamTimeoutSecs: 210,
     compactStreamTimeoutSecs: 300,
   },
   timeoutFieldSources: {
     responsesFirstByteTimeoutSecs: "account",
     compactFirstByteTimeoutSecs: "root",
+    imageFirstByteTimeoutSecs: "account",
     responsesStreamTimeoutSecs: "account",
     compactStreamTimeoutSecs: "group",
   },
@@ -227,12 +231,14 @@ const multipleAccountOverridesRule: EffectiveRoutingRule = {
   timeouts: {
     responsesFirstByteTimeoutSecs: 30,
     compactFirstByteTimeoutSecs: 180,
+    imageFirstByteTimeoutSecs: 420,
     responsesStreamTimeoutSecs: 180,
     compactStreamTimeoutSecs: 240,
   },
   timeoutFieldSources: {
     responsesFirstByteTimeoutSecs: "account",
     compactFirstByteTimeoutSecs: "account",
+    imageFirstByteTimeoutSecs: "account",
     responsesStreamTimeoutSecs: "account",
     compactStreamTimeoutSecs: "group",
   },

@@ -409,6 +409,9 @@ pub(crate) fn proxy_upstream_send_timeout_for_capture_target(
     match capture_target {
         Some(ProxyCaptureTarget::Responses) => timeouts.responses_first_byte_timeout,
         Some(ProxyCaptureTarget::ResponsesCompact) => timeouts.compact_first_byte_timeout,
+        Some(ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits) => {
+            timeouts.image_first_byte_timeout
+        }
         _ => timeouts.default_send_timeout,
     }
 }
@@ -421,6 +424,9 @@ pub(crate) fn pool_upstream_first_chunk_timeout(
     match capture_target_for_request(original_uri.path(), method) {
         Some(ProxyCaptureTarget::Responses) => timeouts.responses_first_byte_timeout,
         Some(ProxyCaptureTarget::ResponsesCompact) => timeouts.compact_first_byte_timeout,
+        Some(ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits) => {
+            timeouts.image_first_byte_timeout
+        }
         _ => timeouts.default_first_byte_timeout,
     }
 }

@@ -548,6 +548,7 @@ export default function UpstreamAccountsPage() {
     routing?.maintenance?.priorityAvailableAccountCap,
     routing?.timeouts?.responsesFirstByteTimeoutSecs,
     routing?.timeouts?.compactFirstByteTimeoutSecs,
+    routing?.timeouts?.imageFirstByteTimeoutSecs,
     routing?.timeouts?.responsesStreamTimeoutSecs,
     routing?.timeouts?.compactStreamTimeoutSecs,
   ]);
@@ -856,6 +857,8 @@ export default function UpstreamAccountsPage() {
       String(resolvedRoutingTimeouts.responsesFirstByteTimeoutSecs) ||
     routingDraft.compactFirstByteTimeoutSecs.trim() !==
       String(resolvedRoutingTimeouts.compactFirstByteTimeoutSecs) ||
+    routingDraft.imageFirstByteTimeoutSecs.trim() !==
+      String(resolvedRoutingTimeouts.imageFirstByteTimeoutSecs) ||
     routingDraft.responsesStreamTimeoutSecs.trim() !==
       String(resolvedRoutingTimeouts.responsesStreamTimeoutSecs) ||
     routingDraft.compactStreamTimeoutSecs.trim() !==
@@ -1118,6 +1121,11 @@ export default function UpstreamAccountsPage() {
         routingDraft.compactFirstByteTimeoutSecs,
       ],
       [
+        "imageFirstByteTimeoutSecs",
+        t("accountPool.upstreamAccounts.routing.timeout.imageFirstByte"),
+        routingDraft.imageFirstByteTimeoutSecs,
+      ],
+      [
         "responsesStreamTimeoutSecs",
         t("accountPool.upstreamAccounts.routing.timeout.responsesStream"),
         routingDraft.responsesStreamTimeoutSecs,
@@ -1368,7 +1376,6 @@ export default function UpstreamAccountsPage() {
     closeBulkSyncEventSource,
     getBulkSyncJob,
     isBulkSyncBusy,
-    refresh,
     selectedAccountIds,
     startBulkSyncJob,
   ]);
@@ -2260,6 +2267,16 @@ export default function UpstreamAccountsPage() {
               setRoutingDraft((current) => ({
                 ...current,
                 compactFirstByteTimeoutSecs: value,
+              })),
+          },
+          {
+            key: "imageFirstByteTimeoutSecs",
+            label: t("accountPool.upstreamAccounts.routing.timeout.imageFirstByte"),
+            value: routingDraft.imageFirstByteTimeoutSecs,
+            onChange: (value) =>
+              setRoutingDraft((current) => ({
+                ...current,
+                imageFirstByteTimeoutSecs: value,
               })),
           },
           {

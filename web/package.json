@@ -36,6 +36,7 @@
     "react": "^19.1.1",
     "react-activity-calendar": "^2.7.15",
     "react-dom": "^19.1.1",
+    "react-json-view-lite": "2.5.0",
     "react-router-dom": "^7.9.5",
     "recharts": "^3.3.0",
     "tailwind-merge": "^3.5.0"

@@ -714,6 +714,207 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_include_manual_binding_summaries() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(24_i64)
+        .bind(0.24_f64)
+        .bind(json!({ "promptCacheKey": key }).to_string())
+        .bind("{}")
+        .bind(format_utc_iso_millis(occurred_at))
+        .execute(pool)
+        .await
+        .expect("insert invocation row");
+    }
+
+    for (offset_minutes, key) in [
+        (4_i64, "pck-binding-group"),
+        (3_i64, "pck-binding-account"),
+        (2_i64, "pck-binding-none"),
+        (1_i64, "pck-binding-empty-group"),
+    ] {
+        insert_row(
+            &state.pool,
+            &format!("invoke-{key}"),
+            now - ChronoDuration::minutes(offset_minutes),
+            key,
+        )
+        .await;
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, group_name, status, enabled, plan_type, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+        "#,
+    )
+    .bind(512_i64)
+    .bind("oauth_codex")
+    .bind("codex")
+    .bind("Codex Pro - Tokyo")
+    .bind("Tokyo")
+    .bind("active")
+    .bind(1_i64)
+    .bind("team")
+    .bind(format_utc_iso(now))
+    .execute(&state.pool)
+    .await
+    .expect("insert bound upstream account");
+
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_bindings (
+            prompt_cache_key,
+            binding_kind,
+            group_name,
+            upstream_account_id,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind("pck-binding-group")
+    .bind(PROMPT_CACHE_BINDING_KIND_GROUP)
+    .bind("CIII")
+    .bind(None::<i64>)
+    .execute(&state.pool)
+    .await
+    .expect("insert group manual binding");
+
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_bindings (
+            prompt_cache_key,
+            binding_kind,
+            group_name,
+            upstream_account_id,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind("pck-binding-account")
+    .bind(PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT)
+    .bind(None::<String>)
+    .bind(Some(512_i64))
+    .execute(&state.pool)
+    .await
+    .expect("insert account manual binding");
+
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_bindings (
+            prompt_cache_key,
+            binding_kind,
+            group_name,
+            upstream_account_id,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind("pck-binding-empty-group")
+    .bind(PROMPT_CACHE_BINDING_KIND_GROUP)
+    .bind("   ")
+    .bind(None::<i64>)
+    .execute(&state.pool)
+    .await
+    .expect("insert empty group manual binding");
+
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+            activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
+            recent_invocation_limit: None,
+        }),
+    )
+    .await
+    .expect("prompt cache conversation stats should succeed");
+
+    let group_conversation = response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-binding-group")
+        .expect("group conversation should be included");
+    let group_binding = group_conversation
+        .manual_binding
+        .as_ref()
+        .expect("group manual binding should be present");
+    assert_eq!(group_binding.binding_kind, "group");
+    assert_eq!(group_binding.group_name.as_deref(), Some("CIII"));
+    assert_eq!(group_binding.upstream_account_id, None);
+    assert_eq!(group_binding.upstream_account_name, None);
+
+    let account_conversation = response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-binding-account")
+        .expect("account conversation should be included");
+    let account_binding = account_conversation
+        .manual_binding
+        .as_ref()
+        .expect("account manual binding should be present");
+    assert_eq!(account_binding.binding_kind, "upstreamAccount");
+    assert_eq!(account_binding.group_name, None);
+    assert_eq!(account_binding.upstream_account_id, Some(512));
+    assert_eq!(
+        account_binding.upstream_account_name.as_deref(),
+        Some("Codex Pro - Tokyo")
+    );
+
+    let none_conversation = response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-binding-none")
+        .expect("unbound conversation should be included");
+    assert!(none_conversation.manual_binding.is_none());
+
+    let empty_group_conversation = response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-binding-empty-group")
+        .expect("empty-group conversation should be included");
+    assert!(empty_group_conversation.manual_binding.is_none());
+}
+
+#[tokio::test]
 async fn prompt_cache_recent_invocations_keep_per_key_limits_for_snapshot_and_proxy_scope() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

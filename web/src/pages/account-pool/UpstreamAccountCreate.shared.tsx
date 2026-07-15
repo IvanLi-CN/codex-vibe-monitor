@@ -2159,7 +2159,7 @@ export function DuplicateWarningPopover({
 
   useEffect(() => {
     setOpen(true);
-  }, [duplicateWarning.accountId, summaryTitle, summaryBody]);
+  }, []);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>

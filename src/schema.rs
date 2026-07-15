@@ -635,6 +635,7 @@ pub(crate) fn prompt_cache_conversation_bindings_create_sql(table_name: &str) ->
             upstream_account_id INTEGER,
             responses_first_byte_timeout_secs INTEGER,
             compact_first_byte_timeout_secs INTEGER,
+            image_first_byte_timeout_secs INTEGER,
             responses_stream_timeout_secs INTEGER,
             compact_stream_timeout_secs INTEGER,
             allow_switch_upstream INTEGER,
@@ -678,6 +679,7 @@ pub(crate) fn prompt_cache_binding_copy_expr(
         match column {
             "responses_first_byte_timeout_secs" => "responses_first_byte_timeout_secs",
             "compact_first_byte_timeout_secs" => "compact_first_byte_timeout_secs",
+            "image_first_byte_timeout_secs" => "image_first_byte_timeout_secs",
             "responses_stream_timeout_secs" => "responses_stream_timeout_secs",
             "compact_stream_timeout_secs" => "compact_stream_timeout_secs",
             "forward_proxy_key" => "forward_proxy_key",
@@ -705,6 +707,7 @@ pub(crate) async fn migrate_prompt_cache_conversation_bindings_contract(
     let already_compatible = normalized_sql.contains("'none'")
         && normalized_sql.contains("responses_first_byte_timeout_secs")
         && normalized_sql.contains("compact_first_byte_timeout_secs")
+        && normalized_sql.contains("image_first_byte_timeout_secs")
         && normalized_sql.contains("responses_stream_timeout_secs")
         && normalized_sql.contains("compact_stream_timeout_secs")
         && normalized_sql.contains("allow_switch_upstream")
@@ -721,6 +724,8 @@ pub(crate) async fn migrate_prompt_cache_conversation_bindings_contract(
         prompt_cache_binding_copy_expr(&existing_columns, "responses_first_byte_timeout_secs");
     let compact_first_byte_timeout_copy =
         prompt_cache_binding_copy_expr(&existing_columns, "compact_first_byte_timeout_secs");
+    let image_first_byte_timeout_copy =
+        prompt_cache_binding_copy_expr(&existing_columns, "image_first_byte_timeout_secs");
     let responses_stream_timeout_copy =
         prompt_cache_binding_copy_expr(&existing_columns, "responses_stream_timeout_secs");
     let compact_stream_timeout_copy =
@@ -750,6 +755,7 @@ pub(crate) async fn migrate_prompt_cache_conversation_bindings_contract(
             upstream_account_id,
             responses_first_byte_timeout_secs,
             compact_first_byte_timeout_secs,
+            image_first_byte_timeout_secs,
             responses_stream_timeout_secs,
             compact_stream_timeout_secs,
             allow_switch_upstream,
@@ -768,6 +774,7 @@ pub(crate) async fn migrate_prompt_cache_conversation_bindings_contract(
             upstream_account_id,
             {responses_first_byte_timeout_copy},
             {compact_first_byte_timeout_copy},
+            {image_first_byte_timeout_copy},
             {responses_stream_timeout_copy},
             {compact_stream_timeout_copy},
             NULL,
@@ -2939,6 +2946,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             upstream_account_id INTEGER,
             responses_first_byte_timeout_secs INTEGER,
             compact_first_byte_timeout_secs INTEGER,
+            image_first_byte_timeout_secs INTEGER,
             responses_stream_timeout_secs INTEGER,
             compact_stream_timeout_secs INTEGER,
             allow_switch_upstream INTEGER,

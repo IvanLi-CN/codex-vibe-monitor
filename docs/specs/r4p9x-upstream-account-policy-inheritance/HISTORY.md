@@ -4,6 +4,8 @@
 
 Account-pool routing policy moved from isolated group/tag behavior to a layered effective policy model. The resolver now computes one effective policy per account and downstream routing code reads that policy instead of separate group or tag fragments.
 
+2026-07-14: Added `imageFirstByteTimeoutSecs` to the root/group/account/conversation timeout chain with a 300-second default. Direct image timeout is terminal and returns an additive `504 upstream_handshake_timeout` contract instead of retrying or degrading to `pool_no_available_account`.
+
 2026-07-06: Added inherited per-reason status-change toggles for upstream auth, quota, transport, overload, and 5xx failure families. Group and account policy now resolve `statusChangeReasons` with root defaults of all-enabled, route and sync state mutations consult the resolved toggle before touching account health/cooldown/latest-action fields, and suppressed reasons create neutral account events instead of mutating account state.
 2026-07-07: Refined the owner-facing status-change reason UI after review. Reason controls are now flat icon-and-label button tiles, category and batch-toggle rows were removed, the account detail Routing tab widened the tile layout for the available drawer width, and account-level rollback is exposed as one panel-level reset action instead of per-tile inherit buttons.
 2026-07-07: Split the group settings dialog into group info, routing settings, and proxy nodes tabs. Group routing policy now uses the shared inline routing-rule editor inside the routing tab, keeps policy edits draft-local across tab switches, and saves them through the unified group settings payload.

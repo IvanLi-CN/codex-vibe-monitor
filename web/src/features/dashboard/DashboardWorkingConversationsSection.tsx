@@ -125,6 +125,7 @@ interface DashboardWorkingConversationsSectionProps {
 export interface DashboardWorkingConversationSelection {
   conversationSequenceId: string;
   promptCacheKey: string;
+  tab?: "overview" | "calls" | "settings";
 }
 
 const ACCOUNT_CARD_CLASS_NAME =
@@ -151,6 +152,46 @@ const DASHBOARD_ACCOUNT_RECENT_SKELETON_IDS = [
 ];
 const UPSTREAM_ACCOUNT_REFRESH_CHIP_SHOW_DELAY_MS = 300;
 const UPSTREAM_ACCOUNT_REFRESH_CHIP_MIN_VISIBLE_MS = 600;
+const MANUAL_BINDING_BADGE_CLASS_NAME =
+  "inline-flex min-w-0 max-w-full items-center rounded-full border px-2 py-0.5 text-[10.5px] font-medium leading-4";
+const MANUAL_BINDING_BADGE_BUTTON_CLASS_NAME =
+  "inline-flex min-w-0 max-w-[20rem] shrink appearance-none rounded-full border-0 bg-transparent p-0 text-left transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary";
+const MANUAL_BINDING_BADGE_TEXT_CLASS_NAME =
+  "block min-w-0 max-w-[20rem] truncate whitespace-nowrap";
+
+type DashboardManualBindingBadgeMeta = {
+  displayValue: string;
+  accessibleLabel: string;
+  toneClassName: string;
+};
+
+function resolveDashboardManualBindingBadgeMeta(
+  binding: DashboardWorkingConversationCardModel["manualBinding"],
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+): DashboardManualBindingBadgeMeta | null {
+  if (!binding) return null;
+  if (binding.bindingKind === "group") {
+    const groupName = binding.groupName?.trim();
+    if (!groupName) return null;
+    return {
+      displayValue: groupName,
+      accessibleLabel: t("live.conversations.drawer.binding.currentGroup", { group: groupName }),
+      toneClassName: "border-info/35 bg-info/15 text-info",
+    };
+  }
+
+  const upstreamAccountLabel =
+    binding.upstreamAccountName?.trim() ||
+    (binding.upstreamAccountId != null ? `#${binding.upstreamAccountId}` : "");
+  if (!upstreamAccountLabel) return null;
+  return {
+    displayValue: upstreamAccountLabel,
+    accessibleLabel: t("live.conversations.drawer.binding.currentAccount", {
+      account: upstreamAccountLabel,
+    }),
+    toneClassName: "border-secondary/45 bg-secondary/14 text-secondary",
+  };
+}
 
 type StatusMeta = {
   badgeVariant: "default" | "secondary" | "success" | "warning" | "error" | "info";
@@ -165,7 +206,6 @@ type StatusMeta = {
   label?: string;
   cardToneClassName: string;
   slotSurfaceClassName: string;
-  beaconClassName: string;
 };
 
 const CARD_CLASS_NAME =
@@ -183,6 +223,9 @@ const UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME =
 
 const UPSTREAM_ACCOUNT_RECENT_IDENTITY_CHIP_CLASS_NAME =
   "inline-flex h-[1.2rem] max-w-[4.8rem] shrink-0 items-center rounded-full border px-1.5 font-mono text-[10px] font-semibold leading-none tracking-[0.04em]";
+
+const ACCOUNT_HEADER_BADGE_CLASS_NAME =
+  "inline-flex h-6 shrink-0 items-center rounded-full border px-2.5 text-[11px] font-semibold leading-none";
 
 const UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES = [
   "dashboard-upstream-account-identity-chip--tone-sky",
@@ -210,7 +253,6 @@ const STATUS_META: Record<DashboardWorkingConversationTone, StatusMeta> = {
     labelKey: "table.status.running",
     cardToneClassName: CARD_SURFACE_CLASS_NAME,
     slotSurfaceClassName: INVOCATION_SURFACE_CLASS_NAME,
-    beaconClassName: "bg-primary/85",
   },
   pending: {
     badgeVariant: "warning",
@@ -218,7 +260,6 @@ const STATUS_META: Record<DashboardWorkingConversationTone, StatusMeta> = {
     labelKey: "table.status.pending",
     cardToneClassName: CARD_SURFACE_CLASS_NAME,
     slotSurfaceClassName: INVOCATION_SURFACE_CLASS_NAME,
-    beaconClassName: "bg-warning/85",
   },
   success: {
     badgeVariant: "success",
@@ -226,14 +267,12 @@ const STATUS_META: Record<DashboardWorkingConversationTone, StatusMeta> = {
     labelKey: "table.status.success",
     cardToneClassName: CARD_SURFACE_CLASS_NAME,
     slotSurfaceClassName: INVOCATION_SURFACE_CLASS_NAME,
-    beaconClassName: "bg-success/85",
   },
   warning: {
     badgeVariant: "warning",
     icon: "alert-outline",
     cardToneClassName: CARD_SURFACE_CLASS_NAME,
     slotSurfaceClassName: INVOCATION_SURFACE_CLASS_NAME,
-    beaconClassName: "bg-warning/85",
   },
   error: {
     badgeVariant: "error",
@@ -241,7 +280,6 @@ const STATUS_META: Record<DashboardWorkingConversationTone, StatusMeta> = {
     labelKey: "table.status.failed",
     cardToneClassName: CARD_SURFACE_CLASS_NAME,
     slotSurfaceClassName: INVOCATION_SURFACE_CLASS_NAME,
-    beaconClassName: "bg-error/90",
   },
   neutral: {
     badgeVariant: "secondary",
@@ -249,7 +287,6 @@ const STATUS_META: Record<DashboardWorkingConversationTone, StatusMeta> = {
     labelKey: "table.status.unknown",
     cardToneClassName: CARD_SURFACE_CLASS_NAME,
     slotSurfaceClassName: INVOCATION_SURFACE_CLASS_NAME,
-    beaconClassName: "bg-base-content/55",
   },
 };
 
@@ -938,7 +975,7 @@ function AccountAttentionBadges({
           data-testid="dashboard-upstream-account-attention-badge"
           title={badge.title ?? badge.label}
           className={cn(
-            "inline-flex h-5 shrink-0 items-center rounded-full border px-2 leading-none",
+            ACCOUNT_HEADER_BADGE_CLASS_NAME,
             badge.tone === "error"
               ? "border-error/38 bg-error/10 text-error"
               : badge.tone === "warning"
@@ -2871,12 +2908,12 @@ function DashboardUpstreamAccountActivityCard({
       data-account-key={account.accountKey ?? account.upstreamAccountId ?? "unassigned"}
       className={ACCOUNT_CARD_CLASS_NAME}
     >
-      <div
-        data-testid="dashboard-upstream-account-header-row"
-        className="flex flex-wrap items-start justify-between gap-4"
-      >
-        <div className="min-w-[12rem] flex-1">
-          <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-col gap-2">
+        <div
+          data-testid="dashboard-upstream-account-header-row"
+          className="grid items-start gap-x-4 gap-y-2 xl:grid-cols-[minmax(0,1fr)_auto]"
+        >
+          <div className="flex min-w-0 flex-wrap items-center gap-2 xl:col-start-1">
             <button
               type="button"
               data-motion-surface
@@ -2905,7 +2942,7 @@ function DashboardUpstreamAccountActivityCard({
                 variant={upstreamPlanBadgeRecipe(account.planType)?.variant ?? "secondary"}
                 data-plan={upstreamPlanBadgeRecipe(account.planType)?.dataPlan}
                 className={cn(
-                  "h-5 px-2 py-0 text-[10px] font-semibold",
+                  ACCOUNT_HEADER_BADGE_CLASS_NAME,
                   upstreamPlanBadgeRecipe(account.planType)?.className,
                 )}
               >
@@ -2923,63 +2960,67 @@ function DashboardUpstreamAccountActivityCard({
               onToggleCutIn={handleToggleCutIn}
             />
           </div>
-          {policySaveError ? (
-            <div
-              role="alert"
-              data-testid="dashboard-upstream-account-policy-error"
-              className="mt-2 inline-flex max-w-full rounded-lg border border-error/30 bg-error/10 px-2.5 py-1 text-xs font-medium text-error"
+          <div className="flex min-w-0 flex-wrap items-center justify-start gap-x-5 gap-y-1.5 text-right xl:col-start-2 xl:justify-end xl:self-start">
+            <AccountInlineMetric
+              label={t("dashboard.today.inProgressConversations")}
+              value={formatAccountNumberValue(account.inProgressInvocationCount, localeTag, 0)}
+              tone="secondary"
+              iconName="send"
+            />
+            <AccountInlineMetric
+              label="TPM"
+              value={formatAccountNumberValue(account.tokensPerMinute, localeTag, 0)}
+              tone="primary"
+              iconName="speedometer"
+              modelPerformance={account.modelPerformance}
+              modelPerformanceTitle={modelPerformanceTitle}
+            />
+            <AccountInlineMetric
+              label={t("dashboard.today.spendRate")}
+              value={formatAccountCurrencyAmountValue(account.spendRate, localeTag, 2)}
+              tone="warning"
+              iconName="cash-clock"
+              modelPerformance={account.modelPerformance}
+              modelPerformanceTitle={modelPerformanceTitle}
+            />
+            <button
+              type="button"
+              data-testid="dashboard-upstream-account-routing-settings"
+              disabled={account.upstreamAccountId == null}
+              className={cn(
+                "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-base-300/70 bg-base-100/82 text-base-content/72 transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                account.upstreamAccountId == null
+                  ? "cursor-not-allowed opacity-45"
+                  : "hover:border-primary/45 hover:text-primary",
+              )}
+              title={locale === "zh" ? "打开账号路由设置" : "Open routing settings"}
+              aria-label={locale === "zh" ? "打开账号路由设置" : "Open routing settings"}
+              onClick={(event) => {
+                event.stopPropagation();
+                handleOpenRoutingTab();
+              }}
+              onKeyDown={(event) => {
+                event.stopPropagation();
+              }}
             >
-              {locale === "zh" ? "策略保存失败：" : "Policy save failed: "}
-              <span className="truncate">{policySaveError}</span>
-            </div>
-          ) : null}
+              <AppIcon
+                name="cog-outline"
+                className="h-[1.125rem] w-[1.125rem]"
+                aria-hidden="true"
+              />
+            </button>
+          </div>
         </div>
-        <div className="flex min-w-0 flex-1 flex-wrap items-start justify-end gap-x-5 gap-y-1.5 text-right">
-          <AccountInlineMetric
-            label={t("dashboard.today.inProgressConversations")}
-            value={formatAccountNumberValue(account.inProgressInvocationCount, localeTag, 0)}
-            tone="secondary"
-            iconName="send"
-          />
-          <AccountInlineMetric
-            label="TPM"
-            value={formatAccountNumberValue(account.tokensPerMinute, localeTag, 0)}
-            tone="primary"
-            iconName="speedometer"
-            modelPerformance={account.modelPerformance}
-            modelPerformanceTitle={modelPerformanceTitle}
-          />
-          <AccountInlineMetric
-            label={t("dashboard.today.spendRate")}
-            value={formatAccountCurrencyAmountValue(account.spendRate, localeTag, 2)}
-            tone="warning"
-            iconName="cash-clock"
-            modelPerformance={account.modelPerformance}
-            modelPerformanceTitle={modelPerformanceTitle}
-          />
-          <button
-            type="button"
-            data-testid="dashboard-upstream-account-routing-settings"
-            disabled={account.upstreamAccountId == null}
-            className={cn(
-              "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-base-300/70 bg-base-100/82 text-base-content/72 transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-              account.upstreamAccountId == null
-                ? "cursor-not-allowed opacity-45"
-                : "hover:border-primary/45 hover:text-primary",
-            )}
-            title={locale === "zh" ? "打开账号路由设置" : "Open routing settings"}
-            aria-label={locale === "zh" ? "打开账号路由设置" : "Open routing settings"}
-            onClick={(event) => {
-              event.stopPropagation();
-              handleOpenRoutingTab();
-            }}
-            onKeyDown={(event) => {
-              event.stopPropagation();
-            }}
+        {policySaveError ? (
+          <div
+            role="alert"
+            data-testid="dashboard-upstream-account-policy-error"
+            className="inline-flex max-w-full rounded-lg border border-error/30 bg-error/10 px-2.5 py-1 text-xs font-medium text-error"
           >
-            <AppIcon name="cog-outline" className="h-[1.125rem] w-[1.125rem]" aria-hidden="true" />
-          </button>
-        </div>
+            {locale === "zh" ? "策略保存失败：" : "Policy save failed: "}
+            <span className="truncate">{policySaveError}</span>
+          </div>
+        ) : null}
       </div>
 
       <div className="mt-4 flex flex-col gap-2.5">
@@ -3575,7 +3616,7 @@ export function DashboardWorkingConversationsSection({
           index,
           start: scrollMargin + index * 360,
         }));
-  const hasVirtualizedRowsAbove = renderedRows.length > 0 ? renderedRows[0]!.index > 0 : false;
+  const hasVirtualizedRowsAbove = renderedRows.length > 0 ? renderedRows[0]?.index > 0 : false;
   const visibleAnchorTarget = useMemo<DashboardVisibleAnchorTarget>(
     () =>
       activeView === "conversations"
@@ -3964,6 +4005,13 @@ export function DashboardWorkingConversationsSection({
                             ? timestampFormatter.format(new Date(card.sortAnchorEpoch))
                             : FALLBACK_CELL;
                         const sequenceConversationActionLabel = `${t("dashboard.workingConversations.openConversation")} · ${displaySequenceId} · ${card.promptCacheKey}`;
+                        const manualBindingBadgeMeta = resolveDashboardManualBindingBadgeMeta(
+                          card.manualBinding,
+                          t,
+                        );
+                        const manualBindingActionLabel = manualBindingBadgeMeta
+                          ? `${t("dashboard.workingConversations.openConversationSettings")} · ${manualBindingBadgeMeta.accessibleLabel}`
+                          : null;
 
                         return (
                           <article
@@ -3980,27 +4028,74 @@ export function DashboardWorkingConversationsSection({
                           >
                             <div className="relative">
                               <div className="flex min-w-0 items-center justify-between gap-3">
-                                {onOpenConversation ? (
-                                  <button
-                                    type="button"
-                                    data-testid="dashboard-working-conversation-sequence-button"
-                                    className="inline-flex min-w-0 shrink cursor-pointer appearance-none items-center border-0 bg-transparent p-0 text-left font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                                    aria-label={sequenceConversationActionLabel}
-                                    title={sequenceConversationActionLabel}
-                                    onClick={() => {
-                                      onOpenConversation({
-                                        conversationSequenceId: card.conversationSequenceId,
-                                        promptCacheKey: card.promptCacheKey,
-                                      });
-                                    }}
-                                  >
-                                    <span className="min-w-0 truncate">{displaySequenceId}</span>
-                                  </button>
-                                ) : (
-                                  <div className="min-w-0 shrink truncate font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content">
-                                    {displaySequenceId}
-                                  </div>
-                                )}
+                                <div className="flex min-w-0 flex-1 items-center gap-2">
+                                  {onOpenConversation ? (
+                                    <button
+                                      type="button"
+                                      data-testid="dashboard-working-conversation-sequence-button"
+                                      className="inline-flex shrink-0 cursor-pointer appearance-none items-center whitespace-nowrap border-0 bg-transparent p-0 text-left font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                                      aria-label={sequenceConversationActionLabel}
+                                      title={sequenceConversationActionLabel}
+                                      onClick={() => {
+                                        onOpenConversation({
+                                          conversationSequenceId: card.conversationSequenceId,
+                                          promptCacheKey: card.promptCacheKey,
+                                        });
+                                      }}
+                                    >
+                                      <span className="block whitespace-nowrap">
+                                        {displaySequenceId}
+                                      </span>
+                                    </button>
+                                  ) : (
+                                    <div className="shrink-0 whitespace-nowrap font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content">
+                                      {displaySequenceId}
+                                    </div>
+                                  )}
+                                  {manualBindingBadgeMeta ? (
+                                    onOpenConversation ? (
+                                      <button
+                                        type="button"
+                                        data-testid="dashboard-working-conversation-manual-binding-badge"
+                                        className={MANUAL_BINDING_BADGE_BUTTON_CLASS_NAME}
+                                        aria-label={manualBindingActionLabel ?? undefined}
+                                        title={manualBindingActionLabel ?? undefined}
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          onOpenConversation({
+                                            conversationSequenceId: card.conversationSequenceId,
+                                            promptCacheKey: card.promptCacheKey,
+                                            tab: "settings",
+                                          });
+                                        }}
+                                      >
+                                        <span
+                                          className={cn(
+                                            MANUAL_BINDING_BADGE_CLASS_NAME,
+                                            manualBindingBadgeMeta.toneClassName,
+                                          )}
+                                        >
+                                          <span className={MANUAL_BINDING_BADGE_TEXT_CLASS_NAME}>
+                                            {manualBindingBadgeMeta.displayValue}
+                                          </span>
+                                        </span>
+                                      </button>
+                                    ) : (
+                                      <span
+                                        data-testid="dashboard-working-conversation-manual-binding-badge"
+                                        className={cn(
+                                          MANUAL_BINDING_BADGE_CLASS_NAME,
+                                          manualBindingBadgeMeta.toneClassName,
+                                        )}
+                                        title={manualBindingBadgeMeta.accessibleLabel}
+                                      >
+                                        <span className={MANUAL_BINDING_BADGE_TEXT_CLASS_NAME}>
+                                          {manualBindingBadgeMeta.displayValue}
+                                        </span>
+                                      </span>
+                                    )
+                                  ) : null}
+                                </div>
                                 <div className="flex shrink-0 items-center justify-end gap-2 whitespace-nowrap text-[10px] text-base-content/62">
                                   <span className="font-mono">{sortAnchorLabel}</span>
                                   {card.currentInvocation.livePhase ? (
@@ -4011,18 +4106,11 @@ export function DashboardWorkingConversationsSection({
                                       showLabel={false}
                                     />
                                   ) : (
-                                    <>
-                                      <span className="font-semibold uppercase tracking-[0.14em] text-base-content/76">
-                                        {currentStatusLabel}
-                                      </span>
-                                      <span
-                                        className={cn(
-                                          "inline-flex h-2 w-2 rounded-full",
-                                          currentStatusMeta.beaconClassName,
-                                        )}
-                                        aria-hidden
-                                      />
-                                    </>
+                                    <InlineInvocationStatus
+                                      meta={currentStatusMeta}
+                                      label={currentStatusLabel}
+                                      showLabel={false}
+                                    />
                                   )}
                                 </div>
                               </div>
