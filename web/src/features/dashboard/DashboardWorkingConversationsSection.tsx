@@ -125,6 +125,7 @@ interface DashboardWorkingConversationsSectionProps {
 export interface DashboardWorkingConversationSelection {
   conversationSequenceId: string;
   promptCacheKey: string;
+  tab?: "overview" | "calls" | "settings";
 }
 
 const ACCOUNT_CARD_CLASS_NAME =
@@ -151,6 +152,46 @@ const DASHBOARD_ACCOUNT_RECENT_SKELETON_IDS = [
 ];
 const UPSTREAM_ACCOUNT_REFRESH_CHIP_SHOW_DELAY_MS = 300;
 const UPSTREAM_ACCOUNT_REFRESH_CHIP_MIN_VISIBLE_MS = 600;
+const MANUAL_BINDING_BADGE_CLASS_NAME =
+  "inline-flex min-w-0 max-w-full items-center rounded-full border px-2 py-0.5 text-[10.5px] font-medium leading-4";
+const MANUAL_BINDING_BADGE_BUTTON_CLASS_NAME =
+  "inline-flex min-w-0 max-w-[20rem] shrink appearance-none rounded-full border-0 bg-transparent p-0 text-left transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary";
+const MANUAL_BINDING_BADGE_TEXT_CLASS_NAME =
+  "block min-w-0 max-w-[20rem] truncate whitespace-nowrap";
+
+type DashboardManualBindingBadgeMeta = {
+  displayValue: string;
+  accessibleLabel: string;
+  toneClassName: string;
+};
+
+function resolveDashboardManualBindingBadgeMeta(
+  binding: DashboardWorkingConversationCardModel["manualBinding"],
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+): DashboardManualBindingBadgeMeta | null {
+  if (!binding) return null;
+  if (binding.bindingKind === "group") {
+    const groupName = binding.groupName?.trim();
+    if (!groupName) return null;
+    return {
+      displayValue: groupName,
+      accessibleLabel: t("live.conversations.drawer.binding.currentGroup", { group: groupName }),
+      toneClassName: "border-info/35 bg-info/15 text-info",
+    };
+  }
+
+  const upstreamAccountLabel =
+    binding.upstreamAccountName?.trim() ||
+    (binding.upstreamAccountId != null ? `#${binding.upstreamAccountId}` : "");
+  if (!upstreamAccountLabel) return null;
+  return {
+    displayValue: upstreamAccountLabel,
+    accessibleLabel: t("live.conversations.drawer.binding.currentAccount", {
+      account: upstreamAccountLabel,
+    }),
+    toneClassName: "border-secondary/45 bg-secondary/14 text-secondary",
+  };
+}
 
 type StatusMeta = {
   badgeVariant: "default" | "secondary" | "success" | "warning" | "error" | "info";
@@ -165,7 +206,6 @@ type StatusMeta = {
   label?: string;
   cardToneClassName: string;
   slotSurfaceClassName: string;
-  beaconClassName: string;
 };
 
 const CARD_CLASS_NAME =
@@ -213,7 +253,6 @@ const STATUS_META: Record<DashboardWorkingConversationTone, StatusMeta> = {
     labelKey: "table.status.running",
     cardToneClassName: CARD_SURFACE_CLASS_NAME,
     slotSurfaceClassName: INVOCATION_SURFACE_CLASS_NAME,
-    beaconClassName: "bg-primary/85",
   },
   pending: {
     badgeVariant: "warning",
@@ -221,7 +260,6 @@ const STATUS_META: Record<DashboardWorkingConversationTone, StatusMeta> = {
     labelKey: "table.status.pending",
     cardToneClassName: CARD_SURFACE_CLASS_NAME,
     slotSurfaceClassName: INVOCATION_SURFACE_CLASS_NAME,
-    beaconClassName: "bg-warning/85",
   },
   success: {
     badgeVariant: "success",
@@ -229,14 +267,12 @@ const STATUS_META: Record<DashboardWorkingConversationTone, StatusMeta> = {
     labelKey: "table.status.success",
     cardToneClassName: CARD_SURFACE_CLASS_NAME,
     slotSurfaceClassName: INVOCATION_SURFACE_CLASS_NAME,
-    beaconClassName: "bg-success/85",
   },
   warning: {
     badgeVariant: "warning",
     icon: "alert-outline",
     cardToneClassName: CARD_SURFACE_CLASS_NAME,
     slotSurfaceClassName: INVOCATION_SURFACE_CLASS_NAME,
-    beaconClassName: "bg-warning/85",
   },
   error: {
     badgeVariant: "error",
@@ -244,7 +280,6 @@ const STATUS_META: Record<DashboardWorkingConversationTone, StatusMeta> = {
     labelKey: "table.status.failed",
     cardToneClassName: CARD_SURFACE_CLASS_NAME,
     slotSurfaceClassName: INVOCATION_SURFACE_CLASS_NAME,
-    beaconClassName: "bg-error/90",
   },
   neutral: {
     badgeVariant: "secondary",
@@ -252,7 +287,6 @@ const STATUS_META: Record<DashboardWorkingConversationTone, StatusMeta> = {
     labelKey: "table.status.unknown",
     cardToneClassName: CARD_SURFACE_CLASS_NAME,
     slotSurfaceClassName: INVOCATION_SURFACE_CLASS_NAME,
-    beaconClassName: "bg-base-content/55",
   },
 };
 
@@ -3971,6 +4005,13 @@ export function DashboardWorkingConversationsSection({
                             ? timestampFormatter.format(new Date(card.sortAnchorEpoch))
                             : FALLBACK_CELL;
                         const sequenceConversationActionLabel = `${t("dashboard.workingConversations.openConversation")} · ${displaySequenceId} · ${card.promptCacheKey}`;
+                        const manualBindingBadgeMeta = resolveDashboardManualBindingBadgeMeta(
+                          card.manualBinding,
+                          t,
+                        );
+                        const manualBindingActionLabel = manualBindingBadgeMeta
+                          ? `${t("dashboard.workingConversations.openConversationSettings")} · ${manualBindingBadgeMeta.accessibleLabel}`
+                          : null;
 
                         return (
                           <article
@@ -3987,27 +4028,74 @@ export function DashboardWorkingConversationsSection({
                           >
                             <div className="relative">
                               <div className="flex min-w-0 items-center justify-between gap-3">
-                                {onOpenConversation ? (
-                                  <button
-                                    type="button"
-                                    data-testid="dashboard-working-conversation-sequence-button"
-                                    className="inline-flex min-w-0 shrink cursor-pointer appearance-none items-center border-0 bg-transparent p-0 text-left font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                                    aria-label={sequenceConversationActionLabel}
-                                    title={sequenceConversationActionLabel}
-                                    onClick={() => {
-                                      onOpenConversation({
-                                        conversationSequenceId: card.conversationSequenceId,
-                                        promptCacheKey: card.promptCacheKey,
-                                      });
-                                    }}
-                                  >
-                                    <span className="min-w-0 truncate">{displaySequenceId}</span>
-                                  </button>
-                                ) : (
-                                  <div className="min-w-0 shrink truncate font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content">
-                                    {displaySequenceId}
-                                  </div>
-                                )}
+                                <div className="flex min-w-0 flex-1 items-center gap-2">
+                                  {onOpenConversation ? (
+                                    <button
+                                      type="button"
+                                      data-testid="dashboard-working-conversation-sequence-button"
+                                      className="inline-flex shrink-0 cursor-pointer appearance-none items-center whitespace-nowrap border-0 bg-transparent p-0 text-left font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                                      aria-label={sequenceConversationActionLabel}
+                                      title={sequenceConversationActionLabel}
+                                      onClick={() => {
+                                        onOpenConversation({
+                                          conversationSequenceId: card.conversationSequenceId,
+                                          promptCacheKey: card.promptCacheKey,
+                                        });
+                                      }}
+                                    >
+                                      <span className="block whitespace-nowrap">
+                                        {displaySequenceId}
+                                      </span>
+                                    </button>
+                                  ) : (
+                                    <div className="shrink-0 whitespace-nowrap font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content">
+                                      {displaySequenceId}
+                                    </div>
+                                  )}
+                                  {manualBindingBadgeMeta ? (
+                                    onOpenConversation ? (
+                                      <button
+                                        type="button"
+                                        data-testid="dashboard-working-conversation-manual-binding-badge"
+                                        className={MANUAL_BINDING_BADGE_BUTTON_CLASS_NAME}
+                                        aria-label={manualBindingActionLabel ?? undefined}
+                                        title={manualBindingActionLabel ?? undefined}
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          onOpenConversation({
+                                            conversationSequenceId: card.conversationSequenceId,
+                                            promptCacheKey: card.promptCacheKey,
+                                            tab: "settings",
+                                          });
+                                        }}
+                                      >
+                                        <span
+                                          className={cn(
+                                            MANUAL_BINDING_BADGE_CLASS_NAME,
+                                            manualBindingBadgeMeta.toneClassName,
+                                          )}
+                                        >
+                                          <span className={MANUAL_BINDING_BADGE_TEXT_CLASS_NAME}>
+                                            {manualBindingBadgeMeta.displayValue}
+                                          </span>
+                                        </span>
+                                      </button>
+                                    ) : (
+                                      <span
+                                        data-testid="dashboard-working-conversation-manual-binding-badge"
+                                        className={cn(
+                                          MANUAL_BINDING_BADGE_CLASS_NAME,
+                                          manualBindingBadgeMeta.toneClassName,
+                                        )}
+                                        title={manualBindingBadgeMeta.accessibleLabel}
+                                      >
+                                        <span className={MANUAL_BINDING_BADGE_TEXT_CLASS_NAME}>
+                                          {manualBindingBadgeMeta.displayValue}
+                                        </span>
+                                      </span>
+                                    )
+                                  ) : null}
+                                </div>
                                 <div className="flex shrink-0 items-center justify-end gap-2 whitespace-nowrap text-[10px] text-base-content/62">
                                   <span className="font-mono">{sortAnchorLabel}</span>
                                   {card.currentInvocation.livePhase ? (
@@ -4018,18 +4106,11 @@ export function DashboardWorkingConversationsSection({
                                       showLabel={false}
                                     />
                                   ) : (
-                                    <>
-                                      <span className="font-semibold uppercase tracking-[0.14em] text-base-content/76">
-                                        {currentStatusLabel}
-                                      </span>
-                                      <span
-                                        className={cn(
-                                          "inline-flex h-2 w-2 rounded-full",
-                                          currentStatusMeta.beaconClassName,
-                                        )}
-                                        aria-hidden
-                                      />
-                                    </>
+                                    <InlineInvocationStatus
+                                      meta={currentStatusMeta}
+                                      label={currentStatusLabel}
+                                      showLabel={false}
+                                    />
                                   )}
                                 </div>
                               </div>

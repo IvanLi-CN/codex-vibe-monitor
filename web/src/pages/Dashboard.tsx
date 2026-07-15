@@ -215,6 +215,7 @@ export default function DashboardPage() {
             return;
           }
           openPromptCacheConversation(selection.promptCacheKey, {
+            tab: selection.tab,
             clearUpstreamAccount: true,
           });
         }}

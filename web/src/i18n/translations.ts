@@ -1698,6 +1698,7 @@ const baseTranslations = {
     "dashboard.workingConversations.currentInvocation": "Current invocation",
     "dashboard.workingConversations.previousInvocation": "Previous invocation",
     "dashboard.workingConversations.openConversation": "Open conversation details",
+    "dashboard.workingConversations.openConversationSettings": "Open conversation settings",
     "dashboard.workingConversations.openInvocation": "Open invocation details",
     "dashboard.workingConversations.placeholderBadge": "Waiting",
     "dashboard.workingConversations.previousPlaceholder":
@@ -3976,6 +3977,7 @@ const baseTranslations = {
     "dashboard.workingConversations.currentInvocation": "当前调用",
     "dashboard.workingConversations.previousInvocation": "上一条调用",
     "dashboard.workingConversations.openConversation": "打开对话详情",
+    "dashboard.workingConversations.openConversationSettings": "打开对话设置",
     "dashboard.workingConversations.openInvocation": "打开调用详情",
     "dashboard.workingConversations.placeholderBadge": "占位",
     "dashboard.workingConversations.previousPlaceholder": "这条对话还没有可展示的上一条调用。",
