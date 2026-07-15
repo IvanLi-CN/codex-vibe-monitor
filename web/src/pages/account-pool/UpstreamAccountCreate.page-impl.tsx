@@ -213,9 +213,7 @@ export default function UpstreamAccountCreatePage() {
   const [apiKeyDisplayName, setApiKeyDisplayName] = useState(
     () => draft?.apiKey?.displayName ?? "",
   );
-  const [apiKeyEmail, setApiKeyEmail] = useState(() => draft?.apiKey?.email ?? "");
   const [apiKeyGroupName, setApiKeyGroupName] = useState(() => draft?.apiKey?.groupName ?? "");
-  const [apiKeyIsMother, setApiKeyIsMother] = useState(() => draft?.apiKey?.isMother === true);
   const [apiKeyNote, setApiKeyNote] = useState(() => draft?.apiKey?.note ?? "");
   const [apiKeyTagIds] = useState<number[]>([]);
   const [apiKeyValue, setApiKeyValue] = useState(() => draft?.apiKey?.apiKeyValue ?? "");
@@ -1848,10 +1846,8 @@ export default function UpstreamAccountCreatePage() {
   } = useUpstreamAccountCreateActions({
     activeOauthMailboxSession,
     apiKeyDisplayName,
-    apiKeyEmail,
     apiKeyGroupName,
     apiKeyGroupProxyState,
-    apiKeyIsMother,
     apiKeyLimitUnit,
     apiKeyNote,
     apiKeyPrimaryLimit,
@@ -1922,7 +1918,6 @@ export default function UpstreamAccountCreatePage() {
     saveAccount,
     session,
     setActionError,
-    setApiKeyEmail,
     setBatchManualCopyRowId,
     setBusyAction,
     setManualCopyOpen,
@@ -1969,10 +1964,8 @@ export default function UpstreamAccountCreatePage() {
     activeTab,
     apiKeyDisplayName,
     apiKeyDisplayNameConflict,
-    apiKeyEmail,
     apiKeyGroupName,
     apiKeyGroupProxyState,
-    apiKeyIsMother,
     apiKeyLimitUnit,
     apiKeyNote,
     apiKeyPrimaryLimit,
@@ -2129,9 +2122,7 @@ export default function UpstreamAccountCreatePage() {
     sessionHint,
     setActionError,
     setApiKeyDisplayName,
-    setApiKeyEmail,
     setApiKeyGroupName: setRememberingApiKeyGroupName,
-    setApiKeyIsMother,
     setApiKeyLimitUnit,
     setApiKeyNote,
     setApiKeyPrimaryLimit,

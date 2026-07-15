@@ -162,9 +162,7 @@ export type CreatePageDraft = {
   };
   apiKey?: {
     displayName?: string;
-    email?: string;
     groupName?: string;
-    isMother?: boolean;
     note?: string;
     tagIds?: number[];
     apiKeyValue?: string;

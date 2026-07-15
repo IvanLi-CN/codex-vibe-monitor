@@ -50,26 +50,14 @@ function RememberedApiKeyGroupStoryRouter() {
   return <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=apiKey" />;
 }
 
-export const EmailDerivedName: Story = {
+export const HiddenMetadataFields: Story = {
   render: () => (
     <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=apiKey" />
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const displayName = canvas.getByLabelText(/display name/i) as HTMLInputElement;
-    const email = canvas.getByLabelText(/^email$/i);
-
-    await userEvent.type(email, "first@storybook.example.com");
-    await expect(displayName.value).toBe("first@storybook.example.com");
-    await userEvent.clear(email);
-    await userEvent.type(email, "second@storybook.example.com");
-    await expect(displayName.value).toBe("second@storybook.example.com");
-
-    await userEvent.clear(displayName);
-    await userEvent.type(displayName, "Manual Alias");
-    await userEvent.clear(email);
-    await userEvent.type(email, "manual@storybook.example.com");
-    await expect(displayName.value).toBe("Manual Alias");
+    await expect(canvas.queryByLabelText(/^email$/i)).not.toBeInTheDocument();
+    await expect(canvas.queryByText(/set as mother|设为母号/i)).not.toBeInTheDocument();
   },
 };
 

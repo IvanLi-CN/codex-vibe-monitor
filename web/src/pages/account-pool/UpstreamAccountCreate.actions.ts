@@ -15,10 +15,8 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
   const {
     activeOauthMailboxSession,
     apiKeyDisplayName,
-    apiKeyEmail,
     apiKeyGroupName,
     apiKeyGroupProxyState,
-    apiKeyIsMother,
     apiKeyLimitUnit,
     apiKeyNote,
     apiKeyPrimaryLimit,
@@ -1298,7 +1296,6 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     try {
       const response = await createApiKeyAccount({
         displayName: apiKeyDisplayName.trim(),
-        email: apiKeyEmail.trim() || undefined,
         groupName: apiKeyGroupProxyState.normalizedGroupName || undefined,
         groupBoundProxyKeys: apiKeyGroupProxyState.boundProxyKeys,
         groupNodeShuntEnabled: apiKeyGroupProxyState.nodeShuntEnabled,
@@ -1309,7 +1306,6 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         concurrencyLimit: resolvePendingGroupConcurrencyLimitForName(apiKeyGroupName),
         apiKey: apiKeyValue.trim(),
         upstreamBaseUrl: apiKeyUpstreamBaseUrl.trim() || undefined,
-        isMother: apiKeyIsMother,
         localPrimaryLimit: normalizeNumberInput(apiKeyPrimaryLimit),
         localSecondaryLimit: normalizeNumberInput(apiKeySecondaryLimit),
         localLimitUnit: apiKeyLimitUnit.trim() || "requests",
