@@ -56,6 +56,7 @@ export {
   fetchParallelWorkStats,
   fetchParallelWorkStatsConditional,
   fetchPerfStats,
+  fetchPoolRoutingSettings,
   fetchPromptCacheConversationBinding,
   fetchPromptCacheConversations,
   fetchPromptCacheConversationsPage,
