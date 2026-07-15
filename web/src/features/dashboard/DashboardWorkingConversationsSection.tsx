@@ -75,6 +75,7 @@ import {
   persistDashboardWorkspaceView,
   readPersistedDashboardWorkspaceView,
 } from "./dashboardActivityRange";
+import { formatDashboardNetworkSpeed } from "./dashboardNetworkFormatting";
 import {
   compareDashboardConversationCards,
   compareDashboardUpstreamAccounts,
@@ -175,7 +176,9 @@ function resolveDashboardManualBindingBadgeMeta(
     if (!groupName) return null;
     return {
       displayValue: groupName,
-      accessibleLabel: t("live.conversations.drawer.binding.currentGroup", { group: groupName }),
+      accessibleLabel: t("live.conversations.drawer.binding.currentGroup", {
+        group: groupName,
+      }),
       toneClassName: "border-info/35 bg-info/15 text-info",
     };
   }
@@ -1376,6 +1379,75 @@ function AccountInlineMetric({
   );
 }
 
+function sumUpstreamAccountNetworkSpeed(
+  accounts: Pick<
+    UpstreamAccountActivityAccount,
+    "uploadBytesPerSecond" | "downloadBytesPerSecond"
+  >[],
+) {
+  return accounts.reduce(
+    (totals, account) => ({
+      uploadBytesPerSecond:
+        totals.uploadBytesPerSecond +
+        (Number.isFinite(account.uploadBytesPerSecond)
+          ? Math.max(0, account.uploadBytesPerSecond)
+          : 0),
+      downloadBytesPerSecond:
+        totals.downloadBytesPerSecond +
+        (Number.isFinite(account.downloadBytesPerSecond)
+          ? Math.max(0, account.downloadBytesPerSecond)
+          : 0),
+    }),
+    { uploadBytesPerSecond: 0, downloadBytesPerSecond: 0 },
+  );
+}
+
+function NetworkSpeedInline({
+  uploadBytesPerSecond,
+  downloadBytesPerSecond,
+  localeTag,
+  uploadLabel,
+  downloadLabel,
+  testId,
+  className,
+}: {
+  uploadBytesPerSecond: number;
+  downloadBytesPerSecond: number;
+  localeTag: string;
+  uploadLabel: string;
+  downloadLabel: string;
+  testId?: string;
+  className?: string;
+}) {
+  const uploadValue = formatDashboardNetworkSpeed(uploadBytesPerSecond, localeTag);
+  const downloadValue = formatDashboardNetworkSpeed(downloadBytesPerSecond, localeTag);
+
+  return (
+    <div
+      data-testid={testId}
+      className={cn(
+        "inline-flex min-w-0 items-center gap-3 rounded-full border border-base-300/65 bg-base-100/78 px-2.5 py-1",
+        className,
+      )}
+      aria-label={`${uploadLabel} ${uploadValue}; ${downloadLabel} ${downloadValue}`}
+      title={`${uploadLabel}: ${uploadValue} · ${downloadLabel}: ${downloadValue}`}
+    >
+      <span className="inline-flex min-w-0 items-center gap-1 whitespace-nowrap text-sky-500 dark:text-sky-300">
+        <AppIcon name="arrow-up-bold" className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        <span className="font-mono text-[0.82rem] font-semibold leading-none">
+          <AnimatedDigits value={uploadValue} />
+        </span>
+      </span>
+      <span className="inline-flex min-w-0 items-center gap-1 whitespace-nowrap text-emerald-500 dark:text-emerald-300">
+        <AppIcon name="arrow-down-bold" className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        <span className="font-mono text-[0.82rem] font-semibold leading-none">
+          <AnimatedDigits value={downloadValue} />
+        </span>
+      </span>
+    </div>
+  );
+}
+
 function AccountSegmentList({
   segments,
   className,
@@ -2439,12 +2511,6 @@ function DashboardUpstreamAccountActivityCard({
       ),
     [account.recentInvocations],
   );
-  const handleOpenRoutingTab = useCallback(() => {
-    if (account.upstreamAccountId == null) return;
-    onOpenUpstreamAccount?.(account.upstreamAccountId, account.displayName, {
-      tab: "routing",
-    });
-  }, [account.displayName, account.upstreamAccountId, onOpenUpstreamAccount]);
   const handleOpenHealthEventsTab = useCallback(() => {
     if (account.upstreamAccountId == null) return;
     onOpenUpstreamAccount?.(account.upstreamAccountId, account.displayName, {
@@ -2932,6 +2998,8 @@ function DashboardUpstreamAccountActivityCard({
     totalTokenValue,
   ]);
   const modelPerformanceTitle = `${account.displayName} · ${t("dashboard.modelPerformance.title")}`;
+  const networkUploadLabel = t("dashboard.activityOverview.networkUpload");
+  const networkDownloadLabel = t("dashboard.activityOverview.networkDownload");
   return (
     <article
       data-testid="dashboard-upstream-account-card"
@@ -2991,6 +3059,14 @@ function DashboardUpstreamAccountActivityCard({
             />
           </div>
           <div className="flex min-w-0 flex-wrap items-center justify-start gap-x-5 gap-y-1.5 text-right xl:col-start-2 xl:justify-end xl:self-start">
+            <NetworkSpeedInline
+              uploadBytesPerSecond={account.uploadBytesPerSecond}
+              downloadBytesPerSecond={account.downloadBytesPerSecond}
+              localeTag={localeTag}
+              uploadLabel={networkUploadLabel}
+              downloadLabel={networkDownloadLabel}
+              testId="dashboard-upstream-account-network-speed"
+            />
             <AccountInlineMetric
               label={t("dashboard.today.inProgressConversations")}
               value={formatAccountNumberValue(account.inProgressInvocationCount, localeTag, 0)}
@@ -3013,32 +3089,6 @@ function DashboardUpstreamAccountActivityCard({
               modelPerformance={account.modelPerformance}
               modelPerformanceTitle={modelPerformanceTitle}
             />
-            <button
-              type="button"
-              data-testid="dashboard-upstream-account-routing-settings"
-              disabled={account.upstreamAccountId == null}
-              className={cn(
-                "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-base-300/70 bg-base-100/82 text-base-content/72 transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-                account.upstreamAccountId == null
-                  ? "cursor-not-allowed opacity-45"
-                  : "hover:border-primary/45 hover:text-primary",
-              )}
-              title={locale === "zh" ? "打开账号路由设置" : "Open routing settings"}
-              aria-label={locale === "zh" ? "打开账号路由设置" : "Open routing settings"}
-              onClick={(event) => {
-                event.stopPropagation();
-                handleOpenRoutingTab();
-              }}
-              onKeyDown={(event) => {
-                event.stopPropagation();
-              }}
-            >
-              <AppIcon
-                name="cog-outline"
-                className="h-[1.125rem] w-[1.125rem]"
-                aria-hidden="true"
-              />
-            </button>
           </div>
         </div>
         {policySaveError ? (
@@ -3400,6 +3450,8 @@ export function DashboardWorkingConversationsSection({
     (card) => card.currentInvocation.isInFlight || card.previousInvocation?.isInFlight === true,
   );
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
+  const networkUploadLabel = t("dashboard.activityOverview.networkUpload");
+  const networkDownloadLabel = t("dashboard.activityOverview.networkDownload");
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
   const currencyFormatter = useMemo(
     () =>
@@ -3500,6 +3552,10 @@ export function DashboardWorkingConversationsSection({
       ),
     [upstreamAccountActivity, upstreamAccountSort],
   );
+  const totalNetworkSpeed = useMemo(
+    () => sumUpstreamAccountNetworkSpeed(upstreamAccountActivity?.accounts ?? []),
+    [upstreamAccountActivity],
+  );
   useEffect(() => {
     persistDashboardWorkspaceView(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY, preferredView);
   }, [preferredView]);
@@ -3526,6 +3582,12 @@ export function DashboardWorkingConversationsSection({
     shouldReserveUpstreamAccountRefreshChip &&
     upstreamAccounts.length > 0 &&
     isUpstreamAccountRefreshChipVisible;
+  const shouldShowTotalNetworkSpeed =
+    !upstreamAccountsDisabled &&
+    (hasExternalUpstreamAccountActivity ||
+      upstreamAccountActivity != null ||
+      showUpstreamAccountActivityLoading ||
+      upstreamAccountActivityEnabled);
   useEffect(() => {
     if (!shouldReserveUpstreamAccountRefreshChip || upstreamAccounts.length === 0) {
       clearUpstreamAccountRefreshChipTimers();
@@ -3895,6 +3957,17 @@ export function DashboardWorkingConversationsSection({
                   visible={shouldShowUpstreamAccountRefreshChip}
                 />
               ) : null}
+              {shouldShowTotalNetworkSpeed ? (
+                <NetworkSpeedInline
+                  uploadBytesPerSecond={totalNetworkSpeed.uploadBytesPerSecond}
+                  downloadBytesPerSecond={totalNetworkSpeed.downloadBytesPerSecond}
+                  localeTag={localeTag}
+                  uploadLabel={networkUploadLabel}
+                  downloadLabel={networkDownloadLabel}
+                  testId="dashboard-upstream-account-total-network-speed"
+                  className="bg-base-100/62"
+                />
+              ) : null}
               <Badge
                 variant="default"
                 className="w-fit rounded-full px-3 py-1 font-mono text-xs font-semibold"
@@ -3907,8 +3980,12 @@ export function DashboardWorkingConversationsSection({
               variant="ghost"
               className="h-11 min-w-0 gap-2 px-2.5 text-sm text-base-content/75 hover:bg-base-200/70 hover:text-base-content desktop:w-auto"
               onClick={cycleSort}
-              title={t("dashboard.workspaceSort.tooltip", { current: activeSortLabel })}
-              aria-label={t("dashboard.workspaceSort.ariaLabel", { current: activeSortLabel })}
+              title={t("dashboard.workspaceSort.tooltip", {
+                current: activeSortLabel,
+              })}
+              aria-label={t("dashboard.workspaceSort.ariaLabel", {
+                current: activeSortLabel,
+              })}
               data-testid="dashboard-workspace-sort-button"
             >
               <AppIcon name="sort-variant" className="h-4 w-4 shrink-0" aria-hidden="true" />

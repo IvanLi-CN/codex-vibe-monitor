@@ -34,6 +34,8 @@ export type {
   DashboardActivityRecentResponse,
   DashboardActivityResponse,
   DashboardActivitySummary,
+  DashboardNetworkTimeseriesPoint,
+  DashboardNetworkTimeseriesResponse,
   EffectiveRoutingRule,
   EffectiveRoutingRuleSource,
   EffectiveRoutingTimeoutFieldSources,

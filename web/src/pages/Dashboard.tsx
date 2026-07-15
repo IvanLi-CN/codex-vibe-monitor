@@ -74,8 +74,9 @@ export default function DashboardPage() {
   } = useDashboardActivitySnapshot(
     activeRange,
     dashboardActivityEnabled,
-    includeUpstreamAccountActivity,
+    true,
     recentPreviewLimit,
+    includeUpstreamAccountActivity,
   );
 
   useEffect(() => {
@@ -121,7 +122,9 @@ export default function DashboardPage() {
     setSelectedInvocation(null);
     setSelectedConversation(null);
     if (routeInvokeId != null) {
-      const search = new URLSearchParams({ upstreamAccountId: String(Math.trunc(accountId)) });
+      const search = new URLSearchParams({
+        upstreamAccountId: String(Math.trunc(accountId)),
+      });
       if (options?.tab && options.tab !== "overview") {
         search.set("upstreamAccountTab", options.tab);
       }

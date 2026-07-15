@@ -847,6 +847,10 @@ pub(crate) async fn test_state_from_config_with_pool_no_available_wait(
         proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         dashboard_activity_live_broadcast_seq: Arc::new(AtomicU64::new(0)),
         dashboard_activity_live_broadcast_running: Arc::new(AtomicBool::new(false)),
+        process_started_at_utc: chrono::Utc::now(),
+        dashboard_network_speed_cache: Arc::new(
+            crate::dashboard_network_speed::DashboardNetworkSpeedCache::new(chrono::Utc::now()),
+        ),
         startup_ready: Arc::new(AtomicBool::new(startup_ready)),
         shutdown: CancellationToken::new(),
         semaphore,
@@ -906,6 +910,8 @@ pub(crate) fn clone_state_with_upstream_accounts(
         dashboard_activity_live_broadcast_running: state
             .dashboard_activity_live_broadcast_running
             .clone(),
+        process_started_at_utc: state.process_started_at_utc,
+        dashboard_network_speed_cache: state.dashboard_network_speed_cache.clone(),
         startup_ready: state.startup_ready.clone(),
         shutdown: state.shutdown.clone(),
         semaphore: state.semaphore.clone(),
@@ -955,6 +961,8 @@ pub(crate) fn clone_state_with_pool_group_429_retry_delay_override(
         dashboard_activity_live_broadcast_running: state
             .dashboard_activity_live_broadcast_running
             .clone(),
+        process_started_at_utc: state.process_started_at_utc,
+        dashboard_network_speed_cache: state.dashboard_network_speed_cache.clone(),
         startup_ready: state.startup_ready.clone(),
         shutdown: state.shutdown.clone(),
         semaphore: state.semaphore.clone(),
@@ -1013,6 +1021,10 @@ pub(crate) async fn test_state_from_existing_pool(
         proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         dashboard_activity_live_broadcast_seq: Arc::new(AtomicU64::new(0)),
         dashboard_activity_live_broadcast_running: Arc::new(AtomicBool::new(false)),
+        process_started_at_utc: chrono::Utc::now(),
+        dashboard_network_speed_cache: Arc::new(
+            crate::dashboard_network_speed::DashboardNetworkSpeedCache::new(chrono::Utc::now()),
+        ),
         startup_ready: Arc::new(AtomicBool::new(startup_ready)),
         shutdown: CancellationToken::new(),
         semaphore,

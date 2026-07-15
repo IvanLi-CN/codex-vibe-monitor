@@ -184,6 +184,8 @@ function buildDashboardActivityResponse({
       avgTotalMs: 12_650,
       inProgressInvocationCount: 8,
       retryInvocationCount: 1,
+      uploadBytesPerSecond: 3_072,
+      downloadBytesPerSecond: 8_388_608,
       effectiveRoutingRule: {
         allowCutOut: false,
         allowCutIn: false,
@@ -235,6 +237,8 @@ function buildDashboardActivityResponse({
       avgTotalMs: 9140,
       inProgressInvocationCount: 3,
       retryInvocationCount: 0,
+      uploadBytesPerSecond: 1_280,
+      downloadBytesPerSecond: 4_194_304,
       effectiveRoutingRule: {
         allowCutOut: true,
         allowCutIn: true,
@@ -1531,6 +1535,8 @@ export const LiveRefreshDiagnostics: Story = {
             inProgressInvocationCount: 2,
             inProgressPhaseCounts: { queued: 0, requesting: 1, responding: 1 },
             retryInvocationCount: 0,
+            uploadBytesPerSecond: 2_048,
+            downloadBytesPerSecond: 6_291_456,
           },
           {
             accountKey: "upstream:77",
@@ -1538,6 +1544,8 @@ export const LiveRefreshDiagnostics: Story = {
             inProgressInvocationCount: 2,
             inProgressPhaseCounts: { queued: 0, requesting: 1, responding: 1 },
             retryInvocationCount: 1,
+            uploadBytesPerSecond: 1_024,
+            downloadBytesPerSecond: 3_145_728,
           },
         ],
       },

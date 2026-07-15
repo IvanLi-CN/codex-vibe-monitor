@@ -3165,6 +3165,11 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             let sticky_key_for_record = live_body_sticky_key.clone();
                             let prompt_cache_key_for_record = live_prompt_cache_key.clone();
                             let invoke_id_for_record = upstream_invoke_id.clone();
+                            let occurred_at_for_record = format_naive(
+                                upstream_attempt_started_at_utc
+                                    .with_timezone(&Shanghai)
+                                    .naive_local(),
+                            );
                             let pending_pool_attempt_record_for_task = pending_pool_attempt_record;
                             let upstream_request_id_for_task = upstream_request_id;
                             let upstream_attempt_started_at_utc_for_record =
@@ -3197,6 +3202,20 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                     response_parse_buffer.append(&chunk);
                                     forwarded_chunks = forwarded_chunks.saturating_add(1);
                                     forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
+                                    if let Some(invoke_id) = invoke_id_for_record.as_deref() {
+                                        state_for_record
+                                            .dashboard_network_speed_cache
+                                            .record_response_chunk_bytes(
+                                                invoke_id,
+                                                &occurred_at_for_record,
+                                                Some(account.account_id),
+                                                chunk.len(),
+                                                Utc::now(),
+                                            );
+                                        schedule_dashboard_activity_live_snapshot(
+                                            state_for_record.as_ref(),
+                                        );
+                                    }
                                     if tx.send(Ok(chunk)).await.is_err() {
                                         downstream_closed = true;
                                         let _ = proxy_request_permit_for_task.take();
@@ -3234,6 +3253,21 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                             forwarded_chunks = forwarded_chunks.saturating_add(1);
                                             forwarded_bytes =
                                                 forwarded_bytes.saturating_add(chunk.len());
+                                            if let Some(invoke_id) = invoke_id_for_record.as_deref()
+                                            {
+                                                state_for_record
+                                                    .dashboard_network_speed_cache
+                                                    .record_response_chunk_bytes(
+                                                        invoke_id,
+                                                        &occurred_at_for_record,
+                                                        Some(account.account_id),
+                                                        chunk.len(),
+                                                        Utc::now(),
+                                                    );
+                                                schedule_dashboard_activity_live_snapshot(
+                                                    state_for_record.as_ref(),
+                                                );
+                                            }
                                             if tx.send(Ok(chunk)).await.is_err() {
                                                 let _ = proxy_request_permit_for_task.take();
                                                 break;
@@ -3804,6 +3838,11 @@ pub(crate) async fn proxy_openai_v1_via_pool(
     let sticky_key_for_record = sticky_key.clone();
     let prompt_cache_key_for_record = prompt_cache_key.clone();
     let invoke_id_for_record = upstream_invoke_id.clone();
+    let occurred_at_for_record = format_naive(
+        upstream_attempt_started_at_utc
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
     let pending_pool_attempt_record_for_task = pending_pool_attempt_record;
     let upstream_request_id_for_task = upstream_request_id;
     let upstream_attempt_started_at_utc_for_record = upstream_attempt_started_at_utc;
@@ -3828,6 +3867,18 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             response_parse_buffer.append(&chunk);
             forwarded_chunks = forwarded_chunks.saturating_add(1);
             forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
+            if let Some(invoke_id) = invoke_id_for_record.as_deref() {
+                state_for_record
+                    .dashboard_network_speed_cache
+                    .record_response_chunk_bytes(
+                        invoke_id,
+                        &occurred_at_for_record,
+                        Some(account.account_id),
+                        chunk.len(),
+                        Utc::now(),
+                    );
+                schedule_dashboard_activity_live_snapshot(state_for_record.as_ref());
+            }
             if tx.send(Ok(chunk)).await.is_err() {
                 downstream_closed = true;
                 let _ = proxy_request_permit_for_task.take();
@@ -3862,6 +3913,18 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     response_parse_buffer.append(&chunk);
                     forwarded_chunks = forwarded_chunks.saturating_add(1);
                     forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
+                    if let Some(invoke_id) = invoke_id_for_record.as_deref() {
+                        state_for_record
+                            .dashboard_network_speed_cache
+                            .record_response_chunk_bytes(
+                                invoke_id,
+                                &occurred_at_for_record,
+                                Some(account.account_id),
+                                chunk.len(),
+                                Utc::now(),
+                            );
+                        schedule_dashboard_activity_live_snapshot(state_for_record.as_ref());
+                    }
                     if tx.send(Ok(chunk)).await.is_err() {
                         let _ = proxy_request_permit_for_task.take();
                         break;

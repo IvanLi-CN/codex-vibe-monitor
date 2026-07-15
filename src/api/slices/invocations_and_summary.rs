@@ -5883,6 +5883,7 @@ pub(crate) async fn query_dashboard_activity_live_snapshot(
     query_dashboard_activity_live_snapshot_from_runtime(
         &state.pool,
         state.proxy_runtime_invocations.as_ref(),
+        state.dashboard_network_speed_cache.as_ref(),
         revision,
     )
     .await
@@ -5891,6 +5892,7 @@ pub(crate) async fn query_dashboard_activity_live_snapshot(
 pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
     pool: &Pool<Sqlite>,
     proxy_runtime_invocations: &ProxyRuntimeInvocationStore,
+    dashboard_network_speed_cache: &DashboardNetworkSpeedCache,
     revision: u64,
 ) -> Result<DashboardActivityLiveSnapshot, ApiError> {
     let counts = query_upstream_account_in_progress_counts_from_runtime(
@@ -5899,10 +5901,15 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
         InvocationSourceScope::All,
     )
     .await?;
+    let account_rates = dashboard_network_speed_cache.snapshot_account_rates(Utc::now());
     let mut accounts = counts
         .into_iter()
-        .map(
-            |(upstream_account_id, summary)| DashboardActivityLiveAccount {
+        .map(|(upstream_account_id, summary)| {
+            let rate = account_rates
+                .get(&upstream_account_id)
+                .copied()
+                .unwrap_or_default();
+            DashboardActivityLiveAccount {
                 account_key: upstream_account_id
                     .map(|id| format!("upstream:{id}"))
                     .unwrap_or_else(|| "unassigned".to_string()),
@@ -5910,9 +5917,32 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
                 in_progress_invocation_count: summary.in_progress_count,
                 in_progress_phase_counts: summary.phase_counts,
                 retry_invocation_count: summary.retry_count,
-            },
-        )
+                upload_bytes_per_second: rate.upload_bytes_per_second,
+                download_bytes_per_second: rate.download_bytes_per_second,
+            }
+        })
         .collect::<Vec<_>>();
+    let existing_account_keys = accounts
+        .iter()
+        .map(|account| account.account_key.clone())
+        .collect::<HashSet<_>>();
+    for (upstream_account_id, rate) in account_rates {
+        let account_key = upstream_account_id
+            .map(|id| format!("upstream:{id}"))
+            .unwrap_or_else(|| "unassigned".to_string());
+        if existing_account_keys.contains(&account_key) {
+            continue;
+        }
+        accounts.push(DashboardActivityLiveAccount {
+            account_key,
+            upstream_account_id,
+            in_progress_invocation_count: 0,
+            in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
+            retry_invocation_count: 0,
+            upload_bytes_per_second: rate.upload_bytes_per_second,
+            download_bytes_per_second: rate.download_bytes_per_second,
+        });
+    }
     accounts.sort_by(|left, right| left.account_key.cmp(&right.account_key));
 
     let mut in_progress_phase_counts = InvocationPhaseCountsResponse::default();
@@ -6956,6 +6986,8 @@ pub(crate) async fn load_dashboard_activity_snapshot(
                 in_progress_invocation_count,
                 in_progress_phase_counts,
                 retry_invocation_count,
+                upload_bytes_per_second: 0.0,
+                download_bytes_per_second: 0.0,
                 in_progress_wait_sum_ms: aggregate.in_progress_wait_sum_ms,
                 in_progress_wait_sample_count: aggregate.in_progress_wait_sample_count,
                 effective_routing_rule: upstream_account_id.map(|id| {
@@ -7053,6 +7085,8 @@ pub(crate) fn dashboard_account_to_upstream_account(
         in_progress_invocation_count: account.in_progress_invocation_count,
         in_progress_phase_counts: account.in_progress_phase_counts,
         retry_invocation_count: account.retry_invocation_count,
+        upload_bytes_per_second: account.upload_bytes_per_second,
+        download_bytes_per_second: account.download_bytes_per_second,
         effective_routing_rule: account
             .effective_routing_rule
             .unwrap_or_else(crate::upstream_accounts::default_effective_routing_rule),
@@ -7110,6 +7144,10 @@ pub(crate) async fn fetch_dashboard_activity(
             );
             account.retry_invocation_count =
                 Some(live_account.map_or(0, |row| row.retry_invocation_count));
+            account.upload_bytes_per_second =
+                live_account.map_or(0.0, |row| row.upload_bytes_per_second);
+            account.download_bytes_per_second =
+                live_account.map_or(0.0, |row| row.download_bytes_per_second);
         }
     }
     let range_start = format_utc_iso_precise(snapshot.range_start);
@@ -7259,6 +7297,315 @@ pub(crate) async fn fetch_dashboard_activity_recent(
         range_end: format_utc_iso_precise(range.end),
         snapshot_id: params.snapshot_id,
         accounts,
+    }))
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct DashboardNetworkBucketAggregate {
+    upload_bytes: i64,
+    download_bytes: i64,
+}
+
+#[derive(Debug, FromRow)]
+struct DashboardNetworkBucketRow {
+    bucket_start_epoch_second: i64,
+    upload_bytes: i64,
+    download_bytes: i64,
+}
+
+fn validate_dashboard_network_timeseries_range(range: &str) -> Result<(), ApiError> {
+    if matches!(range, "today" | "yesterday" | "1d") {
+        return Ok(());
+    }
+    Err(ApiError::bad_request(anyhow!(
+        "unsupported dashboard network range: {range}"
+    )))
+}
+
+fn dashboard_network_download_bytes_sql(alias: &str) -> String {
+    format!(
+        "CASE \
+           WHEN COALESCE( \
+             CASE \
+               WHEN json_valid({alias}.payload) \
+                 AND json_type({alias}.payload, '$.forwardedBytes') IN ('integer', 'real') \
+               THEN CAST(json_extract({alias}.payload, '$.forwardedBytes') AS INTEGER) \
+             END, \
+             {alias}.response_raw_size, \
+             0 \
+           ) < 0 THEN 0 \
+           ELSE COALESCE( \
+             CASE \
+               WHEN json_valid({alias}.payload) \
+                 AND json_type({alias}.payload, '$.forwardedBytes') IN ('integer', 'real') \
+               THEN CAST(json_extract({alias}.payload, '$.forwardedBytes') AS INTEGER) \
+             END, \
+             {alias}.response_raw_size, \
+             0 \
+           ) \
+         END"
+    )
+}
+
+async fn query_dashboard_network_bucket_rows(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    upstream_account_id: Option<i64>,
+    created_before: Option<&str>,
+) -> Result<Vec<DashboardNetworkBucketRow>, ApiError> {
+    if range.start >= range.end {
+        return Ok(Vec::new());
+    }
+
+    let upload_bytes_sql = "CASE WHEN codex_invocations.request_raw_size < 0 THEN 0 ELSE COALESCE(codex_invocations.request_raw_size, 0) END";
+    let download_bytes_sql = dashboard_network_download_bytes_sql("codex_invocations");
+    let bucket_sql =
+        "((unixepoch(codex_invocations.occurred_at || '+08:00') / 300) * 300)".to_string();
+    let resolved_upstream_account_id_sql =
+        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
+    query
+        .push(bucket_sql.as_str())
+        .push(" AS bucket_start_epoch_second, SUM(")
+        .push(upload_bytes_sql)
+        .push(") AS upload_bytes, SUM(")
+        .push(download_bytes_sql.as_str())
+        .push(") AS download_bytes FROM codex_invocations WHERE occurred_at >= ")
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(range.end));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(resolved_upstream_account_id_sql.as_str())
+            .push(" = ")
+            .push_bind(upstream_account_id);
+    }
+    if let Some(created_before) = created_before {
+        query
+            .push(" AND created_at < ")
+            .push_bind(created_before.to_string());
+    }
+    query
+        .push(" GROUP BY ")
+        .push(bucket_sql.as_str())
+        .push(" ORDER BY bucket_start_epoch_second ASC");
+
+    Ok(query
+        .build_query_as::<DashboardNetworkBucketRow>()
+        .fetch_all(pool)
+        .await?)
+}
+
+async fn load_dashboard_network_open_bucket_snapshot(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    range_end: DateTime<Utc>,
+    upstream_account_id: Option<i64>,
+) -> Result<DashboardNetworkOpenBucketSnapshot, ApiError> {
+    let scope = match upstream_account_id {
+        Some(id) => DashboardNetworkScopeKey::Account(id),
+        None => DashboardNetworkScopeKey::Global,
+    };
+    let read = state
+        .dashboard_network_speed_cache
+        .open_bucket_read_state(scope, range_end);
+    if read.needs_seed {
+        let process_started_at =
+            format_utc_iso_millis(state.dashboard_network_speed_cache.process_started_at_utc());
+        let seed_rows = query_dashboard_network_bucket_rows(
+            &state.pool,
+            source_scope,
+            ExactUtcRange {
+                start: read.bucket_start,
+                end: range_end.min(read.bucket_end),
+            },
+            upstream_account_id,
+            Some(process_started_at.as_str()),
+        )
+        .await?;
+        let seed_totals =
+            seed_rows
+                .into_iter()
+                .fold(DashboardNetworkByteTotals::default(), |mut totals, row| {
+                    totals.upload_bytes =
+                        totals.upload_bytes.saturating_add(row.upload_bytes.max(0));
+                    totals.download_bytes = totals
+                        .download_bytes
+                        .saturating_add(row.download_bytes.max(0));
+                    totals
+                });
+        return Ok(state.dashboard_network_speed_cache.seed_open_bucket(
+            scope,
+            read.bucket_start,
+            seed_totals,
+            range_end,
+        ));
+    }
+
+    Ok(state
+        .dashboard_network_speed_cache
+        .snapshot_open_bucket(scope, range_end))
+}
+
+fn dashboard_network_bucket_rate(
+    total_bytes: i64,
+    bucket_start: DateTime<Utc>,
+    bucket_end: DateTime<Utc>,
+    range: ExactUtcRange,
+) -> f64 {
+    let effective_start = bucket_start.max(range.start);
+    let effective_end = bucket_end.min(range.end);
+    let effective_millis = effective_end
+        .signed_duration_since(effective_start)
+        .num_milliseconds()
+        .max(1);
+    total_bytes.max(0) as f64 / (effective_millis as f64 / 1000.0)
+}
+
+pub(crate) async fn fetch_dashboard_network_timeseries(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<DashboardNetworkTimeseriesQuery>,
+) -> Result<Json<DashboardNetworkTimeseriesResponse>, ApiError> {
+    let started_at = Instant::now();
+    validate_dashboard_network_timeseries_range(params.range.as_str())?;
+    let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    let range_window =
+        resolve_range_window(params.range.as_str(), reporting_tz).map_err(ApiError::from)?;
+    let range = ExactUtcRange {
+        start: range_window.start,
+        end: range_window.end,
+    };
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let open_bucket_start_epoch_second = range.end.timestamp()
+        - range
+            .end
+            .timestamp()
+            .rem_euclid(DASHBOARD_NETWORK_BUCKET_SECONDS);
+    let open_bucket_start = Utc
+        .timestamp_opt(open_bucket_start_epoch_second, 0)
+        .single()
+        .expect("valid dashboard network bucket start");
+    let closed_range_end = if params.range == "yesterday" {
+        range.end
+    } else {
+        open_bucket_start.min(range.end)
+    };
+    let bucket_rows = query_dashboard_network_bucket_rows(
+        &state.pool,
+        source_scope,
+        ExactUtcRange {
+            start: range.start,
+            end: closed_range_end,
+        },
+        params.upstream_account_id,
+        None,
+    )
+    .await?;
+
+    let mut aggregates = bucket_rows
+        .into_iter()
+        .map(|row| {
+            (
+                row.bucket_start_epoch_second,
+                DashboardNetworkBucketAggregate {
+                    upload_bytes: row.upload_bytes.max(0),
+                    download_bytes: row.download_bytes.max(0),
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    let live_bucket_epoch_second = open_bucket_start.timestamp();
+    let include_live_bucket = params.range != "yesterday"
+        && open_bucket_start < range.end
+        && open_bucket_start + ChronoDuration::seconds(DASHBOARD_NETWORK_BUCKET_SECONDS)
+            > range.start;
+    if include_live_bucket {
+        let live_bucket = load_dashboard_network_open_bucket_snapshot(
+            state.as_ref(),
+            source_scope,
+            range.end,
+            params.upstream_account_id,
+        )
+        .await?;
+        aggregates.insert(
+            live_bucket.bucket_start.timestamp(),
+            DashboardNetworkBucketAggregate {
+                upload_bytes: live_bucket.totals.upload_bytes.max(0),
+                download_bytes: live_bucket.totals.download_bytes.max(0),
+            },
+        );
+    }
+
+    let first_bucket_epoch_second = range.start.timestamp()
+        - range
+            .start
+            .timestamp()
+            .rem_euclid(DASHBOARD_NETWORK_BUCKET_SECONDS);
+    let mut points = Vec::new();
+    let mut bucket_epoch_second = first_bucket_epoch_second;
+    while bucket_epoch_second < range.end.timestamp() {
+        let bucket_start = Utc
+            .timestamp_opt(bucket_epoch_second, 0)
+            .single()
+            .expect("valid dashboard network bucket point start");
+        let bucket_end = bucket_start + ChronoDuration::seconds(DASHBOARD_NETWORK_BUCKET_SECONDS);
+        if bucket_end <= range.start {
+            bucket_epoch_second =
+                bucket_epoch_second.saturating_add(DASHBOARD_NETWORK_BUCKET_SECONDS);
+            continue;
+        }
+        if bucket_start >= range.end {
+            break;
+        }
+        let aggregate = aggregates
+            .get(&bucket_epoch_second)
+            .copied()
+            .unwrap_or_default();
+        points.push(DashboardNetworkTimeseriesPointResponse {
+            bucket_start: format_utc_iso_precise(bucket_start),
+            bucket_end: format_utc_iso_precise(bucket_end),
+            upload_bytes_per_second: dashboard_network_bucket_rate(
+                aggregate.upload_bytes,
+                bucket_start,
+                bucket_end,
+                range,
+            ),
+            download_bytes_per_second: dashboard_network_bucket_rate(
+                aggregate.download_bytes,
+                bucket_start,
+                bucket_end,
+                range,
+            ),
+            upload_bytes: aggregate.upload_bytes,
+            download_bytes: aggregate.download_bytes,
+            is_live_bucket: include_live_bucket && bucket_epoch_second == live_bucket_epoch_second,
+        });
+        bucket_epoch_second = bucket_epoch_second.saturating_add(DASHBOARD_NETWORK_BUCKET_SECONDS);
+    }
+
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    tracing::debug!(
+        endpoint = "/api/stats/dashboard-network-timeseries",
+        range = %params.range,
+        upstream_account_id = params.upstream_account_id,
+        bucket_count = points.len(),
+        elapsed_ms,
+        "dashboard network timeseries completed"
+    );
+
+    Ok(Json(DashboardNetworkTimeseriesResponse {
+        range: params.range,
+        range_start: format_utc_iso_precise(range.start),
+        range_end: format_utc_iso_precise(range.end),
+        snapshot_id: range.end.timestamp_millis(),
+        bucket_seconds: DASHBOARD_NETWORK_BUCKET_SECONDS,
+        points,
     }))
 }
 

@@ -7,7 +7,7 @@
 use std::{
     borrow::Cow,
     collections::hash_map::DefaultHasher,
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     convert::Infallible,
     env, fmt,
     future::Future,
@@ -99,6 +99,7 @@ use tungstenite::{
 mod api;
 mod app_state;
 mod config;
+mod dashboard_network_speed;
 mod db_pressure;
 mod external_api;
 mod forward_proxy;
@@ -118,6 +119,7 @@ mod proxy;
 mod runtime;
 mod schema;
 mod share_links;
+pub(crate) use dashboard_network_speed::*;
 #[expect(
     clippy::large_enum_variant,
     reason = "Batch variants preserve established channel payload ownership."

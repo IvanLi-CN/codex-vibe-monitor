@@ -1533,6 +1533,16 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     request_info.requested_service_tier = final_requested_service_tier
         .clone()
         .or(request_info.requested_service_tier);
+    state.dashboard_network_speed_cache.record_request_bytes(
+        &invoke_id,
+        &occurred_at,
+        pool_account.as_ref().map(|account| account.account_id),
+        final_request_body_for_capture
+            .as_ref()
+            .map_or(base_request_bytes_for_capture.len(), Bytes::len),
+        Utc::now(),
+    );
+    schedule_dashboard_activity_live_snapshot(state.as_ref());
     let mut req_raw_pending = Some(spawn_raw_payload_file_write(
         state.as_ref(),
         &invoke_id,
@@ -1899,6 +1909,18 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             }
             forwarded_chunks = forwarded_chunks.saturating_add(1);
             forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
+            state_for_task
+                .dashboard_network_speed_cache
+                .record_response_chunk_bytes(
+                    &invoke_id_for_task,
+                    &occurred_at_for_task,
+                    pool_account_for_task
+                        .as_ref()
+                        .map(|account| account.account_id),
+                    chunk.len(),
+                    Utc::now(),
+                );
+            schedule_dashboard_activity_live_snapshot(state_for_task.as_ref());
             stream_started_at = Some(Instant::now());
             last_upstream_chunk_received_at = Some(chunk_received_at);
             if !downstream_closed {
@@ -2143,6 +2165,18 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     }
                     forwarded_chunks = forwarded_chunks.saturating_add(1);
                     forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
+                    state_for_task
+                        .dashboard_network_speed_cache
+                        .record_response_chunk_bytes(
+                            &invoke_id_for_task,
+                            &occurred_at_for_task,
+                            pool_account_for_task
+                                .as_ref()
+                                .map(|account| account.account_id),
+                            chunk.len(),
+                            Utc::now(),
+                        );
+                    schedule_dashboard_activity_live_snapshot(state_for_task.as_ref());
                     last_upstream_chunk_received_at = Some(chunk_received_at);
                     if !downstream_closed {
                         if tx.send(Ok(chunk)).await.is_err() {

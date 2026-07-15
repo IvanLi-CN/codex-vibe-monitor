@@ -298,6 +298,8 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
         inProgressInvocationCount: 3,
         inProgressPhaseCounts: { queued: 1, requesting: 1, responding: 1 },
         retryInvocationCount: 1,
+        uploadBytesPerSecond: 1_536,
+        downloadBytesPerSecond: 5 * 1024 * 1024,
         effectiveRoutingRule: {
           allowCutOut: true,
           allowCutIn: false,
@@ -475,6 +477,13 @@ function renderSection(
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
     }) => void;
+    upstreamAccountActivity?: UpstreamAccountActivityResponse | null;
+    upstreamAccountActivityLoading?: boolean;
+    upstreamAccountActivityRefreshing?: boolean;
+    upstreamAccountActivityError?: string | null;
+    upstreamAccountRecentLoading?: boolean;
+    upstreamAccountRecentError?: string | null;
+    upstreamAccountRecentPreviewLimit?: number;
   },
 ) {
   return renderSectionWithCards(mapPromptCacheConversationsToDashboardCards(response), options);
@@ -483,6 +492,7 @@ function renderSection(
 function renderSectionWithCards(
   cards: DashboardWorkingConversationCardModel[],
   options?: {
+    activeRange?: "today" | "yesterday" | "1d" | "7d" | "usage";
     error?: string | null;
     isLoading?: boolean;
     isLoadingMore?: boolean;
@@ -506,6 +516,13 @@ function renderSectionWithCards(
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
     }) => void;
+    upstreamAccountActivity?: UpstreamAccountActivityResponse | null;
+    upstreamAccountActivityLoading?: boolean;
+    upstreamAccountActivityRefreshing?: boolean;
+    upstreamAccountActivityError?: string | null;
+    upstreamAccountRecentLoading?: boolean;
+    upstreamAccountRecentError?: string | null;
+    upstreamAccountRecentPreviewLimit?: number;
   },
 ) {
   host = document.createElement("div");
@@ -528,6 +545,13 @@ function renderSectionWithCards(
           onOpenUpstreamAccount={options?.onOpenUpstreamAccount}
           onOpenConversation={options?.onOpenConversation}
           onOpenInvocation={options?.onOpenInvocation}
+          upstreamAccountActivity={options?.upstreamAccountActivity}
+          upstreamAccountActivityLoading={options?.upstreamAccountActivityLoading}
+          upstreamAccountActivityRefreshing={options?.upstreamAccountActivityRefreshing}
+          upstreamAccountActivityError={options?.upstreamAccountActivityError}
+          upstreamAccountRecentLoading={options?.upstreamAccountRecentLoading}
+          upstreamAccountRecentError={options?.upstreamAccountRecentError}
+          upstreamAccountRecentPreviewLimit={options?.upstreamAccountRecentPreviewLimit}
         />
       </I18nProvider>,
     );
@@ -588,6 +612,13 @@ function rerenderSection(
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
     }) => void;
+    upstreamAccountActivity?: UpstreamAccountActivityResponse | null;
+    upstreamAccountActivityLoading?: boolean;
+    upstreamAccountActivityRefreshing?: boolean;
+    upstreamAccountActivityError?: string | null;
+    upstreamAccountRecentLoading?: boolean;
+    upstreamAccountRecentError?: string | null;
+    upstreamAccountRecentPreviewLimit?: number;
   },
 ) {
   return rerenderSectionWithCards(mapPromptCacheConversationsToDashboardCards(response), options);
@@ -596,6 +627,7 @@ function rerenderSection(
 function rerenderSectionWithCards(
   cards: DashboardWorkingConversationCardModel[],
   options?: {
+    activeRange?: "today" | "yesterday" | "1d" | "7d" | "usage";
     error?: string | null;
     isLoading?: boolean;
     isLoadingMore?: boolean;
@@ -620,6 +652,13 @@ function rerenderSectionWithCards(
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
     }) => void;
+    upstreamAccountActivity?: UpstreamAccountActivityResponse | null;
+    upstreamAccountActivityLoading?: boolean;
+    upstreamAccountActivityRefreshing?: boolean;
+    upstreamAccountActivityError?: string | null;
+    upstreamAccountRecentLoading?: boolean;
+    upstreamAccountRecentError?: string | null;
+    upstreamAccountRecentPreviewLimit?: number;
   },
 ) {
   if (!root) {
@@ -642,6 +681,13 @@ function rerenderSectionWithCards(
           onOpenUpstreamAccount={options?.onOpenUpstreamAccount}
           onOpenConversation={options?.onOpenConversation}
           onOpenInvocation={options?.onOpenInvocation}
+          upstreamAccountActivity={options?.upstreamAccountActivity}
+          upstreamAccountActivityLoading={options?.upstreamAccountActivityLoading}
+          upstreamAccountActivityRefreshing={options?.upstreamAccountActivityRefreshing}
+          upstreamAccountActivityError={options?.upstreamAccountActivityError}
+          upstreamAccountRecentLoading={options?.upstreamAccountRecentLoading}
+          upstreamAccountRecentError={options?.upstreamAccountRecentError}
+          upstreamAccountRecentPreviewLimit={options?.upstreamAccountRecentPreviewLimit}
         />
       </I18nProvider>,
     );
@@ -927,6 +973,14 @@ describe("DashboardWorkingConversationsSection", () => {
     });
     expect(host?.textContent).toContain("当前活动账号 1 个");
     expect(host?.textContent).toContain("最近 4 条调用");
+    const totalNetworkSpeed = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-total-network-speed"]',
+    );
+    expect(totalNetworkSpeed).not.toBeNull();
+    expect(totalNetworkSpeed?.textContent).toContain("1.5");
+    expect(totalNetworkSpeed?.textContent).toContain("KiB/s");
+    expect(totalNetworkSpeed?.textContent).toContain("5");
+    expect(totalNetworkSpeed?.textContent).toContain("MiB/s");
     expect(host?.textContent).not.toContain("账号状态");
     expect(host?.querySelector('[data-testid="dashboard-upstream-account-status"]')).toBeNull();
     expect(
@@ -998,6 +1052,22 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(accountHeader?.querySelector('[aria-label="进行中 3"]')).not.toBeNull();
     expect(accountHeader?.querySelector('[aria-label="TPM 640"]')).not.toBeNull();
     expect(accountHeader?.querySelector('[aria-label="消费速率 0.12"]')).not.toBeNull();
+    expect(
+      accountHeader?.querySelector('[data-testid="dashboard-upstream-account-routing-settings"]'),
+    ).toBeNull();
+    const networkSpeed = accountHeader?.querySelector(
+      '[data-testid="dashboard-upstream-account-network-speed"]',
+    );
+    expect(networkSpeed).not.toBeNull();
+    expect(networkSpeed?.textContent).toContain("1.5");
+    expect(networkSpeed?.textContent).toContain("KiB/s");
+    expect(networkSpeed?.textContent).toContain("5");
+    expect(networkSpeed?.textContent).toContain("MiB/s");
+    const inProgressMetric = accountHeader?.querySelector('[aria-label="进行中 3"]');
+    expect(inProgressMetric).toBeInstanceOf(HTMLElement);
+    expect(networkSpeed?.compareDocumentPosition(inProgressMetric as HTMLElement)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
     const latencyBreakdown = host?.querySelector(
       '[data-testid="dashboard-upstream-account-latency-breakdown"]',
     );
@@ -1073,6 +1143,55 @@ describe("DashboardWorkingConversationsSection", () => {
       expect(icon?.className).not.toContain("animate-pulse");
       expect(icon?.className).not.toContain("animate-spin");
     }
+  });
+
+  it("shows aggregated upstream network speed in the header while the conversation tab stays active", () => {
+    const upstreamActivity = createUpstreamAccountActivityResponse();
+    upstreamActivity.accounts.push({
+      ...upstreamActivity.accounts[0],
+      accountKey: "upstream:77",
+      upstreamAccountId: 77,
+      displayName: "Pool Beta",
+      requestCount: 3,
+      successCount: 3,
+      failureCount: 0,
+      nonSuccessCount: 0,
+      totalTokens: 600,
+      successTokens: 600,
+      nonSuccessTokens: 0,
+      failureTokens: 0,
+      failureCost: 0,
+      totalCost: 0.18,
+      uploadBytesPerSecond: 512,
+      downloadBytesPerSecond: 1024 * 1024,
+      recentInvocations: [],
+    });
+
+    renderSection(
+      createResponse([
+        createConversation("pck-header-network-speed", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-header-network-speed",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+      {
+        upstreamAccountActivity: upstreamActivity,
+      },
+    );
+
+    expect(host?.textContent).toContain("当前对话 1 条");
+    const totalNetworkSpeed = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-total-network-speed"]',
+    );
+    expect(totalNetworkSpeed).not.toBeNull();
+    expect(totalNetworkSpeed?.textContent).toContain("2");
+    expect(totalNetworkSpeed?.textContent).toContain("KiB/s");
+    expect(totalNetworkSpeed?.textContent).toContain("6");
+    expect(totalNetworkSpeed?.textContent).toContain("MiB/s");
   });
 
   it("renders a fallback for upstream account in-progress invocations when live counts are unavailable", () => {
@@ -2989,44 +3108,6 @@ describe("DashboardWorkingConversationsSection", () => {
 
     expect(onOpenUpstreamAccount).toHaveBeenCalledWith(42, "Pool Alpha", {
       tab: "healthEvents",
-    });
-    expect(onOpenInvocation).not.toHaveBeenCalled();
-  });
-
-  it("opens the routing tab from the upstream account settings button", async () => {
-    const onOpenUpstreamAccount = vi.fn();
-    const onOpenInvocation = vi.fn();
-    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
-
-    renderSection(createResponse([]), {
-      onOpenUpstreamAccount,
-      onOpenInvocation,
-    });
-
-    const upstreamAccountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
-      (candidate) => /上游账号|upstream account/i.test(candidate.textContent ?? ""),
-    );
-    if (!(upstreamAccountTab instanceof HTMLButtonElement)) {
-      throw new Error("missing upstream account tab");
-    }
-
-    act(() => {
-      upstreamAccountTab.click();
-    });
-
-    const settingsButton = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-routing-settings"]',
-    );
-    if (!(settingsButton instanceof HTMLButtonElement)) {
-      throw new Error("missing upstream account settings button");
-    }
-
-    act(() => {
-      settingsButton.click();
-    });
-
-    expect(onOpenUpstreamAccount).toHaveBeenCalledWith(42, "Pool Alpha", {
-      tab: "routing",
     });
     expect(onOpenInvocation).not.toHaveBeenCalled();
   });

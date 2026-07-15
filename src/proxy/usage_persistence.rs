@@ -2749,6 +2749,9 @@ pub(crate) fn remove_proxy_runtime_snapshot_for_terminal(
     state: &AppState,
     record: &ApiInvocation,
 ) -> bool {
+    state
+        .dashboard_network_speed_cache
+        .finish_invocation(&record.invoke_id, &record.occurred_at);
     let remove_outcome = state
         .proxy_runtime_invocations
         .upsert_terminal(record.clone());
@@ -2769,6 +2772,9 @@ pub(crate) fn remove_proxy_runtime_snapshot_by_key(
     occurred_at: &str,
     reason: &'static str,
 ) -> bool {
+    state
+        .dashboard_network_speed_cache
+        .finish_invocation(invoke_id, occurred_at);
     let removed_runtime_snapshot = state
         .proxy_runtime_invocations
         .remove_non_terminal(invoke_id, occurred_at)
@@ -2790,6 +2796,9 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_by_key(
     occurred_at: &str,
     reason: &'static str,
 ) -> bool {
+    state
+        .dashboard_network_speed_cache
+        .finish_invocation(invoke_id, occurred_at);
     let Some(mut record) = state
         .proxy_runtime_invocations
         .remove_non_terminal(invoke_id, occurred_at)
@@ -2850,6 +2859,9 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_with_error(
     error_message: &str,
     reason: &'static str,
 ) -> bool {
+    state
+        .dashboard_network_speed_cache
+        .finish_invocation(invoke_id, occurred_at);
     let Some(mut record) = state
         .proxy_runtime_invocations
         .remove_non_terminal(invoke_id, occurred_at)

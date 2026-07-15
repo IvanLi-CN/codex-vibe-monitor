@@ -2067,7 +2067,7 @@ pub(crate) struct BroadcastStateCache {
 static DASHBOARD_ACTIVITY_LIVE_REVISION: AtomicU64 = AtomicU64::new(0);
 const DASHBOARD_ACTIVITY_LIVE_BROADCAST_DEBOUNCE: Duration = Duration::from_millis(100);
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DashboardActivityLiveAccount {
     pub(crate) account_key: String,
@@ -2075,9 +2075,11 @@ pub(crate) struct DashboardActivityLiveAccount {
     pub(crate) in_progress_invocation_count: i64,
     pub(crate) in_progress_phase_counts: InvocationPhaseCountsResponse,
     pub(crate) retry_invocation_count: i64,
+    pub(crate) upload_bytes_per_second: f64,
+    pub(crate) download_bytes_per_second: f64,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DashboardActivityLiveSnapshot {
     pub(crate) revision: u64,
@@ -2102,6 +2104,7 @@ pub(crate) async fn capture_dashboard_activity_live_snapshot(
     capture_dashboard_activity_live_snapshot_from_runtime(
         &state.pool,
         state.proxy_runtime_invocations.as_ref(),
+        state.dashboard_network_speed_cache.as_ref(),
     )
     .await
 }
@@ -2109,11 +2112,17 @@ pub(crate) async fn capture_dashboard_activity_live_snapshot(
 async fn capture_dashboard_activity_live_snapshot_from_runtime(
     pool: &Pool<Sqlite>,
     proxy_runtime_invocations: &ProxyRuntimeInvocationStore,
+    dashboard_network_speed_cache: &DashboardNetworkSpeedCache,
 ) -> Result<DashboardActivityLiveSnapshot, ApiError> {
     // Reserve before awaiting so concurrent captures cannot label an older read as newer.
     let revision = reserve_dashboard_activity_live_revision();
-    query_dashboard_activity_live_snapshot_from_runtime(pool, proxy_runtime_invocations, revision)
-        .await
+    query_dashboard_activity_live_snapshot_from_runtime(
+        pool,
+        proxy_runtime_invocations,
+        dashboard_network_speed_cache,
+        revision,
+    )
+    .await
 }
 
 pub(crate) fn build_dashboard_activity_live_snapshot(
@@ -2139,6 +2148,8 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
                 in_progress_invocation_count: 0,
                 in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
                 retry_invocation_count: 0,
+                upload_bytes_per_second: 0.0,
+                download_bytes_per_second: 0.0,
             });
         account.in_progress_invocation_count += 1;
         let live_phase = record
@@ -2194,17 +2205,19 @@ pub(crate) fn schedule_dashboard_activity_live_snapshot(state: &AppState) {
     let broadcast_running = state.dashboard_activity_live_broadcast_running.clone();
     let pool = state.pool.clone();
     let proxy_runtime_invocations = state.proxy_runtime_invocations.clone();
+    let dashboard_network_speed_cache = state.dashboard_network_speed_cache.clone();
     let broadcaster = state.broadcaster.clone();
     let shutdown = state.shutdown.clone();
     tokio::spawn(async move {
         let mut delivered_seq = worker_start_seq.saturating_sub(1);
+        let mut cadence = DASHBOARD_ACTIVITY_LIVE_BROADCAST_DEBOUNCE;
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => {
                     broadcast_running.store(false, Ordering::Release);
                     return;
                 }
-                _ = tokio::time::sleep(DASHBOARD_ACTIVITY_LIVE_BROADCAST_DEBOUNCE) => {}
+                _ = tokio::time::sleep(cadence) => {}
             }
 
             let sent_seq = latest_seq.load(Ordering::Acquire);
@@ -2213,6 +2226,7 @@ pub(crate) fn schedule_dashboard_activity_live_snapshot(state: &AppState) {
                 match capture_dashboard_activity_live_snapshot_from_runtime(
                     &pool,
                     proxy_runtime_invocations.as_ref(),
+                    dashboard_network_speed_cache.as_ref(),
                 )
                 .await
                 {
@@ -2240,6 +2254,12 @@ pub(crate) fn schedule_dashboard_activity_live_snapshot(state: &AppState) {
             delivered_seq = sent_seq;
 
             if latest_seq.load(Ordering::Acquire) != sent_seq {
+                cadence = DASHBOARD_ACTIVITY_LIVE_BROADCAST_DEBOUNCE;
+                continue;
+            }
+            if dashboard_network_speed_cache.should_keep_dashboard_activity_live_stream(Utc::now())
+            {
+                cadence = Duration::from_secs(1);
                 continue;
             }
             broadcast_running.store(false, Ordering::Release);
@@ -2248,6 +2268,7 @@ pub(crate) fn schedule_dashboard_activity_live_snapshot(state: &AppState) {
                     .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
             {
+                cadence = DASHBOARD_ACTIVITY_LIVE_BROADCAST_DEBOUNCE;
                 continue;
             }
             return;
