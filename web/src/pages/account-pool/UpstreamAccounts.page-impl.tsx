@@ -48,9 +48,6 @@ import type {
   BulkUpstreamAccountSyncSnapshot,
   FetchUpstreamAccountsQuery,
   PoolRoutingMaintenanceSettings,
-  PoolRoutingTimeoutSettings,
-  RequestCompressionAlgorithm,
-  RequestCompressionLevelPreset,
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
 } from "../../lib/api";
@@ -72,12 +69,10 @@ import {
   bulkSyncRowStatusVariant,
   compactSupportHint,
   compactSupportLabel,
-  DEFAULT_ROUTING_TIMEOUTS,
   DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME,
   type GroupFilterState,
   isBusyAction,
   parseRoutingPositiveInteger,
-  parseRoutingTimeoutValue,
   persistUpstreamAccountFilters,
   poolCardMetric,
   RoutingSettingsDialog,
@@ -548,11 +543,6 @@ export default function UpstreamAccountsPage() {
     routing?.maintenance?.primarySyncIntervalSecs,
     routing?.maintenance?.secondarySyncIntervalSecs,
     routing?.maintenance?.priorityAvailableAccountCap,
-    routing?.timeouts?.responsesFirstByteTimeoutSecs,
-    routing?.timeouts?.compactFirstByteTimeoutSecs,
-    routing?.timeouts?.imageFirstByteTimeoutSecs,
-    routing?.timeouts?.responsesStreamTimeoutSecs,
-    routing?.timeouts?.compactStreamTimeoutSecs,
   ]);
 
   useEffect(() => {
@@ -853,32 +843,11 @@ export default function UpstreamAccountsPage() {
         resolvedRoutingMaintenance.secondarySyncIntervalSecs ||
       parsedRoutingMaintenance.priorityAvailableAccountCap !==
         resolvedRoutingMaintenance.priorityAvailableAccountCap);
-  const resolvedRoutingTimeouts = routing?.timeouts ?? DEFAULT_ROUTING_TIMEOUTS;
-  const resolvedRequestCompressionAlgorithm = routing?.requestCompressionAlgorithm ?? "identity";
-  const resolvedRequestCompressionLevelPreset =
-    routing?.requestCompressionLevelPreset ?? "balanced";
-  const routingHasCompressionChange =
-    routingDraft.requestCompressionAlgorithm !== resolvedRequestCompressionAlgorithm ||
-    routingDraft.requestCompressionLevelPreset !== resolvedRequestCompressionLevelPreset;
-  const routingHasTimeoutChange =
-    routingDraft.responsesFirstByteTimeoutSecs.trim() !==
-      String(resolvedRoutingTimeouts.responsesFirstByteTimeoutSecs) ||
-    routingDraft.compactFirstByteTimeoutSecs.trim() !==
-      String(resolvedRoutingTimeouts.compactFirstByteTimeoutSecs) ||
-    routingDraft.imageFirstByteTimeoutSecs.trim() !==
-      String(resolvedRoutingTimeouts.imageFirstByteTimeoutSecs) ||
-    routingDraft.responsesStreamTimeoutSecs.trim() !==
-      String(resolvedRoutingTimeouts.responsesStreamTimeoutSecs) ||
-    routingDraft.compactStreamTimeoutSecs.trim() !==
-      String(resolvedRoutingTimeouts.compactStreamTimeoutSecs);
   const routingDialogCanEdit = routingWritesEnabled && !isRoutingDialogInspectOnly;
   const routingCanSave =
     routingDialogCanEdit &&
     !routingDraftValidationError &&
-    (routingHasMaintenanceChange ||
-      routingHasCompressionChange ||
-      routingHasTimeoutChange ||
-      routingHasApiKeyChange);
+    (routingHasMaintenanceChange || routingHasApiKeyChange);
   const formatDuplicateReasons = (duplicateInfo?: UpstreamAccountDuplicateInfo | null) => {
     const reasons = duplicateInfo?.reasons ?? [];
     return reasons
@@ -1120,50 +1089,11 @@ export default function UpstreamAccountsPage() {
       }));
       return;
     }
-    const timeoutEntries: Array<[keyof PoolRoutingTimeoutSettings, string, string]> = [
-      [
-        "responsesFirstByteTimeoutSecs",
-        t("accountPool.upstreamAccounts.routing.timeout.responsesFirstByte"),
-        routingDraft.responsesFirstByteTimeoutSecs,
-      ],
-      [
-        "compactFirstByteTimeoutSecs",
-        t("accountPool.upstreamAccounts.routing.timeout.compactFirstByte"),
-        routingDraft.compactFirstByteTimeoutSecs,
-      ],
-      [
-        "imageFirstByteTimeoutSecs",
-        t("accountPool.upstreamAccounts.routing.timeout.imageFirstByte"),
-        routingDraft.imageFirstByteTimeoutSecs,
-      ],
-      [
-        "responsesStreamTimeoutSecs",
-        t("accountPool.upstreamAccounts.routing.timeout.responsesStream"),
-        routingDraft.responsesStreamTimeoutSecs,
-      ],
-      [
-        "compactStreamTimeoutSecs",
-        t("accountPool.upstreamAccounts.routing.timeout.compactStream"),
-        routingDraft.compactStreamTimeoutSecs,
-      ],
-    ];
-    const parsedTimeouts = {} as PoolRoutingTimeoutSettings;
-    for (const [key, label, raw] of timeoutEntries) {
-      const result = parseRoutingTimeoutValue(raw, label);
-      if (!result.ok) {
-        setActionError((current) => ({ ...current, routing: result.error }));
-        return;
-      }
-      parsedTimeouts[key] = result.value;
-    }
     setActionError((current) => ({ ...current, routing: null }));
     const trimmedApiKey = routingDraft.apiKey.trim();
     const payload: {
       apiKey?: string;
       maintenance?: PoolRoutingMaintenanceSettings;
-      requestCompressionAlgorithm?: RequestCompressionAlgorithm;
-      requestCompressionLevelPreset?: RequestCompressionLevelPreset;
-      timeouts?: PoolRoutingTimeoutSettings;
     } = {};
     if (routingWritesEnabled && trimmedApiKey) {
       payload.apiKey = trimmedApiKey;
@@ -1171,20 +1101,7 @@ export default function UpstreamAccountsPage() {
     if (routingHasMaintenanceChange && parsedRoutingMaintenance) {
       payload.maintenance = parsedRoutingMaintenance;
     }
-    if (routingHasCompressionChange) {
-      payload.requestCompressionAlgorithm = routingDraft.requestCompressionAlgorithm;
-      payload.requestCompressionLevelPreset = routingDraft.requestCompressionLevelPreset;
-    }
-    if (routingHasTimeoutChange) {
-      payload.timeouts = parsedTimeouts;
-    }
-    if (
-      !payload.apiKey &&
-      !payload.maintenance &&
-      !payload.requestCompressionAlgorithm &&
-      !payload.requestCompressionLevelPreset &&
-      !payload.timeouts
-    ) {
+    if (!payload.apiKey && !payload.maintenance) {
       setIsRoutingDialogInspectOnly(false);
       setIsRoutingDialogOpen(false);
       return;
@@ -2283,64 +2200,9 @@ export default function UpstreamAccountsPage() {
         primarySyncIntervalSecs={routingDraft.primarySyncIntervalSecs}
         secondarySyncIntervalSecs={routingDraft.secondarySyncIntervalSecs}
         priorityAvailableAccountCap={routingDraft.priorityAvailableAccountCap}
-        requestCompressionAlgorithm={routingDraft.requestCompressionAlgorithm}
-        requestCompressionLevelPreset={routingDraft.requestCompressionLevelPreset}
-        timeoutSectionTitle={t("accountPool.upstreamAccounts.routing.timeout.sectionTitle")}
-        timeoutFields={[
-          {
-            key: "responsesFirstByteTimeoutSecs",
-            label: t("accountPool.upstreamAccounts.routing.timeout.responsesFirstByte"),
-            value: routingDraft.responsesFirstByteTimeoutSecs,
-            onChange: (value) =>
-              setRoutingDraft((current) => ({
-                ...current,
-                responsesFirstByteTimeoutSecs: value,
-              })),
-          },
-          {
-            key: "compactFirstByteTimeoutSecs",
-            label: t("accountPool.upstreamAccounts.routing.timeout.compactFirstByte"),
-            value: routingDraft.compactFirstByteTimeoutSecs,
-            onChange: (value) =>
-              setRoutingDraft((current) => ({
-                ...current,
-                compactFirstByteTimeoutSecs: value,
-              })),
-          },
-          {
-            key: "imageFirstByteTimeoutSecs",
-            label: t("accountPool.upstreamAccounts.routing.timeout.imageFirstByte"),
-            value: routingDraft.imageFirstByteTimeoutSecs,
-            onChange: (value) =>
-              setRoutingDraft((current) => ({
-                ...current,
-                imageFirstByteTimeoutSecs: value,
-              })),
-          },
-          {
-            key: "responsesStreamTimeoutSecs",
-            label: t("accountPool.upstreamAccounts.routing.timeout.responsesStream"),
-            value: routingDraft.responsesStreamTimeoutSecs,
-            onChange: (value) =>
-              setRoutingDraft((current) => ({
-                ...current,
-                responsesStreamTimeoutSecs: value,
-              })),
-          },
-          {
-            key: "compactStreamTimeoutSecs",
-            label: t("accountPool.upstreamAccounts.routing.timeout.compactStream"),
-            value: routingDraft.compactStreamTimeoutSecs,
-            onChange: (value) =>
-              setRoutingDraft((current) => ({
-                ...current,
-                compactStreamTimeoutSecs: value,
-              })),
-          },
-        ]}
         busy={isBusyAction(busyAction, "routing")}
         apiKeyWritesEnabled={routingDialogCanEdit}
-        timeoutWritesEnabled={routingDialogCanEdit}
+        maintenanceWritesEnabled={routingDialogCanEdit}
         canSave={routingCanSave}
         onApiKeyChange={(value) => setRoutingDraft((current) => ({ ...current, apiKey: value }))}
         onGenerate={() =>
@@ -2365,18 +2227,6 @@ export default function UpstreamAccountsPage() {
           setRoutingDraft((current) => ({
             ...current,
             priorityAvailableAccountCap: value,
-          }))
-        }
-        onRequestCompressionAlgorithmChange={(value) =>
-          setRoutingDraft((current) => ({
-            ...current,
-            requestCompressionAlgorithm: value,
-          }))
-        }
-        onRequestCompressionLevelPresetChange={(value) =>
-          setRoutingDraft((current) => ({
-            ...current,
-            requestCompressionLevelPreset: value,
           }))
         }
         onClose={() => {
