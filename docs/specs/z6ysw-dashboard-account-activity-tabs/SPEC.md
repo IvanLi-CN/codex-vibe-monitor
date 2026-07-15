@@ -418,6 +418,34 @@ PR: include
   image:
   ![Dashboard 上游账号头部刷新状态移动证据](./assets/dashboard-upstream-account-refresh-status-mobile.png)
 
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--warning-success-conversation-card`
+  scenario: `warning_success current invocation compact status`
+  evidence_note: 验证 Dashboard 对话卡片中的 future `pure_downstream_closed` 当前调用以独立 `warning_success` 语义呈现：状态位仅保留 warning 图标，不直接显示“警告成功”文字，同时 recent 错误摘要仍保留 downstream 诊断。
+  requested_viewport: `1660x1100`
+  viewport_strategy: `browser-viewport`
+  target_program: `mock-only`
+  capture_scope: `element`
+  sensitive_exclusion: `fixture-only Dashboard data`
+  submission_gate: `approved`
+  image:
+  PR: include
+  ![Dashboard 对话卡片 warning-success 紧凑状态证据](./assets/dashboard-warning-success-conversation-card.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-warning-success`
+  scenario: `warning_success recent invocation compact status`
+  evidence_note: 验证 Dashboard 上游账号 recent 行对 future `pure_downstream_closed` 仍使用成功侧排布，但紧凑状态位只显示 warning 图标；请求 ID、成本、Token 与 downstream 诊断行保持可见。
+  requested_viewport: `1660x1100`
+  viewport_strategy: `browser-viewport`
+  target_program: `mock-only`
+  capture_scope: `element`
+  sensitive_exclusion: `fixture-only Dashboard data`
+  submission_gate: `approved`
+  image:
+  PR: include
+  ![Dashboard 上游账号 warning-success recent 证据](./assets/dashboard-upstream-account-warning-success.png)
+
 - source_type: ui_demo
   story_id_or_title: `#/dashboard?demoScene=progressive-loading&demoTheme=dark`
   scenario: `desktop progressive summary skeleton`
