@@ -3,20 +3,16 @@ import { Button } from "../../components/ui/button";
 import { FloatingFieldError } from "../../components/ui/floating-field-error";
 import { FormFieldFeedback } from "../../components/ui/form-field-feedback";
 import { Input } from "../../components/ui/input";
-import { MotherAccountToggle } from "../../features/account-pool/MotherAccountToggle";
 import { UpstreamAccountGroupCombobox } from "../../features/account-pool/UpstreamAccountGroupCombobox";
 import { AppIcon } from "../../features/shared/AppIcon";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
-import { resolveDisplayNameAfterEmailChange } from "./UpstreamAccountCreate.shared";
 
 export function UpstreamAccountCreateApiKeySection() {
   const {
     apiKeyDisplayName,
     apiKeyDisplayNameConflict,
-    apiKeyEmail,
     apiKeyGroupName,
     apiKeyGroupProxyState,
-    apiKeyIsMother,
     apiKeyLimitUnit,
     apiKeyNote,
     apiKeyPrimaryLimit,
@@ -34,9 +30,7 @@ export function UpstreamAccountCreateApiKeySection() {
     normalizeGroupName,
     openGroupNoteEditor,
     setApiKeyDisplayName,
-    setApiKeyEmail,
     setApiKeyGroupName,
-    setApiKeyIsMother,
     setApiKeyLimitUnit,
     setApiKeyNote,
     setApiKeyPrimaryLimit,
@@ -64,22 +58,6 @@ export function UpstreamAccountCreateApiKeySection() {
             />
           ) : null}
         </div>
-      </label>
-      <label className="field md:col-span-2">
-        <span className="field-label">{t("accountPool.upstreamAccounts.fields.email")}</span>
-        <Input
-          name="apiKeyEmail"
-          value={apiKeyEmail}
-          autoCapitalize="none"
-          spellCheck={false}
-          onChange={(event) => {
-            const nextValue = event.target.value;
-            setApiKeyEmail(nextValue);
-            setApiKeyDisplayName((current: string) =>
-              resolveDisplayNameAfterEmailChange(current, apiKeyEmail, nextValue),
-            );
-          }}
-        />
       </label>
       <label className="field md:col-span-2">
         <span className="field-label">{t("accountPool.upstreamAccounts.fields.groupName")}</span>
@@ -116,15 +94,6 @@ export function UpstreamAccountCreateApiKeySection() {
           <p className="mt-2 text-xs text-error">{apiKeyGroupProxyState.error}</p>
         ) : null}
       </label>
-      <div className="md:col-span-2">
-        <MotherAccountToggle
-          checked={apiKeyIsMother}
-          disabled={!writesEnabled}
-          label={t("accountPool.upstreamAccounts.mother.toggleLabel")}
-          description={t("accountPool.upstreamAccounts.mother.toggleDescription")}
-          onToggle={() => setApiKeyIsMother((current: boolean) => !current)}
-        />
-      </div>
       <label className="field md:col-span-2">
         <span className="field-label">{t("accountPool.upstreamAccounts.fields.apiKey")}</span>
         <Input

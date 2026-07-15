@@ -1,10 +1,10 @@
 describe("UpstreamAccountCreatePage api key", () => {
-  it("derives the api key display name from email until the operator overrides it", async () => {
+  it("hides email and mother fields for api key creation and never submits them", async () => {
     const createApiKeyAccount = vi.fn().mockResolvedValue({
       id: 42,
       kind: "api_key_codex",
       provider: "codex",
-      displayName: "manual alias",
+      displayName: "Gateway Key",
       groupName: null,
       isMother: false,
       status: "active",
@@ -14,34 +14,20 @@ describe("UpstreamAccountCreatePage api key", () => {
     mockUpstreamAccounts({ createApiKeyAccount });
     render("/account-pool/upstream-accounts/new?mode=apiKey");
 
-    const displayNameInput = document.body.querySelector(
-      'input[name="apiKeyDisplayName"]',
-    ) as HTMLInputElement;
-
-    setInputValue('input[name="apiKeyEmail"]', "first@example.com");
-    await flushAsync();
-    expect(displayNameInput.value).toBe("first@example.com");
-
-    setInputValue('input[name="apiKeyEmail"]', "second@example.com");
-    await flushAsync();
-    expect(displayNameInput.value).toBe("second@example.com");
-
-    setInputValue('input[name="apiKeyDisplayName"]', "Manual Alias");
-    setInputValue('input[name="apiKeyEmail"]', "third@example.com");
-    await flushAsync();
-    expect(displayNameInput.value).toBe("Manual Alias");
-
+    expect(document.body.querySelector('input[name="apiKeyEmail"]')).toBeNull();
+    expect(document.body.textContent || "").not.toContain("Set as mother");
+    setInputValue('input[name="apiKeyDisplayName"]', "Gateway Key");
     setInputValue('input[name="apiKeyValue"]', "sk-gateway");
     clickButton(/Create API Key account/i);
     await flushAsync();
 
-    expect(createApiKeyAccount).toHaveBeenCalledWith(
-      expect.objectContaining({
-        displayName: "Manual Alias",
-        email: "third@example.com",
-        apiKey: "sk-gateway",
-      }),
-    );
+    const payload = createApiKeyAccount.mock.calls[0]?.[0];
+    expect(payload).toMatchObject({
+      displayName: "Gateway Key",
+      apiKey: "sk-gateway",
+    });
+    expect(payload).not.toHaveProperty("email");
+    expect(payload).not.toHaveProperty("isMother");
   });
 
   it("submits upstreamBaseUrl for API key accounts", async () => {

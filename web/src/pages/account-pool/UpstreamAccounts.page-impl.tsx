@@ -2195,22 +2195,35 @@ export default function UpstreamAccountsPage() {
         open={bulkDeleteDialogOpen}
         onOpenChange={(open) => (!bulkActionBusy ? setBulkDeleteDialogOpen(open) : undefined)}
       >
-        <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden p-0 desktop:max-h-[calc(100dvh-2rem)]">
-          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-base-300/80 px-5 py-4 desktop:px-6 desktop:py-5">
-            <DialogHeader className="min-w-0 max-w-[28rem]">
-              <DialogTitle>{t("accountPool.upstreamAccounts.bulk.deleteDialogTitle")}</DialogTitle>
-              <DialogDescription>
-                {t("accountPool.upstreamAccounts.bulk.deleteDialogDescription", {
-                  count: selectedAccountIds.length,
-                })}
-              </DialogDescription>
+        <DialogContent
+          role="alertdialog"
+          className="overflow-hidden p-0 desktop:w-[min(30rem,calc(100vw-2rem))]"
+        >
+          <div className="flex items-start justify-between gap-4 px-5 pb-3 pt-5 desktop:px-6 desktop:pt-6">
+            <DialogHeader className="min-w-0">
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-error text-error-content shadow-sm">
+                  <AppIcon name="trash-can-outline" className="h-4.5 w-4.5" aria-hidden />
+                </div>
+                <div className="min-w-0 space-y-1.5">
+                  <DialogTitle>
+                    {t("accountPool.upstreamAccounts.bulk.deleteDialogTitle")}
+                  </DialogTitle>
+                  <DialogDescription>
+                    {t("accountPool.upstreamAccounts.bulk.deleteDialogDescription", {
+                      count: selectedAccountIds.length,
+                    })}
+                  </DialogDescription>
+                </div>
+              </div>
             </DialogHeader>
             <DialogCloseIcon
               aria-label={t("accountPool.upstreamAccounts.actions.cancel")}
               disabled={Boolean(bulkActionBusy)}
+              className="-mr-2 -mt-2"
             />
           </div>
-          <DialogFooter className="shrink-0 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur desktop:px-6 desktop:py-5">
+          <DialogFooter className="px-5 pb-[max(env(safe-area-inset-bottom),1.25rem)] pt-2 desktop:px-6 desktop:pb-6 desktop:pt-3">
             <Button
               type="button"
               variant="outline"
