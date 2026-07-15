@@ -1525,6 +1525,125 @@ async fn timeseries_and_summary_count_http_200_rows_with_downstream_only_failure
 }
 
 #[tokio::test]
+async fn timeseries_and_summary_treat_warning_success_as_success_like() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(5))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    insert_timeseries_invocation(
+        &state.pool,
+        "timeseries-success-control",
+        &occurred_at,
+        "success",
+        Some(80.0),
+    )
+    .await;
+    insert_timeseries_invocation(
+        &state.pool,
+        "timeseries-warning-success",
+        &occurred_at,
+        INVOCATION_STATUS_WARNING_SUCCESS,
+        Some(120.0),
+    )
+    .await;
+    insert_timeseries_invocation(
+        &state.pool,
+        "timeseries-failure-control",
+        &occurred_at,
+        "failed",
+        Some(240.0),
+    )
+    .await;
+
+    sqlx::query(
+        "UPDATE codex_invocations SET failure_kind = ?1, failure_class = ?2, payload = ?3 WHERE invoke_id = ?4",
+    )
+    .bind("downstream_closed")
+    .bind("none")
+    .bind(
+        json!({
+            "downstreamErrorMessage":
+                "[downstream_closed] downstream closed while streaming upstream response"
+        })
+        .to_string(),
+    )
+    .bind("timeseries-warning-success")
+    .execute(&state.pool)
+    .await
+    .expect("annotate warning success row");
+
+    sqlx::query(
+        "UPDATE codex_invocations SET failure_kind = ?1, failure_class = ?2, error_message = ?3 WHERE invoke_id = ?4",
+    )
+    .bind("upstream_response_failed")
+    .bind("service_failure")
+    .bind("[upstream_response_failed] upstream response stream reported failure")
+    .bind("timeseries-failure-control")
+    .execute(&state.pool)
+    .await
+    .expect("annotate failure control row");
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch summary for warning success rows");
+    assert_eq!(summary.total_count, 3);
+    assert_eq!(summary.success_count, 2);
+    assert_eq!(summary.failure_count, 1);
+    assert_f64_close(summary.total_cost, 0.03);
+    assert_f64_close(
+        summary
+            .non_success_cost
+            .expect("non-success cost should exclude warning success"),
+        0.01,
+    );
+    assert_eq!(summary.non_success_tokens, Some(10));
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("15m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch timeseries for warning success rows");
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| point.total_count >= 3)
+        .expect("should include populated bucket");
+
+    assert_eq!(bucket.total_count, 3);
+    assert_eq!(bucket.success_count, 2);
+    assert_eq!(bucket.failure_count, 1);
+    assert_f64_close(bucket.non_success_cost, 0.01);
+    assert_eq!(bucket.first_byte_sample_count, 2);
+    assert_f64_close(
+        bucket
+            .first_byte_avg_ms
+            .expect("warning success should contribute latency"),
+        (80.0 + 120.0) / 2.0,
+    );
+}
+
+#[tokio::test]
 async fn all_time_summary_ignores_stale_rollup_failure_counts_for_running_rows() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

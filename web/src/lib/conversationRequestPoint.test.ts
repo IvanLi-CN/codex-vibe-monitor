@@ -73,4 +73,17 @@ describe("resolvePromptCacheInvocationOutcome", () => {
       }),
     ).toBe("failure");
   });
+
+  it("treats warning_success rows as successes even when downstream diagnostics are retained", () => {
+    expect(
+      resolvePromptCacheInvocationOutcome({
+        status: "warning_success",
+        failureClass: "none",
+        failureKind: "downstream_closed",
+        errorMessage: "",
+        downstreamErrorMessage:
+          "[downstream_closed] downstream closed while streaming upstream response",
+      }),
+    ).toBe("success");
+  });
 });

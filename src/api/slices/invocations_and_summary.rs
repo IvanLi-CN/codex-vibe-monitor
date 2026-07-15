@@ -119,7 +119,72 @@ fn load_invocation_anchor_runtime_records(
 // Legacy records can carry `failure_class=none` or NULL while still representing failures.
 // Keep classification consistent with `resolve_failure_classification` without requiring a
 // backfill pass to complete before the summary + filters become accurate.
-pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = "CASE   WHEN LOWER(TRIM(COALESCE(failure_class, ''))) IN ('service_failure', 'client_failure', 'client_abort')     THEN LOWER(TRIM(COALESCE(failure_class, '')))   ELSE     CASE       WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed')         AND LOWER(TRIM(COALESCE(error_message, ''))) = ''         AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = ''         AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' THEN 'none'       WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')         AND LOWER(TRIM(COALESCE(error_message, ''))) = '' THEN 'none'       WHEN LOWER(TRIM(COALESCE(status, ''))) = ''         AND LOWER(TRIM(COALESCE(error_message, ''))) = ''         AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = ''         AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' THEN 'none'       WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = 'downstream_closed'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[downstream_closed]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%downstream closed while streaming upstream response%'         OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) LIKE '%downstream closed while streaming upstream response%'         THEN 'client_abort'       WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_429'         OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = 'upstream_http_429'         THEN 'service_failure'       WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('request_body_stream_error_client_closed', 'invalid_api_key', 'api_key_not_found', 'api_key_missing')         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_stream_error_client_closed]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to read request body stream%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%invalid api key format%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key format is invalid%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%incorrect api key provided%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key not found%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%please provide an api key%'         OR (LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_4%' AND LOWER(TRIM(COALESCE(status, ''))) != 'http_429')         OR LOWER(TRIM(COALESCE(status, ''))) IN ('http_401', 'http_403')         THEN 'client_failure'       WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('failed_contact_upstream', 'upstream_response_failed', 'upstream_stream_error', 'request_body_read_timeout', 'upstream_handshake_timeout')         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[failed_contact_upstream]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_response_failed]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_stream_error]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_read_timeout]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_handshake_timeout]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to contact upstream%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream response stream reported failure%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream stream error%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%request body read timed out%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream handshake timed out%'         OR LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_5%'         THEN 'service_failure'       WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') THEN 'none'       WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_200'         AND LOWER(TRIM(COALESCE(error_message, ''))) = ''         AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = ''         AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' THEN 'none'       ELSE 'service_failure'     END END";
+pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
+    "CASE ",
+    "  WHEN LOWER(TRIM(COALESCE(failure_class, ''))) IN ('service_failure', 'client_failure', 'client_abort') ",
+    "    THEN LOWER(TRIM(COALESCE(failure_class, ''))) ",
+    "  ELSE ",
+    "    CASE ",
+    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') ",
+    "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
+    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
+    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' ",
+    "        THEN 'none' ",
+    "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'warning_success' ",
+    "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
+    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = 'downstream_closed' ",
+    "        THEN 'none' ",
+    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending') ",
+    "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
+    "        THEN 'none' ",
+    "      WHEN LOWER(TRIM(COALESCE(status, ''))) = '' ",
+    "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
+    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
+    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' ",
+    "        THEN 'none' ",
+    "      WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = 'downstream_closed' ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[downstream_closed]%' ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%downstream closed while streaming upstream response%' ",
+    "        OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) LIKE '%downstream closed while streaming upstream response%' ",
+    "        THEN 'client_abort' ",
+    "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_429' ",
+    "        OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = 'upstream_http_429' ",
+    "        THEN 'service_failure' ",
+    "      WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('request_body_stream_error_client_closed', 'invalid_api_key', 'api_key_not_found', 'api_key_missing') ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_stream_error_client_closed]%' ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to read request body stream%' ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%invalid api key format%' ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key format is invalid%' ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%incorrect api key provided%' ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key not found%' ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%please provide an api key%' ",
+    "        OR (LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_4%' AND LOWER(TRIM(COALESCE(status, ''))) != 'http_429') ",
+    "        OR LOWER(TRIM(COALESCE(status, ''))) IN ('http_401', 'http_403') ",
+    "        THEN 'client_failure' ",
+    "      WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('failed_contact_upstream', 'upstream_response_failed', 'upstream_stream_error', 'request_body_read_timeout', 'upstream_handshake_timeout') ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[failed_contact_upstream]%' ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_response_failed]%' ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_stream_error]%' ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_read_timeout]%' ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_handshake_timeout]%' ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to contact upstream%' ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream response stream reported failure%' ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream stream error%' ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%request body read timed out%' ",
+    "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream handshake timed out%' ",
+    "        OR LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_5%' ",
+    "        THEN 'service_failure' ",
+    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', 'warning_success') ",
+    "        THEN 'none' ",
+    "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_200' ",
+    "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
+    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
+    "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' ",
+    "        THEN 'none' ",
+    "      ELSE 'service_failure' ",
+    "    END ",
+    "END"
+);
 
 pub(crate) fn latest_pool_attempt_phase_sql(invocation_ref: &str) -> String {
     format!(
@@ -802,6 +867,11 @@ pub(crate) fn apply_invocation_records_filters(
             query.push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL);
             query.push(" = 'none'");
             push_exact_text_filter(query, INVOCATION_STATUS_NORMALIZED_SQL, normalized_status);
+        } else if normalized_status.eq_ignore_ascii_case(INVOCATION_STATUS_WARNING_SUCCESS) {
+            query.push(" AND ");
+            query.push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL);
+            query.push(" = 'none'");
+            push_exact_text_filter(query, INVOCATION_STATUS_NORMALIZED_SQL, normalized_status);
         } else {
             push_exact_text_filter(query, "status", status);
         }
@@ -1010,7 +1080,48 @@ pub(crate) fn runtime_record_matches_filters(
     }
     if let Some(status) = filters.status.as_deref() {
         let normalized_status = status.trim();
-        if !runtime_text_equals(record.status.as_deref(), normalized_status) {
+        if normalized_status.eq_ignore_ascii_case("failed") {
+            let classification = resolve_failure_classification(
+                record.status.as_deref(),
+                record.error_message.as_deref(),
+                record.failure_kind.as_deref(),
+                record.failure_class.as_deref(),
+                record.is_actionable.map(|value| if value { 1 } else { 0 }),
+            );
+            if !prompt_cache_and_timeseries_shared::prompt_invocation_status_counts_toward_terminal_totals(
+                record.status.as_deref(),
+            ) || classification.failure_class == FailureClass::None
+                || runtime_text_equals(record.status.as_deref(), "interrupted")
+            {
+                return false;
+            }
+        } else if normalized_status.eq_ignore_ascii_case("success") {
+            let classification = resolve_failure_classification(
+                record.status.as_deref(),
+                record.error_message.as_deref(),
+                record.failure_kind.as_deref(),
+                record.failure_class.as_deref(),
+                record.is_actionable.map(|value| if value { 1 } else { 0 }),
+            );
+            if !runtime_text_equals(record.status.as_deref(), normalized_status)
+                || classification.failure_class != FailureClass::None
+            {
+                return false;
+            }
+        } else if normalized_status.eq_ignore_ascii_case(INVOCATION_STATUS_WARNING_SUCCESS) {
+            let classification = resolve_failure_classification(
+                record.status.as_deref(),
+                record.error_message.as_deref(),
+                record.failure_kind.as_deref(),
+                record.failure_class.as_deref(),
+                record.is_actionable.map(|value| if value { 1 } else { 0 }),
+            );
+            if !runtime_text_equals(record.status.as_deref(), normalized_status)
+                || classification.failure_class != FailureClass::None
+            {
+                return false;
+            }
+        } else if !runtime_text_equals(record.status.as_deref(), normalized_status) {
             return false;
         }
     }
@@ -1577,6 +1688,7 @@ pub(crate) fn runtime_record_is_success_for_summary(record: &ApiInvocation) -> b
     let status = normalized_runtime_text(record.status.as_deref());
     status == "success"
         || status == "completed"
+        || status == INVOCATION_STATUS_WARNING_SUCCESS
         || (status == "http_200"
             && normalized_runtime_text(record.error_message.as_deref()).is_empty())
 }
@@ -2690,7 +2802,7 @@ pub(crate) async fn fetch_invocation_summary(
     let totals_sql = format!(
         "SELECT \
          COUNT(*) AS total_count, \
-         COALESCE(SUM(CASE WHEN {resolved_failure} = 'none' AND ({status_norm} IN ('success', 'completed') OR ({status_norm} = 'http_200' AND LOWER(TRIM(COALESCE(error_message, ''))) = '')) THEN 1 ELSE 0 END), 0) AS success_count, \
+         COALESCE(SUM(CASE WHEN {resolved_failure} = 'none' AND ({status_norm} IN ('success', 'completed', '{warning_success}') OR ({status_norm} = 'http_200' AND LOWER(TRIM(COALESCE(error_message, ''))) = '')) THEN 1 ELSE 0 END), 0) AS success_count, \
          COALESCE(SUM(CASE WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
          COALESCE(SUM(total_tokens), 0) AS total_tokens, \
          COALESCE(SUM(cost), 0.0) AS total_cost, \
@@ -2698,6 +2810,7 @@ pub(crate) async fn fetch_invocation_summary(
          FROM codex_invocations WHERE 1 = 1",
         status_norm = INVOCATION_STATUS_NORMALIZED_SQL,
         resolved_failure = INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
+        warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
     );
     let mut totals_query = QueryBuilder::new(totals_sql);
     apply_invocation_records_filters(
@@ -4416,7 +4529,8 @@ async fn query_live_upstream_account_activity_aggregate_rows(
     };
     let failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
     let success_sql = format!(
-        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') AND ({failure_class_sql}) = 'none'"
+        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', '{warning_success}') AND ({failure_class_sql}) = 'none'",
+        warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
     );
     let failure_sql = format!(
         "LOWER(TRIM(COALESCE(status, ''))) NOT IN ('', 'running', 'pending') AND ({failure_class_sql}) <> 'none'"
@@ -4619,7 +4733,8 @@ async fn query_live_upstream_account_usage_breakdown_rows(
     };
     let failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
     let success_billed_sql = format!(
-        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') AND ({failure_class_sql}) = 'none' AND cost IS NOT NULL"
+        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', '{warning_success}') AND ({failure_class_sql}) = 'none' AND cost IS NOT NULL",
+        warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
     );
     let first_response_byte_total_sql = "COALESCE(t_req_read_ms, 0) + COALESCE(t_req_parse_ms, 0) + COALESCE(t_upstream_connect_ms, 0) + COALESCE(t_upstream_ttfb_ms, 0)";
     let mut query = QueryBuilder::<Sqlite>::new(format!(
@@ -4695,7 +4810,8 @@ async fn query_live_model_performance_total_usage_duration_overrides(
     let occurred_at_epoch_ms_sql = "(CAST(CASE WHEN instr(occurred_at, 'T') > 0 THEN strftime('%s', occurred_at) ELSE strftime('%s', occurred_at || '+08:00') END AS REAL) * 1000.0)";
     let failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
     let success_billed_sql = format!(
-        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') AND ({failure_class_sql}) = 'none' AND cost IS NOT NULL"
+        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', '{warning_success}') AND ({failure_class_sql}) = 'none' AND cost IS NOT NULL",
+        warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
     );
     let range_end_epoch_ms = range.end.timestamp_millis() as f64;
     let mut query = QueryBuilder::<Sqlite>::new("SELECT ");

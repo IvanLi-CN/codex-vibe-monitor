@@ -47,6 +47,15 @@ describe("resolveInvocationDisplayStatus", () => {
     ).toBe("SUCCESS");
   });
 
+  it("preserves warning_success so the UI can render the dedicated success-like warning state", () => {
+    expect(
+      resolveInvocationDisplayStatus({
+        status: "warning_success",
+        failureClass: "none",
+      }),
+    ).toBe("warning_success");
+  });
+
   it("preserves interrupted rows so the UI can show the dedicated recovery status", () => {
     expect(
       resolveInvocationDisplayStatus({

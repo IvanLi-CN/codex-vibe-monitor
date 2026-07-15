@@ -98,6 +98,7 @@ pub(crate) fn prompt_invocation_status_is_success_like(
 
     normalized_status.eq_ignore_ascii_case("success")
         || normalized_status.eq_ignore_ascii_case("completed")
+        || normalized_status.eq_ignore_ascii_case(INVOCATION_STATUS_WARNING_SUCCESS)
         || (normalized_status.eq_ignore_ascii_case("http_200") && error_message_empty)
 }
 

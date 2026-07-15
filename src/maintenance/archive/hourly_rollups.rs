@@ -860,6 +860,17 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
         if (upsert_prompt_cache || upsert_prompt_cache_upstream_accounts)
             && let Some(prompt_cache_key) = prompt_cache_key_from_payload(row.payload.as_deref())
         {
+            let classification = resolve_failure_classification(
+                row.status.as_deref(),
+                row.error_message.as_deref(),
+                row.failure_kind.as_deref(),
+                row.failure_class.as_deref(),
+                row.is_actionable,
+            );
+            let is_success_like = invocation_status_is_success_like(
+                row.status.as_deref(),
+                row.error_message.as_deref(),
+            ) && classification.failure_class == FailureClass::None;
             if upsert_prompt_cache {
                 let entry = keyed_conversation_delta(
                     &mut prompt_cache,
@@ -869,7 +880,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     &row.occurred_at,
                 );
                 entry.request_count += 1;
-                if row.status.as_deref() == Some("success") {
+                if is_success_like {
                     entry.success_count += 1;
                 } else {
                     entry.failure_count += 1;
@@ -907,7 +918,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     entry.last_seen_at = row.occurred_at.clone();
                 }
                 entry.request_count += 1;
-                if row.status.as_deref() == Some("success") {
+                if is_success_like {
                     entry.success_count += 1;
                 } else {
                     entry.failure_count += 1;
@@ -1023,7 +1034,18 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                 entry.last_seen_at = row.occurred_at.clone();
             }
             entry.request_count += 1;
-            if row.status.as_deref() == Some("success") {
+            let classification = resolve_failure_classification(
+                row.status.as_deref(),
+                row.error_message.as_deref(),
+                row.failure_kind.as_deref(),
+                row.failure_class.as_deref(),
+                row.is_actionable,
+            );
+            if invocation_status_is_success_like(
+                row.status.as_deref(),
+                row.error_message.as_deref(),
+            ) && classification.failure_class == FailureClass::None
+            {
                 entry.success_count += 1;
             } else {
                 entry.failure_count += 1;

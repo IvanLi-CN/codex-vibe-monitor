@@ -392,17 +392,22 @@ function createSeededTimeseries(range: string, bucket?: string) {
 function normalizeLiveRecordOutcome(record: ApiInvocation): LiveRecordOutcome {
   const status = record.status?.trim().toLowerCase() ?? "";
   const failureClass = record.failureClass?.trim().toLowerCase() ?? "";
+  if (status === "running" || status === "pending") {
+    return "in_flight";
+  }
+  if (failureClass.length > 0 && failureClass !== "none") {
+    return "failure";
+  }
+  if (status === "warning_success") {
+    return "success";
+  }
   const hasFailureMetadata =
-    (failureClass.length > 0 && failureClass !== "none") ||
     (record.failureKind?.trim().length ?? 0) > 0 ||
     (record.errorMessage?.trim().length ?? 0) > 0 ||
     (record.downstreamErrorMessage?.trim().length ?? 0) > 0;
 
   if (status === "success" || status === "completed" || status === "http_200") {
     return hasFailureMetadata ? "failure" : "success";
-  }
-  if (status === "running" || status === "pending") {
-    return "in_flight";
   }
   if (status.length > 0) return "failure";
   return hasFailureMetadata ? "failure" : "neutral";

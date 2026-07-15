@@ -63,6 +63,9 @@ function resolveStatusMeta(status?: string | null): StatusMeta {
   if (lower === "success" || lower === "completed") {
     return { variant: "success", labelKey: "table.status.success" };
   }
+  if (lower === "warning_success") {
+    return { variant: "warning", labelKey: "table.status.warningSuccess" };
+  }
   if (lower === "failed") {
     return { variant: "error", labelKey: "table.status.failed" };
   }

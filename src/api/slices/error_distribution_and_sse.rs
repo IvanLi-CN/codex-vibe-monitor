@@ -465,7 +465,9 @@ pub(crate) fn classify_invocation_failure_with_kind(
         .map(str::trim)
         .filter(|value| !value.is_empty());
 
-    if (status_norm == "success" || status_norm == "completed")
+    if (status_norm == "success"
+        || status_norm == "completed"
+        || status_norm == INVOCATION_STATUS_WARNING_SUCCESS)
         && err.is_empty()
         && explicit_failure_kind.is_none()
     {
@@ -507,7 +509,13 @@ pub(crate) fn classify_invocation_failure_with_kind(
         && !is_http_429;
     let is_http_5xx = status_norm.starts_with("http_5");
 
-    let failure_class = if failure_kind_lower == PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED
+    let warning_success_like = status_norm == INVOCATION_STATUS_WARNING_SUCCESS
+        && failure_kind_lower == PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED
+        && err.is_empty();
+
+    let failure_class = if warning_success_like {
+        FailureClass::None
+    } else if failure_kind_lower == PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED
         || err_lower.contains("downstream closed while streaming upstream response")
     {
         FailureClass::ClientAbort
@@ -537,9 +545,13 @@ pub(crate) fn classify_invocation_failure_with_kind(
         || is_http_5xx
     {
         FailureClass::ServiceFailure
-    } else if matches!(status_norm.as_str(), "success" | "completed" | "http_200")
+    } else if (matches!(status_norm.as_str(), "success" | "completed" | "http_200")
         && err.is_empty()
-        && failure_kind_lower.is_empty()
+        && failure_kind_lower.is_empty())
+        || (status_norm == INVOCATION_STATUS_WARNING_SUCCESS
+            && err.is_empty()
+            && (failure_kind_lower.is_empty()
+                || failure_kind_lower == PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED))
     {
         FailureClass::None
     } else {
@@ -548,7 +560,9 @@ pub(crate) fn classify_invocation_failure_with_kind(
     };
 
     FailureClassification {
-        failure_kind: if failure_class == FailureClass::None {
+        failure_kind: if failure_class == FailureClass::None
+            && status_norm != INVOCATION_STATUS_WARNING_SUCCESS
+        {
             None
         } else {
             failure_kind

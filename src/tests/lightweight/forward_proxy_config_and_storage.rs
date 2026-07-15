@@ -728,7 +728,7 @@ async fn proxy_error_response_exposes_image_timeout_code_only_for_504() {
 }
 
 #[tokio::test]
-async fn persist_proxy_capture_runtime_record_preserves_downstream_closed_as_client_abort() {
+async fn persist_proxy_capture_runtime_record_preserves_warning_success_diagnostics() {
     #[derive(Debug, sqlx::FromRow)]
     struct InvocationRow {
         status: Option<String>,
@@ -753,7 +753,7 @@ async fn persist_proxy_capture_runtime_record_preserves_downstream_closed_as_cli
             cost_breakdown: None,
             cost_estimated: false,
             price_version: None,
-            status: "failed".to_string(),
+            status: INVOCATION_STATUS_WARNING_SUCCESS.to_string(),
             error_message: None,
             failure_kind: Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED.to_string()),
             payload: None,
@@ -777,8 +777,16 @@ async fn persist_proxy_capture_runtime_record_preserves_downstream_closed_as_cli
     .expect("persist runtime record")
     .expect("persisted invocation should be returned");
 
-    assert_eq!(persisted.failure_class.as_deref(), Some("client_abort"));
+    assert_eq!(
+        persisted.status.as_deref(),
+        Some(INVOCATION_STATUS_WARNING_SUCCESS)
+    );
+    assert_eq!(persisted.failure_class.as_deref(), Some("none"));
     assert_eq!(persisted.is_actionable, Some(false));
+    assert_eq!(
+        persisted.failure_kind.as_deref(),
+        Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
+    );
 
     let row = sqlx::query_as::<_, InvocationRow>(
         r#"
@@ -792,17 +800,20 @@ async fn persist_proxy_capture_runtime_record_preserves_downstream_closed_as_cli
     .await
     .expect("load persisted runtime invocation");
 
-    assert_eq!(row.status.as_deref(), Some("failed"));
+    assert_eq!(
+        row.status.as_deref(),
+        Some(INVOCATION_STATUS_WARNING_SUCCESS)
+    );
     assert_eq!(
         row.failure_kind.as_deref(),
         Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
     );
-    assert_eq!(row.failure_class.as_deref(), Some("client_abort"));
+    assert_eq!(row.failure_class.as_deref(), Some("none"));
     assert_eq!(row.is_actionable, Some(0));
 }
 
 #[tokio::test]
-async fn persist_proxy_capture_record_preserves_downstream_closed_as_client_abort() {
+async fn persist_proxy_capture_record_preserves_warning_success_diagnostics() {
     #[derive(Debug, sqlx::FromRow)]
     struct InvocationRow {
         status: Option<String>,
@@ -828,7 +839,7 @@ async fn persist_proxy_capture_record_preserves_downstream_closed_as_client_abor
             cost_breakdown: None,
             cost_estimated: false,
             price_version: None,
-            status: "failed".to_string(),
+            status: INVOCATION_STATUS_WARNING_SUCCESS.to_string(),
             error_message: None,
             failure_kind: Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED.to_string()),
             payload: None,
@@ -852,8 +863,16 @@ async fn persist_proxy_capture_record_preserves_downstream_closed_as_client_abor
     .expect("persist terminal record")
     .expect("persisted invocation should be returned");
 
-    assert_eq!(persisted.failure_class.as_deref(), Some("client_abort"));
+    assert_eq!(
+        persisted.status.as_deref(),
+        Some(INVOCATION_STATUS_WARNING_SUCCESS)
+    );
+    assert_eq!(persisted.failure_class.as_deref(), Some("none"));
     assert_eq!(persisted.is_actionable, Some(false));
+    assert_eq!(
+        persisted.failure_kind.as_deref(),
+        Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
+    );
 
     let row = sqlx::query_as::<_, InvocationRow>(
         r#"
@@ -867,12 +886,15 @@ async fn persist_proxy_capture_record_preserves_downstream_closed_as_client_abor
     .await
     .expect("load persisted terminal invocation");
 
-    assert_eq!(row.status.as_deref(), Some("failed"));
+    assert_eq!(
+        row.status.as_deref(),
+        Some(INVOCATION_STATUS_WARNING_SUCCESS)
+    );
     assert_eq!(
         row.failure_kind.as_deref(),
         Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
     );
-    assert_eq!(row.failure_class.as_deref(), Some("client_abort"));
+    assert_eq!(row.failure_class.as_deref(), Some("none"));
     assert_eq!(row.is_actionable, Some(0));
 }
 
@@ -951,10 +973,10 @@ async fn persist_proxy_capture_record_omits_response_preview_and_raw_path_when_d
 }
 
 #[test]
-fn proxy_capture_invocation_status_marks_downstream_closed_as_failed() {
+fn proxy_capture_invocation_status_marks_downstream_closed_as_warning_success() {
     assert_eq!(
         proxy_capture_invocation_status(StatusCode::OK, false, true),
-        "failed"
+        INVOCATION_STATUS_WARNING_SUCCESS
     );
     assert_eq!(
         proxy_capture_invocation_status(StatusCode::OK, false, false),

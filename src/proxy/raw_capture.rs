@@ -1371,7 +1371,7 @@ pub(crate) async fn backfill_proxy_usage_tokens_from_cursor(
             SELECT id, response_raw_path, payload
             FROM codex_invocations
             WHERE source = ?1
-              AND status = 'success'
+              AND LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'warning_success')
               AND total_tokens IS NULL
               AND response_raw_path IS NOT NULL
               AND id > ?2
@@ -1619,7 +1619,7 @@ pub(crate) async fn current_proxy_cost_backfill_snapshot_max_id(
                     THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER)
                 END
             WHERE inv.source = ?1
-              AND LOWER(TRIM(COALESCE(inv.status, ''))) IN ('success', 'failed')
+              AND LOWER(TRIM(COALESCE(inv.status, ''))) IN ('success', 'warning_success', 'failed')
               AND inv.model IS NOT NULL
               AND (
                   COALESCE(inv.input_tokens, 0) > 0
@@ -1812,7 +1812,7 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                         THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER)
                     END
                 WHERE inv.source = ?1
-                  AND LOWER(TRIM(COALESCE(inv.status, ''))) IN ('success', 'failed')
+                  AND LOWER(TRIM(COALESCE(inv.status, ''))) IN ('success', 'warning_success', 'failed')
                   AND inv.model IS NOT NULL
                   AND (
                       COALESCE(inv.input_tokens, 0) > 0

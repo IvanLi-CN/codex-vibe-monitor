@@ -1428,6 +1428,109 @@ async fn list_invocations_status_success_excludes_resolved_failures() {
 }
 
 #[tokio::test]
+async fn list_invocations_warning_success_is_separate_from_success_and_failed() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, status, failure_kind, failure_class, downstream_error_message) in [
+        ("status-plain-success", "success", None, None, None),
+        (
+            "status-warning-success",
+            INVOCATION_STATUS_WARNING_SUCCESS,
+            Some("downstream_closed"),
+            Some("none"),
+            Some("[downstream_closed] downstream closed while streaming upstream response"),
+        ),
+        (
+            "status-historical-downstream-failed",
+            "failed",
+            Some("downstream_closed"),
+            Some("client_abort"),
+            Some("[downstream_closed] downstream closed while streaming upstream response"),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                failure_kind,
+                failure_class,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-03-10 08:00:00")
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(failure_kind)
+        .bind(failure_class)
+        .bind(downstream_error_message.map(|message| {
+            json!({
+                "downstreamErrorMessage": message,
+            })
+            .to_string()
+        }))
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert warning success filter row");
+    }
+
+    let Json(warning_success_filtered) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            status: Some(INVOCATION_STATUS_WARNING_SUCCESS.to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("warning success status filter should succeed");
+    assert_eq!(warning_success_filtered.total, 1);
+    assert_eq!(
+        warning_success_filtered.records[0].invoke_id,
+        "status-warning-success"
+    );
+
+    let Json(success_filtered) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            status: Some("success".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("success status filter should stay separate");
+    assert_eq!(success_filtered.total, 1);
+    assert_eq!(
+        success_filtered.records[0].invoke_id,
+        "status-plain-success"
+    );
+
+    let Json(failed_filtered) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            status: Some("failed".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("failed status filter should exclude warning success");
+    assert_eq!(failed_filtered.total, 1);
+    assert_eq!(
+        failed_filtered.records[0].invoke_id,
+        "status-historical-downstream-failed"
+    );
+}
+
+#[tokio::test]
 async fn list_invocations_status_sort_uses_normalized_status_values() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
