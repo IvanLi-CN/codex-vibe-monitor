@@ -176,18 +176,29 @@ function createPreview(
 function createConversation(
   promptCacheKey: string,
   recentInvocations: PromptCacheConversationInvocationPreview[],
+  overrides: Partial<PromptCacheConversation> = {},
 ): PromptCacheConversation {
   return {
     promptCacheKey,
-    requestCount: recentInvocations.length,
-    totalTokens: 200,
-    totalCost: 0.02,
+    requestCount: overrides.requestCount ?? recentInvocations.length,
+    totalTokens: overrides.totalTokens ?? 200,
+    totalCost: overrides.totalCost ?? 0.02,
     createdAt:
-      recentInvocations[recentInvocations.length - 1]?.occurredAt ?? "2026-04-04T10:00:00Z",
-    lastActivityAt: recentInvocations[0]?.occurredAt ?? "2026-04-04T10:00:00Z",
-    upstreamAccounts: [],
+      overrides.createdAt ??
+      recentInvocations[recentInvocations.length - 1]?.occurredAt ??
+      "2026-04-04T10:00:00Z",
+    lastActivityAt:
+      overrides.lastActivityAt ?? recentInvocations[0]?.occurredAt ?? "2026-04-04T10:00:00Z",
+    lastTerminalAt: overrides.lastTerminalAt ?? null,
+    lastInFlightAt: overrides.lastInFlightAt ?? null,
+    hasEncryptedSessionOwner: overrides.hasEncryptedSessionOwner ?? false,
+    encryptedOwnerAccountId: overrides.encryptedOwnerAccountId ?? null,
+    encryptedOwnerAccountName: overrides.encryptedOwnerAccountName ?? null,
+    encryptedOwnerGroupName: overrides.encryptedOwnerGroupName ?? null,
+    manualBinding: overrides.manualBinding ?? null,
+    upstreamAccounts: overrides.upstreamAccounts ?? [],
     recentInvocations,
-    last24hRequests: [],
+    last24hRequests: overrides.last24hRequests ?? [],
   };
 }
 
@@ -456,6 +467,7 @@ function renderSection(
     onOpenConversation?: (selection: {
       conversationSequenceId: string;
       promptCacheKey: string;
+      tab?: "overview" | "calls" | "settings";
     }) => void;
     onOpenInvocation?: (selection: {
       slotKind: "current" | "previous";
@@ -486,6 +498,7 @@ function renderSectionWithCards(
     onOpenConversation?: (selection: {
       conversationSequenceId: string;
       promptCacheKey: string;
+      tab?: "overview" | "calls" | "settings";
     }) => void;
     onOpenInvocation?: (selection: {
       slotKind: "current" | "previous";
@@ -567,6 +580,7 @@ function rerenderSection(
     onOpenConversation?: (selection: {
       conversationSequenceId: string;
       promptCacheKey: string;
+      tab?: "overview" | "calls" | "settings";
     }) => void;
     onOpenInvocation?: (selection: {
       slotKind: "current" | "previous";
@@ -598,6 +612,7 @@ function rerenderSectionWithCards(
     onOpenConversation?: (selection: {
       conversationSequenceId: string;
       promptCacheKey: string;
+      tab?: "overview" | "calls" | "settings";
     }) => void;
     onOpenInvocation?: (selection: {
       slotKind: "current" | "previous";
@@ -2769,7 +2784,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(onOpenInvocation).not.toHaveBeenCalled();
   });
 
-  it("renders interrupted slots with the dedicated interrupted label", () => {
+  it("renders interrupted slots with the dedicated interrupted status icon semantics", () => {
     renderSection(
       createResponse([
         createConversation("pck-interrupted", [
@@ -2793,9 +2808,21 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    const text = host?.textContent ?? "";
-    expect(text).toContain("已中断");
-    expect(text).not.toContain("失败");
+    const card = host?.querySelector('[data-testid="dashboard-working-conversation-card"]');
+    if (!(card instanceof HTMLElement)) {
+      throw new Error("missing interrupted conversation card");
+    }
+
+    const headerStatusIcon = card.querySelector(
+      '[data-testid="dashboard-inline-invocation-status"]',
+    );
+    if (!(headerStatusIcon instanceof HTMLElement)) {
+      throw new Error("missing interrupted header status icon");
+    }
+
+    expect(headerStatusIcon.getAttribute("aria-label")).toContain("已中断");
+    expect(headerStatusIcon.getAttribute("aria-label")).not.toContain("失败");
+    expect(card.textContent ?? "").not.toContain("已中断");
   });
 
   it("keeps upstream account buttons interactive so the shared drawer can open", () => {
@@ -3421,6 +3448,218 @@ describe("DashboardWorkingConversationsSection", () => {
 
     expect(onOpenInvocation).toHaveBeenCalledTimes(1);
     expect(onOpenConversation).not.toHaveBeenCalled();
+  });
+
+  it("renders a manual binding badge beside the sequence id and opens settings directly", () => {
+    const onOpenInvocation = vi.fn();
+    const onOpenConversation = vi.fn();
+    const response = createResponse([
+      createConversation(
+        "pck-manual-binding-open",
+        [
+          createPreview({
+            id: 2,
+            invokeId: "invoke-manual-binding-current",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+          createPreview({
+            id: 1,
+            invokeId: "invoke-manual-binding-previous",
+            occurredAt: "2026-04-04T10:02:00Z",
+            status: "completed",
+          }),
+        ],
+        {
+          manualBinding: {
+            bindingKind: "group",
+            groupName: "CIII",
+            upstreamAccountId: null,
+            upstreamAccountName: null,
+          },
+        },
+      ),
+    ]);
+
+    const cards = renderSection(response, {
+      onOpenConversation,
+      onOpenInvocation,
+    });
+
+    const badgeButton = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-manual-binding-badge"]',
+    );
+    if (!(badgeButton instanceof HTMLButtonElement)) {
+      throw new Error("missing manual binding badge");
+    }
+
+    expect(badgeButton.textContent).toContain("CIII");
+    expect(badgeButton.getAttribute("aria-label")).toContain("打开对话设置");
+    expect(badgeButton.getAttribute("aria-label")).toContain("当前：分组 CIII");
+    expect(badgeButton.className).toContain("max-w-[20rem]");
+
+    act(() => {
+      badgeButton.click();
+    });
+
+    expect(onOpenConversation).toHaveBeenCalledWith({
+      conversationSequenceId: cards[0]?.conversationSequenceId,
+      promptCacheKey: "pck-manual-binding-open",
+      tab: "settings",
+    });
+    expect(onOpenConversation).toHaveBeenCalledTimes(1);
+    expect(onOpenInvocation).not.toHaveBeenCalled();
+  });
+
+  it("uses distinct manual binding badge tones and keeps account badges capped at 20rem", () => {
+    renderSection(
+      createResponse([
+        createConversation(
+          "pck-manual-binding-group-tone",
+          [
+            createPreview({
+              id: 2,
+              invokeId: "invoke-manual-binding-group-tone",
+              occurredAt: "2026-04-04T10:04:00Z",
+              status: "completed",
+            }),
+          ],
+          {
+            manualBinding: {
+              bindingKind: "group",
+              groupName: "CIII",
+              upstreamAccountId: null,
+              upstreamAccountName: null,
+            },
+          },
+        ),
+        createConversation(
+          "pck-manual-binding-account-tone",
+          [
+            createPreview({
+              id: 3,
+              invokeId: "invoke-manual-binding-account-tone",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "completed",
+            }),
+          ],
+          {
+            manualBinding: {
+              bindingKind: "upstreamAccount",
+              groupName: null,
+              upstreamAccountId: 108,
+              upstreamAccountName:
+                "paisleeeinar5710 Team sandbox workflow monitor with an intentionally long account label",
+            },
+          },
+        ),
+      ]),
+    );
+
+    const badges = host?.querySelectorAll(
+      '[data-testid="dashboard-working-conversation-manual-binding-badge"]',
+    );
+    const badgeArray = Array.from(badges ?? []);
+    const groupBadge = badgeArray.find((badge) => badge.textContent?.includes("CIII"));
+    const accountBadge = badgeArray.find((badge) =>
+      badge.textContent?.includes("paisleeeinar5710"),
+    );
+
+    expect(groupBadge).toBeInstanceOf(HTMLSpanElement);
+    expect(accountBadge).toBeInstanceOf(HTMLSpanElement);
+    expect(groupBadge?.className).toContain("text-info");
+    expect(accountBadge?.className).toContain("text-secondary");
+    expect(groupBadge?.className).toContain("text-[10.5px]");
+    expect(accountBadge?.className).toContain("text-[10.5px]");
+
+    const groupBadgeText = groupBadge?.firstElementChild;
+    const accountBadgeText = accountBadge?.firstElementChild;
+
+    expect(groupBadgeText?.className).toContain("max-w-[20rem]");
+    expect(accountBadgeText?.className).toContain("max-w-[20rem]");
+    expect(accountBadgeText?.textContent).toContain("paisleeeinar5710");
+  });
+
+  it("keeps the full sequence id visible and only truncates the binding target", () => {
+    const cards = mapPromptCacheConversationsToDashboardCards(
+      createResponse([
+        createConversation(
+          "pck-manual-binding-long-sequence",
+          [
+            createPreview({
+              id: 5,
+              invokeId: "invoke-manual-binding-long-sequence",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "completed",
+            }),
+          ],
+          {
+            manualBinding: {
+              bindingKind: "upstreamAccount",
+              groupName: null,
+              upstreamAccountId: 219,
+              upstreamAccountName:
+                "paisleeeinar5710 Team sandbox workflow monitor with an intentionally long account label",
+            },
+          },
+        ),
+      ]),
+    ).map((card) => ({
+      ...card,
+      conversationSequenceId: "WC-COLLIDE-ABC123",
+    }));
+
+    renderSectionWithCards(cards, { onOpenConversation: vi.fn() });
+
+    const sequenceButton = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-sequence-button"]',
+    );
+    const badge = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-manual-binding-badge"]',
+    );
+    const badgeText = badge?.firstElementChild?.firstElementChild;
+
+    expect(sequenceButton).toBeInstanceOf(HTMLButtonElement);
+    expect(sequenceButton?.textContent).toBe("COLLIDE-ABC123");
+    expect(sequenceButton?.className).toContain("shrink-0");
+    expect(sequenceButton?.className).toContain("whitespace-nowrap");
+    expect(sequenceButton?.className).not.toContain("min-w-0");
+    expect(sequenceButton?.querySelector("span")?.className).not.toContain("truncate");
+
+    expect(badge).toBeInstanceOf(HTMLButtonElement);
+    expect(badge?.className).toContain("max-w-[20rem]");
+    expect(badgeText?.className).toContain("truncate");
+    expect(badgeText?.className).toContain("max-w-[20rem]");
+  });
+
+  it("renders the card header status as the same icon-only affordance used by invocation records", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-card-header-status-icon", [
+          createPreview({
+            id: 91,
+            invokeId: "invoke-card-header-status-icon",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "success",
+          }),
+        ]),
+      ]),
+    );
+
+    const card = host?.querySelector('[data-testid="dashboard-working-conversation-card"]');
+    if (!(card instanceof HTMLElement)) {
+      throw new Error("missing working conversation card");
+    }
+
+    const headerStatusIcon = card.querySelector(
+      '[data-testid="dashboard-inline-invocation-status"]',
+    );
+    if (!(headerStatusIcon instanceof HTMLElement)) {
+      throw new Error("missing card header status icon");
+    }
+
+    expect(headerStatusIcon.getAttribute("aria-label")).toContain("成功");
+    expect(card.textContent).not.toContain("成功");
   });
 
   it("uses theme-aware surface classes instead of a hardcoded dark canvas surface", () => {

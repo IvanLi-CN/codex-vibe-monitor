@@ -133,6 +133,8 @@ export type {
   PromptCacheConversationImplicitFilter,
   PromptCacheConversationImplicitFilterKind,
   PromptCacheConversationInvocationPreview,
+  PromptCacheConversationManualBinding,
+  PromptCacheConversationManualBindingKind,
   PromptCacheConversationPageQuery,
   PromptCacheConversationRequestPoint,
   PromptCacheConversationRewriteMode,
