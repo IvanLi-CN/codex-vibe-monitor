@@ -2722,7 +2722,7 @@ describe("DashboardWorkingConversationsSection", () => {
     );
   });
 
-  it("renders warning success status labels in dashboard recent cards", () => {
+  it("renders warning success status labels in dashboard recent cards via the shared tooltip", async () => {
     renderSection(
       createResponse([
         createConversation("pck-warning-success", [
@@ -2740,10 +2740,22 @@ describe("DashboardWorkingConversationsSection", () => {
     const statusNode = host?.querySelector(
       '[data-testid="dashboard-inline-invocation-status"]',
     ) as HTMLElement | null;
-    expect(statusNode?.getAttribute("title") ?? "").toContain("警告成功");
+    expect(statusNode?.getAttribute("title")).toBeNull();
+    expect(statusNode?.getAttribute("aria-label") ?? "").toContain("警告成功");
+
+    await act(async () => {
+      statusNode?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+
+    await waitFor(() => {
+      const tooltip = Array.from(document.body.querySelectorAll('[role="tooltip"]')).find((node) =>
+        node.textContent?.includes("警告成功"),
+      );
+      expect(tooltip).toBeInstanceOf(HTMLElement);
+    });
   });
 
-  it("keeps warning success recent rows icon-only in upstream-account activity", () => {
+  it("keeps warning success recent rows icon-only in upstream-account activity and exposes details through the shared tooltip", async () => {
     const upstreamActivity = createUpstreamAccountActivityResponse();
     upstreamActivity.accounts[0]!.recentInvocations[0] = {
       ...upstreamActivity.accounts[0]!.recentInvocations[0]!,
@@ -2782,7 +2794,19 @@ describe("DashboardWorkingConversationsSection", () => {
       '[data-testid="dashboard-inline-invocation-status"]',
     ) as HTMLElement | null;
     expect(statusNode?.textContent ?? "").not.toContain("警告成功");
-    expect(statusNode?.getAttribute("title") ?? "").toContain("警告成功");
+    expect(statusNode?.getAttribute("title")).toBeNull();
+    expect(statusNode?.getAttribute("aria-label") ?? "").toContain("警告成功");
+
+    await act(async () => {
+      statusNode?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+
+    await waitFor(() => {
+      const tooltip = Array.from(document.body.querySelectorAll('[role="tooltip"]')).find((node) =>
+        node.textContent?.includes("警告成功"),
+      );
+      expect(tooltip).toBeInstanceOf(HTMLElement);
+    });
   });
 
   it("renders a fixed previous-invocation placeholder when a conversation has only one call", () => {
@@ -4669,8 +4693,9 @@ describe("DashboardWorkingConversationsSection", () => {
 
     expect(statusIcon.getAttribute("aria-label")).toContain("失败");
     expect(statusIcon.getAttribute("aria-label")).toContain(LONG_ERROR_SUMMARY);
+    expect(statusIcon.getAttribute("title")).toBeNull();
     expect(
-      slotHeader.querySelectorAll(`[title*="${LONG_ERROR_SUMMARY.slice(0, 48)}"]`),
+      slotHeader.querySelectorAll('[data-testid="dashboard-inline-invocation-status"]'),
     ).toHaveLength(1);
   });
 

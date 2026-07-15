@@ -9,6 +9,7 @@ import { SelectField } from "../components/ui/select-field";
 import { Switch } from "../components/ui/switch";
 import { Tooltip } from "../components/ui/tooltip";
 import { ExternalApiKeysSettingsCard } from "../features/settings/ExternalApiKeysSettingsCard";
+import { PoolRoutingSettingsCard } from "../features/settings/PoolRoutingSettingsCard";
 import { AppIcon } from "../features/shared/AppIcon";
 import { useSettings } from "../hooks/useSettings";
 import { useTranslation } from "../i18n";
@@ -19,10 +20,15 @@ import {
   type ForwardProxyNodeStats,
   type ForwardProxySettings,
   normalizeForwardProxyLatencyTestStreamEvent,
+  type PoolRoutingSettings,
+  type PoolRoutingTimeoutSettings,
   type PricingEntry,
   type PricingSettings,
   type ProxySettings,
+  type RequestCompressionAlgorithm,
+  type RequestCompressionLevelPreset,
   refreshForwardProxySubscriptions,
+  type UpdatePoolRoutingSettingsPayload,
   validateForwardProxyCandidate,
 } from "../lib/api";
 import { extractProxyDisplayName, extractProxyProtocolName } from "../lib/forwardProxyDisplay";
@@ -41,6 +47,16 @@ type PricingDraftEntry = {
 type PricingDraft = {
   catalogVersion: string;
   entries: PricingDraftEntry[];
+};
+
+type RoutingDraft = {
+  requestCompressionAlgorithm: RequestCompressionAlgorithm;
+  requestCompressionLevelPreset: RequestCompressionLevelPreset;
+  responsesFirstByteTimeoutSecs: string;
+  compactFirstByteTimeoutSecs: string;
+  imageFirstByteTimeoutSecs: string;
+  responsesStreamTimeoutSecs: string;
+  compactStreamTimeoutSecs: string;
 };
 
 type ForwardProxyValidationState =
@@ -102,6 +118,13 @@ type ForwardProxyLatencyUiState =
 const AUTO_SAVE_DEBOUNCE_MS = 600;
 const FORWARD_PROXY_BATCH_VALIDATION_CONCURRENCY = 5;
 const FORWARD_PROXY_BATCH_VALIDATION_ROUNDS = 12;
+const DEFAULT_ROUTING_TIMEOUTS: PoolRoutingTimeoutSettings = {
+  responsesFirstByteTimeoutSecs: 120,
+  compactFirstByteTimeoutSecs: 300,
+  imageFirstByteTimeoutSecs: 300,
+  responsesStreamTimeoutSecs: 300,
+  compactStreamTimeoutSecs: 300,
+};
 const pricingTableHeaderCellClass =
   "px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/65";
 const pricingTableBodyCellClass = "align-middle px-4 py-3";
@@ -222,6 +245,31 @@ function stablePricingKey(value: PricingSettings | null): string {
     catalogVersion: value.catalogVersion,
     entries: [...value.entries].sort((a, b) => a.model.localeCompare(b.model)),
   });
+}
+
+function toRoutingDraft(routing: PoolRoutingSettings): RoutingDraft {
+  const timeouts = routing.timeouts ?? DEFAULT_ROUTING_TIMEOUTS;
+  return {
+    requestCompressionAlgorithm: routing.requestCompressionAlgorithm ?? "identity",
+    requestCompressionLevelPreset: routing.requestCompressionLevelPreset ?? "balanced",
+    responsesFirstByteTimeoutSecs: String(timeouts.responsesFirstByteTimeoutSecs),
+    compactFirstByteTimeoutSecs: String(timeouts.compactFirstByteTimeoutSecs),
+    imageFirstByteTimeoutSecs: String(timeouts.imageFirstByteTimeoutSecs),
+    responsesStreamTimeoutSecs: String(timeouts.responsesStreamTimeoutSecs),
+    compactStreamTimeoutSecs: String(timeouts.compactStreamTimeoutSecs),
+  };
+}
+
+function stableRoutingKey(value: RoutingDraft | null): string {
+  if (!value) return "null";
+  return JSON.stringify(value);
+}
+
+function parsePositiveInteger(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 function sourceBadgeVariant(source: string): "success" | "warning" | "secondary" {
@@ -364,20 +412,25 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
   const { t } = useTranslation();
   const {
     settings,
+    routing,
     isLoading,
     isProxySaving,
     isForwardProxySaving,
     isPricingSaving,
+    isRoutingSaving,
     pricingRollbackVersion,
     error,
     refresh: refreshSettings,
     saveProxy,
     saveForwardProxy,
     savePricing,
+    saveRouting,
   } = useSettings();
 
   const [pricingDraft, setPricingDraft] = useState<PricingDraft | null>(null);
   const [pricingErrorKey, setPricingErrorKey] = useState<string | null>(null);
+  const [routingDraft, setRoutingDraft] = useState<RoutingDraft | null>(null);
+  const [routingValidationMessage, setRoutingValidationMessage] = useState<string | null>(null);
   const [forwardProxyUrls, setForwardProxyUrls] = useState<string[]>([]);
   const [forwardProxySubscriptionUrls, setForwardProxySubscriptionUrls] = useState<string[]>([]);
   const [forwardProxyIntervalSecs, setForwardProxyIntervalSecs] = useState("3600");
@@ -409,6 +462,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const forwardProxyBatchValidationRunRef = useRef(0);
   const lastSyncedPricingKeyRef = useRef<string | null>(null);
+  const lastSyncedRoutingKeyRef = useRef<string | null>(null);
   const lastHandledRollbackVersionRef = useRef(pricingRollbackVersion);
   const showGeneralSettings = mode !== "proxy";
   const showForwardProxySettings = mode !== "general";
@@ -497,6 +551,24 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
     isForwardProxySaving,
     settings?.forwardProxy,
   ]);
+  useEffect(() => {
+    if (!routing) return;
+    const nextDraft = toRoutingDraft(routing);
+    const nextKey = stableRoutingKey(nextDraft);
+    setRoutingDraft((current) => {
+      if (!current) {
+        return nextDraft;
+      }
+      if (
+        lastSyncedRoutingKeyRef.current == null ||
+        stableRoutingKey(current) === lastSyncedRoutingKeyRef.current
+      ) {
+        return nextDraft;
+      }
+      return current;
+    });
+    lastSyncedRoutingKeyRef.current = nextKey;
+  }, [routing]);
   const currentProxy = settings?.proxy ?? null;
   const currentForwardProxy = settings?.forwardProxy ?? null;
   const enabledPresetModelSet = useMemo(
@@ -554,10 +626,21 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
     [settings?.pricing],
   );
   const remotePricingKeyRef = useRef(remotePricingKey);
+  const remoteRoutingKey = useMemo(
+    () => (routing ? stableRoutingKey(toRoutingDraft(routing)) : null),
+    [routing],
+  );
+  const displayRoutingDraft = routingDraft ?? (routing ? toRoutingDraft(routing) : null);
 
   useEffect(() => {
     remotePricingKeyRef.current = remotePricingKey;
   }, [remotePricingKey]);
+  const routingDirty =
+    routingDraft != null &&
+    remoteRoutingKey != null &&
+    stableRoutingKey(routingDraft) !== remoteRoutingKey;
+  const routingCanSave =
+    Boolean(routingDraft && routing?.writesEnabled && routingDirty) && !isRoutingSaving;
 
   const triggerPricingSave = useCallback(
     (forceImmediate: boolean) => {
@@ -598,6 +681,78 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
     },
     [pricingDraft, savePricing],
   );
+
+  const updateRoutingDraft = useCallback(
+    (patch: Partial<RoutingDraft>) => {
+      setRoutingValidationMessage(null);
+      setRoutingDraft((current) => {
+        const baseDraft = current ?? (routing ? toRoutingDraft(routing) : null);
+        return baseDraft ? { ...baseDraft, ...patch } : baseDraft;
+      });
+    },
+    [routing],
+  );
+
+  const saveRoutingDefaults = useCallback(async () => {
+    if (!routingDraft || !routing?.writesEnabled) {
+      return;
+    }
+
+    const timeoutEntries: Array<[keyof PoolRoutingTimeoutSettings, string, string]> = [
+      [
+        "responsesFirstByteTimeoutSecs",
+        t("settings.routing.timeout.responsesFirstByte"),
+        routingDraft.responsesFirstByteTimeoutSecs,
+      ],
+      [
+        "compactFirstByteTimeoutSecs",
+        t("settings.routing.timeout.compactFirstByte"),
+        routingDraft.compactFirstByteTimeoutSecs,
+      ],
+      [
+        "imageFirstByteTimeoutSecs",
+        t("settings.routing.timeout.imageFirstByte"),
+        routingDraft.imageFirstByteTimeoutSecs,
+      ],
+      [
+        "responsesStreamTimeoutSecs",
+        t("settings.routing.timeout.responsesStream"),
+        routingDraft.responsesStreamTimeoutSecs,
+      ],
+      [
+        "compactStreamTimeoutSecs",
+        t("settings.routing.timeout.compactStream"),
+        routingDraft.compactStreamTimeoutSecs,
+      ],
+    ];
+    const parsedTimeouts = {} as PoolRoutingTimeoutSettings;
+    for (const [key, label, raw] of timeoutEntries) {
+      const parsed = parsePositiveInteger(raw);
+      if (parsed == null) {
+        setRoutingValidationMessage(
+          t("settings.routing.errors.timeoutPositiveInteger", { field: label }),
+        );
+        return;
+      }
+      parsedTimeouts[key] = parsed;
+    }
+
+    const payload: UpdatePoolRoutingSettingsPayload = {
+      requestCompressionAlgorithm: routingDraft.requestCompressionAlgorithm,
+      requestCompressionLevelPreset: routingDraft.requestCompressionLevelPreset,
+      timeouts: parsedTimeouts,
+    };
+
+    try {
+      const saved = await saveRouting(payload);
+      const nextDraft = toRoutingDraft(saved);
+      setRoutingDraft(nextDraft);
+      setRoutingValidationMessage(null);
+      lastSyncedRoutingKeyRef.current = stableRoutingKey(nextDraft);
+    } catch {
+      // The shared hook already surfaces the concrete save error.
+    }
+  }, [routing?.writesEnabled, routingDraft, saveRouting, t]);
 
   useEffect(() => {
     if (!pricingDraft) return;
@@ -1859,6 +2014,40 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                 </div>
               </CardContent>
             </Card>
+
+            {displayRoutingDraft ? (
+              <PoolRoutingSettingsCard
+                draft={displayRoutingDraft}
+                busy={isRoutingSaving}
+                writesEnabled={routing?.writesEnabled ?? false}
+                canSave={routingCanSave}
+                validationMessage={routingValidationMessage}
+                onAlgorithmChange={(value) =>
+                  updateRoutingDraft({
+                    requestCompressionAlgorithm: value,
+                  })
+                }
+                onLevelPresetChange={(value) =>
+                  updateRoutingDraft({
+                    requestCompressionLevelPreset: value,
+                  })
+                }
+                onTimeoutChange={(key, value) => updateRoutingDraft({ [key]: value })}
+                onSave={() => void saveRoutingDefaults()}
+              />
+            ) : (
+              <Card className="mobile-flat-surface overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
+                <CardHeader className="mobile-flat-surface-header gap-2 border-b border-base-300/70 pb-4">
+                  <CardTitle>{t("settings.routing.title")}</CardTitle>
+                  <CardDescription>{t("settings.routing.description")}</CardDescription>
+                </CardHeader>
+                <CardContent className="mobile-flat-surface-body pt-4">
+                  <Alert variant="error" className="text-sm">
+                    {t("settings.routing.unavailable")}
+                  </Alert>
+                </CardContent>
+              </Card>
+            )}
 
             <Card className="mobile-flat-surface overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
               <CardHeader className="mobile-flat-surface-header flex-row items-start justify-between gap-3 space-y-0 border-b border-base-300/70 pb-4">

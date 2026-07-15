@@ -66,8 +66,6 @@ import { useTranslation } from "../../i18n";
 import type {
   ApiInvocation,
   ForwardProxyBindingNode,
-  RequestCompressionAlgorithm,
-  RequestCompressionLevelPreset,
   StickyKeyConversationSelection,
   UpdateGroupAccountRoutingRulePayload,
   UpstreamAccountDetail,
@@ -80,10 +78,6 @@ import {
   fetchInvocationRecords,
 } from "../../lib/api";
 import { invocationStableKey } from "../../lib/invocation";
-import {
-  requestCompressionAlgorithmLabel,
-  requestCompressionLevelPresetLabel,
-} from "../../lib/requestCompression";
 import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
 import {
   type AccountDraft,
@@ -122,14 +116,12 @@ import {
 import {
   buildRoutingDraft,
   parseRoutingPositiveInteger,
-  parseRoutingTimeoutValue,
   resolveRoutingMaintenance,
 } from "./UpstreamAccounts.routing";
 import {
   type AccountBusyActionType,
   type ActionErrorState,
   type BusyActionState,
-  DEFAULT_ROUTING_TIMEOUTS,
   type GroupFilterState,
   type RoutingDraft,
   UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS,
@@ -158,12 +150,10 @@ export {
   bulkSyncRowStatusVariant,
   compactSupportHint,
   compactSupportLabel,
-  DEFAULT_ROUTING_TIMEOUTS,
   DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME,
   formatGroupFilterValue,
   parseGroupFilterValue,
   parseRoutingPositiveInteger,
-  parseRoutingTimeoutValue,
   persistUpstreamAccountFilters,
   poolCardMetric,
   readPersistedUpstreamAccountFilters,
@@ -598,21 +588,15 @@ export function RoutingSettingsDialog({
   primarySyncIntervalSecs,
   secondarySyncIntervalSecs,
   priorityAvailableAccountCap,
-  requestCompressionAlgorithm,
-  requestCompressionLevelPreset,
-  timeoutSectionTitle,
-  timeoutFields,
   busy,
   apiKeyWritesEnabled,
-  timeoutWritesEnabled,
+  maintenanceWritesEnabled,
   canSave,
   onApiKeyChange,
   onGenerate,
   onPrimarySyncIntervalChange,
   onSecondarySyncIntervalChange,
   onPriorityAvailableAccountCapChange,
-  onRequestCompressionAlgorithmChange,
-  onRequestCompressionLevelPresetChange,
   onClose,
   onSave,
 }: {
@@ -626,26 +610,15 @@ export function RoutingSettingsDialog({
   primarySyncIntervalSecs: string;
   secondarySyncIntervalSecs: string;
   priorityAvailableAccountCap: string;
-  requestCompressionAlgorithm: RequestCompressionAlgorithm;
-  requestCompressionLevelPreset: RequestCompressionLevelPreset;
-  timeoutSectionTitle: string;
-  timeoutFields: Array<{
-    key: string;
-    label: string;
-    value: string;
-    onChange: (value: string) => void;
-  }>;
   busy: boolean;
   apiKeyWritesEnabled: boolean;
-  timeoutWritesEnabled: boolean;
+  maintenanceWritesEnabled: boolean;
   canSave: boolean;
   onApiKeyChange: (value: string) => void;
   onGenerate: () => void;
   onPrimarySyncIntervalChange: (value: string) => void;
   onSecondarySyncIntervalChange: (value: string) => void;
   onPriorityAvailableAccountCapChange: (value: string) => void;
-  onRequestCompressionAlgorithmChange: (value: RequestCompressionAlgorithm) => void;
-  onRequestCompressionLevelPresetChange: (value: RequestCompressionLevelPreset) => void;
   onClose: () => void;
   onSave: () => void;
 }) {
@@ -764,7 +737,7 @@ export function RoutingSettingsDialog({
                     value={primarySyncIntervalSecs}
                     onChange={(event) => onPrimarySyncIntervalChange(event.target.value)}
                     placeholder="300"
-                    disabled={busy || !timeoutWritesEnabled}
+                    disabled={busy || !maintenanceWritesEnabled}
                     className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
                   />
                 </div>
@@ -785,7 +758,7 @@ export function RoutingSettingsDialog({
                     value={secondarySyncIntervalSecs}
                     onChange={(event) => onSecondarySyncIntervalChange(event.target.value)}
                     placeholder="1800"
-                    disabled={busy || !timeoutWritesEnabled}
+                    disabled={busy || !maintenanceWritesEnabled}
                     className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
                   />
                 </div>
@@ -807,153 +780,9 @@ export function RoutingSettingsDialog({
                   value={priorityAvailableAccountCap}
                   onChange={(event) => onPriorityAvailableAccountCapChange(event.target.value)}
                   placeholder="100"
-                  disabled={busy || !timeoutWritesEnabled}
+                  disabled={busy || !maintenanceWritesEnabled}
                   className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
                 />
-              </div>
-            </div>
-
-            <div className="space-y-4 rounded-2xl border border-base-300/80 bg-base-100/70 p-4">
-              <div className="space-y-1">
-                <p className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
-                  {t("accountPool.upstreamAccounts.routing.requestCompressionSectionTitle")}
-                </p>
-                <p className="text-sm text-base-content/68">
-                  {t("accountPool.upstreamAccounts.routing.requestCompressionSectionDescription")}
-                </p>
-              </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <SelectField
-                  className="field"
-                  label={t("accountPool.upstreamAccounts.routing.requestCompressionAlgorithmLabel")}
-                  name="poolRoutingRequestCompressionAlgorithm"
-                  value={requestCompressionAlgorithm}
-                  disabled={busy || !timeoutWritesEnabled}
-                  options={[
-                    {
-                      value: "follow",
-                      label: requestCompressionAlgorithmLabel("follow", {
-                        requestCompressionFollow: t("accountPool.requestCompression.follow"),
-                        requestCompressionIdentity: t("accountPool.requestCompression.identity"),
-                        requestCompressionGzip: t("accountPool.requestCompression.gzip"),
-                        requestCompressionDeflate: t("accountPool.requestCompression.deflate"),
-                        requestCompressionZstd: t("accountPool.requestCompression.zstd"),
-                      }),
-                    },
-                    {
-                      value: "identity",
-                      label: requestCompressionAlgorithmLabel("identity", {
-                        requestCompressionFollow: t("accountPool.requestCompression.follow"),
-                        requestCompressionIdentity: t("accountPool.requestCompression.identity"),
-                        requestCompressionGzip: t("accountPool.requestCompression.gzip"),
-                        requestCompressionDeflate: t("accountPool.requestCompression.deflate"),
-                        requestCompressionZstd: t("accountPool.requestCompression.zstd"),
-                      }),
-                    },
-                    {
-                      value: "gzip",
-                      label: requestCompressionAlgorithmLabel("gzip", {
-                        requestCompressionFollow: t("accountPool.requestCompression.follow"),
-                        requestCompressionIdentity: t("accountPool.requestCompression.identity"),
-                        requestCompressionGzip: t("accountPool.requestCompression.gzip"),
-                        requestCompressionDeflate: t("accountPool.requestCompression.deflate"),
-                        requestCompressionZstd: t("accountPool.requestCompression.zstd"),
-                      }),
-                    },
-                    {
-                      value: "deflate",
-                      label: requestCompressionAlgorithmLabel("deflate", {
-                        requestCompressionFollow: t("accountPool.requestCompression.follow"),
-                        requestCompressionIdentity: t("accountPool.requestCompression.identity"),
-                        requestCompressionGzip: t("accountPool.requestCompression.gzip"),
-                        requestCompressionDeflate: t("accountPool.requestCompression.deflate"),
-                        requestCompressionZstd: t("accountPool.requestCompression.zstd"),
-                      }),
-                    },
-                    {
-                      value: "zstd",
-                      label: requestCompressionAlgorithmLabel("zstd", {
-                        requestCompressionFollow: t("accountPool.requestCompression.follow"),
-                        requestCompressionIdentity: t("accountPool.requestCompression.identity"),
-                        requestCompressionGzip: t("accountPool.requestCompression.gzip"),
-                        requestCompressionDeflate: t("accountPool.requestCompression.deflate"),
-                        requestCompressionZstd: t("accountPool.requestCompression.zstd"),
-                      }),
-                    },
-                  ]}
-                  onValueChange={(value) =>
-                    onRequestCompressionAlgorithmChange(value as RequestCompressionAlgorithm)
-                  }
-                />
-                <SelectField
-                  className="field"
-                  label={t(
-                    "accountPool.upstreamAccounts.routing.requestCompressionLevelPresetLabel",
-                  )}
-                  name="poolRoutingRequestCompressionLevelPreset"
-                  value={requestCompressionLevelPreset}
-                  disabled={busy || !timeoutWritesEnabled}
-                  options={[
-                    {
-                      value: "fast",
-                      label: requestCompressionLevelPresetLabel("fast", {
-                        requestCompressionLevelFast: t("accountPool.requestCompression.level.fast"),
-                        requestCompressionLevelBalanced: t(
-                          "accountPool.requestCompression.level.balanced",
-                        ),
-                        requestCompressionLevelBest: t("accountPool.requestCompression.level.best"),
-                      }),
-                    },
-                    {
-                      value: "balanced",
-                      label: requestCompressionLevelPresetLabel("balanced", {
-                        requestCompressionLevelFast: t("accountPool.requestCompression.level.fast"),
-                        requestCompressionLevelBalanced: t(
-                          "accountPool.requestCompression.level.balanced",
-                        ),
-                        requestCompressionLevelBest: t("accountPool.requestCompression.level.best"),
-                      }),
-                    },
-                    {
-                      value: "best",
-                      label: requestCompressionLevelPresetLabel("best", {
-                        requestCompressionLevelFast: t("accountPool.requestCompression.level.fast"),
-                        requestCompressionLevelBalanced: t(
-                          "accountPool.requestCompression.level.balanced",
-                        ),
-                        requestCompressionLevelBest: t("accountPool.requestCompression.level.best"),
-                      }),
-                    },
-                  ]}
-                  onValueChange={(value) =>
-                    onRequestCompressionLevelPresetChange(value as RequestCompressionLevelPreset)
-                  }
-                />
-              </div>
-              <p className="text-xs leading-5 text-base-content/60">
-                {t("accountPool.upstreamAccounts.routing.requestCompressionHint")}
-              </p>
-            </div>
-            <div className="space-y-3">
-              <p className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
-                {timeoutSectionTitle}
-              </p>
-              <div className="grid gap-3 md:grid-cols-2">
-                {timeoutFields.map((field) => (
-                  <label key={field.key} className="field">
-                    <span className="field-label">{field.label}</span>
-                    <Input
-                      name={field.key}
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={field.value}
-                      onChange={(event) => field.onChange(event.target.value)}
-                      disabled={busy || !timeoutWritesEnabled}
-                      className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono"
-                    />
-                  </label>
-                ))}
               </div>
             </div>
           </div>

@@ -2053,6 +2053,15 @@ export async function updatePoolRoutingSettings(
   return normalized;
 }
 
+export async function fetchPoolRoutingSettings(): Promise<PoolRoutingSettings> {
+  const response = await fetchJson<unknown>("/api/pool/routing-settings");
+  const normalized = normalizePoolRoutingSettings(response);
+  if (!normalized) {
+    throw new Error("Request failed: invalid pool routing settings payload");
+  }
+  return normalized;
+}
+
 export async function fetchUpstreamStickyConversations(
   accountId: number,
   selection: StickyKeyConversationSelection,

@@ -221,9 +221,9 @@ describe("UpstreamAccountsPage duplicates", () => {
     );
   });
 
-  it("shows compact support state and saves routing timeouts", async () => {
+  it("shows compact support state and saves routing maintenance settings", async () => {
     const saveRouting = vi.fn().mockResolvedValue(undefined);
-    const { compactSupport, routingTimeouts } = mockAccountsPage({
+    const { compactSupport } = mockAccountsPage({
       saveRouting,
     });
     render("/account-pool/upstream-accounts");
@@ -240,26 +240,28 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(document.body.textContent).toContain(compactSupport.reason);
 
     clickButton(/Edit routing settings/i);
-    const compactInput = document.body.querySelector(
-      'input[name="compactFirstByteTimeoutSecs"]',
+    await flushAsync();
+    const secondaryInput = document.body.querySelector(
+      'input[name="secondarySyncIntervalSecs"]',
     );
-    expect(compactInput).toBeInstanceOf(HTMLInputElement);
-    expect((compactInput as HTMLInputElement).value).toBe("300");
+    expect(secondaryInput).toBeInstanceOf(HTMLInputElement);
+    expect((secondaryInput as HTMLInputElement).value).toBe("1800");
 
-    setInputValue('input[name="compactFirstByteTimeoutSecs"]', "420");
+    setInputValue('input[name="secondarySyncIntervalSecs"]', "2400");
     clickButton(/Save settings/i);
     await flushAsync();
 
     expect(saveRouting).toHaveBeenCalledWith({
       apiKey: undefined,
-      timeouts: {
-        ...routingTimeouts,
-        compactFirstByteTimeoutSecs: 420,
+      maintenance: {
+        primarySyncIntervalSecs: 300,
+        secondarySyncIntervalSecs: 2400,
+        priorityAvailableAccountCap: 100,
       },
     });
   }, 60_000);
 
-  it("keeps the routing card summary-only while the dialog still exposes advanced fields", async () => {
+  it("keeps the routing card summary-only while the dialog only exposes route key and maintenance fields", async () => {
     mockAccountsPage({
       routing: {
         writesEnabled: true,
@@ -304,32 +306,38 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(document.body.textContent).toContain(
       "Priority available account cap",
     );
-    expect(document.body.textContent).toContain(
+    expect(document.body.textContent).not.toContain(
       "Standard response first byte timeout",
     );
-    expect(document.body.textContent).toContain(
+    expect(document.body.textContent).not.toContain(
       "Compact response first byte timeout",
     );
-    expect(document.body.textContent).toContain(
+    expect(document.body.textContent).not.toContain(
       "Standard stream completion timeout",
     );
-    expect(document.body.textContent).toContain(
+    expect(document.body.textContent).not.toContain(
       "Compact stream completion timeout",
+    );
+    expect(document.body.textContent).toContain(
+      "Global request compression and request path timeouts now live in system settings",
     );
   });
 
-  it("rejects non-integer routing timeout edits before saving", async () => {
+  it("rejects non-integer routing maintenance edits before saving", async () => {
     const saveRouting = vi.fn().mockResolvedValue(undefined);
     mockAccountsPage({ saveRouting });
     render("/account-pool/upstream-accounts");
 
     clickButton(/Edit routing settings/i);
-    setInputValue('input[name="compactFirstByteTimeoutSecs"]', "1.5");
-    clickButton(/Save settings/i);
-    await flushAsync();
+    setInputValue('input[name="secondarySyncIntervalSecs"]', "1.5");
+
+    const saveButton = findButton(/Save settings/i);
+    if (!(saveButton instanceof HTMLButtonElement)) {
+      throw new Error("missing save button");
+    }
+    expect(saveButton.disabled).toBe(true);
 
     expect(saveRouting).not.toHaveBeenCalled();
-    expect(document.body.textContent).toContain("must be a positive integer");
   });
 
   it("keeps routing save disabled until settings have loaded", async () => {
@@ -365,11 +373,11 @@ describe("UpstreamAccountsPage duplicates", () => {
     await flushAsync();
     await flushTimers();
 
-    const compactInput = document.body.querySelector(
-      'input[name="compactFirstByteTimeoutSecs"]',
+    const secondaryInput = document.body.querySelector(
+      'input[name="secondarySyncIntervalSecs"]',
     );
-    expect(compactInput).toBeInstanceOf(HTMLInputElement);
-    expect((compactInput as HTMLInputElement).disabled).toBe(true);
+    expect(secondaryInput).toBeInstanceOf(HTMLInputElement);
+    expect((secondaryInput as HTMLInputElement).disabled).toBe(true);
 
     const apiKeyInput = document.body.querySelector(
       'input[name="poolRoutingSecret"]',
@@ -395,17 +403,17 @@ describe("UpstreamAccountsPage duplicates", () => {
     render("/account-pool/upstream-accounts");
 
     clickButton(/Edit routing settings/i);
-    setInputValue('input[name="compactFirstByteTimeoutSecs"]', "420");
+    setInputValue('input[name="secondarySyncIntervalSecs"]', "2400");
 
     mockAccountsPage();
     rerender("/account-pool/upstream-accounts");
     await flushAsync();
 
-    const compactInput = document.body.querySelector(
-      'input[name="compactFirstByteTimeoutSecs"]',
+    const secondaryInput = document.body.querySelector(
+      'input[name="secondarySyncIntervalSecs"]',
     );
-    expect(compactInput).toBeInstanceOf(HTMLInputElement);
-    expect((compactInput as HTMLInputElement).value).toBe("420");
+    expect(secondaryInput).toBeInstanceOf(HTMLInputElement);
+    expect((secondaryInput as HTMLInputElement).value).toBe("2400");
   });
 
   it("disables routing saves when the dialog becomes read-only during refresh", async () => {
@@ -413,13 +421,18 @@ describe("UpstreamAccountsPage duplicates", () => {
     render("/account-pool/upstream-accounts");
 
     clickButton(/Edit routing settings/i);
-    setInputValue('input[name="compactFirstByteTimeoutSecs"]', "420");
+    setInputValue('input[name="secondarySyncIntervalSecs"]', "2400");
 
     mockAccountsPage({
       routing: {
         writesEnabled: false,
         apiKeyConfigured: false,
         maskedApiKey: null,
+        maintenance: {
+          primarySyncIntervalSecs: 300,
+          secondarySyncIntervalSecs: 1800,
+          priorityAvailableAccountCap: 100,
+        },
         timeouts: {
           responsesFirstByteTimeoutSecs: 120,
           compactFirstByteTimeoutSecs: 300,
@@ -433,12 +446,12 @@ describe("UpstreamAccountsPage duplicates", () => {
     await flushAsync();
     await flushTimers();
 
-    const compactInput = document.body.querySelector(
-      'input[name="compactFirstByteTimeoutSecs"]',
+    const secondaryInput = document.body.querySelector(
+      'input[name="secondarySyncIntervalSecs"]',
     );
-    expect(compactInput).toBeInstanceOf(HTMLInputElement);
-    expect((compactInput as HTMLInputElement).value).toBe("300");
-    expect((compactInput as HTMLInputElement).disabled).toBe(true);
+    expect(secondaryInput).toBeInstanceOf(HTMLInputElement);
+    expect((secondaryInput as HTMLInputElement).value).toBe("1800");
+    expect((secondaryInput as HTMLInputElement).disabled).toBe(true);
 
     const saveButton = findButton(/Save settings/i);
     if (!(saveButton instanceof HTMLButtonElement)) {
@@ -453,6 +466,11 @@ describe("UpstreamAccountsPage duplicates", () => {
         writesEnabled: false,
         apiKeyConfigured: true,
         maskedApiKey: "pool-live••••",
+        maintenance: {
+          primarySyncIntervalSecs: 300,
+          secondarySyncIntervalSecs: 1800,
+          priorityAvailableAccountCap: 100,
+        },
         timeouts: {
           responsesFirstByteTimeoutSecs: 120,
           compactFirstByteTimeoutSecs: 300,
@@ -473,6 +491,11 @@ describe("UpstreamAccountsPage duplicates", () => {
         writesEnabled: true,
         apiKeyConfigured: true,
         maskedApiKey: "pool-next••••",
+        maintenance: {
+          primarySyncIntervalSecs: 150,
+          secondarySyncIntervalSecs: 2400,
+          priorityAvailableAccountCap: 120,
+        },
         timeouts: {
           responsesFirstByteTimeoutSecs: 150,
           compactFirstByteTimeoutSecs: 360,
@@ -486,12 +509,12 @@ describe("UpstreamAccountsPage duplicates", () => {
     await flushAsync();
     await flushTimers();
 
-    const compactInput = document.body.querySelector(
-      'input[name="compactFirstByteTimeoutSecs"]',
+    const secondaryInput = document.body.querySelector(
+      'input[name="secondarySyncIntervalSecs"]',
     );
-    expect(compactInput).toBeInstanceOf(HTMLInputElement);
-    expect((compactInput as HTMLInputElement).value).toBe("360");
-    expect((compactInput as HTMLInputElement).disabled).toBe(false);
+    expect(secondaryInput).toBeInstanceOf(HTMLInputElement);
+    expect((secondaryInput as HTMLInputElement).value).toBe("2400");
+    expect((secondaryInput as HTMLInputElement).disabled).toBe(false);
 
     const saveButton = findButton(/Save settings/i);
     if (!(saveButton instanceof HTMLButtonElement)) {
@@ -509,7 +532,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     await flushTimers();
 
     expect(
-      document.body.querySelector('input[name="compactFirstByteTimeoutSecs"]'),
+      document.body.querySelector('input[name="secondarySyncIntervalSecs"]'),
     ).toBeInstanceOf(HTMLInputElement);
 
     mockAccountsPage({ routing: null });
@@ -518,7 +541,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     await flushTimers();
 
     expect(
-      document.body.querySelector('input[name="compactFirstByteTimeoutSecs"]'),
+      document.body.querySelector('input[name="secondarySyncIntervalSecs"]'),
     ).toBeNull();
   });
 

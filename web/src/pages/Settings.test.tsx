@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
-import type { SettingsPayload } from "../lib/api";
+import type { PoolRoutingSettings, SettingsPayload } from "../lib/api";
 import SettingsPage from "./Settings";
 
 const hookMocks = vi.hoisted(() => ({
@@ -66,6 +66,28 @@ function createSettingsPayload(): SettingsPayload {
   };
 }
 
+function createRoutingPayload(): PoolRoutingSettings {
+  return {
+    writesEnabled: true,
+    apiKeyConfigured: true,
+    maskedApiKey: "cvm-••••••••••••1234",
+    maintenance: {
+      primarySyncIntervalSecs: 300,
+      secondarySyncIntervalSecs: 1800,
+      priorityAvailableAccountCap: 100,
+    },
+    requestCompressionAlgorithm: "identity",
+    requestCompressionLevelPreset: "balanced",
+    timeouts: {
+      responsesFirstByteTimeoutSecs: 120,
+      compactFirstByteTimeoutSecs: 300,
+      imageFirstByteTimeoutSecs: 300,
+      responsesStreamTimeoutSecs: 300,
+      compactStreamTimeoutSecs: 300,
+    },
+  };
+}
+
 function renderSettingsPage() {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -95,16 +117,19 @@ describe("Settings forward proxy table", () => {
   beforeEach(() => {
     hookMocks.useSettings.mockReturnValue({
       settings: createSettingsPayload(),
+      routing: createRoutingPayload(),
       isLoading: false,
       isProxySaving: false,
       isForwardProxySaving: false,
       isPricingSaving: false,
+      isRoutingSaving: false,
       pricingRollbackVersion: 0,
       error: null,
       refresh: vi.fn(),
       saveProxy: vi.fn(),
       saveForwardProxy: vi.fn(),
       savePricing: vi.fn(),
+      saveRouting: vi.fn(),
     });
   });
 
@@ -179,16 +204,19 @@ describe("Settings forward proxy table", () => {
     const saveProxy = vi.fn();
     hookMocks.useSettings.mockReturnValue({
       settings: createSettingsPayload(),
+      routing: createRoutingPayload(),
       isLoading: false,
       isProxySaving: false,
       isForwardProxySaving: false,
       isPricingSaving: false,
+      isRoutingSaving: false,
       pricingRollbackVersion: 0,
       error: null,
       refresh: vi.fn(),
       saveProxy,
       saveForwardProxy: vi.fn(),
       savePricing: vi.fn(),
+      saveRouting: vi.fn(),
     });
 
     renderSettingsPage();
@@ -206,6 +234,64 @@ describe("Settings forward proxy table", () => {
     expect(saveProxy).toHaveBeenCalledTimes(1);
     expect(saveProxy.mock.calls[0]?.[0]).toMatchObject({
       encryptedSessionOwnerRoutingEnabled: true,
+    });
+  });
+
+  it("persists routing defaults through system settings", () => {
+    const saveRouting = vi.fn();
+    hookMocks.useSettings.mockReturnValue({
+      settings: createSettingsPayload(),
+      routing: createRoutingPayload(),
+      isLoading: false,
+      isProxySaving: false,
+      isForwardProxySaving: false,
+      isPricingSaving: false,
+      isRoutingSaving: false,
+      pricingRollbackVersion: 0,
+      error: null,
+      refresh: vi.fn(),
+      saveProxy: vi.fn(),
+      saveForwardProxy: vi.fn(),
+      savePricing: vi.fn(),
+      saveRouting,
+    });
+
+    renderSettingsPage();
+
+    expect(host?.textContent).toContain("上游请求默认值");
+
+    const timeoutInput = host?.querySelector('input[name="responsesFirstByteTimeoutSecs"]');
+    if (!(timeoutInput instanceof HTMLInputElement)) {
+      throw new Error("Missing routing timeout input");
+    }
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      valueSetter?.call(timeoutInput, "180");
+      timeoutInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const saveButton = Array.from(host?.querySelectorAll("button") ?? []).find((button) =>
+      button.textContent?.includes("保存默认值"),
+    );
+    if (!(saveButton instanceof HTMLButtonElement)) {
+      throw new Error("Missing routing save button");
+    }
+    expect(saveButton.disabled).toBe(false);
+    act(() => {
+      saveButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(saveRouting).toHaveBeenCalledTimes(1);
+    expect(saveRouting).toHaveBeenCalledWith({
+      requestCompressionAlgorithm: "identity",
+      requestCompressionLevelPreset: "balanced",
+      timeouts: {
+        responsesFirstByteTimeoutSecs: 180,
+        compactFirstByteTimeoutSecs: 300,
+        imageFirstByteTimeoutSecs: 300,
+        responsesStreamTimeoutSecs: 300,
+        compactStreamTimeoutSecs: 300,
+      },
     });
   });
 });

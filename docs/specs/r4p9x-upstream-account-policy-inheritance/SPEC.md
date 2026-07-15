@@ -320,7 +320,7 @@ Visual evidence is captured from stable Storybook scenarios for:
 - Upstream account detail Routing tab showing page-level status-change reason toggle tiles plus the panel-level account reset action inside the full drawer context
 - Group settings Routing tab showing the embedded routing-policy upstream 429 retry count as the same integrated `0..5` selector used by account detail, with `0` representing no retry, in both desktop and narrow layouts
 - Dashboard upstream-account quick policy chips showing explicit Fast rewrite labels for `force_add` and `keep_original`
-- root routing settings dialog showing the global request compression defaults with `gzip` + `best` persisted after save/reopen
+- system settings page showing the global request compression defaults and request-path timeouts with `zstd` + `best` persisted after save
 - group routing policy dialog showing the API-key-only request compression override row with mixed-group helper copy and `follow`
 - effective routing rule card showing the resolved request compression row and account-owned source badge
 
@@ -379,7 +379,7 @@ PR: include
 ![Fast rewrite quick policy leave unchanged chip](./assets/fast-policy-leave-fast-chip.png)
 
 PR: include
-![Root request compression settings](./visual-evidence/2026-07-15-routing-dialog-request-compression.png)
+![System settings routing defaults](./assets/system-settings-routing-defaults.png)
 
 PR: include
 ![Group request compression follow override](./visual-evidence/2026-07-15-group-routing-follow-compression.png)

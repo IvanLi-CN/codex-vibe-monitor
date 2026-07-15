@@ -51,6 +51,7 @@
 - 已实现：工作区 `对话` tab 当前 5 分钟 working-set 的 head/count 改读 write-side `prompt_cache_working_set_live`，并为 mixed-source key 保留 `All / ProxyOnly` 两套聚合列，避免换源后 `ProxyOnly` 视角丢 key 或排序漂移。
 - 已实现：工作区 `对话` tab 的 snapshot count/page 也收口到同一份 live working-set truth，不再通过 `WITH recent_terminal` 对 `codex_invocations` 做严格历史重算。公开字段、cursor 形态、recent preview 与主排序语义保持不变，但 snapshot membership 明确接受 `<=5s` bounded freshness。
 - 已实现：Dashboard 工作区 `对话` 当前/最近调用错误摘要与 `上游账号` recent 行错误摘要统一接入共享 `InvocationErrorSummary`；inline 文案固定单行省略并保持 `min-w-0` 布局约束，完整错误只通过现有 UI tooltip 在 hover / focus / long-press 时披露，不再依赖原生 `title`。
+- 已实现：Dashboard `warning_success` 的 icon-only 紧凑状态位改为复用共享 `Tooltip` 组件，状态文案与 downstream 诊断不再通过浏览器原生 `title` 披露。
 - 已实现：上游账号宽屏双列 grid 使用 `minmax(0, 1fr)` track，账号卡、recent 行和共享错误 trigger 均显式允许收缩；错误摘要无法再通过 intrinsic width 撑开调用行或父账号卡。现役 feature 的 unit、Storybook play 契约与 Playwright 几何回归共同覆盖该链路。
 - 已实现：Dashboard 相关的 working-set / account-activity 派生维护继续遵守 `<=5s` bounded freshness；proxy capture 请求尾的 rollup/live progress、upstream account touch 与 attempt 中间进度已迁入 SQLite batch writer，避免 Dashboard reconcile 与请求收尾派生写在 SQLite 单写者上持续争用。
 - 已实现：Dashboard current records、summary/timeseries、上游账号活动与工作区 `对话` tab 的 running 视图统一 overlay 进程内 runtime invocation store。SSE 仍即时广播 `running/pending` 记录，HTTP open-resync/current reconcile 即使 DB 不再刷新 running 行也不会短暂丢行；terminal DB 事实优先并会移除对应内存记录。

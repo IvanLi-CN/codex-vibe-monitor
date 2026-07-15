@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type ForwardProxySettings,
+  fetchPoolRoutingSettings,
   fetchSettings,
+  type PoolRoutingSettings,
   type PricingSettings,
   type ProxySettings,
   type SettingsPayload,
+  type UpdatePoolRoutingSettingsPayload,
   updateForwardProxySettings,
+  updatePoolRoutingSettings,
   updatePricingSettings,
   updateProxySettings,
 } from "../lib/api";
@@ -35,10 +39,12 @@ function isSamePricingSettings(lhs: PricingSettings, rhs: PricingSettings): bool
 
 export function useSettings() {
   const [settings, setSettings] = useState<SettingsPayload | null>(null);
+  const [routing, setRouting] = useState<PoolRoutingSettings | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isProxySaving, setIsProxySaving] = useState(false);
   const [isForwardProxySaving, setIsForwardProxySaving] = useState(false);
   const [isPricingSaving, setIsPricingSaving] = useState(false);
+  const [isRoutingSaving, setIsRoutingSaving] = useState(false);
   const [pricingRollbackVersion, setPricingRollbackVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const serverSnapshotRef = useRef<SettingsPayload | null>(null);
@@ -50,11 +56,31 @@ export function useSettings() {
   const load = useCallback(async () => {
     setIsLoading(true);
     try {
-      const response = await fetchSettings();
-      setSettings(response);
-      serverSnapshotRef.current = response;
-      setError(null);
+      const [settingsResult, routingResult] = await Promise.allSettled([
+        fetchSettings(),
+        fetchPoolRoutingSettings(),
+      ]);
+
+      if (settingsResult.status !== "fulfilled") {
+        throw settingsResult.reason;
+      }
+
+      setSettings(settingsResult.value);
+      serverSnapshotRef.current = settingsResult.value;
+
+      if (routingResult.status === "fulfilled") {
+        setRouting(routingResult.value);
+        setError(null);
+      } else {
+        setRouting(null);
+        setError(
+          routingResult.reason instanceof Error
+            ? routingResult.reason.message
+            : String(routingResult.reason),
+        );
+      }
     } catch (err) {
+      setRouting(null);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsLoading(false);
@@ -280,17 +306,36 @@ export function useSettings() {
     [rollback],
   );
 
+  const saveRouting = useCallback(async (payload: UpdatePoolRoutingSettingsPayload) => {
+    setIsRoutingSaving(true);
+    try {
+      const saved = await updatePoolRoutingSettings(payload);
+      setRouting(saved);
+      emitUpstreamAccountsChanged();
+      setError(null);
+      return saved;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      throw err;
+    } finally {
+      setIsRoutingSaving(false);
+    }
+  }, []);
+
   return {
     settings,
+    routing,
     isLoading,
     isProxySaving,
     isForwardProxySaving,
     isPricingSaving,
+    isRoutingSaving,
     pricingRollbackVersion,
     error,
     refresh: load,
     saveProxy,
     saveForwardProxy,
     savePricing,
+    saveRouting,
   };
 }

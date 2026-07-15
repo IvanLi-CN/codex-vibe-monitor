@@ -50,6 +50,7 @@
 - 2026-07-11：修正长错误载荷仍可经账号双列 grid 的默认最小内容宽度撑开父卡的问题；宽屏 track、账号卡、recent 行与共享错误 trigger 均冻结为可缩小链，并将回归覆盖迁移到现役 `features/dashboard` 渲染树。
 - 2026-07-10：生产诊断确认活动总览“进行中调用”虚高来自已终结但未清理的 `pool-via-*` synthetic runtime snapshot；修复锁定在既有 cleanup guard 的生命周期终态收口，不增加查询端年龄过滤，以免掩盖生命周期泄漏或误排除真实长时请求。
 - 2026-07-13：修正 Dashboard 账号 recent reconcile 仅从 SQLite 读取调用、遗漏尚未 batch flush 的 runtime running / pending / terminal 记录的问题；recent 候选改为合并 runtime 与 SQLite 并按稳定调用键去重，统计聚合继续以持久化 terminal 事实为准。
+- 2026-07-15：修正 Dashboard `warning_success` 紧凑状态位仍走浏览器原生 `title` 的漏网点；对话卡片与上游账号 recent 行统一改用共享 UI tooltip 披露“警告成功 + downstream 诊断”。
 
 ## Key Reasons / Replacements
 
