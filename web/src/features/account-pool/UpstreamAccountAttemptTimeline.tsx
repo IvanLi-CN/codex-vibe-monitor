@@ -218,7 +218,7 @@ function AttemptEvidenceDisclosure({
   return (
     <details
       className="group overflow-hidden rounded-md border border-base-300/70 text-xs"
-      data-testid={`account-attempt-evidence-${attempt.id}`}
+      data-testid={`account-attempt-evidence-${attempt.attemptId}`}
       onToggle={(event) => setIsOpen(event.currentTarget.open)}
       open={isOpen}
     >
@@ -369,7 +369,7 @@ export function UpstreamAccountAttemptTimeline({
   focusedAttemptId,
 }: {
   accountId: number;
-  focusedAttemptId: number | null;
+  focusedAttemptId: string | null;
 }) {
   const { t, locale } = useTranslation();
   const [response, setResponse] = useState<UpstreamAccountAttemptListResponse | null>(null);
@@ -518,13 +518,13 @@ export function UpstreamAccountAttemptTimeline({
             {response.items.map((attempt) => {
               const proxy = formatProxyBinding(attempt, proxyBindingNodesByKey, t);
               return (
-                <Fragment key={attempt.id}>
+                <Fragment key={attempt.attemptId}>
                   <tr
                     className={
-                      attempt.id === focusedAttemptId ? "bg-info/10" : "hover:bg-base-200/35"
+                      attempt.attemptId === focusedAttemptId ? "bg-info/10" : "hover:bg-base-200/35"
                     }
-                    data-attempt-id={attempt.id}
-                    data-testid={`account-attempt-record-${attempt.id}`}
+                    data-attempt-id={attempt.attemptId}
+                    data-testid={`account-attempt-record-${attempt.attemptId}`}
                   >
                     <td className="min-w-24 px-3 py-3 align-top font-mono text-xs tabular-nums text-base-content/70">
                       <AttemptTime
@@ -536,11 +536,14 @@ export function UpstreamAccountAttemptTimeline({
                     <td className="whitespace-nowrap px-3 py-3 align-top font-mono text-xs">
                       <Link
                         className="inline-block whitespace-nowrap text-info underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                        title={attempt.invokeId}
-                        to={`/records?requestId=${encodeURIComponent(attempt.invokeId)}&rangePreset=7d`}
+                        title={attempt.attemptId}
+                        to={`/records?attemptId=${encodeURIComponent(attempt.attemptId)}&rangePreset=7d`}
                       >
-                        {attempt.invokeId}
+                        {attempt.attemptId}
                       </Link>
+                      <div className="mt-1 text-[11px] text-base-content/55">
+                        {attempt.invokeId}
+                      </div>
                     </td>
                     <td className="px-3 py-3 align-top">
                       <ModelMapping attempt={attempt} t={t} />
@@ -568,12 +571,12 @@ export function UpstreamAccountAttemptTimeline({
                     </td>
                   </tr>
                   {hasAttemptEvidence(attempt, false) ? (
-                    <tr className={attempt.id === focusedAttemptId ? "bg-info/10" : ""}>
+                    <tr className={attempt.attemptId === focusedAttemptId ? "bg-info/10" : ""}>
                       <td className="px-3 pb-3 pt-0" colSpan={7}>
                         <AttemptEvidenceDisclosure
                           attempt={attempt}
                           includeTimings={false}
-                          isFocused={attempt.id === focusedAttemptId}
+                          isFocused={attempt.attemptId === focusedAttemptId}
                           proxy={proxy}
                           t={t}
                         />
@@ -603,10 +606,10 @@ export function UpstreamAccountAttemptTimeline({
             {response.items.map((attempt) => {
               const proxy = formatProxyBinding(attempt, proxyBindingNodesByKey, t);
               return (
-                <Fragment key={attempt.id}>
+                <Fragment key={attempt.attemptId}>
                   <tr
-                    className={attempt.id === focusedAttemptId ? "bg-info/10" : ""}
-                    data-attempt-id={attempt.id}
+                    className={attempt.attemptId === focusedAttemptId ? "bg-info/10" : ""}
+                    data-attempt-id={attempt.attemptId}
                   >
                     <td className="px-2 py-2 align-top font-mono tabular-nums text-base-content/70">
                       <AttemptTime
@@ -618,11 +621,14 @@ export function UpstreamAccountAttemptTimeline({
                     <td className="px-2 py-2 align-top">
                       <Link
                         className="block whitespace-nowrap font-mono text-info underline underline-offset-4"
-                        title={attempt.invokeId}
-                        to={`/records?requestId=${encodeURIComponent(attempt.invokeId)}&rangePreset=7d`}
+                        title={attempt.attemptId}
+                        to={`/records?attemptId=${encodeURIComponent(attempt.attemptId)}&rangePreset=7d`}
                       >
-                        {attempt.invokeId}
+                        {attempt.attemptId}
                       </Link>
+                      <div className="mt-1 font-mono text-[11px] text-base-content/55">
+                        {attempt.invokeId}
+                      </div>
                       <div className="mt-1">
                         <ModelMapping attempt={attempt} t={t} />
                       </div>
@@ -635,12 +641,12 @@ export function UpstreamAccountAttemptTimeline({
                     </td>
                   </tr>
                   {hasAttemptEvidence(attempt, true) ? (
-                    <tr className={attempt.id === focusedAttemptId ? "bg-info/10" : ""}>
+                    <tr className={attempt.attemptId === focusedAttemptId ? "bg-info/10" : ""}>
                       <td className="px-2 pb-2 pt-0" colSpan={4}>
                         <AttemptEvidenceDisclosure
                           attempt={attempt}
                           includeTimings
-                          isFocused={attempt.id === focusedAttemptId}
+                          isFocused={attempt.attemptId === focusedAttemptId}
                           proxy={proxy}
                           t={t}
                         />

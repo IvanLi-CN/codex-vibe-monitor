@@ -769,7 +769,7 @@ pub(crate) fn build_action_event_from_row(
         http_status: row.http_status.and_then(|value| u16::try_from(value).ok()),
         failure_kind: row.failure_kind.clone(),
         invoke_id: row.invoke_id.clone(),
-        attempt_id: row.attempt_id,
+        attempt_id: row.attempt_public_id.clone(),
         sticky_key: row.sticky_key.clone(),
         created_at: row.created_at.clone(),
     }

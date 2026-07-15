@@ -181,7 +181,7 @@ export const DetailDrawerRecordsPopulated: Story = {
     await expect(within(dialog).getByText(/upstream_response_failed/i)).toBeInTheDocument();
     const desktopAttempts = within(dialog).getByTestId("upstream-account-call-records-table");
     await userEvent.click(
-      within(within(desktopAttempts).getByTestId("account-attempt-evidence-9001")).getByText(
+      within(within(desktopAttempts).getByTestId("account-attempt-evidence-4V7MYPJG")).getByText(
         /诊断详情|diagnostics/i,
       ),
     );
@@ -200,11 +200,11 @@ export const DetailDrawerEventLocatesAttempt: Story = {
     await userEvent.click(within(dialog).getByRole("tab", { name: /健康与事件|health & events/i }));
     await userEvent.click(
       within(dialog).getByRole("button", {
-        name: /上游尝试 ID.*9001|upstream attempt id.*9001/i,
+        name: /上游尝试 ID.*4V7MYPJG|upstream attempt id.*4V7MYPJG/i,
       }),
     );
     const recordsTable = await within(dialog).findByTestId("upstream-account-call-records-table");
-    const disclosure = within(recordsTable).getByTestId("account-attempt-evidence-9001");
+    const disclosure = within(recordsTable).getByTestId("account-attempt-evidence-4V7MYPJG");
     await expect(disclosure).toHaveAttribute("open");
     await expect(within(disclosure).getByText("upstream-story-500")).toBeInTheDocument();
   },
@@ -229,7 +229,7 @@ export const DetailDrawerRecordsMobile: Story = {
     await expect(within(dialog).getByText(/上游 HTTP 500|upstream http 500/i)).toBeInTheDocument();
     const mobileAttempts = within(dialog).getByTestId("upstream-account-call-records-mobile-table");
     await userEvent.click(
-      within(within(mobileAttempts).getByTestId("account-attempt-evidence-9001")).getByText(
+      within(within(mobileAttempts).getByTestId("account-attempt-evidence-4V7MYPJG")).getByText(
         /诊断详情|diagnostics/i,
       ),
     );

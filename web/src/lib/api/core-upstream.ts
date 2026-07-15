@@ -286,7 +286,7 @@ export interface UpstreamAccountActionEvent {
   httpStatus?: number | null;
   failureKind?: string | null;
   invokeId?: string | null;
-  attemptId?: number | null;
+  attemptId?: string | null;
   stickyKey?: string | null;
   createdAt: string;
 }
@@ -1258,6 +1258,10 @@ function normalizeUpstreamAccountActionEvent(raw: unknown): UpstreamAccountActio
   const action = typeof payload.action === "string" ? payload.action : "";
   const source = typeof payload.source === "string" ? payload.source : "";
   const createdAt = typeof payload.createdAt === "string" ? payload.createdAt : "";
+  const attemptId =
+    typeof payload.attemptId === "string" && payload.attemptId.trim()
+      ? payload.attemptId.trim()
+      : null;
   if (id == null || !occurredAt || !action || !source || !createdAt) {
     return null;
   }
@@ -1283,7 +1287,7 @@ function normalizeUpstreamAccountActionEvent(raw: unknown): UpstreamAccountActio
     httpStatus: normalizeFiniteNumber(payload.httpStatus) ?? null,
     failureKind: typeof payload.failureKind === "string" ? payload.failureKind : null,
     invokeId: typeof payload.invokeId === "string" ? payload.invokeId : null,
-    attemptId: normalizeFiniteNumber(payload.attemptId) ?? null,
+    attemptId,
     stickyKey: typeof payload.stickyKey === "string" ? payload.stickyKey : null,
     createdAt,
   };

@@ -234,6 +234,7 @@ pub(crate) async fn query_pool_attempt_records_from_live(
         r#"
         SELECT
             attempts.id,
+            attempts.attempt_public_id AS attempt_id,
             attempts.invoke_id,
             attempts.occurred_at,
             attempts.endpoint,

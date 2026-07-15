@@ -403,7 +403,7 @@ export interface ListResponse {
 }
 
 export interface ApiPoolUpstreamRequestAttempt {
-  id: number;
+  attemptId: string;
   invokeId: string;
   occurredAt: string;
   endpoint: string;
@@ -521,13 +521,16 @@ export interface InvocationRecordsResponse extends ListResponse {
 
 export interface InvocationRecordLocationResponse extends InvocationRecordsResponse {
   anchorId: string;
+  requestId?: string;
+  attemptId?: string | null;
   targetIndex: number;
   targetAbsoluteIndex: number;
 }
 
 export interface InvocationRecordLocationQuery {
-  requestId: string;
-  upstreamAccountId: number;
+  requestId?: string;
+  attemptId?: string;
+  upstreamAccountId?: number;
   pageSize?: number;
   signal?: AbortSignal;
 }
@@ -987,10 +990,13 @@ export async function fetchInvocationRecords(query: InvocationRecordsQuery) {
 
 export async function fetchInvocationRecordLocation(query: InvocationRecordLocationQuery) {
   const search = new URLSearchParams({
-    requestId: query.requestId,
-    upstreamAccountId: String(query.upstreamAccountId),
     pageSize: String(query.pageSize ?? 50),
   });
+  if (query.requestId) search.set("requestId", query.requestId);
+  if (query.attemptId) search.set("attemptId", query.attemptId);
+  if (query.upstreamAccountId != null) {
+    search.set("upstreamAccountId", String(query.upstreamAccountId));
+  }
   return fetchJson<InvocationRecordLocationResponse>(
     `/api/invocations/locate?${search.toString()}`,
     { signal: query.signal },
@@ -1044,7 +1050,7 @@ export async function fetchUpstreamAccountAttempts(
 
 export async function locateUpstreamAccountAttempt(
   accountId: number,
-  attemptId: number,
+  attemptId: string,
   options?: { pageSize?: number; signal?: AbortSignal },
 ) {
   const search = new URLSearchParams({
