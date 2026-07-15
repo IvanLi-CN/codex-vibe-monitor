@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.35.1",
+  "base_stable_version": "2.35.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-15T05:33:51Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.35.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "25d22e9c387146e74c09205939289952243d96a1",
+  "pr_number": 620,
+  "pr_title": "fix(web): stabilize conversation routing drawer",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.35.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.35.1",
+  "target_sha": "319372a572739ffd5f419f14f46e4ea2f361fab8",
+  "type_label": "type:patch"
+}
