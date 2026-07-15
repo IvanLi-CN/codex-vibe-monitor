@@ -71,7 +71,7 @@ const DialogContent = React.forwardRef<
               "data-[state=open]:animate-in data-[state=closed]:animate-out",
               "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
               "data-[state=closed]:slide-out-to-bottom-6 data-[state=open]:slide-in-from-bottom-6",
-              "desktop:left-1/2 desktop:right-auto desktop:top-1/2 desktop:max-h-[calc(100dvh-2rem)] desktop:w-[min(34rem,calc(100vw-2rem))] desktop:-translate-x-1/2 desktop:-translate-y-1/2 desktop:rounded-[1.75rem] desktop:border desktop:px-0 desktop:pb-0",
+              "desktop:left-1/2 desktop:right-auto desktop:bottom-auto desktop:top-1/2 desktop:max-h-[calc(100dvh-2rem)] desktop:w-[min(34rem,calc(100vw-2rem))] desktop:-translate-x-1/2 desktop:-translate-y-1/2 desktop:rounded-[1.75rem] desktop:border desktop:px-0 desktop:pb-0",
               "desktop:data-[state=closed]:slide-out-to-bottom-0 desktop:data-[state=open]:slide-in-from-bottom-0 desktop:data-[state=closed]:zoom-out-95 desktop:data-[state=open]:zoom-in-95",
               className,
             )}
