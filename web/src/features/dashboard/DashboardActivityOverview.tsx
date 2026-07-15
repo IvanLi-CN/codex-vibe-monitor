@@ -17,7 +17,6 @@ import {
   persistDashboardActivityRange,
   readPersistedDashboardActivityRange,
 } from "./dashboardActivityRange";
-import { buildDashboardTodayRateSnapshot } from "./dashboardTodayRateSnapshot";
 import { Last24hTenMinuteHeatmap, type MetricKey } from "./Last24hTenMinuteHeatmap";
 import { TodayStatsOverview } from "./TodayStatsOverview";
 import { UsageCalendar } from "./UsageCalendar";
@@ -155,8 +154,6 @@ function DashboardNaturalDayRangePanel({
       {summaryWindow === "today" ? (
         <DashboardNaturalDayTodaySummaryOverview
           response={data}
-          loading={isLoading}
-          error={error}
           closedNaturalDay={timeseriesRange === "yesterday"}
           upstreamAccountId={upstreamAccountId}
           dashboardActivity={dashboardActivity}
@@ -166,8 +163,6 @@ function DashboardNaturalDayRangePanel({
       ) : (
         <DashboardNaturalDayYesterdaySummaryOverview
           response={data}
-          loading={isLoading}
-          error={error}
           closedNaturalDay={timeseriesRange === "yesterday"}
           upstreamAccountId={upstreamAccountId}
           dashboardActivity={dashboardActivity}
@@ -188,8 +183,6 @@ function DashboardNaturalDayRangePanel({
 
 function DashboardNaturalDayTodaySummaryOverview({
   response,
-  loading,
-  error,
   closedNaturalDay,
   upstreamAccountId,
   dashboardActivity,
@@ -197,8 +190,6 @@ function DashboardNaturalDayTodaySummaryOverview({
   dashboardActivityError = null,
 }: {
   response: ReturnType<typeof useTimeseries>["data"];
-  loading: boolean;
-  error: ReturnType<typeof useTimeseries>["error"];
   closedNaturalDay: boolean;
   upstreamAccountId?: number;
   dashboardActivity?: DashboardActivityResponse | null;
@@ -219,8 +210,6 @@ function DashboardNaturalDayTodaySummaryOverview({
   return (
     <DashboardNaturalDayTodaySummaryOverviewFallback
       response={response}
-      loading={loading}
-      error={error}
       closedNaturalDay={closedNaturalDay}
       upstreamAccountId={upstreamAccountId}
       dashboardActivity={dashboardActivity}
@@ -269,7 +258,10 @@ function DashboardNaturalDayTodaySummaryOverviewSnapshotBacked({
         tokensPerMinute: dashboardActivity.summary.tokensPerMinute ?? 0,
         spendRate: dashboardActivity.summary.spendRate ?? 0,
         windowMinutes: dashboardActivity.rateWindow.windowMinutes,
-        available: dashboardActivity.summary.tokensPerMinute != null,
+        available: true,
+        currentFirstResponseByteTotalAvgMs:
+          dashboardActivity.summary.currentFirstResponseByteTotalAvgMs ?? null,
+        currentAvgTotalMs: dashboardActivity.summary.currentAvgTotalMs ?? null,
       }}
       rateLoading={false}
       rateError={null}
@@ -292,8 +284,6 @@ function DashboardNaturalDayTodaySummaryOverviewSnapshotBacked({
 
 function DashboardNaturalDayTodaySummaryOverviewFallback({
   response,
-  loading,
-  error,
   closedNaturalDay,
   upstreamAccountId,
   dashboardActivity,
@@ -301,8 +291,6 @@ function DashboardNaturalDayTodaySummaryOverviewFallback({
   dashboardActivityError = null,
 }: {
   response: ReturnType<typeof useTimeseries>["data"];
-  loading: boolean;
-  error: ReturnType<typeof useTimeseries>["error"];
   closedNaturalDay: boolean;
   upstreamAccountId?: number;
   dashboardActivity?: DashboardActivityResponse | null;
@@ -341,21 +329,16 @@ function DashboardNaturalDayTodaySummaryOverviewFallback({
     return () => window.clearInterval(timer);
   }, [closedNaturalDay]);
 
-  const rate = useMemo(
-    () =>
-      buildDashboardTodayRateSnapshot(response, {
-        closedNaturalDay,
-        now: rateNow,
-      }),
-    [closedNaturalDay, rateNow, response],
-  );
   const snapshotRate =
     upstreamAccountId == null && dashboardActivity?.range === "today"
       ? {
           tokensPerMinute: dashboardActivity.summary.tokensPerMinute ?? 0,
           spendRate: dashboardActivity.summary.spendRate ?? 0,
           windowMinutes: dashboardActivity.rateWindow.windowMinutes,
-          available: dashboardActivity.summary.tokensPerMinute != null,
+          available: true,
+          currentFirstResponseByteTotalAvgMs:
+            dashboardActivity.summary.currentFirstResponseByteTotalAvgMs ?? null,
+          currentAvgTotalMs: dashboardActivity.summary.currentAvgTotalMs ?? null,
         }
       : null;
   const snapshotActive = upstreamAccountId == null && dashboardActivity?.range === "today";
@@ -365,9 +348,9 @@ function DashboardNaturalDayTodaySummaryOverviewFallback({
       stats={summary}
       loading={summaryLoading || dashboardActivityLoading}
       error={summaryError ?? dashboardActivityError}
-      rate={snapshotRate ?? rate}
-      rateLoading={loading || dashboardActivityLoading}
-      rateError={error ?? dashboardActivityError}
+      rate={snapshotRate}
+      rateLoading={dashboardActivityLoading}
+      rateError={dashboardActivityError}
       now={rateNow}
       timeseries={response}
       comparisonStats={comparisonSummary}
@@ -387,8 +370,6 @@ function DashboardNaturalDayTodaySummaryOverviewFallback({
 
 function DashboardNaturalDayYesterdaySummaryOverview({
   response,
-  loading,
-  error,
   closedNaturalDay,
   upstreamAccountId,
   dashboardActivity,
@@ -396,8 +377,6 @@ function DashboardNaturalDayYesterdaySummaryOverview({
   dashboardActivityError = null,
 }: {
   response: ReturnType<typeof useTimeseries>["data"];
-  loading: boolean;
-  error: ReturnType<typeof useTimeseries>["error"];
   closedNaturalDay: boolean;
   upstreamAccountId?: number;
   dashboardActivity?: DashboardActivityResponse | null;
@@ -418,8 +397,6 @@ function DashboardNaturalDayYesterdaySummaryOverview({
   return (
     <DashboardNaturalDayYesterdaySummaryOverviewFallback
       response={response}
-      loading={loading}
-      error={error}
       closedNaturalDay={closedNaturalDay}
       upstreamAccountId={upstreamAccountId}
       dashboardActivity={dashboardActivity}
@@ -463,7 +440,10 @@ function DashboardNaturalDayYesterdaySummaryOverviewSnapshotBacked({
         tokensPerMinute: dashboardActivity.summary.tokensPerMinute ?? 0,
         spendRate: dashboardActivity.summary.spendRate ?? 0,
         windowMinutes: dashboardActivity.rateWindow.windowMinutes,
-        available: dashboardActivity.summary.tokensPerMinute != null,
+        available: true,
+        currentFirstResponseByteTotalAvgMs:
+          dashboardActivity.summary.currentFirstResponseByteTotalAvgMs ?? null,
+        currentAvgTotalMs: dashboardActivity.summary.currentAvgTotalMs ?? null,
       }}
       rateLoading={false}
       rateError={null}
@@ -486,8 +466,6 @@ function DashboardNaturalDayYesterdaySummaryOverviewSnapshotBacked({
 
 function DashboardNaturalDayYesterdaySummaryOverviewFallback({
   response,
-  loading,
-  error,
   closedNaturalDay,
   upstreamAccountId,
   dashboardActivity,
@@ -495,8 +473,6 @@ function DashboardNaturalDayYesterdaySummaryOverviewFallback({
   dashboardActivityError = null,
 }: {
   response: ReturnType<typeof useTimeseries>["data"];
-  loading: boolean;
-  error: ReturnType<typeof useTimeseries>["error"];
   closedNaturalDay: boolean;
   upstreamAccountId?: number;
   dashboardActivity?: DashboardActivityResponse | null;
@@ -525,21 +501,16 @@ function DashboardNaturalDayYesterdaySummaryOverviewFallback({
     return () => window.clearInterval(timer);
   }, [closedNaturalDay]);
 
-  const rate = useMemo(
-    () =>
-      buildDashboardTodayRateSnapshot(response, {
-        closedNaturalDay,
-        now: rateNow,
-      }),
-    [closedNaturalDay, rateNow, response],
-  );
   const snapshotRate =
     upstreamAccountId == null && dashboardActivity?.range === "yesterday"
       ? {
           tokensPerMinute: dashboardActivity.summary.tokensPerMinute ?? 0,
           spendRate: dashboardActivity.summary.spendRate ?? 0,
           windowMinutes: dashboardActivity.rateWindow.windowMinutes,
-          available: dashboardActivity.summary.tokensPerMinute != null,
+          available: true,
+          currentFirstResponseByteTotalAvgMs:
+            dashboardActivity.summary.currentFirstResponseByteTotalAvgMs ?? null,
+          currentAvgTotalMs: dashboardActivity.summary.currentAvgTotalMs ?? null,
         }
       : null;
   const snapshotActive = upstreamAccountId == null && dashboardActivity?.range === "yesterday";
@@ -549,9 +520,9 @@ function DashboardNaturalDayYesterdaySummaryOverviewFallback({
       stats={summary}
       loading={summaryLoading || dashboardActivityLoading}
       error={summaryError ?? dashboardActivityError}
-      rate={snapshotRate ?? rate}
-      rateLoading={loading || dashboardActivityLoading}
-      rateError={error ?? dashboardActivityError}
+      rate={snapshotRate}
+      rateLoading={dashboardActivityLoading}
+      rateError={dashboardActivityError}
       now={rateNow}
       timeseries={response}
       comparisonStats={null}

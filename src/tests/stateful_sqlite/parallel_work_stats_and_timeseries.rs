@@ -12428,6 +12428,11 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     }
 
     let base_local = Utc::now().with_timezone(&Shanghai).naive_local();
+    let current_minute_start = base_local
+        .with_second(0)
+        .and_then(|value| value.with_nanosecond(0))
+        .expect("valid current minute start");
+    let latest_complete_minute_start = current_minute_start - ChronoDuration::minutes(1);
     sqlx::query(
         r#"
         INSERT INTO codex_invocations (
@@ -12447,9 +12452,9 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     .bind(8_000_i64)
     .bind("dashboard-activity-unassigned-failed")
     .bind(format_naive(
-        base_local
-            .checked_sub_signed(ChronoDuration::seconds(50))
-            .expect("valid previous unassigned failure time"),
+        latest_complete_minute_start
+            .checked_add_signed(ChronoDuration::seconds(5))
+            .expect("valid unassigned failure time"),
     ))
     .bind(SOURCE_PROXY)
     .bind("failed")
@@ -12460,7 +12465,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     .execute(&state.pool)
     .await
     .expect("insert previous unassigned failure");
-    for (id, invoke_id, upstream_account_id, status, total_tokens, cost, ttfb_ms) in [
+    for (id, invoke_id, upstream_account_id, status, total_tokens, cost, ttfb_ms, offset_seconds) in [
         (
             8_001_i64,
             "dashboard-activity-alpha-success",
@@ -12469,6 +12474,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             1_000_i64,
             0.10_f64,
             Some(100.0_f64),
+            10_i64,
         ),
         (
             8_002_i64,
@@ -12478,6 +12484,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             2_000_i64,
             0.20_f64,
             Some(200.0_f64),
+            20_i64,
         ),
         (
             8_003_i64,
@@ -12487,6 +12494,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             3_000_i64,
             0.30_f64,
             Some(300.0_f64),
+            30_i64,
         ),
     ] {
         let mut payload = json!({ "promptCacheKey": format!("pck-{invoke_id}") });
@@ -12513,8 +12521,8 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
         .bind(id)
         .bind(invoke_id)
         .bind(format_naive(
-            base_local
-                .checked_sub_signed(ChronoDuration::seconds((8_004_i64 - id) * 10))
+            latest_complete_minute_start
+                .checked_add_signed(ChronoDuration::seconds(offset_seconds))
                 .expect("valid dashboard activity time"),
         ))
         .bind(SOURCE_PROXY)
@@ -12572,8 +12580,8 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     .bind(8_007_i64)
     .bind("dashboard-activity-alpha-zero-cost")
     .bind(format_naive(
-        base_local
-            .checked_sub_signed(ChronoDuration::seconds(29))
+        latest_complete_minute_start
+            .checked_add_signed(ChronoDuration::seconds(40))
             .expect("valid zero-cost dashboard activity time"),
     ))
     .bind(SOURCE_PROXY)
@@ -12964,6 +12972,34 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             .map(|account| account.spend_rate.unwrap_or(0.0))
             .sum::<f64>(),
     );
+    assert_f64_close(
+        activity
+            .summary()
+            .tokens_per_minute
+            .expect("summary current-minute tpm"),
+        1_400.0,
+    );
+    assert_f64_close(
+        activity
+            .summary()
+            .spend_rate
+            .expect("summary current-minute spend rate"),
+        0.65,
+    );
+    assert_f64_close(
+        activity
+            .summary()
+            .current_first_response_byte_total_avg_ms
+            .expect("summary current-minute first-byte avg"),
+        160.0,
+    );
+    assert_f64_close(
+        activity
+            .summary()
+            .current_avg_total_ms
+            .expect("summary current-minute total avg"),
+        1_400.0,
+    );
     let performance = &activity.summary().model_performance;
     assert!(performance.available);
     assert_eq!(performance.models.len(), 2);
@@ -12981,8 +13017,8 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
         activity
             .summary()
             .tokens_per_minute
-            .expect("performance-backed summary token rate"),
-        performance.total.tokens_per_minute,
+            .expect("summary token rate"),
+        1_400.0,
     );
     assert_f64_close(
         performance
@@ -13007,7 +13043,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     );
     assert_f64_close(
         performance.total.usage_duration_ms.expect("usage duration"),
-        2_300.0,
+        2_800.0,
     );
     assert_f64_close(
         performance.models[0]
@@ -13024,10 +13060,8 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
         .iter()
         .find(|account| account.upstream_account_id == Some(42))
         .expect("alpha account");
-    assert_f64_close(
-        alpha.tokens_per_minute.expect("alpha performance tpm"),
-        performance.total.tokens_per_minute,
-    );
+    assert_f64_close(alpha.tokens_per_minute.expect("alpha current tpm"), 1_400.0);
+    assert_f64_close(alpha.spend_rate.expect("alpha current spend rate"), 0.10);
     assert_eq!(alpha.model_performance.models.len(), 2);
     assert_eq!(
         alpha.model_performance.models[0].model,
@@ -13039,7 +13073,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             .total
             .usage_duration_ms
             .expect("alpha usage duration"),
-        2_300.0,
+        2_800.0,
     );
     assert_f64_close(
         alpha.model_performance.models[0]
@@ -13095,14 +13129,34 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             .stats
             .in_progress_retry_conversation_count,
     );
-    assert_eq!(summary_only_activity.summary().tokens_per_minute, None);
-    assert!(summary_only_response.summary.tokens_per_minute.is_some());
+    assert_eq!(
+        summary_only_activity.summary().tokens_per_minute,
+        Some(1_400.0)
+    );
+    assert_eq!(
+        summary_only_response.summary.tokens_per_minute,
+        Some(1_400.0)
+    );
     assert_f64_close(
         summary_only_activity
             .summary()
             .spend_rate
             .expect("summary-only spend rate"),
-        summary_only_activity.summary().stats.total_cost / range_minutes,
+        0.65,
+    );
+    assert_f64_close(
+        summary_only_activity
+            .summary()
+            .current_first_response_byte_total_avg_ms
+            .expect("summary-only current first-byte avg"),
+        160.0,
+    );
+    assert_f64_close(
+        summary_only_activity
+            .summary()
+            .current_avg_total_ms
+            .expect("summary-only current total avg"),
+        1_400.0,
     );
 
     let Json(full_response) = fetch_dashboard_activity(
@@ -13128,6 +13182,28 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
                 .iter()
                 .map(|account| account.in_progress_invocation_count.unwrap_or(0))
                 .sum::<i64>(),
+        ),
+    );
+    assert_eq!(full_response.rate_window.window_minutes, 1);
+    assert_eq!(full_response.rate_window.mode, "last_complete_1m_sma");
+    assert_eq!(
+        full_response.rate_window.start,
+        format_utc_iso_precise(
+            latest_complete_minute_start
+                .and_local_timezone(Shanghai)
+                .single()
+                .expect("valid latest complete minute start")
+                .with_timezone(&Utc),
+        ),
+    );
+    assert_eq!(
+        full_response.rate_window.end,
+        format_utc_iso_precise(
+            current_minute_start
+                .and_local_timezone(Shanghai)
+                .single()
+                .expect("valid current minute start")
+                .with_timezone(&Utc),
         ),
     );
 

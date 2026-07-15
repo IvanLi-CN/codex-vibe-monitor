@@ -194,10 +194,10 @@ function createAccountResponse(
     rangeEnd: "2026-04-04T10:05:00Z",
     snapshotId: 1,
     rateWindow: {
-      start: "2026-04-04T10:00:00Z",
+      start: "2026-04-04T10:04:00Z",
       end: "2026-04-04T10:05:00Z",
-      windowMinutes: 5,
-      mode: "account_active_tail_sum",
+      windowMinutes: 1,
+      mode: "last_complete_1m_sma",
     },
     summary: {
       stats: {

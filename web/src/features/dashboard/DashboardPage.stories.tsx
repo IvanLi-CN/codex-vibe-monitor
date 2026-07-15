@@ -255,10 +255,10 @@ function buildDashboardActivityResponse({
     rangeEnd: "2026-04-09T12:24:00.000Z",
     snapshotId: 1775718240000,
     rateWindow: {
-      start: "2026-04-09T12:19:00.000Z",
+      start: "2026-04-09T12:23:00.000Z",
       end: "2026-04-09T12:24:00.000Z",
-      windowMinutes: 5,
-      mode: "account_active_tail_sum",
+      windowMinutes: 1,
+      mode: "last_complete_1m_sma",
     },
     summary: {
       stats: {
