@@ -1245,11 +1245,21 @@ fn required_imported_oauth_string(
     keys: &[&str],
     field_name: &str,
 ) -> Result<String, String> {
-    optional_string(value, keys).ok_or_else(|| format!("{field_name} is required"))
+    optional_imported_oauth_json_text(value, keys)
+        .ok_or_else(|| format!("{field_name} is required"))
 }
 
 fn optional_imported_oauth_string(value: &Value, keys: &[&str]) -> Option<String> {
-    optional_string(value, keys).and_then(|raw| normalize_optional_text(Some(raw)))
+    optional_imported_oauth_json_text(value, keys)
+}
+
+fn optional_imported_oauth_json_text(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| value.get(*key))
+        .and_then(|raw| match raw {
+            Value::String(text) => normalize_optional_text(Some(text.clone())),
+            _ => None,
+        })
 }
 
 fn normalize_imported_oauth_record_value(value: &Value) -> Result<Value, String> {
