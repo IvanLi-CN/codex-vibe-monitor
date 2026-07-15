@@ -45,6 +45,7 @@
 
 - `cd web && bunx vitest run --project=unit src/features/account-pool/EffectiveRoutingRuleCard.test.tsx`
 - `cd web && bunx vitest run --project=unit src/features/prompt-cache/PromptCacheConversationTable.test.tsx`
+- `cd web && bun run test -- src/features/account-pool/AccountDetailDrawerShell.test.tsx src/features/prompt-cache/PromptCacheConversationTable.test.tsx`
 - `cd web && bunx vitest run --project=unit`
 - `cd web && bun run build`
 - `cargo test --no-run`

@@ -44,6 +44,7 @@ function renderDrawer(revision: number, open = true) {
           labelledBy="drawer-shell-title"
           closeLabel="Close drawer"
           onClose={() => undefined}
+          shellClassName="drawer-shell--detail-wide"
           header={
             <div>
               <h2 id="drawer-shell-title">Drawer shell</h2>
@@ -98,5 +99,16 @@ describe("AccountDetailDrawerShell", () => {
     ) as HTMLButtonElement;
     expect(document.body.querySelector('[data-testid="drawer-input"]')).not.toBeNull();
     expect(document.activeElement).toBe(reopenedCloseButton);
+  });
+
+  it("keeps the overlay frame full-width for wide detail drawers", async () => {
+    renderDrawer(1, true);
+    await flushTimers();
+
+    const dialog = document.body.querySelector('[role="dialog"]');
+    const frame = dialog?.parentElement as HTMLDivElement | null;
+
+    expect(dialog?.className).toContain("drawer-shell--detail-wide");
+    expect(frame?.className).toContain("drawer-frame");
   });
 });
