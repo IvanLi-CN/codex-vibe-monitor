@@ -531,6 +531,10 @@ function buildStatusAssistiveLabel(label: string, detail?: string | null) {
   return `${label} · ${resolvedDetail}`;
 }
 
+function inlineStatusShouldShowLabel(status?: string | null) {
+  return status?.trim().toLowerCase() === "warning_success";
+}
+
 function InlineInvocationStatus({
   meta,
   label,
@@ -1724,7 +1728,7 @@ function AccountRecentInvocationRow({
               <InlineInvocationStatus
                 meta={statusMeta}
                 label={statusLabel}
-                showLabel={false}
+                showLabel={inlineStatusShouldShowLabel(invocation.record.status)}
                 detail={viewModel.collapsedErrorSummary}
               />
             )}
@@ -2111,7 +2115,7 @@ function InvocationSlot({
               <InlineInvocationStatus
                 meta={statusMeta}
                 label={statusLabel}
-                showLabel={false}
+                showLabel={inlineStatusShouldShowLabel(invocation.record.status)}
                 detail={viewModel.collapsedErrorSummary}
               />
             )}
@@ -4114,7 +4118,9 @@ export function DashboardWorkingConversationsSection({
                                     <InlineInvocationStatus
                                       meta={currentStatusMeta}
                                       label={currentStatusLabel}
-                                      showLabel={false}
+                                      showLabel={inlineStatusShouldShowLabel(
+                                        card.currentInvocation.record.status,
+                                      )}
                                     />
                                   )}
                                 </div>
