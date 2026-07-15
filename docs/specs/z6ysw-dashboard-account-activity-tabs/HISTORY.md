@@ -4,6 +4,8 @@
 
 ## Decision Trace
 
+- 2026-07-15：收紧 Dashboard `上游账号` 视图的 background refresh 表达。旧实现把状态渲染成带占位的头部 chip，导致 idle 时仍在“当前活动账号”左侧保留固定空白；本轮改为桌面端非 badge 的 spinner + `刷新中` 文本、移动端 spinner-only，并保留既有 `300ms` 延迟显示与 `600ms` 最短可见时长。
+
 - 2026-07-15：调整 Dashboard 工作区排序语义。此前 spec 把 `cost / tokens` 定义为正序，实际运营更需要和 `createdAt / lastInvocation` 一样按倒序扫描，因此本轮将 4 种 workspace sort 全部统一为倒序；同时冻结 `未分配上游账号` 聚合项在账号视图中始终后置，避免它凭借高失败量或空账号流量抢占已分配账号前排。
 
 - 2026-07-15：修正 Dashboard 工作区头部控制条的实现漂移。规范要求头部保持紧凑控制条：左侧仅保留 `对话 / 上游账号` tabs，右侧收口为 `当前对话` badge 与排序按钮；此前实现把顺序错排成 `badge -> tabs -> 排序`，导致视觉节奏偏离验收基线。本轮将组件顺序恢复为 spec 基线，并同步刷新视觉证据。

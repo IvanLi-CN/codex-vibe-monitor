@@ -13,6 +13,7 @@
 - 已实现：Dashboard 上游账号视图拆为汇总优先与快照绑定的 recent 批量补齐；首屏使用局部骨架，范围刷新保留旧卡片，recent 失败保留汇总并局部重试。
 - 已实现：`includeRecent=false` 的第一阶段对保留期外数据执行 archive 内部分组聚合，只返回账号指标而不读取、排序或传输 invocation preview；兼容 combined 响应与第二阶段 recent 接口继续按相同精确快照边界读取 bounded preview。
 - 已实现：Dashboard 工作区头部控制条重新对齐 spec 基线，桌面布局恢复为“左侧 tabs、右侧 当前对话 badge + 排序按钮”的紧凑顺序，不再出现 `badge -> tabs -> 排序` 的错误节奏；对应视觉证据已刷新为当前实现。
+- 已实现：Dashboard `上游账号` 视图的 background refresh 提示从占位 chip 收口为头部轻量状态表达；桌面端改为非 badge 的 spinner + `刷新中` 文本并固定放在“当前活动账号”计数 badge 左侧，移动端只保留 spinner 视觉表现，idle 时不再预留隐藏宽度空白，同时继续沿用既有 `300ms` show delay 与 `600ms` 最短可见时长。
 - 已实现：workspace sort 的 `createdAt / lastInvocation / cost / tokens` 4 种模式已全部统一为倒序；账号视图中的 `未分配上游账号` 聚合项无论当前排序模式为何，都会统一收在所有已分配账号之后，再在未分配项内部沿用当前倒序规则。
 
 - 已实现：Dashboard 页面提升并共享顶部 range 状态，工作区 section 接入 `对话 / 上游账号` 双 tabs，并保留既有对话 working-set 行为。

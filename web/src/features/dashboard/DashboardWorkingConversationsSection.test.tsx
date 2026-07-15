@@ -695,7 +695,7 @@ describe("DashboardWorkingConversationsSection", () => {
     ).toBeNull();
   });
 
-  it("keeps the header refresh chip idle during short background account refreshes", async () => {
+  it("does not render the header refresh status during short background account refreshes", async () => {
     vi.useFakeTimers();
     upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
     upstreamAccountActivityMock.isRefreshing = true;
@@ -712,33 +712,18 @@ describe("DashboardWorkingConversationsSection", () => {
       fireEvent.click(accountTab);
     });
 
-    const refreshChip = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-refresh-chip"]',
-    );
-    const refreshChipContent = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-refresh-chip-content"]',
-    );
-    const refreshChipStatus = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-refresh-status"]',
-    );
     const accountGrid = host?.querySelector('[data-testid="dashboard-upstream-account-grid"]');
-    if (
-      !(refreshChip instanceof HTMLElement) ||
-      !(refreshChipContent instanceof HTMLElement) ||
-      !(refreshChipStatus instanceof HTMLElement) ||
-      !(accountGrid instanceof HTMLElement)
-    ) {
-      throw new Error("missing refresh chip or account grid");
+    if (!(accountGrid instanceof HTMLElement)) {
+      throw new Error("missing account grid");
     }
 
-    expect(refreshChip.dataset.state).toBe("idle");
-    expect(refreshChipContent.getAttribute("aria-hidden")).toBe("true");
-    expect(refreshChipContent.getAttribute("aria-label")).toBeNull();
-    expect(refreshChipStatus.textContent).toBe("刷新中");
+    expect(
+      host?.querySelector('[data-testid="dashboard-upstream-account-refresh-status"]'),
+    ).toBeNull();
     expect(
       Array.from(host?.querySelectorAll('[role="status"]') ?? []).some(
         (element) =>
-          element.closest('[data-testid="dashboard-upstream-account-refresh-chip"]') == null,
+          element.closest('[data-testid="dashboard-upstream-account-refresh-status"]') == null,
       ),
     ).toBe(false);
 
@@ -746,19 +731,20 @@ describe("DashboardWorkingConversationsSection", () => {
       await vi.advanceTimersByTimeAsync(299);
     });
 
-    expect(refreshChip.dataset.state).toBe("idle");
-    expect(refreshChipContent.getAttribute("aria-hidden")).toBe("true");
+    expect(
+      host?.querySelector('[data-testid="dashboard-upstream-account-refresh-status"]'),
+    ).toBeNull();
     expect(
       Array.from(host?.querySelectorAll('[role="status"]') ?? []).some(
         (element) =>
-          element.closest('[data-testid="dashboard-upstream-account-refresh-chip"]') == null,
+          element.closest('[data-testid="dashboard-upstream-account-refresh-status"]') == null,
       ),
     ).toBe(false);
 
     vi.useRealTimers();
   });
 
-  it("shows the header refresh chip only after the delay and keeps it visible briefly after refresh ends", async () => {
+  it("shows the header refresh status only after the delay and keeps it visible briefly after refresh ends", async () => {
     vi.useFakeTimers();
     const response = createResponse([]);
     upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
@@ -776,57 +762,67 @@ describe("DashboardWorkingConversationsSection", () => {
       fireEvent.click(accountTab);
     });
 
-    const refreshChip = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-refresh-chip"]',
-    );
-    const refreshChipContent = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-refresh-chip-content"]',
-    );
-    const refreshChipStatus = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-refresh-status"]',
-    );
     const accountGrid = host?.querySelector('[data-testid="dashboard-upstream-account-grid"]');
-    if (
-      !(refreshChip instanceof HTMLElement) ||
-      !(refreshChipContent instanceof HTMLElement) ||
-      !(refreshChipStatus instanceof HTMLElement) ||
-      !(accountGrid instanceof HTMLElement)
-    ) {
-      throw new Error("missing refresh chip or account grid");
+    if (!(accountGrid instanceof HTMLElement)) {
+      throw new Error("missing account grid");
     }
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
     });
 
-    expect(refreshChip.dataset.state).toBe("visible");
-    expect(refreshChipContent.getAttribute("aria-hidden")).toBeNull();
-    expect(refreshChipContent.getAttribute("aria-label")).toBe("正在更新账号汇总");
-    expect(refreshChipStatus.textContent).toBe("刷新中");
+    const refreshStatus = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-refresh-status"]',
+    );
+    const refreshText = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-refresh-text"]',
+    );
+    const refreshSpinner = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-refresh-spinner"]',
+    );
+    if (
+      !(refreshStatus instanceof HTMLElement) ||
+      !(refreshText instanceof HTMLElement) ||
+      !(refreshSpinner instanceof HTMLElement)
+    ) {
+      throw new Error("missing refresh status");
+    }
+
+    expect(refreshStatus.getAttribute("aria-label")).toBe("正在更新账号汇总");
+    expect(refreshText.textContent).toBe("刷新中");
+    expect(refreshText.className).toContain("hidden");
+    expect(refreshText.className).toContain("desktop:inline");
+    expect(refreshStatus.className).not.toContain("rounded-full");
+    expect(refreshStatus.className).not.toContain("border");
     expect(
       Array.from(host?.querySelectorAll('[role="status"]') ?? []).filter(
         (element) =>
-          element.closest('[data-testid="dashboard-upstream-account-refresh-chip"]') != null,
+          element.closest('[data-testid="dashboard-upstream-account-refresh-status"]') != null,
       ),
     ).toHaveLength(1);
 
     upstreamAccountActivityMock.isRefreshing = false;
     rerenderSection(response);
 
-    expect(refreshChip.dataset.state).toBe("visible");
+    expect(host?.querySelector('[data-testid="dashboard-upstream-account-refresh-status"]')).toBe(
+      refreshStatus,
+    );
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(599);
     });
 
-    expect(refreshChip.dataset.state).toBe("visible");
+    expect(host?.querySelector('[data-testid="dashboard-upstream-account-refresh-status"]')).toBe(
+      refreshStatus,
+    );
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
     });
 
-    expect(refreshChip.dataset.state).toBe("idle");
-    expect(refreshChipContent.getAttribute("aria-hidden")).toBe("true");
+    expect(
+      host?.querySelector('[data-testid="dashboard-upstream-account-refresh-status"]'),
+    ).toBeNull();
 
     vi.useRealTimers();
   });
