@@ -2877,9 +2877,9 @@ function DashboardUpstreamAccountActivityCard({
       <div className="flex flex-col gap-2">
         <div
           data-testid="dashboard-upstream-account-header-row"
-          className="grid gap-x-4 gap-y-2 xl:grid-cols-[minmax(0,1fr)_auto] xl:grid-rows-[auto_auto]"
+          className="grid items-start gap-x-4 gap-y-2 xl:grid-cols-[minmax(0,1fr)_auto]"
         >
-          <div className="flex min-w-0 flex-wrap items-center gap-2 xl:col-start-1 xl:row-start-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 xl:col-start-1">
             <button
               type="button"
               data-motion-surface
@@ -2915,8 +2915,18 @@ function DashboardUpstreamAccountActivityCard({
                 {compactUpstreamPlanLabel(account.planType)}
               </Badge>
             ) : null}
+            <AccountQuickPolicyChips
+              draft={policyDraft}
+              locale={locale}
+              disabled={account.upstreamAccountId == null}
+              isSaving={isSavingPolicy || debounceTimerRef.current != null}
+              onCyclePriority={handleCyclePriorityPolicy}
+              onCycleFastMode={handleCycleFastModePolicy}
+              onToggleCutOut={handleToggleCutOut}
+              onToggleCutIn={handleToggleCutIn}
+            />
           </div>
-          <div className="flex min-w-0 flex-wrap items-center justify-start gap-x-5 gap-y-1.5 text-right xl:col-start-2 xl:row-start-1 xl:justify-end xl:self-center">
+          <div className="flex min-w-0 flex-wrap items-center justify-start gap-x-5 gap-y-1.5 text-right xl:col-start-2 xl:justify-end xl:self-start">
             <AccountInlineMetric
               label={t("dashboard.today.inProgressConversations")}
               value={formatAccountNumberValue(account.inProgressInvocationCount, localeTag, 0)}
@@ -2965,18 +2975,6 @@ function DashboardUpstreamAccountActivityCard({
                 aria-hidden="true"
               />
             </button>
-          </div>
-          <div className="xl:col-start-1 xl:row-start-2">
-            <AccountQuickPolicyChips
-              draft={policyDraft}
-              locale={locale}
-              disabled={account.upstreamAccountId == null}
-              isSaving={isSavingPolicy || debounceTimerRef.current != null}
-              onCyclePriority={handleCyclePriorityPolicy}
-              onCycleFastMode={handleCycleFastModePolicy}
-              onToggleCutOut={handleToggleCutOut}
-              onToggleCutIn={handleToggleCutIn}
-            />
           </div>
         </div>
         {policySaveError ? (

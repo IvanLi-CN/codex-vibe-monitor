@@ -321,7 +321,7 @@ PR: include
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-phase-breakdown-static`
   scenario: `dark header row vertical alignment`
-  evidence_note: 验证深色主题下上游账号卡标题顶行已拆成独立对齐层；右上角实时 `进行中调用 / TPM / 消费速率 / 齿轮` 与左侧账号名、状态 badge、快捷策略 chip 保持同一垂直节奏，且标题区状态/计划 badge 与第二行快捷策略 chip 已统一为同一可见高度，不再出现上排更矮的视觉断层。
+  evidence_note: 验证深色主题下上游账号卡标题区采用“同一左列自然换行 + 右列实时指标顶对齐”布局：当第一行仍有空余宽度时，快捷策略 chip 会优先回填到 `账号名 / 状态 badge / 计划 badge` 后方，而不是被强制拆到第二行；只有左列真实放不下时才允许换行。标题区状态/计划 badge 与快捷策略 chip 也保持同一可见高度，不再出现上排更矮的视觉断层。
   image:
   ![Dashboard 上游账号标题行深色对齐证据](./assets/dashboard-upstream-account-header-alignment-dark.png)
 
