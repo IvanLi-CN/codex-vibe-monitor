@@ -2130,8 +2130,8 @@ export const DrawerBindingAndTimeouts: Story = {
       documentScope.getByText(/当前对话覆盖|Conversation overrides/i),
     ).toBeInTheDocument();
     await expect(
-      documentScope.getByText(/允许换上游|Allow switching upstream/i),
-    ).toBeInTheDocument();
+      documentScope.getAllByText(/允许换上游|Allow switching upstream/i).length,
+    ).toBeGreaterThan(0);
     await expect(documentScope.getAllByText(/强制添加|Force add/i).length).toBeGreaterThan(0);
     await expect(documentScope.getAllByText(/强制移除|Force remove/i).length).toBeGreaterThan(0);
     await expect(documentScope.getAllByText(/对话|Conversation/i).length).toBeGreaterThan(0);
