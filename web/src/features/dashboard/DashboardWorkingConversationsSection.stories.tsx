@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import {
   type ReactNode,
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
@@ -208,6 +209,7 @@ function createConversation(
     lastTerminalAt: overrides.lastTerminalAt ?? lastTerminalPreview?.occurredAt ?? null,
     lastInFlightAt: overrides.lastInFlightAt ?? lastInFlightPreview?.occurredAt ?? null,
     cursor: overrides.cursor ?? promptCacheKey,
+    manualBinding: overrides.manualBinding ?? null,
     upstreamAccounts: overrides.upstreamAccounts ?? [],
     recentInvocations,
     last24hRequests: overrides.last24hRequests ?? [],
@@ -2039,12 +2041,14 @@ function DrawerPreviewStory({
   const [selectedConversation, setSelectedConversation] = useState<{
     conversationSequenceId: string;
     promptCacheKey: string;
+    tab: "overview" | "calls" | "settings";
   } | null>(() => {
     const initialCard = cards.find((card) => card.promptCacheKey === initialConversationKey);
     return initialCard
       ? {
           conversationSequenceId: initialCard.conversationSequenceId,
           promptCacheKey: initialCard.promptCacheKey,
+          tab: initialConversationTab,
         }
       : null;
   });
@@ -2055,47 +2059,47 @@ function DrawerPreviewStory({
   } | null>(null);
   const promptCacheBindingStateRef = useRef<Map<string, Record<string, unknown>>>(new Map());
 
-  const buildPromptCacheBindingResponse = (
-    promptCacheKey: string,
-    overrides: Record<string, unknown> = {},
-  ) => ({
-    promptCacheKey,
-    bindingKind: "none",
-    groupName: null,
-    upstreamAccountId: null,
-    upstreamAccountName: null,
-    hasEncryptedSessionOwner: true,
-    encryptedOwnerAccountId: 21,
-    encryptedOwnerAccountName: "growth.6vv4@relay.example",
-    encryptedOwnerGroupName: "CIII",
-    timeouts: {
-      responsesFirstByteTimeoutSecs: 120,
-      compactFirstByteTimeoutSecs: 300,
-      responsesStreamTimeoutSecs: 300,
-      compactStreamTimeoutSecs: 300,
-    },
-    timeoutFieldSources: {
-      responsesFirstByteTimeoutSecs: "account",
-      compactFirstByteTimeoutSecs: "group",
-      responsesStreamTimeoutSecs: "account",
-      compactStreamTimeoutSecs: "root",
-    },
-    allowSwitchUpstream: false,
-    fastModeRewriteMode: "inherit",
-    imageToolRewriteMode: "inherit",
-    availableModels: ["gpt-5.5", "gpt-5.5-mini"],
-    forwardProxyKey: null,
-    forwardProxyKeys: [],
-    policyFieldSources: {
-      allowSwitchUpstream: "conversation",
-      fastModeRewriteMode: "account",
-      imageToolRewriteMode: "group",
-      availableModels: "conversation",
-      forwardProxyKey: "account",
-    },
-    updatedAt: "2026-05-12T16:15:57Z",
-    ...overrides,
-  });
+  const buildPromptCacheBindingResponse = useCallback(
+    (promptCacheKey: string, overrides: Record<string, unknown> = {}) => ({
+      promptCacheKey,
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      hasEncryptedSessionOwner: true,
+      encryptedOwnerAccountId: 21,
+      encryptedOwnerAccountName: "growth.6vv4@relay.example",
+      encryptedOwnerGroupName: "CIII",
+      timeouts: {
+        responsesFirstByteTimeoutSecs: 120,
+        compactFirstByteTimeoutSecs: 300,
+        responsesStreamTimeoutSecs: 300,
+        compactStreamTimeoutSecs: 300,
+      },
+      timeoutFieldSources: {
+        responsesFirstByteTimeoutSecs: "account",
+        compactFirstByteTimeoutSecs: "group",
+        responsesStreamTimeoutSecs: "account",
+        compactStreamTimeoutSecs: "root",
+      },
+      allowSwitchUpstream: false,
+      fastModeRewriteMode: "inherit",
+      imageToolRewriteMode: "inherit",
+      availableModels: ["gpt-5.5", "gpt-5.5-mini"],
+      forwardProxyKey: null,
+      forwardProxyKeys: [],
+      policyFieldSources: {
+        allowSwitchUpstream: "conversation",
+        fastModeRewriteMode: "account",
+        imageToolRewriteMode: "group",
+        availableModels: "conversation",
+        forwardProxyKey: "account",
+      },
+      updatedAt: "2026-05-12T16:15:57Z",
+      ...overrides,
+    }),
+    [],
+  );
 
   useEffect(() => {
     setSelectedInvocation(resolveInitialSelection(cards, initialSelection));
@@ -2105,11 +2109,12 @@ function DrawerPreviewStory({
         ? {
             conversationSequenceId: initialCard.conversationSequenceId,
             promptCacheKey: initialCard.promptCacheKey,
+            tab: initialConversationTab,
           }
         : null,
     );
     setSelectedAccount(null);
-  }, [cards, initialConversationKey, initialSelection]);
+  }, [cards, initialConversationKey, initialConversationTab, initialSelection]);
 
   const promptCacheConversationPage = selectedConversation ? (
     <div className="min-h-screen bg-base-200 p-3 text-base-content min-[769px]:p-6">
@@ -2121,7 +2126,7 @@ function DrawerPreviewStory({
           conversationLabel={formatDashboardWorkingConversationSequenceId(
             selectedConversation.conversationSequenceId,
           )}
-          initialTab={initialConversationTab}
+          initialTab={selectedConversation.tab}
           onClose={() => setSelectedConversation(null)}
           t={t}
           onOpenUpstreamAccount={(
@@ -2428,7 +2433,7 @@ function DrawerPreviewStory({
         window.fetch = originalFetchRef.current;
       }
     };
-  }, [storyMocks, upstreamAccountActivity, buildPromptCacheBindingResponse]);
+  }, [buildPromptCacheBindingResponse, storyMocks, upstreamAccountActivity]);
 
   return (
     <>
@@ -2463,7 +2468,11 @@ function DrawerPreviewStory({
           onOpenConversation={(selection) => {
             setSelectedInvocation(null);
             setSelectedAccount(null);
-            setSelectedConversation(selection);
+            setSelectedConversation({
+              conversationSequenceId: selection.conversationSequenceId,
+              promptCacheKey: selection.promptCacheKey,
+              tab: selection.tab ?? "overview",
+            });
           }}
           onOpenInvocation={(selection) => {
             setSelectedConversation(null);
@@ -2502,7 +2511,7 @@ function DrawerPreviewStory({
                 )
               : null
           }
-          initialTab={initialConversationTab}
+          initialTab={selectedConversation?.tab ?? initialConversationTab}
           onClose={() => setSelectedConversation(null)}
           t={t}
           onOpenUpstreamAccount={(
@@ -2618,6 +2627,111 @@ export const CurrentOnlyPlaceholder: Story = {
     cards: buildCards(currentOnlyResponse),
     isLoading: false,
     error: null,
+  },
+};
+
+export const ManualBindingBadges: Story = {
+  args: {
+    activeRange: "today",
+    cards: [],
+    isLoading: false,
+    error: null,
+  },
+  render: () => (
+    <DrawerPreviewStory
+      response={createResponse([
+        createConversation(
+          "pck-story-manual-binding-group",
+          [
+            createPreview({
+              id: 8101,
+              invokeId: "story-manual-binding-group",
+              occurredAt: createRelativeStoryIso(-5_000),
+              status: "running",
+              upstreamAccountId: 42,
+              upstreamAccountName: "pool-alpha@example.com",
+            }),
+            createPreview({
+              id: 8100,
+              invokeId: "story-manual-binding-group-prev",
+              occurredAt: createRelativeStoryIso(-(2 * 60_000 + 5_000)),
+              status: "completed",
+            }),
+          ],
+          {
+            manualBinding: {
+              bindingKind: "group",
+              groupName: "CIII",
+              upstreamAccountId: null,
+              upstreamAccountName: null,
+            },
+          },
+        ),
+        createConversation(
+          "pck-story-manual-binding-account",
+          [
+            createPreview({
+              id: 8201,
+              invokeId: "story-manual-binding-account",
+              occurredAt: createRelativeStoryIso(-35_000),
+              status: "completed",
+              upstreamAccountId: 108,
+              upstreamAccountName: "Codex Pro - Tokyo",
+            }),
+          ],
+          {
+            manualBinding: {
+              bindingKind: "upstreamAccount",
+              groupName: null,
+              upstreamAccountId: 108,
+              upstreamAccountName: "Codex Pro - Tokyo",
+            },
+          },
+        ),
+        createConversation(
+          "pck-story-manual-binding-long-account",
+          [
+            createPreview({
+              id: 8301,
+              invokeId: "story-manual-binding-long-account",
+              occurredAt: createRelativeStoryIso(-65_000),
+              status: "completed",
+              upstreamAccountId: 219,
+            }),
+          ],
+          {
+            manualBinding: {
+              bindingKind: "upstreamAccount",
+              groupName: null,
+              upstreamAccountId: 219,
+              upstreamAccountName:
+                "paisleeeinar5710 Team sandbox workflow monitor with an intentionally long account label",
+            },
+          },
+        ),
+      ])}
+      theme="vibe-dark"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const badgeButtons = canvas.getAllByTestId(
+      "dashboard-working-conversation-manual-binding-badge",
+    );
+    await expect(badgeButtons[0]).toHaveTextContent("CIII");
+    await expect(badgeButtons[1]).toHaveTextContent("Codex Pro - Tokyo");
+    await expect(badgeButtons[2]).toHaveAttribute(
+      "title",
+      expect.stringContaining(
+        "paisleeeinar5710 Team sandbox workflow monitor with an intentionally long account label",
+      ),
+    );
+
+    await userEvent.click(badgeButtons[0]);
+
+    await expect(
+      within(document.body).getByRole("tab", { name: /设置|settings/i }),
+    ).toHaveAttribute("aria-selected", "true");
   },
 };
 

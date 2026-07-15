@@ -69,6 +69,7 @@ function createConversation(
       overrides.lastActivityAt ?? recentInvocations[0]?.occurredAt ?? "2026-04-04T10:00:00Z",
     lastTerminalAt: hasLastTerminalAt ? (overrides.lastTerminalAt ?? null) : undefined,
     lastInFlightAt: hasLastInFlightAt ? (overrides.lastInFlightAt ?? null) : undefined,
+    manualBinding: overrides.manualBinding ?? null,
     upstreamAccounts: overrides.upstreamAccounts ?? [],
     recentInvocations,
     last24hRequests: overrides.last24hRequests ?? [],
@@ -115,6 +116,39 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     expect(first[0]?.conversationSequenceId).toMatch(/^WC-[A-F0-9]{6}$/);
     expect(first[0]?.conversationSequenceId).toBe(second[0]?.conversationSequenceId);
     expect(first[0]?.hasPreviousPlaceholder).toBe(true);
+  });
+
+  it("preserves manual binding summaries for dashboard badge rendering", () => {
+    const response = createResponse([
+      createConversation(
+        "pck-manual-binding",
+        [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-manual-binding",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+        ],
+        {
+          manualBinding: {
+            bindingKind: "upstreamAccount",
+            groupName: null,
+            upstreamAccountId: 88,
+            upstreamAccountName: "Codex Pro - Tokyo",
+          },
+        },
+      ),
+    ]);
+
+    const cards = mapPromptCacheConversationsToDashboardCards(response);
+
+    expect(cards[0]?.manualBinding).toEqual({
+      bindingKind: "upstreamAccount",
+      groupName: null,
+      upstreamAccountId: 88,
+      upstreamAccountName: "Codex Pro - Tokyo",
+    });
   });
 
   it("appends a stable short suffix when visible WC short ids collide", () => {

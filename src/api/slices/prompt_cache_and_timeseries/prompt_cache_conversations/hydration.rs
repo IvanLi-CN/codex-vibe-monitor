@@ -169,6 +169,9 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
     } else {
         Vec::new()
     };
+    let manual_binding_rows =
+        query_prompt_cache_conversation_manual_binding_summaries(&state.pool, &selected_keys)
+            .await?;
 
     let mut grouped_events: HashMap<String, Vec<PromptCacheConversationRequestPointResponse>> =
         HashMap::new();
@@ -339,6 +342,15 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
         .into_iter()
         .map(|row| (row.prompt_cache_key.clone(), row))
         .collect();
+    let mut manual_binding_by_key: HashMap<String, PromptCacheConversationManualBindingResponse> =
+        manual_binding_rows
+            .into_iter()
+            .filter_map(prompt_cache_manual_binding_response_from_row)
+            .map(|binding| {
+                let prompt_cache_key = binding.prompt_cache_key.clone();
+                (prompt_cache_key, binding.response)
+            })
+            .collect();
 
     let conversations = aggregates
         .into_iter()
@@ -364,6 +376,7 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
                 encrypted_owner_group_name: owner
                     .as_ref()
                     .and_then(|value| value.owner_group_name.clone()),
+                manual_binding: manual_binding_by_key.remove(&row.prompt_cache_key),
                 upstream_accounts: grouped_upstream_accounts
                     .remove(&row.prompt_cache_key)
                     .unwrap_or_default(),
@@ -411,6 +424,53 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
     }
 
     Ok(conversations)
+}
+
+struct PromptCacheManualBindingResponseByKey {
+    prompt_cache_key: String,
+    response: PromptCacheConversationManualBindingResponse,
+}
+
+fn prompt_cache_manual_binding_response_from_row(
+    row: PromptCacheConversationManualBindingSummaryRow,
+) -> Option<PromptCacheManualBindingResponseByKey> {
+    let prompt_cache_key = row.prompt_cache_key.trim().to_string();
+    if prompt_cache_key.is_empty() {
+        return None;
+    }
+
+    match row.binding_kind.as_str() {
+        PROMPT_CACHE_BINDING_KIND_GROUP => {
+            let group_name = normalize_trimmed_optional_string(row.group_name)?;
+            Some(PromptCacheManualBindingResponseByKey {
+                prompt_cache_key,
+                response: PromptCacheConversationManualBindingResponse {
+                    binding_kind: "group".to_string(),
+                    group_name: Some(group_name),
+                    upstream_account_id: None,
+                    upstream_account_name: None,
+                },
+            })
+        }
+        PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT => {
+            let upstream_account_name =
+                normalize_trimmed_optional_string(row.upstream_account_name.clone());
+            let upstream_account_id = row.upstream_account_id;
+            if upstream_account_name.is_none() && upstream_account_id.is_none() {
+                return None;
+            }
+            Some(PromptCacheManualBindingResponseByKey {
+                prompt_cache_key,
+                response: PromptCacheConversationManualBindingResponse {
+                    binding_kind: "upstreamAccount".to_string(),
+                    group_name: None,
+                    upstream_account_id,
+                    upstream_account_name,
+                },
+            })
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn overlay_runtime_prompt_cache_invocation_previews(

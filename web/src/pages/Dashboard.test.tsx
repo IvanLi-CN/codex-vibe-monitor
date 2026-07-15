@@ -137,6 +137,7 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
     onOpenConversation?: (selection: {
       conversationSequenceId: string;
       promptCacheKey: string;
+      tab?: "overview" | "calls" | "settings";
     }) => void;
     onOpenInvocation?: (selection: {
       slotKind: "current" | "previous";
@@ -170,6 +171,19 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
             }
           >
             open conversation
+          </button>
+          <button
+            type="button"
+            data-testid="dashboard-open-conversation-settings"
+            onClick={() =>
+              onOpenConversation?.({
+                conversationSequenceId: cards[0].conversationSequenceId,
+                promptCacheKey: cards[0].promptCacheKey,
+                tab: "settings",
+              })
+            }
+          >
+            open conversation settings
           </button>
           <button
             type="button"
@@ -214,12 +228,14 @@ vi.mock("../features/prompt-cache/PromptCacheConversationTable", () => ({
     open,
     conversationKey,
     conversationLabel,
+    initialTab,
     onClose,
     onOpenUpstreamAccount,
   }: {
     open: boolean;
     conversationKey: string | null;
     conversationLabel?: string | null;
+    initialTab?: "overview" | "calls" | "settings";
     onClose: () => void;
     onOpenUpstreamAccount?: (
       accountId: number,
@@ -231,6 +247,7 @@ vi.mock("../features/prompt-cache/PromptCacheConversationTable", () => ({
       <div data-testid="dashboard-conversation-history-drawer-mock">
         <span data-testid="dashboard-conversation-drawer-key">{conversationKey}</span>
         <span data-testid="dashboard-conversation-drawer-label">{conversationLabel}</span>
+        <span data-testid="dashboard-conversation-drawer-tab">{initialTab ?? "overview"}</span>
         <button type="button" data-testid="dashboard-conversation-drawer-close" onClick={onClose}>
           close conversation drawer
         </button>
@@ -978,6 +995,104 @@ describe("DashboardPage", () => {
       host?.querySelector('[data-testid="shared-upstream-account-detail-drawer-mock"]'),
     ).toBeNull();
     expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe("");
+  });
+
+  it("opens the conversation drawer directly on settings when requested by the badge route", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [createWorkingConversationCard()],
+      totalMatched: 1,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />);
+
+    const openConversationSettingsButton = host?.querySelector(
+      '[data-testid="dashboard-open-conversation-settings"]',
+    );
+    if (!(openConversationSettingsButton instanceof HTMLButtonElement)) {
+      throw new Error("missing conversation settings trigger");
+    }
+
+    act(() => {
+      openConversationSettingsButton.click();
+    });
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-tab"]')?.textContent,
+    ).toBe("settings");
+    expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe(
+      "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationTab=settings",
+    );
+  });
+
+  it("keeps the settings-tab conversation route when the dashboard switches into compact page mode", () => {
+    const previousMatchMedia = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: true,
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+
+    try {
+      installSummaryMocks();
+      hookMocks.useDashboardWorkingConversations.mockReturnValue({
+        cards: [createWorkingConversationCard()],
+        totalMatched: 1,
+        hasMore: false,
+        isLoading: false,
+        isLoadingMore: false,
+        error: null,
+        loadMore: vi.fn(),
+        setRefreshTargetCount: vi.fn(),
+      });
+
+      render(<DashboardPage />);
+
+      const openConversationSettingsButton = host?.querySelector(
+        '[data-testid="dashboard-open-conversation-settings"]',
+      );
+      if (!(openConversationSettingsButton instanceof HTMLButtonElement)) {
+        throw new Error("missing compact conversation settings trigger");
+      }
+
+      act(() => {
+        openConversationSettingsButton.click();
+      });
+
+      expect(
+        host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+      ).not.toBeNull();
+      expect(
+        host?.querySelector('[data-testid="dashboard-conversation-drawer-tab"]')?.textContent,
+      ).toBe("settings");
+      expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe(
+        "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationTab=settings",
+      );
+    } finally {
+      Object.defineProperty(window, "matchMedia", {
+        configurable: true,
+        writable: true,
+        value: previousMatchMedia,
+      });
+    }
   });
 
   it("passes refresh target updates from the working conversations section back into the hook", () => {
