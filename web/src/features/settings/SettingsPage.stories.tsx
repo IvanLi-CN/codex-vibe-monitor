@@ -7,10 +7,12 @@ import type {
   ForwardProxyNode,
   ForwardProxyNodeStats,
   ForwardProxySettings,
+  PoolRoutingSettings,
   PricingEntry,
   PricingSettings,
   ProxySettings,
   SettingsPayload,
+  UpdatePoolRoutingSettingsPayload,
 } from "../../lib/api";
 import SettingsPage from "../../pages/Settings";
 import { paritySettingsNodes } from "../forward-proxy/storybookForwardProxyNodeHealth";
@@ -135,6 +137,20 @@ type StorySettingsOverrides = {
   pricing?: Partial<PricingSettings>;
 };
 
+type StoryRoutingOverrides = Partial<
+  Pick<
+    PoolRoutingSettings,
+    | "writesEnabled"
+    | "apiKeyConfigured"
+    | "maskedApiKey"
+    | "requestCompressionAlgorithm"
+    | "requestCompressionLevelPreset"
+  >
+> & {
+  maintenance?: Partial<NonNullable<PoolRoutingSettings["maintenance"]>>;
+  timeouts?: Partial<NonNullable<PoolRoutingSettings["timeouts"]>>;
+};
+
 function createMockExternalApiKeys(): ExternalApiKeySummary[] {
   return [
     {
@@ -233,6 +249,10 @@ function cloneSettings(payload: SettingsPayload): SettingsPayload {
   return JSON.parse(JSON.stringify(payload)) as SettingsPayload;
 }
 
+function cloneRouting(payload: PoolRoutingSettings): PoolRoutingSettings {
+  return JSON.parse(JSON.stringify(payload)) as PoolRoutingSettings;
+}
+
 function createStorySettings(overrides?: StorySettingsOverrides): SettingsPayload {
   const proxy: ProxySettings = {
     ...DEFAULT_PROXY_SETTINGS,
@@ -269,6 +289,28 @@ function createStorySettings(overrides?: StorySettingsOverrides): SettingsPayloa
     proxy,
     forwardProxy,
     pricing,
+  };
+}
+
+function createStoryRoutingSettings(overrides?: StoryRoutingOverrides): PoolRoutingSettings {
+  return {
+    writesEnabled: overrides?.writesEnabled ?? true,
+    apiKeyConfigured: overrides?.apiKeyConfigured ?? true,
+    maskedApiKey: overrides?.maskedApiKey ?? "cvm-••••••••••••1234",
+    maintenance: {
+      primarySyncIntervalSecs: overrides?.maintenance?.primarySyncIntervalSecs ?? 300,
+      secondarySyncIntervalSecs: overrides?.maintenance?.secondarySyncIntervalSecs ?? 1800,
+      priorityAvailableAccountCap: overrides?.maintenance?.priorityAvailableAccountCap ?? 100,
+    },
+    requestCompressionAlgorithm: overrides?.requestCompressionAlgorithm ?? "identity",
+    requestCompressionLevelPreset: overrides?.requestCompressionLevelPreset ?? "balanced",
+    timeouts: {
+      responsesFirstByteTimeoutSecs: overrides?.timeouts?.responsesFirstByteTimeoutSecs ?? 120,
+      compactFirstByteTimeoutSecs: overrides?.timeouts?.compactFirstByteTimeoutSecs ?? 300,
+      imageFirstByteTimeoutSecs: overrides?.timeouts?.imageFirstByteTimeoutSecs ?? 300,
+      responsesStreamTimeoutSecs: overrides?.timeouts?.responsesStreamTimeoutSecs ?? 300,
+      compactStreamTimeoutSecs: overrides?.timeouts?.compactStreamTimeoutSecs ?? 300,
+    },
   };
 }
 
@@ -311,16 +353,21 @@ function persistSettings(storageKey: string, payload: SettingsPayload) {
 function StorybookSettingsMock({
   children,
   initialSettings,
+  initialRouting,
   storageKey,
   initialExternalApiKeys,
 }: {
   children: ReactNode;
   initialSettings?: SettingsPayload;
+  initialRouting?: PoolRoutingSettings;
   storageKey: string;
   initialExternalApiKeys?: ExternalApiKeySummary[];
 }) {
   const fallbackSettings = initialSettings ? cloneSettings(initialSettings) : createStorySettings();
   const settingsRef = useRef<SettingsPayload>(loadPersistedSettings(storageKey, fallbackSettings));
+  const routingRef = useRef<PoolRoutingSettings>(
+    initialRouting ? cloneRouting(initialRouting) : createStoryRoutingSettings(),
+  );
   const externalApiKeysRef = useRef<ExternalApiKeySummary[]>(
     initialExternalApiKeys ? [...initialExternalApiKeys] : createMockExternalApiKeys(),
   );
@@ -461,6 +508,68 @@ function StorybookSettingsMock({
 
       if (path === "/api/settings" && method === "GET") {
         return jsonResponse(cloneSettings(settingsRef.current));
+      }
+
+      if (path === "/api/pool/routing-settings" && method === "GET") {
+        return jsonResponse(cloneRouting(routingRef.current));
+      }
+
+      if (path === "/api/pool/routing-settings" && method === "PUT") {
+        const body = parseBody<UpdatePoolRoutingSettingsPayload>({});
+        routingRef.current = {
+          ...routingRef.current,
+          ...(body.requestCompressionAlgorithm
+            ? { requestCompressionAlgorithm: body.requestCompressionAlgorithm }
+            : {}),
+          ...(body.requestCompressionLevelPreset
+            ? { requestCompressionLevelPreset: body.requestCompressionLevelPreset }
+            : {}),
+          ...(body.maintenance
+            ? {
+                maintenance: {
+                  primarySyncIntervalSecs:
+                    body.maintenance.primarySyncIntervalSecs ??
+                    routingRef.current.maintenance?.primarySyncIntervalSecs ??
+                    300,
+                  secondarySyncIntervalSecs:
+                    body.maintenance.secondarySyncIntervalSecs ??
+                    routingRef.current.maintenance?.secondarySyncIntervalSecs ??
+                    1800,
+                  priorityAvailableAccountCap:
+                    body.maintenance.priorityAvailableAccountCap ??
+                    routingRef.current.maintenance?.priorityAvailableAccountCap ??
+                    100,
+                },
+              }
+            : {}),
+          ...(body.timeouts
+            ? {
+                timeouts: {
+                  responsesFirstByteTimeoutSecs:
+                    body.timeouts.responsesFirstByteTimeoutSecs ??
+                    routingRef.current.timeouts?.responsesFirstByteTimeoutSecs ??
+                    120,
+                  compactFirstByteTimeoutSecs:
+                    body.timeouts.compactFirstByteTimeoutSecs ??
+                    routingRef.current.timeouts?.compactFirstByteTimeoutSecs ??
+                    300,
+                  imageFirstByteTimeoutSecs:
+                    body.timeouts.imageFirstByteTimeoutSecs ??
+                    routingRef.current.timeouts?.imageFirstByteTimeoutSecs ??
+                    300,
+                  responsesStreamTimeoutSecs:
+                    body.timeouts.responsesStreamTimeoutSecs ??
+                    routingRef.current.timeouts?.responsesStreamTimeoutSecs ??
+                    300,
+                  compactStreamTimeoutSecs:
+                    body.timeouts.compactStreamTimeoutSecs ??
+                    routingRef.current.timeouts?.compactStreamTimeoutSecs ??
+                    300,
+                },
+              }
+            : {}),
+        };
+        return jsonResponse(cloneRouting(routingRef.current));
       }
 
       if (path === "/api/settings/proxy" && method === "PUT") {
@@ -742,6 +851,7 @@ function StorybookSettingsMock({
 
 type SettingsStoryParameters = {
   mockSettings?: SettingsPayload;
+  mockRouting?: PoolRoutingSettings;
   mockExternalApiKeys?: ExternalApiKeySummary[];
 };
 
@@ -756,12 +866,14 @@ const meta = {
   decorators: [
     (Story, context) => {
       const mockSettings = (context.parameters as SettingsStoryParameters).mockSettings;
+      const mockRouting = (context.parameters as SettingsStoryParameters).mockRouting;
       const mockExternalApiKeys = (context.parameters as SettingsStoryParameters)
         .mockExternalApiKeys;
       return (
         <I18nProvider>
           <StorybookSettingsMock
             initialSettings={mockSettings}
+            initialRouting={mockRouting}
             storageKey={`${STORYBOOK_SETTINGS_STORAGE_PREFIX}.${context.id}`}
             initialExternalApiKeys={mockExternalApiKeys}
           >
@@ -787,6 +899,7 @@ export const Default: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByRole("heading", { name: "设置" })).toBeVisible();
     await expect(canvas.getByText("代理配置")).toBeVisible();
+    await expect(canvas.getByText("上游请求默认值")).toBeVisible();
     await expect(canvas.getByText("加密对话路由")).toBeVisible();
     await expect(canvas.getByText("正向代理路由")).toBeVisible();
     await expect(canvas.getByText("价格配置")).toBeVisible();
@@ -812,6 +925,30 @@ export const EncryptedOwnerRoutingDisabled: Story = {
     ).toBeVisible();
     const toggle = canvas.getByRole("switch", { name: "加密对话路由绑定" });
     await expect(toggle).toHaveAttribute("aria-checked", "false");
+  },
+};
+
+export const SystemSettingsRouting: Story = {
+  parameters: {
+    mockRouting: createStoryRoutingSettings({
+      requestCompressionAlgorithm: "zstd",
+      requestCompressionLevelPreset: "best",
+      timeouts: {
+        responsesFirstByteTimeoutSecs: 180,
+      },
+    }),
+  },
+  render: () => <SettingsPage mode="general" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("heading", { name: "系统设置" })).toBeVisible();
+    await expect(canvas.getByText("上游请求默认值")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: /默认压缩算法/i })).toHaveTextContent(/zstd/i);
+    await expect(canvas.getByRole("button", { name: /压缩等级预设/i })).toHaveTextContent(/最佳/i);
+    await expect(
+      canvasElement.querySelector<HTMLInputElement>('input[name="responsesFirstByteTimeoutSecs"]')
+        ?.value,
+    ).toBe("180");
   },
 };
 

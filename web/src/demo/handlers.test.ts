@@ -25,8 +25,19 @@ describe("demo MSW handlers", () => {
         };
         modelPerformance: {
           available: boolean;
-          total: { tokensPerMinute: number };
-          models: Array<{ model: string; reasoningEffort: string | null }>;
+          total: {
+            tokensPerMinute: number;
+            wallClockUsageDurationMs: number;
+            cumulativeUsageDurationMs: number;
+            parallelism: number;
+          };
+          models: Array<{
+            model: string;
+            reasoningEffort: string | null;
+            wallClockUsageDurationMs: number;
+            cumulativeUsageDurationMs: number;
+            parallelism: number;
+          }>;
         };
       };
     };
@@ -40,12 +51,35 @@ describe("demo MSW handlers", () => {
     ]);
     expect(payload.summary.modelPerformance).toMatchObject({
       available: true,
-      total: { tokensPerMinute: expect.any(Number) },
+      total: {
+        tokensPerMinute: expect.any(Number),
+        wallClockUsageDurationMs: expect.any(Number),
+        cumulativeUsageDurationMs: expect.any(Number),
+        parallelism: expect.any(Number),
+      },
     });
     expect(payload.summary.modelPerformance.models).toEqual([
-      expect.objectContaining({ model: "gpt-5.6-sol", reasoningEffort: "high" }),
-      expect.objectContaining({ model: "gpt-5.6-sol", reasoningEffort: "medium" }),
-      expect.objectContaining({ model: "gpt-5.6-terra", reasoningEffort: null }),
+      expect.objectContaining({
+        model: "gpt-5.6-sol",
+        reasoningEffort: "high",
+        wallClockUsageDurationMs: expect.any(Number),
+        cumulativeUsageDurationMs: expect.any(Number),
+        parallelism: expect.any(Number),
+      }),
+      expect.objectContaining({
+        model: "gpt-5.6-sol",
+        reasoningEffort: "medium",
+        wallClockUsageDurationMs: expect.any(Number),
+        cumulativeUsageDurationMs: expect.any(Number),
+        parallelism: expect.any(Number),
+      }),
+      expect.objectContaining({
+        model: "gpt-5.6-terra",
+        reasoningEffort: null,
+        wallClockUsageDurationMs: expect.any(Number),
+        cumulativeUsageDurationMs: expect.any(Number),
+        parallelism: expect.any(Number),
+      }),
     ]);
   });
 

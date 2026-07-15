@@ -848,15 +848,15 @@ export const RoutingDialog: Story = {
       within(dialog).getByLabelText(/优先可用账号上限|priority available account cap/i),
     ).toBeInTheDocument();
     await expect(
-      within(dialog).getByRole("button", {
+      within(dialog).queryByRole("button", {
         name: /默认压缩算法|default compression algorithm/i,
       }),
-    ).toBeInTheDocument();
+    ).not.toBeInTheDocument();
     await expect(
-      within(dialog).getByRole("button", {
+      within(dialog).queryByRole("button", {
         name: /压缩等级预设|compression level preset/i,
       }),
-    ).toBeInTheDocument();
+    ).not.toBeInTheDocument();
     await userEvent.click(generateButton);
     const input = within(dialog).getByPlaceholderText(
       /粘贴新的号池 API Key|paste a new pool api key/i,
@@ -888,50 +888,17 @@ export const RoutingDialogRequestCompression: Story = {
     const dialog = await documentScope.findByRole("dialog", {
       name: /高级路由与同步设置|advanced routing & sync settings/i,
     });
-    const algorithmTrigger = within(dialog).getByRole("button", {
-      name: /默认压缩算法|default compression algorithm/i,
-    });
-    const levelTrigger = within(dialog).getByRole("button", {
-      name: /压缩等级预设|compression level preset/i,
-    });
-    const saveButton = within(dialog).getByRole("button", { name: /保存设置|save settings/i });
-
-    await expect(algorithmTrigger).toHaveTextContent(/identity/i);
-    await expect(levelTrigger).toHaveTextContent(/均衡|balanced/i);
-
-    await userEvent.click(algorithmTrigger);
-    await userEvent.click(await documentScope.findByText(/^Gzip$/i));
-
-    await userEvent.click(levelTrigger);
-    await userEvent.click(await documentScope.findByText(/最佳|best/i));
-
-    await expect(saveButton).toBeEnabled();
-    await userEvent.click(saveButton);
-
-    await waitFor(() => {
-      expect(
-        documentScope.queryByRole("dialog", {
-          name: /高级路由与同步设置|advanced routing & sync settings/i,
-        }),
-      ).not.toBeInTheDocument();
-    });
-
-    await userEvent.click(
-      await canvas.findByRole("button", { name: /编辑路由设置|edit routing settings/i }),
-    );
-    const reopenedDialog = await documentScope.findByRole("dialog", {
-      name: /高级路由与同步设置|advanced routing & sync settings/i,
-    });
     await expect(
-      within(reopenedDialog).getByRole("button", {
+      within(dialog).queryByRole("button", {
         name: /默认压缩算法|default compression algorithm/i,
       }),
-    ).toHaveTextContent(/gzip/i);
+    ).not.toBeInTheDocument();
     await expect(
-      within(reopenedDialog).getByRole("button", {
+      within(dialog).queryByRole("button", {
         name: /压缩等级预设|compression level preset/i,
       }),
-    ).toHaveTextContent(/最佳|best/i);
+    ).not.toBeInTheDocument();
+    await expect(dialog).toHaveTextContent(/系统设置/i);
   },
 };
 

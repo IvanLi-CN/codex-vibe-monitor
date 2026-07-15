@@ -4396,14 +4396,24 @@ struct UpstreamAccountUsageBreakdownAggregateRow {
 #[derive(Debug, Clone, FromRow)]
 struct SuccessfulBilledUsageDurationIntervalRow {
     upstream_account_id: Option<i64>,
+    model: String,
+    reasoning_effort: Option<String>,
     start_epoch_ms: f64,
     end_epoch_ms: f64,
 }
 
 #[derive(Debug, Default)]
-struct ModelPerformanceTotalUsageDurationOverrides {
-    total_ms: Option<f64>,
-    by_account_ms: HashMap<Option<i64>, f64>,
+struct ModelPerformanceDurationOverrides {
+    total_wall_clock_ms: Option<f64>,
+    by_account_wall_clock_ms: HashMap<Option<i64>, f64>,
+    by_group_wall_clock_ms: HashMap<UsageBreakdownGroupKey, f64>,
+    by_account_group_wall_clock_ms: HashMap<AccountModelGroupKey, f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct AccountModelGroupKey {
+    upstream_account_id: Option<i64>,
+    group: UsageBreakdownGroupKey,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -4439,31 +4449,62 @@ impl UsageDurationUnionAccumulator {
 }
 
 #[derive(Debug, Default)]
-struct ModelPerformanceTotalUsageDurationUnionState {
+struct ModelPerformanceWallClockUnionState {
     total: UsageDurationUnionAccumulator,
     by_account: HashMap<Option<i64>, UsageDurationUnionAccumulator>,
+    by_group: HashMap<UsageBreakdownGroupKey, UsageDurationUnionAccumulator>,
+    by_account_group: HashMap<AccountModelGroupKey, UsageDurationUnionAccumulator>,
 }
 
-impl ModelPerformanceTotalUsageDurationUnionState {
+impl ModelPerformanceWallClockUnionState {
     fn push_row(&mut self, row: &SuccessfulBilledUsageDurationIntervalRow) {
+        let group = UsageBreakdownGroupKey {
+            model: row.model.clone(),
+            reasoning_effort: row.reasoning_effort.clone(),
+        };
         self.total
             .push_interval(row.start_epoch_ms, row.end_epoch_ms);
         self.by_account
             .entry(row.upstream_account_id)
             .or_default()
             .push_interval(row.start_epoch_ms, row.end_epoch_ms);
+        self.by_group
+            .entry(group.clone())
+            .or_default()
+            .push_interval(row.start_epoch_ms, row.end_epoch_ms);
+        self.by_account_group
+            .entry(AccountModelGroupKey {
+                upstream_account_id: row.upstream_account_id,
+                group,
+            })
+            .or_default()
+            .push_interval(row.start_epoch_ms, row.end_epoch_ms);
     }
 
-    fn into_overrides(self) -> ModelPerformanceTotalUsageDurationOverrides {
-        ModelPerformanceTotalUsageDurationOverrides {
-            total_ms: self.total.total_ms(),
-            by_account_ms: self
+    fn into_overrides(self) -> ModelPerformanceDurationOverrides {
+        ModelPerformanceDurationOverrides {
+            total_wall_clock_ms: self.total.total_ms(),
+            by_account_wall_clock_ms: self
                 .by_account
                 .into_iter()
                 .filter_map(|(upstream_account_id, accumulator)| {
                     accumulator
                         .total_ms()
                         .map(|total_ms| (upstream_account_id, total_ms))
+                })
+                .collect(),
+            by_group_wall_clock_ms: self
+                .by_group
+                .into_iter()
+                .filter_map(|(group, accumulator)| {
+                    accumulator.total_ms().map(|total_ms| (group, total_ms))
+                })
+                .collect(),
+            by_account_group_wall_clock_ms: self
+                .by_account_group
+                .into_iter()
+                .filter_map(|(key, accumulator)| {
+                    accumulator.total_ms().map(|total_ms| (key, total_ms))
                 })
                 .collect(),
         }
@@ -4479,9 +4520,9 @@ struct ModelPerformanceAccumulator {
     response_sum_ms: f64,
     first_byte_sample_count: i64,
     first_byte_sum_ms: f64,
-    usage_duration_sample_count: i64,
-    usage_duration_sum_ms: f64,
-    total_usage_duration_override_ms: Option<f64>,
+    cumulative_usage_duration_sample_count: i64,
+    cumulative_usage_duration_sum_ms: f64,
+    wall_clock_usage_duration_ms: Option<f64>,
     models: HashMap<UsageBreakdownGroupKey, ModelPerformanceAccumulator>,
 }
 
@@ -4494,8 +4535,9 @@ impl ModelPerformanceAccumulator {
         self.response_sum_ms += row.performance_response_sum_ms.max(0.0);
         self.first_byte_sample_count += row.performance_first_byte_sample_count.max(0);
         self.first_byte_sum_ms += row.performance_first_byte_sum_ms.max(0.0);
-        self.usage_duration_sample_count += row.performance_usage_duration_sample_count.max(0);
-        self.usage_duration_sum_ms += row.performance_usage_duration_sum_ms.max(0.0);
+        self.cumulative_usage_duration_sample_count +=
+            row.performance_usage_duration_sample_count.max(0);
+        self.cumulative_usage_duration_sum_ms += row.performance_usage_duration_sum_ms.max(0.0);
 
         let entry = self
             .models
@@ -4511,12 +4553,15 @@ impl ModelPerformanceAccumulator {
         entry.response_sum_ms += row.performance_response_sum_ms.max(0.0);
         entry.first_byte_sample_count += row.performance_first_byte_sample_count.max(0);
         entry.first_byte_sum_ms += row.performance_first_byte_sum_ms.max(0.0);
-        entry.usage_duration_sample_count += row.performance_usage_duration_sample_count.max(0);
-        entry.usage_duration_sum_ms += row.performance_usage_duration_sum_ms.max(0.0);
+        entry.cumulative_usage_duration_sample_count +=
+            row.performance_usage_duration_sample_count.max(0);
+        entry.cumulative_usage_duration_sum_ms += row.performance_usage_duration_sum_ms.max(0.0);
     }
 
     fn metrics(&self, range: ExactUtcRange) -> ModelPerformanceMetricsResponse {
         let range_minutes = (range.end - range.start).num_milliseconds() as f64 / 60_000.0;
+        let cumulative_usage_duration_ms = (self.cumulative_usage_duration_sample_count > 0)
+            .then_some(self.cumulative_usage_duration_sum_ms);
         ModelPerformanceMetricsResponse {
             tokens_per_minute: if range_minutes > 0.0 {
                 self.total_tokens as f64 / range_minutes
@@ -4529,9 +4574,17 @@ impl ModelPerformanceAccumulator {
                 .then_some(self.response_sum_ms / self.response_sample_count as f64),
             avg_first_response_byte_total_ms: (self.first_byte_sample_count > 0)
                 .then_some(self.first_byte_sum_ms / self.first_byte_sample_count as f64),
-            usage_duration_ms: self.total_usage_duration_override_ms.or_else(|| {
-                (self.usage_duration_sample_count > 0).then_some(self.usage_duration_sum_ms)
-            }),
+            wall_clock_usage_duration_ms: self.wall_clock_usage_duration_ms,
+            cumulative_usage_duration_ms,
+            parallelism: match (
+                self.wall_clock_usage_duration_ms,
+                cumulative_usage_duration_ms,
+            ) {
+                (Some(wall_clock_ms), Some(cumulative_ms)) if wall_clock_ms > 0.0 => {
+                    Some(cumulative_ms / wall_clock_ms)
+                }
+                _ => None,
+            },
         }
     }
 
@@ -4545,20 +4598,26 @@ impl ModelPerformanceAccumulator {
                     || entry.stream_duration_ms > 0.0
                     || entry.response_sample_count > 0
                     || entry.first_byte_sample_count > 0
-                    || entry.usage_duration_sample_count > 0)
-                    .then_some(ModelPerformanceModelResponse {
-                        model: group.model,
-                        reasoning_effort: group.reasoning_effort,
-                        metrics: entry.metrics(range),
-                    })
+                    || entry.cumulative_usage_duration_sample_count > 0
+                    || entry.wall_clock_usage_duration_ms.is_some())
+                .then_some(ModelPerformanceModelResponse {
+                    model: group.model,
+                    reasoning_effort: group.reasoning_effort,
+                    metrics: entry.metrics(range),
+                })
             })
             .collect::<Vec<_>>();
         models.sort_by(|left, right| {
             right
                 .metrics
-                .usage_duration_ms
+                .cumulative_usage_duration_ms
                 .unwrap_or_default()
-                .total_cmp(&left.metrics.usage_duration_ms.unwrap_or_default())
+                .total_cmp(
+                    &left
+                        .metrics
+                        .cumulative_usage_duration_ms
+                        .unwrap_or_default(),
+                )
                 .then_with(|| left.model.cmp(&right.model))
                 .then_with(|| left.reasoning_effort.cmp(&right.reasoning_effort))
         });
@@ -4574,10 +4633,10 @@ impl ModelPerformanceAccumulator {
     }
 }
 
-fn compute_model_performance_total_usage_duration_overrides(
+fn compute_model_performance_duration_overrides(
     rows: &[SuccessfulBilledUsageDurationIntervalRow],
-) -> ModelPerformanceTotalUsageDurationOverrides {
-    let mut union_state = ModelPerformanceTotalUsageDurationUnionState::default();
+) -> ModelPerformanceDurationOverrides {
+    let mut union_state = ModelPerformanceWallClockUnionState::default();
     for row in rows {
         union_state.push_row(row);
     }
@@ -4873,18 +4932,23 @@ async fn query_live_upstream_account_usage_breakdown_rows(
     Ok(rows)
 }
 
-async fn query_live_model_performance_total_usage_duration_overrides(
+async fn query_live_model_performance_duration_overrides(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
     use_attempt_fallback: bool,
-) -> Result<ModelPerformanceTotalUsageDurationOverrides, ApiError> {
+) -> Result<ModelPerformanceDurationOverrides, ApiError> {
     let started_at = Instant::now();
     let upstream_account_id_sql = if use_attempt_fallback {
         invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations")
     } else {
         INVOCATION_UPSTREAM_ACCOUNT_ID_SQL.to_string()
     };
+    let model_sql = format!(
+        "COALESCE(NULLIF(TRIM({}), ''), NULLIF(TRIM(model), ''), 'unknown')",
+        INVOCATION_RESPONSE_MODEL_SQL
+    );
+    let reasoning_effort_sql = INVOCATION_REASONING_EFFORT_SQL;
     let occurred_at_epoch_ms_sql = "(CAST(CASE WHEN instr(occurred_at, 'T') > 0 THEN strftime('%s', occurred_at) ELSE strftime('%s', occurred_at || '+08:00') END AS REAL) * 1000.0)";
     let failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
     let success_billed_sql = format!(
@@ -4896,6 +4960,10 @@ async fn query_live_model_performance_total_usage_duration_overrides(
     query
         .push(upstream_account_id_sql.as_str())
         .push(" AS upstream_account_id, ")
+        .push(model_sql.as_str())
+        .push(" AS model, ")
+        .push(reasoning_effort_sql)
+        .push(" AS reasoning_effort, ")
         .push(occurred_at_epoch_ms_sql)
         .push(" AS start_epoch_ms, MIN(")
         .push(occurred_at_epoch_ms_sql)
@@ -4916,7 +4984,7 @@ async fn query_live_model_performance_total_usage_duration_overrides(
         .build_query_as::<SuccessfulBilledUsageDurationIntervalRow>()
         .fetch(pool);
     let mut row_count = 0usize;
-    let mut union_state = ModelPerformanceTotalUsageDurationUnionState::default();
+    let mut union_state = ModelPerformanceWallClockUnionState::default();
     while let Some(row) = rows.try_next().await? {
         row_count += 1;
         union_state.push_row(&row);
@@ -6392,15 +6460,10 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     let current_minute_summary = sum_dashboard_activity_current_minute_accumulators(
         current_minute_by_account.values().copied(),
     );
-    let model_performance_usage_duration_overrides = if model_performance_available {
+    let model_performance_duration_overrides = if model_performance_available {
         Some(
-            query_live_model_performance_total_usage_duration_overrides(
-                &state.pool,
-                source_scope,
-                range,
-                true,
-            )
-            .await?,
+            query_live_model_performance_duration_overrides(&state.pool, source_scope, range, true)
+                .await?,
         )
     } else {
         None
@@ -6487,17 +6550,31 @@ pub(crate) async fn load_dashboard_activity_snapshot(
                 .add_aggregate_row(&row);
         }
     }
-    if let Some(model_performance_usage_duration_overrides) =
-        model_performance_usage_duration_overrides
-    {
-        model_performance.total_usage_duration_override_ms =
-            model_performance_usage_duration_overrides.total_ms;
-        for (upstream_account_id, total_usage_duration_override_ms) in
-            model_performance_usage_duration_overrides.by_account_ms
+    if let Some(model_performance_duration_overrides) = model_performance_duration_overrides {
+        model_performance.wall_clock_usage_duration_ms =
+            model_performance_duration_overrides.total_wall_clock_ms;
+        for (group, wall_clock_usage_duration_ms) in
+            model_performance_duration_overrides.by_group_wall_clock_ms
+        {
+            if let Some(entry) = model_performance.models.get_mut(&group) {
+                entry.wall_clock_usage_duration_ms = Some(wall_clock_usage_duration_ms);
+            }
+        }
+        for (upstream_account_id, wall_clock_usage_duration_ms) in
+            model_performance_duration_overrides.by_account_wall_clock_ms
         {
             if let Some(entry) = account_activity.get_mut(&upstream_account_id) {
-                entry.model_performance.total_usage_duration_override_ms =
-                    Some(total_usage_duration_override_ms);
+                entry.model_performance.wall_clock_usage_duration_ms =
+                    Some(wall_clock_usage_duration_ms);
+            }
+        }
+        for (key, wall_clock_usage_duration_ms) in
+            model_performance_duration_overrides.by_account_group_wall_clock_ms
+        {
+            if let Some(entry) = account_activity.get_mut(&key.upstream_account_id)
+                && let Some(model_entry) = entry.model_performance.models.get_mut(&key.group)
+            {
+                model_entry.wall_clock_usage_duration_ms = Some(wall_clock_usage_duration_ms);
             }
         }
     }
@@ -7365,8 +7442,15 @@ mod upstream_account_activity_rate_tests {
 }
 
 #[cfg(test)]
-mod model_performance_usage_duration_override_tests {
+mod model_performance_duration_override_tests {
     use super::*;
+
+    fn group(model: &str, reasoning_effort: Option<&str>) -> UsageBreakdownGroupKey {
+        UsageBreakdownGroupKey {
+            model: model.to_string(),
+            reasoning_effort: reasoning_effort.map(str::to_string),
+        }
+    }
 
     fn utc_at(
         year: i32,
@@ -7382,58 +7466,158 @@ mod model_performance_usage_duration_override_tests {
     }
 
     #[test]
-    fn total_usage_duration_dedupes_overlaps_per_account_and_globally() {
+    fn wall_clock_duration_dedupes_overlaps_per_account_model_and_total_scopes() {
         let rows = vec![
             SuccessfulBilledUsageDurationIntervalRow {
                 upstream_account_id: Some(42),
+                model: "gpt-5.4".to_string(),
+                reasoning_effort: Some("high".to_string()),
                 start_epoch_ms: utc_at(2026, 7, 15, 12, 0, 10).timestamp_millis() as f64,
                 end_epoch_ms: utc_at(2026, 7, 15, 12, 0, 14).timestamp_millis() as f64,
             },
             SuccessfulBilledUsageDurationIntervalRow {
                 upstream_account_id: Some(42),
+                model: "gpt-5.4".to_string(),
+                reasoning_effort: Some("high".to_string()),
                 start_epoch_ms: utc_at(2026, 7, 15, 12, 0, 12).timestamp_millis() as f64,
                 end_epoch_ms: utc_at(2026, 7, 15, 12, 0, 13).timestamp_millis() as f64,
             },
             SuccessfulBilledUsageDurationIntervalRow {
                 upstream_account_id: Some(77),
+                model: "gpt-5.4".to_string(),
+                reasoning_effort: Some("high".to_string()),
                 start_epoch_ms: utc_at(2026, 7, 15, 12, 0, 13).timestamp_millis() as f64,
                 end_epoch_ms: utc_at(2026, 7, 15, 12, 0, 17).timestamp_millis() as f64,
             },
         ];
 
-        let overrides = compute_model_performance_total_usage_duration_overrides(&rows);
+        let overrides = compute_model_performance_duration_overrides(&rows);
 
-        assert_eq!(overrides.total_ms, Some(7_000.0));
+        assert_eq!(overrides.total_wall_clock_ms, Some(7_000.0));
         assert_eq!(
-            overrides.by_account_ms.get(&Some(42)).copied(),
+            overrides.by_account_wall_clock_ms.get(&Some(42)).copied(),
             Some(4_000.0)
         );
         assert_eq!(
-            overrides.by_account_ms.get(&Some(77)).copied(),
+            overrides.by_account_wall_clock_ms.get(&Some(77)).copied(),
+            Some(4_000.0)
+        );
+        assert_eq!(
+            overrides
+                .by_group_wall_clock_ms
+                .get(&group("gpt-5.4", Some("high")))
+                .copied(),
+            Some(7_000.0)
+        );
+        assert_eq!(
+            overrides
+                .by_account_group_wall_clock_ms
+                .get(&AccountModelGroupKey {
+                    upstream_account_id: Some(42),
+                    group: group("gpt-5.4", Some("high")),
+                })
+                .copied(),
+            Some(4_000.0)
+        );
+        assert_eq!(
+            overrides
+                .by_account_group_wall_clock_ms
+                .get(&AccountModelGroupKey {
+                    upstream_account_id: Some(77),
+                    group: group("gpt-5.4", Some("high")),
+                })
+                .copied(),
             Some(4_000.0)
         );
     }
 
     #[test]
-    fn total_usage_duration_clips_tail_to_selected_range() {
+    fn wall_clock_duration_keeps_cross_model_overlap_local_to_each_model_group() {
         let rows = vec![
             SuccessfulBilledUsageDurationIntervalRow {
                 upstream_account_id: Some(42),
+                model: "gpt-5.4".to_string(),
+                reasoning_effort: Some("high".to_string()),
+                start_epoch_ms: utc_at(2026, 7, 15, 12, 0, 10).timestamp_millis() as f64,
+                end_epoch_ms: utc_at(2026, 7, 15, 12, 0, 14).timestamp_millis() as f64,
+            },
+            SuccessfulBilledUsageDurationIntervalRow {
+                upstream_account_id: Some(77),
+                model: "gpt-5.6-sol".to_string(),
+                reasoning_effort: Some("low".to_string()),
+                start_epoch_ms: utc_at(2026, 7, 15, 12, 0, 13).timestamp_millis() as f64,
+                end_epoch_ms: utc_at(2026, 7, 15, 12, 0, 17).timestamp_millis() as f64,
+            },
+        ];
+
+        let overrides = compute_model_performance_duration_overrides(&rows);
+
+        assert_eq!(overrides.total_wall_clock_ms, Some(7_000.0));
+        assert_eq!(
+            overrides
+                .by_group_wall_clock_ms
+                .get(&group("gpt-5.4", Some("high")))
+                .copied(),
+            Some(4_000.0)
+        );
+        assert_eq!(
+            overrides
+                .by_group_wall_clock_ms
+                .get(&group("gpt-5.6-sol", Some("low")))
+                .copied(),
+            Some(4_000.0)
+        );
+        assert_eq!(
+            overrides
+                .by_group_wall_clock_ms
+                .values()
+                .copied()
+                .sum::<f64>(),
+            8_000.0
+        );
+    }
+
+    #[test]
+    fn wall_clock_duration_clips_tail_to_selected_range() {
+        let rows = vec![
+            SuccessfulBilledUsageDurationIntervalRow {
+                upstream_account_id: Some(42),
+                model: "gpt-5.4".to_string(),
+                reasoning_effort: None,
                 start_epoch_ms: utc_at(2026, 7, 15, 12, 0, 58).timestamp_millis() as f64,
                 end_epoch_ms: utc_at(2026, 7, 15, 12, 1, 0).timestamp_millis() as f64,
             },
             SuccessfulBilledUsageDurationIntervalRow {
                 upstream_account_id: Some(42),
+                model: "gpt-5.4".to_string(),
+                reasoning_effort: None,
                 start_epoch_ms: utc_at(2026, 7, 15, 12, 0, 59).timestamp_millis() as f64,
                 end_epoch_ms: utc_at(2026, 7, 15, 12, 1, 0).timestamp_millis() as f64,
             },
         ];
 
-        let overrides = compute_model_performance_total_usage_duration_overrides(&rows);
+        let overrides = compute_model_performance_duration_overrides(&rows);
 
-        assert_eq!(overrides.total_ms, Some(2_000.0));
+        assert_eq!(overrides.total_wall_clock_ms, Some(2_000.0));
         assert_eq!(
-            overrides.by_account_ms.get(&Some(42)).copied(),
+            overrides.by_account_wall_clock_ms.get(&Some(42)).copied(),
+            Some(2_000.0)
+        );
+        assert_eq!(
+            overrides
+                .by_group_wall_clock_ms
+                .get(&group("gpt-5.4", None))
+                .copied(),
+            Some(2_000.0)
+        );
+        assert_eq!(
+            overrides
+                .by_account_group_wall_clock_ms
+                .get(&AccountModelGroupKey {
+                    upstream_account_id: Some(42),
+                    group: group("gpt-5.4", None),
+                })
+                .copied(),
             Some(2_000.0)
         );
     }

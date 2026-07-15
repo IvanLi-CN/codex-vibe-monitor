@@ -224,7 +224,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.intervalSeconds": "{{count}}s",
     "accountPool.upstreamAccounts.routing.dialogTitle": "Advanced routing & sync settings",
     "accountPool.upstreamAccounts.routing.dialogDescription":
-      "Edit the pool route key, request path timeouts, and the two-tier maintenance queue without touching environment variables.",
+      "Edit the pool route key and the two-tier maintenance queue without touching environment variables. Global request compression and request path timeouts now live in system settings.",
     "accountPool.upstreamAccounts.routing.save": "Save settings",
     "accountPool.upstreamAccounts.routing.validation.integerRequired":
       "Sync fields must be positive integers.",
@@ -1456,6 +1456,31 @@ const baseTranslations = {
     "settings.loadError": "Settings request failed: {{error}}",
     "settings.saving": "Saving…",
     "settings.autoSaved": "Auto save enabled",
+    "settings.routing.title": "Upstream request defaults",
+    "settings.routing.description":
+      "Configure the global request-body compression and request path timeouts for API key upstream HTTP requests. Group and account rules can override only the algorithm.",
+    "settings.routing.readOnly": "Read-only",
+    "settings.routing.saved": "Saved",
+    "settings.routing.unsaved": "Unsaved changes",
+    "settings.routing.save": "Save defaults",
+    "settings.routing.unavailable":
+      "Routing defaults are unavailable right now. Refresh the page and try again.",
+    "settings.routing.requestCompressionSectionTitle": "Upstream request compression",
+    "settings.routing.requestCompressionSectionDescription":
+      "Choose the default request-body compression algorithm and the global level preset used for API key upstream HTTP requests.",
+    "settings.routing.requestCompressionAlgorithmLabel": "Default compression algorithm",
+    "settings.routing.requestCompressionLevelPresetLabel": "Compression level preset",
+    "settings.routing.requestCompressionHint":
+      "Follow reuses the downstream request encoding. Unsupported downstream encodings fail explicitly instead of falling back automatically.",
+    "settings.routing.timeout.sectionTitle": "Request path timeouts (seconds)",
+    "settings.routing.timeout.sectionDescription":
+      "These global timeout defaults apply to API key upstream HTTP requests after request-body rewrite and before any group or account timeout override.",
+    "settings.routing.timeout.responsesFirstByte": "Standard response first byte timeout",
+    "settings.routing.timeout.compactFirstByte": "Compact response first byte timeout",
+    "settings.routing.timeout.imageFirstByte": "Image response first byte timeout",
+    "settings.routing.timeout.responsesStream": "Standard stream completion timeout",
+    "settings.routing.timeout.compactStream": "Compact stream completion timeout",
+    "settings.routing.errors.timeoutPositiveInteger": "{{field}} must be a positive integer.",
     "settings.externalApiKeys.title": "External API Keys",
     "settings.externalApiKeys.description":
       "Manage third-party API keys for external upstream-account operations.",
@@ -1779,6 +1804,8 @@ const baseTranslations = {
     "dashboard.modelPerformance.title": "Model performance",
     "dashboard.modelPerformance.description":
       "Complete-range metrics for successful billed calls, grouped by response model and reasoning effort.",
+    "dashboard.modelPerformance.overlapNote":
+      "Total wall clock is the global union of active time. Model rows keep their own wall clock, so cross-model overlap can make their sum exceed Total.",
     "dashboard.modelPerformance.total": "Total",
     "dashboard.modelPerformance.model": "Model / effort",
     "dashboard.modelPerformance.reasoningEffort": "Reasoning",
@@ -1786,7 +1813,9 @@ const baseTranslations = {
     "dashboard.modelPerformance.columns.streamingRate": "Streaming rate",
     "dashboard.modelPerformance.columns.response": "Avg response",
     "dashboard.modelPerformance.columns.firstByte": "Avg first byte",
-    "dashboard.modelPerformance.columns.usageDuration": "Usage duration",
+    "dashboard.modelPerformance.columns.wallClockDuration": "Wall clock",
+    "dashboard.modelPerformance.columns.cumulativeDuration": "Cumulative",
+    "dashboard.modelPerformance.columns.parallelism": "Parallelism",
     "dashboard.modelPerformance.empty": "No successful billed calls in this time range.",
     "dashboard.modelPerformance.unavailable":
       "Retained raw calls are unavailable for this time range, so model performance cannot be calculated.",
@@ -2611,7 +2640,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.intervalSeconds": "{{count}} 秒",
     "accountPool.upstreamAccounts.routing.dialogTitle": "高级路由与同步设置",
     "accountPool.upstreamAccounts.routing.dialogDescription":
-      "在项目界面里直接编辑号池路由密钥、请求链路超时和双层 maintenance 队列参数。",
+      "在项目界面里直接编辑号池路由密钥和双层 maintenance 队列参数。全局请求压缩与请求链路超时已迁到系统设置。",
     "accountPool.upstreamAccounts.routing.save": "保存设置",
     "accountPool.upstreamAccounts.routing.validation.integerRequired": "同步字段必须填写为正整数。",
     "accountPool.upstreamAccounts.routing.validation.primaryMin":
@@ -3785,6 +3814,30 @@ const baseTranslations = {
     "settings.loadError": "设置请求失败：{{error}}",
     "settings.saving": "保存中…",
     "settings.autoSaved": "已启用自动保存",
+    "settings.routing.title": "上游请求默认值",
+    "settings.routing.description":
+      "为 API Key 上游 HTTP 请求配置全局默认的请求体压缩和请求链路超时。分组和账号规则只允许覆盖算法。",
+    "settings.routing.readOnly": "只读",
+    "settings.routing.saved": "已保存",
+    "settings.routing.unsaved": "有未保存修改",
+    "settings.routing.save": "保存默认值",
+    "settings.routing.unavailable": "暂时无法加载路由默认值，请刷新页面后重试。",
+    "settings.routing.requestCompressionSectionTitle": "上游请求压缩",
+    "settings.routing.requestCompressionSectionDescription":
+      "选择 API Key 上游 HTTP 请求默认使用的请求体压缩算法，以及全局压缩等级预设。",
+    "settings.routing.requestCompressionAlgorithmLabel": "默认压缩算法",
+    "settings.routing.requestCompressionLevelPresetLabel": "压缩等级预设",
+    "settings.routing.requestCompressionHint":
+      "“跟随”会复用下游请求体编码；遇到不支持的下游编码时会显式失败，不会自动降级。",
+    "settings.routing.timeout.sectionTitle": "请求链路超时（秒）",
+    "settings.routing.timeout.sectionDescription":
+      "这些全局超时默认值作用于 API Key 上游 HTTP 请求，请求体改写完成后生效；分组和账号仍可额外覆盖各自的超时字段。",
+    "settings.routing.timeout.responsesFirstByte": "一般请求响应体首字超时",
+    "settings.routing.timeout.compactFirstByte": "压缩请求响应体首字超时",
+    "settings.routing.timeout.imageFirstByte": "图片请求响应体首字超时",
+    "settings.routing.timeout.responsesStream": "一般请求流结束超时",
+    "settings.routing.timeout.compactStream": "压缩请求流结束超时",
+    "settings.routing.errors.timeoutPositiveInteger": "{{field}} 必须填写为正整数。",
     "settings.externalApiKeys.title": "External API Keys",
     "settings.externalApiKeys.description":
       "管理第三方开放接口使用的 API Key，用于外部上游账号操作。",
@@ -4092,6 +4145,8 @@ const baseTranslations = {
     "dashboard.modelPerformance.title": "模型性能",
     "dashboard.modelPerformance.description":
       "仅统计成功且已计费调用，按响应模型与思考程度汇总当前范围完整周期的指标。",
+    "dashboard.modelPerformance.overlapNote":
+      "总计墙钟时长按全局活跃时间并集计算；模型行保留各自墙钟时长，跨模型重叠时模型行墙钟和可能大于总计。",
     "dashboard.modelPerformance.total": "总计",
     "dashboard.modelPerformance.model": "模型 / 思考程度",
     "dashboard.modelPerformance.reasoningEffort": "思考程度",
@@ -4099,7 +4154,9 @@ const baseTranslations = {
     "dashboard.modelPerformance.columns.streamingRate": "流式响应速率",
     "dashboard.modelPerformance.columns.response": "平均响应时长",
     "dashboard.modelPerformance.columns.firstByte": "平均首字用时",
-    "dashboard.modelPerformance.columns.usageDuration": "使用时长",
+    "dashboard.modelPerformance.columns.wallClockDuration": "墙钟时长",
+    "dashboard.modelPerformance.columns.cumulativeDuration": "累计时长",
+    "dashboard.modelPerformance.columns.parallelism": "并行数",
     "dashboard.modelPerformance.empty": "当前范围内没有成功且已计费的调用。",
     "dashboard.modelPerformance.unavailable": "当前范围的原始调用明细不可用，无法计算模型性能。",
     "dashboard.modelPerformance.close": "关闭模型性能详情",

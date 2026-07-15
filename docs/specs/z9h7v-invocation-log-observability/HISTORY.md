@@ -48,5 +48,5 @@
 - 2026-07-10: 锚点分页增加短生命周期 `anchorId`，使后续相邻页复用定位时冻结的 runtime overlay，避免运行态记录令页边界漂移。
 - 2026-07-10: 账号详情调用 ID 固化为单行完整展示，并通过表面专属列宽与单层非布局高亮避免截断、换行和焦点轮廓叠加。
 - 2026-07-13: Dashboard 活动快照新增成功已计费调用的响应模型/思考程度性能聚合，并在总览和账号卡提供桌面浮层与窄屏抽屉入口；后续实时 KPI 合同已迁回 `z6ysw` 的最近完整 1 分钟 bucket，本 spec 只保留完整范围模型性能明细语义。
-- 2026-07-15: 将 Dashboard 模型性能总计 `usageDurationMs` 从简单求和改为范围内调用时间并集；模型行保持原有累加口径，因此总计允许小于下方模型行加总。
+- 2026-07-15: 将 Dashboard 模型性能时长合同从含混的单字段 `usageDurationMs` 改为显式的 `wallClockUsageDurationMs`、`cumulativeUsageDurationMs` 与 `parallelism`，并统一覆盖全局、账号、模型与账号+模型四级聚合。
 - 2026-07-15: Attempt owner-facing 合同改为持久化 8 位短 `attemptId`；账号详情、健康与事件、Records 新跳转统一改用 `attemptId`，并新增启动期 live/archive backfill 补齐历史 `attempt_public_id`。

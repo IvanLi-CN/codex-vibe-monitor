@@ -37,7 +37,7 @@
 - 尝试详情必须提供到 `/records?attemptId=...` 的全局调用总览入口，并自动展开该最终调用的完整尝试链；旧 `requestId` 型入口只保留兼容读取，不再作为新 UI 的 attempt 跳转合同。
 - 账号详情调用记录中的 owner-facing 主入口必须显示 `attemptId` 而不是 `invokeId`；`invokeId` 如保留只能降级为诊断上下文，不能继续承担 attempt 主标识角色。
 - 号池调用处于 `running` / `pending` 且已携带 `upstreamAccountName` 或 `upstreamAccountId` 时，所有共享 invocation 展示面必须用当前上游账号替代“号池路由中”fallback，并以蓝色呼吸文本表达正在路由中。
-- Dashboard 当前时间范围新增按“响应模型 / 思考程度”分组的性能明细，覆盖 TPM、流式响应速率、平均响应时长、平均首字用时与累计使用时长；这些明细仅统计成功且已计费调用。
+- Dashboard 当前时间范围新增按“响应模型 / 思考程度”分组的性能明细，覆盖 TPM、流式响应速率、平均响应时长、平均首字用时、墙钟时长、累计时长与并行数；这些明细仅统计成功且已计费调用。
 
 ### Non-goals
 
@@ -96,9 +96,9 @@
 - 运行态号池账号提示必须复用现有账号点击路径；存在账号 ID 时，Live、Records、Dashboard working conversations 与 Dashboard 调用详情抽屉中的账号文本仍可打开上游账号详情。
 - 运行态号池账号提示必须是 text-only 蓝色语义状态，动画周期在 1500-2200ms 内；`prefers-reduced-motion: reduce` 下关闭呼吸动画但保留蓝色文本。
 - Dashboard 模型性能明细的样本资格固定为：状态为 `success` 或 `completed`、失败分类为 `none`、且 `cost` 非空；`cost=0` 仍属于已计费。模型取 `responseModel`，思考程度为空时显示“未指定”。
-- TPM 为合格调用总 token 除以当前完整选择范围的分钟数；流式响应速率为输出 token 除以上游流式响应时长；响应时长为首字至流结束的平均值；首字用时为收到调用请求至上游首字的平均值；模型行使用时长继续为各自行的端到端时长之和，总计行使用时长改为将同一范围内全部合格调用按 `intersection([occurred_at, occurred_at + t_total_ms), [range.start, range.end))` 取时间并集。缺少有效样本的单项显示 `—`。
+- TPM 为合格调用总 token 除以当前完整选择范围的分钟数；流式响应速率为输出 token 除以上游流式响应时长；响应时长为首字至流结束的平均值；首字用时为收到调用请求至上游首字的平均值；墙钟时长为合格调用区间 `intersection([occurred_at, occurred_at + t_total_ms), [range.start, range.end))` 的并集时长；累计时长为合格调用 `t_total_ms` 直接求和；并行数为 `cumulativeUsageDurationMs / wallClockUsageDurationMs`。分母缺失、非有限值或小于等于零时，并行数显示 `—`；缺少有效样本的其他单项同样显示 `—`。
 - `modelPerformance.total.tokensPerMinute` 与账号级模型性能总计继续使用本规格定义的成功已计费完整范围分母；Dashboard 顶部实时 `TPM / 消费速率 / 首字用时 / 响应时间` 的 owner-facing 当前值由 `z6ysw` 的 `last_complete_1m_sma` 合同负责，不复用这些完整范围总计。
-- 桌面端性能明细触发器必须支持 hover、键盘聚焦与点击保留；窄屏点击打开无横向滚动的详情抽屉。总计行置顶，模型行按累计使用时长降序；总计行允许小于模型行 `使用时长` 的算术和。
+- 桌面端性能明细触发器必须支持 hover、键盘聚焦与点击保留；窄屏点击打开无横向滚动的详情抽屉。总计行置顶，模型行按累计时长降序；显式时长列顺序固定为 `墙钟时长 / 累计时长 / 并行数`；总计墙钟时长允许小于模型行墙钟时长的算术和。
 - `GET /api/invocations/locate` 必须按 `upstreamAccountId + requestId` 在 retained live records 与当前 runtime overlay 中精确定位，固定采用 `occurredAt DESC, id DESC`，返回目标所在的单个分页窗口、稳定 `snapshotId`、短生命周期 `anchorId`、`targetIndex` 与 `targetAbsoluteIndex`。
 - 锚点定位未命中时必须返回结构化 `404`；不得为了定位查询 archive，也不得返回或预加载目标页之外的调用记录。
 
@@ -117,7 +117,7 @@
 
 - 请求进入 `/v1/chat/completions` 或 `/v1/responses` 采集路径时，后端提取 IP 与 prompt cache key，并随 payload 一并落库。
 - `/api/invocations` 通过 `json_extract(payload, ...)` 投影扩展字段，不依赖新增列。
-- Dashboard 活动快照从 retained live 调用按响应模型与思考程度聚合成功已计费性能样本，同时分别生成全局和账号级 `modelPerformance` 总计；原始费用、token 明细和调用列表聚合保持不变。
+- Dashboard 活动快照从 retained live 调用按响应模型与思考程度聚合成功已计费性能样本，同时分别生成全局、账号、模型与账号+模型四级的墙钟并集与累计时长，并在全局和账号级 `modelPerformance` 响应里显式返回 `wallClockUsageDurationMs`、`cumulativeUsageDurationMs` 与 `parallelism`；原始费用、token 明细和调用列表聚合保持不变。
 - Dashboard 性能明细入口继续展示当前选择范围的完整周期总计；顶部实时 KPI 与账号标题实时指标改由 `z6ysw` 的最近完整 1 分钟 bucket 提供，不再把 `modelPerformance` 总计当作当前值。
 - 前端表格默认显示关键字段（token/cost/latency），用户展开后看到请求元信息与阶段耗时明细。
 - 前端展开详情时隐藏 `source` 行，避免把来源分类误读成出站代理。
@@ -177,6 +177,13 @@
 - `requestModel?: string | null`
 - `responseModel?: string | null`
 
+### `GET /api/stats/dashboard-activity` / `GET /api/stats/upstream-account-activity` 的 `modelPerformance`
+
+- `available: boolean`
+- `total` 与每个 `models[]` 条目共享以下字段：`tokensPerMinute`、`streamingResponseRate?`、`avgResponseMs?`、`avgFirstResponseByteTotalMs?`、`wallClockUsageDurationMs?`、`cumulativeUsageDurationMs?`、`parallelism?`
+- `models[]` 继续包含 `model: string` 与 `reasoningEffort?: string | null`
+- 旧字段 `usageDurationMs` 不再对外返回
+
 ### `GET /api/invocations` 记录对象（已存在并沿用）
 
 - `tReqReadMs?`、`tReqParseMs?`、`tUpstreamConnectMs?`、`tUpstreamTtfbMs?`、`tUpstreamStreamMs?`、`tRespParseMs?`、`tPersistMs?`、`tTotalMs?`
@@ -225,7 +232,9 @@
 - Given 号池运行态调用没有 `upstreamAccountName` 或 `upstreamAccountId`，When owner-facing 调用界面渲染，Then 继续显示既有“号池路由中”fallback，且不伪造账号、不启用呼吸状态。
 - Given 号池调用已进入成功或失败等终态，When owner-facing 调用界面渲染其账号字段，Then 保持普通账号显示与点击行为，不启用运行态呼吸状态。
 - Given 当前 Dashboard 范围内同时存在成功已计费、失败、运行中和未计费调用，When 请求模型性能明细，Then 仅成功已计费调用进入总计和模型行，且 `cost=0` 的成功调用仍保留；模型按响应模型归属，空思考程度显示“未指定”。
-- Given owner 在桌面 hover、键盘聚焦或点击 Dashboard 的模型性能入口，When 性能明细打开，Then 显示置顶总计与按累计使用时长降序的模型行，且总计 `使用时长` 按范围内合格调用的时间并集计算、可以小于模型行加总，缺失指标显示 `—`；Given 窄屏点击同一入口，Then 以无横向滚动的抽屉展示同一数据。
+- Given 同一模型两次成功已计费调用分别持续 `10s`、`10s` 且重叠 `5s`，When 请求模型性能明细，Then 该模型返回 `wallClockUsageDurationMs=15s`、`cumulativeUsageDurationMs=20s`、`parallelism≈1.33`。
+- Given 两个不同模型在所选范围内各自活跃 `4s` 且跨模型重叠 `1s`，When owner 查看模型性能明细，Then 总计墙钟时长为 `7s`、两个模型行墙钟时长之和为 `8s`，并且说明文案明确“跨模型重叠时模型行墙钟和可能大于总计”。
+- Given owner 在桌面 hover、键盘聚焦或点击 Dashboard 的模型性能入口，When 性能明细打开，Then 显示置顶总计与按累计时长降序的模型行，且显式展示 `墙钟时长 / 累计时长 / 并行数` 三列，缺失指标显示 `—`；Given 窄屏点击同一入口，Then 以无横向滚动的抽屉展示同一数据。
 
 ### Manual verification
 
@@ -235,10 +244,10 @@
 
 - source_type: storybook_canvas
   story_id_or_title: Dashboard/ModelPerformanceTrigger/DesktopTooltip
-  state: desktop model-performance tooltip with union-based total usage duration
+  state: desktop model-performance tooltip with explicit wall-clock, cumulative, and parallelism columns
   requested_viewport: 1440x1024
-  viewport_strategy: browser-viewport
-  evidence_note: verifies the desktop model-performance tooltip keeps the pinned total row while showing the union-based total duration (`2.2 min`) smaller than the model-row arithmetic sum (`2 min + 1.1 min`).
+  viewport_strategy: storybook-viewport
+  evidence_note: verifies the desktop tooltip canvas shows the overlap note and the explicit `墙钟时长 / 累计时长 / 并行数` columns, with `Total` exposing `1.7 min / 2.2 min / x1.31` after scrolling the desktop table to the duration region.
   PR: include
   target_program: mock-only
   capture_scope: element
@@ -249,10 +258,10 @@
 
 - source_type: storybook_canvas
   story_id_or_title: Dashboard/ModelPerformanceTrigger/MobileDrawer
-  state: mobile model-performance drawer with union-based total usage duration
+  state: mobile model-performance drawer with explicit wall-clock, cumulative, and parallelism metrics
   requested_viewport: 390x844
-  viewport_strategy: browser-viewport
-  evidence_note: verifies the compact drawer keeps the stacked metric layout and shows the same union-based total duration (`2.2 min`) below the model-row sum, matching the desktop semantics.
+  viewport_strategy: storybook-viewport
+  evidence_note: verifies the compact drawer keeps the stacked metric layout, repeats the overlap note, and renders `墙钟时长 / 累计时长 / 并行数` as `1.7 min / 2.2 min / x1.31` for `Total`.
   PR: include
   target_program: mock-only
   capture_scope: element

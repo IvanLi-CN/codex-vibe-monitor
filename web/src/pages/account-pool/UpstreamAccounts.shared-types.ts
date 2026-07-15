@@ -1,30 +1,9 @@
-import type {
-  PoolRoutingTimeoutSettings,
-  RequestCompressionAlgorithm,
-  RequestCompressionLevelPreset,
-} from "../../lib/api";
-
 export type RoutingDraft = {
   apiKey: string;
   maskedApiKey: string | null;
   primarySyncIntervalSecs: string;
   secondarySyncIntervalSecs: string;
   priorityAvailableAccountCap: string;
-  requestCompressionAlgorithm: RequestCompressionAlgorithm;
-  requestCompressionLevelPreset: RequestCompressionLevelPreset;
-  responsesFirstByteTimeoutSecs: string;
-  compactFirstByteTimeoutSecs: string;
-  imageFirstByteTimeoutSecs: string;
-  responsesStreamTimeoutSecs: string;
-  compactStreamTimeoutSecs: string;
-};
-
-export const DEFAULT_ROUTING_TIMEOUTS: PoolRoutingTimeoutSettings = {
-  responsesFirstByteTimeoutSecs: 120,
-  compactFirstByteTimeoutSecs: 300,
-  imageFirstByteTimeoutSecs: 300,
-  responsesStreamTimeoutSecs: 300,
-  compactStreamTimeoutSecs: 300,
 };
 
 export const UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS = 600;

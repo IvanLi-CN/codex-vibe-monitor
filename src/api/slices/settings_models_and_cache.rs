@@ -1600,7 +1600,11 @@ pub(crate) struct ModelPerformanceMetricsResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) avg_first_response_byte_total_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) usage_duration_ms: Option<f64>,
+    pub(crate) wall_clock_usage_duration_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cumulative_usage_duration_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) parallelism: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

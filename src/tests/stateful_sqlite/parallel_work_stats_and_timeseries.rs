@@ -13042,19 +13042,47 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
         100.0,
     );
     assert_f64_close(
-        performance.total.usage_duration_ms.expect("usage duration"),
+        performance
+            .total
+            .wall_clock_usage_duration_ms
+            .expect("wall-clock usage duration"),
+        2_800.0,
+    );
+    assert_f64_close(
+        performance
+            .total
+            .cumulative_usage_duration_ms
+            .expect("cumulative usage duration"),
+        2_800.0,
+    );
+    assert_f64_close(
+        performance.total.parallelism.expect("summary parallelism"),
+        1.0,
+    );
+    assert_f64_close(
+        performance.models[0]
+            .metrics
+            .cumulative_usage_duration_ms
+            .expect("first model cumulative usage duration")
+            + performance.models[1]
+                .metrics
+                .cumulative_usage_duration_ms
+                .expect("second model cumulative usage duration"),
         2_800.0,
     );
     assert_f64_close(
         performance.models[0]
             .metrics
-            .usage_duration_ms
-            .expect("first model usage duration")
-            + performance.models[1]
-                .metrics
-                .usage_duration_ms
-                .expect("second model usage duration"),
-        2_800.0,
+            .wall_clock_usage_duration_ms
+            .expect("first model wall-clock usage duration"),
+        2_300.0,
+    );
+    assert_f64_close(
+        performance.models[1]
+            .metrics
+            .wall_clock_usage_duration_ms
+            .expect("second model wall-clock usage duration"),
+        500.0,
     );
     let alpha = accounts
         .iter()
@@ -13071,20 +13099,36 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
         alpha
             .model_performance
             .total
-            .usage_duration_ms
-            .expect("alpha usage duration"),
+            .wall_clock_usage_duration_ms
+            .expect("alpha wall-clock usage duration"),
+        2_800.0,
+    );
+    assert_f64_close(
+        alpha
+            .model_performance
+            .total
+            .cumulative_usage_duration_ms
+            .expect("alpha cumulative usage duration"),
         2_800.0,
     );
     assert_f64_close(
         alpha.model_performance.models[0]
             .metrics
-            .usage_duration_ms
-            .expect("alpha primary model usage duration")
+            .cumulative_usage_duration_ms
+            .expect("alpha primary model cumulative usage duration")
             + alpha.model_performance.models[1]
                 .metrics
-                .usage_duration_ms
-                .expect("alpha secondary model usage duration"),
+                .cumulative_usage_duration_ms
+                .expect("alpha secondary model cumulative usage duration"),
         2_800.0,
+    );
+    assert_f64_close(
+        alpha
+            .model_performance
+            .total
+            .parallelism
+            .expect("alpha parallelism"),
+        1.0,
     );
     let source_scope = resolve_default_source_scope(&state.pool)
         .await
