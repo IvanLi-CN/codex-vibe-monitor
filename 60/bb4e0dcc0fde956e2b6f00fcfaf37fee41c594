@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.37.0",
+  "base_stable_version": "2.36.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-15T18:19:26Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.37.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "08a0d057e66ab17927c3c5c4072134700b95f98c",
+  "pr_number": 630,
+  "pr_title": "feat(dashboard): add upstream network speed metrics",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.37.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.37.0",
+  "target_sha": "60bb4e0dcc0fde956e2b6f00fcfaf37fee41c594",
+  "type_label": "type:minor"
+}
