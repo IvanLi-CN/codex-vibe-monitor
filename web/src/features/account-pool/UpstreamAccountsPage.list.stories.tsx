@@ -224,6 +224,96 @@ function DynamicRosterStoryRouter({ layout }: { layout: DynamicRosterLayout }) {
   return <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />;
 }
 
+function isVisibleStoryElement(element: Element | null): element is HTMLElement {
+  if (!(element instanceof HTMLElement)) return false;
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+  return (
+    rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden"
+  );
+}
+
+function triggerBulkDeleteConfirmation(attempt = 0): number | null {
+  const root = document.body;
+  if (attempt > 40) return null;
+
+  const flatTab = Array.from(root.querySelectorAll<HTMLButtonElement>('button[role="tab"]')).find(
+    (candidate) => /平铺|flat/i.test(candidate.textContent ?? ""),
+  );
+  if (flatTab && flatTab.getAttribute("aria-selected") !== "true") {
+    flatTab.click();
+    return window.setTimeout(() => {
+      triggerBulkDeleteConfirmation(attempt + 1);
+    }, 120);
+  }
+
+  const existingOauthCheckbox = Array.from(root.querySelectorAll<HTMLInputElement>("input")).find(
+    (candidate) =>
+      isVisibleStoryElement(candidate) &&
+      /选择\s*Codex Pro - Tokyo|select codex pro - tokyo/i.test(
+        candidate.getAttribute("aria-label") ?? "",
+      ),
+  );
+  const stagingCheckbox = Array.from(root.querySelectorAll<HTMLInputElement>("input")).find(
+    (candidate) =>
+      isVisibleStoryElement(candidate) &&
+      /选择\s*Team key - staging|select team key - staging/i.test(
+        candidate.getAttribute("aria-label") ?? "",
+      ),
+  );
+  if (!existingOauthCheckbox || !stagingCheckbox) {
+    return window.setTimeout(() => {
+      triggerBulkDeleteConfirmation(attempt + 1);
+    }, 100);
+  }
+
+  if (!existingOauthCheckbox.checked) {
+    existingOauthCheckbox.click();
+  }
+  if (!stagingCheckbox.checked) {
+    stagingCheckbox.click();
+  }
+
+  const deleteButton = Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find(
+    (candidate) =>
+      isVisibleStoryElement(candidate) &&
+      /delete selected|批量删除/i.test(
+        candidate.textContent || candidate.getAttribute("aria-label") || "",
+      ),
+  );
+  if (!deleteButton) {
+    return window.setTimeout(() => {
+      triggerBulkDeleteConfirmation(attempt + 1);
+    }, 100);
+  }
+
+  const alertDialog = root.querySelector('[role="alertdialog"]');
+  if (!alertDialog) {
+    deleteButton.click();
+  }
+
+  return null;
+}
+
+function BulkDeleteConfirmationStoryRouter() {
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    timerRef.current = window.setTimeout(() => {
+      triggerBulkDeleteConfirmation();
+    }, 120);
+
+    return () => {
+      if (timerRef.current != null) {
+        window.clearTimeout(timerRef.current);
+      }
+      timerRef.current = null;
+    };
+  }, []);
+
+  return <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />;
+}
+
 async function switchToDynamicLayout(canvasElement: HTMLElement, layout: DynamicRosterLayout) {
   const documentScope = within(canvasElement.ownerDocument.body);
   const tab = await documentScope.findByRole("tab", {
@@ -514,6 +604,10 @@ export const BulkSelection: Story = {
       await canvas.findByText(/已跨页选中 \d+ 个账号|\d+ accounts selected across pages/i),
     ).toBeInTheDocument();
   },
+};
+
+export const BulkDeleteConfirmation: Story = {
+  render: () => <BulkDeleteConfirmationStoryRouter />,
 };
 
 export const BulkSyncSuccessAutoHide: Story = {
