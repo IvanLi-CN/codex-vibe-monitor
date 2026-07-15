@@ -1180,7 +1180,7 @@ function mockAccountsPage(options?: {
         httpStatus: 429,
         failureKind: "upstream_http_429_quota_exhausted",
         invokeId: "invk_action_001",
-        attemptId: 9001,
+        attemptId: "4V7MYPJG",
         stickyKey: "sticky-dup-001",
         createdAt: "2026-03-16T02:06:00.000Z",
       },
@@ -2370,7 +2370,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
 
     await flushAsync();
     expect(document.body.textContent).toMatch(/上游尝试 ID|Upstream attempt ID/);
-    expect(document.body.textContent).toContain("9001");
+    expect(document.body.textContent).toContain("4V7MYPJG");
     expect(document.body.textContent).not.toMatch(/调用 ID: invk_action_001/);
   });
 

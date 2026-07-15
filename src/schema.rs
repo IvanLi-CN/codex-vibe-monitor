@@ -2901,6 +2901,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         r#"
         CREATE TABLE IF NOT EXISTS pool_upstream_request_attempts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            attempt_public_id TEXT,
             invoke_id TEXT NOT NULL,
             occurred_at TEXT NOT NULL,
             endpoint TEXT NOT NULL,
@@ -3022,6 +3023,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let existing_pool_attempt_columns =
         load_sqlite_table_columns(pool, "pool_upstream_request_attempts").await?;
     for (column, ty) in [
+        ("attempt_public_id", "TEXT"),
         ("upstream_route_key", "TEXT"),
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),
@@ -3102,6 +3104,17 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_forward_proxy_attempts_time_proxy")?;
+
+    sqlx::query(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_pool_upstream_request_attempts_public_id
+        ON pool_upstream_request_attempts (attempt_public_id)
+        WHERE attempt_public_id IS NOT NULL
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_pool_upstream_request_attempts_public_id")?;
 
     sqlx::query(
         r#"

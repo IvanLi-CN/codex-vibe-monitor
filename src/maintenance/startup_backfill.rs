@@ -15,6 +15,8 @@ pub(crate) enum StartupBackfillTask {
     InvocationServiceTier,
     ReasoningEffort,
     FailureClassification,
+    PoolAttemptPublicIdLive,
+    PoolAttemptPublicIdArchives,
     UpstreamActivityLive,
     UpstreamActivityArchives,
     PoolUpstreamNodeHealthArchives,
@@ -31,6 +33,8 @@ impl StartupBackfillTask {
             Self::ProxyCost,
             Self::ReasoningEffort,
             Self::FailureClassification,
+            Self::PoolAttemptPublicIdLive,
+            Self::PoolAttemptPublicIdArchives,
             Self::UpstreamActivityLive,
             Self::UpstreamActivityArchives,
             Self::PoolUpstreamNodeHealthArchives,
@@ -47,6 +51,10 @@ impl StartupBackfillTask {
             Self::InvocationServiceTier => STARTUP_BACKFILL_TASK_INVOCATION_SERVICE_TIER,
             Self::ReasoningEffort => STARTUP_BACKFILL_TASK_REASONING_EFFORT,
             Self::FailureClassification => STARTUP_BACKFILL_TASK_FAILURE_CLASSIFICATION,
+            Self::PoolAttemptPublicIdLive => STARTUP_BACKFILL_TASK_POOL_ATTEMPT_PUBLIC_ID_LIVE,
+            Self::PoolAttemptPublicIdArchives => {
+                STARTUP_BACKFILL_TASK_POOL_ATTEMPT_PUBLIC_ID_ARCHIVES
+            }
             Self::UpstreamActivityLive => STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_LIVE,
             Self::UpstreamActivityArchives => STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES,
             Self::PoolUpstreamNodeHealthArchives => {
@@ -65,6 +73,8 @@ impl StartupBackfillTask {
             Self::InvocationServiceTier => "invocation service tier",
             Self::ReasoningEffort => "proxy reasoning effort",
             Self::FailureClassification => "invocation failure classification",
+            Self::PoolAttemptPublicIdLive => "pool attempt public id live rows",
+            Self::PoolAttemptPublicIdArchives => "pool attempt public id archives",
             Self::UpstreamActivityLive => "upstream activity live rows",
             Self::UpstreamActivityArchives => "upstream activity archives",
             Self::PoolUpstreamNodeHealthArchives => "pool upstream node health archives",
@@ -782,6 +792,50 @@ pub(crate) async fn run_startup_backfill_task(
                     samples: outcome.samples,
                 },
                 "failure classification recalculated".to_string(),
+            ))
+        }
+        StartupBackfillTask::PoolAttemptPublicIdLive => {
+            let outcome = backfill_pool_upstream_request_attempt_public_ids_from_cursor(
+                &state.pool,
+                cursor_id,
+                Some(STARTUP_BACKFILL_SCAN_LIMIT),
+                max_elapsed,
+            )
+            .await?;
+            Ok((
+                StartupBackfillRunState {
+                    next_cursor_id: outcome.next_cursor_id,
+                    scanned: outcome.summary.scanned,
+                    updated: outcome.summary.updated,
+                    hit_scan_limit: outcome.hit_budget,
+                    force_idle: false,
+                    samples: outcome.samples,
+                },
+                "attempt_public_id live rows".to_string(),
+            ))
+        }
+        StartupBackfillTask::PoolAttemptPublicIdArchives => {
+            let outcome =
+                backfill_pool_upstream_request_attempt_archive_public_ids_from_batch_cursor(
+                    &state.pool,
+                    cursor_id,
+                    Some(1),
+                    max_elapsed,
+                )
+                .await?;
+            Ok((
+                StartupBackfillRunState {
+                    next_cursor_id: outcome.next_cursor_id,
+                    scanned: outcome.summary.scanned_batches,
+                    updated: outcome.summary.updated_rows,
+                    hit_scan_limit: outcome.hit_budget,
+                    force_idle: false,
+                    samples: outcome.samples,
+                },
+                format!(
+                    "updated_batches={} updated_rows={}",
+                    outcome.summary.updated_batches, outcome.summary.updated_rows
+                ),
             ))
         }
         StartupBackfillTask::UpstreamActivityLive => {

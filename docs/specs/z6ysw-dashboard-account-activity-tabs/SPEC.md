@@ -111,7 +111,7 @@
 - Dashboard 默认 `对话` 视图不得预取账号活动；进入 `上游账号` 后必须按“账号卡骨架 -> 汇总卡片 -> recent 调用”渐进展示。只有汇总请求成功且账号数组确实为空时才允许显示真实空态。
 - `GET /api/stats/dashboard-activity` 新增可选 `includeRecent`；省略时默认 `true` 保持兼容。Dashboard 第一阶段必须发送 `includeAccounts=true&includeRecent=false`，使账号身份、状态、策略和聚合指标不等待 recent invocation。
 - `GET /api/stats/dashboard-activity/recent` 必须接收第一阶段响应的 `rangeStart/rangeEnd/snapshotId` 与 `recentLimit`，用一次批量读取返回所有活动账号的 bounded recent rows；不得逐账号发 SQL，也不得以并发 N 个 SQL 伪装批量读取。响应必须回显快照边界，前端只合并当前请求序列与当前快照一致的结果。
-- 首次账号汇总加载时计数 badge 不得显示误导性的 `0`；范围切换与静默校准应保留旧卡片并标注更新中。已有卡片时，更新提示必须收口到头部紧凑状态 chip，而不是在卡片网格上方插入临时行；该 chip 在 idle 与 visible 两种状态下都应按自身内容自然宽度占位，避免为了稳态预留额外固定宽度空白。该 chip 仅在 background refresh 持续超过 `300ms` 后出现，且出现后最少保留 `600ms`，避免高频 reconcile 造成闪烁。新汇总原子替换后，其 recent 区域独立加载；recent 失败不得撤销汇总卡片，必须提供局部错误与重试。
+- 首次账号汇总加载时计数 badge 不得显示误导性的 `0`；范围切换与静默校准应保留旧卡片并标注更新中。已有卡片时，更新提示必须收口到头部紧凑状态表达，而不是在卡片网格上方插入临时行；桌面端显示非 badge 的 spinner + `刷新中` 文本，并固定放在“当前活动账号”计数 badge 左侧，移动端只保留 spinner 视觉表现。刷新状态在 idle 时不得保留隐藏占位或固定宽度空白；background refresh 持续超过 `300ms` 后才允许出现，且出现后最少保留 `600ms`，避免高频 reconcile 造成闪烁。新汇总原子替换后，其 recent 区域独立加载；recent 失败不得撤销汇总卡片，必须提供局部错误与重试。
 - 账号视图切换后的下一次绘制必须出现稳定骨架；固定多账号本地 fixture 下，第一阶段账号汇总应在 1 秒内完成，且第一阶段 SQL 数量不得随账号数量线性增长。
 - 当前实现中，账号视图与 current summary 一样统一收口到 `5s` reconcile/open-resync 预算；任何更激进的 cadence 变更都必须先补充 slow-path 证据。
 - 共享 range 状态应继续使用现有 localStorage key，避免打断用户已保存的 Dashboard 偏好。
@@ -405,17 +405,17 @@ PR: include
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-refreshing`
-  scenario: `desktop header refresh chip`
-  evidence_note: 验证已有账号卡时，background refresh 状态收口到头部紧凑 chip；账号卡网格上方不再插入单独提示行，且 chip 只按自身内容自然宽度占位，不会额外吃掉固定空白。
+  scenario: `desktop header refresh status`
+  evidence_note: 验证已有账号卡时，background refresh 状态收口到头部轻量状态表达；该证据图保留完整头部与账号内容区，展示桌面端以非 badge 的 spinner + `刷新中` 文本紧贴在“当前活动账号”计数 badge 左侧，且不改变右侧排序按钮与首张账号卡的整体排布；idle 时不再预留固定空白。
   image:
-  ![Dashboard 上游账号头部刷新 chip 桌面证据](./assets/dashboard-upstream-account-refresh-chip-desktop.png)
+  ![Dashboard 上游账号头部刷新状态桌面证据](./assets/dashboard-upstream-account-refresh-status-desktop.png)
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-refreshing-mobile`
-  scenario: `mobile header refresh chip`
-  evidence_note: 验证移动视口下同一刷新状态也收口为头部紧凑 chip；状态切换不会额外挤出一条临时行，也不会为了 idle 状态预留不合理的固定宽度空位。
+  scenario: `mobile header refresh status`
+  evidence_note: 验证移动视口下同一刷新状态仍收口到头部；该证据图保留完整头部与首张账号卡，视觉上只保留 spinner、不显示“刷新中”文字；可访问状态播报继续存在，状态切换不会额外挤出一条临时行，也不会为了 idle 状态预留不合理的固定宽度空位。
   image:
-  ![Dashboard 上游账号头部刷新 chip 移动证据](./assets/dashboard-upstream-account-refresh-chip-mobile.png)
+  ![Dashboard 上游账号头部刷新状态移动证据](./assets/dashboard-upstream-account-refresh-status-mobile.png)
 
 - source_type: ui_demo
   story_id_or_title: `#/dashboard?demoScene=progressive-loading&demoTheme=dark`

@@ -28,13 +28,14 @@
 - Live 展开详情与 Dashboard 调用详情抽屉必须共用同一套调用详情组件，并按“快速排障”组织信息：请求身份、路由与模型、失败信号、细节保留、阶段耗时分组展示。
 - 新 HTTP proxy invocation 的 `invokeId` 必须使用 10 位 NanoID 风格短格式，去掉历史 `proxy-...` 前缀、内部 counter 与时间戳尾巴；历史 `proxy-...` 记录继续兼容查询和展示。
 - 账号详情“上游调用尝试”必须按真实 `pool_upstream_request_attempts` 行展示请求、重试、失败与成功；概览统计继续采用最终调用口径。
-- 账号上游调用记录必须采用表格展示；每行仅表达一次真实上游调用，直接列出时间、调用 ID、请求模型与响应模型、结果/HTTP 状态、代理、连接/首字节/流式延迟和错误。不得显示 endpoint、重试序号、最终 invocation 的 tokens/费用或其他非本次调用字段。
+- 账号上游调用记录必须采用表格展示；每行仅表达一次真实上游调用，直接列出时间、上游尝试短 ID、请求模型与响应模型、结果/HTTP 状态、代理、连接/首字节/流式延迟和错误。不得显示 endpoint、重试序号、最终 invocation 的 tokens/费用或其他非本次调用字段。
 - 结果列的 HTTP 值必须明确标记为上游 HTTP；仅当与上游不同才在当前记录下方的全宽诊断展开区显示下游 HTTP。错误主列显示失败分类与两行摘要；失败或状态不一致时以紧凑元数据带展示完整错误、复制命令、上游请求 ID、路由键与代理绑定键，不得挤在错误列角落或为正常成功行额外占用高度。
 - 桌面保留完整诊断表；窄屏仍采用表格，首屏优先时间、调用/模型、结果和错误摘要，代理、三段延迟与完整错误证据收进可展开区。代理优先显示解析后的节点名，不能解析时显示截短绑定键并保留完整值提示。
 - 新产生的路由调用事件必须携带精确 `attemptId`，健康与事件只能用该 ID 定位同账号的尝试；缺少 `attemptId` 的历史事件必须明确不可定位，不做 `invokeId` 模糊跳转。
+- owner-facing attempt 标识统一使用持久化 8 位短 `attemptId`。该 ID 存于 `pool_upstream_request_attempts.attempt_public_id`，live 与 archive 都要求非空；内部数值主键仅保留给 DB join / FK / 维护逻辑，不得直接暴露。
 - 尝试列表与定位只查询主库最近 7 天，按 `occurredAt DESC, id DESC` 稳定分页，不读取 archive。
-- 尝试详情必须提供到 `/records?requestId=...` 的全局调用总览入口，并自动展开该最终调用的完整尝试链。
-- 账号详情调用记录中的 `invokeId` 必须使用等宽字体单行完整展示，不得换行或截断；该表面可使用专用列宽回收用时、输入与输出列空间，但不得改变其他共享调用列表的默认布局。
+- 尝试详情必须提供到 `/records?attemptId=...` 的全局调用总览入口，并自动展开该最终调用的完整尝试链；旧 `requestId` 型入口只保留兼容读取，不再作为新 UI 的 attempt 跳转合同。
+- 账号详情调用记录中的 owner-facing 主入口必须显示 `attemptId` 而不是 `invokeId`；`invokeId` 如保留只能降级为诊断上下文，不能继续承担 attempt 主标识角色。
 - 号池调用处于 `running` / `pending` 且已携带 `upstreamAccountName` 或 `upstreamAccountId` 时，所有共享 invocation 展示面必须用当前上游账号替代“号池路由中”fallback，并以蓝色呼吸文本表达正在路由中。
 - Dashboard 当前时间范围新增按“响应模型 / 思考程度”分组的性能明细，覆盖 TPM、流式响应速率、平均响应时长、平均首字用时与累计使用时长；明细及对应 TPM、首字卡面仅统计成功且已计费调用。
 
@@ -153,7 +154,8 @@
 
 - `pool_upstream_account_events.attempt_id` 为可空精确关联；只为新产生且调用链路已拿到尝试主键的路由事件写入，不回填历史事件。
 - `GET /api/pool/upstream-accounts/{accountId}/call-attempts` Query: `page?: number`、`pageSize?: number`；Response: `items`、`total`、`page`、`pageSize`。
-- `GET /api/pool/upstream-accounts/{accountId}/call-attempts/locate` Query: `attemptId: number`、`pageSize?: number`；目标必须属于当前账号且处于 7 天主库窗口内。
+- `GET /api/pool/upstream-accounts/{accountId}/call-attempts/locate` Query: `attemptId: string`、`pageSize?: number`；目标必须属于当前账号且处于 7 天主库窗口内。
+- 尝试对象必须返回 `attemptId: string`，映射自持久化 `attempt_public_id`；不得返回纯数字主键作为 owner-facing attempt 标识。
 - 尝试对象额外返回 `requestModel?: string | null` 与 `responseModel?: string | null`；两个字段从关联 invocation 的 `payload.requestModel` / `payload.responseModel` 投影，请求模型缺失时回退 `model`，缺少匹配 invocation 时保持空值。该查询不得依赖新增 SQLite 列。
 
 ### `GET /api/settings` / `PUT /api/settings/proxy` 新增字段
@@ -181,8 +183,8 @@
 
 ### `GET /api/invocations/locate` 锚点分页
 
-- Query: `requestId: string`、`upstreamAccountId: number`、`pageSize?: number`（默认 `50`）。
-- Response: 沿用 `snapshotId`、`total`、`page`、`pageSize`、`records`，并增加 `anchorId: string`、`targetIndex: number` 与 `targetAbsoluteIndex: number`。
+- Query: `requestId?: string`、`attemptId?: string`、`upstreamAccountId?: number`、`pageSize?: number`（默认 `50`）；至少提供一个定位键，显式 `attemptId` 优先用于解析父 invocation。
+- Response: 沿用 `snapshotId`、`total`、`page`、`pageSize`、`records`，并增加 `anchorId: string`、`requestId: string`、`attemptId?: string | null`、`targetIndex: number` 与 `targetAbsoluteIndex: number`。
 - 后续双向分页继续调用 `GET /api/invocations`，携带定位响应的 `snapshotId`、`anchorId`、相邻 `page`、相同 `pageSize` 与 `upstreamAccountId`；服务端用 `anchorId` 复现定位时冻结的 runtime overlay，令所有页边界一致。
 
 ## 验收标准（Acceptance Criteria）

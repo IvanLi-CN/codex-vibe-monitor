@@ -29,6 +29,7 @@ import {
 } from "../../lib/dashboardWorkingConversations";
 import { AccountDetailDrawerShell } from "../account-pool/AccountDetailDrawerShell";
 import { PromptCacheConversationHistoryDrawer } from "../prompt-cache/PromptCacheConversationTable";
+import { formatStoryAttemptId } from "../records/invocationRecordsStoryFixtures";
 import { DashboardInvocationDetailDrawer } from "./DashboardInvocationDetailDrawer";
 import { DashboardWorkingConversationsSection } from "./DashboardWorkingConversationsSection";
 import { DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY } from "./dashboardActivityRange";
@@ -1748,7 +1749,7 @@ function buildStoryMockData(
     ) {
       poolAttemptsByInvokeId.set(record.invokeId, [
         {
-          id: record.id * 10 + 1,
+          attemptId: formatStoryAttemptId(record.id * 10 + 1),
           invokeId: record.invokeId,
           occurredAt: record.occurredAt,
           endpoint: record.endpoint ?? "/v1/responses",
@@ -3474,17 +3475,14 @@ export const UpstreamAccountRefreshing: Story = {
       await expect(canvas.getByRole("status", { name: "正在更新账号汇总" })).toBeVisible();
     });
     await expect(canvas.getByTestId("dashboard-upstream-account-card")).toBeVisible();
-    await expect(canvas.getByTestId("dashboard-upstream-account-refresh-chip")).toHaveAttribute(
-      "data-state",
-      "visible",
-    );
+    await expect(canvas.getByTestId("dashboard-upstream-account-refresh-text")).toBeVisible();
   },
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
     docs: {
       description: {
         story:
-          "Range refresh keeps the previous cards visible until replacement while the header chip keeps a stable intrinsic width instead of reserving a wider blank slot or inserting a new layout row above the account grid.",
+          "Range refresh keeps the previous cards visible until replacement while the header status collapses to a lightweight spinner + label ahead of the count badge, without reserving idle whitespace or inserting a new row above the account grid.",
       },
     },
   },
@@ -3508,13 +3506,15 @@ export const UpstreamAccountRefreshingMobile: Story = {
     });
     await expect(canvas.getByTestId("dashboard-upstream-account-card")).toBeVisible();
     await expect(canvas.getByTestId("dashboard-working-conversations-badges")).toBeVisible();
+    await expect(canvas.getByTestId("dashboard-upstream-account-refresh-spinner")).toBeVisible();
+    await expect(canvas.getByTestId("dashboard-upstream-account-refresh-text")).not.toBeVisible();
   },
   parameters: {
     viewport: { defaultViewport: "mobile430" },
     docs: {
       description: {
         story:
-          "Mobile refresh keeps the account card visible and uses the same intrinsic-width chip, so toggling refresh does not consume a dedicated wide slot or introduce a transient extra row.",
+          "Mobile refresh keeps the account card visible while the header collapses the visual treatment to spinner-only; the accessible status remains intact, but no text badge or idle placeholder consumes an extra slot.",
       },
     },
   },

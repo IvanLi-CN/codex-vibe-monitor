@@ -7,7 +7,9 @@ use tokio::sync::watch;
 #[derive(Debug, Clone, Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ApiPoolUpstreamRequestAttempt {
+    #[serde(skip_serializing)]
     pub(crate) id: i64,
+    pub(crate) attempt_id: String,
     pub(crate) invoke_id: String,
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
     pub(crate) occurred_at: String,
@@ -1466,8 +1468,9 @@ pub(crate) struct ListQuery {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LocateInvocationQuery {
-    pub(crate) request_id: String,
-    pub(crate) upstream_account_id: i64,
+    pub(crate) request_id: Option<String>,
+    pub(crate) attempt_id: Option<String>,
+    pub(crate) upstream_account_id: Option<i64>,
     pub(crate) page_size: Option<i64>,
 }
 

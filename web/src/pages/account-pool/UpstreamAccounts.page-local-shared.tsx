@@ -243,6 +243,7 @@ type AccountDetailTab = UpstreamAccountDetailRouteTab;
 type AccountRecordsMode = "latest" | "anchored";
 type AccountRecordsLocateError = {
   invokeId: string;
+  attemptId?: string | null;
   kind: "notFound" | "request";
 };
 
@@ -907,7 +908,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE,
   );
   const [expandedStickyKeys, setExpandedStickyKeys] = useState<string[]>([]);
-  const [focusedAttemptId, setFocusedAttemptId] = useState<number | null>(null);
+  const [focusedAttemptId, setFocusedAttemptId] = useState<string | null>(null);
   const [accountRecords, setAccountRecords] = useState<ApiInvocation[]>([]);
   const [accountRecordsMode, setAccountRecordsMode] = useState<AccountRecordsMode>("latest");
   const [accountRecordsFirstPage, setAccountRecordsFirstPage] = useState(0);
@@ -921,6 +922,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     useState<AccountRecordsLocateError | null>(null);
   const [accountRecordsScrollTarget, setAccountRecordsScrollTarget] = useState<{
     invokeId: string;
+    attemptId?: string | null;
     version: number;
   } | null>(null);
   const [detailDrawerBodyElement, setDetailDrawerBodyElement] = useState<HTMLDivElement | null>(
@@ -1974,9 +1976,10 @@ function SharedUpstreamAccountDetailDrawerInner({
     [accountId, openUpstreamAccount],
   );
   const locateAccountAttempt = useCallback(
-    (attemptId: number | null | undefined) => {
-      if (attemptId == null || !Number.isFinite(attemptId)) return;
-      setFocusedAttemptId(attemptId);
+    (attemptId: string | null | undefined) => {
+      const normalizedAttemptId = attemptId?.trim() ?? "";
+      if (!normalizedAttemptId) return;
+      setFocusedAttemptId(normalizedAttemptId);
       handleSelectDetailTab("records");
     },
     [handleSelectDetailTab],

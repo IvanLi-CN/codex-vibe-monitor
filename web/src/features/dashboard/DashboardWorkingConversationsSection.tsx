@@ -3217,7 +3217,7 @@ function DashboardUpstreamAccountGridSkeleton() {
   );
 }
 
-function DashboardUpstreamAccountRefreshChip({
+function DashboardUpstreamAccountRefreshStatus({
   label,
   visibleLabel,
   visible,
@@ -3226,35 +3226,32 @@ function DashboardUpstreamAccountRefreshChip({
   visibleLabel: string;
   visible: boolean;
 }) {
+  if (!visible) {
+    return null;
+  }
+
   return (
     <div
-      data-testid="dashboard-upstream-account-refresh-chip"
-      data-state={visible ? "visible" : "idle"}
-      className="inline-flex h-7 shrink-0 items-center"
+      data-testid="dashboard-upstream-account-refresh-status"
+      role="status"
+      aria-live="polite"
+      aria-label={label}
+      title={label}
+      className="inline-flex h-7 shrink-0 items-center gap-1 text-info"
     >
-      <div
-        data-testid="dashboard-upstream-account-refresh-chip-content"
-        role={visible ? "status" : undefined}
-        aria-live={visible ? "polite" : undefined}
-        aria-hidden={visible ? undefined : true}
-        aria-label={visible ? label : undefined}
-        title={visible ? label : undefined}
-        className={cn(
-          "inline-flex h-full min-w-0 items-center gap-1 rounded-full border px-2 text-[11px] font-semibold whitespace-nowrap transition-opacity duration-200",
-          visible
-            ? "border-info/35 bg-info/12 text-info shadow-[inset_0_1px_0_rgba(255,255,255,0.16)]"
-            : "invisible border-transparent bg-transparent text-transparent opacity-0",
-        )}
+      <Spinner
+        data-testid="dashboard-upstream-account-refresh-spinner"
+        size="sm"
+        className="h-3 w-3 border-[1.65px]"
+        aria-hidden
+      />
+      <span
+        data-testid="dashboard-upstream-account-refresh-text"
+        aria-hidden
+        className="hidden whitespace-nowrap text-[11px] font-semibold leading-none desktop:inline"
       >
-        <Spinner size="sm" className="h-3 w-3 border-[1.65px]" aria-hidden />
-        <span
-          data-testid="dashboard-upstream-account-refresh-status"
-          aria-hidden
-          className="truncate whitespace-nowrap"
-        >
-          {visibleLabel}
-        </span>
-      </div>
+        {visibleLabel}
+      </span>
     </div>
   );
 }
@@ -3854,26 +3851,26 @@ export function DashboardWorkingConversationsSection({
             </SegmentedControlItem>
           </SegmentedControl>
           <div
-            className="flex min-w-0 flex-wrap items-center gap-2 desktop:justify-end"
+            className="flex w-full min-w-0 items-center justify-between gap-2 px-4 desktop:w-auto desktop:flex-wrap desktop:justify-end desktop:px-0"
             data-testid="dashboard-working-conversations-actions"
           >
             <div
-              className="flex min-w-0 flex-wrap items-center gap-2 desktop:justify-end"
+              className="inline-flex min-w-0 shrink-0 items-center gap-2 desktop:flex desktop:min-w-0 desktop:flex-wrap desktop:justify-end"
               data-testid="dashboard-working-conversations-badges"
             >
+              {shouldReserveUpstreamAccountRefreshChip ? (
+                <DashboardUpstreamAccountRefreshStatus
+                  label={t("dashboard.upstreamAccounts.refreshing")}
+                  visibleLabel={t("dashboard.upstreamAccounts.refreshingShort")}
+                  visible={shouldShowUpstreamAccountRefreshChip}
+                />
+              ) : null}
               <Badge
                 variant="default"
                 className="w-fit rounded-full px-3 py-1 font-mono text-xs font-semibold"
               >
                 {countBadgeLabel}
               </Badge>
-              {shouldReserveUpstreamAccountRefreshChip ? (
-                <DashboardUpstreamAccountRefreshChip
-                  label={t("dashboard.upstreamAccounts.refreshing")}
-                  visibleLabel={t("dashboard.upstreamAccounts.refreshingShort")}
-                  visible={shouldShowUpstreamAccountRefreshChip}
-                />
-              ) : null}
             </div>
             <Button
               type="button"

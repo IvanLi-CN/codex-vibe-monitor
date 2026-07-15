@@ -19,8 +19,9 @@
 - 本次修复是 future-only：不改 SQLite schema，不对历史 invocation 回填 `imageIntent` 或 `compactionRequestKind`。
 - 运行态 V2 识别来自 request body 的 `context_management[type=compaction][compact_threshold]`，终态识别来自响应内实际出现的 compaction item；两者独立写入 payload，不回填历史记录。
 - raw request/response payload 的完整保留合同不作为 SQLite 止血牺牲项；本轮只补充 raw file write 的 `raw_kind`、codec、file bytes、observed bytes、truncated、path 与 elapsed 证据，并继续同步持久化 terminal usage/status/failure/raw metadata。
-- 账号详情调用记录现显示可选择的 `invokeId`；健康与事件的调用 ID 通过 `/api/invocations/locate` 获取目标所在 retained/runtime 分页窗口及短生命周期 `anchorId`，后续页复用冻结 runtime overlay，再由共享虚拟表格定位目标行。
-- 账号详情调用列表使用表面专属列宽，并按容器实际宽度自动缩小超长 `invokeId` 字号，以完整单行展示 ID；桌面与移动定位态均采用单层非布局型高亮并抑制默认 outline，其他共享 `InvocationTable` 使用方保持原布局。
+- `pool_upstream_request_attempts` live + archive 现已统一持久化 `attempt_public_id`，使用 8 位 Base58 风格短串生成；生成结果强制至少包含一个字母，避免 owner-facing 纯数字 ID。新写入在入库时生成，启动期 backfill 会顺序补齐 live 表与 archive manifest 指向的历史 gzip sqlite。
+- 账号详情调用记录现显示并跳转 `attemptId`；健康与事件的上游尝试入口、账号详情尝试列表与 Records 新链接统一使用该短 ID。`invokeId` 只保留在诊断上下文，不再承担 attempt 主入口。
+- `/api/invocations/locate` 现接受显式 `attemptId`，先解析父 `invokeId` 再返回目标分页窗口与精确 attempt 高亮所需上下文；旧 `requestId` 入口继续兼容读取，但新 UI 不再生成它作为 attempt 跳转参数。
 - 账号活动聚合、按模型用量分组、受限 recent 读取与路由 sticky escape 检测现在会在超过 1 秒时输出结构化 warn；日志只含 endpoint/operation、范围、候选或返回行数、阶段与耗时，不含 SQL、payload 或账号敏感内容。
 - 账号详情已将最终调用记录表替换为真实上游调用表：按账号从 `pool_upstream_request_attempts` 读取最近 7 天主库数据，按 `occurred_at DESC, id DESC` 分页。每行只显示本次调用的时间、ID、请求模型与响应模型、状态、代理、三段延迟和错误；不显示 endpoint，也不混入重试序号、最终调用 tokens/费用或其他调用上下文。列表以 `(invoke_id, occurred_at)` 关联 invocation payload 的 `requestModel` / `responseModel`，请求模型缺失时回退 `model`，避免依赖旧数据库不存在的列。
 - Dashboard 活动快照现额外返回全局与账号级的模型性能分组。仅状态成功、失败分类为 `none` 且 `cost` 非空的调用参与 TPM、流式响应速率、响应时长、首字用时和使用时长；零费用成功调用保留。模型按响应模型归属，空思考程度在前端显示“未指定”。模型行 `usageDurationMs` 继续累加各自的 `t_total_ms`，但 `total.usageDurationMs` 会对同一范围内的合格调用区间做裁剪后并集。

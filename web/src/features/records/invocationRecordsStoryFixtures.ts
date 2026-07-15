@@ -21,6 +21,12 @@ function formatStoryProxyBindingDisplayName(key: string) {
   return `Story Proxy ${key.slice(-6)}`;
 }
 
+export function formatStoryAttemptId(seed: number) {
+  const compact = Math.abs(Math.trunc(seed)).toString(36).toUpperCase().slice(-8).padStart(8, "0");
+  if (/[A-Z]/.test(compact)) return compact;
+  return `${compact.slice(0, 4)}A${compact.slice(5)}`;
+}
+
 export function createStoryForwardProxyBindingNodes(keys: string[]): ForwardProxyBindingNode[] {
   return Array.from(new Set(keys.map((key) => key.trim()).filter(Boolean)))
     .filter((key) => key !== "__direct__")
@@ -462,7 +468,7 @@ export function createStoryPoolAttemptsByInvokeId(records: ApiInvocation[]) {
         const retryIndex = index < 3 ? index + 1 : index < 6 ? index - 2 : 1;
 
         return {
-          id: record.id * 100 + index + 1,
+          attemptId: formatStoryAttemptId(record.id * 100 + index + 1),
           invokeId: record.invokeId,
           occurredAt: record.occurredAt,
           endpoint: record.endpoint ?? "/v1/responses",
@@ -490,7 +496,7 @@ export function createStoryPoolAttemptsByInvokeId(records: ApiInvocation[]) {
       attemptsByInvokeId[record.invokeId] = [
         ...realAttempts,
         {
-          id: record.id * 100 + 8,
+          attemptId: formatStoryAttemptId(record.id * 100 + 8),
           invokeId: record.invokeId,
           occurredAt: record.occurredAt,
           endpoint: record.endpoint ?? "/v1/responses",
@@ -599,7 +605,7 @@ export function createStoryPoolAttemptsByInvokeId(records: ApiInvocation[]) {
           syntheticOauthBridgeAttempt ?? trueUpstreamHttpAttempt ?? downstreamClosedAttempt;
 
         return {
-          id: record.id * 100 + attemptIndex + 1,
+          attemptId: formatStoryAttemptId(record.id * 100 + attemptIndex + 1),
           invokeId: record.invokeId,
           occurredAt: record.occurredAt,
           endpoint: record.endpoint ?? "/v1/responses",

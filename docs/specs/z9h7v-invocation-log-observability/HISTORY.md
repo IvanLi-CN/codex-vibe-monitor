@@ -7,6 +7,7 @@
 - 诊断证据改为当前记录下方的全宽展开区，避免将关键排障信息压缩在错误列的局部入口中。
 - 路由调用事件新增可空 `attempt_id` 精确关联；旧事件保持可见但不可跳转。
 - 尝试列表的模型投影保持从 invocation payload 读取，兼容未包含独立 request/response model 列的既有 SQLite 数据库；健康事件以 `attempt_id` 作为可见定位标识，不再显示空的最终调用 ID。
+- owner-facing attempt 标识收口为持久化短 `attemptId`：live / archive `pool_upstream_request_attempts` 统一新增 `attempt_public_id`，新写入即生成，启动期顺序回填历史主库与 archive batch；账号详情、健康事件与 Records 新入口不再暴露纯数字 attempt 主键。
 
 ## Migration
 
@@ -48,3 +49,4 @@
 - 2026-07-10: 账号详情调用 ID 固化为单行完整展示，并通过表面专属列宽与单层非布局高亮避免截断、换行和焦点轮廓叠加。
 - 2026-07-13: Dashboard 活动快照新增成功已计费调用的响应模型/思考程度性能聚合，统一 TPM、首字与费用速率的完整周期展示口径，并在总览和账号卡提供桌面浮层与窄屏抽屉入口。
 - 2026-07-15: 将 Dashboard 模型性能总计 `usageDurationMs` 从简单求和改为范围内调用时间并集；模型行保持原有累加口径，因此总计允许小于下方模型行加总。
+- 2026-07-15: Attempt owner-facing 合同改为持久化 8 位短 `attemptId`；账号详情、健康与事件、Records 新跳转统一改用 `attemptId`，并新增启动期 live/archive backfill 补齐历史 `attempt_public_id`。
