@@ -35,6 +35,7 @@
 | ykhfu | 全产品路由 Web Demo                                                       | active    | `ykhfu-web-demo/SPEC.md`                                   | `ykhfu-web-demo/IMPLEMENTATION.md`                                   | topic anchor: mock runtime / Pages / UI evidence            |
 | hnu7b | 移动优先导航与浮层收口                                                    | active    | `hnu7b-mobile-first-navigation-and-overlays/SPEC.md`       | `hnu7b-mobile-first-navigation-and-overlays/IMPLEMENTATION.md`       | topic anchor: mobile navigation / responsive overlays       |
 | dqstf | 调用详情可分享路由与结构化响应体查看器                                    | active    | `dqstf-invocation-detail-routing-payload-viewer/SPEC.md`   | `dqstf-invocation-detail-routing-payload-viewer/IMPLEMENTATION.md`   | topic anchor: invocation details / routing / payload viewer |
+| v3fum | Dashboard 上游账号网速与活动总览 Network Tab                              | active    | `v3fum-dashboard-network-speed/SPEC.md`                    | `v3fum-dashboard-network-speed/IMPLEMENTATION.md`                    | topic anchor: dashboard / network speed / runtime cache     |
 
 ## Archived Sources
 

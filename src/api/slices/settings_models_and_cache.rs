@@ -1556,6 +1556,15 @@ pub(crate) struct DashboardActivityRecentQuery {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardNetworkTimeseriesQuery {
+    #[serde(default = "default_range")]
+    pub(crate) range: String,
+    pub(crate) time_zone: Option<String>,
+    pub(crate) upstream_account_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PerfQuery {
     #[serde(default = "default_range")]
     pub(crate) range: String,
@@ -1670,6 +1679,29 @@ pub(crate) struct DashboardActivityRecentResponse {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardNetworkTimeseriesPointResponse {
+    pub(crate) bucket_start: String,
+    pub(crate) bucket_end: String,
+    pub(crate) upload_bytes_per_second: f64,
+    pub(crate) download_bytes_per_second: f64,
+    pub(crate) upload_bytes: i64,
+    pub(crate) download_bytes: i64,
+    pub(crate) is_live_bucket: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardNetworkTimeseriesResponse {
+    pub(crate) range: String,
+    pub(crate) range_start: String,
+    pub(crate) range_end: String,
+    pub(crate) snapshot_id: i64,
+    pub(crate) bucket_seconds: i64,
+    pub(crate) points: Vec<DashboardNetworkTimeseriesPointResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct DashboardActivityAccountResponse {
     pub(crate) account_key: String,
     pub(crate) upstream_account_id: Option<i64>,
@@ -1731,6 +1763,8 @@ pub(crate) struct DashboardActivityAccountResponse {
     pub(crate) in_progress_phase_counts: Option<InvocationPhaseCountsResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) retry_invocation_count: Option<i64>,
+    pub(crate) upload_bytes_per_second: f64,
+    pub(crate) download_bytes_per_second: f64,
     #[serde(skip)]
     pub(crate) in_progress_wait_sum_ms: f64,
     #[serde(skip)]
@@ -1792,6 +1826,8 @@ pub(crate) struct UpstreamAccountActivityAccountResponse {
     pub(crate) in_progress_phase_counts: Option<InvocationPhaseCountsResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) retry_invocation_count: Option<i64>,
+    pub(crate) upload_bytes_per_second: f64,
+    pub(crate) download_bytes_per_second: f64,
     pub(crate) effective_routing_rule: crate::upstream_accounts::EffectiveRoutingRule,
     pub(crate) recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
 }

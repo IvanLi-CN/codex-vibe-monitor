@@ -1441,6 +1441,16 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         pool_request_snapshot_kind(&prepared_request_body.snapshot);
                     let prepared_body_bytes =
                         pool_request_snapshot_body_bytes(&prepared_request_body.snapshot);
+                    if let Some(trace) = trace_context.as_ref() {
+                        state.dashboard_network_speed_cache.record_request_bytes(
+                            &trace.invoke_id,
+                            &trace.occurred_at,
+                            Some(account.account_id),
+                            prepared_body_bytes,
+                            Utc::now(),
+                        );
+                        schedule_dashboard_activity_live_snapshot(state.as_ref());
+                    }
                     let outbound_content_length = outbound_request_body.content_length;
                     let preserve_content_length = outbound_content_length.is_some()
                         && forwarded_content_length

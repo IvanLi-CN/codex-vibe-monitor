@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { SelectField } from "../../components/ui/select-field";
+import { useDashboardNetworkTimeseries } from "../../hooks/useDashboardNetworkTimeseries";
 import { useParallelWorkStats } from "../../hooks/useParallelWorkStats";
 import { useSummary } from "../../hooks/useStats";
 import { useTimeseries } from "../../hooks/useTimeseries";
@@ -10,6 +11,7 @@ import { metricAccent } from "../../lib/chartTheme";
 import { recordTodayChartDataCommit } from "../../lib/dashboardPerformanceDiagnostics";
 import { useTheme } from "../../theme";
 import { StatsCards } from "../stats/StatsCards";
+import { DashboardNetworkActivityChart } from "./DashboardNetworkActivityChart";
 import { DashboardTodayActivityChart } from "./DashboardTodayActivityChart";
 import {
   DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY,
@@ -22,7 +24,9 @@ import { TodayStatsOverview } from "./TodayStatsOverview";
 import { UsageCalendar } from "./UsageCalendar";
 import { WeeklyHourlyHeatmap } from "./WeeklyHourlyHeatmap";
 
-type NaturalDayChartMetric = MetricKey | "trend";
+type OverviewMetricKey = MetricKey | "network";
+type NaturalDayChartMetric = OverviewMetricKey | "trend";
+type Dashboard24HourMetric = OverviewMetricKey;
 
 const LIVE_RATE_REFRESH_MS = 15_000;
 export const DASHBOARD_TOP_CHART_DATA_COMMIT_INTERVAL_MS = 5_000;
@@ -39,10 +43,26 @@ const METRIC_OPTIONS: Array<{ key: MetricKey; labelKey: string }> = [
   { key: "totalCost", labelKey: "metric.totalCost" },
   { key: "totalTokens", labelKey: "metric.totalTokens" },
 ];
+const NETWORK_METRIC_OPTION = {
+  key: "network" as const,
+  labelKey: "dashboard.activityOverview.network",
+};
 const NATURAL_DAY_METRIC_OPTIONS: Array<{ key: NaturalDayChartMetric; labelKey: string }> = [
   ...METRIC_OPTIONS,
+  NETWORK_METRIC_OPTION,
   { key: "trend", labelKey: "chart.trend" },
 ];
+const RANGE_24H_METRIC_OPTIONS: Array<{ key: Dashboard24HourMetric; labelKey: string }> = [
+  ...METRIC_OPTIONS,
+  NETWORK_METRIC_OPTION,
+];
+
+function resolveDashboardMetricAccent(metric: OverviewMetricKey, themeMode: "light" | "dark") {
+  if (metric === "network") {
+    return themeMode === "dark" ? "#34d399" : "#059669";
+  }
+  return metricAccent(metric, themeMode);
+}
 
 function useScopedSummary(window: string, upstreamAccountId?: number) {
   return useSummary(window, upstreamAccountId == null ? undefined : { upstreamAccountId });
@@ -144,6 +164,12 @@ function DashboardNaturalDayRangePanel({
     timeseriesRange,
     upstreamAccountId == null ? { bucket: "1m" } : { bucket: "1m", upstreamAccountId },
   );
+  const {
+    data: networkData,
+    isLoading: networkLoading,
+    isRefreshing: networkRefreshing,
+    error: networkError,
+  } = useDashboardNetworkTimeseries(timeseriesRange, metric === "network", upstreamAccountId);
   const chartResponse = useDashboardTopChartCommittedResponse(data, {
     summaryWindow,
     closedNaturalDay: timeseriesRange === "yesterday",
@@ -176,6 +202,10 @@ function DashboardNaturalDayRangePanel({
         error={error}
         metric={metric}
         closedNaturalDay={timeseriesRange === "yesterday"}
+        networkResponse={networkData}
+        networkLoading={networkLoading}
+        networkRefreshing={networkRefreshing}
+        networkError={networkError}
       />
     </div>
   );
@@ -546,13 +576,30 @@ const DashboardNaturalDayChartSection = memo(function DashboardNaturalDayChartSe
   error,
   metric,
   closedNaturalDay,
+  networkResponse,
+  networkLoading,
+  networkRefreshing,
+  networkError,
 }: {
   response: ReturnType<typeof useTimeseries>["data"];
   loading: boolean;
   error: ReturnType<typeof useTimeseries>["error"];
   metric: NaturalDayChartMetric;
   closedNaturalDay: boolean;
+  networkResponse: ReturnType<typeof useDashboardNetworkTimeseries>["data"];
+  networkLoading: boolean;
+  networkRefreshing: boolean;
+  networkError: string | null;
 }) {
+  if (metric === "network") {
+    return (
+      <DashboardNetworkActivityChart
+        response={networkResponse}
+        loading={networkLoading || networkRefreshing}
+        error={networkError}
+      />
+    );
+  }
   return (
     <DashboardTodayActivityChart
       response={response}
@@ -625,7 +672,7 @@ function Dashboard24HourRangePanel({
   dashboardActivityLoading,
   dashboardActivityError,
 }: {
-  metric: MetricKey;
+  metric: Dashboard24HourMetric;
   upstreamAccountId?: number;
   dashboardActivity?: DashboardActivityResponse | null;
   dashboardActivityLoading?: boolean;
@@ -633,6 +680,12 @@ function Dashboard24HourRangePanel({
 }) {
   const { summary, isLoading, error } = useScopedSummary("1d", upstreamAccountId);
   const snapshotActive = upstreamAccountId == null && dashboardActivity?.range === "1d";
+  const {
+    data: networkData,
+    isLoading: networkLoading,
+    isRefreshing: networkRefreshing,
+    error: networkError,
+  } = useDashboardNetworkTimeseries("1d", metric === "network", upstreamAccountId);
 
   return (
     <div
@@ -645,11 +698,19 @@ function Dashboard24HourRangePanel({
         loading={snapshotActive ? false : isLoading || dashboardActivityLoading === true}
         error={snapshotActive ? null : (error ?? dashboardActivityError)}
       />
-      <Last24hTenMinuteHeatmap
-        metric={metric}
-        showHeader={false}
-        upstreamAccountId={upstreamAccountId}
-      />
+      {metric === "network" ? (
+        <DashboardNetworkActivityChart
+          response={networkData}
+          loading={networkLoading || networkRefreshing}
+          error={networkError}
+        />
+      ) : (
+        <Last24hTenMinuteHeatmap
+          metric={metric}
+          showHeader={false}
+          upstreamAccountId={upstreamAccountId}
+        />
+      )}
     </div>
   );
 }
@@ -743,7 +804,7 @@ export function DashboardActivityOverview({
   );
   const [metricToday, setMetricToday] = useState<NaturalDayChartMetric>("totalCount");
   const [metricYesterday, setMetricYesterday] = useState<NaturalDayChartMetric>("totalCount");
-  const [metric24h, setMetric24h] = useState<MetricKey>("totalCount");
+  const [metric24h, setMetric24h] = useState<Dashboard24HourMetric>("totalCount");
   const [metric7d, setMetric7d] = useState<MetricKey>("totalCount");
   const [metricUsage, setMetricUsage] = useState<MetricKey>("totalCount");
 
@@ -763,7 +824,9 @@ export function DashboardActivityOverview({
     const source =
       activeRange === "today" || activeRange === "yesterday"
         ? NATURAL_DAY_METRIC_OPTIONS
-        : METRIC_OPTIONS;
+        : activeRange === "1d"
+          ? RANGE_24H_METRIC_OPTIONS
+          : METRIC_OPTIONS;
     return source.map((option) => ({ ...option, label: t(option.labelKey) }));
   }, [activeRange, t]);
 
@@ -784,25 +847,25 @@ export function DashboardActivityOverview({
     }
   }, [activeRange, controlledActiveRange, storageKey]);
 
-  const setActiveMetric = (metric: NaturalDayChartMetric) => {
+  const setActiveMetric = (metric: NaturalDayChartMetric | Dashboard24HourMetric | MetricKey) => {
     if (activeRange === "today") {
-      setMetricToday(metric);
+      setMetricToday(metric as NaturalDayChartMetric);
       return;
     }
     if (activeRange === "yesterday") {
-      setMetricYesterday(metric);
+      setMetricYesterday(metric as NaturalDayChartMetric);
       return;
     }
     if (metric === "trend") return;
     if (activeRange === "1d") {
-      setMetric24h(metric);
+      setMetric24h(metric as Dashboard24HourMetric);
       return;
     }
     if (activeRange === "7d") {
-      setMetric7d(metric);
+      setMetric7d(metric as MetricKey);
       return;
     }
-    setMetricUsage(metric);
+    setMetricUsage(metric as MetricKey);
   };
 
   return (
@@ -850,7 +913,12 @@ export function DashboardActivityOverview({
                   aria-selected={active}
                   style={
                     active && option.key !== "trend"
-                      ? { color: metricAccent(option.key, themeMode) }
+                      ? {
+                          color: resolveDashboardMetricAccent(
+                            option.key as OverviewMetricKey,
+                            themeMode,
+                          ),
+                        }
                       : undefined
                   }
                   onClick={() => setActiveMetric(option.key)}

@@ -172,6 +172,10 @@ pub(crate) async fn spawn_kaisoumail_test_harness(
         proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         dashboard_activity_live_broadcast_seq: Arc::new(AtomicU64::new(0)),
         dashboard_activity_live_broadcast_running: Arc::new(AtomicBool::new(false)),
+        process_started_at_utc: chrono::Utc::now(),
+        dashboard_network_speed_cache: Arc::new(
+            crate::dashboard_network_speed::DashboardNetworkSpeedCache::new(chrono::Utc::now()),
+        ),
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore: Arc::new(Semaphore::new(4)),

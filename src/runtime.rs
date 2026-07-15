@@ -114,10 +114,13 @@ pub(crate) async fn run() -> Result<()> {
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
     let proxy_raw_async_semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config)));
     let shutdown = CancellationToken::new();
+    let process_started_at_utc = Utc::now();
 
     let prompt_cache_conversation_cache =
         Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
     let proxy_runtime_invocations = Arc::new(ProxyRuntimeInvocationStore::default());
+    let dashboard_network_speed_cache =
+        Arc::new(DashboardNetworkSpeedCache::new(process_started_at_utc));
     let sqlite_batch_writer = SqliteBatchWriter::spawn(
         pool.clone(),
         shutdown.clone(),
@@ -129,9 +132,11 @@ pub(crate) async fn run() -> Result<()> {
     let state = Arc::new(AppState {
         config: config.clone(),
         pool,
+        process_started_at_utc,
         sqlite_batch_writer,
         pool_account_selection_runtime,
         proxy_runtime_invocations,
+        dashboard_network_speed_cache,
         oauth_installation_seed,
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         http_clients,

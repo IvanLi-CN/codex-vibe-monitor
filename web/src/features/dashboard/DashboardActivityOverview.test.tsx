@@ -12,6 +12,7 @@ const hookMocks = vi.hoisted(() => ({
   useSummary: vi.fn(),
   useTimeseries: vi.fn(),
   useParallelWorkStats: vi.fn(),
+  useDashboardNetworkTimeseries: vi.fn(),
 }));
 
 const componentState = vi.hoisted(() => ({
@@ -32,6 +33,10 @@ vi.mock("../../hooks/useTimeseries", () => ({
 
 vi.mock("../../hooks/useParallelWorkStats", () => ({
   useParallelWorkStats: hookMocks.useParallelWorkStats,
+}));
+
+vi.mock("../../hooks/useDashboardNetworkTimeseries", () => ({
+  useDashboardNetworkTimeseries: hookMocks.useDashboardNetworkTimeseries,
 }));
 
 vi.mock("../../lib/sse", () => ({
@@ -58,6 +63,11 @@ vi.mock("../../i18n", () => ({
         "dashboard.activityOverview.range7d": "7 Days",
         "dashboard.activityOverview.rangeUsage": "History",
         "dashboard.activityOverview.rangeToggleAria": "Switch activity range",
+        "dashboard.activityOverview.network": "Network",
+        "dashboard.activityOverview.networkUpload": "Upload",
+        "dashboard.activityOverview.networkDownload": "Download",
+        "dashboard.activityOverview.networkLiveNote": "Live bucket",
+        "dashboard.activityOverview.networkRefreshing": "Refreshing",
         "heatmap.metricsToggleAria": "Switch metric",
         "metric.totalCount": "Calls",
         "metric.totalCost": "Cost",
@@ -119,6 +129,22 @@ vi.mock("./DashboardTodayActivityChart", () => ({
       </div>
     );
   },
+}));
+
+vi.mock("./DashboardNetworkActivityChart", () => ({
+  DashboardNetworkActivityChart: ({
+    response,
+    loading,
+    error,
+  }: {
+    response?: { points?: unknown[] } | null;
+    loading?: boolean;
+    error?: string | null;
+  }) => (
+    <div data-testid="dashboard-network-activity-chart-mock">
+      {`points:${response?.points?.length ?? 0};loading:${String(Boolean(loading))};error:${error ?? "null"}`}
+    </div>
+  ),
 }));
 
 vi.mock("../stats/StatsCards", () => ({
@@ -426,6 +452,39 @@ function installSummaryMocks() {
     isLoading: false,
     error: null,
   });
+  hookMocks.useDashboardNetworkTimeseries.mockReturnValue({
+    data: {
+      range: "today",
+      rangeStart: "2026-04-08T00:00:00Z",
+      rangeEnd: "2026-04-08T00:10:00Z",
+      snapshotId: 99,
+      bucketSeconds: 300,
+      points: [
+        {
+          bucketStart: "2026-04-08T00:00:00Z",
+          bucketEnd: "2026-04-08T00:05:00Z",
+          uploadBytesPerSecond: 1200,
+          downloadBytesPerSecond: 5400,
+          uploadBytes: 360000,
+          downloadBytes: 1620000,
+          isLiveBucket: false,
+        },
+        {
+          bucketStart: "2026-04-08T00:05:00Z",
+          bucketEnd: "2026-04-08T00:10:00Z",
+          uploadBytesPerSecond: 1600,
+          downloadBytesPerSecond: 6800,
+          uploadBytes: 480000,
+          downloadBytes: 2040000,
+          isLiveBucket: true,
+        },
+      ],
+    },
+    isLoading: false,
+    isRefreshing: false,
+    error: null,
+    reload: vi.fn(),
+  });
 }
 
 function clickTab(label: string) {
@@ -692,6 +751,33 @@ describe("DashboardActivityOverview", () => {
     expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe(
       "metric:totalTokens;account:global",
     );
+  });
+
+  it("shows the network metric only on today, yesterday, and 24 hours, and switches those ranges to the network chart", () => {
+    installSummaryMocks();
+
+    render(<DashboardActivityOverview />);
+
+    clickTab("Network");
+    expect(
+      host?.querySelector('[data-testid="dashboard-network-activity-chart-mock"]')?.textContent,
+    ).toBe("points:2;loading:false;error:null");
+    expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')).toBeNull();
+    expect(hookMocks.useDashboardNetworkTimeseries).toHaveBeenCalledWith("today", true, undefined);
+
+    clickTab("24 Hours");
+    expect(host?.textContent).toContain("Network");
+    clickTab("Network");
+    expect(
+      host?.querySelector('[data-testid="dashboard-network-activity-chart-mock"]')?.textContent,
+    ).toBe("points:2;loading:false;error:null");
+    expect(host?.querySelector('[data-testid="heatmap-24h"]')).toBeNull();
+    expect(hookMocks.useDashboardNetworkTimeseries).toHaveBeenCalledWith("1d", true, undefined);
+
+    clickTab("7 Days");
+    expect(host?.textContent).not.toContain("Trend");
+    expect(host?.textContent).not.toContain("Network");
+    expect(hookMocks.useDashboardNetworkTimeseries).toHaveBeenCalledWith("1d", false, undefined);
   });
 
   it("restores the last active range from localStorage and falls back to today on invalid values", () => {

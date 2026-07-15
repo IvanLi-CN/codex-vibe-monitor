@@ -438,6 +438,8 @@ function createUpstreamAccountActivityStoryResponse(
           responding: 4,
         },
         retryInvocationCount: 1,
+        uploadBytesPerSecond: 1_920,
+        downloadBytesPerSecond: 6_291_456,
         effectiveRoutingRule: {
           allowCutOut: true,
           allowCutIn: false,
@@ -3382,10 +3384,21 @@ export const UpstreamAccountTab: Story = {
     await userEvent.click(sortButton);
     await expect(sortButton).toHaveTextContent(/对话创建|Conversation created/);
     await expect(canvas.getByText("当前活动账号 1 个")).toBeInTheDocument();
+    const totalNetworkSpeed = await canvas.findByTestId(
+      "dashboard-upstream-account-total-network-speed",
+    );
+    await expect(totalNetworkSpeed).toHaveTextContent("1.9");
+    await expect(totalNetworkSpeed).toHaveTextContent("KiB/s");
+    await expect(totalNetworkSpeed).toHaveTextContent("6");
+    await expect(totalNetworkSpeed).toHaveTextContent("MiB/s");
     await expect(canvas.getByText("最近 4 条调用")).toBeInTheDocument();
     await expect(canvas.getByTestId("dashboard-upstream-account-header-row")).not.toHaveTextContent(
       "#42",
     );
+    await expect(canvas.getByTestId("dashboard-upstream-account-network-speed")).toHaveTextContent(
+      "1.9",
+    );
+    await expect(canvas.queryByTestId("dashboard-upstream-account-routing-settings")).toBeNull();
     await expect(
       canvasElement.querySelector('[data-testid="dashboard-upstream-account-status"]'),
     ).toBeNull();
@@ -3478,6 +3491,54 @@ export const UpstreamAccountTab: Story = {
   },
 };
 
+export const ConversationTabWithUpstreamNetworkSpeed: Story = {
+  args: {
+    activeRange: "today",
+    cards: [],
+    isLoading: false,
+    error: null,
+  },
+  render: () => (
+    <ForcedWorkspaceViewStory view="conversations">
+      <DrawerPreviewStory
+        response={createResponse([
+          createConversation("pck-story-conversation-network-speed", [
+            createPreview({
+              id: 9802,
+              invokeId: "story-conversation-invoke",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+              upstreamAccountId: 42,
+              upstreamAccountName: "Pool Alpha",
+            }),
+          ]),
+        ])}
+        upstreamAccountActivity={createUpstreamAccountActivityStoryResponse()}
+      />
+    </ForcedWorkspaceViewStory>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("当前对话 1 条")).toBeInTheDocument();
+    const totalNetworkSpeed = await canvas.findByTestId(
+      "dashboard-upstream-account-total-network-speed",
+    );
+    await expect(totalNetworkSpeed).toHaveTextContent("1.9");
+    await expect(totalNetworkSpeed).toHaveTextContent("KiB/s");
+    await expect(totalNetworkSpeed).toHaveTextContent("6");
+    await expect(totalNetworkSpeed).toHaveTextContent("MiB/s");
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Conversation workspace header with aggregate upstream upload and download throughput rendered beside the live-count badge.",
+      },
+    },
+  },
+};
+
 export const UpstreamAccountWarningSuccess: Story = {
   args: UpstreamAccountTab.args,
   render: () => (
@@ -3529,7 +3590,9 @@ export const UpstreamAccountInitialSkeleton: Story = {
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
     docs: {
-      description: { story: "Initial account-view frame with a layout-stable card skeleton." },
+      description: {
+        story: "Initial account-view frame with a layout-stable card skeleton.",
+      },
     },
   },
 };
@@ -3554,7 +3617,11 @@ export const UpstreamAccountSummaryWithRecentLoading: Story = {
   },
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
-    docs: { description: { story: "Account summary cards remain usable while recent rows load." } },
+    docs: {
+      description: {
+        story: "Account summary cards remain usable while recent rows load.",
+      },
+    },
   },
 };
 
@@ -3577,7 +3644,11 @@ export const UpstreamAccountRecentFailure: Story = {
   },
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
-    docs: { description: { story: "Recent-row failure is local to each retained summary card." } },
+    docs: {
+      description: {
+        story: "Recent-row failure is local to each retained summary card.",
+      },
+    },
   },
 };
 
@@ -3664,7 +3735,9 @@ export const UpstreamAccountEmpty: Story = {
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
     docs: {
-      description: { story: "True empty state after a successful zero-account summary response." },
+      description: {
+        story: "True empty state after a successful zero-account summary response.",
+      },
     },
   },
 };
@@ -3754,16 +3827,13 @@ export const UpstreamAccountHeaderActions: Story = {
     await expect(within(document.body).getByTestId("story-account-drawer-tab")).toHaveTextContent(
       "Tab healthEvents",
     );
-
-    const settingsButton = await canvas.findByTestId("dashboard-upstream-account-routing-settings");
-    await userEvent.click(settingsButton);
-    await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent("account:42:routing");
     await userEvent.click(
       within(document.body).getByRole("button", {
         name: "Close account drawer",
       }),
     );
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent("none");
+    await expect(canvas.queryByTestId("dashboard-upstream-account-routing-settings")).toBeNull();
 
     const policyBadges = await canvas.findAllByTestId("dashboard-upstream-account-policy-badge");
     await userEvent.click(policyBadges[0]!);

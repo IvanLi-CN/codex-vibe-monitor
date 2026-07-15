@@ -690,6 +690,8 @@ export interface UpstreamAccountActivityAccount {
   inProgressInvocationCount?: number | null;
   inProgressPhaseCounts?: InvocationPhaseCounts | null;
   retryInvocationCount?: number | null;
+  uploadBytesPerSecond: number;
+  downloadBytesPerSecond: number;
   effectiveRoutingRule: EffectiveRoutingRule;
   recentInvocations: PromptCacheConversationInvocationPreview[];
 }
@@ -723,6 +725,8 @@ export interface DashboardActivityLiveAccount {
   inProgressInvocationCount: number;
   inProgressPhaseCounts: InvocationPhaseCounts;
   retryInvocationCount: number;
+  uploadBytesPerSecond: number;
+  downloadBytesPerSecond: number;
 }
 
 export interface DashboardActivityLiveSnapshot {
@@ -753,6 +757,25 @@ export interface DashboardActivityRecentResponse {
     accountKey: string;
     recentInvocations: PromptCacheConversationInvocationPreview[];
   }>;
+}
+
+export interface DashboardNetworkTimeseriesPoint {
+  bucketStart: string;
+  bucketEnd: string;
+  uploadBytesPerSecond: number;
+  downloadBytesPerSecond: number;
+  uploadBytes: number;
+  downloadBytes: number;
+  isLiveBucket: boolean;
+}
+
+export interface DashboardNetworkTimeseriesResponse {
+  range: string;
+  rangeStart: string;
+  rangeEnd: string;
+  snapshotId: number;
+  bucketSeconds: number;
+  points: DashboardNetworkTimeseriesPoint[];
 }
 
 export interface StatsMaintenanceResponse {
@@ -2788,6 +2811,8 @@ function normalizeUpstreamAccountActivityAccount(
     inProgressInvocationCount: normalizeFiniteNumber(payload.inProgressInvocationCount),
     inProgressPhaseCounts: normalizeInvocationPhaseCounts(payload.inProgressPhaseCounts),
     retryInvocationCount: normalizeFiniteNumber(payload.retryInvocationCount),
+    uploadBytesPerSecond: normalizeFiniteNumber(payload.uploadBytesPerSecond) ?? 0,
+    downloadBytesPerSecond: normalizeFiniteNumber(payload.downloadBytesPerSecond) ?? 0,
     effectiveRoutingRule: normalizeEffectiveRoutingRule(payload.effectiveRoutingRule),
     recentInvocations,
   };
@@ -2917,6 +2942,33 @@ function normalizeDashboardActivityRecentResponse(raw: unknown): DashboardActivi
                   .map(normalizePromptCacheConversationInvocationPreview)
                   .filter((item): item is PromptCacheConversationInvocationPreview => item != null)
               : [],
+          };
+        })
+      : [],
+  };
+}
+
+function normalizeDashboardNetworkTimeseriesResponse(
+  raw: unknown,
+): DashboardNetworkTimeseriesResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    range: typeof payload.range === "string" ? payload.range : "",
+    rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
+    rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
+    snapshotId: normalizeFiniteNumber(payload.snapshotId) ?? 0,
+    bucketSeconds: normalizeFiniteNumber(payload.bucketSeconds) ?? 300,
+    points: Array.isArray(payload.points)
+      ? payload.points.map((entry) => {
+          const point = (entry ?? {}) as Record<string, unknown>;
+          return {
+            bucketStart: typeof point.bucketStart === "string" ? point.bucketStart : "",
+            bucketEnd: typeof point.bucketEnd === "string" ? point.bucketEnd : "",
+            uploadBytesPerSecond: normalizeFiniteNumber(point.uploadBytesPerSecond) ?? 0,
+            downloadBytesPerSecond: normalizeFiniteNumber(point.downloadBytesPerSecond) ?? 0,
+            uploadBytes: normalizeFiniteNumber(point.uploadBytes) ?? 0,
+            downloadBytes: normalizeFiniteNumber(point.downloadBytes) ?? 0,
+            isLiveBucket: point.isLiveBucket === true,
           };
         })
       : [],
@@ -3282,6 +3334,27 @@ export async function fetchDashboardActivityRecent(options: {
     { signal: options.signal },
   );
   return normalizeDashboardActivityRecentResponse(response);
+}
+
+export async function fetchDashboardNetworkTimeseries(
+  range: string,
+  options?: {
+    timeZone?: string;
+    upstreamAccountId?: number;
+    signal?: AbortSignal;
+  },
+) {
+  const search = new URLSearchParams();
+  search.set("range", range);
+  search.set("timeZone", options?.timeZone ?? getBrowserTimeZone());
+  if (options?.upstreamAccountId !== undefined) {
+    search.set("upstreamAccountId", String(options.upstreamAccountId));
+  }
+  const response = await fetchJson<unknown>(
+    `/api/stats/dashboard-network-timeseries?${search.toString()}`,
+    { signal: options?.signal },
+  );
+  return normalizeDashboardNetworkTimeseriesResponse(response);
 }
 
 export async function fetchForwardProxyLiveStats() {

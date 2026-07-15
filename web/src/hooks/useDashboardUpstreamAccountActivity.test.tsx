@@ -237,6 +237,8 @@ function createAccountResponse(
         avgTotalMs: 780,
         inProgressInvocationCount,
         retryInvocationCount: 1,
+        uploadBytesPerSecond: 1280,
+        downloadBytesPerSecond: 5120,
         recentInvocations,
       },
     ],
@@ -417,6 +419,8 @@ describe("useDashboardUpstreamAccountActivity", () => {
           inProgressInvocationCount: 2,
           inProgressPhaseCounts: { queued: 0, requesting: 1, responding: 1 },
           retryInvocationCount: 1,
+          uploadBytesPerSecond: 960,
+          downloadBytesPerSecond: 4096,
         },
       ],
     });
@@ -427,6 +431,14 @@ describe("useDashboardUpstreamAccountActivity", () => {
         displayName: "#77",
         inProgressInvocationCount: 2,
         retryInvocationCount: 1,
+        uploadBytesPerSecond: 960,
+        downloadBytesPerSecond: 4096,
+      }),
+    );
+    expect(merged.accounts?.find((account) => account.accountKey === "upstream:42")).toEqual(
+      expect.objectContaining({
+        uploadBytesPerSecond: 0,
+        downloadBytesPerSecond: 0,
       }),
     );
     expect(
@@ -462,6 +474,8 @@ describe("useDashboardUpstreamAccountActivity", () => {
                 responding: 1,
               },
               retryInvocationCount: 1,
+              uploadBytesPerSecond: 3200,
+              downloadBytesPerSecond: 12800,
             },
           ],
         },

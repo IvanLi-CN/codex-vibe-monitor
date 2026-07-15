@@ -7,6 +7,7 @@ import { DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY } from "./dashboardActivityRange";
 
 type SummaryKey = "today" | "yesterday" | "previous7d" | "1d" | "7d";
 type TimeseriesKey = "today:1m" | "yesterday:1m" | "1d:1m" | "7d:1h" | "6mo:1d";
+type DashboardNetworkTimeseriesKey = "today:5m" | "yesterday:5m" | "1d:5m";
 type PersistedRange = "today" | "yesterday" | "1d" | "7d" | "usage" | null;
 type SummaryFixture = ReturnType<typeof createSummary>;
 type TimeseriesFixture =
@@ -14,6 +15,7 @@ type TimeseriesFixture =
   | ReturnType<typeof build24HourPoints>
   | ReturnType<typeof buildHourlyPoints>
   | ReturnType<typeof buildDailyPoints>;
+type DashboardNetworkTimeseriesFixture = ReturnType<typeof buildDashboardNetworkPoints>;
 type WindowWithDashboardFetchLog = Window & {
   __dashboardOverviewFetchLog__?: string[];
 };
@@ -22,6 +24,9 @@ type DashboardOverviewParameters = {
   failTodayTimeseries?: boolean;
   summaryOverrides?: Partial<Record<SummaryKey, SummaryFixture>>;
   timeseriesOverrides?: Partial<Record<TimeseriesKey, TimeseriesFixture>>;
+  networkTimeseriesOverrides?: Partial<
+    Record<DashboardNetworkTimeseriesKey, DashboardNetworkTimeseriesFixture>
+  >;
   delaySummaryWindows?: SummaryKey[];
   responseDelayMs?: number;
 };
@@ -322,6 +327,47 @@ function buildDailyPoints() {
   };
 }
 
+function buildDashboardNetworkPoints(range: "today" | "yesterday" | "1d") {
+  const bucketSeconds = 300;
+  const now = new Date("2026-04-09T12:20:00+08:00");
+  const rangeStart =
+    range === "today"
+      ? new Date("2026-04-09T00:00:00+08:00")
+      : range === "yesterday"
+        ? new Date("2026-04-08T00:00:00+08:00")
+        : new Date(now.getTime() - 24 * 60 * 60_000);
+  const rangeEnd =
+    range === "yesterday" ? new Date("2026-04-09T00:00:00+08:00") : new Date(now.getTime());
+  const bucketCount = Math.max(
+    1,
+    Math.ceil((rangeEnd.getTime() - rangeStart.getTime()) / (bucketSeconds * 1000)),
+  );
+  const points = Array.from({ length: bucketCount }, (_, index) => {
+    const bucketStart = new Date(rangeStart.getTime() + index * bucketSeconds * 1000);
+    const bucketEnd = new Date(bucketStart.getTime() + bucketSeconds * 1000);
+    const uploadBytesPerSecond = 4800 + ((index * 430) % 6400);
+    const downloadBytesPerSecond = 28_000 + ((index * 1730) % 36_000);
+    return {
+      bucketStart: bucketStart.toISOString(),
+      bucketEnd: bucketEnd.toISOString(),
+      uploadBytesPerSecond,
+      downloadBytesPerSecond,
+      uploadBytes: Math.round(uploadBytesPerSecond * bucketSeconds),
+      downloadBytes: Math.round(downloadBytesPerSecond * bucketSeconds),
+      isLiveBucket: range !== "yesterday" && index === bucketCount - 1,
+    };
+  });
+
+  return {
+    range,
+    rangeStart: rangeStart.toISOString(),
+    rangeEnd: rangeEnd.toISOString(),
+    snapshotId: Date.parse(rangeEnd.toISOString()),
+    bucketSeconds,
+    points,
+  };
+}
+
 const SUMMARY_FIXTURES: Record<SummaryKey, ReturnType<typeof createSummary>> = {
   today: TODAY_SUMMARY_FIXTURE,
   yesterday: YESTERDAY_SUMMARY_FIXTURE,
@@ -342,6 +388,15 @@ const TIMESERIES_FIXTURES: Record<
   "1d:1m": build24HourPoints(),
   "7d:1h": buildHourlyPoints(),
   "6mo:1d": buildDailyPoints(),
+};
+
+const DASHBOARD_NETWORK_TIMESERIES_FIXTURES: Record<
+  DashboardNetworkTimeseriesKey,
+  DashboardNetworkTimeseriesFixture
+> = {
+  "today:5m": buildDashboardNetworkPoints("today"),
+  "yesterday:5m": buildDashboardNetworkPoints("yesterday"),
+  "1d:5m": buildDashboardNetworkPoints("1d"),
 };
 
 function buildActivityWeight(index: number, mode: "success" | "failure") {
@@ -417,6 +472,7 @@ function DashboardOverviewMockApi({
   failTodayTimeseries = false,
   summaryOverrides = {},
   timeseriesOverrides = {},
+  networkTimeseriesOverrides = {},
   delaySummaryWindows = [],
   responseDelayMs = 0,
 }: {
@@ -424,6 +480,9 @@ function DashboardOverviewMockApi({
   failTodayTimeseries?: boolean;
   summaryOverrides?: Partial<Record<SummaryKey, SummaryFixture>>;
   timeseriesOverrides?: Partial<Record<TimeseriesKey, TimeseriesFixture>>;
+  networkTimeseriesOverrides?: Partial<
+    Record<DashboardNetworkTimeseriesKey, DashboardNetworkTimeseriesFixture>
+  >;
   delaySummaryWindows?: SummaryKey[];
   responseDelayMs?: number;
 }) {
@@ -467,6 +526,16 @@ function DashboardOverviewMockApi({
         }
       }
 
+      if (url.pathname === "/api/stats/dashboard-network-timeseries") {
+        const range = url.searchParams.get("range");
+        const key = `${range}:5m` as DashboardNetworkTimeseriesKey;
+        if (key in DASHBOARD_NETWORK_TIMESERIES_FIXTURES) {
+          return jsonResponse(
+            networkTimeseriesOverrides[key] ?? DASHBOARD_NETWORK_TIMESERIES_FIXTURES[key],
+          );
+        }
+      }
+
       return (originalFetchRef.current ?? fetch)(input as RequestInfo | URL, init);
     };
 
@@ -490,6 +559,7 @@ function DashboardOverviewMockApi({
   }, [
     delaySummaryWindows,
     failTodayTimeseries,
+    networkTimeseriesOverrides,
     responseDelayMs,
     summaryOverrides,
     timeseriesOverrides,
@@ -517,6 +587,11 @@ function DashboardOverviewStoryEnvironment({
         timeseriesOverrides={
           (parameters.timeseriesOverrides ?? {}) as Partial<
             Record<TimeseriesKey, TimeseriesFixture>
+          >
+        }
+        networkTimeseriesOverrides={
+          (parameters.networkTimeseriesOverrides ?? {}) as Partial<
+            Record<DashboardNetworkTimeseriesKey, DashboardNetworkTimeseriesFixture>
           >
         }
         delaySummaryWindows={(parameters.delaySummaryWindows ?? []) as SummaryKey[]}
@@ -946,6 +1021,39 @@ export const TodayTrendView: Story = {
         "data-chart-mode",
         "trend-area",
       );
+    });
+  },
+};
+
+export const TodayNetworkView: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("tab", { name: /网速|network/i }));
+    await waitFor(() => {
+      expect(canvas.getByRole("tab", { name: /网速|network/i })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+      expect(canvas.getByTestId("dashboard-network-activity-chart")).toBeVisible();
+    });
+  },
+};
+
+export const Day24NetworkView: Story = {
+  parameters: {
+    persistedRange: "1d",
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => {
+      expect(canvas.getByRole("tab", { name: /24 小时|24 hours/i })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+    });
+    await userEvent.click(canvas.getByRole("tab", { name: /网速|network/i }));
+    await waitFor(() => {
+      expect(canvas.getByTestId("dashboard-network-activity-chart")).toBeVisible();
     });
   },
 };

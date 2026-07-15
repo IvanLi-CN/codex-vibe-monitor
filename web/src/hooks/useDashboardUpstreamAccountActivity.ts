@@ -56,6 +56,8 @@ function buildLiveOnlyAccount(
     inProgressInvocationCount: live.inProgressInvocationCount,
     inProgressPhaseCounts: live.inProgressPhaseCounts,
     retryInvocationCount: live.retryInvocationCount,
+    uploadBytesPerSecond: live.uploadBytesPerSecond,
+    downloadBytesPerSecond: live.downloadBytesPerSecond,
     effectiveRoutingRule: normalizeEffectiveRoutingRule({}),
     recentInvocations: [],
   };
@@ -83,6 +85,8 @@ export function mergeDashboardActivityLiveSnapshot(
           responding: 0,
         },
         retryInvocationCount: liveAccount?.retryInvocationCount ?? 0,
+        uploadBytesPerSecond: liveAccount?.uploadBytesPerSecond ?? 0,
+        downloadBytesPerSecond: liveAccount?.downloadBytesPerSecond ?? 0,
       };
     },
   );
@@ -150,7 +154,7 @@ export function useDashboardUpstreamAccountActivity(
   enabled: boolean,
   recentInvocationLimit = DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
 ) {
-  const snapshot = useDashboardActivitySnapshot(range, enabled, true, recentInvocationLimit);
+  const snapshot = useDashboardActivitySnapshot(range, enabled, true, recentInvocationLimit, true);
   const data = snapshot.data
     ? {
         range: snapshot.data.range,
@@ -170,6 +174,7 @@ export function useDashboardActivitySnapshot(
   enabled: boolean,
   includeAccounts: boolean,
   recentInvocationLimit = DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
+  includeRecent = includeAccounts,
 ) {
   const initialRecentInvocationLimit = clampRecentInvocationLimit(recentInvocationLimit);
   const [data, setData] = useState<DashboardActivityResponse | null>(null);
@@ -183,6 +188,7 @@ export function useDashboardActivitySnapshot(
   );
   const enabledRef = useRef(enabled);
   const includeAccountsRef = useRef(includeAccounts);
+  const includeRecentRef = useRef(includeRecent);
   const rangeRef = useRef(range);
   const recentInvocationLimitRef = useRef(initialRecentInvocationLimit);
   const previousRangeRef = useRef(range);
@@ -208,6 +214,18 @@ export function useDashboardActivitySnapshot(
   useEffect(() => {
     includeAccountsRef.current = includeAccounts;
   }, [includeAccounts]);
+
+  useEffect(() => {
+    includeRecentRef.current = includeRecent;
+    if (includeRecent) {
+      return;
+    }
+    recentAbortControllerRef.current?.abort();
+    recentAbortControllerRef.current = null;
+    pendingRecentLoadRef.current = null;
+    setRecentLoading(false);
+    setRecentError(null);
+  }, [includeRecent]);
 
   useEffect(() => {
     rangeRef.current = range;
@@ -246,7 +264,7 @@ export function useDashboardActivitySnapshot(
   }, []);
 
   const loadRecent = useCallback(async ({ summary, recentLimit }: RecentLoadRequest) => {
-    if (!includeAccountsRef.current || !enabledRef.current) return;
+    if (!includeAccountsRef.current || !includeRecentRef.current || !enabledRef.current) return;
     if (recentAbortControllerRef.current) {
       pendingRecentLoadRef.current = { summary, recentLimit };
       return;
@@ -306,7 +324,12 @@ export function useDashboardActivitySnapshot(
         recentAbortControllerRef.current = null;
         const pendingRequest = pendingRecentLoadRef.current;
         pendingRecentLoadRef.current = null;
-        if (pendingRequest && includeAccountsRef.current && enabledRef.current) {
+        if (
+          pendingRequest &&
+          includeAccountsRef.current &&
+          includeRecentRef.current &&
+          enabledRef.current
+        ) {
           void loadRecentRef.current?.(pendingRequest);
         } else {
           setRecentLoading(false);
@@ -326,6 +349,7 @@ export function useDashboardActivitySnapshot(
       requestSeqRef.current = requestSeq;
       const requestedRange = rangeRef.current;
       const requestedRecentLimit = recentInvocationLimitRef.current;
+      const requestedIncludeRecent = includeRecentRef.current;
       const controller = new AbortController();
       abortControllerRef.current = controller;
       const shouldShowLoading = !(silent && hasHydratedRef.current);
@@ -343,6 +367,7 @@ export function useDashboardActivitySnapshot(
           requestSeq !== requestSeqRef.current ||
           rangeRef.current !== requestedRange ||
           includeAccountsRef.current !== requestedIncludeAccounts ||
+          includeRecentRef.current !== requestedIncludeRecent ||
           recentInvocationLimitRef.current !== requestedRecentLimit ||
           !enabledRef.current
         ) {
@@ -383,8 +408,11 @@ export function useDashboardActivitySnapshot(
         recordUpstreamAccountActivityRefresh();
         hasHydratedRef.current = true;
         setError(null);
-        if (requestedIncludeAccounts) {
-          void loadRecent({ summary: nextData, recentLimit: nextRecentInvocationLimit });
+        if (requestedIncludeAccounts && requestedIncludeRecent) {
+          void loadRecent({
+            summary: nextData,
+            recentLimit: nextRecentInvocationLimit,
+          });
         }
       } catch (err) {
         if (isAbortError(err)) return;
@@ -432,7 +460,15 @@ export function useDashboardActivitySnapshot(
     }
     hasActivatedRef.current = true;
     void load({ silent: hasHydratedRef.current });
-  }, [clearPendingRefreshTimer, enabled, includeAccounts, invalidateCurrentRequest, load, range]);
+  }, [
+    clearPendingRefreshTimer,
+    enabled,
+    includeAccounts,
+    includeRecent,
+    invalidateCurrentRequest,
+    load,
+    range,
+  ]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -511,8 +547,11 @@ export function useDashboardActivitySnapshot(
     reload: load,
     retryRecent: () => {
       const summary = latestSummaryRef.current;
-      if (summary) {
-        void loadRecent({ summary, recentLimit: recentInvocationLimitRef.current });
+      if (summary && includeRecentRef.current) {
+        void loadRecent({
+          summary,
+          recentLimit: recentInvocationLimitRef.current,
+        });
       }
     },
   };

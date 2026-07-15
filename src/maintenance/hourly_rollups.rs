@@ -1634,6 +1634,10 @@ pub(crate) fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<Ap
             get(fetch_dashboard_activity_recent),
         )
         .route(
+            "/api/stats/dashboard-network-timeseries",
+            get(fetch_dashboard_network_timeseries),
+        )
+        .route(
             "/api/stats/upstream-account-activity",
             get(fetch_upstream_account_activity),
         )
