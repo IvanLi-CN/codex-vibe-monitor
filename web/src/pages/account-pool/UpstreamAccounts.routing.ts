@@ -24,6 +24,8 @@ export function buildRoutingDraft(
   routing?: {
     maskedApiKey?: string | null;
     maintenance?: PoolRoutingMaintenanceSettings | null;
+    requestCompressionAlgorithm?: RoutingDraft["requestCompressionAlgorithm"];
+    requestCompressionLevelPreset?: RoutingDraft["requestCompressionLevelPreset"];
     timeouts?: PoolRoutingTimeoutSettings | null;
   } | null,
 ): RoutingDraft {
@@ -35,6 +37,8 @@ export function buildRoutingDraft(
     primarySyncIntervalSecs: String(maintenance.primarySyncIntervalSecs),
     secondarySyncIntervalSecs: String(maintenance.secondarySyncIntervalSecs),
     priorityAvailableAccountCap: String(maintenance.priorityAvailableAccountCap),
+    requestCompressionAlgorithm: routing?.requestCompressionAlgorithm ?? "identity",
+    requestCompressionLevelPreset: routing?.requestCompressionLevelPreset ?? "balanced",
     responsesFirstByteTimeoutSecs: String(timeouts.responsesFirstByteTimeoutSecs),
     compactFirstByteTimeoutSecs: String(timeouts.compactFirstByteTimeoutSecs),
     imageFirstByteTimeoutSecs: String(timeouts.imageFirstByteTimeoutSecs),

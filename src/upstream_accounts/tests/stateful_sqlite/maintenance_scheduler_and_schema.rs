@@ -290,6 +290,7 @@ fn test_effective_routing_rule(concurrency_limit: i64) -> EffectiveRoutingRule {
         priority_tier: TagPriorityTier::Normal,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         concurrency_limit,
         upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
@@ -306,6 +307,7 @@ fn test_effective_routing_rule(concurrency_limit: i64) -> EffectiveRoutingRule {
             priority_tier: "root".to_string(),
             fast_mode_rewrite_mode: "root".to_string(),
             image_tool_rewrite_mode: "root".to_string(),
+            request_compression_algorithm: "root".to_string(),
             concurrency_limit: "root".to_string(),
             upstream_429_retry: "root".to_string(),
             available_models: "root".to_string(),
@@ -4349,6 +4351,7 @@ async fn update_upstream_account_clears_individual_account_policy_override() {
                     priority_tier: OptionalField::Missing,
                     fast_mode_rewrite_mode: OptionalField::Missing,
                     image_tool_rewrite_mode: OptionalField::Missing,
+                    request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
@@ -4432,6 +4435,7 @@ async fn update_upstream_account_patches_one_timeout_without_clearing_other_over
                     priority_tier: OptionalField::Missing,
                     fast_mode_rewrite_mode: OptionalField::Missing,
                     image_tool_rewrite_mode: OptionalField::Missing,
+                    request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
@@ -4566,6 +4570,7 @@ async fn update_upstream_account_writes_positive_new_conversation_policy() {
                     priority_tier: OptionalField::Value("no_new".to_string()),
                     fast_mode_rewrite_mode: OptionalField::Missing,
                     image_tool_rewrite_mode: OptionalField::Missing,
+                    request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
@@ -4641,6 +4646,7 @@ async fn update_upstream_account_preserves_priority_tier_when_omitted() {
                     priority_tier: OptionalField::Missing,
                     fast_mode_rewrite_mode: OptionalField::Missing,
                     image_tool_rewrite_mode: OptionalField::Missing,
+                    request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
@@ -4699,6 +4705,7 @@ async fn update_upstream_account_accepts_no_new_priority_write() {
                     priority_tier: OptionalField::Value("no_new".to_string()),
                     fast_mode_rewrite_mode: OptionalField::Missing,
                     image_tool_rewrite_mode: OptionalField::Missing,
+                    request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
@@ -4774,6 +4781,7 @@ async fn update_upstream_account_does_not_change_priority_tier_when_omitted() {
                     priority_tier: OptionalField::Missing,
                     fast_mode_rewrite_mode: OptionalField::Missing,
                     image_tool_rewrite_mode: OptionalField::Missing,
+                    request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
@@ -4832,6 +4840,7 @@ async fn update_upstream_account_persists_empty_available_models_as_deny_all() {
                     priority_tier: OptionalField::Missing,
                     fast_mode_rewrite_mode: OptionalField::Missing,
                     image_tool_rewrite_mode: OptionalField::Missing,
+                    request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
@@ -4888,6 +4897,7 @@ async fn update_upstream_account_rejects_invalid_routing_policy_enums() {
                     priority_tier: OptionalField::Value("normal".to_string()),
                     fast_mode_rewrite_mode: OptionalField::Value("always_fast".to_string()),
                     image_tool_rewrite_mode: OptionalField::Missing,
+                    request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
                     upstream_429_max_retries: OptionalField::Missing,
@@ -5037,6 +5047,136 @@ async fn load_upstream_account_detail_with_actual_usage_populates_root_timeout_v
     );
     assert_eq!(
         rule.timeout_field_sources.compact_stream_timeout_secs,
+        "root"
+    );
+}
+
+#[tokio::test]
+async fn load_effective_routing_rules_for_accounts_request_compression_respects_inheritance() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let root_only_id = insert_api_key_account(&state.pool, "Root Compression").await;
+    let group_only_id = insert_api_key_account(&state.pool, "Group Compression").await;
+    let account_override_id = insert_api_key_account(&state.pool, "Account Compression").await;
+    let oauth_id = insert_oauth_account(&state.pool, "OAuth Compression").await;
+
+    save_pool_routing_settings(
+        &state.pool,
+        &state.config,
+        None,
+        None,
+        Some(RequestCompressionAlgorithm::Gzip),
+        Some(RequestCompressionLevelPreset::Best),
+        None,
+    )
+    .await
+    .expect("save root request compression settings");
+
+    for account_id in [group_only_id, account_override_id, oauth_id] {
+        sqlx::query(
+            r#"
+                UPDATE pool_upstream_accounts
+                SET group_name = 'compression-mixed'
+                WHERE id = ?1
+                "#,
+        )
+        .bind(account_id)
+        .execute(&state.pool)
+        .await
+        .expect("assign mixed compression group");
+    }
+
+    let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+    save_group_metadata_record_conn(
+        &mut conn,
+        "compression-mixed",
+        UpstreamAccountGroupMetadata {
+            note: None,
+            bound_proxy_keys: vec![],
+            node_shunt_enabled: false,
+            single_account_rotation_enabled: false,
+            upstream_429_retry_enabled: false,
+            upstream_429_max_retries: 0,
+            concurrency_limit: 0,
+        },
+    )
+    .await
+    .expect("save compression group metadata");
+    drop(conn);
+
+    sqlx::query(
+        r#"
+            UPDATE pool_upstream_account_group_notes
+            SET policy_request_compression_algorithm = 'deflate'
+            WHERE group_name = 'compression-mixed'
+            "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("save group compression override");
+
+    sqlx::query(
+        r#"
+            UPDATE pool_upstream_accounts
+            SET policy_request_compression_algorithm = CASE id
+                WHEN ?1 THEN 'zstd'
+                WHEN ?2 THEN 'identity'
+                ELSE policy_request_compression_algorithm
+            END
+            WHERE id IN (?1, ?2)
+            "#,
+    )
+    .bind(account_override_id)
+    .bind(oauth_id)
+    .execute(&state.pool)
+    .await
+    .expect("save account compression overrides");
+
+    let rules = load_effective_routing_rules_for_accounts(
+        &state.pool,
+        &[root_only_id, group_only_id, account_override_id, oauth_id],
+    )
+    .await
+    .expect("load effective routing rules");
+
+    let root_only = rules.get(&root_only_id).expect("root-only rule");
+    assert_eq!(
+        root_only.request_compression_algorithm,
+        RequestCompressionAlgorithm::Gzip
+    );
+    assert_eq!(
+        root_only.field_sources.request_compression_algorithm,
+        "root"
+    );
+
+    let group_only = rules.get(&group_only_id).expect("group-only rule");
+    assert_eq!(
+        group_only.request_compression_algorithm,
+        RequestCompressionAlgorithm::Deflate
+    );
+    assert_eq!(
+        group_only.field_sources.request_compression_algorithm,
+        "group"
+    );
+
+    let account_override = rules
+        .get(&account_override_id)
+        .expect("account override rule");
+    assert_eq!(
+        account_override.request_compression_algorithm,
+        RequestCompressionAlgorithm::Zstd
+    );
+    assert_eq!(
+        account_override.field_sources.request_compression_algorithm,
+        "account"
+    );
+
+    let oauth_rule = rules.get(&oauth_id).expect("oauth rule");
+    assert_eq!(
+        oauth_rule.request_compression_algorithm,
+        RequestCompressionAlgorithm::Gzip
+    );
+    assert_eq!(
+        oauth_rule.field_sources.request_compression_algorithm,
         "root"
     );
 }

@@ -271,7 +271,29 @@ pub(crate) async fn load_via_pool_effective_routing(
 pub(crate) fn pool_account_supports_live_request_body(
     account: &PoolResolvedAccount,
     original_uri: &Uri,
+    method: &Method,
+    headers: &HeaderMap,
 ) -> bool {
+    let capture_target = capture_target_for_request(original_uri.path(), method);
+    let fast_mode_rewrite_required = capture_target
+        .is_some_and(|target| target.allows_fast_mode_rewrite())
+        && account.fast_mode_rewrite_mode != TagFastModeRewriteMode::KeepOriginal;
+    let image_tool_rewrite_required = capture_target.is_some_and(|target| {
+        matches!(
+            target,
+            ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
+        )
+    }) && account.image_tool_rewrite_mode
+        != crate::ImageToolRewriteMode::KeepOriginal;
+
+    if headers.contains_key(header::CONTENT_ENCODING)
+        || fast_mode_rewrite_required
+        || image_tool_rewrite_required
+        || account.request_compression_algorithm != RequestCompressionAlgorithm::Identity
+    {
+        return false;
+    }
+
     match &account.auth {
         PoolResolvedAuth::ApiKey { .. } => true,
         PoolResolvedAuth::Oauth { .. } => original_uri.path() != "/v1/responses",
@@ -2933,7 +2955,12 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             live_body_sticky_key.clone(),
                         );
 
-                        if pool_account_supports_live_request_body(&initial_account, original_uri) {
+                        if pool_account_supports_live_request_body(
+                            &initial_account,
+                            original_uri,
+                            &method,
+                            &headers,
+                        ) {
                             let upstream = match send_pool_request_live_first_attempt(
                                 state.clone(),
                                 proxy_request_id,

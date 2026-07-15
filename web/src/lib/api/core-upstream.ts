@@ -74,6 +74,8 @@ export type TagFastModeRewriteMode =
 export type ImageToolRewriteMode = "keep_original" | "fill_missing" | "force_add" | "force_remove";
 export type ImageToolCapability = "supported" | "unsupported" | "unknown";
 export type ImageIntent = "yes" | "direct_image" | "no" | "unknown";
+export type RequestCompressionAlgorithm = "follow" | "identity" | "gzip" | "deflate" | "zstd";
+export type RequestCompressionLevelPreset = "fast" | "balanced" | "best";
 
 export interface TagRoutingRule {
   allowCutOut: boolean;
@@ -142,6 +144,7 @@ export interface PoolRoutingTimeoutSettings {
 
 export interface GroupAccountRoutingRule extends TagRoutingRule {
   imageToolRewriteMode?: ImageToolRewriteMode;
+  requestCompressionAlgorithm?: RequestCompressionAlgorithm;
   statusChangeReasons?: StatusChangeReasons;
   timeouts?: Partial<PoolRoutingTimeoutSettings>;
 }
@@ -152,6 +155,7 @@ export interface EffectiveRoutingRuleFieldSources {
   priorityTier: EffectiveRoutingRuleSource;
   fastModeRewriteMode: EffectiveRoutingRuleSource;
   imageToolRewriteMode?: EffectiveRoutingRuleSource;
+  requestCompressionAlgorithm?: EffectiveRoutingRuleSource;
   concurrencyLimit: EffectiveRoutingRuleSource;
   upstream429Retry: EffectiveRoutingRuleSource;
   availableModels?: EffectiveRoutingRuleSource;
@@ -167,6 +171,7 @@ export interface EffectiveRoutingTimeoutFieldSources {
 }
 
 export interface EffectiveRoutingRule extends GroupAccountRoutingRule {
+  requestCompressionAlgorithm?: RequestCompressionAlgorithm;
   systemDeniedModels?: string[];
   sourceTagIds: number[];
   sourceTagNames: string[];
@@ -326,6 +331,8 @@ export interface UpstreamAccountGroupSummary {
 export interface UpdatePoolRoutingSettingsPayload {
   apiKey?: string;
   maintenance?: UpdatePoolRoutingMaintenanceSettingsPayload;
+  requestCompressionAlgorithm?: RequestCompressionAlgorithm;
+  requestCompressionLevelPreset?: RequestCompressionLevelPreset;
   timeouts?: Partial<PoolRoutingTimeoutSettings>;
 }
 
@@ -334,6 +341,8 @@ export interface PoolRoutingSettings {
   apiKeyConfigured: boolean;
   maskedApiKey?: string | null;
   maintenance?: PoolRoutingMaintenanceSettings;
+  requestCompressionAlgorithm?: RequestCompressionAlgorithm;
+  requestCompressionLevelPreset?: RequestCompressionLevelPreset;
   timeouts?: PoolRoutingTimeoutSettings;
 }
 
@@ -789,6 +798,7 @@ export interface UpdateGroupAccountRoutingRulePayload {
   priorityTier?: NullableRoutingRuleValue<TagPriorityTier>;
   fastModeRewriteMode?: NullableRoutingRuleValue<TagFastModeRewriteMode>;
   imageToolRewriteMode?: NullableRoutingRuleValue<ImageToolRewriteMode>;
+  requestCompressionAlgorithm?: NullableRoutingRuleValue<RequestCompressionAlgorithm>;
   concurrencyLimit?: NullableRoutingRuleValue<number>;
   upstream429RetryEnabled?: NullableRoutingRuleValue<boolean>;
   upstream429MaxRetries?: NullableRoutingRuleValue<number>;
@@ -996,12 +1006,36 @@ function normalizeStatusChangeReasonFieldSources(raw: unknown): StatusChangeReas
   return next;
 }
 
+function normalizeRequestCompressionAlgorithm(value: unknown): RequestCompressionAlgorithm {
+  if (
+    value === "follow" ||
+    value === "identity" ||
+    value === "gzip" ||
+    value === "deflate" ||
+    value === "zstd"
+  ) {
+    return value;
+  }
+  return "identity";
+}
+
+function normalizeOptionalRequestCompressionAlgorithm(
+  value: unknown,
+): RequestCompressionAlgorithm | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? normalizeRequestCompressionAlgorithm(value)
+    : undefined;
+}
+
 function normalizeGroupAccountRoutingRule(raw: unknown): GroupAccountRoutingRule {
   const payload = normalizeTagRoutingRule(raw);
   const rawPayload = (raw ?? {}) as Record<string, unknown>;
   return {
     ...payload,
     imageToolRewriteMode: normalizeImageToolRewriteMode(rawPayload.imageToolRewriteMode),
+    requestCompressionAlgorithm: normalizeOptionalRequestCompressionAlgorithm(
+      rawPayload.requestCompressionAlgorithm,
+    ),
     statusChangeReasons: normalizeStatusChangeReasons(rawPayload.statusChangeReasons),
     timeouts: normalizeOptionalPoolRoutingTimeoutSettings(rawPayload.timeouts),
   };
@@ -1049,6 +1083,7 @@ export function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRul
       priorityTier: normalizeSource(rawSources.priorityTier),
       fastModeRewriteMode: normalizeSource(rawSources.fastModeRewriteMode),
       imageToolRewriteMode: normalizeSource(rawSources.imageToolRewriteMode),
+      requestCompressionAlgorithm: normalizeSource(rawSources.requestCompressionAlgorithm),
       concurrencyLimit: normalizeSource(rawSources.concurrencyLimit),
       upstream429Retry: normalizeSource(rawSources.upstream429Retry),
       availableModels: normalizeSource(rawSources.availableModels),

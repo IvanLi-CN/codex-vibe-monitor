@@ -25,6 +25,15 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
+use async_compression::{
+    Level as AsyncCompressionLevel,
+    tokio::bufread::{
+        DeflateDecoder as AsyncDeflateDecoder, GzipDecoder as AsyncGzipDecoder,
+        GzipEncoder as AsyncGzipEncoder, ZlibDecoder as AsyncZlibDecoder,
+        ZlibEncoder as AsyncZlibEncoder, ZstdDecoder as AsyncZstdDecoder,
+        ZstdEncoder as AsyncZstdEncoder,
+    },
+};
 #[cfg(test)]
 pub(crate) use axum::http::header as http_header;
 use axum::response::sse::{Event, KeepAlive};
@@ -65,7 +74,7 @@ use sqlx::{
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     process::{Child, Command},
     sync::{Mutex, RwLock, Semaphore, broadcast, mpsc, oneshot, watch},
@@ -75,6 +84,7 @@ use tokio::{
 use tokio_rustls::TlsConnector;
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, client_async_tls_with_config};
+use tokio_util::io::{ReaderStream, StreamReader};
 use tokio_util::sync::CancellationToken;
 use tower::service_fn;
 use tower_http::{

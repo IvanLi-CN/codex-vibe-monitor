@@ -459,6 +459,7 @@ async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_compa
         Some(&PoolReplayBodySnapshot::Memory(body)),
         &"/v1/responses/compact".parse().expect("valid compact uri"),
         &Method::POST,
+        None,
         TagFastModeRewriteMode::ForceAdd,
         crate::ImageToolRewriteMode::KeepOriginal,
     )
@@ -491,6 +492,7 @@ async fn prepare_pool_request_body_for_account_preserves_file_snapshot_when_rewr
         Some(&snapshot),
         &"/v1/responses".parse().expect("valid responses uri"),
         &Method::POST,
+        None,
         TagFastModeRewriteMode::KeepOriginal,
         crate::ImageToolRewriteMode::ForceRemove,
     )
@@ -531,6 +533,7 @@ async fn prepare_pool_request_body_for_account_reports_rewritten_image_intent_af
         Some(&PoolReplayBodySnapshot::Memory(body)),
         &"/v1/responses".parse().expect("valid responses uri"),
         &Method::POST,
+        None,
         TagFastModeRewriteMode::KeepOriginal,
         crate::ImageToolRewriteMode::ForceRemove,
     )
@@ -576,6 +579,7 @@ async fn prepare_pool_request_body_for_account_keeps_large_rewrite_file_backed()
         Some(&PoolReplayBodySnapshot::Memory(body)),
         &"/v1/responses".parse().expect("valid responses uri"),
         &Method::POST,
+        None,
         TagFastModeRewriteMode::KeepOriginal,
         crate::ImageToolRewriteMode::ForceRemove,
     )
@@ -596,6 +600,210 @@ async fn prepare_pool_request_body_for_account_keeps_large_rewrite_file_backed()
             .any(|tool| tool["type"].as_str() == Some("image_generation"))
     );
     assert!(payload.get("tool_choice").is_none());
+}
+
+#[tokio::test]
+async fn prepare_pool_request_body_for_account_decodes_gzip_before_rewrite() {
+    let plain = serde_json::to_vec(&json!({
+        "model": "gpt-5.1-codex-max",
+        "serviceTier": "flex",
+        "input": [{
+            "role": "user",
+            "content": "rewrite compressed request"
+        }]
+    }))
+    .expect("serialize compressed request body");
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(&plain)
+        .expect("write compressed request body");
+    let compressed = encoder.finish().expect("finish compressed request body");
+
+    let prepared = prepare_pool_request_body_for_account(
+        490001,
+        Some(&PoolReplayBodySnapshot::Memory(Bytes::from(compressed))),
+        &"/v1/responses".parse().expect("valid responses uri"),
+        &Method::POST,
+        Some("gzip"),
+        TagFastModeRewriteMode::ForceAdd,
+        crate::ImageToolRewriteMode::KeepOriginal,
+    )
+    .await
+    .expect("prepare gzip-compressed pool request body");
+
+    assert!(prepared.snapshot_is_decoded);
+    assert_eq!(prepared.requested_service_tier.as_deref(), Some("priority"));
+    let request_body = prepared
+        .request_body_for_capture
+        .expect("capture request body should be materialized");
+    let payload: Value = serde_json::from_slice(&request_body).expect("decode rewritten body");
+    assert_eq!(payload["service_tier"].as_str(), Some("priority"));
+    assert!(payload.get("serviceTier").is_none());
+    let decoded_snapshot = prepared
+        .snapshot
+        .to_bytes()
+        .await
+        .expect("read decoded rewrite snapshot");
+    let snapshot_payload: Value =
+        serde_json::from_slice(&decoded_snapshot).expect("decode rewritten snapshot");
+    assert_eq!(snapshot_payload["service_tier"].as_str(), Some("priority"));
+    assert!(snapshot_payload.get("serviceTier").is_none());
+}
+
+#[tokio::test]
+async fn build_pool_upstream_request_body_follow_passthrough_preserves_gzip_snapshot() {
+    let plain = Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#);
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(&plain)
+        .expect("write follow passthrough gzip payload");
+    let compressed = encoder
+        .finish()
+        .expect("finish follow passthrough gzip payload");
+    let prepared = PreparedPoolRequestBody {
+        snapshot: PoolReplayBodySnapshot::Memory(Bytes::from(compressed.clone())),
+        request_body_for_capture: None,
+        requested_service_tier: None,
+        requested_image_intent: ImageIntent::Unknown,
+        snapshot_is_decoded: false,
+    };
+
+    let outbound = build_pool_upstream_request_body(
+        &prepared,
+        RequestCompressionAlgorithm::Follow,
+        RequestCompressionLevelPreset::Balanced,
+        Some("gzip"),
+    )
+    .await
+    .expect("build passthrough gzip request body");
+
+    assert_eq!(outbound.content_length, Some(compressed.len()));
+    assert_eq!(outbound.content_encoding, RequestBodyContentEncoding::Gzip);
+    assert_eq!(
+        outbound.compression_mode,
+        PoolRequestBodyCompressionMode::Passthrough
+    );
+}
+
+#[tokio::test]
+async fn build_pool_upstream_request_body_follow_rejects_unsupported_request_encoding() {
+    let prepared = PreparedPoolRequestBody {
+        snapshot: PoolReplayBodySnapshot::Memory(Bytes::from_static(
+            br#"{"model":"gpt-5","input":"hello"}"#,
+        )),
+        request_body_for_capture: None,
+        requested_service_tier: None,
+        requested_image_intent: ImageIntent::Unknown,
+        snapshot_is_decoded: false,
+    };
+
+    let err = build_pool_upstream_request_body(
+        &prepared,
+        RequestCompressionAlgorithm::Follow,
+        RequestCompressionLevelPreset::Balanced,
+        Some("br"),
+    )
+    .await
+    .expect_err("follow should reject unsupported request encoding");
+
+    assert_eq!(err.status, StatusCode::BAD_REQUEST);
+    assert!(
+        err.message
+            .contains("unsupported request Content-Encoding: br"),
+        "unexpected error: {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn query_pool_attempt_records_from_live_includes_request_compression_observation() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    let invoke_id = "pool-request-compression-query";
+    let occurred_at = "2026-07-15 12:00:00";
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            payload,
+            raw_response,
+            request_raw_codec
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(r#"{"endpoint":"/v1/responses"}"#)
+    .bind(r#"{"ok":true}"#)
+    .bind("identity")
+    .execute(&pool)
+    .await
+    .expect("insert invocation row");
+
+    insert_pool_upstream_request_attempt_with_scope(
+        &pool,
+        &PoolUpstreamAttemptTraceContext {
+            invoke_id: invoke_id.to_string(),
+            occurred_at: occurred_at.to_string(),
+            endpoint: "/v1/responses".to_string(),
+            sticky_key: None,
+            requester_ip: None,
+        },
+        None,
+        None,
+        None,
+        Some("https://api.openai.com"),
+        1,
+        1,
+        0,
+        Some(occurred_at),
+        Some(occurred_at),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED),
+        Some(StatusCode::OK),
+        None,
+        None,
+        None,
+        None,
+        Some(12.0),
+        Some(24.0),
+        Some(36.0),
+        Some("req_compression_obs"),
+        None,
+        None,
+        Some("gzip"),
+        Some("recompressed"),
+    )
+    .await
+    .expect("insert pool attempt row");
+
+    let rows = query_pool_attempt_records_from_live(&pool, invoke_id)
+        .await
+        .expect("query pool attempt records");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].downstream_request_content_encoding.as_deref(),
+        Some("identity")
+    );
+    assert_eq!(
+        rows[0].upstream_request_compression_algorithm.as_deref(),
+        Some("gzip")
+    );
+    assert_eq!(
+        rows[0].upstream_request_compression_mode.as_deref(),
+        Some("recompressed")
+    );
 }
 
 #[test]

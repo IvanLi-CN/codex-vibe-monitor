@@ -94,6 +94,17 @@ const labels = {
   imageToolFillMissing: "Fill when missing",
   imageToolForceAdd: "Force add",
   imageToolForceRemove: "Force remove",
+  requestCompressionAlgorithm: "Request compression",
+  requestCompressionFollow: "Follow",
+  requestCompressionIdentity: "Identity",
+  requestCompressionGzip: "Gzip",
+  requestCompressionDeflate: "Deflate",
+  requestCompressionZstd: "Zstd",
+  requestCompressionInherited: "Inherit",
+  requestCompressionHint:
+    "Override the algorithm only for API key upstream accounts in this group.",
+  requestCompressionMixedGroupHint:
+    "Mixed groups only apply this override when the final target account is an API key upstream.",
   imageToolRewriteHint:
     "Keep original follows the account's own image capability. Fill when missing only injects image tools when image intent is confirmed; force add always injects; force remove always strips it.",
   concurrencyLimit: "Concurrency limit",
@@ -169,6 +180,7 @@ describe("GroupAccountRoutingRuleDialog", () => {
     );
 
     expect(document.body.textContent).toContain("Image tools");
+    expect(document.body.textContent).toContain("Request compression");
     const submit = Array.from(document.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "Apply group policy",
     );

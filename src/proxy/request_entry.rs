@@ -993,6 +993,8 @@ pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) first_byte_latency_ms: f64,
     pub(crate) compact_support_status: Option<String>,
     pub(crate) compact_support_reason: Option<String>,
+    pub(crate) upstream_request_compression_algorithm: Option<String>,
+    pub(crate) upstream_request_compression_mode: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -2091,6 +2093,340 @@ pub(crate) struct PreparedPoolRequestBody {
     pub(crate) request_body_for_capture: Option<Bytes>,
     pub(crate) requested_service_tier: Option<String>,
     pub(crate) requested_image_intent: ImageIntent,
+    pub(crate) snapshot_is_decoded: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PoolRequestBodyPreparationError {
+    pub(crate) status: StatusCode,
+    pub(crate) message: String,
+}
+
+impl PoolRequestBodyPreparationError {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+
+    fn bad_gateway(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PoolRequestBodyCompressionMode {
+    Identity,
+    Passthrough,
+    Recompressed,
+}
+
+impl PoolRequestBodyCompressionMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Identity => "identity",
+            Self::Passthrough => "passthrough",
+            Self::Recompressed => "recompressed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequestBodyContentEncoding {
+    Identity,
+    Gzip,
+    Deflate { zlib_wrapper: bool },
+    Zstd,
+}
+
+impl RequestBodyContentEncoding {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Identity => "identity",
+            Self::Gzip => "gzip",
+            Self::Deflate { .. } => "deflate",
+            Self::Zstd => "zstd",
+        }
+    }
+
+    pub(crate) fn header_value(self) -> Option<&'static str> {
+        match self {
+            Self::Identity => None,
+            Self::Gzip => Some("gzip"),
+            Self::Deflate { .. } => Some("deflate"),
+            Self::Zstd => Some("zstd"),
+        }
+    }
+
+    pub(crate) fn algorithm(self) -> RequestCompressionAlgorithm {
+        match self {
+            Self::Identity => RequestCompressionAlgorithm::Identity,
+            Self::Gzip => RequestCompressionAlgorithm::Gzip,
+            Self::Deflate { .. } => RequestCompressionAlgorithm::Deflate,
+            Self::Zstd => RequestCompressionAlgorithm::Zstd,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedPoolUpstreamRequestBody {
+    pub(crate) body: reqwest::Body,
+    pub(crate) content_length: Option<usize>,
+    pub(crate) content_encoding: RequestBodyContentEncoding,
+    pub(crate) compression_mode: PoolRequestBodyCompressionMode,
+}
+
+type BoxedPoolRequestReader = Pin<Box<dyn AsyncRead + Send>>;
+
+fn request_compression_preset_to_async_level(
+    preset: RequestCompressionLevelPreset,
+) -> AsyncCompressionLevel {
+    match preset {
+        RequestCompressionLevelPreset::Fast => AsyncCompressionLevel::Fastest,
+        RequestCompressionLevelPreset::Balanced => AsyncCompressionLevel::Default,
+        RequestCompressionLevelPreset::Best => AsyncCompressionLevel::Best,
+    }
+}
+
+async fn resolve_request_body_content_encoding(
+    snapshot: &PoolReplayBodySnapshot,
+    content_encoding: Option<&str>,
+) -> Result<RequestBodyContentEncoding, PoolRequestBodyPreparationError> {
+    let encodings = parse_content_encodings(content_encoding);
+    if encodings.is_empty() || encodings.iter().all(|encoding| encoding == "identity") {
+        return Ok(RequestBodyContentEncoding::Identity);
+    }
+    if encodings.len() != 1 {
+        return Err(PoolRequestBodyPreparationError::bad_request(format!(
+            "unsupported request Content-Encoding chain: {}",
+            encodings.join(", ")
+        )));
+    }
+
+    match encodings[0].as_str() {
+        "gzip" | "x-gzip" => Ok(RequestBodyContentEncoding::Gzip),
+        "deflate" => {
+            let prefix = snapshot.to_prefix_bytes(2).await.map_err(|err| {
+                PoolRequestBodyPreparationError::bad_gateway(format!(
+                    "failed to inspect deflate request body header: {err}"
+                ))
+            })?;
+            Ok(RequestBodyContentEncoding::Deflate {
+                zlib_wrapper: deflate_stream_uses_zlib_wrapper(prefix.as_ref()),
+            })
+        }
+        "zstd" => Ok(RequestBodyContentEncoding::Zstd),
+        other => Err(PoolRequestBodyPreparationError::bad_request(format!(
+            "unsupported request Content-Encoding: {other}"
+        ))),
+    }
+}
+
+fn decode_request_payload_bytes(
+    bytes: &[u8],
+    encoding: RequestBodyContentEncoding,
+) -> Result<Bytes, PoolRequestBodyPreparationError> {
+    match encoding {
+        RequestBodyContentEncoding::Identity => Ok(Bytes::copy_from_slice(bytes)),
+        RequestBodyContentEncoding::Gzip => {
+            let mut decoder = GzDecoder::new(bytes);
+            let mut decoded = Vec::new();
+            decoder.read_to_end(&mut decoded).map_err(|err| {
+                PoolRequestBodyPreparationError::bad_request(format!(
+                    "failed to decode gzip request body: {err}"
+                ))
+            })?;
+            Ok(Bytes::from(decoded))
+        }
+        RequestBodyContentEncoding::Deflate { zlib_wrapper } => {
+            let mut decoded = Vec::new();
+            if zlib_wrapper {
+                let mut decoder = ZlibDecoder::new(bytes);
+                decoder.read_to_end(&mut decoded).map_err(|err| {
+                    PoolRequestBodyPreparationError::bad_request(format!(
+                        "failed to decode deflate request body: {err}"
+                    ))
+                })?;
+            } else {
+                let mut decoder = DeflateDecoder::new(bytes);
+                decoder.read_to_end(&mut decoded).map_err(|err| {
+                    PoolRequestBodyPreparationError::bad_request(format!(
+                        "failed to decode deflate request body: {err}"
+                    ))
+                })?;
+            }
+            Ok(Bytes::from(decoded))
+        }
+        RequestBodyContentEncoding::Zstd => {
+            zstd::decode_all(bytes).map(Bytes::from).map_err(|err| {
+                PoolRequestBodyPreparationError::bad_request(format!(
+                    "failed to decode zstd request body: {err}"
+                ))
+            })
+        }
+    }
+}
+
+async fn open_pool_request_snapshot_reader(
+    snapshot: &PoolReplayBodySnapshot,
+) -> Result<BoxedPoolRequestReader, PoolRequestBodyPreparationError> {
+    match snapshot {
+        PoolReplayBodySnapshot::Empty => Ok(Box::pin(tokio::io::empty())),
+        PoolReplayBodySnapshot::Memory(bytes) => {
+            let bytes = bytes.clone();
+            let stream = stream::once(async move { Ok::<Bytes, io::Error>(bytes) });
+            Ok(Box::pin(StreamReader::new(stream)))
+        }
+        PoolReplayBodySnapshot::File { temp_file, .. } => {
+            let file = tokio::fs::File::open(&temp_file.path)
+                .await
+                .map_err(|err| {
+                    PoolRequestBodyPreparationError::bad_gateway(format!(
+                        "failed to open request replay body: {err}"
+                    ))
+                })?;
+            Ok(Box::pin(file))
+        }
+    }
+}
+
+async fn decode_pool_request_reader(
+    reader: BoxedPoolRequestReader,
+    encoding: RequestBodyContentEncoding,
+) -> Result<BoxedPoolRequestReader, PoolRequestBodyPreparationError> {
+    match encoding {
+        RequestBodyContentEncoding::Identity => Ok(reader),
+        RequestBodyContentEncoding::Gzip => Ok(Box::pin(AsyncGzipDecoder::new(
+            tokio::io::BufReader::new(reader),
+        ))),
+        RequestBodyContentEncoding::Deflate { zlib_wrapper } => {
+            let mut buffered = tokio::io::BufReader::new(reader);
+            let _ = buffered.fill_buf().await.map_err(|err| {
+                PoolRequestBodyPreparationError::bad_request(format!(
+                    "failed to read deflate request body header: {err}"
+                ))
+            })?;
+            if zlib_wrapper {
+                Ok(Box::pin(AsyncZlibDecoder::new(buffered)))
+            } else {
+                Ok(Box::pin(AsyncDeflateDecoder::new(buffered)))
+            }
+        }
+        RequestBodyContentEncoding::Zstd => Ok(Box::pin(AsyncZstdDecoder::new(
+            tokio::io::BufReader::new(reader),
+        ))),
+    }
+}
+
+fn encode_pool_request_reader(
+    reader: BoxedPoolRequestReader,
+    encoding: RequestBodyContentEncoding,
+    level: AsyncCompressionLevel,
+) -> BoxedPoolRequestReader {
+    let buffered = tokio::io::BufReader::new(reader);
+    match encoding {
+        RequestBodyContentEncoding::Identity => Box::pin(buffered),
+        RequestBodyContentEncoding::Gzip => {
+            Box::pin(AsyncGzipEncoder::with_quality(buffered, level))
+        }
+        RequestBodyContentEncoding::Deflate { zlib_wrapper } => {
+            if zlib_wrapper {
+                Box::pin(AsyncZlibEncoder::with_quality(buffered, level))
+            } else {
+                Box::pin(
+                    async_compression::tokio::bufread::DeflateEncoder::with_quality(
+                        buffered, level,
+                    ),
+                )
+            }
+        }
+        RequestBodyContentEncoding::Zstd => {
+            Box::pin(AsyncZstdEncoder::with_quality(buffered, level))
+        }
+    }
+}
+
+pub(crate) async fn build_pool_upstream_request_body(
+    prepared: &PreparedPoolRequestBody,
+    request_compression_algorithm: RequestCompressionAlgorithm,
+    request_compression_level_preset: RequestCompressionLevelPreset,
+    downstream_content_encoding: Option<&str>,
+) -> Result<PreparedPoolUpstreamRequestBody, PoolRequestBodyPreparationError> {
+    if matches!(prepared.snapshot, PoolReplayBodySnapshot::Empty) {
+        return Ok(PreparedPoolUpstreamRequestBody {
+            body: reqwest::Body::from(Bytes::new()),
+            content_length: Some(0),
+            content_encoding: RequestBodyContentEncoding::Identity,
+            compression_mode: PoolRequestBodyCompressionMode::Identity,
+        });
+    }
+
+    let downstream_encoding =
+        resolve_request_body_content_encoding(&prepared.snapshot, downstream_content_encoding)
+            .await?;
+    let target_encoding = match request_compression_algorithm {
+        RequestCompressionAlgorithm::Follow => downstream_encoding,
+        RequestCompressionAlgorithm::Identity => RequestBodyContentEncoding::Identity,
+        RequestCompressionAlgorithm::Gzip => RequestBodyContentEncoding::Gzip,
+        RequestCompressionAlgorithm::Deflate => {
+            RequestBodyContentEncoding::Deflate { zlib_wrapper: true }
+        }
+        RequestCompressionAlgorithm::Zstd => RequestBodyContentEncoding::Zstd,
+    };
+
+    if prepared.snapshot_is_decoded
+        && matches!(target_encoding, RequestBodyContentEncoding::Identity)
+    {
+        return Ok(PreparedPoolUpstreamRequestBody {
+            body: prepared.snapshot.to_reqwest_body(),
+            content_length: Some(pool_request_snapshot_body_bytes(&prepared.snapshot)),
+            content_encoding: RequestBodyContentEncoding::Identity,
+            compression_mode: PoolRequestBodyCompressionMode::Identity,
+        });
+    }
+
+    if !prepared.snapshot_is_decoded && target_encoding == downstream_encoding {
+        let compression_mode = if matches!(target_encoding, RequestBodyContentEncoding::Identity) {
+            PoolRequestBodyCompressionMode::Identity
+        } else {
+            PoolRequestBodyCompressionMode::Passthrough
+        };
+        return Ok(PreparedPoolUpstreamRequestBody {
+            body: prepared.snapshot.to_reqwest_body(),
+            content_length: Some(pool_request_snapshot_body_bytes(&prepared.snapshot)),
+            content_encoding: target_encoding,
+            compression_mode,
+        });
+    }
+
+    let raw_reader = open_pool_request_snapshot_reader(&prepared.snapshot).await?;
+    let decoded_reader = if prepared.snapshot_is_decoded {
+        raw_reader
+    } else {
+        decode_pool_request_reader(raw_reader, downstream_encoding).await?
+    };
+
+    if matches!(target_encoding, RequestBodyContentEncoding::Identity) {
+        return Ok(PreparedPoolUpstreamRequestBody {
+            body: reqwest::Body::wrap_stream(ReaderStream::new(decoded_reader)),
+            content_length: None,
+            content_encoding: RequestBodyContentEncoding::Identity,
+            compression_mode: PoolRequestBodyCompressionMode::Identity,
+        });
+    }
+
+    let level = request_compression_preset_to_async_level(request_compression_level_preset);
+    let encoded_reader = encode_pool_request_reader(decoded_reader, target_encoding, level);
+    Ok(PreparedPoolUpstreamRequestBody {
+        body: reqwest::Body::wrap_stream(ReaderStream::new(encoded_reader)),
+        content_length: None,
+        content_encoding: target_encoding,
+        compression_mode: PoolRequestBodyCompressionMode::Recompressed,
+    })
 }
 
 pub(crate) fn pool_request_snapshot_preserves_content_length(
@@ -2232,9 +2568,10 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     body: Option<&PoolReplayBodySnapshot>,
     original_uri: &Uri,
     method: &Method,
+    content_encoding: Option<&str>,
     fast_mode_rewrite_mode: TagFastModeRewriteMode,
     image_tool_rewrite_mode: crate::ImageToolRewriteMode,
-) -> Result<PreparedPoolRequestBody, String> {
+) -> Result<PreparedPoolRequestBody, PoolRequestBodyPreparationError> {
     let capture_target = capture_target_for_request(original_uri.path(), method);
     let fast_mode_rewrite_required = capture_target
         .is_some_and(|target| target.allows_fast_mode_rewrite())
@@ -2254,6 +2591,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
             request_body_for_capture: Some(Bytes::new()),
             requested_service_tier: None,
             requested_image_intent: ImageIntent::Unknown,
+            snapshot_is_decoded: false,
         });
     };
 
@@ -2289,22 +2627,29 @@ pub(crate) async fn prepare_pool_request_body_for_account(
             request_body_for_capture,
             requested_service_tier,
             requested_image_intent,
+            snapshot_is_decoded: false,
         });
     }
 
-    let original_bytes = snapshot
-        .to_bytes()
-        .await
-        .map_err(|err| format!("failed to materialize pool request body for rewrite: {err}"))?;
+    let original_bytes = snapshot.to_bytes().await.map_err(|err| {
+        PoolRequestBodyPreparationError::bad_gateway(format!(
+            "failed to materialize pool request body for rewrite: {err}"
+        ))
+    })?;
+    let downstream_encoding =
+        resolve_request_body_content_encoding(&snapshot, content_encoding).await?;
+    let decoded_original_bytes =
+        decode_request_payload_bytes(&original_bytes, downstream_encoding)?;
     let Some(target) = capture_target else {
         return Ok(PreparedPoolRequestBody {
             snapshot,
             request_body_for_capture: Some(original_bytes),
             requested_service_tier: None,
             requested_image_intent: ImageIntent::Unknown,
+            snapshot_is_decoded: false,
         });
     };
-    let mut value = match serde_json::from_slice::<Value>(&original_bytes) {
+    let mut value = match serde_json::from_slice::<Value>(&decoded_original_bytes) {
         Ok(value) => value,
         Err(_) => {
             return Ok(PreparedPoolRequestBody {
@@ -2312,6 +2657,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
                 request_body_for_capture: Some(original_bytes),
                 requested_service_tier: None,
                 requested_image_intent: ImageIntent::Unknown,
+                snapshot_is_decoded: false,
             });
         }
     };
@@ -2342,12 +2688,15 @@ pub(crate) async fn prepare_pool_request_body_for_account(
             request_body_for_capture: Some(original_bytes),
             requested_service_tier,
             requested_image_intent: upstream_image_intent,
+            snapshot_is_decoded: false,
         });
     }
 
-    let rewritten_bytes = serde_json::to_vec(&value)
-        .map(Bytes::from)
-        .map_err(|err| format!("failed to serialize rewritten pool request body: {err}"))?;
+    let rewritten_bytes = serde_json::to_vec(&value).map(Bytes::from).map_err(|err| {
+        PoolRequestBodyPreparationError::bad_gateway(format!(
+            "failed to serialize rewritten pool request body: {err}"
+        ))
+    })?;
     let rewritten_snapshot =
         pool_replay_snapshot_from_bytes(proxy_request_id, rewritten_bytes.clone()).await;
     Ok(PreparedPoolRequestBody {
@@ -2355,6 +2704,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
         request_body_for_capture: Some(rewritten_bytes.clone()),
         requested_service_tier,
         requested_image_intent: upstream_image_intent,
+        snapshot_is_decoded: true,
     })
 }
 

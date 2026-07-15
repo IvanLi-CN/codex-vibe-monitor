@@ -2507,6 +2507,7 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         image_tool_capability: ImageToolCapability::Unknown,
     };
 

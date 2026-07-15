@@ -2969,6 +2969,9 @@ export function PromptCacheConversationHistoryDrawer({
               "accountPool.upstreamAccounts.effectiveRule.fieldSystemDeniedModels",
             ),
             fieldProxyBindings: t("live.conversations.drawer.policy.proxy"),
+            fieldRequestCompression: t(
+              "accountPool.upstreamAccounts.effectiveRule.fieldRequestCompression",
+            ),
             timeoutSectionTitle: t("accountPool.upstreamAccounts.routing.timeout.sectionTitle"),
             timeoutInheritedValue: t("accountPool.upstreamAccounts.timeoutEditor.inherited"),
             timeoutOverrideValue: t(
@@ -2991,6 +2994,11 @@ export function PromptCacheConversationHistoryDrawer({
             inheritValue: t("live.conversations.drawer.policy.inherit"),
             cutOutLabel: t("live.conversations.drawer.policy.cutOut"),
             cutInLabel: t("accountPool.upstreamAccounts.effectiveRule.fieldCutIn"),
+            requestCompressionFollow: t("accountPool.requestCompression.follow"),
+            requestCompressionIdentity: t("accountPool.requestCompression.identity"),
+            requestCompressionGzip: t("accountPool.requestCompression.gzip"),
+            requestCompressionDeflate: t("accountPool.requestCompression.deflate"),
+            requestCompressionZstd: t("accountPool.requestCompression.zstd"),
             upstream429RetryCountValue: (count) => String(count),
             availableModelsAddCustom: t("accountPool.tags.dialog.availableModelsAddCustom"),
             availableModelsCustomLabel: (value) =>

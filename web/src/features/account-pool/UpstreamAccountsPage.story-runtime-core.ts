@@ -57,6 +57,7 @@ export type StoryStore = {
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
   allowCutOut: true,
   allowCutIn: true,
+  requestCompressionAlgorithm: "identity",
   availableModels: [],
   systemDeniedModels: [],
   sourceTagIds: [],
@@ -300,6 +301,7 @@ export const defaultRoutingTimeouts: PoolRoutingTimeoutSettings = {
 const detailRichRoutingRule: EffectiveRoutingRule = {
   allowCutOut: false,
   allowCutIn: false,
+  requestCompressionAlgorithm: "gzip",
   availableModels: ["gpt-5.5", "gpt-5.4-mini"],
   systemDeniedModels: ["gpt-5.5"],
   statusChangeReasons: {
@@ -322,6 +324,7 @@ const detailRichRoutingRule: EffectiveRoutingRule = {
     allowCutIn: "account",
     priorityTier: "tag",
     fastModeRewriteMode: "account",
+    requestCompressionAlgorithm: "account",
     concurrencyLimit: "tag",
     upstream429Retry: "account",
     availableModels: "account",
@@ -2535,6 +2538,8 @@ export function createStore(): StoryStore {
       writesEnabled: true,
       apiKeyConfigured: true,
       maskedApiKey: "fixture-pool••••••demo",
+      requestCompressionAlgorithm: "identity",
+      requestCompressionLevelPreset: "balanced",
       maintenance: clone(defaultRoutingMaintenance),
       timeouts: clone(defaultRoutingTimeouts),
     },

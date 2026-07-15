@@ -431,6 +431,27 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
     let prompt_cache_key = runtime_snapshot_context
         .as_ref()
         .and_then(|ctx| ctx.prompt_cache_key.as_deref());
+    let request_compression_level_preset = load_pool_routing_runtime_cache(state.as_ref())
+        .await
+        .map_err(|err| PoolUpstreamError {
+            account: None,
+            status: StatusCode::BAD_GATEWAY,
+            message: format!("failed to load pool routing runtime cache: {err}"),
+            canonical_error_message: None,
+            failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+            connect_latency_ms: 0.0,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            downstream_error_message: None,
+            upstream_request_id: None,
+            proxy_binding_key_snapshot: None,
+            oauth_responses_debug: None,
+            attempt_summary: PoolAttemptSummary::default(),
+            requested_service_tier: None,
+            request_body_for_capture: None,
+        })?
+        .request_compression
+        .level_preset;
 
     'account_loop: loop {
         let mut distinct_account_count = attempted_account_ids.len();
@@ -1284,7 +1305,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
             let connect_started = Instant::now();
             let attempt_started_at: String;
             let attempt_index: i64;
-            let pending_attempt_record: Option<PendingPoolAttemptRecord>;
+            let mut pending_attempt_record: Option<PendingPoolAttemptRecord>;
             let mut early_phase_cleanup_guard: Option<PoolEarlyPhaseOrphanCleanupGuard>;
             let live_attempt_activity_lease: Option<PoolLiveAttemptActivityLease>;
             let prepared_request_body = match prepare_pool_request_body_for_account(
@@ -1292,37 +1313,34 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 body.as_ref(),
                 original_uri,
                 &method,
+                headers
+                    .get(header::CONTENT_ENCODING)
+                    .and_then(|value| value.to_str().ok()),
                 account.fast_mode_rewrite_mode,
                 account.image_tool_rewrite_mode,
             )
             .await
             {
                 Ok(prepared) => prepared,
-                Err(message) => {
+                Err(err) => {
                     release_pool_routing_reservation(state.as_ref(), &reservation_key);
-                    store_pool_failover_error(
-                        &mut last_error,
-                        &mut preserve_sticky_owner_terminal_error,
-                        PoolUpstreamError {
-                            account: Some(account.clone()),
-                            status: StatusCode::BAD_GATEWAY,
-                            message,
-                            failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                            connect_latency_ms: 0.0,
-                            upstream_error_code: None,
-                            upstream_error_message: None,
-                            canonical_error_message: None,
-                            downstream_error_message: None,
-                            upstream_request_id: None,
-                            proxy_binding_key_snapshot: None,
-                            oauth_responses_debug: None,
-                            attempt_summary: PoolAttemptSummary::default(),
-                            requested_service_tier: None,
-                            request_body_for_capture: None,
-                        },
-                    );
-                    exhausted_accounts_all_rate_limited = false;
-                    continue 'account_loop;
+                    return Err(PoolUpstreamError {
+                        account: Some(account.clone()),
+                        status: err.status,
+                        message: err.message,
+                        failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                        connect_latency_ms: 0.0,
+                        upstream_error_code: None,
+                        upstream_error_message: None,
+                        canonical_error_message: None,
+                        downstream_error_message: None,
+                        upstream_request_id: None,
+                        proxy_binding_key_snapshot: None,
+                        oauth_responses_debug: None,
+                        attempt_summary: PoolAttemptSummary::default(),
+                        requested_service_tier: None,
+                        request_body_for_capture: None,
+                    });
                 }
             };
             let attempted_requested_service_tier =
@@ -1380,6 +1398,35 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     attempt_count += 1;
                     attempt_index = attempt_count as i64;
                     attempt_started_at = shanghai_now_string();
+                    let outbound_request_body = build_pool_upstream_request_body(
+                        &prepared_request_body,
+                        account.request_compression_algorithm,
+                        request_compression_level_preset,
+                        headers
+                            .get(header::CONTENT_ENCODING)
+                            .and_then(|value| value.to_str().ok()),
+                    )
+                    .await
+                    .map_err(|err| {
+                        release_pool_routing_reservation(state.as_ref(), &reservation_key);
+                        PoolUpstreamError {
+                            account: Some(account.clone()),
+                            status: err.status,
+                            message: err.message,
+                            canonical_error_message: None,
+                            failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                            connect_latency_ms: 0.0,
+                            upstream_error_code: None,
+                            upstream_error_message: None,
+                            downstream_error_message: None,
+                            upstream_request_id: None,
+                            proxy_binding_key_snapshot: None,
+                            oauth_responses_debug: None,
+                            attempt_summary: PoolAttemptSummary::default(),
+                            requested_service_tier: attempted_requested_service_tier.clone(),
+                            request_body_for_capture: attempted_request_body_for_capture.clone(),
+                        }
+                    })?;
                     let mut request = client.request(
                         method.clone(),
                         api_key_target_url
@@ -1392,16 +1439,16 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         .map(str::to_string);
                     let outbound_snapshot_kind =
                         pool_request_snapshot_kind(&prepared_request_body.snapshot);
-                    let outbound_body_bytes =
+                    let prepared_body_bytes =
                         pool_request_snapshot_body_bytes(&prepared_request_body.snapshot);
-                    let preserve_content_length = pool_request_snapshot_preserves_content_length(
-                        &prepared_request_body.snapshot,
-                    ) && forwarded_content_length
-                        .as_deref()
-                        .and_then(|value| value.parse::<usize>().ok())
-                        == Some(outbound_body_bytes);
+                    let outbound_content_length = outbound_request_body.content_length;
+                    let preserve_content_length = outbound_content_length.is_some()
+                        && forwarded_content_length
+                            .as_deref()
+                            .and_then(|value| value.parse::<usize>().ok())
+                            == outbound_content_length;
                     for (name, value) in headers {
-                        if *name == header::AUTHORIZATION {
+                        if *name == header::AUTHORIZATION || *name == header::CONTENT_ENCODING {
                             continue;
                         }
                         if *name == header::CONTENT_LENGTH && !preserve_content_length {
@@ -1412,10 +1459,15 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         }
                     }
                     request = request.header(header::AUTHORIZATION, authorization.clone());
-                    if !preserve_content_length {
-                        request = request.header(header::CONTENT_LENGTH, outbound_body_bytes);
+                    if let Some(content_length) = outbound_content_length {
+                        request = request.header(header::CONTENT_LENGTH, content_length);
                     }
-                    request = request.body(prepared_request_body.snapshot.to_reqwest_body());
+                    if let Some(content_encoding) =
+                        outbound_request_body.content_encoding.header_value()
+                    {
+                        request = request.header(header::CONTENT_ENCODING, content_encoding);
+                    }
+                    request = request.body(outbound_request_body.body);
                     record_account_selected(state.as_ref(), account.account_id).await;
                     let group_name_snapshot =
                         normalize_pool_attempt_group_name(account.group_name.clone());
@@ -1443,6 +1495,22 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     } else {
                         None
                     };
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_mut()
+                        && let Err(err) =
+                            annotate_pool_upstream_request_attempt_request_compression(
+                                &state.pool,
+                                pending_attempt_record,
+                                outbound_request_body.content_encoding.algorithm().as_str(),
+                                outbound_request_body.compression_mode.as_str(),
+                            )
+                            .await
+                    {
+                        warn!(
+                            invoke_id = %pending_attempt_record.invoke_id,
+                            error = %err,
+                            "failed to persist pool request compression metadata"
+                        );
+                    }
                     let attempt_runtime_snapshot = runtime_snapshot_context.as_ref().map(|ctx| {
                         let mut ctx = ctx.clone();
                         ctx.request_info.requested_service_tier =
@@ -1498,7 +1566,11 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             .as_ref()
                             .map(|pending| pending.attempt_index),
                         upstream_attempt_started = true,
-                        outbound_body_bytes,
+                        request_compression_algorithm =
+                            outbound_request_body.content_encoding.as_str(),
+                        request_compression_mode = outbound_request_body.compression_mode.as_str(),
+                        prepared_body_bytes,
+                        outbound_content_length,
                         "pool upstream attempt started"
                     );
                     match timeout(attempt_send_timeout, request.send()).await {
@@ -1523,8 +1595,13 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 account_id = account.account_id,
                                 endpoint = original_uri.path(),
                                 requested_service_tier = attempted_requested_service_tier.as_deref(),
+                                request_compression_algorithm =
+                                    outbound_request_body.content_encoding.as_str(),
+                                request_compression_mode =
+                                    outbound_request_body.compression_mode.as_str(),
                                 snapshot_kind = outbound_snapshot_kind,
-                                outbound_body_bytes,
+                                prepared_body_bytes,
+                                outbound_content_length,
                                 forwarded_content_length = forwarded_content_length.as_deref(),
                                 preserved_content_length = preserve_content_length,
                                 error = %err,
@@ -1697,8 +1774,13 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 endpoint = original_uri.path(),
                                 requested_service_tier =
                                     attempted_requested_service_tier.as_deref(),
+                                request_compression_algorithm =
+                                    outbound_request_body.content_encoding.as_str(),
+                                request_compression_mode =
+                                    outbound_request_body.compression_mode.as_str(),
                                 snapshot_kind = outbound_snapshot_kind,
-                                outbound_body_bytes,
+                                prepared_body_bytes,
+                                outbound_content_length,
                                 forwarded_content_length = forwarded_content_length.as_deref(),
                                 preserved_content_length = preserve_content_length,
                                 timeout_ms = attempt_send_timeout.as_millis(),

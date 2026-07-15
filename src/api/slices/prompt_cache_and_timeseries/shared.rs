@@ -268,12 +268,18 @@ pub(crate) async fn query_pool_attempt_records_from_live(
             attempts.first_byte_latency_ms,
             attempts.stream_latency_ms,
             attempts.upstream_request_id,
+            COALESCE(inv.request_raw_codec, 'identity') AS downstream_request_content_encoding,
+            attempts.upstream_request_compression_algorithm,
+            attempts.upstream_request_compression_mode,
             attempts.compact_support_status,
             attempts.compact_support_reason,
             attempts.created_at
         FROM pool_upstream_request_attempts AS attempts
         LEFT JOIN pool_upstream_accounts AS accounts
             ON accounts.id = attempts.upstream_account_id
+        LEFT JOIN codex_invocations AS inv
+            ON inv.invoke_id = attempts.invoke_id
+           AND inv.occurred_at = attempts.occurred_at
         WHERE attempts.invoke_id = ?1
         ORDER BY attempts.attempt_index ASC, attempts.id ASC
         "#,

@@ -67,6 +67,7 @@ const defaultRoutingRule: GroupAccountRoutingRule = {
   priorityTier: "normal",
   fastModeRewriteMode: "keep_original",
   imageToolRewriteMode: "keep_original",
+  requestCompressionAlgorithm: undefined,
   concurrencyLimit: 0,
   upstream429RetryEnabled: false,
   upstream429MaxRetries: 0,
@@ -106,6 +107,9 @@ export function mergeRoutingRulePatch(
     ...(patch.imageToolRewriteMode == null
       ? {}
       : { imageToolRewriteMode: patch.imageToolRewriteMode }),
+    ...(patch.requestCompressionAlgorithm == null
+      ? {}
+      : { requestCompressionAlgorithm: patch.requestCompressionAlgorithm }),
     ...(patch.concurrencyLimit == null ? {} : { concurrencyLimit: patch.concurrencyLimit }),
     ...(patch.upstream429RetryEnabled == null
       ? {}
@@ -361,6 +365,21 @@ export function useUpstreamAccountGroupSettingsDialog(
       ),
       imageToolRewriteHint: t(
         "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint",
+      ),
+      requestCompressionAlgorithm: t(
+        "accountPool.upstreamAccounts.groupNotes.routingPolicy.requestCompressionAlgorithm",
+      ),
+      requestCompressionFollow: t("accountPool.requestCompression.follow"),
+      requestCompressionIdentity: t("accountPool.requestCompression.identity"),
+      requestCompressionGzip: t("accountPool.requestCompression.gzip"),
+      requestCompressionDeflate: t("accountPool.requestCompression.deflate"),
+      requestCompressionZstd: t("accountPool.requestCompression.zstd"),
+      requestCompressionInherited: t("accountPool.requestCompression.inherit"),
+      requestCompressionHint: t(
+        "accountPool.upstreamAccounts.groupNotes.routingPolicy.requestCompressionHint",
+      ),
+      requestCompressionMixedGroupHint: t(
+        "accountPool.upstreamAccounts.groupNotes.routingPolicy.requestCompressionMixedGroupHint",
       ),
       statusChangeReasonSectionTitle: t(
         "accountPool.upstreamAccounts.statusChangeReasons.sectionTitle",

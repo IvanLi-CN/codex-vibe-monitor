@@ -61,6 +61,8 @@ pub(crate) struct UpstreamAccountRow {
     #[sqlx(default)]
     pub(crate) policy_image_tool_rewrite_mode: Option<String>,
     #[sqlx(default)]
+    pub(crate) policy_request_compression_algorithm: Option<String>,
+    #[sqlx(default)]
     pub(crate) policy_concurrency_limit: Option<i64>,
     #[sqlx(default)]
     pub(crate) policy_upstream_429_retry_enabled: Option<i64>,
@@ -140,6 +142,8 @@ pub(crate) struct PoolRoutingSettingsRow {
     pub(crate) image_first_byte_timeout_secs: Option<i64>,
     pub(crate) responses_stream_timeout_secs: Option<i64>,
     pub(crate) compact_stream_timeout_secs: Option<i64>,
+    pub(crate) request_compression_algorithm: Option<String>,
+    pub(crate) request_compression_level_preset: Option<String>,
     pub(crate) default_first_byte_timeout_secs: Option<i64>,
     pub(crate) upstream_handshake_timeout_secs: Option<i64>,
     pub(crate) request_read_timeout_secs: Option<i64>,
@@ -520,6 +524,8 @@ pub(crate) struct UpstreamAccountGroupListRow {
     pub(crate) policy_fast_mode_rewrite_mode: Option<String>,
     #[sqlx(default)]
     pub(crate) policy_image_tool_rewrite_mode: Option<String>,
+    #[sqlx(default)]
+    pub(crate) policy_request_compression_algorithm: Option<String>,
     pub(crate) policy_concurrency_limit: Option<i64>,
     pub(crate) policy_upstream_429_retry_enabled: Option<i64>,
     pub(crate) policy_upstream_429_max_retries: Option<i64>,

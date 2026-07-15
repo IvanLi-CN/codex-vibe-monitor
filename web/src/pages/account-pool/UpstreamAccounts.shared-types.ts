@@ -1,4 +1,8 @@
-import type { PoolRoutingTimeoutSettings } from "../../lib/api";
+import type {
+  PoolRoutingTimeoutSettings,
+  RequestCompressionAlgorithm,
+  RequestCompressionLevelPreset,
+} from "../../lib/api";
 
 export type RoutingDraft = {
   apiKey: string;
@@ -6,6 +10,8 @@ export type RoutingDraft = {
   primarySyncIntervalSecs: string;
   secondarySyncIntervalSecs: string;
   priorityAvailableAccountCap: string;
+  requestCompressionAlgorithm: RequestCompressionAlgorithm;
+  requestCompressionLevelPreset: RequestCompressionLevelPreset;
   responsesFirstByteTimeoutSecs: string;
   compactFirstByteTimeoutSecs: string;
   imageFirstByteTimeoutSecs: string;

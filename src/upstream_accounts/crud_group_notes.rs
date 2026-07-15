@@ -168,6 +168,9 @@ async fn load_upstream_account_attempt_page(
             attempts.first_byte_latency_ms,
             attempts.stream_latency_ms,
             attempts.upstream_request_id,
+            COALESCE(inv.request_raw_codec, 'identity') AS downstream_request_content_encoding,
+            attempts.upstream_request_compression_algorithm,
+            attempts.upstream_request_compression_mode,
             attempts.compact_support_status,
             attempts.compact_support_reason,
             attempts.created_at
@@ -879,6 +882,12 @@ pub(crate) async fn update_upstream_account_group(
                     .map(|mode| mode.as_str())
             })
             .transpose()?;
+        let policy_request_compression_algorithm = routing_rule
+            .request_compression_algorithm_value()
+            .map(|value| {
+                normalize_request_compression_algorithm(Some(value)).map(|mode| mode.as_str())
+            })
+            .transpose()?;
         let available_models_json = match &routing_rule.available_models {
             OptionalField::Missing | OptionalField::Null => None,
             OptionalField::Value(value) => Some(
@@ -953,29 +962,30 @@ pub(crate) async fn update_upstream_account_group(
                 policy_priority_tier = CASE WHEN ?6 != 0 THEN policy_priority_tier ELSE ?7 END,
                 policy_fast_mode_rewrite_mode = CASE WHEN ?8 != 0 THEN policy_fast_mode_rewrite_mode ELSE ?9 END,
                 policy_image_tool_rewrite_mode = CASE WHEN ?10 != 0 THEN policy_image_tool_rewrite_mode ELSE ?11 END,
-                policy_concurrency_limit = CASE WHEN ?12 != 0 THEN policy_concurrency_limit ELSE ?13 END,
-                policy_upstream_429_retry_enabled = CASE WHEN ?14 != 0 THEN policy_upstream_429_retry_enabled ELSE ?15 END,
-                policy_upstream_429_max_retries = CASE WHEN ?16 != 0 THEN policy_upstream_429_max_retries ELSE ?17 END,
+                policy_request_compression_algorithm = CASE WHEN ?12 != 0 THEN policy_request_compression_algorithm ELSE ?13 END,
+                policy_concurrency_limit = CASE WHEN ?14 != 0 THEN policy_concurrency_limit ELSE ?15 END,
+                policy_upstream_429_retry_enabled = CASE WHEN ?16 != 0 THEN policy_upstream_429_retry_enabled ELSE ?17 END,
+                policy_upstream_429_max_retries = CASE WHEN ?18 != 0 THEN policy_upstream_429_max_retries ELSE ?19 END,
                 policy_available_models_json = CASE
-                    WHEN ?18 != 0 THEN policy_available_models_json
-                    ELSE ?19
+                    WHEN ?20 != 0 THEN policy_available_models_json
+                    ELSE ?21
                 END,
-                policy_status_change_upstream_http_401 = CASE WHEN ?20 != 0 THEN policy_status_change_upstream_http_401 ELSE ?21 END,
-                policy_status_change_upstream_http_402 = CASE WHEN ?22 != 0 THEN policy_status_change_upstream_http_402 ELSE ?23 END,
-                policy_status_change_upstream_http_403 = CASE WHEN ?24 != 0 THEN policy_status_change_upstream_http_403 ELSE ?25 END,
-                policy_status_change_reauth_required = CASE WHEN ?26 != 0 THEN policy_status_change_reauth_required ELSE ?27 END,
-                policy_status_change_upstream_http_429_rate_limit = CASE WHEN ?28 != 0 THEN policy_status_change_upstream_http_429_rate_limit ELSE ?29 END,
-                policy_status_change_upstream_http_429_quota_exhausted = CASE WHEN ?30 != 0 THEN policy_status_change_upstream_http_429_quota_exhausted ELSE ?31 END,
-                policy_status_change_usage_snapshot_exhausted = CASE WHEN ?32 != 0 THEN policy_status_change_usage_snapshot_exhausted ELSE ?33 END,
-                policy_status_change_quota_still_exhausted = CASE WHEN ?34 != 0 THEN policy_status_change_quota_still_exhausted ELSE ?35 END,
-                policy_status_change_transport_failure = CASE WHEN ?36 != 0 THEN policy_status_change_transport_failure ELSE ?37 END,
-                policy_status_change_upstream_server_overloaded = CASE WHEN ?38 != 0 THEN policy_status_change_upstream_server_overloaded ELSE ?39 END,
-                policy_status_change_upstream_http_5xx = CASE WHEN ?40 != 0 THEN policy_status_change_upstream_http_5xx ELSE ?41 END,
-                policy_responses_first_byte_timeout_secs = CASE WHEN ?42 != 0 THEN policy_responses_first_byte_timeout_secs ELSE ?43 END,
-                policy_compact_first_byte_timeout_secs = CASE WHEN ?44 != 0 THEN policy_compact_first_byte_timeout_secs ELSE ?45 END,
-                policy_image_first_byte_timeout_secs = CASE WHEN ?46 != 0 THEN policy_image_first_byte_timeout_secs ELSE ?47 END,
-                policy_responses_stream_timeout_secs = CASE WHEN ?48 != 0 THEN policy_responses_stream_timeout_secs ELSE ?49 END,
-                policy_compact_stream_timeout_secs = CASE WHEN ?50 != 0 THEN policy_compact_stream_timeout_secs ELSE ?51 END
+                policy_status_change_upstream_http_401 = CASE WHEN ?22 != 0 THEN policy_status_change_upstream_http_401 ELSE ?23 END,
+                policy_status_change_upstream_http_402 = CASE WHEN ?24 != 0 THEN policy_status_change_upstream_http_402 ELSE ?25 END,
+                policy_status_change_upstream_http_403 = CASE WHEN ?26 != 0 THEN policy_status_change_upstream_http_403 ELSE ?27 END,
+                policy_status_change_reauth_required = CASE WHEN ?28 != 0 THEN policy_status_change_reauth_required ELSE ?29 END,
+                policy_status_change_upstream_http_429_rate_limit = CASE WHEN ?30 != 0 THEN policy_status_change_upstream_http_429_rate_limit ELSE ?31 END,
+                policy_status_change_upstream_http_429_quota_exhausted = CASE WHEN ?32 != 0 THEN policy_status_change_upstream_http_429_quota_exhausted ELSE ?33 END,
+                policy_status_change_usage_snapshot_exhausted = CASE WHEN ?34 != 0 THEN policy_status_change_usage_snapshot_exhausted ELSE ?35 END,
+                policy_status_change_quota_still_exhausted = CASE WHEN ?36 != 0 THEN policy_status_change_quota_still_exhausted ELSE ?37 END,
+                policy_status_change_transport_failure = CASE WHEN ?38 != 0 THEN policy_status_change_transport_failure ELSE ?39 END,
+                policy_status_change_upstream_server_overloaded = CASE WHEN ?40 != 0 THEN policy_status_change_upstream_server_overloaded ELSE ?41 END,
+                policy_status_change_upstream_http_5xx = CASE WHEN ?42 != 0 THEN policy_status_change_upstream_http_5xx ELSE ?43 END,
+                policy_responses_first_byte_timeout_secs = CASE WHEN ?44 != 0 THEN policy_responses_first_byte_timeout_secs ELSE ?45 END,
+                policy_compact_first_byte_timeout_secs = CASE WHEN ?46 != 0 THEN policy_compact_first_byte_timeout_secs ELSE ?47 END,
+                policy_image_first_byte_timeout_secs = CASE WHEN ?48 != 0 THEN policy_image_first_byte_timeout_secs ELSE ?49 END,
+                policy_responses_stream_timeout_secs = CASE WHEN ?50 != 0 THEN policy_responses_stream_timeout_secs ELSE ?51 END,
+                policy_compact_stream_timeout_secs = CASE WHEN ?52 != 0 THEN policy_compact_stream_timeout_secs ELSE ?53 END
             WHERE group_name = ?1
             "#,
         )
@@ -990,6 +1000,8 @@ pub(crate) async fn update_upstream_account_group(
         .bind(policy_fast_mode_rewrite_mode)
         .bind(if matches!(routing_rule.image_tool_rewrite_mode, OptionalField::Missing) { 1_i64 } else { 0_i64 })
         .bind(policy_image_tool_rewrite_mode)
+        .bind(if matches!(routing_rule.request_compression_algorithm, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(policy_request_compression_algorithm)
         .bind(if matches!(routing_rule.concurrency_limit, OptionalField::Missing) { 1_i64 } else { 0_i64 })
         .bind(policy_concurrency_limit)
         .bind(if matches!(routing_rule.upstream_429_retry_enabled, OptionalField::Missing) { 1_i64 } else { 0_i64 })

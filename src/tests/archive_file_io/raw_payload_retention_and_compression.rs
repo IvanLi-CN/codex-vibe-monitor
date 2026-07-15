@@ -2216,6 +2216,8 @@ async fn finalize_pool_upstream_request_attempt_fallback_preserves_scope_snapsho
         started_at: "2026-03-23 21:00:00".to_string(),
         connect_latency_ms: 0.0,
         first_byte_latency_ms: 0.0,
+        upstream_request_compression_algorithm: None,
+        upstream_request_compression_mode: None,
         compact_support_status: None,
         compact_support_reason: None,
     };
@@ -2298,6 +2300,7 @@ async fn insert_pool_upstream_terminal_attempt_preserves_scope_snapshots() {
                 upstream_429_max_retries: 0,
                 fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
                 image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+                request_compression_algorithm: RequestCompressionAlgorithm::Identity,
                 image_tool_capability: ImageToolCapability::Unknown,
                 upstream_base_url: Url::parse("https://api.openai.com/")
                     .expect("valid upstream base"),
@@ -3333,6 +3336,8 @@ async fn recover_guard_dropped_pool_early_phase_orphan_without_persisted_attempt
         started_at: occurred_at.to_string(),
         connect_latency_ms: 0.0,
         first_byte_latency_ms: 0.0,
+        upstream_request_compression_algorithm: None,
+        upstream_request_compression_mode: None,
         compact_support_status: None,
         compact_support_reason: None,
     };
@@ -4543,6 +4548,8 @@ async fn pool_early_phase_orphan_cleanup_guard_disarm_keeps_invocation_running_w
         started_at: occurred_at.to_string(),
         connect_latency_ms: 0.0,
         first_byte_latency_ms: 0.0,
+        upstream_request_compression_algorithm: None,
+        upstream_request_compression_mode: None,
         compact_support_status: None,
         compact_support_reason: None,
     };
@@ -4597,6 +4604,8 @@ async fn finalize_deferred_pool_early_phase_cleanup_guard_after_terminal_invocat
         started_at: "2026-03-23 21:10:10".to_string(),
         connect_latency_ms: 5.0,
         first_byte_latency_ms: 12.0,
+        upstream_request_compression_algorithm: None,
+        upstream_request_compression_mode: None,
         compact_support_status: None,
         compact_support_reason: None,
     };
@@ -4651,6 +4660,8 @@ async fn complete_deferred_pool_early_phase_cleanup_guard_marks_terminal_and_dis
         started_at: "2026-03-23 21:10:09".to_string(),
         connect_latency_ms: 5.0,
         first_byte_latency_ms: 12.0,
+        upstream_request_compression_algorithm: None,
+        upstream_request_compression_mode: None,
         compact_support_status: None,
         compact_support_reason: None,
     };
@@ -4728,6 +4739,8 @@ async fn attempt_completion_preserves_synthetic_runtime_until_request_cleanup() 
         started_at: occurred_at.to_string(),
         connect_latency_ms: 5.0,
         first_byte_latency_ms: 12.0,
+        upstream_request_compression_algorithm: None,
+        upstream_request_compression_mode: None,
         compact_support_status: None,
         compact_support_reason: None,
     };
@@ -4833,6 +4846,7 @@ async fn send_pool_request_with_failover_defers_armed_guard_when_pending_attempt
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         image_tool_capability: ImageToolCapability::Unknown,
     };
 
@@ -4951,6 +4965,7 @@ async fn send_pool_request_with_failover_disarms_guard_after_streaming_phase_is_
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         image_tool_capability: ImageToolCapability::Unknown,
     };
 
@@ -5084,6 +5099,7 @@ async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_stre
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         image_tool_capability: ImageToolCapability::Unknown,
     };
 

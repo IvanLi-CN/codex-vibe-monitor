@@ -26,6 +26,7 @@ import type {
   EffectiveRoutingTimeoutFieldSources,
   ImageToolRewriteMode,
   PoolRoutingTimeoutSettings,
+  RequestCompressionAlgorithm,
   TagFastModeRewriteMode,
   TagPriorityTier,
   UpdateGroupAccountRoutingRulePayload,
@@ -42,6 +43,7 @@ import {
   ROUTING_TIMEOUT_FIELD_ORDER,
   type RoutingTimeoutFieldKey,
 } from "../../lib/poolRoutingTimeouts";
+import { requestCompressionAlgorithmLabel } from "../../lib/requestCompression";
 import { fastModeRewriteBadgeLabel, priorityTierBadgeLabel } from "../../lib/tagRoutingRule";
 import {
   countEnabledStatusChangeReasons,
@@ -68,6 +70,7 @@ type EditablePolicyField =
   | "priorityTier"
   | "fastModeRewriteMode"
   | "imageToolRewriteMode"
+  | "requestCompressionAlgorithm"
   | "concurrencyLimit"
   | "upstream429Retry"
   | "availableModels"
@@ -86,6 +89,7 @@ export type EffectiveRoutingRuleCardRowKey =
   | "allowCutIn"
   | "fastModeRewriteMode"
   | "imageToolRewriteMode"
+  | "requestCompressionAlgorithm"
   | "concurrencyLimit"
   | "upstream429Retry"
   | "availableModels"
@@ -102,6 +106,7 @@ const editableFieldSourceKeys: Array<[EditablePolicyField, keyof FieldSourceMap]
   ["priorityTier", "priorityTier"],
   ["fastModeRewriteMode", "fastModeRewriteMode"],
   ["imageToolRewriteMode", "imageToolRewriteMode"],
+  ["requestCompressionAlgorithm", "requestCompressionAlgorithm"],
   ["concurrencyLimit", "concurrencyLimit"],
   ["upstream429Retry", "upstream429Retry"],
   ["availableModels", "availableModels"],
@@ -184,6 +189,11 @@ interface EffectiveRoutingRuleCardProps {
     imageToolFillMissing: string;
     imageToolForceAdd: string;
     imageToolForceRemove: string;
+    requestCompressionFollow: string;
+    requestCompressionIdentity: string;
+    requestCompressionGzip: string;
+    requestCompressionDeflate: string;
+    requestCompressionZstd: string;
     availableModelsInherited?: string;
     availableModelsNoneAllowed?: string;
     availableModelsEmpty?: string;
@@ -198,6 +208,7 @@ interface EffectiveRoutingRuleCardProps {
     fieldPriority?: string;
     fieldFastMode?: string;
     fieldImageToolRewriteMode?: string;
+    fieldRequestCompression?: string;
     fieldConcurrency?: string;
     fieldUpstream429?: string;
     fieldAvailableModels?: string;
@@ -251,6 +262,7 @@ const defaultFieldSources: FieldSourceMap = {
   priorityTier: "root",
   fastModeRewriteMode: "root",
   imageToolRewriteMode: "root",
+  requestCompressionAlgorithm: "root",
   concurrencyLimit: "root",
   upstream429Retry: "root",
   availableModels: "root",
@@ -265,6 +277,7 @@ function defaultRule(rule?: EffectiveRoutingRule | null): EffectiveRoutingRule {
       priorityTier: "normal",
       fastModeRewriteMode: "keep_original",
       imageToolRewriteMode: "keep_original",
+      requestCompressionAlgorithm: "identity",
       sourceTagIds: [],
       sourceTagNames: [],
       concurrencyLimit: 0,
@@ -358,6 +371,11 @@ function valueVariant(
       return "default";
     if (value === labels.imageToolFillMissing) return "info";
     return "secondary";
+  }
+  if (field === "requestCompressionAlgorithm") {
+    if (value === labels.requestCompressionIdentity) return "success";
+    if (value === labels.requestCompressionFollow) return "info";
+    return "default";
   }
   if (field === "concurrencyLimit") {
     return value === (labels.concurrencyUnlimited ?? "Concurrency unlimited")
@@ -651,6 +669,7 @@ export function EffectiveRoutingRuleCard({
           "allowCutIn",
           "fastModeRewriteMode",
           "imageToolRewriteMode",
+          "requestCompressionAlgorithm",
           "concurrencyLimit",
           "upstream429Retry",
           "availableModels",
@@ -908,6 +927,36 @@ export function EffectiveRoutingRuleCard({
             { value: "force_remove", label: labels.imageToolForceRemove },
           ]}
           onChange={(value) => changeField("imageToolRewriteMode", { imageToolRewriteMode: value })}
+        />
+      ),
+    },
+    {
+      key: "requestCompressionAlgorithm" as const,
+      field: "requestCompressionAlgorithm" as const,
+      label: labels.fieldRequestCompression ?? "Request compression",
+      value: requestCompressionAlgorithmLabel(
+        resolvedRule.requestCompressionAlgorithm ?? "identity",
+        labels,
+      ),
+      source: fieldSources.requestCompressionAlgorithm ?? "root",
+      clearPayload: { requestCompressionAlgorithm: null },
+      editor: (
+        <PolicyInlineOptionGroup<RequestCompressionAlgorithm>
+          ariaLabel={labels.fieldRequestCompression ?? "Request compression"}
+          value={resolvedRule.requestCompressionAlgorithm ?? "identity"}
+          disabled={isBusy("requestCompressionAlgorithm")}
+          options={[
+            { value: "follow", label: labels.requestCompressionFollow },
+            { value: "identity", label: labels.requestCompressionIdentity },
+            { value: "gzip", label: labels.requestCompressionGzip },
+            { value: "deflate", label: labels.requestCompressionDeflate },
+            { value: "zstd", label: labels.requestCompressionZstd },
+          ]}
+          onChange={(value) =>
+            changeField("requestCompressionAlgorithm", {
+              requestCompressionAlgorithm: value,
+            })
+          }
         />
       ),
     },
@@ -1488,6 +1537,8 @@ function fieldToSource(
       return sources.fastModeRewriteMode;
     case "imageToolRewriteMode":
       return sources.imageToolRewriteMode ?? "root";
+    case "requestCompressionAlgorithm":
+      return sources.requestCompressionAlgorithm ?? "root";
     case "concurrencyLimit":
       return sources.concurrencyLimit;
     case "upstream429Retry":

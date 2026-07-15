@@ -34,6 +34,7 @@ function applyRoutingRulePatchToEffectiveRule(
     priorityTier: rule.fieldSources?.priorityTier ?? "root",
     fastModeRewriteMode: rule.fieldSources?.fastModeRewriteMode ?? "root",
     imageToolRewriteMode: rule.fieldSources?.imageToolRewriteMode ?? "root",
+    requestCompressionAlgorithm: rule.fieldSources?.requestCompressionAlgorithm ?? "root",
     concurrencyLimit: rule.fieldSources?.concurrencyLimit ?? "root",
     upstream429Retry: rule.fieldSources?.upstream429Retry ?? "root",
     availableModels: rule.fieldSources?.availableModels ?? "root",
@@ -50,6 +51,9 @@ function applyRoutingRulePatchToEffectiveRule(
     ...(patch.imageToolRewriteMode == null
       ? {}
       : { imageToolRewriteMode: patch.imageToolRewriteMode }),
+    ...(patch.requestCompressionAlgorithm == null
+      ? {}
+      : { requestCompressionAlgorithm: patch.requestCompressionAlgorithm }),
     ...(patch.concurrencyLimit == null ? {} : { concurrencyLimit: patch.concurrencyLimit }),
     ...(patch.upstream429RetryEnabled == null
       ? {}
@@ -74,6 +78,12 @@ function applyRoutingRulePatchToEffectiveRule(
         : {}),
       ...(Object.hasOwn(patch, "imageToolRewriteMode")
         ? { imageToolRewriteMode: patch.imageToolRewriteMode == null ? "root" : "account" }
+        : {}),
+      ...(Object.hasOwn(patch, "requestCompressionAlgorithm")
+        ? {
+            requestCompressionAlgorithm:
+              patch.requestCompressionAlgorithm == null ? "root" : "account",
+          }
         : {}),
       ...(Object.hasOwn(patch, "concurrencyLimit")
         ? { concurrencyLimit: patch.concurrencyLimit == null ? "root" : "account" }
@@ -630,6 +640,12 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
                 apiKeyConfigured: true,
                 maskedApiKey: maskApiKey(trimmed),
               }
+            : {}),
+          ...(body.requestCompressionAlgorithm
+            ? { requestCompressionAlgorithm: body.requestCompressionAlgorithm }
+            : {}),
+          ...(body.requestCompressionLevelPreset
+            ? { requestCompressionLevelPreset: body.requestCompressionLevelPreset }
             : {}),
           ...(body.maintenance
             ? {

@@ -14,6 +14,10 @@ import {
   locateUpstreamAccountAttempt,
   type UpstreamAccountAttemptListResponse,
 } from "../../lib/api";
+import {
+  requestCompressionAlgorithmLabel,
+  requestCompressionModeLabel,
+} from "../../lib/requestCompression";
 import { AppIcon } from "../shared/AppIcon";
 
 const PAGE_SIZE = 50;
@@ -49,6 +53,33 @@ function pendingPhaseLabel(phase: string | null | undefined, t: Translator) {
     default:
       return t("accountPool.upstreamAttempts.phase.sendingRequest");
   }
+}
+
+function compressionAlgorithmValueLabel(value: string | null | undefined, t: Translator) {
+  return requestCompressionAlgorithmLabel(
+    value === "follow" ||
+      value === "identity" ||
+      value === "gzip" ||
+      value === "deflate" ||
+      value === "zstd"
+      ? value
+      : "identity",
+    {
+      requestCompressionFollow: t("accountPool.requestCompression.follow"),
+      requestCompressionIdentity: t("accountPool.requestCompression.identity"),
+      requestCompressionGzip: t("accountPool.requestCompression.gzip"),
+      requestCompressionDeflate: t("accountPool.requestCompression.deflate"),
+      requestCompressionZstd: t("accountPool.requestCompression.zstd"),
+    },
+  );
+}
+
+function compressionModeValueLabel(value: string | null | undefined, t: Translator) {
+  return requestCompressionModeLabel(value, {
+    requestCompressionModeIdentity: t("accountPool.requestCompression.mode.identity"),
+    requestCompressionModePassthrough: t("accountPool.requestCompression.mode.passthrough"),
+    requestCompressionModeRecompressed: t("accountPool.requestCompression.mode.recompressed"),
+  });
 }
 
 function compactProxyBindingKey(value: string) {
@@ -262,6 +293,26 @@ function AttemptEvidenceDisclosure({
               <dd className="font-mono">{attempt.downstreamHttpStatus}</dd>
             </div>
           ) : null}
+          <div className={metadataItemClass}>
+            <dt className="text-base-content/55">
+              {t("accountPool.upstreamAttempts.downstreamRequestCompression")}
+            </dt>
+            <dd>{compressionAlgorithmValueLabel(attempt.downstreamRequestContentEncoding, t)}</dd>
+          </div>
+          <div className={metadataItemClass}>
+            <dt className="text-base-content/55">
+              {t("accountPool.upstreamAttempts.upstreamRequestCompression")}
+            </dt>
+            <dd>
+              {compressionAlgorithmValueLabel(attempt.upstreamRequestCompressionAlgorithm, t)}
+            </dd>
+          </div>
+          <div className={metadataItemClass}>
+            <dt className="text-base-content/55">
+              {t("accountPool.upstreamAttempts.upstreamRequestCompressionMode")}
+            </dt>
+            <dd>{compressionModeValueLabel(attempt.upstreamRequestCompressionMode, t)}</dd>
+          </div>
           {includeTimings ? (
             <div className={metadataItemClass}>
               <dt className="text-base-content/55">
