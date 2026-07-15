@@ -224,6 +224,9 @@ const UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME =
 const UPSTREAM_ACCOUNT_RECENT_IDENTITY_CHIP_CLASS_NAME =
   "inline-flex h-[1.2rem] max-w-[4.8rem] shrink-0 items-center rounded-full border px-1.5 font-mono text-[10px] font-semibold leading-none tracking-[0.04em]";
 
+const ACCOUNT_HEADER_BADGE_CLASS_NAME =
+  "inline-flex h-6 shrink-0 items-center rounded-full border px-2.5 text-[11px] font-semibold leading-none";
+
 const UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES = [
   "dashboard-upstream-account-identity-chip--tone-sky",
   "dashboard-upstream-account-identity-chip--tone-cyan",
@@ -972,7 +975,7 @@ function AccountAttentionBadges({
           data-testid="dashboard-upstream-account-attention-badge"
           title={badge.title ?? badge.label}
           className={cn(
-            "inline-flex h-5 shrink-0 items-center rounded-full border px-2 leading-none",
+            ACCOUNT_HEADER_BADGE_CLASS_NAME,
             badge.tone === "error"
               ? "border-error/38 bg-error/10 text-error"
               : badge.tone === "warning"
@@ -2905,12 +2908,12 @@ function DashboardUpstreamAccountActivityCard({
       data-account-key={account.accountKey ?? account.upstreamAccountId ?? "unassigned"}
       className={ACCOUNT_CARD_CLASS_NAME}
     >
-      <div
-        data-testid="dashboard-upstream-account-header-row"
-        className="flex flex-wrap items-start justify-between gap-4"
-      >
-        <div className="min-w-[12rem] flex-1">
-          <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-col gap-2">
+        <div
+          data-testid="dashboard-upstream-account-header-row"
+          className="grid items-start gap-x-4 gap-y-2 xl:grid-cols-[minmax(0,1fr)_auto]"
+        >
+          <div className="flex min-w-0 flex-wrap items-center gap-2 xl:col-start-1">
             <button
               type="button"
               data-motion-surface
@@ -2939,7 +2942,7 @@ function DashboardUpstreamAccountActivityCard({
                 variant={upstreamPlanBadgeRecipe(account.planType)?.variant ?? "secondary"}
                 data-plan={upstreamPlanBadgeRecipe(account.planType)?.dataPlan}
                 className={cn(
-                  "h-5 px-2 py-0 text-[10px] font-semibold",
+                  ACCOUNT_HEADER_BADGE_CLASS_NAME,
                   upstreamPlanBadgeRecipe(account.planType)?.className,
                 )}
               >
@@ -2957,63 +2960,67 @@ function DashboardUpstreamAccountActivityCard({
               onToggleCutIn={handleToggleCutIn}
             />
           </div>
-          {policySaveError ? (
-            <div
-              role="alert"
-              data-testid="dashboard-upstream-account-policy-error"
-              className="mt-2 inline-flex max-w-full rounded-lg border border-error/30 bg-error/10 px-2.5 py-1 text-xs font-medium text-error"
+          <div className="flex min-w-0 flex-wrap items-center justify-start gap-x-5 gap-y-1.5 text-right xl:col-start-2 xl:justify-end xl:self-start">
+            <AccountInlineMetric
+              label={t("dashboard.today.inProgressConversations")}
+              value={formatAccountNumberValue(account.inProgressInvocationCount, localeTag, 0)}
+              tone="secondary"
+              iconName="send"
+            />
+            <AccountInlineMetric
+              label="TPM"
+              value={formatAccountNumberValue(account.tokensPerMinute, localeTag, 0)}
+              tone="primary"
+              iconName="speedometer"
+              modelPerformance={account.modelPerformance}
+              modelPerformanceTitle={modelPerformanceTitle}
+            />
+            <AccountInlineMetric
+              label={t("dashboard.today.spendRate")}
+              value={formatAccountCurrencyAmountValue(account.spendRate, localeTag, 2)}
+              tone="warning"
+              iconName="cash-clock"
+              modelPerformance={account.modelPerformance}
+              modelPerformanceTitle={modelPerformanceTitle}
+            />
+            <button
+              type="button"
+              data-testid="dashboard-upstream-account-routing-settings"
+              disabled={account.upstreamAccountId == null}
+              className={cn(
+                "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-base-300/70 bg-base-100/82 text-base-content/72 transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                account.upstreamAccountId == null
+                  ? "cursor-not-allowed opacity-45"
+                  : "hover:border-primary/45 hover:text-primary",
+              )}
+              title={locale === "zh" ? "打开账号路由设置" : "Open routing settings"}
+              aria-label={locale === "zh" ? "打开账号路由设置" : "Open routing settings"}
+              onClick={(event) => {
+                event.stopPropagation();
+                handleOpenRoutingTab();
+              }}
+              onKeyDown={(event) => {
+                event.stopPropagation();
+              }}
             >
-              {locale === "zh" ? "策略保存失败：" : "Policy save failed: "}
-              <span className="truncate">{policySaveError}</span>
-            </div>
-          ) : null}
+              <AppIcon
+                name="cog-outline"
+                className="h-[1.125rem] w-[1.125rem]"
+                aria-hidden="true"
+              />
+            </button>
+          </div>
         </div>
-        <div className="flex min-w-0 flex-1 flex-wrap items-start justify-end gap-x-5 gap-y-1.5 text-right">
-          <AccountInlineMetric
-            label={t("dashboard.today.inProgressConversations")}
-            value={formatAccountNumberValue(account.inProgressInvocationCount, localeTag, 0)}
-            tone="secondary"
-            iconName="send"
-          />
-          <AccountInlineMetric
-            label="TPM"
-            value={formatAccountNumberValue(account.tokensPerMinute, localeTag, 0)}
-            tone="primary"
-            iconName="speedometer"
-            modelPerformance={account.modelPerformance}
-            modelPerformanceTitle={modelPerformanceTitle}
-          />
-          <AccountInlineMetric
-            label={t("dashboard.today.spendRate")}
-            value={formatAccountCurrencyAmountValue(account.spendRate, localeTag, 2)}
-            tone="warning"
-            iconName="cash-clock"
-            modelPerformance={account.modelPerformance}
-            modelPerformanceTitle={modelPerformanceTitle}
-          />
-          <button
-            type="button"
-            data-testid="dashboard-upstream-account-routing-settings"
-            disabled={account.upstreamAccountId == null}
-            className={cn(
-              "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-base-300/70 bg-base-100/82 text-base-content/72 transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-              account.upstreamAccountId == null
-                ? "cursor-not-allowed opacity-45"
-                : "hover:border-primary/45 hover:text-primary",
-            )}
-            title={locale === "zh" ? "打开账号路由设置" : "Open routing settings"}
-            aria-label={locale === "zh" ? "打开账号路由设置" : "Open routing settings"}
-            onClick={(event) => {
-              event.stopPropagation();
-              handleOpenRoutingTab();
-            }}
-            onKeyDown={(event) => {
-              event.stopPropagation();
-            }}
+        {policySaveError ? (
+          <div
+            role="alert"
+            data-testid="dashboard-upstream-account-policy-error"
+            className="inline-flex max-w-full rounded-lg border border-error/30 bg-error/10 px-2.5 py-1 text-xs font-medium text-error"
           >
-            <AppIcon name="cog-outline" className="h-[1.125rem] w-[1.125rem]" aria-hidden="true" />
-          </button>
-        </div>
+            {locale === "zh" ? "策略保存失败：" : "Policy save failed: "}
+            <span className="truncate">{policySaveError}</span>
+          </div>
+        ) : null}
       </div>
 
       <div className="mt-4 flex flex-col gap-2.5">
