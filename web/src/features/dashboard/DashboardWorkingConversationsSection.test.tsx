@@ -2740,10 +2740,10 @@ describe("DashboardWorkingConversationsSection", () => {
     const statusNode = host?.querySelector(
       '[data-testid="dashboard-inline-invocation-status"]',
     ) as HTMLElement | null;
-    expect(statusNode?.textContent ?? "").toContain("警告成功");
+    expect(statusNode?.getAttribute("title") ?? "").toContain("警告成功");
   });
 
-  it("renders warning success status labels in upstream-account recent rows", () => {
+  it("keeps warning success recent rows icon-only in upstream-account activity", () => {
     const upstreamActivity = createUpstreamAccountActivityResponse();
     upstreamActivity.accounts[0]!.recentInvocations[0] = {
       ...upstreamActivity.accounts[0]!.recentInvocations[0]!,
@@ -2778,7 +2778,11 @@ describe("DashboardWorkingConversationsSection", () => {
       fireEvent.click(accountTab);
     });
 
-    expect(host?.textContent ?? "").toContain("警告成功");
+    const statusNode = host?.querySelector(
+      '[data-testid="dashboard-inline-invocation-status"]',
+    ) as HTMLElement | null;
+    expect(statusNode?.textContent ?? "").not.toContain("警告成功");
+    expect(statusNode?.getAttribute("title") ?? "").toContain("警告成功");
   });
 
   it("renders a fixed previous-invocation placeholder when a conversation has only one call", () => {
