@@ -11,7 +11,7 @@ const modelPerformance: ModelPerformance = {
     streamingResponseRate: 164.2,
     avgResponseMs: 4820,
     avgFirstResponseByteTotalMs: 1290,
-    usageDurationMs: 184200,
+    usageDurationMs: 132400,
   },
   models: [
     {
