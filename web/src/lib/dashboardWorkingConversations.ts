@@ -2,6 +2,7 @@ import type {
   ApiInvocation,
   PromptCacheConversation,
   PromptCacheConversationInvocationPreview,
+  PromptCacheConversationManualBinding,
   PromptCacheConversationsResponse,
 } from "./api";
 import { resolveInvocationLivePhase } from "./invocationPhase";
@@ -39,6 +40,7 @@ export interface DashboardWorkingConversationCardModel {
   promptCacheKey: string;
   normalizedPromptCacheKey: string;
   conversationSequenceId: string;
+  manualBinding?: PromptCacheConversationManualBinding | null;
   createdAtEpoch: number | null;
   currentInvocation: DashboardWorkingConversationInvocationModel;
   previousInvocation: DashboardWorkingConversationInvocationModel | null;
@@ -193,6 +195,7 @@ function buildPendingCardModel(
   return {
     promptCacheKey: conversation.promptCacheKey,
     normalizedPromptCacheKey,
+    manualBinding: conversation.manualBinding ?? null,
     createdAtEpoch: parseEpoch(conversation.createdAt),
     currentInvocation,
     previousInvocation,
