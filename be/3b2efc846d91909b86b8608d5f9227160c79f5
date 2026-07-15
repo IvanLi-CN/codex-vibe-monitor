@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.35.3",
+  "base_stable_version": "2.35.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-15T09:07:51Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.35.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "1343e0d6130a572d4b4d2e69f9d76162c1e919ca",
+  "pr_number": 623,
+  "pr_title": "fix(web): stabilize detail drawer frame width",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.35.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.35.3",
+  "target_sha": "be3b2efc846d91909b86b8608d5f9227160c79f5",
+  "type_label": "type:patch"
+}
