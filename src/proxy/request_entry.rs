@@ -1438,7 +1438,7 @@ pub(crate) fn proxy_capture_invocation_status(
     pure_downstream_closed: bool,
 ) -> String {
     if pure_downstream_closed {
-        "failed".to_string()
+        INVOCATION_STATUS_WARNING_SUCCESS.to_string()
     } else if status.is_success() && !has_error_message {
         "success".to_string()
     } else {

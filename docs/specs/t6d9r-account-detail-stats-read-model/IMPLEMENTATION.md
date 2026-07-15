@@ -16,6 +16,7 @@
 - Note: 账号活动总览现在归属 overview tab；records tab 只承载调用表格本体，并通过固定页大小的滚动追加加载保留调用记录。
 - Note: records tab 支持后端锚点页启动的双向按需加载；锚点模式冻结快照并暂停 SSE，返回最新记录后恢复既有实时窗口。
 - Note: 概览页活动总览新增的 `nonSuccessCost` 已重新回到 read-model-first 主路径；live augmentation 只保留 `nonSuccessTokens` 与 in-progress 字段，闭区间 summary / timeseries 默认不再回退到 live raw 重算。
+- Note: 未来新写入的 `pure_downstream_closed` 现在以 `warning_success` 对外显示，并按 success-like 纳入 account detail summary/timeseries/live tail；该状态继续保留 `failureKind=downstream_closed` 与 downstream 诊断，但不计入 `nonSuccessCost/nonSuccessTokens/failure*` 侧口径，历史存量不回补。
 
 ## 落地内容
 

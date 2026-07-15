@@ -129,13 +129,15 @@ export function buildDashboardWorkingConversationInvocationModel(
         ? "pending"
         : normalizedStatus === "success" || normalizedStatus === "completed"
           ? "success"
-          : normalizedStatus.startsWith("http_4")
+          : normalizedStatus === "warning_success"
             ? "warning"
-            : normalizedStatus.startsWith("http_") ||
-                normalizedStatus === "failed" ||
-                normalizedStatus === "interrupted"
-              ? "error"
-              : "neutral";
+            : normalizedStatus.startsWith("http_4")
+              ? "warning"
+              : normalizedStatus.startsWith("http_") ||
+                  normalizedStatus === "failed" ||
+                  normalizedStatus === "interrupted"
+                ? "error"
+                : "neutral";
 
   return {
     preview,

@@ -2722,6 +2722,27 @@ describe("DashboardWorkingConversationsSection", () => {
     );
   });
 
+  it("renders warning success status labels in dashboard recent cards", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-warning-success", [
+          createPreview({
+            id: 10,
+            invokeId: "invoke-warning-success-dashboard",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "warning_success",
+            failureClass: "none",
+          }),
+        ]),
+      ]),
+    );
+
+    const statusNode = host?.querySelector(
+      '[data-testid="dashboard-inline-invocation-status"]',
+    ) as HTMLElement | null;
+    expect(statusNode?.getAttribute("title") ?? "").toContain("警告成功");
+  });
+
   it("renders a fixed previous-invocation placeholder when a conversation has only one call", () => {
     renderSection(
       createResponse([

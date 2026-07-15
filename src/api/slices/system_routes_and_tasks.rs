@@ -286,8 +286,8 @@ pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<Syst
         r#"
         SELECT
             COUNT(*) AS live_invocations_count,
-            COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) = 'success' THEN 1 ELSE 0 END), 0) AS success_count,
-            COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) != 'success' THEN 1 ELSE 0 END), 0) AS non_success_count
+            COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'warning_success') THEN 1 ELSE 0 END), 0) AS success_count,
+            COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) NOT IN ('success', 'warning_success') THEN 1 ELSE 0 END), 0) AS non_success_count
         FROM codex_invocations
         "#,
     )

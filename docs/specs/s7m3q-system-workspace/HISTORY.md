@@ -12,3 +12,4 @@
 - 2026-06-23: `系统/状态` 把 `raw payload` 的解释从尾注前移到指标本身：总量固定标记为“并集总量”，request / response 固定标记为“侧向拆分”，并在主读数旁直接展示项目总量公式。
 - 2026-06-23: `系统/状态` 的 `raw payload 聚焦` 改成“总量卡 + request 行 + response 行”的纵向结构，避免 request-heavy 场景在窄列中出现四小卡挤压变形。
 - 2026-06-23: `系统/状态` 顶部总览从左右并排重排为顺序流，先展示主读数与项目级 breakdown，再展示 `raw payload 聚焦`，移除大面积无信息留白。
+- 2026-07-15: `系统/状态` 中 live invocation 的 success/non-success 计数改为跟随 success-like 口径；未来新写入的 `warning_success` 计入 success，不再落入 non-success。

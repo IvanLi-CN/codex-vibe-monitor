@@ -103,19 +103,20 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name）                                      | 类型（Kind）        | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                                         | 备注（Notes）                                       |
-| ------------------------------------------------- | ------------------- | ------------- | -------------- | ------------------------ | --------------- | ----------------------------------------------------------- | --------------------------------------------------- |
-| `StatsResponse.inProgressRetryConversationCount`  | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI   | strict in-progress retry 对话数                     |
-| `StatsResponse.nonSuccessCost`                    | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI   | `failed + interrupted` cost                         |
-| `StatsResponse.nonSuccessTokens`                  | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI   | `failed + interrupted` tokens                       |
-| `TimeseriesPoint.nonSuccessCost`                  | http-response-field | external      | Add            | None                     | backend/stats   | Dashboard natural-day cost chart, account detail cost chart | bucket-level `failed + interrupted` cost            |
-| `TodayStatsOverview` metric tile contract         | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | DashboardActivityOverview, account detail activity overview | 统一四区布局与 inline secondary                     |
-| `DashboardTodayActivityChart` total-cost contract | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | DashboardActivityOverview, account detail activity overview | `Success + Non-success` cumulative stacked area     |
-| same-progress success comparison helper           | ui-helper           | internal      | Add            | None                     | web/dashboard   | TodayStatsOverview                                          | `current success / yesterday same-progress success` |
+| 接口（Name）                                      | 类型（Kind）        | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                                         | 备注（Notes）                                                             |
+| ------------------------------------------------- | ------------------- | ------------- | -------------- | ------------------------ | --------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `StatsResponse.inProgressRetryConversationCount`  | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI   | strict in-progress retry 对话数                                           |
+| `StatsResponse.nonSuccessCost`                    | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI   | `failed + interrupted` cost；future `warning_success` 不计入              |
+| `StatsResponse.nonSuccessTokens`                  | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI   | `failed + interrupted` tokens；future `warning_success` 不计入            |
+| `TimeseriesPoint.nonSuccessCost`                  | http-response-field | external      | Add            | None                     | backend/stats   | Dashboard natural-day cost chart, account detail cost chart | bucket-level `failed + interrupted` cost；future `warning_success` 不计入 |
+| `TodayStatsOverview` metric tile contract         | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | DashboardActivityOverview, account detail activity overview | 统一四区布局与 inline secondary                                           |
+| `DashboardTodayActivityChart` total-cost contract | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | DashboardActivityOverview, account detail activity overview | `Success + Non-success` cumulative stacked area                           |
+| same-progress success comparison helper           | ui-helper           | internal      | Add            | None                     | web/dashboard   | TodayStatsOverview                                          | `current success / yesterday same-progress success`                       |
 
 ### 契约文档（按 Kind 拆分）
 
 - `None`
+- Future-only status note: 新写入的 `pure_downstream_closed` 调用对外显示为独立状态 `warning_success`（警告成功），但统计口径按 success-like 处理；历史 `failed/client_abort` 存量不回补、不重解释。
 
 ## 验收标准（Acceptance Criteria）
 
