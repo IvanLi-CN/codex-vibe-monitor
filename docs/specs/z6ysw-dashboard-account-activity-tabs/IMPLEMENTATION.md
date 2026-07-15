@@ -43,7 +43,8 @@
 - 已实现：账号卡异常/注意状态 badge 集合点击进入账号详情 `healthEvents` 标签页，右侧齿轮按钮进入账号详情 `routing` 标签页；`useUpstreamAccountDetailRoute` 已支持 `healthEvents` tab。
 - 已实现：Dashboard 上游账号卡标题区不再渲染本地 `#<upstreamAccountId>` 编号；标题区保留账号名、异常/注意状态 badge、快捷策略 chip、实时指标与齿轮路由入口，避免把内部主键暴露成主要扫描元素。
 - 已实现：账号活动接口补出 `avgTotalMs`、`totalCost`、严格失败 `failureCost` 与 `failureTokens`；请求组的非成功率由前端按 `nonSuccessCount / requestCount` 计算，成本组的失败成本比率由前端按 `failureCost / totalCost` 计算，`其他` 按 `nonSuccessCount - failureCount` 下限归零。
-- 已实现：账号活动接口中的 `tokensPerMinute` / `spendRate` 改为按每个账号最近 5 分钟活跃尾段计算；账号卡今日总量、recent 调用与排序仍使用所选 range 总量口径。
+- 已实现：Dashboard 活动快照的 summary/account 实时 `tokensPerMinute` / `spendRate` 已统一改为后端 `last_complete_1m_sma`；后端先固定最近完整 1 分钟 bucket，再同步产出顶部 summary 与账号标题值，严格空桶时返回 `TPM=0`、`消费速率=0`。
+- 已实现：Dashboard 活动快照新增 `currentFirstResponseByteTotalAvgMs` 与 `currentAvgTotalMs`；两者与实时 `TPM / 消费速率` 共用同一个最近完整 1 分钟 bucket，延迟样本资格沿用 success-latency 规则，空桶或缺样本时显式返回 `null`。
 - 已实现：账号活动 live rows、账号卡 `inProgressInvocationCount` 与 account-scoped summary 对 pool running 调用使用同 `invokeId` 的 pool attempt 账号作为 fallback，避免已选账号但 payload 尚未写入 `upstreamAccountId` 时形成未归属 running 行。
 - 已实现：账号卡列表按 `totalTokens` 倒序排列，并用最近调用时间与账号 ID 作稳定排序兜底。
 - 已实现：账号卡“首字用时”从阶段级 `t_upstream_ttfb_ms` 纠偏为 owner-facing 的首字总耗时口径；后端聚合现在复用 `resolve_first_response_byte_total_ms(...)`，并额外暴露显式 `firstResponseByteTotalAvgMs` 供前端优先消费，避免真实秒级总耗时被渲染成 `0ms`。
@@ -60,7 +61,7 @@
 - 已实现：运行态变更只无阻塞地递增 live snapshot 序列号；单个后台 worker 在 100ms 合并窗口内收敛多次变更后读取 SQLite 并广播，避免把实时查询放进代理上游派发和首字节关键路径。
 - 已实现：`dashboard-activity.summary` 的 `tokensPerMinute`、`spendRate` 与 in-progress 调用数由账号聚合结果求和得到；无账号流量进入 `unassigned` 聚合项，避免顶部数字无法由同屏明细解释。
 - 已实现：via-pool 请求级 cleanup guard 在响应消费期间保留 `pool-via-*` synthetic runtime snapshot，并随最终 stream task 生命周期收口；成功、失败、所有重试耗尽、下游断开或任务取消后清除残留非终态 snapshot，单次 upstream attempt 终结不会提前移除；普通 invocation runtime 与短暂终态 overlay 仍由其原有终态持久化路径负责。
-- 已实现：timeseries 继续只服务趋势图与兼容回退，不再作为 Dashboard 顶部当前速率类 KPI 的事实来源。
+- 已实现：timeseries 继续只服务趋势图与日均比较，不再作为 Dashboard 顶部当前速率类 KPI 的事实来源；`buildDashboardTodayRateSnapshot`、timeseries recent snapshot 与 `modelPerformance.total.*` 已退出顶部当前值驱动链。
 - 已实现：账号活动快照的终态 live 数据改为账号级窄聚合与按模型用量分组，避免为整个 range 传输完整 invocation preview 行；运行态 runtime overlay、归档折叠、四个时间范围和公开响应字段保持原有语义。
 - 已实现：账号卡 recent 调用改为每个候选账号按时间倒序的受限读取，数量仍严格受请求 `recentLimit` 限制。
 - 已实现：账号卡 recent 调用在 SQLite batch flush 前也会读取同一 runtime store；同键 runtime 行覆盖非终态 DB shell，短暂 terminal overlay 立即可见，落库后不会形成重复行。

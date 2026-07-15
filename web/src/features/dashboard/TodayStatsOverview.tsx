@@ -36,7 +36,6 @@ import {
   ratioOfCurrentToBaseline,
   sumCacheInputTokens,
 } from "./dashboardKpiComparisons";
-import { parseDateInput, resolveClosedNaturalDayEnd } from "./dashboardNaturalDayWindow";
 import { buildDashboardResponseTimeSnapshot } from "./dashboardResponseTimeSnapshot";
 import type { DashboardTodayRateSnapshot } from "./dashboardTodayRateSnapshot";
 import { ModelPerformanceTrigger } from "./ModelPerformanceTrigger";
@@ -463,96 +462,6 @@ function buildLatencyValueSpec(value: number | null, localeTag: string) {
   return buildAdaptiveDurationTextSpec(value, localeTag);
 }
 
-function recentWindowAvgTotalMs(
-  response: TimeseriesResponse | null | undefined,
-  options?: { now?: Date; targetWindowMinutes?: number; closedNaturalDay?: boolean },
-) {
-  if (!response?.points?.length) return null;
-
-  const targetWindowMinutes = Math.max(1, options?.targetWindowMinutes ?? 5);
-  const fallbackNow = options?.now ?? new Date();
-  const responseEnd = parseDateInput(response.rangeEnd);
-  const closedNaturalDayEnd = resolveClosedNaturalDayEnd(
-    response,
-    options?.closedNaturalDay ?? false,
-  );
-  const anchor =
-    closedNaturalDayEnd ??
-    (responseEnd &&
-    isSameLocalDay(responseEnd, fallbackNow) &&
-    fallbackNow.getTime() > responseEnd.getTime()
-      ? fallbackNow
-      : (responseEnd ?? fallbackNow));
-  const start = closedNaturalDayEnd
-    ? floorToMinute(
-        parseDateInput(response.rangeStart) ??
-          new Date(closedNaturalDayEnd.getTime() - 24 * 60 * 60_000),
-      )
-    : startOfLocalDay(anchor);
-  const startMs = start.getTime();
-  const anchorMs = anchor.getTime();
-  const windowStartMs = Math.max(startMs, anchorMs - targetWindowMinutes * 60_000);
-  let totalLatencyMs = 0;
-  let totalLatencySampleWeight = 0;
-
-  for (let index = response.points.length - 1; index >= 0; index -= 1) {
-    const point = response.points[index];
-    const bucketStart = parseDateInput(point?.bucketStart);
-    const bucketEnd = parseDateInput(point?.bucketEnd);
-    if (!bucketStart || !bucketEnd) continue;
-    const bucketStartMs = floorToMinute(bucketStart).getTime();
-    const bucketEndMs = bucketEnd.getTime();
-    if (bucketStartMs >= anchorMs || bucketEndMs <= windowStartMs) continue;
-    const value = point?.avgTotalMs ?? null;
-    const sampleCount = point?.totalLatencySampleCount ?? 0;
-    if (
-      value == null ||
-      !Number.isFinite(value) ||
-      !Number.isFinite(sampleCount) ||
-      sampleCount <= 0
-    ) {
-      continue;
-    }
-    const bucketDurationMs = bucketEndMs - bucketStartMs;
-    if (bucketDurationMs <= 0) continue;
-    const overlapStartMs = Math.max(bucketStartMs, windowStartMs);
-    const overlapEndMs = Math.min(bucketEndMs, anchorMs);
-    const overlapDurationMs = overlapEndMs - overlapStartMs;
-    if (overlapDurationMs <= 0) continue;
-    const overlapRatio = overlapDurationMs / bucketDurationMs;
-    if (!Number.isFinite(overlapRatio) || overlapRatio <= 0) continue;
-    const weightedSampleCount = sampleCount * overlapRatio;
-    totalLatencyMs += value * weightedSampleCount;
-    totalLatencySampleWeight += weightedSampleCount;
-  }
-
-  if (totalLatencySampleWeight <= 0) {
-    return null;
-  }
-
-  return totalLatencyMs / totalLatencySampleWeight;
-}
-
-function startOfLocalDay(date: Date) {
-  const next = new Date(date);
-  next.setHours(0, 0, 0, 0);
-  return next;
-}
-
-function isSameLocalDay(left: Date, right: Date) {
-  return (
-    left.getFullYear() === right.getFullYear() &&
-    left.getMonth() === right.getMonth() &&
-    left.getDate() === right.getDate()
-  );
-}
-
-function floorToMinute(date: Date) {
-  const next = new Date(date);
-  next.setSeconds(0, 0);
-  return next;
-}
-
 export function TodayStatsOverview({
   stats,
   loading,
@@ -662,20 +571,13 @@ export function TodayStatsOverview({
     ? t("dashboard.today.inProgressConversationsDescription")
     : t("dashboard.today.parallelConversationsDescription");
 
-  const rateUnavailable = !loading && !rateLoading && rateError != null;
-  const tokensPerMinuteUnavailable = rateUnavailable || rate?.available === false;
-  const modelPerformanceAvailable = modelPerformance?.available === true;
-  const performanceComparisonUnavailable = modelPerformanceAvailable;
-  const performanceFirstByteMs = modelPerformanceAvailable
-    ? (modelPerformance?.total.avgFirstResponseByteTotalMs ?? null)
-    : null;
-  const responseTimeCurrentValue = modelPerformanceAvailable
-    ? performanceFirstByteMs
-    : (responseTimeSnapshot?.responseTimeMs ?? null);
+  const rateUnavailable =
+    !loading && !rateLoading && (rateError != null || rate == null || rate.available === false);
+  const tokensPerMinuteUnavailable = rateUnavailable;
+  const performanceComparisonUnavailable = false;
+  const responseTimeCurrentValue = rate?.currentFirstResponseByteTotalAvgMs ?? null;
   const responseTimeCurrentUnavailable = rateUnavailable || responseTimeCurrentValue == null;
-  const tokensPerMinute = modelPerformanceAvailable
-    ? (modelPerformance?.total.tokensPerMinute ?? 0)
-    : (rate?.tokensPerMinute ?? 0);
+  const tokensPerMinute = rate?.tokensPerMinute ?? 0;
   const spendRate = rate?.spendRate ?? 0;
   const perConversationTpm = dividePerConversation(
     tokensPerMinute,
@@ -1016,13 +918,7 @@ export function TodayStatsOverview({
               },
               {
                 label: t("dashboard.today.responseTime"),
-                valueSpec: buildLatencyValueSpec(
-                  recentWindowAvgTotalMs(timeseries, {
-                    closedNaturalDay: dayKind === "yesterday",
-                    now,
-                  }),
-                  localeTag,
-                ),
+                valueSpec: buildLatencyValueSpec(rate?.currentAvgTotalMs ?? null, localeTag),
                 valueTestId: "today-stats-secondary-response-time-avg-total",
               },
             ]}

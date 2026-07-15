@@ -355,10 +355,10 @@ describe("fetchDashboardActivity", () => {
             rangeEnd: "2026-07-05T12:00:00Z",
             snapshotId: 1783233600000,
             rateWindow: {
-              start: "2026-07-05T11:55:00Z",
+              start: "2026-07-05T11:59:00Z",
               end: "2026-07-05T12:00:00Z",
-              windowMinutes: 5,
-              mode: "account_active_tail_sum",
+              windowMinutes: 1,
+              mode: "last_complete_1m_sma",
             },
             summary: {
               stats: {
@@ -375,6 +375,8 @@ describe("fetchDashboardActivity", () => {
               },
               tokensPerMinute: 1200,
               spendRate: 0.12,
+              currentFirstResponseByteTotalAvgMs: 1500,
+              currentAvgTotalMs: 2400,
             },
             accounts: [
               {
@@ -411,7 +413,7 @@ describe("fetchDashboardActivity", () => {
 
     expect(response.summary.stats.inProgressConversationCount).toBe(2);
     expect(response.summary.tokensPerMinute).toBe(1200);
-    expect(response.rateWindow.mode).toBe("account_active_tail_sum");
+    expect(response.rateWindow.mode).toBe("last_complete_1m_sma");
     expect(response.accounts?.[0]?.accountKey).toBe("unassigned");
     expect(response.accounts?.[0]?.upstreamAccountId).toBeNull();
     expect(response.accounts?.[0]?.isUnassigned).toBe(true);
