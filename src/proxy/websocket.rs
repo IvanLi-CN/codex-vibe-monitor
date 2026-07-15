@@ -1540,6 +1540,8 @@ pub(crate) async fn record_ws_pre_upstream_failure(
         None,
         None,
         None,
+        None,
+        None,
     )
     .await
     {
@@ -2708,6 +2710,7 @@ mod websocket_tests {
             upstream_429_max_retries: 0,
             fast_mode_rewrite_mode: TagFastModeRewriteMode::default(),
             image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            request_compression_algorithm: RequestCompressionAlgorithm::Identity,
             image_tool_capability: ImageToolCapability::Unknown,
             upstream_base_url,
             routing_source: PoolRoutingSelectionSource::FreshAssignment,
@@ -2731,6 +2734,7 @@ mod websocket_tests {
             upstream_429_max_retries: 0,
             fast_mode_rewrite_mode: TagFastModeRewriteMode::default(),
             image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            request_compression_algorithm: RequestCompressionAlgorithm::Identity,
             image_tool_capability: ImageToolCapability::Unknown,
             upstream_base_url,
             routing_source: PoolRoutingSelectionSource::FreshAssignment,

@@ -48,6 +48,7 @@ const labels = {
   fieldAvailableModels: "Available models",
   fieldSystemDeniedModels: "System denied models",
   fieldProxyBindings: "Account proxy",
+  fieldRequestCompression: "Request compression",
   statusChangeReasonSectionTitle: "Status change trigger reasons",
   statusChangeReasonSectionHint:
     "Disabled reasons still keep evidence but no longer mutate account state.",
@@ -83,6 +84,11 @@ const labels = {
   inheritValue: "Default value starts from the inherited value.",
   cutOutLabel: "Cut out",
   cutInLabel: "Cut in",
+  requestCompressionFollow: "Follow",
+  requestCompressionIdentity: "Identity",
+  requestCompressionGzip: "Gzip",
+  requestCompressionDeflate: "Deflate",
+  requestCompressionZstd: "Zstd",
   upstream429RetryCountValue: (count: number) => String(count),
   availableModelsAddCustom: "Add model",
   availableModelsCustomLabel: (value: string) => value,
@@ -97,6 +103,7 @@ const relaxedRule: EffectiveRoutingRule = {
   priorityTier: "normal",
   fastModeRewriteMode: "keep_original",
   imageToolRewriteMode: "keep_original",
+  requestCompressionAlgorithm: "identity",
   concurrencyLimit: 0,
   upstream429RetryEnabled: false,
   upstream429MaxRetries: 0,
@@ -112,6 +119,7 @@ const relaxedRule: EffectiveRoutingRule = {
     priorityTier: "root",
     fastModeRewriteMode: "root",
     imageToolRewriteMode: "root",
+    requestCompressionAlgorithm: "root",
     concurrencyLimit: "root",
     upstream429Retry: "root",
     availableModels: "root",
@@ -139,6 +147,7 @@ const strictRule: EffectiveRoutingRule = {
   priorityTier: "no_new",
   fastModeRewriteMode: "force_remove",
   imageToolRewriteMode: "force_add",
+  requestCompressionAlgorithm: "gzip",
   concurrencyLimit: 2,
   upstream429RetryEnabled: true,
   upstream429MaxRetries: 4,
@@ -162,6 +171,7 @@ const strictRule: EffectiveRoutingRule = {
     priorityTier: "account",
     fastModeRewriteMode: "account",
     imageToolRewriteMode: "tag",
+    requestCompressionAlgorithm: "account",
     concurrencyLimit: "tag",
     upstream429Retry: "account",
     availableModels: "account",
@@ -189,6 +199,7 @@ const strictFieldSources = {
   priorityTier: "tag",
   fastModeRewriteMode: "account",
   imageToolRewriteMode: "account",
+  requestCompressionAlgorithm: "account",
   concurrencyLimit: "tag",
   upstream429Retry: "account",
   availableModels: "account",
@@ -214,6 +225,7 @@ const multipleAccountOverridesRule: EffectiveRoutingRule = {
   allowCutIn: false,
   priorityTier: "primary",
   fastModeRewriteMode: "force_add",
+  requestCompressionAlgorithm: "deflate",
   concurrencyLimit: 3,
   upstream429RetryEnabled: true,
   upstream429MaxRetries: 5,
@@ -223,6 +235,7 @@ const multipleAccountOverridesRule: EffectiveRoutingRule = {
     priorityTier: "account",
     fastModeRewriteMode: "account",
     imageToolRewriteMode: strictRule.fieldSources?.imageToolRewriteMode ?? "root",
+    requestCompressionAlgorithm: "account",
     concurrencyLimit: "account",
     upstream429Retry: "account",
     availableModels: strictRule.fieldSources?.availableModels ?? "root",
@@ -311,6 +324,7 @@ export const PrimaryRule: Story = {
       ...relaxedRule,
       priorityTier: "primary",
       fastModeRewriteMode: "force_add",
+      requestCompressionAlgorithm: "follow",
       sourceTagIds: [9],
       sourceTagNames: ["priority-lane"],
     },
@@ -344,6 +358,7 @@ function applyPatchToRule(
     priorityTier: rule.fieldSources?.priorityTier ?? "root",
     fastModeRewriteMode: rule.fieldSources?.fastModeRewriteMode ?? "root",
     imageToolRewriteMode: rule.fieldSources?.imageToolRewriteMode ?? "root",
+    requestCompressionAlgorithm: rule.fieldSources?.requestCompressionAlgorithm ?? "root",
     concurrencyLimit: rule.fieldSources?.concurrencyLimit ?? "root",
     upstream429Retry: rule.fieldSources?.upstream429Retry ?? "root",
     availableModels: rule.fieldSources?.availableModels ?? "root",
@@ -386,6 +401,13 @@ function applyPatchToRule(
     if (patch.imageToolRewriteMode !== null)
       next.imageToolRewriteMode = patch.imageToolRewriteMode ?? next.imageToolRewriteMode;
     nextSources.imageToolRewriteMode = sourceFor(patch.imageToolRewriteMode);
+  }
+  if ("requestCompressionAlgorithm" in patch) {
+    if (patch.requestCompressionAlgorithm !== null) {
+      next.requestCompressionAlgorithm =
+        patch.requestCompressionAlgorithm ?? next.requestCompressionAlgorithm;
+    }
+    nextSources.requestCompressionAlgorithm = sourceFor(patch.requestCompressionAlgorithm);
   }
   if ("concurrencyLimit" in patch) {
     if (patch.concurrencyLimit !== null)

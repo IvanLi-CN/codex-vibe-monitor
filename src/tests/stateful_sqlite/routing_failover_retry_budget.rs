@@ -132,6 +132,7 @@ async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         image_tool_capability: ImageToolCapability::Unknown,
     };
 

@@ -34,6 +34,8 @@ pub(crate) struct PoolUpstreamRequestAttemptArchiveRow {
     first_byte_latency_ms: Option<f64>,
     stream_latency_ms: Option<f64>,
     upstream_request_id: Option<String>,
+    upstream_request_compression_algorithm: Option<String>,
+    upstream_request_compression_mode: Option<String>,
     compact_support_status: Option<String>,
     compact_support_reason: Option<String>,
     created_at: String,
@@ -90,6 +92,8 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_direct(
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),
         ("downstream_error_message", "TEXT"),
+        ("upstream_request_compression_algorithm", "TEXT"),
+        ("upstream_request_compression_mode", "TEXT"),
         ("compact_support_status", "TEXT"),
         ("compact_support_reason", "TEXT"),
         ("group_name_snapshot", "TEXT"),
@@ -336,6 +340,8 @@ pub(crate) async fn archive_pool_upstream_request_attempt_rows_into_month_batch(
                 .push_bind(row.first_byte_latency_ms)
                 .push_bind(row.stream_latency_ms)
                 .push_bind(&row.upstream_request_id)
+                .push_bind(&row.upstream_request_compression_algorithm)
+                .push_bind(&row.upstream_request_compression_mode)
                 .push_bind(&row.compact_support_status)
                 .push_bind(&row.compact_support_reason)
                 .push_bind(&row.created_at);

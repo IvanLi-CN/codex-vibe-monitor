@@ -1838,6 +1838,7 @@ async fn websocket_payload_owner_guard_blocks_mismatched_payload_owner() {
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::default(),
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         image_tool_capability: ImageToolCapability::Unknown,
         upstream_base_url: Url::parse("https://api.example.test").expect("valid base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
@@ -1960,6 +1961,7 @@ async fn websocket_payload_owner_guard_disabled_does_not_block_mismatched_payloa
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::default(),
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         image_tool_capability: ImageToolCapability::Unknown,
         upstream_base_url: Url::parse("https://api.example.test").expect("valid base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
@@ -6611,6 +6613,59 @@ async fn pool_route_oauth_passthrough_streams_without_eager_prebuffering() {
 
     upstream_handle.abort();
     oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+fn test_live_first_pool_account(
+    request_compression_algorithm: RequestCompressionAlgorithm,
+) -> PoolResolvedAccount {
+    PoolResolvedAccount {
+        account_id: 1,
+        display_name: "Live First".to_string(),
+        kind: UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX.to_string(),
+        auth: PoolResolvedAuth::ApiKey {
+            authorization: "Bearer upstream-live-first".to_string(),
+        },
+        group_name: None,
+        bound_proxy_keys: Vec::new(),
+        forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(None, Vec::new()),
+        single_account_rotation_enabled: false,
+        upstream_429_retry_enabled: false,
+        upstream_429_max_retries: 0,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+        image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        request_compression_algorithm,
+        image_tool_capability: ImageToolCapability::Unknown,
+        upstream_base_url: Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        routing_source: PoolRoutingSelectionSource::FreshAssignment,
+    }
+}
+
+#[test]
+fn pool_account_supports_live_request_body_rejects_non_identity_request_compression() {
+    let account = test_live_first_pool_account(RequestCompressionAlgorithm::Gzip);
+
+    assert!(!pool_account_supports_live_request_body(
+        &account,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        &Method::POST,
+        &HeaderMap::new(),
+    ));
+}
+
+#[test]
+fn pool_account_supports_live_request_body_rejects_downstream_content_encoding() {
+    let account = test_live_first_pool_account(RequestCompressionAlgorithm::Identity);
+    let headers = HeaderMap::from_iter([(
+        http_header::CONTENT_ENCODING,
+        HeaderValue::from_static("gzip"),
+    )]);
+
+    assert!(!pool_account_supports_live_request_body(
+        &account,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        &Method::POST,
+        &headers,
+    ));
 }
 
 #[tokio::test]

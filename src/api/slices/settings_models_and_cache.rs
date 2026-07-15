@@ -62,6 +62,12 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     #[sqlx(default)]
     pub(crate) upstream_request_id: Option<String>,
     #[sqlx(default)]
+    pub(crate) downstream_request_content_encoding: Option<String>,
+    #[sqlx(default)]
+    pub(crate) upstream_request_compression_algorithm: Option<String>,
+    #[sqlx(default)]
+    pub(crate) upstream_request_compression_mode: Option<String>,
+    #[sqlx(default)]
     pub(crate) compact_support_status: Option<String>,
     #[sqlx(default)]
     pub(crate) compact_support_reason: Option<String>,

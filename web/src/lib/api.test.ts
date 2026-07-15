@@ -1797,6 +1797,8 @@ describe("account pool frontend API helpers", () => {
         responsesStreamTimeoutSecs: 300,
         compactStreamTimeoutSecs: 300,
       },
+      requestCompressionAlgorithm: "identity",
+      requestCompressionLevelPreset: "balanced",
     });
   });
 

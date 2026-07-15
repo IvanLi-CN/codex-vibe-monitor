@@ -109,6 +109,9 @@ describe("UpstreamAccountAttemptTimeline", () => {
           connectLatencyMs: 120,
           firstByteLatencyMs: 480,
           streamLatencyMs: 810,
+          downstreamRequestContentEncoding: "gzip",
+          upstreamRequestCompressionAlgorithm: "zstd",
+          upstreamRequestCompressionMode: "recompressed",
           upstreamRequestId: "req_upstream_123",
           upstreamRouteKey: "route-tokyo-primary",
           createdAt: "2026-07-11T12:00:00.000Z",
@@ -151,6 +154,11 @@ describe("UpstreamAccountAttemptTimeline", () => {
     expect(disclosure?.textContent).toContain("route-tokyo-primary");
     expect(disclosure?.textContent).toMatch(/下游 HTTP|downstream http/i);
     expect(disclosure?.textContent).toContain("502");
+    expect(disclosure?.textContent).toMatch(/下游请求压缩|downstream request compression/i);
+    expect(disclosure?.textContent).toMatch(/上游请求压缩|upstream request compression/i);
+    expect(disclosure?.textContent).toMatch(/压缩发送模式|compression send mode/i);
+    expect(disclosure?.textContent).toMatch(/gzip/i);
+    expect(disclosure?.textContent).toMatch(/zstd/i);
     expect(disclosure?.textContent).toMatch(/upstream returned an oversized diagnostic payload/i);
   });
 

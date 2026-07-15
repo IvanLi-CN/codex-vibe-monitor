@@ -19,6 +19,7 @@ The editable inherited policy covers:
 - priority tier
 - FAST mode rewrite mode
 - image tool rewrite mode
+- upstream request compression algorithm for API-key upstream HTTP requests
 - cut-out
 - cut-in
 - concurrency limit
@@ -43,6 +44,16 @@ The editable inherited policy covers:
   - `responsesStreamTimeoutSecs`
   - `compactStreamTimeoutSecs`
 
+Request compression uses this fixed algorithm set:
+
+- `follow`
+- `identity`
+- `gzip`
+- `deflate`
+- `zstd`
+
+`follow` is owner-facing "跟随". It means reuse the downstream request-body encoding semantics and re-encode the final upstream request body after proxy-side rewrites. Unsupported downstream encodings fail explicitly instead of silently falling back.
+
 `priorityTier` is the owner-facing usage lane and accepts exactly `primary | normal | fallback | no_new`. `no_new` means the account does not admit fresh automatic assignments; it is carried by the priority field rather than a separate new-conversation policy field.
 
 Root defaults preserve existing behavior:
@@ -55,6 +66,8 @@ Root defaults preserve existing behavior:
 - upstream 429 retry: disabled
 - upstream 429 max retries: 0
 - image tool rewrite mode: keep original
+- upstream request compression algorithm: identity
+- upstream request compression level preset: balanced
 - available models: unrestricted
 - every status-change reason toggle: enabled
 - request-path timeouts continue to use the existing global pool defaults
@@ -73,6 +86,14 @@ Effective account policy is computed in this order:
 2. Apply group policy.
 3. Merge system tag signals.
 4. Apply account policy.
+
+Request compression has one scope restriction:
+
+- root settings may define the default algorithm and the global compression level preset
+- group and account may override only the algorithm
+- the group/account algorithm override applies only when the final target upstream account kind is `api_key_codex`
+- OAuth upstreams ignore group/account request-compression overrides
+- conversation overrides do not participate in request compression
 
 Status-change reason toggles follow the same `group -> system -> account` resolution envelope with one restriction:
 
@@ -97,6 +118,13 @@ Timeout inheritance is field-local:
 - clearing one timeout field only clears that field
 
 Tags and system-tag signals never contribute timeout values or timeout sources.
+
+Request compression level is global-only:
+
+- root stores `requestCompressionLevelPreset`
+- group/account never store or override a level
+- level presets are `fast | balanced | best`
+- runtime maps the preset to encoder-specific quality levels for `gzip`, `deflate`, and `zstd`
 
 `imageFirstByteTimeoutSecs` applies to `/v1/images/generations` and `/v1/images/edits`, defaults to `300`, and follows the same field-local root -> group -> account -> conversation inheritance contract. Direct-image first-byte timeout is terminal: the proxy must not retry the same account or switch accounts after the image operation may already have started upstream.
 
@@ -174,12 +202,18 @@ No migration, export, or policy flattening is performed for deleted custom tags.
 
 Group summaries expose `routingRule`. Group update payloads accept `routingRule`.
 
+Pool routing settings expose:
+
+- `requestCompressionAlgorithm`
+- `requestCompressionLevelPreset`
+
 Account summaries and detail responses expose:
 
 - read-only `tags` for system badge display
 - read-only `imageToolCapability`
 - account-level `boundProxyKeys`
 - effective-rule field sources including `systemDeniedModels`
+- effective `requestCompressionAlgorithm`
 - effective request-path `timeouts`
 - request-path `timeoutFieldSources`
 
@@ -199,6 +233,14 @@ Missing `routingRule` preserves account-level overrides. Inside a present `routi
 - `true|false`: store that reason override
 
 The same tri-state semantics apply to group policy updates for nullable policy fields. Boolean `false` is a stored override value and must not be treated as absent.
+
+`requestCompressionAlgorithm` uses the same preserve / clear / set contract for group/account writes:
+
+- missing field: preserve the stored algorithm override
+- `null`: clear the stored override and inherit
+- value: store one of `follow | identity | gzip | deflate | zstd`
+
+`requestCompressionLevelPreset` exists only on root pool-routing settings updates and accepts `fast | balanced | best`.
 
 Timeout writes use the same preserve / clear / set contract, but per timeout field:
 
@@ -227,6 +269,15 @@ Automatic candidate selection and sticky reuse must filter by the final model po
 
 Status-change trigger reasons use the same flattened reason list on every owner-facing surface.
 
+Request compression editing follows the existing root -> group -> account inheritance model with one asymmetry:
+
+- system settings expose global default algorithm and global level preset
+- group settings expose only the algorithm override plus clear-to-inherit
+- account detail routing exposes only the algorithm override plus clear-to-inherit
+- owner-facing text labels `follow` as `跟随`
+- mixed groups must explain that the group override only affects API-key members
+- owner-facing outbound telemetry must distinguish the downstream request-body encoding from the actual upstream request-body encoding
+
 - reason controls render as pressed/unpressed button-style tiles with icon + name only
 - they do not use slider switches, category headers, or separate batch-toggle rows
 - group policy surfaces keep per-reason editing only
@@ -246,6 +297,7 @@ Legacy `unsupported_model:gpt-5.5` handling is treated as one instance of the ge
 - Splitting text reasoning and image generation across two upstreams in the same Responses request is not introduced.
 - OAuth/API key credential behavior is unchanged apart from rejecting manual `tagIds`.
 - Global reverse-proxy `/v1/*` settings are unchanged.
+- OAuth upstream requests, WebSocket routes, and conversation-level request compression overrides are not introduced.
 
 ## Visual Evidence
 
@@ -268,6 +320,9 @@ Visual evidence is captured from stable Storybook scenarios for:
 - Upstream account detail Routing tab showing page-level status-change reason toggle tiles plus the panel-level account reset action inside the full drawer context
 - Group settings Routing tab showing the embedded routing-policy upstream 429 retry count as the same integrated `0..5` selector used by account detail, with `0` representing no retry, in both desktop and narrow layouts
 - Dashboard upstream-account quick policy chips showing explicit Fast rewrite labels for `force_add` and `keep_original`
+- root routing settings dialog showing the global request compression defaults with `gzip` + `best` persisted after save/reopen
+- group routing policy dialog showing the API-key-only request compression override row with mixed-group helper copy and `follow`
+- effective routing rule card showing the resolved request compression row and account-owned source badge
 
 PR: include
 ![Account pool layout without tags nav](./assets/account-pool-layout-no-tags-nav.png)
@@ -322,3 +377,12 @@ PR: include
 
 PR: include
 ![Fast rewrite quick policy leave unchanged chip](./assets/fast-policy-leave-fast-chip.png)
+
+PR: include
+![Root request compression settings](./visual-evidence/2026-07-15-routing-dialog-request-compression.png)
+
+PR: include
+![Group request compression follow override](./visual-evidence/2026-07-15-group-routing-follow-compression.png)
+
+PR: include
+![Effective routing rule request compression row](./visual-evidence/2026-07-15-effective-rule-request-compression.png)

@@ -19,7 +19,8 @@ pub(crate) const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
     compact_support_reason, image_tool_capability, local_primary_limit, local_secondary_limit,
     local_limit_unit,
     policy_allow_cut_out, policy_allow_cut_in, policy_priority_tier,
-    policy_fast_mode_rewrite_mode, policy_image_tool_rewrite_mode, policy_concurrency_limit,
+    policy_fast_mode_rewrite_mode, policy_image_tool_rewrite_mode,
+    policy_request_compression_algorithm, policy_concurrency_limit,
     policy_upstream_429_retry_enabled, policy_upstream_429_max_retries,
     policy_available_models_json,
     policy_status_change_upstream_http_401,
@@ -2454,6 +2455,7 @@ pub(crate) async fn load_upstream_account_groups(
             notes.policy_priority_tier,
             notes.policy_fast_mode_rewrite_mode,
             notes.policy_image_tool_rewrite_mode,
+            notes.policy_request_compression_algorithm,
             notes.policy_concurrency_limit,
             notes.policy_upstream_429_retry_enabled,
             notes.policy_upstream_429_max_retries,
@@ -2508,6 +2510,7 @@ pub(crate) async fn load_upstream_account_groups(
             row.policy_priority_tier.as_deref(),
             row.policy_fast_mode_rewrite_mode.as_deref(),
             row.policy_image_tool_rewrite_mode.as_deref(),
+            row.policy_request_compression_algorithm.as_deref(),
             row.policy_concurrency_limit,
             row.policy_upstream_429_retry_enabled,
             row.policy_upstream_429_max_retries,
@@ -3516,7 +3519,7 @@ pub(crate) async fn load_canonicalized_upstream_account_group(
         return Ok(None);
     };
     let metadata = load_group_metadata(&state.pool, Some(group_name)).await?;
-    let routing_rule = group_routing_rule_from_group_metadata(&metadata);
+    let routing_rule = load_group_routing_rule(&state.pool, group_name).await?;
     let (effective_timeouts, timeout_field_sources, _) =
         load_effective_request_path_timeouts_for_group(
             &state.pool,
@@ -3559,6 +3562,7 @@ pub(crate) fn group_routing_rule_from_group_metadata(
         priority_tier: TagPriorityTier::Normal,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        request_compression_algorithm: None,
         concurrency_limit: metadata.concurrency_limit,
         upstream_429_retry_enabled: metadata.upstream_429_retry_enabled,
         upstream_429_max_retries: metadata.upstream_429_max_retries,

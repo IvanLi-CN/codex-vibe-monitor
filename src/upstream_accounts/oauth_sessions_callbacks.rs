@@ -67,17 +67,33 @@ pub(crate) async fn update_pool_routing_settings(
             })
         })
         .transpose()?;
+    let request_compression_algorithm = payload
+        .request_compression_algorithm
+        .as_deref()
+        .map(|value| normalize_request_compression_algorithm(Some(value)))
+        .transpose()?;
+    let request_compression_level_preset = payload
+        .request_compression_level_preset
+        .as_deref()
+        .map(|value| normalize_request_compression_level_preset(Some(value)))
+        .transpose()?;
     let crypto_key = if api_key.is_some() {
         Some(state.upstream_accounts.require_crypto_key()?)
     } else {
         None
     };
-    if api_key.is_some() || timeout_updates.is_some() {
+    if api_key.is_some()
+        || timeout_updates.is_some()
+        || request_compression_algorithm.is_some()
+        || request_compression_level_preset.is_some()
+    {
         save_pool_routing_settings(
             &state.pool,
             &state.config,
             crypto_key,
             api_key.as_deref(),
+            request_compression_algorithm,
+            request_compression_level_preset,
             timeout_updates.as_ref(),
         )
         .await?;
@@ -88,7 +104,7 @@ pub(crate) async fn update_pool_routing_settings(
         } else {
             refresh_pool_routing_runtime_cache_best_effort(
                 state.as_ref(),
-                "timeout-only settings update",
+                "pool routing settings update",
             )
             .await;
         }
@@ -1492,6 +1508,18 @@ pub(crate) async fn update_upstream_account_inner(
                 .map(|mode| mode.as_str().to_string())
         })
         .transpose()?;
+    let policy_request_compression_algorithm = payload
+        .routing_rule
+        .as_ref()
+        .and_then(|rule| match &rule.request_compression_algorithm {
+            OptionalField::Value(value) => Some(value.as_str()),
+            OptionalField::Missing | OptionalField::Null => None,
+        })
+        .map(|value| {
+            normalize_request_compression_algorithm(Some(value))
+                .map(|mode| mode.as_str().to_string())
+        })
+        .transpose()?;
     // Empty tagIds remains a compatibility no-op. Manual tag mutation is removed,
     // so account edits must not clear preserved system tags.
     if let Some(values) = payload.tag_ids.as_ref() {
@@ -1818,28 +1846,29 @@ pub(crate) async fn update_upstream_account_inner(
             policy_priority_tier = ?16,
             policy_fast_mode_rewrite_mode = ?17,
             policy_image_tool_rewrite_mode = ?18,
-            policy_concurrency_limit = ?19,
-            policy_upstream_429_retry_enabled = ?20,
-            policy_upstream_429_max_retries = ?21,
-            policy_available_models_json = ?22,
-            policy_status_change_upstream_http_401 = ?23,
-            policy_status_change_upstream_http_402 = ?24,
-            policy_status_change_upstream_http_403 = ?25,
-            policy_status_change_reauth_required = ?26,
-            policy_status_change_upstream_http_429_rate_limit = ?27,
-            policy_status_change_upstream_http_429_quota_exhausted = ?28,
-            policy_status_change_usage_snapshot_exhausted = ?29,
-            policy_status_change_quota_still_exhausted = ?30,
-            policy_status_change_transport_failure = ?31,
-            policy_status_change_upstream_server_overloaded = ?32,
-            policy_status_change_upstream_http_5xx = ?33,
-            policy_responses_first_byte_timeout_secs = ?34,
-            policy_compact_first_byte_timeout_secs = ?35,
-            policy_image_first_byte_timeout_secs = ?36,
-            policy_responses_stream_timeout_secs = ?37,
-            policy_compact_stream_timeout_secs = ?38,
-            bound_proxy_keys_json = ?39,
-            updated_at = ?40
+            policy_request_compression_algorithm = ?19,
+            policy_concurrency_limit = ?20,
+            policy_upstream_429_retry_enabled = ?21,
+            policy_upstream_429_max_retries = ?22,
+            policy_available_models_json = ?23,
+            policy_status_change_upstream_http_401 = ?24,
+            policy_status_change_upstream_http_402 = ?25,
+            policy_status_change_upstream_http_403 = ?26,
+            policy_status_change_reauth_required = ?27,
+            policy_status_change_upstream_http_429_rate_limit = ?28,
+            policy_status_change_upstream_http_429_quota_exhausted = ?29,
+            policy_status_change_usage_snapshot_exhausted = ?30,
+            policy_status_change_quota_still_exhausted = ?31,
+            policy_status_change_transport_failure = ?32,
+            policy_status_change_upstream_server_overloaded = ?33,
+            policy_status_change_upstream_http_5xx = ?34,
+            policy_responses_first_byte_timeout_secs = ?35,
+            policy_compact_first_byte_timeout_secs = ?36,
+            policy_image_first_byte_timeout_secs = ?37,
+            policy_responses_stream_timeout_secs = ?38,
+            policy_compact_stream_timeout_secs = ?39,
+            bound_proxy_keys_json = ?40,
+            updated_at = ?41
         WHERE id = ?1
         "#,
     )
@@ -1895,6 +1924,14 @@ pub(crate) async fn update_upstream_account_inner(
             OptionalField::Value(_) => policy_image_tool_rewrite_mode.clone(),
         },
         None => row.policy_image_tool_rewrite_mode.clone(),
+    })
+    .bind(match payload.routing_rule.as_ref() {
+        Some(rule) => match rule.request_compression_algorithm {
+            OptionalField::Missing => row.policy_request_compression_algorithm.clone(),
+            OptionalField::Null => None,
+            OptionalField::Value(_) => policy_request_compression_algorithm.clone(),
+        },
+        None => row.policy_request_compression_algorithm.clone(),
     })
     .bind(match payload.routing_rule.as_ref() {
         Some(rule) => match rule.concurrency_limit {

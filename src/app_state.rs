@@ -3,6 +3,7 @@ use super::*;
 #[derive(Debug, Clone)]
 pub(crate) struct PoolRoutingRuntimeCache {
     pub(crate) api_key: Option<String>,
+    pub(crate) request_compression: PoolRoutingRequestCompressionSettingsResolved,
     pub(crate) timeouts: PoolRoutingTimeoutSettingsResolved,
 }
 

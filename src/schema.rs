@@ -2928,6 +2928,8 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             first_byte_latency_ms REAL,
             stream_latency_ms REAL,
             upstream_request_id TEXT,
+            upstream_request_compression_algorithm TEXT,
+            upstream_request_compression_mode TEXT,
             compact_support_status TEXT,
             compact_support_reason TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -3028,6 +3030,8 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),
         ("downstream_error_message", "TEXT"),
+        ("upstream_request_compression_algorithm", "TEXT"),
+        ("upstream_request_compression_mode", "TEXT"),
         ("compact_support_status", "TEXT"),
         ("compact_support_reason", "TEXT"),
         ("group_name_snapshot", "TEXT"),

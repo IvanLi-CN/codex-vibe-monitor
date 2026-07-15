@@ -17,6 +17,7 @@ import type {
   GroupAccountRoutingRule,
   ImageToolRewriteMode,
   PoolRoutingTimeoutSettings,
+  RequestCompressionAlgorithm,
   TagFastModeRewriteMode,
   TagPriorityTier,
   UpdateGroupAccountRoutingRulePayload,
@@ -36,6 +37,10 @@ import {
   type RoutingTimeoutOverrideDraft,
   type RoutingTimeoutOverrideEnabledState,
 } from "../../lib/poolRoutingTimeouts";
+import {
+  REQUEST_COMPRESSION_INHERIT_VALUE,
+  requestCompressionAlgorithmLabel,
+} from "../../lib/requestCompression";
 import {
   resolveStatusChangeReasons,
   STATUS_CHANGE_REASON_CODES,
@@ -58,6 +63,9 @@ type GroupAccountRoutingRuleDraft = {
   priorityTier: TagPriorityTier;
   fastModeRewriteMode: TagFastModeRewriteMode;
   imageToolRewriteMode: ImageToolRewriteMode;
+  requestCompressionAlgorithm:
+    | RequestCompressionAlgorithm
+    | typeof REQUEST_COMPRESSION_INHERIT_VALUE;
   concurrencyLimit: number;
   upstream429RetryEnabled: boolean;
   upstream429MaxRetries: number;
@@ -134,6 +142,9 @@ function buildDraft(
     priorityTier: rule?.priorityTier ?? "normal",
     fastModeRewriteMode: rule?.fastModeRewriteMode ?? "keep_original",
     imageToolRewriteMode: rule?.imageToolRewriteMode ?? "keep_original",
+    requestCompressionAlgorithm: options?.changedFieldsOnly
+      ? (rule?.requestCompressionAlgorithm ?? REQUEST_COMPRESSION_INHERIT_VALUE)
+      : (rule?.requestCompressionAlgorithm ?? "identity"),
     concurrencyLimit: apiConcurrencyLimitToSliderValue(rule?.concurrencyLimit),
     upstream429RetryEnabled: rule?.upstream429RetryEnabled === true,
     upstream429MaxRetries: normalizeRetryCount(rule?.upstream429MaxRetries),
@@ -171,12 +182,17 @@ function buildPayload(
   if (!parsedTimeouts.ok) {
     return null;
   }
+  const requestCompressionAlgorithm =
+    draft.requestCompressionAlgorithm === REQUEST_COMPRESSION_INHERIT_VALUE
+      ? null
+      : draft.requestCompressionAlgorithm;
   const payload: UpdateGroupAccountRoutingRulePayload = {
     allowCutOut: draft.allowCutOut,
     allowCutIn: draft.allowCutIn,
     priorityTier: draft.priorityTier,
     fastModeRewriteMode: draft.fastModeRewriteMode,
     imageToolRewriteMode: draft.imageToolRewriteMode,
+    ...(requestCompressionAlgorithm == null ? {} : { requestCompressionAlgorithm }),
     concurrencyLimit: sliderConcurrencyLimitToApiValue(draft.concurrencyLimit),
     upstream429RetryEnabled: draft.upstream429RetryEnabled,
     upstream429MaxRetries: draft.upstream429RetryEnabled
@@ -204,6 +220,12 @@ function buildPayload(
     }
     if (draft.imageToolRewriteMode !== (base.imageToolRewriteMode ?? "keep_original")) {
       changedPayload.imageToolRewriteMode = payload.imageToolRewriteMode;
+    }
+    if (
+      draft.requestCompressionAlgorithm !==
+      (base.requestCompressionAlgorithm ?? REQUEST_COMPRESSION_INHERIT_VALUE)
+    ) {
+      changedPayload.requestCompressionAlgorithm = requestCompressionAlgorithm;
     }
     if (draft.concurrencyLimit !== apiConcurrencyLimitToSliderValue(base.concurrencyLimit ?? 0)) {
       changedPayload.concurrencyLimit = payload.concurrencyLimit;
@@ -283,6 +305,15 @@ export interface GroupAccountRoutingRuleLabels {
   imageToolForceAdd: string;
   imageToolForceRemove: string;
   imageToolRewriteHint?: string;
+  requestCompressionAlgorithm: string;
+  requestCompressionFollow: string;
+  requestCompressionIdentity: string;
+  requestCompressionGzip: string;
+  requestCompressionDeflate: string;
+  requestCompressionZstd: string;
+  requestCompressionInherited: string;
+  requestCompressionHint?: string;
+  requestCompressionMixedGroupHint?: string;
   concurrencyLimit: string;
   concurrencyHint: string;
   currentValue: string;
@@ -538,6 +569,62 @@ export function GroupAccountRoutingRuleEditor({
             setDraft((current) => ({
               ...current,
               imageToolRewriteMode: value as ImageToolRewriteMode,
+            }))
+          }
+        />
+      </div>
+
+      <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
+        {labels.requestCompressionHint ? (
+          <p className="mb-2 text-xs leading-5 text-base-content/65">
+            {labels.requestCompressionHint}
+          </p>
+        ) : null}
+        {labels.requestCompressionMixedGroupHint ? (
+          <p className="mb-3 text-xs leading-5 text-base-content/55">
+            {labels.requestCompressionMixedGroupHint}
+          </p>
+        ) : null}
+        <SelectField
+          label={labels.requestCompressionAlgorithm}
+          name="groupRequestCompressionAlgorithm"
+          value={draft.requestCompressionAlgorithm}
+          disabled={busy}
+          options={[
+            ...(changedFieldsOnly
+              ? [
+                  {
+                    value: REQUEST_COMPRESSION_INHERIT_VALUE,
+                    label: labels.requestCompressionInherited,
+                  },
+                ]
+              : []),
+            {
+              value: "follow",
+              label: requestCompressionAlgorithmLabel("follow", labels),
+            },
+            {
+              value: "identity",
+              label: requestCompressionAlgorithmLabel("identity", labels),
+            },
+            {
+              value: "gzip",
+              label: requestCompressionAlgorithmLabel("gzip", labels),
+            },
+            {
+              value: "deflate",
+              label: requestCompressionAlgorithmLabel("deflate", labels),
+            },
+            {
+              value: "zstd",
+              label: requestCompressionAlgorithmLabel("zstd", labels),
+            },
+          ]}
+          onValueChange={(value) =>
+            setDraft((current) => ({
+              ...current,
+              requestCompressionAlgorithm:
+                value as GroupAccountRoutingRuleDraft["requestCompressionAlgorithm"],
             }))
           }
         />

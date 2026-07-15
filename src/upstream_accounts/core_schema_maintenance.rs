@@ -54,6 +54,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             policy_priority_tier TEXT,
             policy_fast_mode_rewrite_mode TEXT,
             policy_image_tool_rewrite_mode TEXT,
+            policy_request_compression_algorithm TEXT,
             policy_concurrency_limit INTEGER,
             policy_upstream_429_retry_enabled INTEGER,
             policy_upstream_429_max_retries INTEGER,
@@ -168,6 +169,13 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_upstream_accounts.policy_image_tool_rewrite_mode")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "policy_request_compression_algorithm",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.policy_request_compression_algorithm")?;
     ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_concurrency_limit")
         .await
         .context("failed to ensure pool_upstream_accounts.policy_concurrency_limit")?;
@@ -895,6 +903,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             policy_priority_tier TEXT,
             policy_fast_mode_rewrite_mode TEXT,
             policy_image_tool_rewrite_mode TEXT,
+            policy_request_compression_algorithm TEXT,
             policy_concurrency_limit INTEGER,
             policy_upstream_429_retry_enabled INTEGER,
             policy_upstream_429_max_retries INTEGER,
@@ -1035,6 +1044,15 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_upstream_account_group_notes.policy_image_tool_rewrite_mode")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_account_group_notes",
+        "policy_request_compression_algorithm",
+    )
+    .await
+    .context(
+        "failed to ensure pool_upstream_account_group_notes.policy_request_compression_algorithm",
+    )?;
     ensure_nullable_text_column(
         pool,
         "pool_upstream_account_group_notes",
@@ -1180,6 +1198,8 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             image_first_byte_timeout_secs INTEGER,
             responses_stream_timeout_secs INTEGER,
             compact_stream_timeout_secs INTEGER,
+            request_compression_algorithm TEXT,
+            request_compression_level_preset TEXT,
             default_first_byte_timeout_secs INTEGER,
             upstream_handshake_timeout_secs INTEGER,
             request_read_timeout_secs INTEGER,
@@ -1238,6 +1258,20 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_integer_column(pool, "pool_routing_settings", "compact_stream_timeout_secs")
         .await
         .context("failed to ensure pool_routing_settings.compact_stream_timeout_secs")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_routing_settings",
+        "request_compression_algorithm",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.request_compression_algorithm")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_routing_settings",
+        "request_compression_level_preset",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.request_compression_level_preset")?;
     ensure_nullable_integer_column(
         pool,
         "pool_routing_settings",

@@ -148,6 +148,8 @@ export type {
   RateWindowActualUsage,
   RateWindowSnapshot,
   RawCompressionBacklogResponse,
+  RequestCompressionAlgorithm,
+  RequestCompressionLevelPreset,
   SettingsPayload,
   StartupBackfillResponse,
   StatsMaintenanceResponse,

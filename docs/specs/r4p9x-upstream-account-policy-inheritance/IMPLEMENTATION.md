@@ -52,6 +52,7 @@ The account detail Routing tab exposes final effective rules as field-level inli
 - status-change reason toggles render as flat icon-and-label button tiles on both the group dialog and the account effective-rule card
 - the group dialog no longer shows category headers or batch toggle rows for this policy family
 - the account effective-rule card keeps the resolved badge summary and reason tiles, and adds one panel-level reset action that clears only account-layer reason overrides for this family
+- the account effective-rule card also exposes a request-compression row for API-key upstreams only; the row shows source badges, lets owners choose `跟随 | identity | gzip | deflate | zstd`, and clears back to inheritance with `null`
 
 Status-change side effects are now gated by the resolved per-reason policy.
 
@@ -71,6 +72,16 @@ Account and group routing policy writes distinguish missing, `null`, and value f
 - value writes the override, including boolean `false`
 
 Effective routing resolution applies group policy, read-only system signals, then account policy. Account-level `priorityTier`, `cut-out`, and `cut-in` values replace inherited values directly; they no longer use a most-conservative merge at the account layer.
+
+Request compression extends the same inheritance contract with one root-only field.
+
+- `pool_routing_settings` stores the global `request_compression_algorithm` and `request_compression_level_preset`
+- `pool_upstream_account_group_notes` stores nullable `policy_request_compression_algorithm`
+- `pool_upstream_accounts` stores nullable `policy_request_compression_algorithm`
+- effective routing exports `requestCompressionAlgorithm` plus `fieldSources.requestCompressionAlgorithm`
+- group/account `null` clears the stored algorithm override; the root level preset never has lower-layer overrides
+- mixed-group request-compression overrides are runtime-gated so only `api_key_codex` targets observe them
+- root defaults preserve existing traffic behavior by starting from `identity`
 
 Startup schema maintenance migrates legacy forbid-new rows into priority.
 
@@ -109,6 +120,21 @@ Account-level forward-proxy bindings are now a first-class routing override.
 - dashboard upstream-account Fast quick policy chips now label the four `fastModeRewriteMode` states as a parallel rewrite-policy axis: `不改Fast / 补Fast / 强制Fast / 禁Fast`
 - the Fast quick policy chip title and aria-label identify the control as the Fast rewrite policy and include the current state label
 
+API-key upstream request dispatch now applies compression after body rewrite.
+
+- request-body rewrites still happen first for FAST/image-tool policy
+- the final outbound body is then encoded according to the resolved request-compression algorithm
+- file-backed or replay bodies use streaming/chunked encoders for `gzip`, `deflate`, and `zstd`
+- rewritten in-memory JSON bodies avoid generating an additional fully compressed buffer
+- `follow` re-encodes using supported downstream request encodings only; unsupported encodings return an explicit request error and do not auto-fallback
+- OAuth upstream dispatch and WebSocket routes keep their current request-body behavior
+
+Outbound observability now records both raw downstream and actual upstream request encodings.
+
+- `codex_invocations.request_raw_codec` remains the stored raw-request capture codec
+- pool attempt persistence adds the actual outbound upstream request-body encoding/mode
+- payload summaries expose the downstream request encoding separately from the actual upstream request encoding so operators can query recent compressed sends directly
+
 ## Validation
 
 Validation covers:
@@ -130,8 +156,10 @@ Validation covers:
 - account route proxy binding Storybook evidence proves the inline account proxy editor, inherited/effective proxy chips, and removal of the old edit policy button
 - dashboard upstream-account Fast quick policy unit and Storybook coverage verifies `强制Fast` and `不改Fast` labels, Fast rewrite policy tooltip/aria copy, debounce behavior, and persisted visual evidence
 - backend regressions proving disabled reasons suppress account-state side effects for both route and sync paths while still creating neutral account events
+- backend regressions covering request-compression schema migration, root/group/account inheritance, mixed-group API-key gating, unsupported `follow` encodings, request rewrite plus compression, and stateful upstream round-trips
 - frontend regressions and Storybook states proving flat button-style reason toggles, the account panel-level reset behavior, and desktop / narrow-width readability
 - group settings regressions and Storybook states proving tab navigation, inline routing-policy draft save, proxy-node long-list readability, delete blocking, and explicit empty-model group policy payloads
+- frontend regressions and Storybook states proving root algorithm + level controls, group/account algorithm override rows, source badges, clear-to-inherit behavior, mixed-group helper copy, and explicit `gzip` availability
 - `cargo test prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slots -- --nocapture`
 - `cd web && npm test -- --run UpstreamAccounts.test.tsx`
 - `cd web && npm run build`

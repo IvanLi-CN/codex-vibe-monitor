@@ -96,6 +96,21 @@ pub(crate) fn resolve_pool_routing_timeouts_from_row(
     }
 }
 
+pub(crate) fn resolve_pool_request_compression_settings_from_row(
+    row: &PoolRoutingSettingsRow,
+) -> PoolRoutingRequestCompressionSettingsResolved {
+    PoolRoutingRequestCompressionSettingsResolved {
+        algorithm: row
+            .request_compression_algorithm
+            .as_deref()
+            .map(RequestCompressionAlgorithm::from_str)
+            .unwrap_or_default(),
+        level_preset: decode_request_compression_level_preset(
+            row.request_compression_level_preset.as_deref(),
+        ),
+    }
+}
+
 pub(crate) fn pool_routing_timeouts_response(
     resolved: PoolRoutingTimeoutSettingsResolved,
 ) -> PoolRoutingTimeoutSettingsResponse {
@@ -564,6 +579,8 @@ pub(crate) async fn load_pool_routing_settings(
             image_first_byte_timeout_secs,
             responses_stream_timeout_secs,
             compact_stream_timeout_secs,
+            request_compression_algorithm,
+            request_compression_level_preset,
             default_first_byte_timeout_secs,
             upstream_handshake_timeout_secs,
             request_read_timeout_secs
@@ -613,6 +630,7 @@ pub(crate) fn build_pool_routing_settings_response(
     row: &PoolRoutingSettingsRow,
 ) -> PoolRoutingSettingsResponse {
     let timeouts = resolve_pool_routing_timeouts_from_row(row, &state.config);
+    let request_compression = resolve_pool_request_compression_settings_from_row(row);
     PoolRoutingSettingsResponse {
         writes_enabled: true,
         api_key_configured: row
@@ -621,6 +639,8 @@ pub(crate) fn build_pool_routing_settings_response(
             .is_some_and(|value| !value.trim().is_empty()),
         masked_api_key: row.masked_api_key.clone(),
         maintenance: resolve_pool_routing_maintenance_settings(row, &state.config).into_response(),
+        request_compression_algorithm: request_compression.algorithm,
+        request_compression_level_preset: request_compression.level_preset,
         timeouts: pool_routing_timeouts_response(timeouts),
     }
 }
@@ -711,6 +731,7 @@ pub(crate) fn build_pool_routing_runtime_cache(
 
     Ok(PoolRoutingRuntimeCache {
         api_key,
+        request_compression: resolve_pool_request_compression_settings_from_row(row),
         timeouts: resolve_pool_routing_timeouts_from_row(row, &state.config),
     })
 }
@@ -743,6 +764,8 @@ pub(crate) async fn save_pool_routing_settings(
     config: &AppConfig,
     crypto_key: Option<&[u8; 32]>,
     api_key: Option<&str>,
+    request_compression_algorithm: Option<RequestCompressionAlgorithm>,
+    request_compression_level_preset: Option<RequestCompressionLevelPreset>,
     timeout_updates: Option<&UpdatePoolRoutingTimeoutSettingsRequest>,
 ) -> Result<PoolRoutingSettingsRow, (StatusCode, String)> {
     let current = load_pool_routing_settings_seeded(pool, config)
@@ -787,6 +810,12 @@ pub(crate) async fn save_pool_routing_settings(
         .and_then(|value| value.compact_stream_timeout_secs)
         .map(|value| value as i64)
         .or(current.compact_stream_timeout_secs);
+    let request_compression_algorithm = request_compression_algorithm
+        .map(|value| value.as_str().to_string())
+        .or(current.request_compression_algorithm.clone());
+    let request_compression_level_preset = request_compression_level_preset
+        .map(|value| value.as_str().to_string())
+        .or(current.request_compression_level_preset.clone());
     let default_first_byte_timeout_secs = current.default_first_byte_timeout_secs;
     let upstream_handshake_timeout_secs = current.upstream_handshake_timeout_secs;
     let request_read_timeout_secs = current.request_read_timeout_secs;
@@ -805,10 +834,12 @@ pub(crate) async fn save_pool_routing_settings(
             image_first_byte_timeout_secs = ?9,
             responses_stream_timeout_secs = ?10,
             compact_stream_timeout_secs = ?11,
-            default_first_byte_timeout_secs = ?12,
-            upstream_handshake_timeout_secs = ?13,
-            request_read_timeout_secs = ?14,
-            updated_at = ?15
+            request_compression_algorithm = ?12,
+            request_compression_level_preset = ?13,
+            default_first_byte_timeout_secs = ?14,
+            upstream_handshake_timeout_secs = ?15,
+            request_read_timeout_secs = ?16,
+            updated_at = ?17
         WHERE id = ?1
         "#,
     )
@@ -823,6 +854,8 @@ pub(crate) async fn save_pool_routing_settings(
     .bind(image_first_byte_timeout_secs)
     .bind(responses_stream_timeout_secs)
     .bind(compact_stream_timeout_secs)
+    .bind(request_compression_algorithm)
+    .bind(request_compression_level_preset)
     .bind(default_first_byte_timeout_secs)
     .bind(upstream_handshake_timeout_secs)
     .bind(request_read_timeout_secs)
@@ -933,6 +966,7 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) upstream_429_max_retries: u8,
     pub(crate) fast_mode_rewrite_mode: TagFastModeRewriteMode,
     pub(crate) image_tool_rewrite_mode: ImageToolRewriteMode,
+    pub(crate) request_compression_algorithm: RequestCompressionAlgorithm,
     pub(crate) image_tool_capability: ImageToolCapability,
     pub(crate) upstream_base_url: Url,
     pub(crate) routing_source: PoolRoutingSelectionSource,

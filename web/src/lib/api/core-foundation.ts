@@ -8,6 +8,8 @@ import type {
   PoolRoutingMaintenanceSettings,
   PoolRoutingSettings,
   PoolRoutingTimeoutSettings,
+  RequestCompressionAlgorithm,
+  RequestCompressionLevelPreset,
 } from "./core-upstream";
 import { normalizeEffectiveRoutingRule } from "./core-upstream";
 
@@ -432,6 +434,9 @@ export interface ApiPoolUpstreamRequestAttempt {
   firstByteLatencyMs?: number | null;
   streamLatencyMs?: number | null;
   upstreamRequestId?: string | null;
+  downstreamRequestContentEncoding?: string | null;
+  upstreamRequestCompressionAlgorithm?: string | null;
+  upstreamRequestCompressionMode?: string | null;
   createdAt: string;
 }
 
@@ -2521,6 +2526,20 @@ export function normalizePoolRoutingSettings(raw: unknown): PoolRoutingSettings 
     apiKeyConfigured: payload.apiKeyConfigured,
     maskedApiKey: typeof payload.maskedApiKey === "string" ? payload.maskedApiKey : null,
     maintenance,
+    requestCompressionAlgorithm:
+      payload.requestCompressionAlgorithm === "follow" ||
+      payload.requestCompressionAlgorithm === "identity" ||
+      payload.requestCompressionAlgorithm === "gzip" ||
+      payload.requestCompressionAlgorithm === "deflate" ||
+      payload.requestCompressionAlgorithm === "zstd"
+        ? (payload.requestCompressionAlgorithm as RequestCompressionAlgorithm)
+        : "identity",
+    requestCompressionLevelPreset:
+      payload.requestCompressionLevelPreset === "fast" ||
+      payload.requestCompressionLevelPreset === "balanced" ||
+      payload.requestCompressionLevelPreset === "best"
+        ? (payload.requestCompressionLevelPreset as RequestCompressionLevelPreset)
+        : "balanced",
     timeouts: normalizePoolRoutingTimeoutSettings(payload.timeouts),
   };
 }

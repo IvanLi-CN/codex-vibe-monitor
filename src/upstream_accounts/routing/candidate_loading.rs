@@ -88,15 +88,22 @@ pub(crate) fn account_accepts_requested_image_intent(
     }
 }
 
+#[derive(Debug, Clone, FromRow)]
+pub(crate) struct AccountGroupKindRow {
+    pub(crate) id: i64,
+    pub(crate) group_name: Option<String>,
+    pub(crate) kind: String,
+}
+
 pub(crate) async fn load_account_group_name_map(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
-) -> Result<HashMap<i64, Option<String>>> {
+) -> Result<HashMap<i64, AccountGroupKindRow>> {
     if account_ids.is_empty() {
         return Ok(HashMap::new());
     }
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT id, group_name FROM pool_upstream_accounts WHERE id IN (",
+        "SELECT id, group_name, kind FROM pool_upstream_accounts WHERE id IN (",
     );
     {
         let mut separated = query.separated(", ");
@@ -106,10 +113,10 @@ pub(crate) async fn load_account_group_name_map(
     }
     let rows = query
         .push(")")
-        .build_query_as::<(i64, Option<String>)>()
+        .build_query_as::<AccountGroupKindRow>()
         .fetch_all(pool)
         .await?;
-    Ok(rows.into_iter().collect())
+    Ok(rows.into_iter().map(|row| (row.id, row)).collect())
 }
 
 pub(crate) async fn load_effective_routing_rules_for_accounts(
@@ -121,10 +128,13 @@ pub(crate) async fn load_effective_routing_rules_for_accounts(
         return Ok(HashMap::new());
     }
 
+    let root_request_compression = resolve_pool_request_compression_settings_from_row(
+        &load_pool_routing_settings(pool).await?,
+    );
     let tags_by_account = load_account_tag_map(pool, account_ids).await?;
     let group_names = account_group_map
         .values()
-        .filter_map(|group_name| normalize_optional_text(group_name.clone()))
+        .filter_map(|row| normalize_optional_text(row.group_name.clone()))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
@@ -132,13 +142,19 @@ pub(crate) async fn load_effective_routing_rules_for_accounts(
     let account_policy_overrides =
         load_account_routing_policy_override_map(pool, account_ids).await?;
     let mut rules = HashMap::with_capacity(account_group_map.len());
-    for (account_id, group_name) in account_group_map {
+    for (account_id, account_row) in account_group_map {
         let mut rule = build_effective_routing_rule(&[]);
-        let normalized_group_name = normalize_optional_text(group_name.clone());
+        apply_root_request_compression_defaults(&mut rule, &root_request_compression);
+        let normalized_group_name = normalize_optional_text(account_row.group_name.clone());
+        let request_compression_override_enabled =
+            account_row.kind.trim() == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX;
         if let Some(group_name) = normalized_group_name.as_ref()
             && let Some(group_policy) = group_policy_overrides.get(group_name)
         {
             apply_group_routing_policy_override(&mut rule, group_policy);
+            if !request_compression_override_enabled {
+                apply_root_request_compression_defaults(&mut rule, &root_request_compression);
+            }
         }
         if let Some(tags) = tags_by_account.get(&account_id)
             && !tags.is_empty()
@@ -148,6 +164,9 @@ pub(crate) async fn load_effective_routing_rules_for_accounts(
         }
         if let Some(account_policy) = account_policy_overrides.get(&account_id) {
             apply_account_routing_policy_override(&mut rule, account_policy);
+            if !request_compression_override_enabled {
+                apply_root_request_compression_defaults(&mut rule, &root_request_compression);
+            }
         }
         rules.insert(account_id, rule);
     }
@@ -177,6 +196,10 @@ pub(crate) async fn load_effective_routing_rule_for_group(
     group_name: Option<&str>,
 ) -> Result<EffectiveRoutingRule> {
     let mut rule = build_effective_routing_rule(&[]);
+    let root_request_compression = resolve_pool_request_compression_settings_from_row(
+        &load_pool_routing_settings(pool).await?,
+    );
+    apply_root_request_compression_defaults(&mut rule, &root_request_compression);
     let Some(group_name) = group_name
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -343,6 +366,7 @@ pub(crate) fn build_pool_resolved_account(
         upstream_429_max_retries: effective_rule.upstream_429_max_retries,
         fast_mode_rewrite_mode: effective_rule.fast_mode_rewrite_mode,
         image_tool_rewrite_mode: effective_rule.image_tool_rewrite_mode,
+        request_compression_algorithm: effective_rule.request_compression_algorithm,
         image_tool_capability: decode_image_tool_capability(row.image_tool_capability.as_deref()),
         upstream_base_url,
         routing_source,

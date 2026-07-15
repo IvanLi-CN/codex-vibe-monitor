@@ -245,6 +245,16 @@ const baseTranslations = {
       "Standard stream completion timeout",
     "accountPool.upstreamAccounts.routing.timeout.compactStream":
       "Compact stream completion timeout",
+    "accountPool.upstreamAccounts.routing.requestCompressionSectionTitle":
+      "Upstream request compression",
+    "accountPool.upstreamAccounts.routing.requestCompressionSectionDescription":
+      "Set the default request-body compression used for API key upstream HTTP requests. Group and account overrides can change the algorithm, but the level preset stays global.",
+    "accountPool.upstreamAccounts.routing.requestCompressionAlgorithmLabel":
+      "Default compression algorithm",
+    "accountPool.upstreamAccounts.routing.requestCompressionLevelPresetLabel":
+      "Compression level preset",
+    "accountPool.upstreamAccounts.routing.requestCompressionHint":
+      "Follow reuses the downstream request encoding. Unsupported downstream encodings fail explicitly instead of falling back automatically.",
     "accountPool.upstreamAccounts.actions.refresh": "Refresh",
     "accountPool.upstreamAccounts.actions.addAccount": "Add account",
     "accountPool.upstreamAccounts.actions.addOauth": "Add OAuth account",
@@ -577,6 +587,12 @@ const baseTranslations = {
       "Fill when missing",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceAdd": "Force add",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceRemove": "Force remove",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.requestCompressionAlgorithm":
+      "Request compression",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.requestCompressionHint":
+      "Override the algorithm only for API key upstream accounts in this group. Clear it to inherit the root default.",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.requestCompressionMixedGroupHint":
+      "Mixed groups only apply this override when the final target account is an API key upstream.",
     "accountPool.upstreamAccounts.statusChangeReasons.sectionTitle":
       "Status change trigger reasons",
     "accountPool.upstreamAccounts.statusChangeReasons.sectionHint":
@@ -772,6 +788,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.fieldAvailableModels": "Available models",
     "accountPool.upstreamAccounts.effectiveRule.fieldSystemDeniedModels": "System denied models",
     "accountPool.upstreamAccounts.effectiveRule.fieldProxyBindings": "Account proxy",
+    "accountPool.upstreamAccounts.effectiveRule.fieldRequestCompression": "Request compression",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited":
       "Inherited / unrestricted",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed": "No models allowed",
@@ -806,9 +823,12 @@ const baseTranslations = {
     "accountPool.upstreamAttempts.proxyDirect": "Direct",
     "accountPool.upstreamAttempts.upstreamHttp": "Upstream HTTP {{status}}",
     "accountPool.upstreamAttempts.downstreamHttp": "Downstream HTTP",
+    "accountPool.upstreamAttempts.downstreamRequestCompression": "Downstream request compression",
     "accountPool.upstreamAttempts.proxyBinding": "Proxy binding",
     "accountPool.upstreamAttempts.upstreamRequestId": "Upstream request ID",
     "accountPool.upstreamAttempts.routeKey": "Route key",
+    "accountPool.upstreamAttempts.upstreamRequestCompression": "Upstream request compression",
+    "accountPool.upstreamAttempts.upstreamRequestCompressionMode": "Compression send mode",
     "accountPool.upstreamAttempts.fullError": "Full error",
     "accountPool.upstreamAttempts.copyError": "Copy error",
     "accountPool.upstreamAttempts.copied": "Copied",
@@ -837,6 +857,18 @@ const baseTranslations = {
     "accountPool.upstreamAttempts.total": "{{count}} calls",
     "accountPool.upstreamAttempts.previous": "Previous",
     "accountPool.upstreamAttempts.next": "Next",
+    "accountPool.requestCompression.follow": "Follow",
+    "accountPool.requestCompression.identity": "Identity",
+    "accountPool.requestCompression.gzip": "Gzip",
+    "accountPool.requestCompression.deflate": "Deflate",
+    "accountPool.requestCompression.zstd": "Zstd",
+    "accountPool.requestCompression.inherit": "Inherit",
+    "accountPool.requestCompression.level.fast": "Fast",
+    "accountPool.requestCompression.level.balanced": "Balanced",
+    "accountPool.requestCompression.level.best": "Best",
+    "accountPool.requestCompression.mode.identity": "Identity",
+    "accountPool.requestCompression.mode.passthrough": "Pass through",
+    "accountPool.requestCompression.mode.recompressed": "Recompressed",
     "accountPool.upstreamAccounts.detailTabs.edit": "Edit",
     "accountPool.upstreamAccounts.detailTabs.routing": "Routing",
     "accountPool.upstreamAccounts.detailTabs.healthEvents": "Health & events",
@@ -2594,6 +2626,13 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.timeout.imageFirstByte": "图片请求响应体首字超时",
     "accountPool.upstreamAccounts.routing.timeout.responsesStream": "一般请求流结束超时",
     "accountPool.upstreamAccounts.routing.timeout.compactStream": "压缩请求流结束超时",
+    "accountPool.upstreamAccounts.routing.requestCompressionSectionTitle": "上游请求压缩",
+    "accountPool.upstreamAccounts.routing.requestCompressionSectionDescription":
+      "为 API Key 上游 HTTP 请求设置默认请求体压缩。分组和账号只允许覆盖算法，压缩等级预设始终沿用全局设置。",
+    "accountPool.upstreamAccounts.routing.requestCompressionAlgorithmLabel": "默认压缩算法",
+    "accountPool.upstreamAccounts.routing.requestCompressionLevelPresetLabel": "压缩等级预设",
+    "accountPool.upstreamAccounts.routing.requestCompressionHint":
+      "“跟随”会复用下游请求体编码；遇到不支持的下游编码时会显式失败，不会自动降级。",
     "accountPool.upstreamAccounts.actions.refresh": "刷新列表",
     "accountPool.upstreamAccounts.actions.addAccount": "新增账号",
     "accountPool.upstreamAccounts.actions.addOauth": "新增 OAuth 账号",
@@ -2932,6 +2971,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolFillMissing": "缺少时补充",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceAdd": "强制补充",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceRemove": "强制去掉",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.requestCompressionAlgorithm": "请求压缩",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.requestCompressionHint":
+      "仅覆盖这个分组内 API Key 上游账号的压缩算法。清空后会重新继承根设置。",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.requestCompressionMixedGroupHint":
+      "混合分组只会在最终命中的账号是 API Key 上游时应用这个覆盖。",
     "accountPool.upstreamAccounts.statusChangeReasons.sectionTitle": "状态变化触发原因",
     "accountPool.upstreamAccounts.statusChangeReasons.sectionHint":
       "关闭后，这类原因仍会保留调用证据和一条中性账号事件，但不再把账号推向重新登录、上游拒绝、冷却或降级状态。",
@@ -3112,6 +3156,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.fieldAvailableModels": "可用模型",
     "accountPool.upstreamAccounts.effectiveRule.fieldSystemDeniedModels": "系统拒绝模型",
     "accountPool.upstreamAccounts.effectiveRule.fieldProxyBindings": "账号代理",
+    "accountPool.upstreamAccounts.effectiveRule.fieldRequestCompression": "请求压缩",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited": "继承 / 不限",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed": "无可用模型",
     "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty": "无",
@@ -3144,9 +3189,12 @@ const baseTranslations = {
     "accountPool.upstreamAttempts.proxyDirect": "直连",
     "accountPool.upstreamAttempts.upstreamHttp": "上游 HTTP {{status}}",
     "accountPool.upstreamAttempts.downstreamHttp": "下游 HTTP",
+    "accountPool.upstreamAttempts.downstreamRequestCompression": "下游请求压缩",
     "accountPool.upstreamAttempts.proxyBinding": "代理绑定",
     "accountPool.upstreamAttempts.upstreamRequestId": "上游请求 ID",
     "accountPool.upstreamAttempts.routeKey": "路由键",
+    "accountPool.upstreamAttempts.upstreamRequestCompression": "上游请求压缩",
+    "accountPool.upstreamAttempts.upstreamRequestCompressionMode": "压缩发送模式",
     "accountPool.upstreamAttempts.fullError": "完整错误",
     "accountPool.upstreamAttempts.copyError": "复制错误",
     "accountPool.upstreamAttempts.copied": "已复制",
@@ -3175,6 +3223,18 @@ const baseTranslations = {
     "accountPool.upstreamAttempts.total": "{{count}} 次调用",
     "accountPool.upstreamAttempts.previous": "上一页",
     "accountPool.upstreamAttempts.next": "下一页",
+    "accountPool.requestCompression.follow": "跟随",
+    "accountPool.requestCompression.identity": "Identity",
+    "accountPool.requestCompression.gzip": "Gzip",
+    "accountPool.requestCompression.deflate": "Deflate",
+    "accountPool.requestCompression.zstd": "Zstd",
+    "accountPool.requestCompression.inherit": "继承",
+    "accountPool.requestCompression.level.fast": "快速",
+    "accountPool.requestCompression.level.balanced": "均衡",
+    "accountPool.requestCompression.level.best": "最佳",
+    "accountPool.requestCompression.mode.identity": "不压缩",
+    "accountPool.requestCompression.mode.passthrough": "保持原始编码",
+    "accountPool.requestCompression.mode.recompressed": "解压后重压",
     "accountPool.upstreamAccounts.detailTabs.edit": "编辑",
     "accountPool.upstreamAccounts.detailTabs.routing": "路由",
     "accountPool.upstreamAccounts.detailTabs.healthEvents": "健康与事件",

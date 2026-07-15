@@ -90,6 +90,17 @@ function DialogHarness({
             imageToolFillMissing: "Fill when missing",
             imageToolForceAdd: "Force add",
             imageToolForceRemove: "Force remove",
+            requestCompressionAlgorithm: "Request compression",
+            requestCompressionFollow: "Follow",
+            requestCompressionIdentity: "Identity",
+            requestCompressionGzip: "Gzip",
+            requestCompressionDeflate: "Deflate",
+            requestCompressionZstd: "Zstd",
+            requestCompressionInherited: "Inherit",
+            requestCompressionHint:
+              "Override the algorithm only for API key upstream accounts in this group.",
+            requestCompressionMixedGroupHint:
+              "Mixed groups only apply this override when the final target account is an API key upstream.",
             imageToolRewriteHint:
               "Keep original follows the account's own image capability. Fill when missing only injects image tools when image intent is confirmed; force add always injects; force remove always strips it.",
             concurrencyLimit: "Concurrency limit",
@@ -183,6 +194,11 @@ const mixedTimeoutRule: GroupAccountRoutingRule = {
   },
 };
 
+const followCompressionRule: GroupAccountRoutingRule = {
+  ...defaultRule,
+  requestCompressionAlgorithm: "follow",
+};
+
 const meta = {
   title: "Account Pool/Components/Group Account Routing Rule Dialog",
   component: DialogHarness,
@@ -215,5 +231,15 @@ export const MixedTimeoutInheritance: Story = {
     description:
       "Preview of mixed inherited/global defaults and explicit group timeout overrides in the shared policy dialog.",
     submitLabel: "Apply timeout policy",
+  },
+};
+
+export const FollowCompression: Story = {
+  args: {
+    rule: followCompressionRule,
+    title: "Group request compression policy",
+    description:
+      "Preview of an API key group override that follows downstream request-body compression while still inheriting the global level preset.",
+    submitLabel: "Apply compression policy",
   },
 };

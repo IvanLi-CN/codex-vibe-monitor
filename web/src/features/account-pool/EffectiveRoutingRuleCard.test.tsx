@@ -79,6 +79,7 @@ const labels = {
   fieldAvailableModels: "Available models",
   fieldSystemDeniedModels: "System denied models",
   fieldProxyBindings: "Account proxy",
+  fieldRequestCompression: "Request compression",
   statusChangeReasonSectionTitle: "Status change trigger reasons",
   statusChangeReasonSectionHint:
     "Disabled reasons still keep evidence but no longer mutate account state.",
@@ -113,6 +114,11 @@ const labels = {
   overrideSaving: "Saving account override...",
   cutOutLabel: "Cut out",
   cutInLabel: "Cut in",
+  requestCompressionFollow: "Follow",
+  requestCompressionIdentity: "Identity",
+  requestCompressionGzip: "Gzip",
+  requestCompressionDeflate: "Deflate",
+  requestCompressionZstd: "Zstd",
   upstream429RetryCountValue: (count: number) => String(count),
   currentValue: "Current value",
   availableModelsAddCustom: "Add model",
@@ -128,6 +134,7 @@ function buildRule(overrides: Partial<EffectiveRoutingRule> = {}): EffectiveRout
     priorityTier: "normal",
     fastModeRewriteMode: "keep_original",
     imageToolRewriteMode: "keep_original",
+    requestCompressionAlgorithm: "identity",
     concurrencyLimit: 0,
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
@@ -143,6 +150,7 @@ function buildRule(overrides: Partial<EffectiveRoutingRule> = {}): EffectiveRout
       priorityTier: "root",
       fastModeRewriteMode: "root",
       imageToolRewriteMode: "root",
+      requestCompressionAlgorithm: "root",
       concurrencyLimit: "root",
       upstream429Retry: "root",
       availableModels: "root",
@@ -158,6 +166,8 @@ describe("EffectiveRoutingRuleCard", () => {
 
     expect(document.body.textContent).toContain("Inherited / unrestricted");
     expect(document.body.textContent).toContain("Image tools");
+    expect(document.body.textContent).toContain("Request compression");
+    expect(document.body.textContent).toContain("Identity");
     expect(document.body.textContent).not.toContain("No models allowed");
   });
 

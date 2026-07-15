@@ -1456,6 +1456,7 @@ pub(crate) fn normalize_group_account_routing_rule(
         priority_tier,
         fast_mode_rewrite_mode,
         image_tool_rewrite_mode,
+        request_compression_algorithm: None,
         concurrency_limit,
         upstream_429_retry_enabled,
         upstream_429_max_retries,
@@ -1565,6 +1566,57 @@ pub(crate) fn normalize_image_tool_rewrite_mode(
 
 pub(crate) fn decode_image_tool_rewrite_mode(value: &str) -> ImageToolRewriteMode {
     ImageToolRewriteMode::from_str(value)
+}
+
+pub(crate) fn normalize_request_compression_algorithm(
+    value: Option<&str>,
+) -> Result<RequestCompressionAlgorithm, (StatusCode, String)> {
+    let normalized = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("identity");
+    match normalized {
+        "follow" => Ok(RequestCompressionAlgorithm::Follow),
+        "identity" => Ok(RequestCompressionAlgorithm::Identity),
+        "gzip" => Ok(RequestCompressionAlgorithm::Gzip),
+        "deflate" => Ok(RequestCompressionAlgorithm::Deflate),
+        "zstd" => Ok(RequestCompressionAlgorithm::Zstd),
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            "requestCompressionAlgorithm must be one of: follow, identity, gzip, deflate, zstd"
+                .to_string(),
+        )),
+    }
+}
+
+pub(crate) fn decode_request_compression_algorithm(value: &str) -> RequestCompressionAlgorithm {
+    RequestCompressionAlgorithm::from_str(value)
+}
+
+pub(crate) fn normalize_request_compression_level_preset(
+    value: Option<&str>,
+) -> Result<RequestCompressionLevelPreset, (StatusCode, String)> {
+    let normalized = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("balanced");
+    match normalized {
+        "fast" => Ok(RequestCompressionLevelPreset::Fast),
+        "balanced" => Ok(RequestCompressionLevelPreset::Balanced),
+        "best" => Ok(RequestCompressionLevelPreset::Best),
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            "requestCompressionLevelPreset must be one of: fast, balanced, best".to_string(),
+        )),
+    }
+}
+
+pub(crate) fn decode_request_compression_level_preset(
+    value: Option<&str>,
+) -> RequestCompressionLevelPreset {
+    value
+        .map(RequestCompressionLevelPreset::from_str)
+        .unwrap_or_default()
 }
 
 pub(crate) fn decode_image_tool_capability(value: Option<&str>) -> ImageToolCapability {
@@ -1744,6 +1796,7 @@ pub(crate) fn group_routing_rule_from_columns(
     policy_priority_tier: Option<&str>,
     policy_fast_mode_rewrite_mode: Option<&str>,
     policy_image_tool_rewrite_mode: Option<&str>,
+    policy_request_compression_algorithm: Option<&str>,
     policy_concurrency_limit: Option<i64>,
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
@@ -1778,6 +1831,8 @@ pub(crate) fn group_routing_rule_from_columns(
         image_tool_rewrite_mode: decode_image_tool_rewrite_mode(
             policy_image_tool_rewrite_mode.unwrap_or("keep_original"),
         ),
+        request_compression_algorithm: policy_request_compression_algorithm
+            .map(decode_request_compression_algorithm),
         concurrency_limit: policy_concurrency_limit.unwrap_or(legacy_concurrency_limit),
         upstream_429_retry_enabled,
         upstream_429_max_retries: normalize_group_upstream_429_retry_metadata(
@@ -1825,6 +1880,7 @@ pub(crate) async fn load_group_routing_rule(
         policy_priority_tier: Option<String>,
         policy_fast_mode_rewrite_mode: Option<String>,
         policy_image_tool_rewrite_mode: Option<String>,
+        policy_request_compression_algorithm: Option<String>,
         policy_concurrency_limit: Option<i64>,
         policy_upstream_429_retry_enabled: Option<i64>,
         policy_upstream_429_max_retries: Option<i64>,
@@ -1857,6 +1913,7 @@ pub(crate) async fn load_group_routing_rule(
             policy_priority_tier,
             policy_fast_mode_rewrite_mode,
             policy_image_tool_rewrite_mode,
+            policy_request_compression_algorithm,
             policy_concurrency_limit,
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
@@ -1888,7 +1945,7 @@ pub(crate) async fn load_group_routing_rule(
     let Some(row) = row else {
         return Ok(group_routing_rule_from_columns(
             0, false, 0, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
         ));
     };
     let upstream_429_retry_enabled =
@@ -1906,6 +1963,7 @@ pub(crate) async fn load_group_routing_rule(
         row.policy_priority_tier.as_deref(),
         row.policy_fast_mode_rewrite_mode.as_deref(),
         row.policy_image_tool_rewrite_mode.as_deref(),
+        row.policy_request_compression_algorithm.as_deref(),
         row.policy_concurrency_limit,
         row.policy_upstream_429_retry_enabled,
         row.policy_upstream_429_max_retries,

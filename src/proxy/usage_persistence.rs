@@ -244,6 +244,8 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
     upstream_request_id: Option<&str>,
     compact_support_status: Option<&str>,
     compact_support_reason: Option<&str>,
+    upstream_request_compression_algorithm: Option<&str>,
+    upstream_request_compression_mode: Option<&str>,
 ) -> Result<i64> {
     for _ in 0..POOL_UPSTREAM_REQUEST_ATTEMPT_PUBLIC_ID_RETRY_LIMIT {
         let attempt_public_id = generate_pool_upstream_request_attempt_public_id();
@@ -277,11 +279,13 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
                 first_byte_latency_ms,
                 stream_latency_ms,
                 upstream_request_id,
+                upstream_request_compression_algorithm,
+                upstream_request_compression_mode,
                 compact_support_status,
                 compact_support_reason
             )
             VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31
             )
             "#,
         )
@@ -312,6 +316,8 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
         .bind(first_byte_latency_ms)
         .bind(stream_latency_ms)
         .bind(upstream_request_id)
+        .bind(upstream_request_compression_algorithm)
+        .bind(upstream_request_compression_mode)
         .bind(compact_support_status)
         .bind(compact_support_reason)
         .execute(pool)
@@ -375,6 +381,8 @@ pub(crate) async fn insert_pool_upstream_request_attempt(
         upstream_request_id,
         compact_support_status,
         compact_support_reason,
+        None,
+        None,
     )
     .await
 }
@@ -441,6 +449,8 @@ pub(crate) async fn begin_pool_upstream_request_attempt_with_scope(
         None,
         None,
         None,
+        None,
+        None,
     )
     .await
     {
@@ -474,7 +484,44 @@ pub(crate) async fn begin_pool_upstream_request_attempt_with_scope(
         first_byte_latency_ms: 0.0,
         compact_support_status: None,
         compact_support_reason: None,
+        upstream_request_compression_algorithm: None,
+        upstream_request_compression_mode: None,
     }
+}
+
+pub(crate) async fn annotate_pool_upstream_request_attempt_request_compression(
+    pool: &Pool<Sqlite>,
+    pending: &mut PendingPoolAttemptRecord,
+    algorithm: &str,
+    mode: &str,
+) -> Result<bool> {
+    pending.upstream_request_compression_algorithm = Some(algorithm.to_string());
+    pending.upstream_request_compression_mode = Some(mode.to_string());
+
+    let Some(attempt_id) = pending.attempt_id else {
+        return Ok(false);
+    };
+
+    let result = sqlx::query(
+        r#"
+        UPDATE pool_upstream_request_attempts
+        SET
+            upstream_request_compression_algorithm = ?2,
+            upstream_request_compression_mode = ?3
+        WHERE id = ?1
+          AND (
+                COALESCE(upstream_request_compression_algorithm, '') <> ?2
+                OR COALESCE(upstream_request_compression_mode, '') <> ?3
+              )
+        "#,
+    )
+    .bind(attempt_id)
+    .bind(algorithm)
+    .bind(mode)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
 }
 
 pub(crate) async fn update_pool_upstream_request_attempt_phase(
@@ -1661,6 +1708,9 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
         compact_support_status.or(pending.compact_support_status.as_deref());
     let compact_support_reason =
         compact_support_reason.or(pending.compact_support_reason.as_deref());
+    let upstream_request_compression_algorithm =
+        pending.upstream_request_compression_algorithm.as_deref();
+    let upstream_request_compression_mode = pending.upstream_request_compression_mode.as_deref();
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: pending.invoke_id.clone(),
         occurred_at: pending.occurred_at.clone(),
@@ -1686,7 +1736,9 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
                 stream_latency_ms = ?12,
                 upstream_request_id = ?13,
                 compact_support_status = ?14,
-                compact_support_reason = ?15
+                compact_support_reason = ?15,
+                upstream_request_compression_algorithm = COALESCE(?16, upstream_request_compression_algorithm),
+                upstream_request_compression_mode = COALESCE(?17, upstream_request_compression_mode)
             WHERE id = ?1
             "#,
         )
@@ -1705,6 +1757,8 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
         .bind(upstream_request_id)
         .bind(compact_support_status)
         .bind(compact_support_reason)
+        .bind(upstream_request_compression_algorithm)
+        .bind(upstream_request_compression_mode)
         .execute(pool)
         .await?;
 
@@ -1738,6 +1792,8 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
         upstream_request_id,
         compact_support_status,
         compact_support_reason,
+        upstream_request_compression_algorithm,
+        upstream_request_compression_mode,
     )
     .await
     .map(|_| ())
@@ -1798,6 +1854,8 @@ pub(crate) async fn insert_pool_upstream_terminal_attempt(
         None,
         None,
         final_error.upstream_request_id.as_deref(),
+        None,
+        None,
         None,
         None,
     )

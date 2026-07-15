@@ -49,6 +49,8 @@ import type {
   FetchUpstreamAccountsQuery,
   PoolRoutingMaintenanceSettings,
   PoolRoutingTimeoutSettings,
+  RequestCompressionAlgorithm,
+  RequestCompressionLevelPreset,
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
 } from "../../lib/api";
@@ -852,6 +854,12 @@ export default function UpstreamAccountsPage() {
       parsedRoutingMaintenance.priorityAvailableAccountCap !==
         resolvedRoutingMaintenance.priorityAvailableAccountCap);
   const resolvedRoutingTimeouts = routing?.timeouts ?? DEFAULT_ROUTING_TIMEOUTS;
+  const resolvedRequestCompressionAlgorithm = routing?.requestCompressionAlgorithm ?? "identity";
+  const resolvedRequestCompressionLevelPreset =
+    routing?.requestCompressionLevelPreset ?? "balanced";
+  const routingHasCompressionChange =
+    routingDraft.requestCompressionAlgorithm !== resolvedRequestCompressionAlgorithm ||
+    routingDraft.requestCompressionLevelPreset !== resolvedRequestCompressionLevelPreset;
   const routingHasTimeoutChange =
     routingDraft.responsesFirstByteTimeoutSecs.trim() !==
       String(resolvedRoutingTimeouts.responsesFirstByteTimeoutSecs) ||
@@ -867,7 +875,10 @@ export default function UpstreamAccountsPage() {
   const routingCanSave =
     routingDialogCanEdit &&
     !routingDraftValidationError &&
-    (routingHasMaintenanceChange || routingHasTimeoutChange || routingHasApiKeyChange);
+    (routingHasMaintenanceChange ||
+      routingHasCompressionChange ||
+      routingHasTimeoutChange ||
+      routingHasApiKeyChange);
   const formatDuplicateReasons = (duplicateInfo?: UpstreamAccountDuplicateInfo | null) => {
     const reasons = duplicateInfo?.reasons ?? [];
     return reasons
@@ -1150,6 +1161,8 @@ export default function UpstreamAccountsPage() {
     const payload: {
       apiKey?: string;
       maintenance?: PoolRoutingMaintenanceSettings;
+      requestCompressionAlgorithm?: RequestCompressionAlgorithm;
+      requestCompressionLevelPreset?: RequestCompressionLevelPreset;
       timeouts?: PoolRoutingTimeoutSettings;
     } = {};
     if (routingWritesEnabled && trimmedApiKey) {
@@ -1158,10 +1171,20 @@ export default function UpstreamAccountsPage() {
     if (routingHasMaintenanceChange && parsedRoutingMaintenance) {
       payload.maintenance = parsedRoutingMaintenance;
     }
+    if (routingHasCompressionChange) {
+      payload.requestCompressionAlgorithm = routingDraft.requestCompressionAlgorithm;
+      payload.requestCompressionLevelPreset = routingDraft.requestCompressionLevelPreset;
+    }
     if (routingHasTimeoutChange) {
       payload.timeouts = parsedTimeouts;
     }
-    if (!payload.apiKey && !payload.maintenance && !payload.timeouts) {
+    if (
+      !payload.apiKey &&
+      !payload.maintenance &&
+      !payload.requestCompressionAlgorithm &&
+      !payload.requestCompressionLevelPreset &&
+      !payload.timeouts
+    ) {
       setIsRoutingDialogInspectOnly(false);
       setIsRoutingDialogOpen(false);
       return;
@@ -2260,6 +2283,8 @@ export default function UpstreamAccountsPage() {
         primarySyncIntervalSecs={routingDraft.primarySyncIntervalSecs}
         secondarySyncIntervalSecs={routingDraft.secondarySyncIntervalSecs}
         priorityAvailableAccountCap={routingDraft.priorityAvailableAccountCap}
+        requestCompressionAlgorithm={routingDraft.requestCompressionAlgorithm}
+        requestCompressionLevelPreset={routingDraft.requestCompressionLevelPreset}
         timeoutSectionTitle={t("accountPool.upstreamAccounts.routing.timeout.sectionTitle")}
         timeoutFields={[
           {
@@ -2340,6 +2365,18 @@ export default function UpstreamAccountsPage() {
           setRoutingDraft((current) => ({
             ...current,
             priorityAvailableAccountCap: value,
+          }))
+        }
+        onRequestCompressionAlgorithmChange={(value) =>
+          setRoutingDraft((current) => ({
+            ...current,
+            requestCompressionAlgorithm: value,
+          }))
+        }
+        onRequestCompressionLevelPresetChange={(value) =>
+          setRoutingDraft((current) => ({
+            ...current,
+            requestCompressionLevelPreset: value,
           }))
         }
         onClose={() => {

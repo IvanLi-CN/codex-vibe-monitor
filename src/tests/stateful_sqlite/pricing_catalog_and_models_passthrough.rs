@@ -2556,6 +2556,8 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
     let payload = UpdatePoolRoutingSettingsRequest {
         api_key: None,
         maintenance: None,
+        request_compression_algorithm: None,
+        request_compression_level_preset: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: Some(135),
             compact_first_byte_timeout_secs: Some(325),
@@ -2606,6 +2608,8 @@ async fn pool_routing_settings_timeout_updates_succeed_without_crypto_key() {
     let payload = UpdatePoolRoutingSettingsRequest {
         api_key: None,
         maintenance: None,
+        request_compression_algorithm: None,
+        request_compression_level_preset: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: None,
             compact_first_byte_timeout_secs: None,
@@ -2646,6 +2650,8 @@ async fn pool_routing_settings_timeout_updates_tolerate_invalid_cached_api_key_c
     let payload = UpdatePoolRoutingSettingsRequest {
         api_key: None,
         maintenance: None,
+        request_compression_algorithm: None,
+        request_compression_level_preset: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: None,
             compact_first_byte_timeout_secs: None,
@@ -2690,6 +2696,8 @@ async fn pool_routing_settings_api_key_updates_require_crypto_key() {
     let payload = UpdatePoolRoutingSettingsRequest {
         api_key: Some("pool-secret".to_string()),
         maintenance: None,
+        request_compression_algorithm: None,
+        request_compression_level_preset: None,
         timeouts: None,
     };
     let err = update_pool_routing_settings(State(state), HeaderMap::new(), Json(payload))
@@ -2706,6 +2714,8 @@ async fn pool_routing_settings_reject_timeouts_above_i64_max() {
     let payload = UpdatePoolRoutingSettingsRequest {
         api_key: None,
         maintenance: None,
+        request_compression_algorithm: None,
+        request_compression_level_preset: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: None,
             compact_first_byte_timeout_secs: None,
@@ -2737,6 +2747,8 @@ async fn proxy_request_timeouts_only_apply_pool_overrides_to_pool_routes() {
     let payload = UpdatePoolRoutingSettingsRequest {
         api_key: None,
         maintenance: None,
+        request_compression_algorithm: None,
+        request_compression_level_preset: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: Some(135),
             compact_first_byte_timeout_secs: Some(325),
