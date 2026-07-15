@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.34.1",
+  "base_stable_version": "2.34.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-15T02:39:41Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.34.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "5815f0234094ece6defd49ac1f29874c518ac92e",
+  "pr_number": 614,
+  "pr_title": "fix(web): align upstream account header chips",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.34.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.34.1",
+  "target_sha": "308660b99badae8e4c87c073a702e16950122c1e",
+  "type_label": "type:patch"
+}
