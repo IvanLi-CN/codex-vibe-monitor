@@ -50,3 +50,4 @@
 - 2026-07-13: Dashboard 活动快照新增成功已计费调用的响应模型/思考程度性能聚合，并在总览和账号卡提供桌面浮层与窄屏抽屉入口；后续实时 KPI 合同已迁回 `z6ysw` 的最近完整 1 分钟 bucket，本 spec 只保留完整范围模型性能明细语义。
 - 2026-07-15: 将 Dashboard 模型性能时长合同从含混的单字段 `usageDurationMs` 改为显式的 `wallClockUsageDurationMs`、`cumulativeUsageDurationMs` 与 `parallelism`，并统一覆盖全局、账号、模型与账号+模型四级聚合。
 - 2026-07-15: Attempt owner-facing 合同改为持久化 8 位短 `attemptId`；账号详情、健康与事件、Records 新跳转统一改用 `attemptId`，并新增启动期 live/archive backfill 补齐历史 `attempt_public_id`。
+- 2026-07-16: 修复 terminal failure payload summary 在 pool route / pre-upstream 失败分支丢失 `requestModel` 的合同漂移，确保 `/api/invocations`、SSE records 与账号尝试列表在失败记录上继续拿到真实请求模型。
