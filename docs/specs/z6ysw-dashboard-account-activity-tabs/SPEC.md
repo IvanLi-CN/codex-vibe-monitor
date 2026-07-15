@@ -57,6 +57,7 @@
 - `上游账号` 视图仅支持 `today / yesterday / 1d / 7d`；当共享 range 为 `usage` 时，该 tab 必须 disabled，且若当前停留在账号 tab，必须自动回退到 `对话`。
 - 账号活动接口必须一次返回每个账号的 `upstreamAccountId`、`displayName`、`groupName`、`planType`、`enabled`、`displayStatus`、`enableStatus`、`workStatus`、`healthStatus`、`syncState`、`lastError`、`lastActionReasonMessage`、`requestCount`、`successCount`、`failureCount`、`nonSuccessCount`、`totalTokens`、`successTokens`、`nonSuccessTokens`、`failureTokens`、`cacheHitRate`、`tokensPerMinute`、`spendRate`、`totalCost`、`failureCost`、`firstByteAvgMs`、`avgTotalMs`、`inProgressInvocationCount`、`inProgressPhaseCounts`、`retryInvocationCount`、`effectiveRoutingRule` 与 `recentInvocations[4]`。
 - Future-only status note: 仅对未来新写入的 `pure_downstream_closed`，账号活动聚合必须把 `warning_success` 计入 `successCount/successTokens/totalCost/totalTokens/latency`，并排除出 `failureCount/nonSuccessCount/failureTokens/failureCost`；`recentInvocations` 仍要明确显示独立状态“警告成功”，普通 `success` 筛选不混入该状态。
+- `warning_success` 的紧凑状态位在 Dashboard 对话卡片与上游账号 recent 行中可以继续只显示 warning 图标，但 hover / focus / long-press 后必须通过共享 UI tooltip 披露完整状态文案与诊断；不得退回浏览器原生 `title` 黑框提示。
 - `recentInvocations` 必须限制在当前所选范围内，按 `occurredAt DESC` 排序，并使用后端 bounded query 返回；尚未完成 SQLite batch flush 的 runtime running / pending / terminal 记录必须参与 recent 候选，与 SQLite 行按 `(invokeId, occurredAt)` 去重后再截断到 `recentLimit`，不得等待后续调用事件才能显示。
 - `recentInvocations[]` 必须额外返回真实 `promptCacheKey?: string | null`，供账号卡 recent 行生成稳定的对话短 ID 与详情抽屉 selection。
 - 账号卡不是折叠卡，也不是 `2 x 2` 小格子；它是单张放大卡片，桌面宽屏 `>=1660px` 时每行 2 张，其余断点为 1 列。
@@ -445,6 +446,34 @@ PR: include
   image:
   PR: include
   ![Dashboard 上游账号 warning-success recent 证据](./assets/dashboard-upstream-account-warning-success.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--warning-success-conversation-card`
+  scenario: `warning_success current invocation tooltip`
+  evidence_note: 验证 Dashboard 对话卡片的紧凑 warning-success 状态位 hover 后会打开共享 UI tooltip，并完整披露“警告成功 + downstream_closed 诊断”；不再出现浏览器原生黑框 `title` 提示。
+  requested_viewport: `1200x500`
+  viewport_strategy: `browser-viewport`
+  target_program: `mock-only`
+  capture_scope: `page-clip`
+  sensitive_exclusion: `fixture-only Dashboard data`
+  submission_gate: `approved`
+  image:
+  PR: include
+  ![Dashboard 对话卡片 warning-success tooltip 证据](./assets/dashboard-warning-success-tooltip-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-warning-success`
+  scenario: `warning_success recent invocation tooltip`
+  evidence_note: 验证 Dashboard 上游账号 recent 行的紧凑 warning-success 状态位 hover 后同样改为共享 UI tooltip，保留成功侧排布但完整显示 downstream 诊断，不再依赖浏览器原生 `title`。
+  requested_viewport: `1660x1100`
+  viewport_strategy: `browser-viewport`
+  target_program: `mock-only`
+  capture_scope: `element`
+  sensitive_exclusion: `fixture-only Dashboard data`
+  submission_gate: `approved`
+  image:
+  PR: include
+  ![Dashboard 上游账号 warning-success tooltip 证据](./assets/dashboard-upstream-account-warning-success-tooltip-storybook.png)
 
 - source_type: ui_demo
   story_id_or_title: `#/dashboard?demoScene=progressive-loading&demoTheme=dark`
