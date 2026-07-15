@@ -2422,8 +2422,8 @@ function DrawerPreviewStory({
           rateWindow: {
             start: activity.rangeStart,
             end: activity.rangeEnd,
-            windowMinutes: 5,
-            mode: "story",
+            windowMinutes: 1,
+            mode: "last_complete_1m_sma",
           },
           summary: {
             stats: {

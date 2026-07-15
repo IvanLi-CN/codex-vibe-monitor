@@ -238,7 +238,7 @@ function render(ui: React.ReactNode) {
 }
 
 describe("TodayStatsOverview", () => {
-  it("uses the successful billed model-performance total for TPM and first-byte card values", () => {
+  it("prefers explicit current snapshot metrics over model-performance totals for TPM and first-byte card values", () => {
     render(
       <TodayStatsOverview
         stats={{
@@ -251,8 +251,10 @@ describe("TodayStatsOverview", () => {
         rate={{
           tokensPerMinute: 9999,
           spendRate: 0.1,
-          windowMinutes: 60,
+          windowMinutes: 1,
           available: true,
+          currentFirstResponseByteTotalAvgMs: 2750,
+          currentAvgTotalMs: 4900,
         }}
         modelPerformance={{
           available: true,
@@ -275,11 +277,15 @@ describe("TodayStatsOverview", () => {
     );
 
     expect(host?.querySelector('[data-testid="today-stats-value-tpm"]')?.textContent).toContain(
-      "1,200",
+      "9,999",
     );
     expect(
       host?.querySelector('[data-testid="today-stats-value-response-time"]')?.textContent,
-    ).toMatch(/1\.5|1,5/);
+    ).toMatch(/2\.75|2,75/);
+    expect(
+      host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-total"]')
+        ?.textContent,
+    ).toMatch(/4\.9|4,9/);
 
     const tpmTrigger = host?.querySelector('[aria-label="TPM dashboard.modelPerformance.title"]');
     act(() => {
@@ -860,8 +866,10 @@ describe("TodayStatsOverview", () => {
         rate={{
           tokensPerMinute: 1200,
           spendRate: 0.6,
-          windowMinutes: 5,
+          windowMinutes: 1,
           available: true,
+          currentFirstResponseByteTotalAvgMs: 820,
+          currentAvgTotalMs: 1390,
         }}
         loading={false}
         error={null}
@@ -907,8 +915,9 @@ describe("TodayStatsOverview", () => {
         rate={{
           tokensPerMinute: 0,
           spendRate: 0,
-          windowMinutes: 5,
+          windowMinutes: 1,
           available: true,
+          currentAvgTotalMs: 400,
         }}
         timeseries={{
           rangeStart: "2026-04-10T00:00:00.000Z",
@@ -981,8 +990,9 @@ describe("TodayStatsOverview", () => {
         rate={{
           tokensPerMinute: 0,
           spendRate: 0,
-          windowMinutes: 5,
+          windowMinutes: 1,
           available: true,
+          currentAvgTotalMs: 340,
         }}
         timeseries={{
           rangeStart: "2026-04-10T00:00:00.000Z",
@@ -1220,9 +1230,9 @@ describe("TodayStatsOverview", () => {
     );
 
     expect(host?.querySelector('[data-testid="today-stats-value-tpm"]')?.textContent).toBe("—");
-    expect(
-      host?.querySelector('[data-testid="today-stats-value-spend-rate"]')?.textContent,
-    ).toContain("0.10");
+    expect(host?.querySelector('[data-testid="today-stats-value-spend-rate"]')?.textContent).toBe(
+      "—",
+    );
   });
 
   it("switches to compact notation when the full metric value would overflow", () => {
@@ -1557,8 +1567,10 @@ describe("TodayStatsOverview", () => {
         rate={{
           tokensPerMinute: 416,
           spendRate: 0.1,
-          windowMinutes: 5,
+          windowMinutes: 1,
           available: true,
+          currentFirstResponseByteTotalAvgMs: 760,
+          currentAvgTotalMs: 1180,
         }}
         timeseries={timeseries}
         comparisonTimeseries={comparisonTimeseries}
@@ -1629,11 +1641,11 @@ describe("TodayStatsOverview", () => {
 
     expect(
       host?.querySelector('[data-testid="today-stats-value-response-time"]')?.textContent,
-    ).toBe("500 ms");
+    ).toBe("—");
     expect(
       host?.querySelector('[data-testid="today-stats-secondary-response-time-day-average"]')
         ?.textContent,
-    ).toContain("500 ms");
+    ).toContain("—");
     expect(
       host?.querySelector('[data-testid="today-stats-secondary-response-time-delta"]')?.textContent,
     ).toContain("—");
@@ -1723,7 +1735,7 @@ describe("TodayStatsOverview", () => {
 
     expect(
       host?.querySelector('[data-testid="today-stats-value-response-time"]')?.textContent,
-    ).toBe("500 ms");
+    ).toBe("—");
 
     act(() => {
       root?.render(renderOverview(new Date("2026-04-10T00:10:00.000Z")));
@@ -1731,10 +1743,10 @@ describe("TodayStatsOverview", () => {
 
     expect(
       host?.querySelector('[data-testid="today-stats-value-response-time"]')?.textContent,
-    ).toBe("500 ms");
+    ).toBe("—");
     expect(
       host?.querySelector('[data-testid="today-stats-secondary-response-time-day-average"]')
         ?.textContent,
-    ).toContain("500 ms");
+    ).toContain("—");
   });
 });

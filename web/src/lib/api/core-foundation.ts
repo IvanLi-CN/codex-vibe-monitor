@@ -710,6 +710,8 @@ export interface DashboardActivitySummary {
   stats: StatsResponse;
   tokensPerMinute?: number | null;
   spendRate?: number | null;
+  currentFirstResponseByteTotalAvgMs?: number | null;
+  currentAvgTotalMs?: number | null;
   modelPerformance?: ModelPerformance | null;
 }
 
@@ -2881,6 +2883,10 @@ function normalizeDashboardActivityResponse(raw: unknown): DashboardActivityResp
       stats: normalizeStatsResponse(summaryPayload.stats),
       tokensPerMinute: normalizeFiniteNumber(summaryPayload.tokensPerMinute),
       spendRate: normalizeFiniteNumber(summaryPayload.spendRate),
+      currentFirstResponseByteTotalAvgMs: normalizeFiniteNumber(
+        summaryPayload.currentFirstResponseByteTotalAvgMs,
+      ),
+      currentAvgTotalMs: normalizeFiniteNumber(summaryPayload.currentAvgTotalMs),
       modelPerformance: normalizeModelPerformance(summaryPayload.modelPerformance),
     },
     accounts: Array.isArray(payload.accounts)

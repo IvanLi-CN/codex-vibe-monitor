@@ -469,10 +469,10 @@ describe("DashboardActivityOverview", () => {
           rangeEnd: "2026-07-05T12:00:00Z",
           snapshotId: 1783233600000,
           rateWindow: {
-            start: "2026-07-05T11:55:00Z",
+            start: "2026-07-05T11:59:00Z",
             end: "2026-07-05T12:00:00Z",
-            windowMinutes: 5,
-            mode: "account_active_tail_sum",
+            windowMinutes: 1,
+            mode: "last_complete_1m_sma",
           },
           summary: {
             stats: {
@@ -493,6 +493,8 @@ describe("DashboardActivityOverview", () => {
             },
             tokensPerMinute: 1234,
             spendRate: 0.45,
+            currentFirstResponseByteTotalAvgMs: 1500,
+            currentAvgTotalMs: 2400,
           },
         }}
       />,
@@ -538,10 +540,10 @@ describe("DashboardActivityOverview", () => {
           rangeEnd: "2026-07-05T00:00:00Z",
           snapshotId: 1783147200000,
           rateWindow: {
-            start: "2026-07-04T23:55:00Z",
+            start: "2026-07-04T23:59:00Z",
             end: "2026-07-05T00:00:00Z",
-            windowMinutes: 5,
-            mode: "account_active_tail_sum",
+            windowMinutes: 1,
+            mode: "last_complete_1m_sma",
           },
           summary: {
             stats: {
@@ -588,7 +590,7 @@ describe("DashboardActivityOverview", () => {
     expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')).toBeNull();
     expect(host?.querySelector('[data-testid="dashboard-activity-range-usage"]')).toBeNull();
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
-      "total:12;cacheWrite:null;inProgress:11;retry:3;wait:1700;nonSuccessCost:0.12;nonSuccessTokens:256;surface:false;header:false;badge:false;tpm:833.3333333333334;spendRate:0.08333333333333333;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true",
+      "total:12;cacheWrite:null;inProgress:11;retry:3;wait:1700;nonSuccessCost:0.12;nonSuccessTokens:256;surface:false;header:false;badge:false;tpm:null;spendRate:null;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true",
     );
     expect(
       host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent,

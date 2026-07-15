@@ -14,6 +14,8 @@ export interface DashboardTodayRateSnapshot {
   spendRate: number;
   windowMinutes: number;
   available: boolean;
+  currentFirstResponseByteTotalAvgMs?: number | null;
+  currentAvgTotalMs?: number | null;
 }
 
 export function buildDashboardTodayRateSnapshot(

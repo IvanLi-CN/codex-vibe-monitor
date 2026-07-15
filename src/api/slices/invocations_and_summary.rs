@@ -1,5 +1,6 @@
 use super::*;
 use anyhow::anyhow;
+use chrono::Timelike;
 use futures_util::TryStreamExt;
 use serde::Serialize;
 use serde_json::json;
@@ -3968,6 +3969,83 @@ pub(crate) struct UpstreamAccountRateUsageEvent {
     total_cost: f64,
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct DashboardActivityCurrentMinuteAccumulator {
+    qualified_tokens: i64,
+    total_cost: f64,
+    first_response_byte_total_sample_count: i64,
+    first_response_byte_total_sum_ms: f64,
+    total_latency_sample_count: i64,
+    total_latency_sum_ms: f64,
+}
+
+impl DashboardActivityCurrentMinuteAccumulator {
+    fn add_row(&mut self, row: &UpstreamAccountInvocationPreviewRow) {
+        self.total_cost += row.cost.unwrap_or_default().max(0.0);
+
+        let classification = resolve_failure_classification(
+            Some(row.status.as_str()),
+            row.error_message.as_deref(),
+            row.failure_kind.as_deref(),
+            row.failure_class.as_deref(),
+            row.is_actionable,
+        );
+        let is_success =
+            prompt_cache_and_timeseries_shared::prompt_invocation_status_is_success_like(
+                Some(row.status.as_str()),
+                row.error_message.as_deref(),
+            ) && classification.failure_class == FailureClass::None;
+        let is_qualified_tpm = is_success && row.cost.is_some();
+
+        if is_qualified_tpm {
+            self.qualified_tokens += row.total_tokens.max(0);
+        }
+        if !is_success {
+            return;
+        }
+
+        if let Some(first_response_byte_total_ms) =
+            crate::stats::resolve_first_response_byte_total_ms(
+                row.t_req_read_ms,
+                row.t_req_parse_ms,
+                row.t_upstream_connect_ms,
+                row.t_upstream_ttfb_ms,
+            )
+        {
+            self.first_response_byte_total_sample_count += 1;
+            self.first_response_byte_total_sum_ms += first_response_byte_total_ms;
+        }
+        if let Some(total_ms) = row
+            .t_total_ms
+            .filter(|value| value.is_finite() && *value >= 0.0)
+        {
+            self.total_latency_sample_count += 1;
+            self.total_latency_sum_ms += total_ms;
+        }
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.qualified_tokens += other.qualified_tokens;
+        self.total_cost += other.total_cost;
+        self.first_response_byte_total_sample_count += other.first_response_byte_total_sample_count;
+        self.first_response_byte_total_sum_ms += other.first_response_byte_total_sum_ms;
+        self.total_latency_sample_count += other.total_latency_sample_count;
+        self.total_latency_sum_ms += other.total_latency_sum_ms;
+    }
+
+    fn first_response_byte_total_avg_ms(&self) -> Option<f64> {
+        (self.first_response_byte_total_sample_count > 0).then_some(
+            self.first_response_byte_total_sum_ms
+                / self.first_response_byte_total_sample_count as f64,
+        )
+    }
+
+    fn avg_total_ms(&self) -> Option<f64> {
+        (self.total_latency_sample_count > 0)
+            .then_some(self.total_latency_sum_ms / self.total_latency_sample_count as f64)
+    }
+}
+
 pub(crate) fn normalize_trimmed_optional_string_local(raw: Option<String>) -> Option<String> {
     raw.and_then(|value| {
         let trimmed = value.trim();
@@ -5882,14 +5960,115 @@ pub(crate) fn sum_optional_rates(
     saw_value.then_some(total)
 }
 
-fn compute_dashboard_range_rate(value: f64, range: ExactUtcRange) -> Option<f64> {
-    let range_minutes = (range.end - range.start).num_milliseconds() as f64 / 60_000.0;
-    (range_minutes > 0.0).then_some(value.max(0.0) / range_minutes)
+async fn load_dashboard_activity_current_minute_rows(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, ApiError> {
+    let current_window = dashboard_activity_last_complete_minute_window(range);
+    let mut rows = query_live_upstream_account_activity_preview_rows_with_limit(
+        &state.pool,
+        source_scope,
+        current_window,
+        None,
+        None,
+        false,
+    )
+    .await?;
+    let mut rows_by_key = rows
+        .drain(..)
+        .map(|row| ((row.invoke_id.clone(), row.occurred_at.clone()), row))
+        .collect::<HashMap<_, _>>();
+    let mut unresolved_runtime_account_keys = HashSet::new();
+
+    for record in state.proxy_runtime_invocations.snapshot() {
+        let Some(mut row) =
+            runtime_upstream_account_activity_preview_row_with_terminal(record, source_scope, true)
+        else {
+            continue;
+        };
+        let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
+            continue;
+        };
+        if occurred_at < current_window.start || occurred_at >= current_window.end {
+            continue;
+        }
+        let key = (row.invoke_id.clone(), row.occurred_at.clone());
+        if let Some(existing) = rows_by_key.get(&key) {
+            if row.upstream_account_id.is_none() {
+                row.upstream_account_id = existing.upstream_account_id;
+            }
+            if row.upstream_account_name.is_none() {
+                row.upstream_account_name = existing.upstream_account_name.clone();
+            }
+            if row.upstream_account_plan_type.is_none() {
+                row.upstream_account_plan_type = existing.upstream_account_plan_type.clone();
+            }
+        }
+        if row.upstream_account_id.is_none() {
+            unresolved_runtime_account_keys.insert(key.clone());
+        }
+        rows_by_key.insert(key, row);
+    }
+
+    if !unresolved_runtime_account_keys.is_empty() {
+        for fallback_row in query_runtime_recent_account_fallback_rows(
+            &state.pool,
+            source_scope,
+            &unresolved_runtime_account_keys,
+        )
+        .await?
+        {
+            let key = (
+                fallback_row.invoke_id.clone(),
+                fallback_row.occurred_at.clone(),
+            );
+            if let Some(row) = rows_by_key.get_mut(&key) {
+                if row.upstream_account_id.is_none() {
+                    row.upstream_account_id = fallback_row.upstream_account_id;
+                }
+                if row.upstream_account_name.is_none() {
+                    row.upstream_account_name = fallback_row.upstream_account_name;
+                }
+                if row.upstream_account_plan_type.is_none() {
+                    row.upstream_account_plan_type = fallback_row.upstream_account_plan_type;
+                }
+            }
+        }
+    }
+
+    Ok(rows_by_key.into_values().collect())
+}
+
+async fn load_dashboard_activity_current_minute_accumulators_by_account(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+) -> Result<HashMap<Option<i64>, DashboardActivityCurrentMinuteAccumulator>, ApiError> {
+    let mut accumulators = HashMap::<Option<i64>, DashboardActivityCurrentMinuteAccumulator>::new();
+    for row in load_dashboard_activity_current_minute_rows(state, source_scope, range).await? {
+        accumulators
+            .entry(row.upstream_account_id)
+            .or_default()
+            .add_row(&row);
+    }
+    Ok(accumulators)
+}
+
+fn sum_dashboard_activity_current_minute_accumulators(
+    accumulators: impl IntoIterator<Item = DashboardActivityCurrentMinuteAccumulator>,
+) -> DashboardActivityCurrentMinuteAccumulator {
+    let mut total = DashboardActivityCurrentMinuteAccumulator::default();
+    for accumulator in accumulators {
+        total.merge(accumulator);
+    }
+    total
 }
 
 pub(crate) fn build_dashboard_activity_summary(
     accounts: &[DashboardActivityAccountResponse],
     include_live_counts: bool,
+    current_minute_summary: DashboardActivityCurrentMinuteAccumulator,
     model_performance: ModelPerformanceResponse,
 ) -> DashboardActivitySummaryResponse {
     let ttfb_sum = accounts
@@ -5955,10 +6134,17 @@ pub(crate) fn build_dashboard_activity_summary(
 
     DashboardActivitySummaryResponse {
         stats,
-        tokens_per_minute: model_performance
-            .available
-            .then_some(model_performance.total.tokens_per_minute),
-        spend_rate: sum_optional_rates(accounts, |account| account.spend_rate),
+        tokens_per_minute: Some(
+            sum_optional_rates(accounts, |account| account.tokens_per_minute)
+                .unwrap_or(current_minute_summary.qualified_tokens.max(0) as f64),
+        ),
+        spend_rate: Some(
+            sum_optional_rates(accounts, |account| account.spend_rate)
+                .unwrap_or(current_minute_summary.total_cost.max(0.0)),
+        ),
+        current_first_response_byte_total_avg_ms: current_minute_summary
+            .first_response_byte_total_avg_ms(),
+        current_avg_total_ms: current_minute_summary.avg_total_ms(),
         model_performance,
     }
 }
@@ -6111,6 +6297,21 @@ pub(crate) fn sum_dashboard_activity_rate_events(
     )
 }
 
+pub(crate) fn dashboard_activity_last_complete_minute_window(
+    range: ExactUtcRange,
+) -> ExactUtcRange {
+    let closed_window_end = range
+        .end
+        .with_second(0)
+        .and_then(|value| value.with_nanosecond(0))
+        .expect("valid exact minute");
+    let closed_window_start = (closed_window_end - ChronoDuration::minutes(1)).max(range.start);
+    ExactUtcRange {
+        start: closed_window_start,
+        end: closed_window_end.max(closed_window_start),
+    }
+}
+
 pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
     state: &AppState,
     range_name: &str,
@@ -6133,7 +6334,11 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
     )
     .await?;
     apply_summary_live_augmentation(&mut stats, augmentation);
-    let spend_rate = compute_dashboard_range_rate(stats.total_cost, range);
+    let current_minute_by_account =
+        load_dashboard_activity_current_minute_accumulators_by_account(state, source_scope, range)
+            .await?;
+    let current_minute_summary =
+        sum_dashboard_activity_current_minute_accumulators(current_minute_by_account.into_values());
 
     Ok(DashboardActivitySnapshot {
         range: range_name.to_string(),
@@ -6142,10 +6347,11 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
         accounts: Vec::new(),
         summary: DashboardActivitySummaryResponse {
             stats,
-            // Archived rollups cannot distinguish every successful, billed invocation
-            // required by the dashboard TPM contract.
-            tokens_per_minute: None,
-            spend_rate,
+            tokens_per_minute: Some(current_minute_summary.qualified_tokens.max(0) as f64),
+            spend_rate: Some(current_minute_summary.total_cost.max(0.0)),
+            current_first_response_byte_total_avg_ms: current_minute_summary
+                .first_response_byte_total_avg_ms(),
+            current_avg_total_ms: current_minute_summary.avg_total_ms(),
             model_performance: ModelPerformanceAccumulator::unavailable(range),
         },
     })
@@ -6180,6 +6386,12 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
     let mut account_activity = HashMap::<Option<i64>, UpstreamAccountActivityAccumulator>::new();
     let mut model_performance = ModelPerformanceAccumulator::default();
+    let current_minute_by_account =
+        load_dashboard_activity_current_minute_accumulators_by_account(state, source_scope, range)
+            .await?;
+    let current_minute_summary = sum_dashboard_activity_current_minute_accumulators(
+        current_minute_by_account.values().copied(),
+    );
     let model_performance_usage_duration_overrides = if model_performance_available {
         Some(
             query_live_model_performance_total_usage_duration_overrides(
@@ -6563,10 +6775,12 @@ pub(crate) async fn load_dashboard_activity_snapshot(
             let model_performance = aggregate
                 .model_performance
                 .into_response(range, model_performance_available);
-            let tokens_per_minute = model_performance
-                .available
-                .then_some(model_performance.total.tokens_per_minute);
-            let spend_rate = compute_dashboard_range_rate(aggregate.total_cost, range);
+            let current_minute = current_minute_by_account
+                .get(&upstream_account_id)
+                .copied()
+                .unwrap_or_default();
+            let tokens_per_minute = Some(current_minute.qualified_tokens.max(0) as f64);
+            let spend_rate = Some(current_minute.total_cost.max(0.0));
             let (in_progress_invocation_count, in_progress_phase_counts, retry_invocation_count) =
                 if range_name == "yesterday" {
                     (None, None, None)
@@ -6705,6 +6919,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     let summary = build_dashboard_activity_summary(
         &accounts,
         range_name != "yesterday",
+        current_minute_summary,
         model_performance.into_response(range, model_performance_available),
     );
     Ok(DashboardActivitySnapshot {
@@ -6822,6 +7037,10 @@ pub(crate) async fn fetch_dashboard_activity(
     }
     let range_start = format_utc_iso_precise(snapshot.range_start);
     let range_end = format_utc_iso_precise(snapshot.range_end);
+    let current_rate_window = dashboard_activity_last_complete_minute_window(ExactUtcRange {
+        start: snapshot.range_start,
+        end: snapshot.range_end,
+    });
     let account_count = snapshot.accounts.len();
     let accounts = params.include_accounts.then_some(snapshot.accounts);
     let response = DashboardActivityResponse {
@@ -6831,10 +7050,10 @@ pub(crate) async fn fetch_dashboard_activity(
         snapshot_id: snapshot.range_end.timestamp_millis(),
         live_revision,
         rate_window: DashboardActivityRateWindowResponse {
-            start: range_start.clone(),
-            end: range_end,
-            window_minutes: ((snapshot.range_end - snapshot.range_start).num_seconds() / 60).max(0),
-            mode: "range_average".to_string(),
+            start: format_utc_iso_precise(current_rate_window.start),
+            end: format_utc_iso_precise(current_rate_window.end),
+            window_minutes: 1,
+            mode: "last_complete_1m_sma".to_string(),
         },
         summary: snapshot.summary,
         accounts,
