@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.36.2",
+  "base_stable_version": "2.36.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-15T14:20:04Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.36.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "ba163839b3a175326b5b0c3a06eaf736c23308c2",
+  "pr_number": 626,
+  "pr_title": "fix(web): use shared tooltip for dashboard warning status",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.36.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.36.2",
+  "target_sha": "4d46d5519f8d2b3e3a7016d411b90fff444c1a15",
+  "type_label": "type:patch"
+}
