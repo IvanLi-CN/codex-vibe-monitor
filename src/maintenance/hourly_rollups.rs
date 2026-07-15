@@ -2224,6 +2224,7 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema(
     )
     .await?;
     for (column, ty) in [
+        ("attempt_public_id", "TEXT"),
         ("upstream_route_key", "TEXT"),
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),
@@ -2247,6 +2248,16 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema(
                 })?;
         }
     }
+    sqlx::query(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS archive_db.idx_pool_upstream_request_attempts_public_id
+        ON pool_upstream_request_attempts (attempt_public_id)
+        WHERE attempt_public_id IS NOT NULL
+        "#,
+    )
+    .execute(&mut *conn)
+    .await
+    .context("failed to ensure archive_db.idx_pool_upstream_request_attempts_public_id")?;
     Ok(())
 }
 
@@ -2257,6 +2268,7 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_in_plac
         load_sqlite_table_columns_from_connection(conn, None, "pool_upstream_request_attempts")
             .await?;
     for (column, ty) in [
+        ("attempt_public_id", "TEXT"),
         ("upstream_route_key", "TEXT"),
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),
@@ -2279,6 +2291,16 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_in_plac
                 })?;
         }
     }
+    sqlx::query(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_pool_upstream_request_attempts_public_id
+        ON pool_upstream_request_attempts (attempt_public_id)
+        WHERE attempt_public_id IS NOT NULL
+        "#,
+    )
+    .execute(&mut *conn)
+    .await
+    .context("failed to ensure idx_pool_upstream_request_attempts_public_id")?;
     Ok(())
 }
 

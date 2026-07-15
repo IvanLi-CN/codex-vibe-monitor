@@ -117,6 +117,7 @@ interface InvocationExpandedDetailsProps {
   detailNotice: string | null;
   size: DetailPanelSize;
   poolAttemptsState: InvocationPoolAttemptsState;
+  focusedAttemptId?: string | null;
   abnormalResponseBody?: ApiInvocationAbnormalResponseBodyPreview | null;
   abnormalResponseBodyLoading?: boolean;
   abnormalResponseBodyError?: string | null;
@@ -1487,6 +1488,7 @@ function renderPoolAttemptsContent(
   record: ApiInvocation,
   poolAttemptsState: InvocationPoolAttemptsState,
   proxyBindingNodesByKey: Map<string, ForwardProxyBindingNode>,
+  focusedAttemptId: string | null,
   t: Translator,
 ) {
   const invokeId = record.invokeId;
@@ -1575,12 +1577,20 @@ function renderPoolAttemptsContent(
                     attempt,
                     proxyBindingNodesByKey,
                   );
+                  const isFocused =
+                    focusedAttemptId != null && attempt.attemptId === focusedAttemptId;
 
                   return (
                     <div
-                      key={`${attempt.id}-${attempt.attemptIndex}`}
-                      className="rounded-lg border border-base-300/70 bg-base-100/70 p-3"
+                      key={`${attempt.attemptId}-${attempt.attemptIndex}`}
+                      className={cn(
+                        "rounded-lg border bg-base-100/70 p-3",
+                        isFocused
+                          ? "border-primary/45 bg-primary/8 ring-1 ring-inset ring-primary/35"
+                          : "border-base-300/70",
+                      )}
                       data-testid="pool-attempt-item"
+                      data-attempt-id={attempt.attemptId}
                     >
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge variant={statusMeta.variant}>{t(statusMeta.key)}</Badge>
@@ -1592,6 +1602,7 @@ function renderPoolAttemptsContent(
                         <span className="font-mono text-xs text-base-content/70">
                           #{attempt.attemptIndex}
                         </span>
+                        <span className="font-mono text-xs text-info">{attempt.attemptId}</span>
                         <span className="text-sm font-medium">{accountLabel}</span>
                       </div>
                       <div className="mt-2 grid gap-2 text-sm md:grid-cols-2 xl:grid-cols-3">
@@ -1731,9 +1742,10 @@ function renderPoolAttemptsContent(
 
               return (
                 <div
-                  key={`terminal-${attempt.id}-${attempt.attemptIndex}`}
+                  key={`terminal-${attempt.attemptId}-${attempt.attemptIndex}`}
                   className="overflow-hidden rounded-xl border border-warning/40 bg-warning/10 shadow-sm"
                   data-testid="pool-attempt-terminal-record"
+                  data-attempt-id={attempt.attemptId}
                 >
                   <div className="flex flex-col gap-3 border-b border-warning/25 bg-warning/12 px-3 py-3 md:flex-row md:items-start md:justify-between">
                     <div className="flex min-w-0 items-start gap-3">
@@ -2017,6 +2029,7 @@ export function InvocationExpandedDetails({
   detailNotice,
   size,
   poolAttemptsState,
+  focusedAttemptId = null,
   abnormalResponseBody,
   abnormalResponseBodyLoading = false,
   abnormalResponseBodyError,
@@ -2235,7 +2248,13 @@ export function InvocationExpandedDetails({
         </DetailSection>
       ) : null}
 
-      {renderPoolAttemptsContent(record, poolAttemptsState, poolAttemptProxyBindingNodesByKey, t)}
+      {renderPoolAttemptsContent(
+        record,
+        poolAttemptsState,
+        poolAttemptProxyBindingNodesByKey,
+        focusedAttemptId,
+        t,
+      )}
     </div>
   );
 }

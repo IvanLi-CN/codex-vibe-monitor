@@ -52,7 +52,7 @@ const INVOCATION_ANCHOR_CACHE_LIMIT: usize = 32;
 #[derive(Clone)]
 struct InvocationAnchorSnapshot {
     snapshot_id: i64,
-    upstream_account_id: i64,
+    upstream_account_id: Option<i64>,
     runtime_records: Vec<ApiInvocation>,
     expires_at: Instant,
 }
@@ -63,7 +63,7 @@ static INVOCATION_ANCHOR_SNAPSHOTS: once_cell::sync::Lazy<
 
 fn store_invocation_anchor_snapshot(
     snapshot_id: i64,
-    upstream_account_id: i64,
+    upstream_account_id: Option<i64>,
     runtime_records: Vec<ApiInvocation>,
 ) -> String {
     let anchor_id = nanoid::nanoid!(16);
@@ -107,7 +107,7 @@ fn load_invocation_anchor_runtime_records(
         .get(&anchor_id)
         .ok_or_else(|| ApiError::bad_request(anyhow!("invocation anchor expired or not found")))?;
     if params.snapshot_id != Some(snapshot.snapshot_id)
-        || params.upstream_account_id != Some(snapshot.upstream_account_id)
+        || params.upstream_account_id != snapshot.upstream_account_id
     {
         return Err(ApiError::bad_request(anyhow!(
             "invocation anchor does not match snapshot or account"
@@ -2191,6 +2191,8 @@ async fn list_invocations_with_runtime_overlay(
 pub(crate) struct LocateInvocationResponse {
     pub(crate) anchor_id: String,
     pub(crate) snapshot_id: i64,
+    pub(crate) request_id: String,
+    pub(crate) attempt_id: Option<String>,
     pub(crate) total: i64,
     pub(crate) page: i64,
     pub(crate) page_size: i64,
@@ -2205,19 +2207,32 @@ struct InvocationLocateRow {
     occurred_at: String,
 }
 
+#[derive(Debug, FromRow)]
+struct InvocationLocateAttemptRow {
+    invoke_id: String,
+    upstream_account_id: Option<i64>,
+}
+
 pub(crate) async fn locate_invocation_page(
     state: Arc<AppState>,
     params: &LocateInvocationQuery,
 ) -> Result<Option<LocateInvocationResponse>, ApiError> {
-    let request_id = params.request_id.trim();
-    if request_id.is_empty() {
-        return Err(ApiError::bad_request(anyhow!("requestId is required")));
-    }
-    if params.upstream_account_id <= 0 {
+    let request_id = normalize_query_text(params.request_id.as_deref());
+    let attempt_id = normalize_query_text(params.attempt_id.as_deref());
+    if request_id.is_none() && attempt_id.is_none() {
         return Err(ApiError::bad_request(anyhow!(
-            "upstreamAccountId must be positive"
+            "requestId or attemptId is required"
         )));
     }
+    let upstream_account_id = match params.upstream_account_id {
+        Some(value) if value > 0 => Some(value),
+        Some(_) => {
+            return Err(ApiError::bad_request(anyhow!(
+                "upstreamAccountId must be positive"
+            )));
+        }
+        None => None,
+    };
 
     let page_size = params
         .page_size
@@ -2225,13 +2240,40 @@ pub(crate) async fn locate_invocation_page(
         .clamp(1, state.config.list_limit_max as i64);
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
+    let (request_id, resolved_attempt_id, upstream_account_id) =
+        if let Some(attempt_public_id) = attempt_id.as_deref() {
+            let target = sqlx::query_as::<_, InvocationLocateAttemptRow>(
+                r#"
+                SELECT invoke_id, upstream_account_id
+                FROM pool_upstream_request_attempts
+                WHERE attempt_public_id = ?1
+                LIMIT 1
+                "#,
+            )
+            .bind(attempt_public_id)
+            .fetch_optional(&state.pool)
+            .await?;
+            let Some(target) = target else {
+                return Ok(None);
+            };
+            if upstream_account_id.is_some() && upstream_account_id != target.upstream_account_id {
+                return Ok(None);
+            }
+            (
+                target.invoke_id,
+                Some(attempt_public_id.to_string()),
+                upstream_account_id.or(target.upstream_account_id),
+            )
+        } else {
+            (request_id.unwrap_or_default(), None, upstream_account_id)
+        };
     let base_filters = InvocationRecordsFilters {
-        upstream_account_id: Some(params.upstream_account_id),
+        upstream_account_id,
         ..Default::default()
     };
     let runtime_records = runtime_overlay_snapshot(state.as_ref());
     let runtime_target = runtime_records.iter().find(|record| {
-        runtime_text_equals(Some(record.invoke_id.as_str()), request_id)
+        runtime_text_equals(Some(record.invoke_id.as_str()), request_id.as_str())
             && runtime_record_matches_filters(record, &base_filters, source_scope)
     });
 
@@ -2245,7 +2287,7 @@ pub(crate) async fn locate_invocation_page(
     );
     target_query
         .push(" AND invoke_id = ")
-        .push_bind(request_id.to_string())
+        .push_bind(request_id.clone())
         .push(" ORDER BY occurred_at DESC, id DESC LIMIT 1");
     let db_target = target_query
         .build_query_as::<InvocationLocateRow>()
@@ -2375,25 +2417,25 @@ pub(crate) async fn locate_invocation_page(
                 snapshot_id: Some(snapshot_id),
                 sort_by: Some("occurredAt".to_string()),
                 sort_order: Some("desc".to_string()),
-                upstream_account_id: Some(params.upstream_account_id),
+                upstream_account_id,
                 ..Default::default()
             },
             Some(anchor_runtime_records.clone()),
         )
         .await?;
-        if let Some(target_index) = response
-            .records
-            .iter()
-            .position(|record| runtime_text_equals(Some(record.invoke_id.as_str()), request_id))
-        {
+        if let Some(target_index) = response.records.iter().position(|record| {
+            runtime_text_equals(Some(record.invoke_id.as_str()), request_id.as_str())
+        }) {
             let anchor_id = store_invocation_anchor_snapshot(
                 snapshot_id,
-                params.upstream_account_id,
+                upstream_account_id,
                 anchor_runtime_records.clone(),
             );
             return Ok(Some(LocateInvocationResponse {
                 anchor_id,
                 snapshot_id: response.snapshot_id,
+                request_id: request_id.clone(),
+                attempt_id: resolved_attempt_id.clone(),
                 total: response.total,
                 page: response.page,
                 page_size: response.page_size,
@@ -2419,7 +2461,8 @@ pub(crate) async fn locate_invocation(
             Json(json!({
                 "code": "invocation_not_found",
                 "message": "invocation record not found",
-                "requestId": params.request_id.trim(),
+                "requestId": normalize_query_text(params.request_id.as_deref()),
+                "attemptId": normalize_query_text(params.attempt_id.as_deref()),
             })),
         )
             .into_response()),

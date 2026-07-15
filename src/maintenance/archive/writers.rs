@@ -7,6 +7,7 @@ use std::str::FromStr;
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct PoolUpstreamRequestAttemptArchiveRow {
     id: i64,
+    attempt_public_id: Option<String>,
     invoke_id: String,
     occurred_at: String,
     endpoint: String,
@@ -84,6 +85,7 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_direct(
         .filter_map(|row| row.try_get::<String, _>("name").ok())
         .collect::<HashSet<_>>();
     for (column, ty) in [
+        ("attempt_public_id", "TEXT"),
         ("upstream_route_key", "TEXT"),
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),
@@ -104,7 +106,159 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_direct(
                 })?;
         }
     }
+    sqlx::query(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_pool_upstream_request_attempts_public_id
+        ON pool_upstream_request_attempts (attempt_public_id)
+        WHERE attempt_public_id IS NOT NULL
+        "#,
+    )
+    .execute(&mut *conn)
+    .await
+    .context("failed to ensure idx_pool_upstream_request_attempts_public_id")?;
     Ok(())
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PoolAttemptPublicIdArchiveBackfillSummary {
+    pub(crate) scanned_batches: u64,
+    pub(crate) updated_batches: u64,
+    pub(crate) scanned_rows: u64,
+    pub(crate) updated_rows: u64,
+}
+
+#[derive(Debug, FromRow)]
+struct PoolAttemptPublicIdArchiveBatchRow {
+    id: i64,
+    file_path: String,
+}
+
+pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_from_batch_cursor(
+    pool: &Pool<Sqlite>,
+    start_after_batch_id: i64,
+    scan_limit: Option<u64>,
+    max_elapsed: Option<Duration>,
+) -> Result<BackfillBatchOutcome<PoolAttemptPublicIdArchiveBackfillSummary>> {
+    let started_at = Instant::now();
+    let mut summary = PoolAttemptPublicIdArchiveBackfillSummary::default();
+    let mut last_seen_batch_id = start_after_batch_id;
+    let mut hit_budget = false;
+    let mut samples = Vec::new();
+
+    loop {
+        if startup_backfill_budget_reached(
+            started_at,
+            summary.scanned_batches,
+            scan_limit,
+            max_elapsed,
+        ) {
+            hit_budget = true;
+            break;
+        }
+
+        let rows = sqlx::query_as::<_, PoolAttemptPublicIdArchiveBatchRow>(
+            r#"
+            SELECT id, file_path
+            FROM archive_batches
+            WHERE dataset = 'pool_upstream_request_attempts'
+              AND status = ?1
+              AND id > ?2
+            ORDER BY id ASC
+            LIMIT ?3
+            "#,
+        )
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .bind(last_seen_batch_id)
+        .bind(startup_backfill_query_limit(
+            summary.scanned_batches,
+            scan_limit,
+        ))
+        .fetch_all(pool)
+        .await?;
+
+        if rows.is_empty() {
+            break;
+        }
+
+        for batch in rows {
+            last_seen_batch_id = batch.id;
+            summary.scanned_batches += 1;
+            let archive_path = PathBuf::from(&batch.file_path);
+            let suffix = retention_temp_suffix();
+            let work_path = PathBuf::from(format!("{}.{}.sqlite", batch.file_path, suffix));
+            let temp_gzip_path = PathBuf::from(format!("{}.{}.tmp", batch.file_path, suffix));
+            let _ = fs::remove_file(&work_path);
+            let _ = fs::remove_file(&temp_gzip_path);
+
+            inflate_gzip_sqlite_file(&archive_path, &work_path)?;
+
+            let backfill_outcome = async {
+                let mut conn = open_archive_sqlite_connection(&work_path).await?;
+                ensure_pool_upstream_request_attempts_archive_schema_direct(&mut conn).await?;
+                let outcome = backfill_pool_upstream_request_attempt_public_ids_on_connection(
+                    &mut conn, 0, None, None,
+                )
+                .await?;
+                conn.close().await?;
+                Ok::<BackfillBatchOutcome<PoolAttemptPublicIdBackfillSummary>, anyhow::Error>(
+                    outcome,
+                )
+            }
+            .await;
+
+            let outcome = match backfill_outcome {
+                Ok(outcome) => outcome,
+                Err(err) => {
+                    let _ = fs::remove_file(&work_path);
+                    let _ = fs::remove_file(&temp_gzip_path);
+                    return Err(err);
+                }
+            };
+
+            summary.scanned_rows += outcome.summary.scanned;
+            summary.updated_rows += outcome.summary.updated;
+            if outcome.summary.updated > 0 {
+                summary.updated_batches += 1;
+                push_backfill_sample(
+                    &mut samples,
+                    format!("batch_id={} rows={}", batch.id, outcome.summary.updated),
+                );
+            }
+
+            if let Err(err) = finalize_archive_sqlite_file(&work_path).await {
+                let _ = fs::remove_file(&work_path);
+                let _ = fs::remove_file(&temp_gzip_path);
+                return Err(err);
+            }
+            if let Err(err) = deflate_sqlite_file_to_gzip(&work_path, &temp_gzip_path) {
+                let _ = fs::remove_file(&work_path);
+                let _ = fs::remove_file(&temp_gzip_path);
+                return Err(err);
+            }
+            fs::rename(&temp_gzip_path, &archive_path).with_context(|| {
+                format!(
+                    "failed to move pool_upstream_request_attempts archive batch into place: {} -> {}",
+                    temp_gzip_path.display(),
+                    archive_path.display()
+                )
+            })?;
+            let _ = fs::remove_file(&work_path);
+
+            let sha256 = sha256_hex_file(&archive_path)?;
+            sqlx::query("UPDATE archive_batches SET sha256 = ?1 WHERE id = ?2")
+                .bind(&sha256)
+                .bind(batch.id)
+                .execute(pool)
+                .await?;
+        }
+    }
+
+    Ok(BackfillBatchOutcome {
+        summary,
+        next_cursor_id: last_seen_batch_id,
+        hit_budget,
+        samples,
+    })
 }
 
 pub(crate) async fn archive_pool_upstream_request_attempt_rows_into_month_batch(
@@ -155,6 +309,7 @@ pub(crate) async fn archive_pool_upstream_request_attempt_rows_into_month_batch(
         insert.push_values(chunk, |mut builder, row| {
             builder
                 .push_bind(row.id)
+                .push_bind(&row.attempt_public_id)
                 .push_bind(&row.invoke_id)
                 .push_bind(&row.occurred_at)
                 .push_bind(&row.endpoint)

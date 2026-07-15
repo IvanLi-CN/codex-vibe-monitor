@@ -49,12 +49,12 @@ pub(crate) async fn locate_upstream_account_attempt(
         r#"
         SELECT occurred_at
         FROM pool_upstream_request_attempts
-        WHERE id = ?1
+        WHERE attempt_public_id = ?1
           AND upstream_account_id = ?2
           AND occurred_at >= ?3
         "#,
     )
-    .bind(params.attempt_id)
+    .bind(&params.attempt_id)
     .bind(account_id)
     .bind(&cutoff)
     .fetch_optional(&state.pool)
@@ -72,13 +72,23 @@ pub(crate) async fn locate_upstream_account_attempt(
         FROM pool_upstream_request_attempts
         WHERE upstream_account_id = ?1
           AND occurred_at >= ?2
-          AND (occurred_at > ?3 OR (occurred_at = ?3 AND id > ?4))
+          AND (
+                occurred_at > ?3
+                OR (
+                    occurred_at = ?3
+                    AND id > (
+                        SELECT id
+                        FROM pool_upstream_request_attempts
+                        WHERE attempt_public_id = ?4
+                    )
+                )
+              )
         "#,
     )
     .bind(account_id)
     .bind(&cutoff)
     .bind(&target_occurred_at)
-    .bind(params.attempt_id)
+    .bind(&params.attempt_id)
     .fetch_one(&state.pool)
     .await
     .map_err(internal_error_tuple)?
@@ -115,6 +125,7 @@ async fn load_upstream_account_attempt_page(
         r#"
         SELECT
             attempts.id,
+            attempts.attempt_public_id AS attempt_id,
             attempts.invoke_id,
             attempts.occurred_at,
             attempts.endpoint,
@@ -372,11 +383,12 @@ pub(crate) async fn list_upstream_account_action_events_from_params(
             event.http_status,
             event.failure_kind,
             event.invoke_id,
-            event.attempt_id,
+            attempts.attempt_public_id,
             event.sticky_key,
             event.created_at
         FROM pool_upstream_account_events event
         INNER JOIN pool_upstream_accounts account ON account.id = event.account_id
+        LEFT JOIN pool_upstream_request_attempts attempts ON attempts.id = event.attempt_id
         {where_clause}
         ORDER BY event.occurred_at DESC, event.id DESC
         LIMIT ? OFFSET ?

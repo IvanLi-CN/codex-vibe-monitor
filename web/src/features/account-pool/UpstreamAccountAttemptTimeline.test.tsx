@@ -24,7 +24,7 @@ const fetchBindingNodesMock = vi.mocked(fetchForwardProxyBindingNodes);
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 
-function renderTimeline(focusedAttemptId: number | null = null) {
+function renderTimeline(focusedAttemptId: string | null = null) {
   if (!host) {
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -89,7 +89,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
     fetchAttemptsMock.mockResolvedValue({
       items: [
         {
-          id: 1,
+          attemptId: "4V7MYPJG",
           invokeId: "POOLCALL001",
           occurredAt: "2026-07-11T12:00:00.000Z",
           endpoint: "/v1/responses",
@@ -136,7 +136,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
     expect(mobileTable?.querySelector("a")?.className).not.toContain("truncate");
 
     const disclosure = host?.querySelector<HTMLDetailsElement>(
-      '[data-testid="account-attempt-evidence-1"]',
+      '[data-testid="account-attempt-evidence-4V7MYPJG"]',
     );
     expect(disclosure).not.toBeNull();
     expect(disclosure?.closest("td")?.colSpan).toBe(7);
@@ -158,7 +158,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
     fetchAttemptsMock.mockResolvedValue({
       items: [
         {
-          id: 2,
+          attemptId: "QADKN5Z9",
           invokeId: "POOLPENDING",
           occurredAt: "2026-07-11T12:00:00.000Z",
           endpoint: "/v1/responses",
@@ -191,7 +191,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
 
   it("opens the exact attempt diagnostics when event navigation focuses it", async () => {
     const focusedAttempt = {
-      id: 3,
+      attemptId: "YG7P25XG",
       invokeId: "POOLFOCUSED",
       occurredAt: "2026-07-11T12:00:00.000Z",
       endpoint: "/v1/responses",
@@ -222,11 +222,11 @@ describe("UpstreamAccountAttemptTimeline", () => {
 
     renderTimeline();
     await flushAsync();
-    renderTimeline(3);
+    renderTimeline("YG7P25XG");
     await flushAsync();
 
     const disclosures = host?.querySelectorAll<HTMLDetailsElement>(
-      '[data-testid="account-attempt-evidence-3"]',
+      '[data-testid="account-attempt-evidence-YG7P25XG"]',
     );
     expect(disclosures).toHaveLength(2);
     expect(Array.from(disclosures ?? []).every((disclosure) => disclosure.open)).toBe(true);

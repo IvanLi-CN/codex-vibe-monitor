@@ -18,6 +18,7 @@ import UpstreamAccountsPage, {
 } from "../../pages/account-pool/UpstreamAccounts";
 import {
   createStoryForwardProxyBindingNodes,
+  formatStoryAttemptId,
   STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS,
 } from "../records/invocationRecordsStoryFixtures";
 import { InvocationTable } from "./InvocationTable";
@@ -1227,7 +1228,7 @@ function buildPoolAttemptLifecycleAttempts(
   if (phase === "success") {
     return [
       {
-        id: 4101,
+        attemptId: formatStoryAttemptId(4101),
         invokeId: "inv_storybook_pool_attempt_detail_lifecycle",
         occurredAt,
         endpoint: "/v1/responses",
@@ -1256,7 +1257,7 @@ function buildPoolAttemptLifecycleAttempts(
 
   return [
     {
-      id: 4101,
+      attemptId: formatStoryAttemptId(4101),
       invokeId: "inv_storybook_pool_attempt_detail_lifecycle",
       occurredAt,
       endpoint: "/v1/responses",

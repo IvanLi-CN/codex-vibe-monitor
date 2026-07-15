@@ -1022,10 +1022,10 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
       );
       if (attemptMatch && method === "GET") {
         const accountId = Number(attemptMatch[1]);
-        const attemptId = Number(parsedUrl.searchParams.get("attemptId") || 9001);
+        const attemptId = parsedUrl.searchParams.get("attemptId")?.trim() || "4V7MYPJG";
         const attempts: ApiPoolUpstreamRequestAttempt[] = [
           {
-            id: 9001,
+            attemptId: "4V7MYPJG",
             invokeId: "storybook-pool-retry-001",
             occurredAt: "2026-07-11T12:00:00.000Z",
             endpoint: "/v1/responses",
@@ -1053,7 +1053,7 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
             createdAt: "2026-07-11T12:00:00.000Z",
           },
           {
-            id: 9002,
+            attemptId: "QADKN5Z9",
             invokeId: "storybook-pool-retry-001",
             occurredAt: "2026-07-11T12:00:01.000Z",
             endpoint: "/v1/responses",
@@ -1081,7 +1081,7 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         ];
         if (storyId?.endsWith("--detail-drawer-records-pending-mobile")) {
           attempts.unshift({
-            id: 9003,
+            attemptId: "YG7P25XG",
             invokeId: "storybook-pool-pending-001",
             occurredAt: "2026-07-11T12:00:02.000Z",
             endpoint: "/v1/responses",
@@ -1099,7 +1099,10 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
             createdAt: "2026-07-11T12:00:02.000Z",
           });
         }
-        if (path.endsWith("/locate") && !attempts.some((attempt) => attempt.id === attemptId)) {
+        if (
+          path.endsWith("/locate") &&
+          !attempts.some((attempt) => attempt.attemptId === attemptId)
+        ) {
           return jsonResponse({ message: "upstream account attempt was not found" }, 404);
         }
         return jsonResponse({ items: attempts, total: attempts.length, page: 1, pageSize: 50 });

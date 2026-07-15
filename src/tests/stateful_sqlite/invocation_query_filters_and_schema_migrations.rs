@@ -120,8 +120,9 @@ async fn locate_invocation_returns_account_scoped_anchor_pages() {
         let response = locate_invocation_page(
             state.clone(),
             &LocateInvocationQuery {
-                request_id: request_id.to_string(),
-                upstream_account_id: 17,
+                request_id: Some(request_id.to_string()),
+                attempt_id: None,
+                upstream_account_id: Some(17),
                 page_size: Some(50),
             },
         )
@@ -140,8 +141,9 @@ async fn locate_invocation_returns_account_scoped_anchor_pages() {
     let account_mismatch = locate_invocation_page(
         state.clone(),
         &LocateInvocationQuery {
-            request_id: "locate-060".to_string(),
-            upstream_account_id: 18,
+            request_id: Some("locate-060".to_string()),
+            attempt_id: None,
+            upstream_account_id: Some(18),
             page_size: Some(50),
         },
     )
@@ -152,8 +154,9 @@ async fn locate_invocation_returns_account_scoped_anchor_pages() {
     let anchored = locate_invocation_page(
         state.clone(),
         &LocateInvocationQuery {
-            request_id: "locate-060".to_string(),
-            upstream_account_id: 17,
+            request_id: Some("locate-060".to_string()),
+            attempt_id: None,
+            upstream_account_id: Some(17),
             page_size: Some(50),
         },
     )

@@ -3100,11 +3100,12 @@ pub(crate) async fn load_upstream_account_detail_with_options(
                 event.http_status,
                 event.failure_kind,
                 event.invoke_id,
-                event.attempt_id,
+                attempts.attempt_public_id,
                 event.sticky_key,
                 event.created_at
             FROM pool_upstream_account_events event
             INNER JOIN pool_upstream_accounts account ON account.id = event.account_id
+            LEFT JOIN pool_upstream_request_attempts attempts ON attempts.id = event.attempt_id
             WHERE event.account_id = ?1
             ORDER BY event.occurred_at DESC, event.id DESC
             LIMIT 20

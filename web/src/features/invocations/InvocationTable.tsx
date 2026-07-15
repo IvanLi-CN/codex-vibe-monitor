@@ -49,7 +49,7 @@ interface InvocationTableProps {
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   scrollElement?: HTMLElement | null;
   showInvokeId?: boolean;
-  scrollTarget?: { invokeId: string; version: number } | null;
+  scrollTarget?: { invokeId: string; attemptId?: string | null; version: number } | null;
 }
 
 type StatusMeta = {
@@ -867,6 +867,7 @@ export function InvocationTable({
                       detailNotice={row.detailNotice}
                       size="compact"
                       poolAttemptsState={poolAttemptsState}
+                      focusedAttemptId={isHighlighted ? (scrollTarget?.attemptId ?? null) : null}
                       t={t}
                     />
                   </div>
@@ -1208,6 +1209,9 @@ export function InvocationTable({
                             detailNotice={row.detailNotice}
                             size="default"
                             poolAttemptsState={poolAttemptsState}
+                            focusedAttemptId={
+                              isHighlighted ? (scrollTarget?.attemptId ?? null) : null
+                            }
                             t={t}
                           />
                         </td>

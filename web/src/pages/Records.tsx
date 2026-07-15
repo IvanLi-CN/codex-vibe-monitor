@@ -14,6 +14,7 @@ import { useInvocationRecords } from "../hooks/useInvocationRecords";
 import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
 import { useTranslation } from "../i18n";
 import {
+  fetchInvocationRecordLocation,
   fetchInvocationSuggestions,
   type InvocationFocus,
   type InvocationRangePreset,
@@ -69,8 +70,15 @@ export default function RecordsPage() {
   const { t } = useTranslation();
   const [searchParams] = useSearchParams();
   const requestedInvokeId = searchParams.get("requestId")?.trim() || null;
+  const requestedAttemptId = searchParams.get("attemptId")?.trim() || null;
+  const requestedUpstreamAccountIdRaw = searchParams.get("upstreamAccountId")?.trim() || "";
+  const requestedUpstreamAccountId =
+    requestedUpstreamAccountIdRaw && Number.isFinite(Number(requestedUpstreamAccountIdRaw))
+      ? Number(requestedUpstreamAccountIdRaw)
+      : null;
   const requestedRangePreset = searchParams.get("rangePreset") === "7d" ? "7d" : null;
   const appliedRequestIdRef = useRef<string | null>(null);
+  const requestedAttemptLocateKeyRef = useRef<string | null>(null);
   const isCompactViewport = useCompactViewport();
   const { upstreamAccountId, openUpstreamAccount, closeUpstreamAccount } =
     useUpstreamAccountDetailRoute();
@@ -98,6 +106,8 @@ export default function RecordsPage() {
     setPageSize,
     setSort,
   } = useInvocationRecords();
+  const [autoExpandInvokeId, setAutoExpandInvokeId] = useState<string | null>(null);
+  const [focusedAttemptId, setFocusedAttemptId] = useState<string | null>(null);
 
   const appliedSnapshotId = records?.snapshotId ?? summary?.snapshotId;
   const [suggestions, setSuggestions] = useState<InvocationSuggestionsResponse | null>(null);
@@ -120,6 +130,8 @@ export default function RecordsPage() {
     const requestKey = `${requestedInvokeId}:${requestedRangePreset ?? ""}`;
     if (!requestedInvokeId || appliedRequestIdRef.current === requestKey) return;
     appliedRequestIdRef.current = requestKey;
+    setAutoExpandInvokeId(requestedInvokeId);
+    setFocusedAttemptId(null);
     resetDraft();
     updateDraft("requestId", requestedInvokeId);
     if (requestedRangePreset) {
@@ -128,6 +140,61 @@ export default function RecordsPage() {
     const timer = window.setTimeout(() => void search(), 0);
     return () => window.clearTimeout(timer);
   }, [requestedInvokeId, requestedRangePreset, resetDraft, search, updateDraft]);
+
+  useEffect(() => {
+    const requestKey = [
+      requestedAttemptId ?? "",
+      requestedUpstreamAccountId ?? "",
+      requestedRangePreset ?? "",
+    ].join(":");
+    if (!requestedAttemptId || requestedAttemptLocateKeyRef.current === requestKey) return;
+    requestedAttemptLocateKeyRef.current = requestKey;
+    setAutoExpandInvokeId(null);
+    setFocusedAttemptId(requestedAttemptId);
+    let cancelled = false;
+
+    void fetchInvocationRecordLocation({
+      attemptId: requestedAttemptId,
+      upstreamAccountId: requestedUpstreamAccountId ?? undefined,
+      pageSize,
+    })
+      .then(async (response) => {
+        if (cancelled) return;
+        const resolvedInvokeId =
+          response.requestId?.trim() ||
+          response.records[response.targetIndex]?.invokeId?.trim() ||
+          "";
+        if (!resolvedInvokeId) return;
+        resetDraft();
+        updateDraft("requestId", resolvedInvokeId);
+        if (requestedRangePreset) {
+          updateDraft("rangePreset", requestedRangePreset);
+        }
+        setAutoExpandInvokeId(resolvedInvokeId);
+        setFocusedAttemptId(response.attemptId?.trim() || requestedAttemptId);
+        await search();
+        if (!cancelled && response.page > 1) {
+          await setPage(response.page);
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAutoExpandInvokeId(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    pageSize,
+    requestedAttemptId,
+    requestedRangePreset,
+    requestedUpstreamAccountId,
+    resetDraft,
+    search,
+    setPage,
+    updateDraft,
+  ]);
 
   useEffect(() => {
     suggestionsSeqRef.current += 1;
@@ -845,7 +912,8 @@ export default function RecordsPage() {
             isLoading={tableLoading}
             error={recordsError}
             onOpenUpstreamAccount={(accountId) => openUpstreamAccount(accountId)}
-            autoExpandInvokeId={requestedInvokeId}
+            autoExpandInvokeId={autoExpandInvokeId}
+            focusedAttemptId={focusedAttemptId}
           />
 
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-base-300/70 bg-base-100/45 px-4 py-3">

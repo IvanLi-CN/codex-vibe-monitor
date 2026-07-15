@@ -29,6 +29,7 @@ import {
 } from "../../lib/dashboardWorkingConversations";
 import { AccountDetailDrawerShell } from "../account-pool/AccountDetailDrawerShell";
 import { PromptCacheConversationHistoryDrawer } from "../prompt-cache/PromptCacheConversationTable";
+import { formatStoryAttemptId } from "../records/invocationRecordsStoryFixtures";
 import { DashboardInvocationDetailDrawer } from "./DashboardInvocationDetailDrawer";
 import { DashboardWorkingConversationsSection } from "./DashboardWorkingConversationsSection";
 import { DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY } from "./dashboardActivityRange";
@@ -1748,7 +1749,7 @@ function buildStoryMockData(
     ) {
       poolAttemptsByInvokeId.set(record.invokeId, [
         {
-          id: record.id * 10 + 1,
+          attemptId: formatStoryAttemptId(record.id * 10 + 1),
           invokeId: record.invokeId,
           occurredAt: record.occurredAt,
           endpoint: record.endpoint ?? "/v1/responses",

@@ -37,6 +37,7 @@ interface InvocationRecordsTableProps {
   error?: string | null;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   autoExpandInvokeId?: string | null;
+  focusedAttemptId?: string | null;
 }
 
 type StatusMeta = {
@@ -355,6 +356,7 @@ export function InvocationRecordsTable({
   error,
   onOpenUpstreamAccount,
   autoExpandInvokeId = null,
+  focusedAttemptId = null,
 }: InvocationRecordsTableProps) {
   const { t, locale } = useTranslation();
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -954,6 +956,7 @@ export function InvocationRecordsTable({
                     detailNotice={row.detailNotice}
                     size="compact"
                     poolAttemptsState={poolAttemptsState}
+                    focusedAttemptId={isExpanded ? focusedAttemptId : null}
                     abnormalResponseBody={abnormalResponseBody}
                     abnormalResponseBodyLoading={detailLoading}
                     abnormalResponseBodyError={detailError}
@@ -1066,6 +1069,7 @@ export function InvocationRecordsTable({
                             detailNotice={row.detailNotice}
                             size="default"
                             poolAttemptsState={poolAttemptsState}
+                            focusedAttemptId={isExpanded ? focusedAttemptId : null}
                             abnormalResponseBody={abnormalResponseBody}
                             abnormalResponseBodyLoading={detailLoading}
                             abnormalResponseBodyError={detailError}
@@ -1130,6 +1134,7 @@ export function InvocationRecordsTable({
               detailNotice={drawerRow.detailNotice}
               size="default"
               poolAttemptsState={drawerPoolAttemptsState}
+              focusedAttemptId={focusedAttemptId}
               abnormalResponseBody={
                 drawerResponseBody
                   ? {
