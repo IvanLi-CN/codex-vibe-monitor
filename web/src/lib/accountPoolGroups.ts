@@ -34,7 +34,7 @@ export function normalizeAccountPoolGroupName(value?: string | null) {
   return normalized ? normalized : null;
 }
 
-const GROUPED_PLAN_ORDER = ["free", "pro", "team", "enterprise"];
+const GROUPED_PLAN_ORDER = ["free", "k12", "pro", "team", "enterprise"];
 
 export function buildAccountPoolGroupSummaries(options: {
   items: UpstreamAccountSummary[];

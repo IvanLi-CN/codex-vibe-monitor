@@ -28,6 +28,7 @@ pub(crate) async fn build_imported_oauth_validation_response(
                     file_name: item.file_name.clone(),
                     email: None,
                     chatgpt_account_id: None,
+                    chatgpt_user_id: None,
                     display_name: None,
                     token_expires_at: None,
                     matched_account: None,
@@ -39,13 +40,18 @@ pub(crate) async fn build_imported_oauth_validation_response(
             }
         };
 
-        let match_key = imported_match_key(&normalized.email, &normalized.chatgpt_account_id);
+        let match_key = imported_match_key(
+            normalized.chatgpt_user_id.as_deref(),
+            &normalized.email,
+            &normalized.chatgpt_account_id,
+        );
         if !seen_keys.insert(match_key) {
             rows.push(ImportedOauthValidationRow {
                 source_id: normalized.source_id,
                 file_name: normalized.file_name,
                 email: Some(normalized.email),
                 chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                chatgpt_user_id: normalized.chatgpt_user_id,
                 display_name: Some(normalized.display_name),
                 token_expires_at: Some(normalized.token_expires_at),
                 matched_account: None,
@@ -57,6 +63,7 @@ pub(crate) async fn build_imported_oauth_validation_response(
         }
         let existing_match = match find_existing_import_match(
             &state.pool,
+            normalized.chatgpt_user_id.as_deref(),
             &normalized.chatgpt_account_id,
             &normalized.email,
         )
@@ -69,6 +76,7 @@ pub(crate) async fn build_imported_oauth_validation_response(
                     file_name: normalized.file_name,
                     email: Some(normalized.email),
                     chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                    chatgpt_user_id: normalized.chatgpt_user_id,
                     display_name: Some(normalized.display_name),
                     token_expires_at: Some(normalized.token_expires_at),
                     matched_account: None,
@@ -96,6 +104,7 @@ pub(crate) async fn build_imported_oauth_validation_response(
                     file_name: normalized.file_name,
                     email: Some(normalized.email),
                     chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                    chatgpt_user_id: normalized.chatgpt_user_id,
                     display_name: Some(normalized.display_name),
                     token_expires_at: Some(normalized.token_expires_at),
                     matched_account: matched_account.clone(),
@@ -187,6 +196,7 @@ pub(crate) fn build_imported_oauth_pending_response(
                 file_name: item.file_name.clone(),
                 email: None,
                 chatgpt_account_id: None,
+                chatgpt_user_id: None,
                 display_name: None,
                 token_expires_at: None,
                 matched_account: None,
@@ -367,6 +377,7 @@ pub(crate) async fn build_imported_oauth_validation_result(
                 file_name: normalized.file_name.clone(),
                 email: Some(normalized.email.clone()),
                 chatgpt_account_id: Some(normalized.chatgpt_account_id.clone()),
+                chatgpt_user_id: normalized.chatgpt_user_id.clone(),
                 display_name: Some(normalized.display_name.clone()),
                 token_expires_at: Some(outcome.token_expires_at.clone()),
                 matched_account,
@@ -393,6 +404,7 @@ pub(crate) async fn build_imported_oauth_validation_result(
                 file_name: normalized.file_name,
                 email: Some(normalized.email),
                 chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                chatgpt_user_id: normalized.chatgpt_user_id,
                 display_name: Some(normalized.display_name),
                 token_expires_at: Some(normalized.token_expires_at),
                 matched_account,
@@ -693,6 +705,7 @@ pub(crate) fn spawn_imported_oauth_validation_job(
                                 file_name: item.file_name.clone(),
                                 email: None,
                                 chatgpt_account_id: None,
+                                chatgpt_user_id: None,
                                 display_name: None,
                                 token_expires_at: None,
                                 matched_account: None,
@@ -707,8 +720,11 @@ pub(crate) fn spawn_imported_oauth_validation_job(
                     }
                 };
 
-                let match_key =
-                    imported_match_key(&normalized.email, &normalized.chatgpt_account_id);
+                let match_key = imported_match_key(
+                    normalized.chatgpt_user_id.as_deref(),
+                    &normalized.email,
+                    &normalized.chatgpt_account_id,
+                );
                 if !seen_keys.insert(match_key) {
                     update_imported_oauth_validation_job_row(
                         &job,
@@ -718,6 +734,7 @@ pub(crate) fn spawn_imported_oauth_validation_job(
                             file_name: normalized.file_name,
                             email: Some(normalized.email),
                             chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                            chatgpt_user_id: normalized.chatgpt_user_id,
                             display_name: Some(normalized.display_name),
                             token_expires_at: Some(normalized.token_expires_at),
                             matched_account: None,
@@ -734,6 +751,7 @@ pub(crate) fn spawn_imported_oauth_validation_job(
                 }
                 let existing_match = match find_existing_import_match(
                     &state.pool,
+                    normalized.chatgpt_user_id.as_deref(),
                     &normalized.chatgpt_account_id,
                     &normalized.email,
                 )
@@ -749,6 +767,7 @@ pub(crate) fn spawn_imported_oauth_validation_job(
                                 file_name: normalized.file_name,
                                 email: Some(normalized.email),
                                 chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                                chatgpt_user_id: normalized.chatgpt_user_id,
                                 display_name: Some(normalized.display_name),
                                 token_expires_at: Some(normalized.token_expires_at),
                                 matched_account: None,
@@ -783,6 +802,7 @@ pub(crate) fn spawn_imported_oauth_validation_job(
                                 file_name: normalized.file_name,
                                 email: Some(normalized.email),
                                 chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                                chatgpt_user_id: normalized.chatgpt_user_id,
                                 display_name: Some(normalized.display_name),
                                 token_expires_at: Some(normalized.token_expires_at),
                                 matched_account: matched_account.clone(),
@@ -1429,7 +1449,11 @@ pub(crate) async fn import_validated_oauth_accounts(
             },
         };
 
-        let match_key = imported_match_key(&normalized.email, &normalized.chatgpt_account_id);
+        let match_key = imported_match_key(
+            normalized.chatgpt_user_id.as_deref(),
+            &normalized.email,
+            &normalized.chatgpt_account_id,
+        );
         if !seen_keys.insert(match_key) {
             failed += 1;
             results.push(ImportedOauthImportResult {
@@ -1447,6 +1471,7 @@ pub(crate) async fn import_validated_oauth_accounts(
 
         let existing_match = match find_existing_import_match(
             &state.pool,
+            normalized.chatgpt_user_id.as_deref(),
             &normalized.chatgpt_account_id,
             &normalized.email,
         )

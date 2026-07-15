@@ -37,6 +37,8 @@ import {
   markImportedOauthRowsAsError,
   mergeImportedOauthValidationRow,
   mergeImportedOauthValidationRows,
+  type ParsedImportedOauthCredentialRejection,
+  parseImportedOauthCredentialDocumentLocally,
   parseImportedOauthPasteDraft,
   replaceImportedOauthValidationRows,
   summarizeImportedOauthBatchErrors,
@@ -48,6 +50,37 @@ type LocalImportedOauthCandidate = {
   payload: ImportOauthCredentialFilePayload;
   matchKey: string;
 };
+
+type LocalImportedOauthRejection = {
+  fileName: string;
+  reason: string;
+  duplicate?: boolean;
+  warning?: boolean;
+};
+
+type LocalImportedOauthCandidatesResult =
+  | {
+      ok: true;
+      candidates: LocalImportedOauthCandidate[];
+      rejected: LocalImportedOauthRejection[];
+    }
+  | {
+      ok: false;
+      error: string;
+      rejected: LocalImportedOauthRejection[];
+    };
+
+type LocalImportedSessionCandidatesResult =
+  | {
+      ok: true;
+      candidates: LocalImportedOauthCandidate[];
+      rejected: LocalImportedOauthRejection[];
+    }
+  | {
+      ok: false;
+      error: string;
+      rejected: LocalImportedOauthRejection[];
+    };
 
 export function useUpstreamAccountCreateImportedOauth(ctx: UpstreamAccountCreateControllerContext) {
   const {
@@ -426,19 +459,15 @@ export function useUpstreamAccountCreateImportedOauth(ctx: UpstreamAccountCreate
   );
 
   const summarizeRejectedImportedOauthItems = useCallback(
-    (
-      rejected: Array<{
-        fileName: string;
-        reason: string;
-        duplicate?: boolean;
-      }>,
-    ) => {
+    (rejected: LocalImportedOauthRejection[]) => {
       if (rejected.length === 0) {
         setImportSelectionFeedback(null);
         return;
       }
       setImportSelectionFeedback({
-        variant: rejected.some((item) => item.duplicate !== true) ? "error" : "warning",
+        variant: rejected.some((item) => item.duplicate !== true && item.warning !== true)
+          ? "error"
+          : "warning",
         messages: rejected.map((item) =>
           item.duplicate
             ? t("accountPool.upstreamAccounts.import.local.duplicateSkipped", {
@@ -473,12 +502,13 @@ export function useUpstreamAccountCreateImportedOauth(ctx: UpstreamAccountCreate
       content: string;
       fileName: string;
       createSourceId: (index: number) => string;
-    }) => {
+    }): LocalImportedSessionCandidatesResult => {
       const parsed = convertImportedWebSessionDocumentLocally(content, t);
       if (!parsed.ok) {
         return {
           ok: false as const,
           error: parsed.error,
+          rejected: [],
         };
       }
       return {
@@ -498,9 +528,89 @@ export function useUpstreamAccountCreateImportedOauth(ctx: UpstreamAccountCreate
             content: item.content,
           },
         })),
+        rejected: [],
       };
     },
     [t],
+  );
+
+  const buildExpandedImportedOauthFileName = useCallback(
+    ({
+      baseFileName,
+      sourceLabel,
+      total,
+      index,
+    }: {
+      baseFileName: string;
+      sourceLabel: string;
+      total: number;
+      index: number;
+    }) => {
+      if (total <= 1) return baseFileName;
+      const normalizedSourceLabel = sourceLabel.trim() || `account ${index + 1}`;
+      return `${baseFileName.replace(/\.json$/i, "")} ${normalizedSourceLabel}.json`;
+    },
+    [],
+  );
+
+  const buildImportedOauthCandidates = useCallback(
+    ({
+      content,
+      fileName,
+      createSourceId,
+    }: {
+      content: string;
+      fileName: string;
+      createSourceId: (index: number) => string;
+    }): LocalImportedOauthCandidatesResult => {
+      const parsed = parseImportedOauthCredentialDocumentLocally(content, t);
+      const mapRejected = (
+        rejected: ParsedImportedOauthCredentialRejection[],
+        total: number,
+      ): LocalImportedOauthRejection[] =>
+        rejected.map((item, index) => ({
+          fileName: buildExpandedImportedOauthFileName({
+            baseFileName: fileName,
+            sourceLabel: item.sourceLabel,
+            total,
+            index,
+          }),
+          reason: item.reason,
+          warning: true,
+        }));
+      if (!parsed.ok) {
+        const rejected = mapRejected(parsed.rejected, parsed.rejected.length);
+        return {
+          ok: false as const,
+          error: parsed.error,
+          rejected,
+        };
+      }
+
+      const totalEntries = parsed.candidates.length + parsed.rejected.length;
+      return {
+        ok: true as const,
+        candidates: parsed.candidates.map((candidate, index) => {
+          const nextFileName = buildExpandedImportedOauthFileName({
+            baseFileName: fileName,
+            sourceLabel: candidate.sourceLabel,
+            total: totalEntries,
+            index,
+          });
+          return {
+            fileName: nextFileName,
+            matchKey: candidate.matchKey,
+            payload: {
+              sourceId: totalEntries <= 1 ? createSourceId(0) : createSourceId(index),
+              fileName: nextFileName,
+              content: candidate.normalizedContent,
+            },
+          };
+        }),
+        rejected: mapRejected(parsed.rejected, totalEntries),
+      };
+    },
+    [buildExpandedImportedOauthFileName, t],
   );
 
   const validateAndQueueImportedOauthPaste = useCallback(
@@ -554,6 +664,7 @@ export function useUpstreamAccountCreateImportedOauth(ctx: UpstreamAccountCreate
       setImportSelectionFeedback(null);
 
       const items: Array<ImportOauthCredentialFilePayload & { matchKey: string }> = [];
+      const rejectedItems: LocalImportedOauthRejection[] = [];
       if (parsedSessionDraft?.ok) {
         items.push(
           ...parsedSessionDraft.candidates.map((candidate, index) => ({
@@ -567,30 +678,73 @@ export function useUpstreamAccountCreateImportedOauth(ctx: UpstreamAccountCreate
           })),
         );
       } else if (parsedDraft?.ok) {
-        if (!parsedDraft.matchKey) {
+        rejectedItems.push(
+          ...parsedDraft.rejected.map((item) => ({
+            fileName:
+              parsedDraft.candidates.length + parsedDraft.rejected.length <= 1
+                ? createImportedOauthPastedFileName(serial)
+                : `${createImportedOauthPastedFileName(serial).replace(/\.json$/i, "")} ${item.sourceLabel}.json`,
+            reason: item.reason,
+            duplicate: false,
+            warning: true,
+          })),
+        );
+        if (parsedDraft.candidates.length === 0) {
           setImportPasteError(
-            t("accountPool.upstreamAccounts.import.local.requiredField", {
-              fieldName: "account_id",
-            }),
+            parsedDraft.rejected[0]?.reason ??
+              t("accountPool.upstreamAccounts.import.local.noSupportedSub2apiAccounts"),
           );
           return;
         }
-        items.push({
-          sourceId: createImportedOauthPastedSourceId(serial),
-          fileName: createImportedOauthPastedFileName(serial),
-          content: parsedDraft.normalizedContent,
-          matchKey: parsedDraft.matchKey,
-        });
+        items.push(
+          ...parsedDraft.candidates.map((candidate, index) => ({
+            sourceId:
+              parsedDraft.candidates.length + parsedDraft.rejected.length <= 1
+                ? createImportedOauthPastedSourceId(serial)
+                : `${createImportedOauthPastedSourceId(serial)}:oauth:${index}`,
+            fileName:
+              parsedDraft.candidates.length + parsedDraft.rejected.length <= 1
+                ? createImportedOauthPastedFileName(serial)
+                : `${createImportedOauthPastedFileName(serial).replace(/\.json$/i, "")} ${candidate.sourceLabel}.json`,
+            content: candidate.normalizedContent,
+            matchKey: candidate.matchKey,
+          })),
+        );
       }
 
       try {
         const seenKeys = collectQueuedImportedOauthMatchKeys();
+        const initiallyAcceptedItems: Array<
+          ImportOauthCredentialFilePayload & { matchKey: string }
+        > = [];
         for (const item of items) {
           if (item.matchKey && seenKeys.has(item.matchKey)) {
-            setImportPasteError(t("accountPool.upstreamAccounts.import.local.pasteDuplicate"));
-            return;
+            rejectedItems.push({
+              fileName: item.fileName,
+              reason: "",
+              duplicate: true,
+            });
+            continue;
           }
           if (item.matchKey) seenKeys.add(item.matchKey);
+          initiallyAcceptedItems.push(item);
+        }
+        if (initiallyAcceptedItems.length === 0) {
+          if (
+            rejectedItems.length === 1 &&
+            rejectedItems[0]?.duplicate === true &&
+            items.length === 1
+          ) {
+            setImportPasteError(t("accountPool.upstreamAccounts.import.local.pasteDuplicate"));
+          } else {
+            summarizeRejectedImportedOauthItems(rejectedItems);
+            setImportPasteError(
+              rejectedItems[0]?.duplicate
+                ? t("accountPool.upstreamAccounts.import.local.pasteDuplicate")
+                : (rejectedItems[0]?.reason ?? null),
+            );
+          }
+          return;
         }
         await resetImportValidationForSelectionChange();
         if (
@@ -600,21 +754,42 @@ export function useUpstreamAccountCreateImportedOauth(ctx: UpstreamAccountCreate
           return;
         }
         const refreshedSeenKeys = collectQueuedImportedOauthMatchKeys();
-        for (const item of items) {
+        const acceptedItems: ImportOauthCredentialFilePayload[] = [];
+        for (const item of initiallyAcceptedItems) {
           if (item.matchKey && refreshedSeenKeys.has(item.matchKey)) {
-            setImportPasteError(t("accountPool.upstreamAccounts.import.local.pasteDuplicate"));
-            return;
+            rejectedItems.push({
+              fileName: item.fileName,
+              reason: "",
+              duplicate: true,
+            });
+            continue;
           }
           if (item.matchKey) refreshedSeenKeys.add(item.matchKey);
+          const { matchKey, ...queuedItem } = item;
+          void matchKey;
+          acceptedItems.push(queuedItem);
+        }
+        if (acceptedItems.length === 0) {
+          if (
+            rejectedItems.length === 1 &&
+            rejectedItems[0]?.duplicate === true &&
+            items.length === 1
+          ) {
+            setImportPasteError(t("accountPool.upstreamAccounts.import.local.pasteDuplicate"));
+          } else {
+            summarizeRejectedImportedOauthItems(rejectedItems);
+            setImportPasteError(
+              rejectedItems[0]?.duplicate
+                ? t("accountPool.upstreamAccounts.import.local.pasteDuplicate")
+                : (rejectedItems[0]?.reason ?? null),
+            );
+          }
+          return;
         }
         importFilesRevisionRef.current += 1;
         const nextItems = [
           ...(importFilesRef.current as ImportOauthCredentialFilePayload[]),
-          ...items.map((item) => {
-            const { matchKey, ...queuedItem } = item;
-            void matchKey;
-            return queuedItem;
-          }),
+          ...acceptedItems,
         ];
         importFilesRef.current = nextItems;
         setImportFiles(nextItems);
@@ -622,6 +797,7 @@ export function useUpstreamAccountCreateImportedOauth(ctx: UpstreamAccountCreate
         setImportPasteDraft("");
         setImportPasteDraftSerial(null);
         setImportPasteError(null);
+        summarizeRejectedImportedOauthItems(rejectedItems);
       } catch (err) {
         if (validationToken === importPasteValidationTokenRef.current) {
           setImportPasteError(err instanceof Error ? err.message : String(err));
@@ -634,10 +810,13 @@ export function useUpstreamAccountCreateImportedOauth(ctx: UpstreamAccountCreate
     },
     [
       collectQueuedImportedOauthMatchKeys,
+      createImportedOauthPastedFileName,
+      createImportedOauthPastedSourceId,
       buildWebSessionCandidates,
       importFilesRef,
       isImportingWebSession,
       resetImportValidationForSelectionChange,
+      summarizeRejectedImportedOauthItems,
       t,
     ],
   );
@@ -710,41 +889,14 @@ export function useUpstreamAccountCreateImportedOauth(ctx: UpstreamAccountCreate
                 parsed,
               };
             }
-            const parsed = validateImportedOauthCredentialLocally(content, t);
-            if (parsed.ok && !parsed.matchKey) {
-              return {
-                fileName: file.name,
-                parsed: {
-                  ok: false as const,
-                  error: t("accountPool.upstreamAccounts.import.local.requiredField", {
-                    fieldName: "account_id",
-                  }),
-                },
-              };
-            }
-            if (parsed.ok) {
-              const matchKey = parsed.matchKey as string;
-              return {
-                fileName: file.name,
-                parsed: {
-                  ok: true as const,
-                  candidates: [
-                    {
-                      fileName: file.name,
-                      matchKey,
-                      payload: {
-                        sourceId: sourceIdBase,
-                        fileName: file.name,
-                        content: parsed.normalizedContent,
-                      },
-                    },
-                  ],
-                },
-              };
-            }
             return {
               fileName: file.name,
-              parsed,
+              parsed: buildImportedOauthCandidates({
+                content,
+                fileName: file.name,
+                createSourceId: (oauthIndex) =>
+                  oauthIndex === 0 ? sourceIdBase : `${sourceIdBase}:oauth:${oauthIndex}`,
+              }),
             };
           }),
         );
@@ -757,12 +909,17 @@ export function useUpstreamAccountCreateImportedOauth(ctx: UpstreamAccountCreate
 
         for (const item of parsedItems) {
           if (!item.parsed.ok) {
-            rejectedItems.push({
-              fileName: item.fileName,
-              reason: item.parsed.error,
-            });
+            if (item.parsed.rejected.length > 0) {
+              rejectedItems.push(...item.parsed.rejected);
+            } else {
+              rejectedItems.push({
+                fileName: item.fileName,
+                reason: item.parsed.error,
+              });
+            }
             continue;
           }
+          rejectedItems.push(...item.parsed.rejected);
           validCandidates.push(...item.parsed.candidates);
         }
 
@@ -818,6 +975,7 @@ export function useUpstreamAccountCreateImportedOauth(ctx: UpstreamAccountCreate
     },
     [
       collectQueuedImportedOauthMatchKeys,
+      buildImportedOauthCandidates,
       buildWebSessionCandidates,
       importFileSourceSequenceRef,
       importFilesRef,

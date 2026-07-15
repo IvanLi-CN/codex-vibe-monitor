@@ -3,7 +3,7 @@
 ## Current State
 
 - Canonical spec: `docs/specs/pd77h-oauth-inline-adapter/SPEC.md`
-- Implementation summary: OAuth 凭据模型支持无 refresh token，相关自动刷新路径会跳过无 RT 账号，账号列表 API 和 Web roster 通过 `hasRefreshToken` 显示 `无 RT` 标记；新增账号页的 `导入 Session` 会把 ChatGPT Web session JSON 转换到现有 OAuth 导入队列；OAuth JSON 导入忽略 `type` 来源值，单条本地校验可一次性展示多个字段错误；服务端导入验证的既有账号匹配复用完整 `UpstreamAccountRow` 列清单，避免账号 schema 扩展后漏列导致整批验证失败。
+- Implementation summary: OAuth 凭据模型支持无 refresh token，相关自动刷新路径会跳过无 RT 账号，账号列表 API 和 Web roster 通过 `hasRefreshToken` 显示 `无 RT` 标记；新增账号页的 `导入 Session` 会把 ChatGPT Web session JSON 转换到现有 OAuth 导入队列；OAuth JSON 导入忽略 `type` 来源值，单条本地校验可一次性展示多个字段错误；前端导入现在兼容单条 `sub2api` OAuth object 与整份 `sub2api-data` 导出包，并在本地展开成多个标准化单账号 payload；成员级去重与服务端既有账号匹配优先使用 `chatgpt_user_id`，仅对缺少 user id 的历史凭据回退到 `account_id`；共享 `account_id` 但 `chatgpt_user_id` 不同的成员不会再被误判成重复导入，同时 `k12` 作为一等 plan 类型参与 badge、分组顺序与文案显示。
 
 ## Migrated Implementation Notes
 
@@ -63,6 +63,10 @@
 ![导入 Session Storybook evidence](./assets/import-session-story.png)
 
 ![OAuth import local multi-error validation](./assets/import-multiple-errors.png)
+
+![sub2api package expands into multiple queued imported OAuth members](./assets/import-sub2api-package-queue.png)
+
+![shared account id keeps distinct imported OAuth members importable](./assets/import-shared-account-distinct-members.png)
 
 ## 资产晋升（Asset promotion）
 
