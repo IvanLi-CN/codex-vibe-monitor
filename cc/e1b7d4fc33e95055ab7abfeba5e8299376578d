@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.36.1",
+  "base_stable_version": "2.36.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-15T13:55:50Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.36.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "89e0cab73a44007db510cb5f786214c8ae70c664",
+  "pr_number": 625,
+  "pr_title": "fix(dashboard): unify realtime kpi on backend 1m sma",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.36.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.36.1",
+  "target_sha": "cce1b7d4fc33e95055ab7abfeba5e8299376578d",
+  "type_label": "type:patch"
+}
