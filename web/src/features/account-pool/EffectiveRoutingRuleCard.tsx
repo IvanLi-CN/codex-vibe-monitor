@@ -80,7 +80,7 @@ type EditablePolicyField =
   | "proxyBindings"
   | StatusChangeEditablePolicyField;
 
-type EffectiveRoutingRuleCardRowKey =
+export type EffectiveRoutingRuleCardRowKey =
   | "priorityTier"
   | "allowCutOut"
   | "allowCutIn"
@@ -144,6 +144,14 @@ interface EffectiveProxyBindingConfig {
   };
 }
 
+export interface EffectiveRoutingRuleCardRowValueOverride {
+  value?: string;
+  valueBadges?: string[] | null;
+  valueField?: EditablePolicyField | null;
+  valueVariant?: BadgeVariant;
+  editor?: ReactNode;
+}
+
 interface EffectiveRoutingRuleCardProps {
   rule?: EffectiveRoutingRule | null;
   identityKey?: string | number | null;
@@ -152,6 +160,9 @@ interface EffectiveRoutingRuleCardProps {
   localOverrideSource?: EffectiveRoutingRuleSource;
   visibleRows?: EffectiveRoutingRuleCardRowKey[];
   visibleSections?: Partial<Record<EffectiveRoutingRuleCardSectionKey, boolean>>;
+  rowValueOverrides?: Partial<
+    Record<EffectiveRoutingRuleCardRowKey, EffectiveRoutingRuleCardRowValueOverride>
+  >;
   labels: {
     title: string;
     description: string;
@@ -377,15 +388,17 @@ function ValueBadge({
   field,
   value,
   labels,
+  variantOverride,
 }: {
   field: EditablePolicyField | null;
   value: string;
   labels: EffectiveRoutingRuleCardProps["labels"];
+  variantOverride?: BadgeVariant;
 }) {
   return (
     <Badge
       className="min-w-0 max-w-full justify-self-start whitespace-normal break-words text-left leading-5"
-      variant={valueVariant(field, value, labels)}
+      variant={variantOverride ?? valueVariant(field, value, labels)}
     >
       {value}
     </Badge>
@@ -396,15 +409,23 @@ function ValueBadgeList({
   field,
   values,
   labels,
+  variantOverride,
 }: {
   field: EditablePolicyField | null;
   values: string[];
   labels: EffectiveRoutingRuleCardProps["labels"];
+  variantOverride?: BadgeVariant;
 }) {
   return (
     <div className="flex min-w-0 flex-wrap gap-2 justify-self-start">
       {values.map((value) => (
-        <ValueBadge key={value} field={field} value={value} labels={labels} />
+        <ValueBadge
+          key={value}
+          field={field}
+          value={value}
+          labels={labels}
+          variantOverride={variantOverride}
+        />
       ))}
     </div>
   );
@@ -583,6 +604,7 @@ export function EffectiveRoutingRuleCard({
   localOverrideSource = "account",
   visibleRows,
   visibleSections,
+  rowValueOverrides,
 }: EffectiveRoutingRuleCardProps) {
   const resolvedRule = defaultRule(rule);
   const isEditable = editablePolicy != null;
@@ -979,7 +1001,29 @@ export function EffectiveRoutingRuleCard({
           : null,
     },
   ];
-  const visibleFieldRows = fieldRows.filter((row) => visibleRowSet.has(row.key));
+  const visibleFieldRows = fieldRows
+    .filter((row) => visibleRowSet.has(row.key))
+    .map((row) => {
+      const override = rowValueOverrides?.[row.key];
+      if (!override) {
+        return {
+          ...row,
+          displayField: row.field,
+          displayValue: row.value,
+          displayValueBadges: row.valueBadges,
+          displayValueVariant: undefined,
+          displayEditor: row.editor,
+        };
+      }
+      return {
+        ...row,
+        displayField: override.valueField ?? row.field,
+        displayValue: override.value ?? row.value,
+        displayValueBadges: override.valueBadges ?? row.valueBadges,
+        displayValueVariant: override.valueVariant,
+        displayEditor: override.editor ?? row.editor,
+      };
+    });
   const statusChangeReasonRows = STATUS_CHANGE_REASON_CODES.map((reason) => {
     const field = statusChangeReasonFieldKey(reason);
     return {
@@ -1055,14 +1099,20 @@ export function EffectiveRoutingRuleCard({
                   <div key={row.label} className="border-b border-base-300/60 last:border-b-0">
                     <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-3">
                       <span className="font-medium text-base-content/80">{row.label}</span>
-                      {row.valueBadges ? (
+                      {row.displayValueBadges ? (
                         <ValueBadgeList
-                          field={row.field}
-                          values={row.valueBadges}
+                          field={row.displayField}
+                          values={row.displayValueBadges}
                           labels={labels}
+                          variantOverride={row.displayValueVariant}
                         />
                       ) : (
-                        <ValueBadge field={row.field} value={row.value} labels={labels} />
+                        <ValueBadge
+                          field={row.displayField}
+                          value={row.displayValue}
+                          labels={labels}
+                          variantOverride={row.displayValueVariant}
+                        />
                       )}
                       <Badge
                         className="w-fit sm:justify-self-end"
@@ -1106,7 +1156,7 @@ export function EffectiveRoutingRuleCard({
                       <div className="border-t border-base-300/50 bg-base-100/55 px-3 py-3">
                         <div className="grid grid-cols-1 gap-y-2 sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-x-3">
                           <p className="text-sm font-semibold text-base-content">{row.label}</p>
-                          <div className="min-w-0 sm:col-span-3">{row.editor}</div>
+                          <div className="min-w-0 sm:col-span-3">{row.displayEditor}</div>
                           {busy ? (
                             <p className="text-xs text-base-content/60 sm:col-start-2 sm:col-span-3">
                               {labels.overrideSaving ?? "Saving..."}

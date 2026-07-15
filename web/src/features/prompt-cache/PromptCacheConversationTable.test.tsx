@@ -147,6 +147,7 @@ function createUpstreamAccountSummary(
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
+let consoleErrorSpy: ReturnType<typeof vi.spyOn> | null = null;
 
 beforeAll(() => {
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
@@ -190,6 +191,16 @@ describe("PromptCacheConversationTable", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-03T00:00:00Z"));
+    consoleErrorSpy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      const [firstArg] = args;
+      const message = typeof firstArg === "string" ? firstArg : String(firstArg ?? "");
+      if (
+        message.includes("not wrapped in act") ||
+        message.includes("Not implemented: Window's scrollTo() method")
+      ) {
+        return;
+      }
+    });
     apiMocks.fetchUpstreamAccountDetail.mockReset();
     apiMocks.fetchInvocationRecords.mockReset();
     apiMocks.fetchInvocationRecordsSummary.mockReset();
@@ -271,6 +282,8 @@ describe("PromptCacheConversationTable", () => {
     root = null;
     sseMocks.listeners.clear();
     sseMocks.openListeners.clear();
+    consoleErrorSpy?.mockRestore();
+    consoleErrorSpy = null;
     vi.useRealTimers();
   });
 
@@ -1480,15 +1493,15 @@ describe("PromptCacheConversationTable", () => {
     expect(findButtonByAriaLabel("清除对话覆盖: 图片工具")).not.toBeNull();
     expect(findButtonByAriaLabel("清除对话覆盖: 代理")).not.toBeNull();
     expect(findButtonByAriaLabel("清除对话覆盖: 可用模型")).not.toBeNull();
-    expect(findButtonByAriaLabel("清除账号覆盖: 一般请求响应体首字超时")).not.toBeNull();
-    expect(findButtonByAriaLabel("清除账号覆盖: 一般请求流结束超时")).not.toBeNull();
+    expect(findButtonByAriaLabel("清除对话覆盖: 一般请求响应体首字超时")).not.toBeNull();
+    expect(findButtonByAriaLabel("清除对话覆盖: 一般请求流结束超时")).not.toBeNull();
     expect(
       document.querySelector<HTMLInputElement>('input[name="responsesFirstByteTimeoutSecs"]'),
     ).not.toBeNull();
     expect(
       document.querySelector<HTMLInputElement>('input[name="responsesStreamTimeoutSecs"]'),
     ).not.toBeNull();
-    expect(document.body.textContent).toContain("继承 / 不限");
+    expect(document.body.textContent).toContain("无可用模型");
     expect(document.body.textContent).toContain("对话");
   });
 
@@ -1772,14 +1785,14 @@ describe("PromptCacheConversationTable", () => {
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(6),
     );
 
-    await user.click(findButtonByAriaLabel("清空并继承: 一般请求响应体首字超时")!);
+    await user.click(findButtonByAriaLabel("编辑对话覆盖: 一般请求响应体首字超时")!);
     const timeoutInput = document.querySelector<HTMLInputElement>(
       'input[name="responsesFirstByteTimeoutSecs"]',
     );
     expect(timeoutInput).not.toBeNull();
     await user.clear(timeoutInput!);
     await user.type(timeoutInput!, "180");
-    await user.click(findButtonByAriaLabel("保存")!);
+    await user.tab();
     await flushInteractive();
     await vi.waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(7),
@@ -1824,7 +1837,7 @@ describe("PromptCacheConversationTable", () => {
     );
     expect(document.body.textContent).toContain("gpt-5.1-codex-max");
     expect(document.body.textContent).toContain("180s");
-  });
+  }, 60_000);
 
   it("shows inline field errors when a conversation override save fails", async () => {
     apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({

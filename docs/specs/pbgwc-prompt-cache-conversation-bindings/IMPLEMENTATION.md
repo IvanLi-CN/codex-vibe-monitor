@@ -43,6 +43,10 @@
 
 ## Verification
 
+- `cd web && bunx vitest run --project=unit src/features/account-pool/EffectiveRoutingRuleCard.test.tsx`
+- `cd web && bunx vitest run --project=unit src/features/prompt-cache/PromptCacheConversationTable.test.tsx`
+- `cd web && bunx vitest run --project=unit`
+- `cd web && bun run build`
 - `cargo test --no-run`
 - `cargo test prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clearable -- --nocapture`
 - `cargo test prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clearable`
