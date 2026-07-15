@@ -550,11 +550,26 @@ body {
     padding-bottom: max(env(safe-area-inset-bottom), 1rem);
   }
 
+  .drawer-frame {
+    position: absolute;
+    inset-inline: 0;
+    top: 0;
+    bottom: 0;
+    display: flex;
+    align-items: flex-end;
+    justify-content: flex-end;
+  }
+
   .drawer-shell--detail-wide {
     width: 100%;
   }
 
   @media (min-width: 769px) {
+    .drawer-frame {
+      align-items: stretch;
+      padding-left: 2rem;
+    }
+
     .drawer-shell {
       border-top: none;
       border-left: 1px solid var(--app-surface-border);
