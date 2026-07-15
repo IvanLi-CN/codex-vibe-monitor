@@ -16,6 +16,7 @@ type UpstreamPlanBadgeRecipe = {
 const PLAN_VARIANTS: Record<string, UpstreamPlanBadgeVariant> = {
   local: "secondary",
   free: "warning",
+  k12: "success",
   plus: "default",
   pro: "default",
   team: "info",
@@ -24,6 +25,7 @@ const PLAN_VARIANTS: Record<string, UpstreamPlanBadgeVariant> = {
 
 const COMPACT_PLAN_LABELS: Record<string, string> = {
   free: "Free",
+  k12: "K12",
   plus: "Plus",
   pro: "Pro",
   team: "Team",

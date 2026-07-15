@@ -129,6 +129,10 @@ None
 
 ![OAuth import local multi-error validation](./assets/import-multiple-errors.png)
 
+![sub2api package expands into multiple queued imported OAuth members](./assets/import-sub2api-package-queue.png)
+
+![shared account id keeps distinct imported OAuth members importable](./assets/import-shared-account-distinct-members.png)
+
 ## 方案概述（Approach, high-level）
 
 - 复用现有 `src/oauth_bridge.rs` 的数据面适配逻辑，但删除 server/register 生命周期，只保留“直接拿 access token 调 codex backend 并生成兼容响应”的能力。

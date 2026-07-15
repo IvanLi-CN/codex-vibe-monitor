@@ -170,6 +170,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.plan.team": "Team",
     "accountPool.upstreamAccounts.plan.enterprise": "Enterprise",
     "accountPool.upstreamAccounts.plan.local": "Local",
+    "accountPool.upstreamAccounts.plan.k12": "K12",
     "accountPool.upstreamAccounts.emptyTitle": "No upstream account yet",
     "accountPool.upstreamAccounts.emptyDescription":
       "Create an OAuth or API key account to start building the pool.",
@@ -363,13 +364,13 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.createPage.tabs.apiKey": "API key",
     "accountPool.upstreamAccounts.import.createTitle": "Import OAuth JSON",
     "accountPool.upstreamAccounts.import.createDescription":
-      "Select exported credential files or paste one credential JSON at a time, run local checks and dedupe first, then use Validate and review for the actual server-side preview.",
+      "Select exported cpa credential files, sub2api export packages, or paste one credential JSON / one sub2api-data export object at a time. Local checks and member-level dedupe run first, then Validate and review performs the actual server-side preview.",
     "accountPool.upstreamAccounts.import.fileInputLabel": "Credential JSON files",
     "accountPool.upstreamAccounts.import.paste.label": "Paste one credential JSON",
     "accountPool.upstreamAccounts.import.paste.placeholder":
       '{\n  "type": "auth0",\n  "email": "owner@example.com",\n  ...\n}',
     "accountPool.upstreamAccounts.import.paste.hint":
-      "Paste exactly one credential JSON object. A successful paste is checked locally and added to the queue automatically; actual API validation waits for Validate and review.",
+      "Paste exactly one cpa credential JSON object, one sub2api OAuth account object, or one sub2api-data export object. A successful paste is checked locally and added to the queue automatically; actual API validation waits for Validate and review.",
     "accountPool.upstreamAccounts.import.paste.validating": "Checking pasted credential locally…",
     "accountPool.upstreamAccounts.import.paste.action": "Check and add to queue",
     "accountPool.upstreamAccounts.import.paste.clearDraft": "Clear editor",
@@ -378,7 +379,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.import.paste.invalidJsonError":
       "The pasted content must be valid JSON.",
     "accountPool.upstreamAccounts.import.paste.singleObjectError":
-      "Paste exactly one credential JSON object.",
+      "Paste exactly one credential JSON object or one sub2api-data export object.",
     "accountPool.upstreamAccounts.import.paste.unexpectedResponse":
       "The pasted credential returned an unexpected validation response.",
     "accountPool.upstreamAccounts.import.local.requiredField": "{{fieldName}} is required.",
@@ -394,7 +395,11 @@ const baseTranslations = {
       "This credential is already queued.",
     "accountPool.upstreamAccounts.import.local.fileRejected": 'Skipped "{{fileName}}": {{reason}}',
     "accountPool.upstreamAccounts.import.local.duplicateSkipped":
-      'Skipped duplicate credential "{{fileName}}" because the same account is already queued.',
+      'Skipped duplicate credential "{{fileName}}" because the same member is already queued.',
+    "accountPool.upstreamAccounts.import.local.unsupportedSub2apiAccount":
+      "Only sub2api accounts with platform=openai and type=oauth are supported.",
+    "accountPool.upstreamAccounts.import.local.noSupportedSub2apiAccounts":
+      "No supported OpenAI OAuth accounts were found in the sub2api export.",
     "accountPool.upstreamAccounts.import.selectedFilesTitle": "Queued credentials",
     "accountPool.upstreamAccounts.import.selectedFilesEmpty": "No credential has been added yet.",
     "accountPool.upstreamAccounts.import.filesSelected": "{{count}} credentials queued",
@@ -2518,6 +2523,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.plan.team": "Team",
     "accountPool.upstreamAccounts.plan.enterprise": "Enterprise",
     "accountPool.upstreamAccounts.plan.local": "Local",
+    "accountPool.upstreamAccounts.plan.k12": "K12",
     "accountPool.upstreamAccounts.emptyTitle": "还没有上游账号",
     "accountPool.upstreamAccounts.emptyDescription":
       "先创建一个 OAuth 或 API Key 账号，把号池基础能力搭起来。",
@@ -2725,20 +2731,20 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.createPage.tabs.apiKey": "API Key",
     "accountPool.upstreamAccounts.import.createTitle": "导入 OAuth JSON",
     "accountPool.upstreamAccounts.import.createDescription":
-      "选择导出的凭据 JSON 文件，或一次粘贴一条凭据 JSON，先做本地检查与去重，再通过“验证并预览”执行真正的服务端预览。",
+      "选择导出的 cpa 凭据 JSON、sub2api 导出包，或一次粘贴一条凭据 JSON / 一份 sub2api-data 导出 object，先做本地检查与成员级去重，再通过“验证并预览”执行真正的服务端预览。",
     "accountPool.upstreamAccounts.import.fileInputLabel": "凭据 JSON 文件",
     "accountPool.upstreamAccounts.import.paste.label": "粘贴单条凭据 JSON",
     "accountPool.upstreamAccounts.import.paste.placeholder":
       '{\n  "type": "auth0",\n  "email": "owner@example.com",\n  ...\n}',
     "accountPool.upstreamAccounts.import.paste.hint":
-      "每次只粘贴一条凭据 JSON object。粘贴成功后会先做本地检查并自动加入列表；真正的接口校验会在“验证并预览”时统一执行。",
+      "每次可粘贴一条 cpa 凭据 JSON、一条 sub2api OAuth 账号 object，或一份 sub2api-data 导出 object。粘贴成功后会先做本地检查并自动加入列表；真正的接口校验会在“验证并预览”时统一执行。",
     "accountPool.upstreamAccounts.import.paste.validating": "正在本地检查粘贴的凭据…",
     "accountPool.upstreamAccounts.import.paste.action": "检查并加入列表",
     "accountPool.upstreamAccounts.import.paste.clearDraft": "清空编辑框",
     "accountPool.upstreamAccounts.import.paste.emptyError": "请先粘贴一条凭据 JSON object。",
     "accountPool.upstreamAccounts.import.paste.invalidJsonError": "粘贴内容必须是合法 JSON。",
     "accountPool.upstreamAccounts.import.paste.singleObjectError":
-      "一次只能粘贴一条凭据 JSON object。",
+      "一次只能粘贴一条凭据 JSON object，或一份 sub2api-data 导出 object。",
     "accountPool.upstreamAccounts.import.paste.unexpectedResponse":
       "粘贴凭据返回了无法识别的校验结果。",
     "accountPool.upstreamAccounts.import.local.requiredField": "{{fieldName}} 不能为空。",
@@ -2753,7 +2759,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.import.local.pasteDuplicate": "这条凭据已经在待验证列表里了。",
     "accountPool.upstreamAccounts.import.local.fileRejected": "已跳过 {{fileName}}：{{reason}}",
     "accountPool.upstreamAccounts.import.local.duplicateSkipped":
-      "已跳过重复凭据 {{fileName}}：同一账号已经在待验证列表里。",
+      "已跳过重复凭据 {{fileName}}：同一成员已经在待验证列表里。",
+    "accountPool.upstreamAccounts.import.local.unsupportedSub2apiAccount":
+      "只支持 `platform=openai` 且 `type=oauth` 的 sub2api 账号记录。",
+    "accountPool.upstreamAccounts.import.local.noSupportedSub2apiAccounts":
+      "这份 sub2api 导出里没有可导入的 OpenAI OAuth 账号。",
     "accountPool.upstreamAccounts.import.selectedFilesTitle": "待验证凭据",
     "accountPool.upstreamAccounts.import.selectedFilesEmpty": "还没有加入任何凭据。",
     "accountPool.upstreamAccounts.import.filesSelected": "当前已加入 {{count}} 条凭据",

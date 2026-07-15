@@ -1131,7 +1131,18 @@ pub(crate) fn routing_candidate_snapshot_is_exhausted(
     )
 }
 
-pub(crate) fn imported_match_key(email: &str, account_id: &str) -> String {
+pub(crate) fn imported_match_key(
+    chatgpt_user_id: Option<&str>,
+    email: &str,
+    account_id: &str,
+) -> String {
+    if let Some(normalized_user_id) = chatgpt_user_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+    {
+        return format!("user:{normalized_user_id}");
+    }
     let normalized_account_id = account_id.trim().to_ascii_lowercase();
     if !normalized_account_id.is_empty() {
         return format!("account:{normalized_account_id}");
@@ -1157,19 +1168,39 @@ pub(crate) fn normalize_imported_oauth_credentials(
         .ok_or_else(|| "fileName is required".to_string())?;
     let content = normalize_optional_text(Some(item.content.clone()))
         .ok_or_else(|| "content is required".to_string())?;
-    let parsed: ImportedOauthCredentialsFile =
+    let parsed: Value =
         serde_json::from_str(&content).map_err(|err| format!("invalid JSON: {err}"))?;
-    let email =
-        normalize_required_secret(&parsed.email, "email").map_err(|(_, message)| message)?;
-    let chatgpt_account_id = normalize_required_secret(&parsed.account_id, "account_id")
-        .map_err(|(_, message)| message)?;
-    let access_token = normalize_required_secret(&parsed.access_token, "access_token")
-        .map_err(|(_, message)| message)?;
-    let refresh_token = normalize_optional_json_text(parsed.refresh_token);
-    let id_token =
-        normalize_required_secret(&parsed.id_token, "id_token").map_err(|(_, message)| message)?;
-    let token_expires_at =
-        resolve_imported_token_expires_at(parsed.expired.as_deref(), &access_token, &id_token)?;
+    let normalized_value = normalize_imported_oauth_record_value(&parsed)?;
+    let email = normalize_required_secret(
+        &required_imported_oauth_string(&normalized_value, &["email"], "email")?,
+        "email",
+    )
+    .map_err(|(_, message)| message)?;
+    let chatgpt_account_id = normalize_required_secret(
+        &required_imported_oauth_string(
+            &normalized_value,
+            &["account_id", "chatgpt_account_id"],
+            "account_id",
+        )?,
+        "account_id",
+    )
+    .map_err(|(_, message)| message)?;
+    let access_token = normalize_required_secret(
+        &required_imported_oauth_string(&normalized_value, &["access_token"], "access_token")?,
+        "access_token",
+    )
+    .map_err(|(_, message)| message)?;
+    let refresh_token = optional_imported_oauth_string(&normalized_value, &["refresh_token"]);
+    let id_token = normalize_required_secret(
+        &required_imported_oauth_string(&normalized_value, &["id_token"], "id_token")?,
+        "id_token",
+    )
+    .map_err(|(_, message)| message)?;
+    let token_expires_at = resolve_imported_token_expires_at(
+        optional_imported_oauth_string(&normalized_value, &["expired"]).as_deref(),
+        &access_token,
+        &id_token,
+    )?;
     let mut claims = parse_chatgpt_jwt_claims(&id_token)
         .map_err(|err| format!("failed to parse id_token: {err}"))?;
     if let Some(jwt_email) = claims.email.as_deref()
@@ -1184,22 +1215,107 @@ pub(crate) fn normalize_imported_oauth_credentials(
     }
     claims.email = Some(email.clone());
     claims.chatgpt_account_id = Some(chatgpt_account_id.clone());
+    let chatgpt_user_id = claims
+        .chatgpt_user_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     Ok(NormalizedImportedOauthCredentials {
         source_id,
         file_name,
         email: email.clone(),
         display_name: email,
         chatgpt_account_id,
+        chatgpt_user_id,
         token_expires_at,
         credentials: StoredOauthCredentials {
             access_token,
             refresh_token,
             id_token,
-            token_type: normalize_optional_json_text(parsed.token_type)
+            token_type: optional_imported_oauth_string(&normalized_value, &["token_type"])
                 .or_else(|| Some("Bearer".to_string())),
         },
         claims,
     })
+}
+
+fn required_imported_oauth_string(
+    value: &Value,
+    keys: &[&str],
+    field_name: &str,
+) -> Result<String, String> {
+    optional_imported_oauth_json_text(value, keys)
+        .ok_or_else(|| format!("{field_name} is required"))
+}
+
+fn optional_imported_oauth_string(value: &Value, keys: &[&str]) -> Option<String> {
+    optional_imported_oauth_json_text(value, keys)
+}
+
+fn optional_imported_oauth_json_text(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| value.get(*key))
+        .and_then(|raw| match raw {
+            Value::String(text) => normalize_optional_text(Some(text.clone())),
+            _ => None,
+        })
+}
+
+fn normalize_imported_oauth_record_value(value: &Value) -> Result<Value, String> {
+    let Some(record) = value.as_object() else {
+        return Err("expected one credential JSON object".to_string());
+    };
+
+    if record
+        .get("platform")
+        .and_then(value_as_string)
+        .is_some_and(|value| value.eq_ignore_ascii_case("openai"))
+        && record
+            .get("type")
+            .and_then(value_as_string)
+            .is_some_and(|value| value.eq_ignore_ascii_case("oauth"))
+    {
+        let credentials = record
+            .get("credentials")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "sub2api oauth account is missing credentials".to_string())?;
+        let mut normalized = serde_json::Map::new();
+        for (target_key, source_key) in [
+            ("email", "email"),
+            ("access_token", "access_token"),
+            ("refresh_token", "refresh_token"),
+            ("id_token", "id_token"),
+            ("token_type", "token_type"),
+            ("expired", "expires_at"),
+            ("plan_type", "plan_type"),
+            ("chatgpt_user_id", "chatgpt_user_id"),
+        ] {
+            if let Some(value) = credentials.get(source_key) {
+                normalized.insert(target_key.to_string(), value.clone());
+            }
+        }
+        if let Some(value) = credentials
+            .get("chatgpt_account_id")
+            .or_else(|| credentials.get("account_id"))
+        {
+            normalized.insert("account_id".to_string(), value.clone());
+        }
+        return Ok(Value::Object(normalized));
+    }
+
+    if record
+        .get("type")
+        .and_then(value_as_string)
+        .is_some_and(|value| value.eq_ignore_ascii_case("sub2api-data"))
+    {
+        return Err(
+            "sub2api-data export packages must be expanded into individual OpenAI OAuth accounts before validation"
+                .to_string(),
+        );
+    }
+
+    Ok(value.clone())
 }
 
 pub(crate) fn normalize_optional_json_text(value: Option<serde_json::Value>) -> Option<String> {

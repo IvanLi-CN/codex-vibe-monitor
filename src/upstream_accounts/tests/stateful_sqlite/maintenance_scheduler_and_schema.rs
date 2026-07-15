@@ -633,7 +633,7 @@ async fn find_existing_import_match_loads_compact_support_fields() {
     .await
     .expect("seed compact support fields");
 
-    let row = find_existing_import_match(&pool, "org_test", "oauth@example.com")
+    let row = find_existing_import_match(&pool, Some("user_test"), "org_test", "oauth@example.com")
         .await
         .expect("find existing import match")
         .expect("existing OAuth account should match");
@@ -648,6 +648,88 @@ async fn find_existing_import_match_loads_compact_support_fields() {
         row.compact_support_reason.as_deref(),
         Some("validation probe")
     );
+}
+
+#[tokio::test]
+async fn find_existing_import_match_prefers_chatgpt_user_id_for_shared_account_ids() {
+    let pool = test_pool().await;
+    let first_id = insert_oauth_account(&pool, "Shared Org First").await;
+    let second_id = insert_oauth_account(&pool, "Shared Org Second").await;
+
+    sqlx::query(
+        r#"
+            UPDATE pool_upstream_accounts
+            SET email = ?2,
+                chatgpt_account_id = ?3,
+                chatgpt_user_id = ?4
+            WHERE id = ?1
+            "#,
+    )
+    .bind(first_id)
+    .bind("member-one@example.com")
+    .bind("org_shared_k12")
+    .bind("user_member_one")
+    .execute(&pool)
+    .await
+    .expect("update first shared-org row");
+    sqlx::query(
+        r#"
+            UPDATE pool_upstream_accounts
+            SET email = ?2,
+                chatgpt_account_id = ?3,
+                chatgpt_user_id = ?4
+            WHERE id = ?1
+            "#,
+    )
+    .bind(second_id)
+    .bind("member-two@example.com")
+    .bind("org_shared_k12")
+    .bind("user_member_two")
+    .execute(&pool)
+    .await
+    .expect("update second shared-org row");
+
+    let row = find_existing_import_match(
+        &pool,
+        Some("user_member_two"),
+        "org_shared_k12",
+        "member-one@example.com",
+    )
+    .await
+    .expect("find existing import match by user id")
+    .expect("shared-org member should match");
+
+    assert_eq!(row.id, second_id);
+    assert_eq!(row.email.as_deref(), Some("member-two@example.com"));
+}
+
+#[tokio::test]
+async fn find_existing_import_match_falls_back_to_account_id_only_for_legacy_missing_user_id() {
+    let pool = test_pool().await;
+    let legacy_id = insert_oauth_account(&pool, "Legacy Shared Org").await;
+    sqlx::query(
+        r#"
+            UPDATE pool_upstream_accounts
+            SET email = ?2,
+                chatgpt_account_id = ?3,
+                chatgpt_user_id = NULL
+            WHERE id = ?1
+            "#,
+    )
+    .bind(legacy_id)
+    .bind("legacy@example.com")
+    .bind("legacy_shared_org")
+    .execute(&pool)
+    .await
+    .expect("update legacy row");
+
+    let row = find_existing_import_match(&pool, None, "legacy_shared_org", "different@example.com")
+        .await
+        .expect("find legacy import match")
+        .expect("legacy account should match by account id");
+
+    assert_eq!(row.id, legacy_id);
+    assert_eq!(row.chatgpt_user_id.as_deref(), None);
 }
 
 pub(crate) async fn insert_syncable_oauth_account(

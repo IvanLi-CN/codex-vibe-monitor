@@ -12454,7 +12454,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     .bind("dashboard-activity-alpha-zero-cost")
     .bind(format_naive(
         base_local
-            .checked_sub_signed(ChronoDuration::seconds(5))
+            .checked_sub_signed(ChronoDuration::seconds(29))
             .expect("valid zero-cost dashboard activity time"),
     ))
     .bind(SOURCE_PROXY)
@@ -12888,6 +12888,17 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     );
     assert_f64_close(
         performance.total.usage_duration_ms.expect("usage duration"),
+        2_300.0,
+    );
+    assert_f64_close(
+        performance.models[0]
+            .metrics
+            .usage_duration_ms
+            .expect("first model usage duration")
+            + performance.models[1]
+                .metrics
+                .usage_duration_ms
+                .expect("second model usage duration"),
         2_800.0,
     );
     let alpha = accounts
@@ -12902,6 +12913,25 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     assert_eq!(
         alpha.model_performance.models[0].model,
         "gpt-5.6-performance"
+    );
+    assert_f64_close(
+        alpha
+            .model_performance
+            .total
+            .usage_duration_ms
+            .expect("alpha usage duration"),
+        2_300.0,
+    );
+    assert_f64_close(
+        alpha.model_performance.models[0]
+            .metrics
+            .usage_duration_ms
+            .expect("alpha primary model usage duration")
+            + alpha.model_performance.models[1]
+                .metrics
+                .usage_duration_ms
+                .expect("alpha secondary model usage duration"),
+        2_800.0,
     );
     let source_scope = resolve_default_source_scope(&state.pool)
         .await

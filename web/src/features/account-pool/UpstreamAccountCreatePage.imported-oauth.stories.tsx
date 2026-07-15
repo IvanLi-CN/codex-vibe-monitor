@@ -101,6 +101,56 @@ function buildPastedSession() {
   });
 }
 
+function buildPastedSub2apiPackage() {
+  return JSON.stringify({
+    type: "sub2api-data",
+    accounts: [
+      {
+        platform: "openai",
+        type: "oauth",
+        credentials: {
+          email: "sub2api-story-one@duckmail.sbs",
+          chatgpt_account_id: "acct_story_shared_k12",
+          chatgpt_user_id: "user_story_one",
+          plan_type: "k12",
+          access_token: "access-token-one",
+          refresh_token: "refresh-token-one",
+          id_token: buildJwt({
+            email: "sub2api-story-one@duckmail.sbs",
+            auth: {
+              chatgpt_account_id: "acct_story_shared_k12",
+              chatgpt_user_id: "user_story_one",
+              chatgpt_plan_type: "k12",
+            },
+          }),
+          expires_at: "2026-03-20T00:00:00.000Z",
+        },
+      },
+      {
+        platform: "openai",
+        type: "oauth",
+        credentials: {
+          email: "sub2api-story-two@duckmail.sbs",
+          chatgpt_account_id: "acct_story_shared_k12",
+          chatgpt_user_id: "user_story_two",
+          plan_type: "k12",
+          access_token: "access-token-two",
+          refresh_token: "refresh-token-two",
+          id_token: buildJwt({
+            email: "sub2api-story-two@duckmail.sbs",
+            auth: {
+              chatgpt_account_id: "acct_story_shared_k12",
+              chatgpt_user_id: "user_story_two",
+              chatgpt_plan_type: "k12",
+            },
+          }),
+          expires_at: "2026-03-20T00:00:00.000Z",
+        },
+      },
+    ],
+  });
+}
+
 async function uploadImportFixture(canvasElement: HTMLElement) {
   const canvas = within(canvasElement);
   const fileInput = canvasElement.querySelector('input[type="file"]');
@@ -157,7 +207,11 @@ export const PasteInvalidEditable: Story = {
     const editor = canvas.getByLabelText(/paste one credential json/i);
     await userEvent.click(editor);
     await userEvent.paste('[{"type":"codex"}]');
-    await expect(canvas.getByText(/paste exactly one credential json object/i)).toBeInTheDocument();
+    await expect(
+      canvas.getByText(
+        /paste exactly one credential json object or one sub2api-data export object/i,
+      ),
+    ).toBeInTheDocument();
     await expect(editor).toHaveValue('[{"type":"codex"}]');
   },
 };
@@ -192,6 +246,19 @@ export const PasteAddedToQueue: Story = {
     await userEvent.paste(buildPastedCredential());
     await expect(canvas.getByText(/pasted credential #1\.json/i)).toBeInTheDocument();
     await expect(editor).toHaveValue("");
+  },
+};
+
+export const PasteSub2apiPackageAddedToQueue: Story = {
+  render: () => renderImportedOauthStory(),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const editor = canvas.getByLabelText(/paste one credential json/i);
+    await userEvent.click(editor);
+    await userEvent.paste(buildPastedSub2apiPackage());
+    await expect(canvas.getByText(/sub2api-story-one@duckmail\.sbs/i)).toBeInTheDocument();
+    await expect(canvas.getByText(/sub2api-story-two@duckmail\.sbs/i)).toBeInTheDocument();
+    await expect(canvas.getByRole("button", { name: /validate/i })).toBeEnabled();
   },
 };
 

@@ -95,9 +95,9 @@
 - 运行态号池账号提示必须复用现有账号点击路径；存在账号 ID 时，Live、Records、Dashboard working conversations 与 Dashboard 调用详情抽屉中的账号文本仍可打开上游账号详情。
 - 运行态号池账号提示必须是 text-only 蓝色语义状态，动画周期在 1500-2200ms 内；`prefers-reduced-motion: reduce` 下关闭呼吸动画但保留蓝色文本。
 - Dashboard 模型性能明细的样本资格固定为：状态为 `success` 或 `completed`、失败分类为 `none`、且 `cost` 非空；`cost=0` 仍属于已计费。模型取 `responseModel`，思考程度为空时显示“未指定”。
-- TPM 为合格调用总 token 除以当前完整选择范围的分钟数；流式响应速率为输出 token 除以上游流式响应时长；响应时长为首字至流结束的平均值；首字用时为收到调用请求至上游首字的平均值；使用时长为端到端时长之和。缺少有效样本的单项显示 `—`。
+- TPM 为合格调用总 token 除以当前完整选择范围的分钟数；流式响应速率为输出 token 除以上游流式响应时长；响应时长为首字至流结束的平均值；首字用时为收到调用请求至上游首字的平均值；模型行使用时长继续为各自行的端到端时长之和，总计行使用时长改为将同一范围内全部合格调用按 `intersection([occurred_at, occurred_at + t_total_ms), [range.start, range.end))` 取时间并集。缺少有效样本的单项显示 `—`。
 - Dashboard 全局和账号 TPM 卡面必须使用对应模型性能总计；费用速率继续使用既有费用归集，但以完整选择范围为分母。
-- 桌面端性能明细触发器必须支持 hover、键盘聚焦与点击保留；窄屏点击打开无横向滚动的详情抽屉。总计行置顶，模型行按累计使用时长降序。
+- 桌面端性能明细触发器必须支持 hover、键盘聚焦与点击保留；窄屏点击打开无横向滚动的详情抽屉。总计行置顶，模型行按累计使用时长降序；总计行允许小于模型行 `使用时长` 的算术和。
 - `GET /api/invocations/locate` 必须按 `upstreamAccountId + requestId` 在 retained live records 与当前 runtime overlay 中精确定位，固定采用 `occurredAt DESC, id DESC`，返回目标所在的单个分页窗口、稳定 `snapshotId`、短生命周期 `anchorId`、`targetIndex` 与 `targetAbsoluteIndex`。
 - 锚点定位未命中时必须返回结构化 `404`；不得为了定位查询 archive，也不得返回或预加载目标页之外的调用记录。
 
@@ -223,7 +223,7 @@
 - Given 号池运行态调用没有 `upstreamAccountName` 或 `upstreamAccountId`，When owner-facing 调用界面渲染，Then 继续显示既有“号池路由中”fallback，且不伪造账号、不启用呼吸状态。
 - Given 号池调用已进入成功或失败等终态，When owner-facing 调用界面渲染其账号字段，Then 保持普通账号显示与点击行为，不启用运行态呼吸状态。
 - Given 当前 Dashboard 范围内同时存在成功已计费、失败、运行中和未计费调用，When 请求模型性能明细，Then 仅成功已计费调用进入总计和模型行，且 `cost=0` 的成功调用仍保留；模型按响应模型归属，空思考程度显示“未指定”。
-- Given owner 在桌面 hover、键盘聚焦或点击 Dashboard TPM、首字、账号 TPM 或费用速率入口，When 性能明细打开，Then 显示置顶总计与按累计使用时长降序的模型行，缺失指标显示 `—`；Given 窄屏点击同一入口，Then 以无横向滚动的抽屉展示同一数据。
+- Given owner 在桌面 hover、键盘聚焦或点击 Dashboard TPM、首字、账号 TPM 或费用速率入口，When 性能明细打开，Then 显示置顶总计与按累计使用时长降序的模型行，且总计 `使用时长` 按范围内合格调用的时间并集计算、可以小于模型行加总，缺失指标显示 `—`；Given 窄屏点击同一入口，Then 以无横向滚动的抽屉展示同一数据。
 
 ### Manual verification
 
@@ -231,33 +231,33 @@
 
 ## Visual Evidence
 
-- source_type: ui_demo
-  route: '#/dashboard'
-  state: desktop model-performance Tooltip opened from the Dashboard TPM card
+- source_type: storybook_canvas
+  story_id_or_title: Dashboard/ModelPerformanceTrigger/DesktopTooltip
+  state: desktop model-performance tooltip with union-based total usage duration
   requested_viewport: 1440x1024
   viewport_strategy: browser-viewport
-  evidence_note: verifies the desktop Dashboard exposes a complete-range, successful-billed model and reasoning-effort table with a pinned total row through the TPM card Tooltip.
+  evidence_note: verifies the desktop model-performance tooltip keeps the pinned total row while showing the union-based total duration (`2.2 min`) smaller than the model-row arithmetic sum (`2 min + 1.1 min`).
   PR: include
   target_program: mock-only
-  capture_scope: page
+  capture_scope: element
   sensitive_exclusion: fixture-only Dashboard data
   submission_gate: approved
   image:
-  ![Dashboard desktop model performance Tooltip](./assets/dashboard-model-performance-desktop.png)
+  ![Dashboard desktop model performance union total](./assets/model-performance-total-union-desktop-storybook.png)
 
-- source_type: ui_demo
-  route: '#/dashboard'
-  state: mobile model-performance Drawer opened from the Dashboard TPM card
+- source_type: storybook_canvas
+  story_id_or_title: Dashboard/ModelPerformanceTrigger/MobileDrawer
+  state: mobile model-performance drawer with union-based total usage duration
   requested_viewport: 390x844
   viewport_strategy: browser-viewport
-  evidence_note: verifies the compact Dashboard opens a scrollable Drawer whose total and model rows use a stacked metric layout instead of a horizontally scrolling table.
+  evidence_note: verifies the compact drawer keeps the stacked metric layout and shows the same union-based total duration (`2.2 min`) below the model-row sum, matching the desktop semantics.
   PR: include
   target_program: mock-only
-  capture_scope: page
+  capture_scope: element
   sensitive_exclusion: fixture-only Dashboard data
   submission_gate: approved
   image:
-  ![Dashboard mobile model performance Drawer](./assets/dashboard-model-performance-mobile.png)
+  ![Dashboard mobile model performance union total](./assets/model-performance-total-union-mobile-storybook.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays/DetailDrawer
