@@ -28,6 +28,14 @@ function formatDuration(value: number | null | undefined, localeTag: string) {
   return minutes > 0 ? `${hours} h ${minutes} min` : `${hours} h`;
 }
 
+function formatParallelism(value: number | null | undefined, localeTag: string) {
+  if (value == null || !Number.isFinite(value) || value <= 0) return "—";
+  return `x${new Intl.NumberFormat(localeTag, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value)}`;
+}
+
 function effortLabel(
   effort: string | null | undefined,
   labels: Record<string, string>,
@@ -50,7 +58,9 @@ export function ModelPerformanceDetails({
     streamingRate: t("dashboard.modelPerformance.columns.streamingRate"),
     response: t("dashboard.modelPerformance.columns.response"),
     firstByte: t("dashboard.modelPerformance.columns.firstByte"),
-    usageDuration: t("dashboard.modelPerformance.columns.usageDuration"),
+    wallClockDuration: t("dashboard.modelPerformance.columns.wallClockDuration"),
+    cumulativeDuration: t("dashboard.modelPerformance.columns.cumulativeDuration"),
+    parallelism: t("dashboard.modelPerformance.columns.parallelism"),
   };
   const effortLabels = {
     none: t("dashboard.modelPerformance.effort.none"),
@@ -67,7 +77,9 @@ export function ModelPerformanceDetails({
       : `${formatNumber(metrics.streamingResponseRate, localeTag, 2)} tok/s`,
     formatDuration(metrics.avgResponseMs, localeTag),
     formatDuration(metrics.avgFirstResponseByteTotalMs, localeTag),
-    formatDuration(metrics.usageDurationMs, localeTag),
+    formatDuration(metrics.wallClockUsageDurationMs, localeTag),
+    formatDuration(metrics.cumulativeUsageDurationMs, localeTag),
+    formatParallelism(metrics.parallelism, localeTag),
   ];
 
   if (!performance.available) {
@@ -95,9 +107,14 @@ export function ModelPerformanceDetails({
   if (presentation === "drawer") {
     return (
       <div className="space-y-4" data-testid="model-performance-drawer-content">
-        <p className="text-sm leading-6 text-base-content/70">
-          {t("dashboard.modelPerformance.description")}
-        </p>
+        <div className="space-y-1.5">
+          <p className="text-sm leading-6 text-base-content/70">
+            {t("dashboard.modelPerformance.description")}
+          </p>
+          <p className="text-xs leading-5 text-base-content/58">
+            {t("dashboard.modelPerformance.overlapNote")}
+          </p>
+        </div>
         <ModelPerformanceMetricGrid
           label={t("dashboard.modelPerformance.total")}
           values={valuesFor(performance.total)}
@@ -137,13 +154,16 @@ export function ModelPerformanceDetails({
         <p className="mt-0.5 text-[11px] leading-4 text-base-content/65">
           {t("dashboard.modelPerformance.description")}
         </p>
+        <p className="mt-1 text-[11px] leading-4 text-base-content/55">
+          {t("dashboard.modelPerformance.overlapNote")}
+        </p>
       </div>
       <div className="max-h-[min(28rem,calc(100dvh-8rem))] overflow-auto">
-        <table className="w-full min-w-[43rem] table-fixed border-collapse text-[10px] leading-4 sm:text-[11px]">
+        <table className="w-full min-w-[60rem] table-fixed border-collapse text-[10px] leading-4 sm:text-[11px]">
           <caption className="sr-only">{title}</caption>
           <thead className="border-y border-base-300/55 bg-base-200/55 text-[9px] text-base-content/60">
             <tr>
-              <th scope="col" className="w-[23%] px-2 py-2 text-left font-semibold">
+              <th scope="col" className="w-[19%] px-2 py-2 text-left font-semibold">
                 {t("dashboard.modelPerformance.model")}
               </th>
               {[
@@ -151,7 +171,9 @@ export function ModelPerformanceDetails({
                 labels.streamingRate,
                 labels.response,
                 labels.firstByte,
-                labels.usageDuration,
+                labels.wallClockDuration,
+                labels.cumulativeDuration,
+                labels.parallelism,
               ].map((label) => (
                 <th
                   key={label}

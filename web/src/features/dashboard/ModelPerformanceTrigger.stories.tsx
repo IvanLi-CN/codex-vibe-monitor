@@ -11,7 +11,9 @@ const modelPerformance: ModelPerformance = {
     streamingResponseRate: 164.2,
     avgResponseMs: 4820,
     avgFirstResponseByteTotalMs: 1290,
-    usageDurationMs: 132400,
+    wallClockUsageDurationMs: 101200,
+    cumulativeUsageDurationMs: 132400,
+    parallelism: 1.31,
   },
   models: [
     {
@@ -21,7 +23,9 @@ const modelPerformance: ModelPerformance = {
       streamingResponseRate: 182.4,
       avgResponseMs: 5150,
       avgFirstResponseByteTotalMs: 1480,
-      usageDurationMs: 118600,
+      wallClockUsageDurationMs: 86400,
+      cumulativeUsageDurationMs: 118600,
+      parallelism: 1.37,
     },
     {
       model: "gpt-5.6-terra",
@@ -30,7 +34,9 @@ const modelPerformance: ModelPerformance = {
       streamingResponseRate: null,
       avgResponseMs: null,
       avgFirstResponseByteTotalMs: 930,
-      usageDurationMs: 65600,
+      wallClockUsageDurationMs: 50800,
+      cumulativeUsageDurationMs: 65600,
+      parallelism: 1.29,
     },
   ],
 };
@@ -73,6 +79,9 @@ export const DesktopTooltip: Story = {
     await expect(details).toHaveTextContent("Model performance");
     await expect(within(details).getByRole("rowheader", { name: "Total" })).toBeInTheDocument();
     await expect(within(details).getByText("Unspecified")).toBeInTheDocument();
+    await expect(details).toHaveTextContent("Wall clock");
+    await expect(details).toHaveTextContent("Cumulative");
+    await expect(details).toHaveTextContent("x1.31");
   },
 };
 
@@ -103,6 +112,8 @@ export const MobileDrawer: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: /open model performance/i }));
-    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+    const dialog = within(document.body).getByRole("dialog");
+    await expect(dialog).toBeInTheDocument();
+    await expect(dialog).toHaveTextContent("x1.31");
   },
 };

@@ -13,7 +13,9 @@ const modelPerformance: ModelPerformance = {
     streamingResponseRate: 150,
     avgResponseMs: 2800,
     avgFirstResponseByteTotalMs: 720,
-    usageDurationMs: 90000,
+    wallClockUsageDurationMs: 90000,
+    cumulativeUsageDurationMs: 288000,
+    parallelism: 3.2,
   },
   models: [
     {
@@ -23,7 +25,9 @@ const modelPerformance: ModelPerformance = {
       streamingResponseRate: null,
       avgResponseMs: null,
       avgFirstResponseByteTotalMs: 720,
-      usageDurationMs: 90000,
+      wallClockUsageDurationMs: 90000,
+      cumulativeUsageDurationMs: 288000,
+      parallelism: 3.2,
     },
   ],
 };
@@ -98,6 +102,10 @@ describe("ModelPerformanceTrigger", () => {
     expect(tooltip?.textContent).toContain("Model performance");
     expect(tooltip?.textContent).toMatch(/Total|总计/);
     expect(tooltip?.textContent).toMatch(/Unspecified|未指定/);
+    expect(tooltip?.textContent).toMatch(/Wall clock|墙钟时长/);
+    expect(tooltip?.textContent).toMatch(/Cumulative|累计时长/);
+    expect(tooltip?.textContent).toMatch(/Parallelism|并行数/);
+    expect(tooltip?.textContent).toContain("x3.20");
   });
 
   it("opens a compact drawer without a horizontally scrolling table", async () => {
@@ -117,14 +125,28 @@ describe("ModelPerformanceTrigger", () => {
     expect(
       dialog?.querySelector('[data-testid="model-performance-drawer-content"]'),
     ).not.toBeNull();
+    expect(dialog?.textContent).toMatch(/Wall clock|墙钟时长/);
+    expect(dialog?.textContent).toContain("x3.20");
   });
 
-  it("normalizes rounded usage durations at the next hour boundary", async () => {
+  it("normalizes rounded wall-clock durations and fixed parallelism formatting", async () => {
     compactViewport = true;
     await renderTrigger({
       ...modelPerformance,
-      total: { ...modelPerformance.total, usageDurationMs: 7_199_500 },
-      models: [{ ...modelPerformance.models[0], usageDurationMs: 7_199_500 }],
+      total: {
+        ...modelPerformance.total,
+        wallClockUsageDurationMs: 7_199_500,
+        cumulativeUsageDurationMs: 23_038_400,
+        parallelism: 3.2,
+      },
+      models: [
+        {
+          ...modelPerformance.models[0],
+          wallClockUsageDurationMs: 7_199_500,
+          cumulativeUsageDurationMs: 23_038_400,
+          parallelism: 3.2,
+        },
+      ],
     });
     const trigger = host?.querySelector('[aria-label="Open model performance details"]');
     await act(async () => {
@@ -134,6 +156,7 @@ describe("ModelPerformanceTrigger", () => {
 
     expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain("2 h");
     expect(document.body.querySelector('[role="dialog"]')?.textContent).not.toContain("1 h 60 min");
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain("x3.20");
   });
 
   it("renders explicit empty and unavailable states", async () => {
