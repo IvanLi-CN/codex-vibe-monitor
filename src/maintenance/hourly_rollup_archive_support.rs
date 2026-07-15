@@ -14,7 +14,7 @@ use tracing::warn;
 
 use crate::{
     ARCHIVE_LAYOUT_SEGMENT_V1, AppConfig, ArchiveBatchLayout, ArchiveFileCodec,
-    ArchiveSegmentGranularity, format_naive, start_of_local_day,
+    ArchiveSegmentGranularity, INVOCATION_STATUS_WARNING_SUCCESS, format_naive, start_of_local_day,
 };
 
 pub(crate) fn resolved_raw_path_candidates(
@@ -143,6 +143,7 @@ pub(crate) fn invocation_status_is_success_like(
 
     normalized_status.eq_ignore_ascii_case("success")
         || normalized_status.eq_ignore_ascii_case("completed")
+        || normalized_status.eq_ignore_ascii_case(INVOCATION_STATUS_WARNING_SUCCESS)
         || (normalized_status.eq_ignore_ascii_case("http_200") && error_message_empty)
 }
 
@@ -151,7 +152,8 @@ pub(crate) fn invocation_status_is_success_like_sql(
     error_message_column: &str,
 ) -> String {
     format!(
-        "(LOWER(TRIM(COALESCE({status_column}, ''))) IN ('success', 'completed') OR (LOWER(TRIM(COALESCE({status_column}, ''))) = 'http_200' AND TRIM(COALESCE({error_message_column}, '')) = ''))"
+        "(LOWER(TRIM(COALESCE({status_column}, ''))) IN ('success', 'completed', '{warning_success}') OR (LOWER(TRIM(COALESCE({status_column}, ''))) = 'http_200' AND TRIM(COALESCE({error_message_column}, '')) = ''))",
+        warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
     )
 }
 

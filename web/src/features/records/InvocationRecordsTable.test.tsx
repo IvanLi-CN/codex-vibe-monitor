@@ -225,6 +225,28 @@ describe("InvocationRecordsTable", () => {
     expect(text).not.toContain("completed");
   });
 
+  it("renders warning_success rows with the dedicated warning success badge label", () => {
+    render(
+      <InvocationRecordsTable
+        focus="token"
+        isLoading={false}
+        records={[
+          createRecord({
+            status: "warning_success",
+            failureClass: "none",
+            failureKind: "downstream_closed",
+            downstreamErrorMessage:
+              "[downstream_closed] downstream closed while streaming upstream response",
+          }),
+        ]}
+      />,
+    );
+
+    const text = host?.textContent ?? "";
+    expect(text).toContain("table.status.warningSuccess");
+    expect(text).not.toContain("warning_success");
+  });
+
   it("renders interrupted rows with the dedicated interrupted badge label", () => {
     render(
       <InvocationRecordsTable

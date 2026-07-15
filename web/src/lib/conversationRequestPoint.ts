@@ -54,6 +54,10 @@ export function resolvePromptCacheInvocationOutcome(
     return "failure";
   }
 
+  if (status === "warning_success") {
+    return "success";
+  }
+
   const failureKind = normalizeFailureKind(record.failureKind);
   const hasErrorMessage = hasNonEmptyText(record.errorMessage);
   const hasDownstreamErrorMessage = hasNonEmptyText(record.downstreamErrorMessage);
@@ -69,7 +73,12 @@ export function resolvePromptCacheInvocationOutcome(
     return "in_flight";
   }
 
-  if (status === "success" || status === "completed" || status === "http_200") {
+  if (
+    status === "success" ||
+    status === "completed" ||
+    status === "warning_success" ||
+    status === "http_200"
+  ) {
     return "success";
   }
 

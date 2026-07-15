@@ -1032,17 +1032,17 @@ pub(crate) async fn backfill_failure_classification_from_cursor(
                 OR TRIM(COALESCE(failure_class, '')) = ''
                 OR is_actionable IS NULL
                 OR (
-                    LOWER(TRIM(COALESCE(status, ''))) != 'success'
+                    LOWER(TRIM(COALESCE(status, ''))) NOT IN ('success', 'warning_success')
                     AND TRIM(COALESCE(status, '')) != ''
                     AND TRIM(COALESCE(failure_kind, '')) = ''
                 )
                 OR (
-                    LOWER(TRIM(COALESCE(status, ''))) != 'success'
+                    LOWER(TRIM(COALESCE(status, ''))) NOT IN ('success', 'warning_success')
                     AND TRIM(COALESCE(failure_class, '')) = 'none'
                 )
                 OR (
                     source = ?2
-                    AND LOWER(TRIM(COALESCE(status, ''))) = 'success'
+                    AND LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'warning_success')
                     AND (
                         raw_response LIKE '%response.failed%'
                         OR raw_response LIKE '%"type":"error"%'

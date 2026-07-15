@@ -53,6 +53,25 @@ const POOL_ROUTING_ACCOUNT_STATE_RECORDS: ApiInvocation[] = [
   },
 ];
 
+const WARNING_SUCCESS_RECORDS: ApiInvocation[] = [
+  {
+    ...STORYBOOK_INVOCATION_RECORDS[0]!,
+    id: 6401,
+    invokeId: "inv_story_warning_success",
+    status: "warning_success",
+    failureKind: "downstream_closed",
+    failureClass: "none",
+    errorMessage: "[downstream_closed] downstream closed while streaming upstream response",
+    upstreamAccountId: 42,
+    upstreamAccountName: "Pool Alpha 42",
+    totalTokens: 167_710,
+    cost: 0.0629,
+    tUpstreamTtfbMs: 1_131,
+    tUpstreamStreamMs: 15_849,
+    tTotalMs: 16_980,
+  },
+];
+
 type StorybookPoolAttemptsRegistry = {
   originalFetch: typeof window.fetch;
   providers: Map<
@@ -380,6 +399,29 @@ export const FirstResponseByteSemantics: Story = {
           "Focused network view for the new first-response-byte-total semantics. The first row deliberately keeps `上游首字节 = 0.0 ms` while the cumulative `首字总耗时` stays near `9.36 s`, matching the user-facing clarification in the monitoring table.",
       },
     },
+  },
+};
+
+export const WarningSuccessStatus: Story = {
+  args: {
+    focus: "network",
+    records: WARNING_SUCCESS_RECORDS,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Dedicated warning-success terminal row for future pure_downstream_closed records, preserving downstream diagnostics while rendering the owner-facing status as success-like warning.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(/警告成功|Warning success/i)).toBeInTheDocument();
+    await expect(canvas.getByText("Pool Alpha 42")).toBeInTheDocument();
+    await expect(canvas.getByText(/167,710/)).toBeInTheDocument();
   },
 };
 

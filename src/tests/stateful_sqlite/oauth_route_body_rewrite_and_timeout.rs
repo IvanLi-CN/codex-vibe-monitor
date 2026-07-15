@@ -2191,7 +2191,7 @@ async fn pool_openai_v1_responses_network_marks_after_first_byte_downstream_clos
 
     wait_for_codex_invocations(&state.pool, 1).await;
     let (row, payload) = load_latest_invocation_payload_row(state.as_ref()).await;
-    assert_eq!(row.status.as_deref(), Some("failed"));
+    assert_eq!(row.status.as_deref(), Some("warning_success"));
     assert_eq!(
         row.failure_kind.as_deref(),
         Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)

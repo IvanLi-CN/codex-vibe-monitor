@@ -169,10 +169,7 @@ export function AccountDetailDrawerShell({
         className="absolute inset-0 bg-neutral/50 backdrop-blur-sm"
         onClick={closeDisabled ? undefined : onClose}
       />
-      <div
-        className="absolute inset-x-0 bottom-0 top-0 flex items-end justify-end desktop:inset-y-0 desktop:left-auto desktop:right-0 desktop:items-stretch desktop:pl-8"
-        onClick={closeDisabled ? undefined : onClose}
-      >
+      <div className="drawer-frame" onClick={closeDisabled ? undefined : onClose}>
         {shell}
       </div>
     </div>,

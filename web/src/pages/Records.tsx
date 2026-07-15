@@ -343,6 +343,7 @@ export default function RecordsPage() {
 
     const statusLabels: Record<string, string> = {
       success: t("records.filters.status.success"),
+      warning_success: t("records.filters.status.warningSuccess"),
       failed: t("records.filters.status.failed"),
       interrupted: t("records.filters.status.interrupted"),
       running: t("records.filters.status.running"),
@@ -602,6 +603,10 @@ export default function RecordsPage() {
                 {
                   value: "success",
                   label: t("records.filters.status.success"),
+                },
+                {
+                  value: "warning_success",
+                  label: t("records.filters.status.warningSuccess"),
                 },
                 {
                   value: "failed",

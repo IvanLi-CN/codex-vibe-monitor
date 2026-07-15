@@ -1474,6 +1474,7 @@ describe("PromptCacheConversationTable", () => {
 
     const drawerShell = document.querySelector(".drawer-shell");
     expect(drawerShell?.className).toContain("drawer-shell--detail-wide");
+    expect(drawerShell?.parentElement?.className).toContain("drawer-frame");
     expect(document.body.textContent).toContain("路由绑定");
     expect(document.body.textContent).toContain("当前对话覆盖");
     expect(document.body.textContent).toContain("切出");

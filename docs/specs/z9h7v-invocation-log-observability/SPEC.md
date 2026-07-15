@@ -374,6 +374,18 @@
   ![Legacy response model fallback](./assets/invocation-model-routing-legacy.png)
 
 - source_type: storybook_canvas
+  story_id_or_title: Records/InvocationRecordsTable/WarningSuccessStatus
+  state: warning-success terminal row
+  evidence_note: verifies future `pure_downstream_closed` rows render as the dedicated owner-facing `警告成功` status in Records, keep downstream diagnostics queryable, and remain visibly distinct from ordinary success rows.
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only invocation data
+  submission_gate: approved
+  image:
+  PR: include
+  ![Records warning-success terminal row](./assets/records-warning-success-status.png)
+
+- source_type: storybook_canvas
   story_id_or_title: Dashboard/WorkingConversationsSection/PoolRoutingAccountStates
   state: dashboard running pool account routing states
   evidence_note: verifies Dashboard working conversation slots show the concrete upstream account as breathing primary text while the request is running, keep the no-account fallback as `号池路由中`, and leave terminal account text static.

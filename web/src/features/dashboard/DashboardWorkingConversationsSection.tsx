@@ -481,6 +481,14 @@ function CompactAccountPlanBadge({ planType }: { planType: string | null }) {
 function resolveStatusMeta(tone: DashboardWorkingConversationTone, status: string): StatusMeta {
   const base = STATUS_META[tone];
   const normalized = status.trim().toLowerCase();
+  if (normalized === "warning_success") {
+    return {
+      ...base,
+      badgeVariant: "warning",
+      icon: "alert-outline",
+      labelKey: "table.status.warningSuccess",
+    };
+  }
   if (normalized === "interrupted") {
     return {
       ...base,

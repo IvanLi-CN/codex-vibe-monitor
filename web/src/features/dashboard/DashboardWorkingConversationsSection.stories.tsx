@@ -525,6 +525,35 @@ const currentOnlyResponse = createResponse([
   ]),
 ]);
 
+const warningSuccessConversationResponse = createResponse([
+  createConversation("pck-warning-success", [
+    createPreview({
+      id: 61,
+      invokeId: "invoke-warning-success",
+      occurredAt: "2026-04-04T10:04:20Z",
+      status: "warning_success",
+      failureKind: "downstream_closed",
+      failureClass: "none",
+      errorMessage: "[downstream_closed] downstream closed while streaming upstream response",
+      upstreamAccountId: 42,
+      upstreamAccountName: "Pool Alpha",
+      totalTokens: 167_710,
+      cost: 0.0629,
+      tUpstreamTtfbMs: 1_131,
+      tUpstreamStreamMs: 15_849,
+      tTotalMs: 16_980,
+    }),
+    createPreview({
+      id: 60,
+      invokeId: "invoke-warning-success-previous",
+      occurredAt: "2026-04-04T10:01:12Z",
+      status: "completed",
+      upstreamAccountName: "Pool Alpha",
+      model: "gpt-5.4-mini",
+    }),
+  ]),
+]);
+
 function createRunningOnlyResponse() {
   return createResponse([
     createConversation("pck-running-only", [
@@ -548,6 +577,39 @@ function createRunningOnlyResponse() {
       }),
     ]),
   ]);
+}
+
+function createWarningSuccessUpstreamAccountActivityResponse(): UpstreamAccountActivityResponse {
+  const response = createUpstreamAccountActivityStoryResponse();
+  const firstAccount = response.accounts[0];
+  if (!firstAccount) return response;
+
+  const [firstRecent, ...restRecent] = firstAccount.recentInvocations;
+  if (!firstRecent) return response;
+
+  return {
+    ...response,
+    accounts: [
+      {
+        ...firstAccount,
+        recentInvocations: [
+          {
+            ...firstRecent,
+            status: "warning_success",
+            failureKind: "downstream_closed",
+            failureClass: "none",
+            errorMessage: "[downstream_closed] downstream closed while streaming upstream response",
+            totalTokens: 167_710,
+            cost: 0.0629,
+            tUpstreamTtfbMs: 1_131,
+            tUpstreamStreamMs: 15_849,
+            tTotalMs: 16_980,
+          },
+          ...restRecent,
+        ],
+      },
+    ],
+  };
 }
 
 function createRequestingOnlyResponse() {
@@ -2631,6 +2693,33 @@ export const CurrentOnlyPlaceholder: Story = {
   },
 };
 
+export const WarningSuccessConversationCard: Story = {
+  args: {
+    activeRange: "today",
+    cards: buildCards(warningSuccessConversationResponse),
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Conversation workspace card showing the dedicated warning-success status for future pure_downstream_closed rows while keeping the rest of the dashboard layout unchanged.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const statusNode = canvasElement.querySelector(
+      '[data-testid="dashboard-inline-invocation-status"]',
+    );
+    if (!(statusNode instanceof HTMLElement)) {
+      throw new Error("missing warning success status node");
+    }
+    await expect(statusNode.getAttribute("title") ?? "").toContain("警告成功");
+    await expect(canvasElement.textContent ?? "").toContain("Pool Alpha");
+  },
+};
+
 export const ManualBindingBadges: Story = {
   args: {
     activeRange: "today",
@@ -3381,6 +3470,34 @@ export const UpstreamAccountTab: Story = {
       description: {
         story:
           "Dashboard workspace section switched to the upstream-account tab, showing one enlarged active-account card with account-level KPIs and the dynamic recent invocation window in the selected range, including lightweight short conversation identity chips and request/response model mismatch rows.",
+      },
+    },
+  },
+};
+
+export const UpstreamAccountWarningSuccess: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <ForcedWorkspaceViewStory view="upstreamAccounts">
+      <DrawerPreviewStory
+        response={warningSuccessConversationResponse}
+        upstreamAccountActivity={createWarningSuccessUpstreamAccountActivityResponse()}
+      />
+    </ForcedWorkspaceViewStory>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("当前活动账号 1 个")).toBeInTheDocument();
+    const statusNode = await canvas.findByTestId("dashboard-inline-invocation-status");
+    await expect(statusNode.getAttribute("title") ?? "").toContain("警告成功");
+    await expect(canvas.getByText("story-account-1")).toBeInTheDocument();
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Upstream-account workspace card with a recent invocation rendered as warning-success, preserving success-like placement while exposing the dedicated owner-facing label.",
       },
     },
   },

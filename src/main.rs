@@ -362,6 +362,7 @@ const INVOCATION_ROUTE_MODE_POOL: &str = "pool";
 const INVOCATION_STATUS_RUNNING: &str = "running";
 const INVOCATION_STATUS_PENDING: &str = "pending";
 const INVOCATION_STATUS_INTERRUPTED: &str = "interrupted";
+const INVOCATION_STATUS_WARNING_SUCCESS: &str = "warning_success";
 const INVOCATION_INTERRUPTED_MESSAGE: &str =
     "proxy request was interrupted before completion and was recovered on startup";
 const POOL_ATTEMPT_INTERRUPTED_MESSAGE: &str =

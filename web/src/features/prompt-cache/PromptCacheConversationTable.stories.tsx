@@ -2122,9 +2122,9 @@ export const DrawerBindingAndTimeouts: Story = {
 
     await userEvent.click(historyButton);
     await userEvent.click(await documentScope.findByRole("tab", { name: /设置|Settings/i }));
-    await expect(canvasElement.ownerDocument.body.querySelector(".drawer-shell")).toHaveClass(
-      "drawer-shell--detail-wide",
-    );
+    const drawerShell = canvasElement.ownerDocument.body.querySelector(".drawer-shell");
+    await expect(drawerShell).toHaveClass("drawer-shell--detail-wide");
+    await expect(drawerShell?.parentElement).toHaveClass("drawer-frame");
     await expect(await documentScope.findByText(/路由绑定|Route binding/i)).toBeInTheDocument();
     await expect(
       documentScope.getByText(/当前对话覆盖|Conversation overrides/i),

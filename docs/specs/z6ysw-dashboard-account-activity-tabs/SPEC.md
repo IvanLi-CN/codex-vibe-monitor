@@ -56,6 +56,7 @@
 - `上游账号` 视图只展示当前共享 range 内“至少有 1 条调用”的账号；账号标题直接使用 `displayName`。
 - `上游账号` 视图仅支持 `today / yesterday / 1d / 7d`；当共享 range 为 `usage` 时，该 tab 必须 disabled，且若当前停留在账号 tab，必须自动回退到 `对话`。
 - 账号活动接口必须一次返回每个账号的 `upstreamAccountId`、`displayName`、`groupName`、`planType`、`enabled`、`displayStatus`、`enableStatus`、`workStatus`、`healthStatus`、`syncState`、`lastError`、`lastActionReasonMessage`、`requestCount`、`successCount`、`failureCount`、`nonSuccessCount`、`totalTokens`、`successTokens`、`nonSuccessTokens`、`failureTokens`、`cacheHitRate`、`tokensPerMinute`、`spendRate`、`totalCost`、`failureCost`、`firstByteAvgMs`、`avgTotalMs`、`inProgressInvocationCount`、`inProgressPhaseCounts`、`retryInvocationCount`、`effectiveRoutingRule` 与 `recentInvocations[4]`。
+- Future-only status note: 仅对未来新写入的 `pure_downstream_closed`，账号活动聚合必须把 `warning_success` 计入 `successCount/successTokens/totalCost/totalTokens/latency`，并排除出 `failureCount/nonSuccessCount/failureTokens/failureCost`；`recentInvocations` 仍要明确显示独立状态“警告成功”，普通 `success` 筛选不混入该状态。
 - `recentInvocations` 必须限制在当前所选范围内，按 `occurredAt DESC` 排序，并使用后端 bounded query 返回；尚未完成 SQLite batch flush 的 runtime running / pending / terminal 记录必须参与 recent 候选，与 SQLite 行按 `(invokeId, occurredAt)` 去重后再截断到 `recentLimit`，不得等待后续调用事件才能显示。
 - `recentInvocations[]` 必须额外返回真实 `promptCacheKey?: string | null`，供账号卡 recent 行生成稳定的对话短 ID 与详情抽屉 selection。
 - 账号卡不是折叠卡，也不是 `2 x 2` 小格子；它是单张放大卡片，桌面宽屏 `>=1660px` 时每行 2 张，其余断点为 1 列。
@@ -416,6 +417,34 @@ PR: include
   evidence_note: 验证移动视口下同一刷新状态仍收口到头部；该证据图保留完整头部与首张账号卡，视觉上只保留 spinner、不显示“刷新中”文字；可访问状态播报继续存在，状态切换不会额外挤出一条临时行，也不会为了 idle 状态预留不合理的固定宽度空位。
   image:
   ![Dashboard 上游账号头部刷新状态移动证据](./assets/dashboard-upstream-account-refresh-status-mobile.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--warning-success-conversation-card`
+  scenario: `warning_success current invocation compact status`
+  evidence_note: 验证 Dashboard 对话卡片中的 future `pure_downstream_closed` 当前调用以独立 `warning_success` 语义呈现：状态位仅保留 warning 图标，不直接显示“警告成功”文字，同时 recent 错误摘要仍保留 downstream 诊断。
+  requested_viewport: `1660x1100`
+  viewport_strategy: `browser-viewport`
+  target_program: `mock-only`
+  capture_scope: `element`
+  sensitive_exclusion: `fixture-only Dashboard data`
+  submission_gate: `approved`
+  image:
+  PR: include
+  ![Dashboard 对话卡片 warning-success 紧凑状态证据](./assets/dashboard-warning-success-conversation-card.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-warning-success`
+  scenario: `warning_success recent invocation compact status`
+  evidence_note: 验证 Dashboard 上游账号 recent 行对 future `pure_downstream_closed` 仍使用成功侧排布，但紧凑状态位只显示 warning 图标；请求 ID、成本、Token 与 downstream 诊断行保持可见。
+  requested_viewport: `1660x1100`
+  viewport_strategy: `browser-viewport`
+  target_program: `mock-only`
+  capture_scope: `element`
+  sensitive_exclusion: `fixture-only Dashboard data`
+  submission_gate: `approved`
+  image:
+  PR: include
+  ![Dashboard 上游账号 warning-success recent 证据](./assets/dashboard-upstream-account-warning-success.png)
 
 - source_type: ui_demo
   story_id_or_title: `#/dashboard?demoScene=progressive-loading&demoTheme=dark`

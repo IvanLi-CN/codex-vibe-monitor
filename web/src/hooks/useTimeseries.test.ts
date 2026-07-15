@@ -194,6 +194,37 @@ describe("useTimeseries current-day bucket patching", () => {
     });
   });
 
+  it("treats warning_success live rows as successful even when diagnostics are retained", () => {
+    const next = applyRecordsToCurrentDayBucket(
+      base,
+      [
+        {
+          id: 5,
+          invokeId: "today-warning-success",
+          occurredAt: "2026-03-06T08:33:00Z",
+          status: "warning_success",
+          failureClass: "none",
+          failureKind: "downstream_closed",
+          downstreamErrorMessage:
+            "[downstream_closed] downstream closed while streaming upstream response",
+          totalTokens: 25,
+          cost: 0.25,
+          tUpstreamTtfbMs: 150,
+          createdAt: "2026-03-06T08:33:00Z",
+        },
+      ],
+      Math.floor(Date.parse("2026-03-06T12:00:00Z") / 1000),
+    );
+
+    expect(next?.points[1]).toMatchObject({
+      totalCount: 2,
+      successCount: 2,
+      failureCount: 0,
+      totalTokens: 125,
+      totalCost: 0.75,
+    });
+  });
+
   it("keeps blank-status rows without failure metadata neutral instead of counting them as in-flight", () => {
     const next = applyRecordsToCurrentDayBucket(
       base,
