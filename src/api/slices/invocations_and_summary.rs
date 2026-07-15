@@ -1,5 +1,6 @@
 use super::*;
 use anyhow::anyhow;
+use futures_util::TryStreamExt;
 use serde::Serialize;
 use serde_json::json;
 use sqlx::FromRow;
@@ -4159,14 +4160,8 @@ struct UpstreamAccountUsageBreakdownAggregateRow {
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct SuccessfulBilledUsageDurationRow {
+struct SuccessfulBilledUsageDurationIntervalRow {
     upstream_account_id: Option<i64>,
-    occurred_at: String,
-    t_total_ms: f64,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct UsageDurationInterval {
     start_epoch_ms: f64,
     end_epoch_ms: f64,
 }
@@ -4175,6 +4170,70 @@ struct UsageDurationInterval {
 struct ModelPerformanceTotalUsageDurationOverrides {
     total_ms: Option<f64>,
     by_account_ms: HashMap<Option<i64>, f64>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct UsageDurationUnionAccumulator {
+    saw_interval: bool,
+    total_ms: f64,
+    current_end_epoch_ms: Option<f64>,
+}
+
+impl UsageDurationUnionAccumulator {
+    fn push_interval(&mut self, start_epoch_ms: f64, end_epoch_ms: f64) {
+        if !start_epoch_ms.is_finite() || !end_epoch_ms.is_finite() || end_epoch_ms < start_epoch_ms
+        {
+            return;
+        }
+        self.saw_interval = true;
+        match self.current_end_epoch_ms {
+            None => {
+                self.total_ms += end_epoch_ms - start_epoch_ms;
+                self.current_end_epoch_ms = Some(end_epoch_ms);
+            }
+            Some(current_end_epoch_ms) if end_epoch_ms <= current_end_epoch_ms => {}
+            Some(current_end_epoch_ms) => {
+                self.total_ms += end_epoch_ms - start_epoch_ms.max(current_end_epoch_ms);
+                self.current_end_epoch_ms = Some(end_epoch_ms);
+            }
+        }
+    }
+
+    fn total_ms(self) -> Option<f64> {
+        self.saw_interval.then_some(self.total_ms)
+    }
+}
+
+#[derive(Debug, Default)]
+struct ModelPerformanceTotalUsageDurationUnionState {
+    total: UsageDurationUnionAccumulator,
+    by_account: HashMap<Option<i64>, UsageDurationUnionAccumulator>,
+}
+
+impl ModelPerformanceTotalUsageDurationUnionState {
+    fn push_row(&mut self, row: &SuccessfulBilledUsageDurationIntervalRow) {
+        self.total
+            .push_interval(row.start_epoch_ms, row.end_epoch_ms);
+        self.by_account
+            .entry(row.upstream_account_id)
+            .or_default()
+            .push_interval(row.start_epoch_ms, row.end_epoch_ms);
+    }
+
+    fn into_overrides(self) -> ModelPerformanceTotalUsageDurationOverrides {
+        ModelPerformanceTotalUsageDurationOverrides {
+            total_ms: self.total.total_ms(),
+            by_account_ms: self
+                .by_account
+                .into_iter()
+                .filter_map(|(upstream_account_id, accumulator)| {
+                    accumulator
+                        .total_ms()
+                        .map(|total_ms| (upstream_account_id, total_ms))
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -4281,81 +4340,14 @@ impl ModelPerformanceAccumulator {
     }
 }
 
-fn clipped_usage_duration_interval(
-    row: &SuccessfulBilledUsageDurationRow,
-    range: ExactUtcRange,
-) -> Option<UsageDurationInterval> {
-    let occurred_at = parse_to_utc_datetime(&row.occurred_at)?;
-    if !row.t_total_ms.is_finite() || row.t_total_ms < 0.0 {
-        return None;
-    }
-    let range_start_epoch_ms = range.start.timestamp_millis() as f64;
-    let range_end_epoch_ms = range.end.timestamp_millis() as f64;
-    let start_epoch_ms = occurred_at.timestamp_millis() as f64;
-    let end_epoch_ms = start_epoch_ms + row.t_total_ms;
-    let clipped_start_epoch_ms = start_epoch_ms.max(range_start_epoch_ms);
-    let clipped_end_epoch_ms = end_epoch_ms.min(range_end_epoch_ms);
-    (clipped_end_epoch_ms >= clipped_start_epoch_ms).then_some(UsageDurationInterval {
-        start_epoch_ms: clipped_start_epoch_ms,
-        end_epoch_ms: clipped_end_epoch_ms,
-    })
-}
-
-fn union_usage_duration_ms(intervals: &mut [UsageDurationInterval]) -> f64 {
-    if intervals.is_empty() {
-        return 0.0;
-    }
-    intervals.sort_by(|left, right| {
-        left.start_epoch_ms
-            .total_cmp(&right.start_epoch_ms)
-            .then_with(|| left.end_epoch_ms.total_cmp(&right.end_epoch_ms))
-    });
-    let mut total_ms = 0.0;
-    let mut current_start_epoch_ms = intervals[0].start_epoch_ms;
-    let mut current_end_epoch_ms = intervals[0].end_epoch_ms;
-    for interval in intervals.iter().skip(1) {
-        if interval.start_epoch_ms > current_end_epoch_ms {
-            total_ms += current_end_epoch_ms - current_start_epoch_ms;
-            current_start_epoch_ms = interval.start_epoch_ms;
-            current_end_epoch_ms = interval.end_epoch_ms;
-            continue;
-        }
-        current_end_epoch_ms = current_end_epoch_ms.max(interval.end_epoch_ms);
-    }
-    total_ms + (current_end_epoch_ms - current_start_epoch_ms)
-}
-
 fn compute_model_performance_total_usage_duration_overrides(
-    rows: &[SuccessfulBilledUsageDurationRow],
-    range: ExactUtcRange,
+    rows: &[SuccessfulBilledUsageDurationIntervalRow],
 ) -> ModelPerformanceTotalUsageDurationOverrides {
-    let mut total_intervals = Vec::new();
-    let mut intervals_by_account = HashMap::<Option<i64>, Vec<UsageDurationInterval>>::new();
+    let mut union_state = ModelPerformanceTotalUsageDurationUnionState::default();
     for row in rows {
-        let Some(interval) = clipped_usage_duration_interval(row, range) else {
-            continue;
-        };
-        total_intervals.push(interval);
-        intervals_by_account
-            .entry(row.upstream_account_id)
-            .or_default()
-            .push(interval);
+        union_state.push_row(row);
     }
-    let total_ms =
-        (!total_intervals.is_empty()).then_some(union_usage_duration_ms(&mut total_intervals));
-    let by_account_ms = intervals_by_account
-        .into_iter()
-        .map(|(upstream_account_id, mut account_intervals)| {
-            (
-                upstream_account_id,
-                union_usage_duration_ms(&mut account_intervals),
-            )
-        })
-        .collect();
-    ModelPerformanceTotalUsageDurationOverrides {
-        total_ms,
-        by_account_ms,
-    }
+    union_state.into_overrides()
 }
 
 #[derive(Debug, FromRow)]
@@ -4645,26 +4637,34 @@ async fn query_live_upstream_account_usage_breakdown_rows(
     Ok(rows)
 }
 
-async fn query_live_model_performance_usage_duration_rows(
+async fn query_live_model_performance_total_usage_duration_overrides(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
     use_attempt_fallback: bool,
-) -> Result<Vec<SuccessfulBilledUsageDurationRow>, ApiError> {
+) -> Result<ModelPerformanceTotalUsageDurationOverrides, ApiError> {
     let started_at = Instant::now();
     let upstream_account_id_sql = if use_attempt_fallback {
         invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations")
     } else {
         INVOCATION_UPSTREAM_ACCOUNT_ID_SQL.to_string()
     };
+    let occurred_at_epoch_ms_sql = "(CAST(CASE WHEN instr(occurred_at, 'T') > 0 THEN strftime('%s', occurred_at) ELSE strftime('%s', occurred_at || '+08:00') END AS REAL) * 1000.0)";
     let failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
     let success_billed_sql = format!(
         "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') AND ({failure_class_sql}) = 'none' AND cost IS NOT NULL"
     );
+    let range_end_epoch_ms = range.end.timestamp_millis() as f64;
     let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
     query
         .push(upstream_account_id_sql.as_str())
-        .push(" AS upstream_account_id, occurred_at, t_total_ms FROM codex_invocations WHERE occurred_at >= ")
+        .push(" AS upstream_account_id, ")
+        .push(occurred_at_epoch_ms_sql)
+        .push(" AS start_epoch_ms, MIN(")
+        .push(occurred_at_epoch_ms_sql)
+        .push(" + t_total_ms, ")
+        .push_bind(range_end_epoch_ms)
+        .push(") AS end_epoch_ms FROM codex_invocations WHERE occurred_at >= ")
         .push_bind(db_occurred_at_lower_bound(range.start))
         .push(" AND occurred_at < ")
         .push_bind(db_occurred_at_upper_bound(range.end));
@@ -4674,11 +4674,16 @@ async fn query_live_model_performance_usage_duration_rows(
     query
         .push(" AND ")
         .push(success_billed_sql.as_str())
-        .push(" AND t_total_ms >= 0");
-    let rows = query
-        .build_query_as::<SuccessfulBilledUsageDurationRow>()
-        .fetch_all(pool)
-        .await?;
+        .push(" AND t_total_ms >= 0 ORDER BY occurred_at ASC, id ASC");
+    let mut rows = query
+        .build_query_as::<SuccessfulBilledUsageDurationIntervalRow>()
+        .fetch(pool);
+    let mut row_count = 0usize;
+    let mut union_state = ModelPerformanceTotalUsageDurationUnionState::default();
+    while let Some(row) = rows.try_next().await? {
+        row_count += 1;
+        union_state.push_row(&row);
+    }
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
     if elapsed_ms >= 1_000 {
         tracing::warn!(
@@ -4687,12 +4692,12 @@ async fn query_live_model_performance_usage_duration_rows(
             ?source_scope,
             start = %range.start,
             end = %range.end,
-            row_count = rows.len(),
+            row_count,
             elapsed_ms,
             "slow model performance usage duration query"
         );
     }
-    Ok(rows)
+    Ok(union_state.into_overrides())
 }
 
 async fn query_completed_invocation_archive_activity_aggregate_rows(
@@ -4703,7 +4708,6 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
     (
         Vec<UpstreamAccountActivityAggregateRow>,
         Vec<UpstreamAccountUsageBreakdownAggregateRow>,
-        Vec<SuccessfulBilledUsageDurationRow>,
     ),
     ApiError,
 > {
@@ -4714,7 +4718,6 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
     .await?;
     let mut aggregates = Vec::new();
     let mut usage_breakdowns = Vec::new();
-    let mut usage_duration_rows = Vec::new();
     let mut earliest_created_at_by_prompt_cache_key = HashMap::<String, String>::new();
     let mut prompt_cache_keys_by_account = HashMap::<Option<i64>, HashSet<String>>::new();
     for archive_row in archive_rows {
@@ -4774,15 +4777,6 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
             )
             .await?,
         );
-        usage_duration_rows.extend(
-            query_live_model_performance_usage_duration_rows(
-                &archive_pool,
-                source_scope,
-                range,
-                false,
-            )
-            .await?,
-        );
         archive_pool.close().await;
         drop(temp_cleanup);
     }
@@ -4808,7 +4802,7 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
             aggregate.latest_conversation_created_at = Some(latest_created_at.clone());
         }
     }
-    Ok((aggregates, usage_breakdowns, usage_duration_rows))
+    Ok((aggregates, usage_breakdowns))
 }
 
 #[derive(Debug, FromRow)]
@@ -6027,9 +6021,19 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
     let mut account_activity = HashMap::<Option<i64>, UpstreamAccountActivityAccumulator>::new();
     let mut model_performance = ModelPerformanceAccumulator::default();
-    let mut model_performance_usage_duration_rows =
-        query_live_model_performance_usage_duration_rows(&state.pool, source_scope, range, true)
-            .await?;
+    let model_performance_usage_duration_overrides = if model_performance_available {
+        Some(
+            query_live_model_performance_total_usage_duration_overrides(
+                &state.pool,
+                source_scope,
+                range,
+                true,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     for row in
         query_live_upstream_account_activity_aggregate_rows(&state.pool, source_scope, range, true)
             .await?
@@ -6072,7 +6076,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         model_performance.add_aggregate_row(&row);
     }
     if range.start < retention_cutoff {
-        let (archived_aggregates, archived_usage_breakdowns, archived_usage_duration_rows) =
+        let (archived_aggregates, archived_usage_breakdowns) =
             query_completed_invocation_archive_activity_aggregate_rows(
                 &state.pool,
                 source_scope,
@@ -6111,21 +6115,19 @@ pub(crate) async fn load_dashboard_activity_snapshot(
                 .usage_breakdown
                 .add_aggregate_row(&row);
         }
-        model_performance_usage_duration_rows.extend(archived_usage_duration_rows);
     }
-    let model_performance_usage_duration_overrides =
-        compute_model_performance_total_usage_duration_overrides(
-            &model_performance_usage_duration_rows,
-            range,
-        );
-    model_performance.total_usage_duration_override_ms =
-        model_performance_usage_duration_overrides.total_ms;
-    for (upstream_account_id, total_usage_duration_override_ms) in
-        model_performance_usage_duration_overrides.by_account_ms
+    if let Some(model_performance_usage_duration_overrides) =
+        model_performance_usage_duration_overrides
     {
-        if let Some(entry) = account_activity.get_mut(&upstream_account_id) {
-            entry.model_performance.total_usage_duration_override_ms =
-                Some(total_usage_duration_override_ms);
+        model_performance.total_usage_duration_override_ms =
+            model_performance_usage_duration_overrides.total_ms;
+        for (upstream_account_id, total_usage_duration_override_ms) in
+            model_performance_usage_duration_overrides.by_account_ms
+        {
+            if let Some(entry) = account_activity.get_mut(&upstream_account_id) {
+                entry.model_performance.total_usage_duration_override_ms =
+                    Some(total_usage_duration_override_ms);
+            }
         }
     }
     for row in
@@ -6611,6 +6613,7 @@ pub(crate) async fn fetch_dashboard_activity(
     State(state): State<Arc<AppState>>,
     Query(params): Query<DashboardActivityQuery>,
 ) -> Result<Json<DashboardActivityResponse>, ApiError> {
+    let started_at = Instant::now();
     let recent_limit = validate_dashboard_activity_params(
         "dashboard-activity",
         params.range.as_str(),
@@ -6660,9 +6663,9 @@ pub(crate) async fn fetch_dashboard_activity(
     }
     let range_start = format_utc_iso_precise(snapshot.range_start);
     let range_end = format_utc_iso_precise(snapshot.range_end);
+    let account_count = snapshot.accounts.len();
     let accounts = params.include_accounts.then_some(snapshot.accounts);
-
-    Ok(Json(DashboardActivityResponse {
+    let response = DashboardActivityResponse {
         range: snapshot.range,
         range_start: range_start.clone(),
         range_end: range_end.clone(),
@@ -6676,7 +6679,37 @@ pub(crate) async fn fetch_dashboard_activity(
         },
         summary: snapshot.summary,
         accounts,
-    }))
+    };
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    if elapsed_ms >= 250 {
+        tracing::warn!(
+            endpoint = "/api/stats/dashboard-activity",
+            range = %params.range,
+            include_accounts = params.include_accounts,
+            include_recent = params.include_recent.unwrap_or(true),
+            recent_limit,
+            live_revision,
+            account_count,
+            model_performance_available = response.summary.model_performance.available,
+            elapsed_ms,
+            "dashboard activity snapshot exceeded slow-path threshold"
+        );
+    } else {
+        tracing::debug!(
+            endpoint = "/api/stats/dashboard-activity",
+            range = %params.range,
+            include_accounts = params.include_accounts,
+            include_recent = params.include_recent.unwrap_or(true),
+            recent_limit,
+            live_revision,
+            account_count,
+            model_performance_available = response.summary.model_performance.available,
+            elapsed_ms,
+            "dashboard activity snapshot completed"
+        );
+    }
+
+    Ok(Json(response))
 }
 
 pub(crate) async fn fetch_dashboard_activity_recent(
@@ -6972,29 +7005,25 @@ mod model_performance_usage_duration_override_tests {
 
     #[test]
     fn total_usage_duration_dedupes_overlaps_per_account_and_globally() {
-        let range = ExactUtcRange {
-            start: utc_at(2026, 7, 15, 12, 0, 0),
-            end: utc_at(2026, 7, 15, 12, 1, 0),
-        };
         let rows = vec![
-            SuccessfulBilledUsageDurationRow {
+            SuccessfulBilledUsageDurationIntervalRow {
                 upstream_account_id: Some(42),
-                occurred_at: "2026-07-15T12:00:10Z".to_string(),
-                t_total_ms: 4_000.0,
+                start_epoch_ms: utc_at(2026, 7, 15, 12, 0, 10).timestamp_millis() as f64,
+                end_epoch_ms: utc_at(2026, 7, 15, 12, 0, 14).timestamp_millis() as f64,
             },
-            SuccessfulBilledUsageDurationRow {
+            SuccessfulBilledUsageDurationIntervalRow {
                 upstream_account_id: Some(42),
-                occurred_at: "2026-07-15T12:00:12Z".to_string(),
-                t_total_ms: 1_000.0,
+                start_epoch_ms: utc_at(2026, 7, 15, 12, 0, 12).timestamp_millis() as f64,
+                end_epoch_ms: utc_at(2026, 7, 15, 12, 0, 13).timestamp_millis() as f64,
             },
-            SuccessfulBilledUsageDurationRow {
+            SuccessfulBilledUsageDurationIntervalRow {
                 upstream_account_id: Some(77),
-                occurred_at: "2026-07-15T12:00:13Z".to_string(),
-                t_total_ms: 4_000.0,
+                start_epoch_ms: utc_at(2026, 7, 15, 12, 0, 13).timestamp_millis() as f64,
+                end_epoch_ms: utc_at(2026, 7, 15, 12, 0, 17).timestamp_millis() as f64,
             },
         ];
 
-        let overrides = compute_model_performance_total_usage_duration_overrides(&rows, range);
+        let overrides = compute_model_performance_total_usage_duration_overrides(&rows);
 
         assert_eq!(overrides.total_ms, Some(7_000.0));
         assert_eq!(
@@ -7009,24 +7038,20 @@ mod model_performance_usage_duration_override_tests {
 
     #[test]
     fn total_usage_duration_clips_tail_to_selected_range() {
-        let range = ExactUtcRange {
-            start: utc_at(2026, 7, 15, 12, 0, 0),
-            end: utc_at(2026, 7, 15, 12, 1, 0),
-        };
         let rows = vec![
-            SuccessfulBilledUsageDurationRow {
+            SuccessfulBilledUsageDurationIntervalRow {
                 upstream_account_id: Some(42),
-                occurred_at: "2026-07-15T12:00:58Z".to_string(),
-                t_total_ms: 5_000.0,
+                start_epoch_ms: utc_at(2026, 7, 15, 12, 0, 58).timestamp_millis() as f64,
+                end_epoch_ms: utc_at(2026, 7, 15, 12, 1, 0).timestamp_millis() as f64,
             },
-            SuccessfulBilledUsageDurationRow {
+            SuccessfulBilledUsageDurationIntervalRow {
                 upstream_account_id: Some(42),
-                occurred_at: "2026-07-15T12:00:59Z".to_string(),
-                t_total_ms: 1_000.0,
+                start_epoch_ms: utc_at(2026, 7, 15, 12, 0, 59).timestamp_millis() as f64,
+                end_epoch_ms: utc_at(2026, 7, 15, 12, 1, 0).timestamp_millis() as f64,
             },
         ];
 
-        let overrides = compute_model_performance_total_usage_duration_overrides(&rows, range);
+        let overrides = compute_model_performance_total_usage_duration_overrides(&rows);
 
         assert_eq!(overrides.total_ms, Some(2_000.0));
         assert_eq!(
