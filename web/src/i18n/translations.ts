@@ -1779,6 +1779,8 @@ const baseTranslations = {
     "dashboard.modelPerformance.title": "Model performance",
     "dashboard.modelPerformance.description":
       "Complete-range metrics for successful billed calls, grouped by response model and reasoning effort.",
+    "dashboard.modelPerformance.overlapNote":
+      "Total wall clock is the global union of active time. Model rows keep their own wall clock, so cross-model overlap can make their sum exceed Total.",
     "dashboard.modelPerformance.total": "Total",
     "dashboard.modelPerformance.model": "Model / effort",
     "dashboard.modelPerformance.reasoningEffort": "Reasoning",
@@ -1786,7 +1788,9 @@ const baseTranslations = {
     "dashboard.modelPerformance.columns.streamingRate": "Streaming rate",
     "dashboard.modelPerformance.columns.response": "Avg response",
     "dashboard.modelPerformance.columns.firstByte": "Avg first byte",
-    "dashboard.modelPerformance.columns.usageDuration": "Usage duration",
+    "dashboard.modelPerformance.columns.wallClockDuration": "Wall clock",
+    "dashboard.modelPerformance.columns.cumulativeDuration": "Cumulative",
+    "dashboard.modelPerformance.columns.parallelism": "Parallelism",
     "dashboard.modelPerformance.empty": "No successful billed calls in this time range.",
     "dashboard.modelPerformance.unavailable":
       "Retained raw calls are unavailable for this time range, so model performance cannot be calculated.",
@@ -4092,6 +4096,8 @@ const baseTranslations = {
     "dashboard.modelPerformance.title": "模型性能",
     "dashboard.modelPerformance.description":
       "仅统计成功且已计费调用，按响应模型与思考程度汇总当前范围完整周期的指标。",
+    "dashboard.modelPerformance.overlapNote":
+      "总计墙钟时长按全局活跃时间并集计算；模型行保留各自墙钟时长，跨模型重叠时模型行墙钟和可能大于总计。",
     "dashboard.modelPerformance.total": "总计",
     "dashboard.modelPerformance.model": "模型 / 思考程度",
     "dashboard.modelPerformance.reasoningEffort": "思考程度",
@@ -4099,7 +4105,9 @@ const baseTranslations = {
     "dashboard.modelPerformance.columns.streamingRate": "流式响应速率",
     "dashboard.modelPerformance.columns.response": "平均响应时长",
     "dashboard.modelPerformance.columns.firstByte": "平均首字用时",
-    "dashboard.modelPerformance.columns.usageDuration": "使用时长",
+    "dashboard.modelPerformance.columns.wallClockDuration": "墙钟时长",
+    "dashboard.modelPerformance.columns.cumulativeDuration": "累计时长",
+    "dashboard.modelPerformance.columns.parallelism": "并行数",
     "dashboard.modelPerformance.empty": "当前范围内没有成功且已计费的调用。",
     "dashboard.modelPerformance.unavailable": "当前范围的原始调用明细不可用，无法计算模型性能。",
     "dashboard.modelPerformance.close": "关闭模型性能详情",

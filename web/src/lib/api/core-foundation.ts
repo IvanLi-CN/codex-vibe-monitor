@@ -636,7 +636,9 @@ export interface ModelPerformanceMetrics {
   streamingResponseRate?: number | null;
   avgResponseMs?: number | null;
   avgFirstResponseByteTotalMs?: number | null;
-  usageDurationMs?: number | null;
+  wallClockUsageDurationMs?: number | null;
+  cumulativeUsageDurationMs?: number | null;
+  parallelism?: number | null;
 }
 
 export interface ModelPerformanceModel extends ModelPerformanceMetrics {
@@ -2798,7 +2800,9 @@ function normalizeModelPerformanceMetrics(raw: unknown): ModelPerformanceMetrics
     streamingResponseRate: normalizeFiniteNumber(payload.streamingResponseRate),
     avgResponseMs: normalizeFiniteNumber(payload.avgResponseMs),
     avgFirstResponseByteTotalMs: normalizeFiniteNumber(payload.avgFirstResponseByteTotalMs),
-    usageDurationMs: normalizeFiniteNumber(payload.usageDurationMs),
+    wallClockUsageDurationMs: normalizeFiniteNumber(payload.wallClockUsageDurationMs),
+    cumulativeUsageDurationMs: normalizeFiniteNumber(payload.cumulativeUsageDurationMs),
+    parallelism: normalizeFiniteNumber(payload.parallelism),
   };
 }
 

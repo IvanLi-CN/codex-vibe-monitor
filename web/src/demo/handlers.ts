@@ -124,7 +124,8 @@ const DEMO_MODEL_PERFORMANCE_MODELS = [
     streamingResponseRate: 71.4,
     avgResponseMs: 3_280,
     avgFirstResponseByteTotalMs: 820,
-    usageDurationMs: 10_482_000,
+    wallClockUsageDurationMs: 6_540_000,
+    cumulativeUsageDurationMs: 10_482_000,
   },
   {
     model: "gpt-5.6-sol",
@@ -133,7 +134,8 @@ const DEMO_MODEL_PERFORMANCE_MODELS = [
     streamingResponseRate: 64.8,
     avgResponseMs: 2_680,
     avgFirstResponseByteTotalMs: 694,
-    usageDurationMs: 7_246_000,
+    wallClockUsageDurationMs: 4_872_000,
+    cumulativeUsageDurationMs: 7_246_000,
   },
   {
     model: "gpt-5.6-terra",
@@ -142,18 +144,40 @@ const DEMO_MODEL_PERFORMANCE_MODELS = [
     streamingResponseRate: 46.2,
     avgResponseMs: 4_910,
     avgFirstResponseByteTotalMs: 1_104,
-    usageDurationMs: 4_038_000,
+    wallClockUsageDurationMs: 3_120_000,
+    cumulativeUsageDurationMs: 4_038_000,
   },
 ] as const;
 
+const DEMO_MODEL_PERFORMANCE_PAIR_OVERLAPS_MS = [
+  [0, 1, 2_724_000],
+  [0, 2, 420_000],
+] as const;
+
+function computeDemoParallelism(
+  wallClockUsageDurationMs: number | null | undefined,
+  cumulativeUsageDurationMs: number | null | undefined,
+) {
+  if (
+    wallClockUsageDurationMs == null ||
+    cumulativeUsageDurationMs == null ||
+    !Number.isFinite(wallClockUsageDurationMs) ||
+    !Number.isFinite(cumulativeUsageDurationMs) ||
+    wallClockUsageDurationMs <= 0
+  ) {
+    return null;
+  }
+  return cumulativeUsageDurationMs / wallClockUsageDurationMs;
+}
+
 function demoModelPerformanceForModels(modelIndexes: number[]) {
-  const models =
+  const baseModels =
     demoModel.snapshot.scene === "empty"
       ? []
       : modelIndexes
           .map((index) => DEMO_MODEL_PERFORMANCE_MODELS[index])
           .filter((model) => model != null);
-  if (models.length === 0) {
+  if (baseModels.length === 0) {
     return {
       available: true,
       total: {
@@ -161,30 +185,59 @@ function demoModelPerformanceForModels(modelIndexes: number[]) {
         streamingResponseRate: null,
         avgResponseMs: null,
         avgFirstResponseByteTotalMs: null,
-        usageDurationMs: null,
+        wallClockUsageDurationMs: null,
+        cumulativeUsageDurationMs: null,
+        parallelism: null,
       },
       models: [],
     };
   }
-  const usageDurationMs = models.reduce((total, model) => total + model.usageDurationMs, 0);
+  const includedIndexes = [...new Set(modelIndexes)].sort((left, right) => left - right);
+  const overlapMs = DEMO_MODEL_PERFORMANCE_PAIR_OVERLAPS_MS.reduce(
+    (total, [left, right, pairOverlapMs]) =>
+      includedIndexes.includes(left) && includedIndexes.includes(right)
+        ? total + pairOverlapMs
+        : total,
+    0,
+  );
+  const models = baseModels.map((model) => ({
+    ...model,
+    parallelism: computeDemoParallelism(
+      model.wallClockUsageDurationMs,
+      model.cumulativeUsageDurationMs,
+    ),
+  }));
+  const cumulativeUsageDurationMs = models.reduce(
+    (total, model) => total + model.cumulativeUsageDurationMs,
+    0,
+  );
+  const wallClockUsageDurationMs = Math.max(
+    0,
+    models.reduce((total, model) => total + model.wallClockUsageDurationMs, 0) - overlapMs,
+  );
   return {
     available: true,
     total: {
       tokensPerMinute: models.reduce((total, model) => total + model.tokensPerMinute, 0),
       streamingResponseRate:
         models.reduce(
-          (total, model) => total + model.streamingResponseRate * model.usageDurationMs,
+          (total, model) => total + model.streamingResponseRate * model.cumulativeUsageDurationMs,
           0,
-        ) / usageDurationMs,
+        ) / cumulativeUsageDurationMs,
       avgResponseMs:
-        models.reduce((total, model) => total + model.avgResponseMs * model.usageDurationMs, 0) /
-        usageDurationMs,
+        models.reduce(
+          (total, model) => total + model.avgResponseMs * model.cumulativeUsageDurationMs,
+          0,
+        ) / cumulativeUsageDurationMs,
       avgFirstResponseByteTotalMs:
         models.reduce(
-          (total, model) => total + model.avgFirstResponseByteTotalMs * model.usageDurationMs,
+          (total, model) =>
+            total + model.avgFirstResponseByteTotalMs * model.cumulativeUsageDurationMs,
           0,
-        ) / usageDurationMs,
-      usageDurationMs,
+        ) / cumulativeUsageDurationMs,
+      wallClockUsageDurationMs,
+      cumulativeUsageDurationMs,
+      parallelism: computeDemoParallelism(wallClockUsageDurationMs, cumulativeUsageDurationMs),
     },
     models,
   };

@@ -24,9 +24,9 @@
 - `/api/invocations/locate` 现接受显式 `attemptId`，先解析父 `invokeId` 再返回目标分页窗口与精确 attempt 高亮所需上下文；旧 `requestId` 入口继续兼容读取，但新 UI 不再生成它作为 attempt 跳转参数。
 - 账号活动聚合、按模型用量分组、受限 recent 读取与路由 sticky escape 检测现在会在超过 1 秒时输出结构化 warn；日志只含 endpoint/operation、范围、候选或返回行数、阶段与耗时，不含 SQL、payload 或账号敏感内容。
 - 账号详情已将最终调用记录表替换为真实上游调用表：按账号从 `pool_upstream_request_attempts` 读取最近 7 天主库数据，按 `occurred_at DESC, id DESC` 分页。每行只显示本次调用的时间、ID、请求模型与响应模型、状态、代理、三段延迟和错误；不显示 endpoint，也不混入重试序号、最终调用 tokens/费用或其他调用上下文。列表以 `(invoke_id, occurred_at)` 关联 invocation payload 的 `requestModel` / `responseModel`，请求模型缺失时回退 `model`，避免依赖旧数据库不存在的列。
-- Dashboard 活动快照现额外返回全局与账号级的模型性能分组。仅状态成功、失败分类为 `none` 且 `cost` 非空的调用参与 TPM、流式响应速率、响应时长、首字用时和使用时长；零费用成功调用保留。模型按响应模型归属，空思考程度在前端显示“未指定”。模型行 `usageDurationMs` 继续累加各自的 `t_total_ms`，但 `total.usageDurationMs` 会对同一范围内的合格调用区间做裁剪后并集。
+- Dashboard 活动快照现额外返回全局与账号级的模型性能分组。仅状态成功、失败分类为 `none` 且 `cost` 非空的调用参与 TPM、流式响应速率、响应时长、首字用时、墙钟时长、累计时长和并行数；零费用成功调用保留。模型按响应模型归属，空思考程度在前端显示“未指定”。后端在单次 retained live interval 扫描里同时生成全局、账号、模型与账号+模型四级墙钟并集，并继续累加各 scope 的 `t_total_ms`，统一对外返回 `wallClockUsageDurationMs`、`cumulativeUsageDurationMs` 与 `parallelism`。
 - `modelPerformance` 继续服务 Dashboard 完整范围性能明细入口，不再回流为顶部实时 KPI 当前值；顶部 `TPM / 消费速率 / 首字用时 / 响应时间` 已改由 `z6ysw` 的后端 `last_complete_1m_sma` 合同驱动。
-- `ModelPerformanceTrigger` 在桌面通过可点击、可聚焦的 Tooltip 展示总计及按使用时长排序的模型行，在窄屏通过详情抽屉展示无横向滚动的指标网格；入口仍挂在总览与账号区域，但展示的是完整范围性能明细而非实时 1 分钟值。总计 `使用时长` 允许小于下方模型行相加，避免并发调用被重复记时。
+- `ModelPerformanceTrigger` 在桌面通过可点击、可聚焦的 Tooltip 展示总计及按累计时长排序的模型行，在窄屏通过详情抽屉展示无横向滚动的指标网格；入口仍挂在总览与账号区域，但展示的是完整范围性能明细而非实时 1 分钟值。owner-facing 明细显式拆成 `墙钟时长 / 累计时长 / 并行数` 三列，并补充说明“跨模型重叠时模型行墙钟和可能大于总计”。
 - 调用结果中的 HTTP 现在明确为上游 HTTP；下游 HTTP 仅在不一致时置入当前记录下方的全宽诊断展开区。错误列保持失败分类和两行摘要，失败诊断使用紧凑元数据带而非字段卡；完整错误可复制，上游请求 ID、路由键与代理绑定键一并作为诊断证据。代理绑定优先解析为当前节点显示名，历史或未知绑定键降级为截短值并保留完整提示。
 - 窄屏调用列表继续使用表格而非卡片：主表仅保留时间、调用/模型、结果和错误摘要，代理、阶段耗时与完整错误放进展开证据区；`pending` 行在结果下方显示当前请求阶段。
 - `pool_upstream_account_events` 新增可空 `attempt_id`。failover 路径在已获得 pending attempt ID 时，将新生成的 call 事件直接绑定到同一账号、同一请求尝试；历史事件不回填，前端不会再用 `invokeId` 猜测其对应尝试。带关联的健康事件明确显示并点击“上游尝试 ID”，不将为空的最终 `invokeId` 渲染为入口。

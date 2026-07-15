@@ -142,7 +142,9 @@ const sampleModelPerformance: ModelPerformance = {
     streamingResponseRate: 148.2,
     avgResponseMs: 4100,
     avgFirstResponseByteTotalMs: 980,
-    usageDurationMs: 133000,
+    wallClockUsageDurationMs: 94000,
+    cumulativeUsageDurationMs: 133000,
+    parallelism: 1.41,
   },
   models: [
     {
@@ -152,7 +154,9 @@ const sampleModelPerformance: ModelPerformance = {
       streamingResponseRate: 162.4,
       avgResponseMs: 4500,
       avgFirstResponseByteTotalMs: 1100,
-      usageDurationMs: 107000,
+      wallClockUsageDurationMs: 82000,
+      cumulativeUsageDurationMs: 107000,
+      parallelism: 1.3,
     },
     {
       model: "gpt-5.4-mini",
@@ -161,7 +165,9 @@ const sampleModelPerformance: ModelPerformance = {
       streamingResponseRate: null,
       avgResponseMs: null,
       avgFirstResponseByteTotalMs: 860,
-      usageDurationMs: 61000,
+      wallClockUsageDurationMs: 47000,
+      cumulativeUsageDurationMs: 61000,
+      parallelism: 1.3,
     },
   ],
 };
