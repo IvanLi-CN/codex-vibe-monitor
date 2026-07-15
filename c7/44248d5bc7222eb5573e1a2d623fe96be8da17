@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.36.3",
+  "base_stable_version": "2.36.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-15T15:04:26Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.36.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "f41b213ee8a908f524ef16b734ca46c1c8cf5b6a",
+  "pr_number": 627,
+  "pr_title": "fix(web): move routing defaults into system settings",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.36.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.36.3",
+  "target_sha": "c744248d5bc7222eb5573e1a2d623fe96be8da17",
+  "type_label": "type:patch"
+}
