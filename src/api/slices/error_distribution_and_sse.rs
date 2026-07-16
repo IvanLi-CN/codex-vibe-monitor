@@ -1733,6 +1733,7 @@ pub(crate) async fn sse_stream(
         .into_iter()
         .filter_map(|payload| Event::default().json_data(&payload).ok().map(Ok))
         .collect::<Vec<_>>();
+        schedule_dashboard_activity_live_snapshot(state.as_ref());
         stream::iter(events)
     };
 
@@ -2077,6 +2078,8 @@ pub(crate) struct DashboardActivityLiveAccount {
     pub(crate) retry_invocation_count: i64,
     pub(crate) upload_bytes_per_second: f64,
     pub(crate) download_bytes_per_second: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) network_live_bucket: Option<DashboardNetworkTimeseriesPointResponse>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -2087,6 +2090,8 @@ pub(crate) struct DashboardActivityLiveSnapshot {
     pub(crate) in_progress_invocation_count: i64,
     pub(crate) in_progress_phase_counts: InvocationPhaseCountsResponse,
     pub(crate) retry_invocation_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) network_live_bucket: Option<DashboardNetworkTimeseriesPointResponse>,
     pub(crate) accounts: Vec<DashboardActivityLiveAccount>,
 }
 
@@ -2150,6 +2155,7 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
                 retry_invocation_count: 0,
                 upload_bytes_per_second: 0.0,
                 download_bytes_per_second: 0.0,
+                network_live_bucket: None,
             });
         account.in_progress_invocation_count += 1;
         let live_phase = record
@@ -2181,6 +2187,7 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
         in_progress_invocation_count,
         in_progress_phase_counts: phase_counts,
         retry_invocation_count,
+        network_live_bucket: None,
         accounts,
     }
 }

@@ -1677,7 +1677,7 @@ pub(crate) struct DashboardActivityRecentResponse {
     pub(crate) accounts: Vec<DashboardActivityRecentAccountResponse>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DashboardNetworkTimeseriesPointResponse {
     pub(crate) bucket_start: String,

@@ -2411,18 +2411,12 @@ pub(crate) async fn update_existing_proxy_invocation_record_tx(
     .bind(raw_response)
     .bind(record.req_raw.path.as_deref())
     .bind(raw_payload_meta_codec(&record.req_raw))
-    .bind(
-        record
-            .req_raw
-            .path
-            .as_ref()
-            .map(|_| record.req_raw.size_bytes),
-    )
+    .bind(record.req_raw.size_bytes)
     .bind(record.req_raw.truncated as i64)
     .bind(record.req_raw.truncated_reason.as_deref())
     .bind(resp_raw.path.as_deref())
     .bind(raw_payload_meta_codec(resp_raw))
-    .bind(resp_raw.path.as_ref().map(|_| resp_raw.size_bytes))
+    .bind(resp_raw.size_bytes)
     .bind(resp_raw.truncated as i64)
     .bind(resp_raw.truncated_reason.as_deref())
     .bind(t_total_ms)
@@ -2509,19 +2503,11 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         cost_estimated: Some(record.cost_estimated as i64),
         price_version: record.price_version.clone(),
         request_raw_path: record.req_raw.path.clone(),
-        request_raw_size: record
-            .req_raw
-            .path
-            .as_ref()
-            .map(|_| record.req_raw.size_bytes),
+        request_raw_size: Some(record.req_raw.size_bytes),
         request_raw_truncated: Some(record.req_raw.truncated as i64),
         request_raw_truncated_reason: record.req_raw.truncated_reason.clone(),
         response_raw_path: record.resp_raw.path.clone(),
-        response_raw_size: record
-            .resp_raw
-            .path
-            .as_ref()
-            .map(|_| record.resp_raw.size_bytes),
+        response_raw_size: Some(record.resp_raw.size_bytes),
         response_raw_truncated: Some(record.resp_raw.truncated as i64),
         response_raw_truncated_reason: record.resp_raw.truncated_reason.clone(),
         detail_level: DETAIL_LEVEL_FULL.to_string(),
@@ -3029,7 +3015,12 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
     let resp_raw = if record.response_body_preview_enabled {
         record.resp_raw.clone()
     } else {
-        RawPayloadMeta::default()
+        RawPayloadMeta {
+            path: None,
+            size_bytes: record.resp_raw.size_bytes,
+            truncated: record.resp_raw.truncated,
+            truncated_reason: record.resp_raw.truncated_reason.clone(),
+        }
     };
     let failure = resolve_failure_classification(
         Some(record.status.as_str()),
@@ -3167,12 +3158,12 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
         .bind(&raw_response)
         .bind(record.req_raw.path.as_deref())
         .bind(raw_payload_meta_codec(&record.req_raw))
-        .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
+        .bind(record.req_raw.size_bytes)
         .bind(record.req_raw.truncated as i64)
         .bind(record.req_raw.truncated_reason.as_deref())
         .bind(resp_raw.path.as_deref())
         .bind(raw_payload_meta_codec(&resp_raw))
-        .bind(resp_raw.path.as_ref().map(|_| resp_raw.size_bytes))
+        .bind(resp_raw.size_bytes)
         .bind(resp_raw.truncated as i64)
         .bind(resp_raw.truncated_reason.as_deref())
         .bind(None::<f64>)
@@ -3612,8 +3603,16 @@ pub(crate) fn spawn_raw_payload_file_write(
     bytes: Bytes,
     enabled: bool,
 ) -> PendingRawPayloadWrite {
-    if !enabled || bytes.is_empty() {
+    if bytes.is_empty() {
         return PendingRawPayloadWrite::Ready(RawPayloadMeta::default());
+    }
+    if !enabled {
+        return PendingRawPayloadWrite::Ready(RawPayloadMeta {
+            path: None,
+            size_bytes: bytes.len() as i64,
+            truncated: false,
+            truncated_reason: None,
+        });
     }
 
     let Ok(permit) = state.proxy_raw_async_semaphore.clone().try_acquire_owned() else {

@@ -167,7 +167,6 @@ function DashboardNaturalDayRangePanel({
   const {
     data: networkData,
     isLoading: networkLoading,
-    isRefreshing: networkRefreshing,
     error: networkError,
   } = useDashboardNetworkTimeseries(timeseriesRange, metric === "network", upstreamAccountId);
   const chartResponse = useDashboardTopChartCommittedResponse(data, {
@@ -204,7 +203,6 @@ function DashboardNaturalDayRangePanel({
         closedNaturalDay={timeseriesRange === "yesterday"}
         networkResponse={networkData}
         networkLoading={networkLoading}
-        networkRefreshing={networkRefreshing}
         networkError={networkError}
       />
     </div>
@@ -578,7 +576,6 @@ const DashboardNaturalDayChartSection = memo(function DashboardNaturalDayChartSe
   closedNaturalDay,
   networkResponse,
   networkLoading,
-  networkRefreshing,
   networkError,
 }: {
   response: ReturnType<typeof useTimeseries>["data"];
@@ -588,14 +585,13 @@ const DashboardNaturalDayChartSection = memo(function DashboardNaturalDayChartSe
   closedNaturalDay: boolean;
   networkResponse: ReturnType<typeof useDashboardNetworkTimeseries>["data"];
   networkLoading: boolean;
-  networkRefreshing: boolean;
   networkError: string | null;
 }) {
   if (metric === "network") {
     return (
       <DashboardNetworkActivityChart
         response={networkResponse}
-        loading={networkLoading || networkRefreshing}
+        loading={networkLoading && networkResponse == null}
         error={networkError}
       />
     );
@@ -683,7 +679,6 @@ function Dashboard24HourRangePanel({
   const {
     data: networkData,
     isLoading: networkLoading,
-    isRefreshing: networkRefreshing,
     error: networkError,
   } = useDashboardNetworkTimeseries("1d", metric === "network", upstreamAccountId);
 
@@ -701,7 +696,7 @@ function Dashboard24HourRangePanel({
       {metric === "network" ? (
         <DashboardNetworkActivityChart
           response={networkData}
-          loading={networkLoading || networkRefreshing}
+          loading={networkLoading && networkData == null}
           error={networkError}
         />
       ) : (

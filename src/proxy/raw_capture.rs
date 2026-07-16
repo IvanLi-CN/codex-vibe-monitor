@@ -1019,7 +1019,12 @@ pub(crate) async fn persist_proxy_capture_record_core(
     let resp_raw = if record.response_body_preview_enabled {
         record.resp_raw.clone()
     } else {
-        RawPayloadMeta::default()
+        RawPayloadMeta {
+            path: None,
+            size_bytes: record.resp_raw.size_bytes,
+            truncated: record.resp_raw.truncated,
+            truncated_reason: record.resp_raw.truncated_reason.clone(),
+        }
     };
     let failure = resolve_failure_classification(
         Some(record.status.as_str()),
@@ -1157,12 +1162,12 @@ pub(crate) async fn persist_proxy_capture_record_core(
         .bind(&raw_response)
         .bind(record.req_raw.path.as_deref())
         .bind(raw_payload_meta_codec(&record.req_raw))
-        .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
+        .bind(record.req_raw.size_bytes)
         .bind(record.req_raw.truncated as i64)
         .bind(record.req_raw.truncated_reason.as_deref())
         .bind(resp_raw.path.as_deref())
         .bind(raw_payload_meta_codec(&resp_raw))
-        .bind(resp_raw.path.as_ref().map(|_| resp_raw.size_bytes))
+        .bind(resp_raw.size_bytes)
         .bind(resp_raw.truncated as i64)
         .bind(resp_raw.truncated_reason.as_deref())
         .bind(record.timings.t_total_ms)

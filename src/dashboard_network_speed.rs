@@ -245,9 +245,23 @@ impl DashboardNetworkSpeedCache {
             .inner
             .lock()
             .expect("dashboard network speed cache should not be poisoned");
-        inner.latest_speed_epoch_second.is_some_and(|latest| {
+        if inner.latest_speed_epoch_second.is_some_and(|latest| {
             now_epoch_second.saturating_sub(latest) < DASHBOARD_NETWORK_REALTIME_WINDOW_SECONDS
-        })
+        }) {
+            return true;
+        }
+
+        let current_bucket_start_epoch_second = current_bucket_start_epoch_second(now_epoch_second);
+        inner
+            .open_buckets
+            .get(&DashboardNetworkScopeKey::Global)
+            .filter(|bucket| bucket.bucket_start_epoch_second == current_bucket_start_epoch_second)
+            .is_some_and(|bucket| {
+                bucket.seed_totals.upload_bytes > 0
+                    || bucket.seed_totals.download_bytes > 0
+                    || bucket.delta_totals.upload_bytes > 0
+                    || bucket.delta_totals.download_bytes > 0
+            })
     }
 
     pub(crate) fn open_bucket_read_state(
@@ -537,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn heartbeat_expires_after_realtime_window() {
+    fn heartbeat_stays_alive_until_the_live_bucket_rolls_over() {
         let cache = DashboardNetworkSpeedCache::new(fixed_utc(0));
         cache.record_response_chunk_bytes(
             "invoke-1",
@@ -548,6 +562,25 @@ mod tests {
         );
 
         assert!(cache.should_keep_dashboard_activity_live_stream(fixed_utc(214)));
-        assert!(!cache.should_keep_dashboard_activity_live_stream(fixed_utc(216)));
+        assert!(cache.should_keep_dashboard_activity_live_stream(fixed_utc(299)));
+        assert!(!cache.should_keep_dashboard_activity_live_stream(fixed_utc(300)));
+    }
+
+    #[test]
+    fn seeded_open_bucket_keeps_live_stream_running_without_recent_chunks() {
+        let cache = DashboardNetworkSpeedCache::new(fixed_utc(0));
+        let read = cache.open_bucket_read_state(DashboardNetworkScopeKey::Global, fixed_utc(620));
+        cache.seed_open_bucket(
+            DashboardNetworkScopeKey::Global,
+            read.bucket_start,
+            DashboardNetworkByteTotals {
+                upload_bytes: 120,
+                download_bytes: 240,
+            },
+            fixed_utc(620),
+        );
+
+        assert!(cache.should_keep_dashboard_activity_live_stream(fixed_utc(700)));
+        assert!(!cache.should_keep_dashboard_activity_live_stream(fixed_utc(900)));
     }
 }

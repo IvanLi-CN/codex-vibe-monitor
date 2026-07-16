@@ -780,6 +780,41 @@ describe("DashboardActivityOverview", () => {
     expect(hookMocks.useDashboardNetworkTimeseries).toHaveBeenCalledWith("1d", false, undefined);
   });
 
+  it("does not surface the chart refreshing chrome when network data is already hydrated", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardNetworkTimeseries.mockReturnValue({
+      data: {
+        range: "today",
+        rangeStart: "2026-04-08T00:00:00Z",
+        rangeEnd: "2026-04-08T00:10:00Z",
+        snapshotId: 100,
+        bucketSeconds: 300,
+        points: [
+          {
+            bucketStart: "2026-04-08T00:05:00Z",
+            bucketEnd: "2026-04-08T00:10:00Z",
+            uploadBytesPerSecond: 1600,
+            downloadBytesPerSecond: 6800,
+            uploadBytes: 480000,
+            downloadBytes: 2040000,
+            isLiveBucket: true,
+          },
+        ],
+      },
+      isLoading: false,
+      isRefreshing: true,
+      error: null,
+      reload: vi.fn(),
+    });
+
+    render(<DashboardActivityOverview />);
+    clickTab("Network");
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-network-activity-chart-mock"]')?.textContent,
+    ).toBe("points:1;loading:false;error:null");
+  });
+
   it("restores the last active range from localStorage and falls back to today on invalid values", () => {
     installSummaryMocks();
     window.localStorage.setItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY, "usage");
