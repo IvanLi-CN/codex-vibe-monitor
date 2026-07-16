@@ -872,8 +872,8 @@ describe("useInvocationRecords", () => {
           createRecord({
             id: 2,
             invokeId: "invoke-existing-b",
-            occurredAt: "2026-03-09T23:59:00Z",
-            createdAt: "2026-03-09T23:59:00Z",
+            occurredAt: "2026-03-10T00:00:30Z",
+            createdAt: "2026-03-10T00:00:30Z",
             status: "success",
           }),
         ],
@@ -911,8 +911,8 @@ describe("useInvocationRecords", () => {
         createRecord({
           id: 2,
           invokeId: "invoke-existing-b",
-          occurredAt: "2026-03-09T23:59:00Z",
-          createdAt: "2026-03-09T23:59:00Z",
+          occurredAt: "2026-03-10T00:00:30Z",
+          createdAt: "2026-03-10T00:00:30Z",
           status: "success",
         }),
       ],
