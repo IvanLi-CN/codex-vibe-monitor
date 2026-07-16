@@ -1,6 +1,6 @@
-import {
-  type PromptCacheConversationSelection,
-  type PromptCacheConversationsResponse,
+import type {
+  PromptCacheConversationSelection,
+  PromptCacheConversationsResponse,
 } from "../lib/api";
 import { buildTopicDescriptor } from "../lib/sse";
 import { useSubscriptionTopic } from "./useSubscriptionTopic";
