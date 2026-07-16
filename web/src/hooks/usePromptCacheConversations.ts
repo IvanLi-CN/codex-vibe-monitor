@@ -9,6 +9,19 @@ export const PROMPT_CACHE_SSE_REFRESH_THROTTLE_MS = 5_000;
 export const PROMPT_CACHE_POLLING_REFRESH_INTERVAL_MS = 60_000;
 export const PROMPT_CACHE_OPEN_RESYNC_COOLDOWN_MS = 3_000;
 
+export function getPromptCacheSseRefreshDelay(lastRefreshAt: number, now: number) {
+  return Math.max(0, PROMPT_CACHE_SSE_REFRESH_THROTTLE_MS - (now - lastRefreshAt));
+}
+
+export function shouldTriggerPromptCacheOpenResync(
+  lastResyncAt: number,
+  now: number,
+  force = false,
+) {
+  if (force) return true;
+  return now - lastResyncAt >= PROMPT_CACHE_OPEN_RESYNC_COOLDOWN_MS;
+}
+
 function buildPromptCacheTopic(selection: PromptCacheConversationSelection) {
   return buildTopicDescriptor("prompt-cache.window", {
     ...(selection.mode === "count"
