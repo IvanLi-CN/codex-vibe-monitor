@@ -116,7 +116,10 @@ export const DetailDrawer: Story = {
     await expectFixedDesktopDrawerWidth(dialog);
     await waitFor(() => {
       const requestLog = window.__storybookUpstreamAccountsController__?.getRequestLog() ?? [];
-      expect(requestLog.some((entry) => entry.includes("/sticky-keys"))).toBe(true);
+      expect(requestLog.some((entry) => entry.includes("/sticky-keys"))).toBe(false);
+      expect(
+        within(dialog).getByText(/Sticky Key 对话|Sticky key conversations/i),
+      ).toBeInTheDocument();
     });
     await userEvent.click(within(dialog).getByRole("tab", { name: /健康与事件|health & events/i }));
     await expectFixedDesktopDrawerWidth(dialog);

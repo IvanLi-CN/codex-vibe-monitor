@@ -1,7 +1,10 @@
 import type { BroadcastPayload } from "../lib/api";
+import type { SubscriptionTopicEnvelope } from "../lib/sse";
+
+export type StorybookPageSsePayload = BroadcastPayload | SubscriptionTopicEnvelope<unknown>;
 
 export interface StorybookPageSseController {
-  emit: (payload: BroadcastPayload) => void;
+  emit: (payload: StorybookPageSsePayload) => void;
   emitOpen: () => void;
   reset: () => void;
 }
