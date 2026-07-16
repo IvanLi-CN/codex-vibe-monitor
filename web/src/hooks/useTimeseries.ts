@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   ApiInvocation,
   InvocationRecordsQuery,
@@ -8,7 +8,9 @@ import type {
 } from "../lib/api";
 import { fetchInvocationRecords, fetchTimeseries } from "../lib/api";
 import { invocationStableKey } from "../lib/invocation";
-import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
+import { buildTopicDescriptor } from "../lib/sse";
+import { getBrowserTimeZone } from "../lib/timeZone";
+import { useSubscriptionTopic } from "./useSubscriptionTopic";
 
 export interface UseTimeseriesOptions {
   bucket?: string;
@@ -27,16 +29,6 @@ export interface TimeseriesSyncPolicy {
 export interface TimeseriesOpenResyncOptions {
   bypassCooldown?: boolean;
   forceLoad?: boolean;
-}
-
-interface LoadOptions {
-  silent?: boolean;
-  force?: boolean;
-}
-
-interface PendingLoad {
-  silent: boolean;
-  waiters: Array<() => void>;
 }
 
 interface UpdateContext {
@@ -366,29 +358,6 @@ function getRangeStartEpoch(range: string, rangeEndEpoch: number) {
   return rangeSeconds != null ? rangeEndEpoch - rangeSeconds : null;
 }
 
-function resolvePendingLoad(pending: PendingLoad | null) {
-  if (!pending) return;
-  pending.waiters.forEach((resolve) => {
-    resolve();
-  });
-}
-
-function createSeededTimeseries(range: string, bucket?: string) {
-  const bucketSeconds = guessBucketSeconds(bucket) ?? defaultBucketSecondsForRange(range);
-  const nowEpochSeconds = Math.floor(Date.now() / 1000);
-  const rangeEndEpoch =
-    range === "yesterday" ? getYesterdayRangeEndEpoch(nowEpochSeconds) : nowEpochSeconds;
-  const rangeStartEpoch = getRangeStartEpoch(range, rangeEndEpoch) ?? rangeEndEpoch - 86_400;
-  const start = formatEpochToIso(rangeStartEpoch);
-  const end = formatEpochToIso(rangeEndEpoch);
-  return {
-    rangeStart: start,
-    rangeEnd: end,
-    bucketSeconds,
-    points: [] satisfies TimeseriesPoint[],
-  };
-}
-
 function normalizeLiveRecordOutcome(record: ApiInvocation): LiveRecordOutcome {
   const status = record.status?.trim().toLowerCase() ?? "";
   const failureClass = record.failureClass?.trim().toLowerCase() ?? "";
@@ -475,67 +444,6 @@ function sanitizeTimeseriesPointLatency(point: TimeseriesPoint) {
   point.firstResponseByteTotalSampleCount = 0;
   point.firstResponseByteTotalAvgMs = null;
   point.firstResponseByteTotalP95Ms = null;
-}
-
-function buildUntrackedInFlightCounts(
-  current: TimeseriesResponse,
-  liveRecordDeltas: ReadonlyMap<string, LiveRecordDelta>,
-) {
-  const remaining = new Map<string, number>();
-  for (const point of current.points) {
-    const inFlightCount = getTimeseriesPointInFlightCount(point);
-    if (inFlightCount > 0) {
-      remaining.set(point.bucketStart, inFlightCount);
-    }
-  }
-  for (const delta of liveRecordDeltas.values()) {
-    const currentCount = remaining.get(delta.bucketStart) ?? 0;
-    const nextCount = currentCount - delta.inFlightCount;
-    if (nextCount > 0) {
-      remaining.set(delta.bucketStart, nextCount);
-    } else {
-      remaining.delete(delta.bucketStart);
-    }
-  }
-  return remaining;
-}
-
-function claimUntrackedInFlightDelta(
-  record: ApiInvocation,
-  nextDelta: LiveRecordDelta | null,
-  untrackedInFlightCounts: Map<string, number>,
-  claimSnapshotId: number | null,
-) {
-  if (!nextDelta) {
-    return null;
-  }
-  if (claimSnapshotId != null && Number.isFinite(record.id) && record.id <= 0) {
-    return null;
-  }
-  if (claimSnapshotId != null && Number.isFinite(record.id) && record.id > claimSnapshotId) {
-    return null;
-  }
-  const remainingCount = untrackedInFlightCounts.get(nextDelta.bucketStart) ?? 0;
-  if (remainingCount <= 0) {
-    return null;
-  }
-  if (remainingCount === 1) {
-    untrackedInFlightCounts.delete(nextDelta.bucketStart);
-  } else {
-    untrackedInFlightCounts.set(nextDelta.bucketStart, remainingCount - 1);
-  }
-  return createCountsOnlyLiveRecordDelta({
-    ...nextDelta,
-    successCount: 0,
-    failureCount: 0,
-    inFlightCount: 1,
-  });
-}
-
-function resolveUntrackedInFlightClaimSnapshotId(response: Pick<TimeseriesResponse, "snapshotId">) {
-  return typeof response.snapshotId === "number" && Number.isFinite(response.snapshotId)
-    ? response.snapshotId
-    : null;
 }
 
 function createCountsOnlyLiveRecordDelta(delta: LiveRecordDelta): LiveRecordDelta {
@@ -854,124 +762,6 @@ export function mergeFreshResponseLiveRecordDeltas(
   };
 }
 
-function restoreMissingTrackedDeltaView(
-  response: TimeseriesResponse,
-  current: TimeseriesResponse | null,
-  liveRecordDeltas: ReadonlyMap<string, LiveRecordDelta>,
-) {
-  if (!current || liveRecordDeltas.size === 0) {
-    return response;
-  }
-
-  const restoredBucketStarts = new Set<string>();
-  for (const delta of liveRecordDeltas.values()) {
-    restoredBucketStarts.add(delta.bucketStart);
-  }
-  if (restoredBucketStarts.size === 0) {
-    return response;
-  }
-
-  const currentPoints = new Map(current.points.map((point) => [point.bucketStart, point]));
-  const responsePoints = new Map(response.points.map((point) => [point.bucketStart, { ...point }]));
-  const responseRangeStartEpoch = parseIsoEpoch(response.rangeStart);
-  const responseRangeEndEpoch = parseIsoEpoch(response.rangeEnd);
-  let changed = false;
-
-  for (const bucketStart of restoredBucketStarts) {
-    const currentPoint = currentPoints.get(bucketStart);
-    if (!currentPoint) {
-      continue;
-    }
-    const currentBucketStartEpoch = parseIsoEpoch(currentPoint.bucketStart);
-    const currentBucketEndEpoch = parseIsoEpoch(currentPoint.bucketEnd);
-    if (
-      responseRangeStartEpoch != null &&
-      responseRangeEndEpoch != null &&
-      responseRangeEndEpoch > responseRangeStartEpoch &&
-      currentBucketStartEpoch != null &&
-      currentBucketEndEpoch != null &&
-      (currentBucketEndEpoch <= responseRangeStartEpoch ||
-        currentBucketStartEpoch >= responseRangeEndEpoch)
-    ) {
-      continue;
-    }
-    const responsePoint = responsePoints.get(bucketStart);
-    const totalCountDiff = Math.max(0, currentPoint.totalCount - (responsePoint?.totalCount ?? 0));
-    const successCountDiff = Math.max(
-      0,
-      currentPoint.successCount - (responsePoint?.successCount ?? 0),
-    );
-    const failureCountDiff = Math.max(
-      0,
-      currentPoint.failureCount - (responsePoint?.failureCount ?? 0),
-    );
-    const inFlightCountDiff = Math.max(
-      0,
-      getTimeseriesPointInFlightCount(currentPoint) -
-        getTimeseriesPointInFlightCount(
-          responsePoint ?? {
-            ...currentPoint,
-            totalCount: 0,
-            successCount: 0,
-            failureCount: 0,
-            inFlightCount: 0,
-            totalTokens: 0,
-            totalCost: 0,
-          },
-        ),
-    );
-    const totalTokensDiff = Math.max(
-      0,
-      currentPoint.totalTokens - (responsePoint?.totalTokens ?? 0),
-    );
-    const totalCostDiff = Math.max(0, currentPoint.totalCost - (responsePoint?.totalCost ?? 0));
-
-    if (
-      totalCountDiff === 0 &&
-      successCountDiff === 0 &&
-      failureCountDiff === 0 &&
-      inFlightCountDiff === 0 &&
-      totalTokensDiff === 0 &&
-      totalCostDiff === 0
-    ) {
-      continue;
-    }
-
-    const nextPoint = responsePoint ?? {
-      bucketStart: currentPoint.bucketStart,
-      bucketEnd: currentPoint.bucketEnd,
-      totalCount: 0,
-      successCount: 0,
-      failureCount: 0,
-      inFlightCount: 0,
-      totalTokens: 0,
-      totalCost: 0,
-    };
-    nextPoint.bucketEnd = currentPoint.bucketEnd;
-    nextPoint.totalCount += totalCountDiff;
-    nextPoint.successCount += successCountDiff;
-    nextPoint.failureCount += failureCountDiff;
-    nextPoint.inFlightCount = getTimeseriesPointInFlightCount(nextPoint) + inFlightCountDiff;
-    nextPoint.totalTokens += totalTokensDiff;
-    nextPoint.totalCost += totalCostDiff;
-    responsePoints.set(bucketStart, nextPoint);
-    changed = true;
-  }
-
-  if (!changed) {
-    return response;
-  }
-
-  return {
-    ...response,
-    points: Array.from(responsePoints.values()).sort((left, right) => {
-      const leftEpoch = parseIsoEpoch(left.bucketStart) ?? 0;
-      const rightEpoch = parseIsoEpoch(right.bucketStart) ?? 0;
-      return leftEpoch - rightEpoch;
-    }),
-  };
-}
-
 function adjustTimeseriesPoint(point: TimeseriesPoint, delta: LiveRecordDelta, sign: 1 | -1) {
   const previousLatencySampleCount = Math.max(point.totalLatencySampleCount ?? 0, 0);
   const previousLatencyTotal =
@@ -1158,43 +948,6 @@ export function resolveCurrentDayLiveSeedRange(
   };
 }
 
-async function loadSeededLiveRecordDeltas(
-  current: TimeseriesResponse,
-  syncMode: TimeseriesSyncMode,
-  context: UpdateContext,
-  signal?: AbortSignal,
-  upstreamAccountId?: number,
-) {
-  if (syncMode === "server") {
-    return new Map<string, LiveRecordDelta>();
-  }
-
-  if (syncMode === "current-day-local") {
-    const seedEpoch = resolveCurrentDayLiveSeedEpoch(current);
-    const seedRange = resolveCurrentDayLiveSeedRange(current, seedEpoch);
-    if (!seedRange) {
-      return new Map<string, LiveRecordDelta>();
-    }
-    const inFlightRecords = await fetchTimeseriesInFlightRecords(
-      current,
-      signal,
-      fetchInvocationRecords,
-      seedRange,
-      upstreamAccountId,
-    );
-    return seedCurrentDayLiveRecordDeltas(current, inFlightRecords, seedEpoch);
-  }
-
-  const inFlightRecords = await fetchTimeseriesInFlightRecords(
-    current,
-    signal,
-    fetchInvocationRecords,
-    null,
-    upstreamAccountId,
-  );
-  return seedTimeseriesLiveRecordDeltas(current, inFlightRecords, context);
-}
-
 export function upsertTimeseriesLiveRecord(
   current: TimeseriesResponse | null,
   record: ApiInvocation,
@@ -1297,530 +1050,73 @@ export function upsertTimeseriesLiveRecord(
 
 export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   const initialCachedTimeseries = readTimeseriesRemountCache(range, options);
-  const initialLiveRecordDeltas =
-    initialCachedTimeseries?.liveRecordDeltas ?? new Map<string, LiveRecordDelta>();
-  const [data, setData] = useState<TimeseriesResponse | null>(
-    () => initialCachedTimeseries?.data ?? null,
-  );
-  const [isLoading, setIsLoading] = useState(() => initialCachedTimeseries == null);
-  const [error, setError] = useState<string | null>(null);
   const bucket = options?.bucket;
   const settlementHour = options?.settlementHour;
-  const preferServerAggregation = options?.preferServerAggregation ?? false;
   const upstreamAccountId = options?.upstreamAccountId;
-  const hasHydratedRef = useRef(initialCachedTimeseries != null);
-  const activeLoadCountRef = useRef(0);
-  const pendingLoadRef = useRef<PendingLoad | null>(null);
-  const pendingOpenResyncRef = useRef(false);
-  const requestSeqRef = useRef(0);
-  const activeRequestControllerRef = useRef<AbortController | null>(null);
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const dayRolloverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastRecordsRefreshAtRef = useRef(0);
-  const lastOpenResyncAtRef = useRef(0);
-  const localRevisionRef = useRef(0);
-  const dataRef = useRef<TimeseriesResponse | null>(initialCachedTimeseries?.data ?? null);
-  const liveRecordDeltaRef = useRef<Map<string, LiveRecordDelta>>(initialLiveRecordDeltas);
-  const settledLiveRecordUpdatedAtRef = useRef<Map<string, number>>(
-    initialCachedTimeseries?.settledLiveRecordUpdatedAt ?? new Map(),
-  );
-  const untrackedInFlightCountsRef = useRef<Map<string, number>>(
-    initialCachedTimeseries?.untrackedInFlightCounts ?? new Map(),
-  );
-  const untrackedInFlightClaimSnapshotIdRef = useRef<number | null>(
-    initialCachedTimeseries?.untrackedInFlightClaimSnapshotId ?? null,
-  );
 
   const normalizedOptions = useMemo<UseTimeseriesOptions>(
     () => ({
       bucket,
       settlementHour,
-      preferServerAggregation,
       upstreamAccountId,
     }),
-    [bucket, settlementHour, preferServerAggregation, upstreamAccountId],
+    [bucket, settlementHour, upstreamAccountId],
   );
-
-  const syncPolicy = useMemo(
-    () => resolveTimeseriesSyncPolicy(range, normalizedOptions),
-    [normalizedOptions, range],
+  const supportsPureSse = range !== "yesterday";
+  const topic = supportsPureSse
+    ? buildTopicDescriptor("stats.timeseries.open-window", {
+        range,
+        bucket: normalizedOptions.bucket,
+        settlementHour: normalizedOptions.settlementHour,
+        upstreamAccountId: normalizedOptions.upstreamAccountId,
+        timeZone: getBrowserTimeZone(),
+      })
+    : null;
+  const sse = useSubscriptionTopic<TimeseriesResponse>(topic, supportsPureSse);
+  const [httpData, setHttpData] = useState<TimeseriesResponse | null>(
+    () => initialCachedTimeseries?.data ?? null,
   );
-
-  const clearPendingRefreshTimer = useCallback(() => {
-    if (!refreshTimerRef.current) return;
-    clearTimeout(refreshTimerRef.current);
-    refreshTimerRef.current = null;
-  }, []);
-
-  const clearDayRolloverTimer = useCallback(() => {
-    if (!dayRolloverTimerRef.current) return;
-    clearTimeout(dayRolloverTimerRef.current);
-    dayRolloverTimerRef.current = null;
-  }, []);
-
-  const clearPendingLoad = useCallback(() => {
-    resolvePendingLoad(pendingLoadRef.current);
-    pendingLoadRef.current = null;
-  }, []);
-
-  const runLoad = useCallback(
-    async ({ silent = false }: LoadOptions = {}) => {
-      activeLoadCountRef.current += 1;
-      const requestSeq = requestSeqRef.current + 1;
-      requestSeqRef.current = requestSeq;
-      const controller = new AbortController();
-      activeRequestControllerRef.current = controller;
-      const shouldShowLoading = !(silent && hasHydratedRef.current);
-      if (shouldShowLoading) {
-        setIsLoading(true);
-      }
-
-      try {
-        const response = await fetchTimeseries(range, {
-          ...normalizedOptions,
-          signal: controller.signal,
-        });
-        let seededLiveRecordDeltas = new Map<string, LiveRecordDelta>();
-        let untrackedInFlightCounts = new Map<string, number>();
-        if (syncPolicy.mode !== "server") {
-          try {
-            seededLiveRecordDeltas = await loadSeededLiveRecordDeltas(
-              response,
-              syncPolicy.mode,
-              {
-                range,
-                bucketSeconds: response.bucketSeconds,
-                settlementHour: normalizedOptions.settlementHour,
-              },
-              controller.signal,
-              normalizedOptions.upstreamAccountId,
-            );
-          } catch (seedErr) {
-            if (seedErr instanceof Error && seedErr.name === "AbortError") {
-              throw seedErr;
-            }
-            console.warn("Failed to seed in-flight timeseries deltas after load", seedErr);
-          }
-          untrackedInFlightCounts = buildUntrackedInFlightCounts(response, seededLiveRecordDeltas);
-        }
-        if (requestSeq !== requestSeqRef.current) {
-          return;
-        }
-
-        const mergedLiveRecordDeltas =
-          syncPolicy.mode !== "server"
-            ? mergeFreshResponseLiveRecordDeltas(
-                seededLiveRecordDeltas,
-                liveRecordDeltaRef.current,
-                settledLiveRecordUpdatedAtRef.current,
-                response.snapshotId,
-              )
-            : {
-                liveRecordDeltas: seededLiveRecordDeltas,
-                settledLiveRecordUpdatedAt: new Map<string, number>(),
-              };
-        const responseWithPreservedLiveDeltas =
-          syncPolicy.mode !== "server"
-            ? restoreMissingTrackedDeltaView(
-                response,
-                dataRef.current,
-                mergedLiveRecordDeltas.liveRecordDeltas,
-              )
-            : response;
-        const claimSnapshotId = resolveUntrackedInFlightClaimSnapshotId(response);
-        liveRecordDeltaRef.current = mergedLiveRecordDeltas.liveRecordDeltas;
-        settledLiveRecordUpdatedAtRef.current = mergedLiveRecordDeltas.settledLiveRecordUpdatedAt;
-        untrackedInFlightCountsRef.current = untrackedInFlightCounts;
-        untrackedInFlightClaimSnapshotIdRef.current = claimSnapshotId;
-        dataRef.current = responseWithPreservedLiveDeltas;
-        setData(responseWithPreservedLiveDeltas);
-        writeTimeseriesRemountCache(
-          range,
-          normalizedOptions,
-          responseWithPreservedLiveDeltas,
-          Date.now(),
-          liveRecordDeltaRef.current,
-          settledLiveRecordUpdatedAtRef.current,
-          untrackedInFlightCounts,
-          claimSnapshotId,
-        );
-
-        hasHydratedRef.current = true;
-        setError(null);
-
-        if (pendingOpenResyncRef.current) {
-          pendingOpenResyncRef.current = false;
-          lastOpenResyncAtRef.current = Date.now();
-          if (pendingLoadRef.current) {
-            pendingLoadRef.current.silent = mergePendingTimeseriesSilentOption(
-              pendingLoadRef.current.silent,
-              true,
-            );
-          } else {
-            pendingLoadRef.current = { silent: true, waiters: [] };
-          }
-        }
-      } catch (err) {
-        if (requestSeq !== requestSeqRef.current) {
-          return;
-        }
-        if (err instanceof Error && err.name === "AbortError") {
-          return;
-        }
-        setError(err instanceof Error ? err.message : String(err));
-        if (dataRef.current != null) {
-          hasHydratedRef.current = true;
-          return;
-        }
-        const fallback = createSeededTimeseries(range, normalizedOptions.bucket);
-        liveRecordDeltaRef.current = new Map();
-        settledLiveRecordUpdatedAtRef.current = new Map();
-        untrackedInFlightCountsRef.current = new Map();
-        untrackedInFlightClaimSnapshotIdRef.current = null;
-        dataRef.current = fallback;
-        setData(fallback);
-        hasHydratedRef.current = true;
-      } finally {
-        if (activeRequestControllerRef.current === controller) {
-          activeRequestControllerRef.current = null;
-        }
-        if (requestSeq === requestSeqRef.current && shouldShowLoading) {
-          setIsLoading(false);
-        }
-        activeLoadCountRef.current = Math.max(0, activeLoadCountRef.current - 1);
-        if (activeLoadCountRef.current === 0) {
-          const pendingLoad = pendingLoadRef.current;
-          if (pendingLoad) {
-            pendingLoadRef.current = null;
-            void runLoad({ silent: pendingLoad.silent }).finally(() => {
-              pendingLoad.waiters.forEach((resolve) => {
-                resolve();
-              });
-            });
-          }
-        }
-      }
-    },
-    [normalizedOptions, range, syncPolicy.mode],
+  const [httpLoading, setHttpLoading] = useState(
+    () => !supportsPureSse && initialCachedTimeseries == null,
   );
+  const [httpError, setHttpError] = useState<string | null>(null);
 
-  const load = useCallback(
-    async ({ silent = false, force = false }: LoadOptions = {}) => {
-      if (force) {
-        activeRequestControllerRef.current?.abort();
-        clearPendingLoad();
-        clearPendingRefreshTimer();
-      }
-
-      if (!force && activeLoadCountRef.current > 0) {
-        return new Promise<void>((resolve) => {
-          if (pendingLoadRef.current) {
-            pendingLoadRef.current.silent = mergePendingTimeseriesSilentOption(
-              pendingLoadRef.current.silent,
-              silent,
-            );
-            pendingLoadRef.current.waiters.push(resolve);
-            return;
-          }
-          pendingLoadRef.current = { silent, waiters: [resolve] };
-        });
-      }
-
-      if (syncPolicy.mode === "server") {
-        lastRecordsRefreshAtRef.current = Date.now();
-      }
-
-      await runLoad({ silent });
-    },
-    [clearPendingLoad, clearPendingRefreshTimer, runLoad, syncPolicy.mode],
-  );
-
-  const triggerRecordsResync = useCallback(() => {
-    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-    const now = Date.now();
-    const delay = getTimeseriesRecordsResyncDelay(
-      lastRecordsRefreshAtRef.current,
-      now,
-      syncPolicy.recordsRefreshThrottleMs,
-    );
-    const run = () => {
-      refreshTimerRef.current = null;
-      lastRecordsRefreshAtRef.current = Date.now();
-      void load({ silent: true });
-    };
-
-    if (delay === 0) {
-      clearPendingRefreshTimer();
-      run();
-      return;
+  const loadHttpTimeseries = useCallback(async () => {
+    setHttpLoading(true);
+    try {
+      const response = await fetchTimeseries(range, normalizedOptions);
+      setHttpData(response);
+      writeTimeseriesRemountCache(range, normalizedOptions, response, Date.now());
+      setHttpError(null);
+    } catch (error) {
+      setHttpError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setHttpLoading(false);
     }
+  }, [normalizedOptions, range]);
 
-    if (refreshTimerRef.current) {
-      return;
+  useEffect(() => {
+    if (!supportsPureSse) {
+      void loadHttpTimeseries();
     }
-    refreshTimerRef.current = setTimeout(run, delay);
-  }, [clearPendingRefreshTimer, load, syncPolicy.recordsRefreshThrottleMs]);
-
-  const triggerOpenResync = useCallback(
-    ({ bypassCooldown = false, forceLoad = false }: TimeseriesOpenResyncOptions = {}) => {
-      if (!hasHydratedRef.current) {
-        pendingOpenResyncRef.current = true;
-        return;
-      }
-      const now = Date.now();
-      if (!shouldTriggerTimeseriesOpenResync(lastOpenResyncAtRef.current, now, bypassCooldown)) {
-        return;
-      }
-      lastOpenResyncAtRef.current = now;
-      void load({ silent: true, force: forceLoad });
-    },
-    [load],
-  );
+  }, [loadHttpTimeseries, supportsPureSse]);
 
   useEffect(() => {
-    const cachedTimeseries = readTimeseriesRemountCache(range, normalizedOptions);
-    requestSeqRef.current += 1;
-    activeRequestControllerRef.current?.abort();
-    activeRequestControllerRef.current = null;
-    setData(cachedTimeseries?.data ?? null);
-    setError(null);
-    setIsLoading(cachedTimeseries == null);
-    hasHydratedRef.current = cachedTimeseries != null;
-    pendingOpenResyncRef.current = false;
-    lastRecordsRefreshAtRef.current = 0;
-    lastOpenResyncAtRef.current = 0;
-    localRevisionRef.current = 0;
-    dataRef.current = cachedTimeseries?.data ?? null;
-    liveRecordDeltaRef.current = cachedTimeseries?.liveRecordDeltas ?? new Map();
-    settledLiveRecordUpdatedAtRef.current =
-      cachedTimeseries?.settledLiveRecordUpdatedAt ?? new Map();
-    untrackedInFlightCountsRef.current = cachedTimeseries?.untrackedInFlightCounts ?? new Map();
-    untrackedInFlightClaimSnapshotIdRef.current =
-      cachedTimeseries?.untrackedInFlightClaimSnapshotId ?? null;
-    clearPendingLoad();
-    clearPendingRefreshTimer();
-    clearDayRolloverTimer();
-    if (!cachedTimeseries) {
-      void load({ force: true });
-      return;
+    if (supportsPureSse && sse.data) {
+      writeTimeseriesRemountCache(range, normalizedOptions, sse.data, Date.now());
     }
-    void load({ silent: true, force: true });
-  }, [
-    clearDayRolloverTimer,
-    clearPendingLoad,
-    clearPendingRefreshTimer,
-    load,
-    normalizedOptions,
-    range,
-  ]);
+  }, [normalizedOptions, range, sse.data, supportsPureSse]);
 
-  useEffect(() => {
-    if (!error) return;
-    const id = setTimeout(() => {
-      void load();
-    }, 2000);
-    return () => clearTimeout(id);
-  }, [error, load]);
-
-  useEffect(() => {
-    const unsubscribe = subscribeToSse((payload) => {
-      if (payload.type !== "records") return;
-      const scopedRecords =
-        normalizedOptions.upstreamAccountId == null
-          ? payload.records
-          : payload.records.filter(
-              (record) => record.upstreamAccountId === normalizedOptions.upstreamAccountId,
-            );
-      if (scopedRecords.length === 0) return;
-
-      if (syncPolicy.mode === "server") {
-        triggerRecordsResync();
-        return;
-      }
-
-      if (syncPolicy.mode === "current-day-local") {
-        const nowEpochSeconds = Math.floor(Date.now() / 1000);
-        if (shouldResyncForCurrentDayBucket(dataRef.current, nowEpochSeconds)) {
-          triggerOpenResync({
-            bypassCooldown: true,
-            forceLoad: true,
-          });
-          return;
-        }
-        setData((current) => {
-          let next = current;
-          for (const record of scopedRecords) {
-            const key = invocationStableKey(record);
-            const trackedDelta = liveRecordDeltaRef.current.get(key) ?? null;
-            const currentBucket = next != null ? getCurrentDayBucket(next, nowEpochSeconds) : null;
-            const previousDelta =
-              trackedDelta ??
-              (next != null
-                ? claimUntrackedInFlightDelta(
-                    record,
-                    currentBucket != null
-                      ? buildCurrentDayLiveRecordDelta(record, currentBucket)
-                      : null,
-                    untrackedInFlightCountsRef.current,
-                    untrackedInFlightClaimSnapshotIdRef.current,
-                  )
-                : null);
-            const result = upsertCurrentDayLiveRecord(next, record, previousDelta, nowEpochSeconds);
-            next = result.next;
-            trackTimeseriesLiveRecordDelta(
-              liveRecordDeltaRef.current,
-              settledLiveRecordUpdatedAtRef.current,
-              key,
-              record,
-              result.delta,
-            );
-          }
-          if (next !== current) {
-            dataRef.current = next;
-            localRevisionRef.current += 1;
-            if (next) {
-              writeTimeseriesRemountCache(
-                range,
-                normalizedOptions,
-                next,
-                Date.now(),
-                liveRecordDeltaRef.current,
-                settledLiveRecordUpdatedAtRef.current,
-                untrackedInFlightCountsRef.current,
-                untrackedInFlightClaimSnapshotIdRef.current,
-              );
-            }
-          }
-          return next;
-        });
-        return;
-      }
-
-      setData((current) => {
-        let next = current ?? createSeededTimeseries(range, normalizedOptions.bucket);
-        for (const record of scopedRecords) {
-          const key = invocationStableKey(record);
-          const trackedDelta = liveRecordDeltaRef.current.get(key) ?? null;
-          const previousDelta =
-            trackedDelta ??
-            claimUntrackedInFlightDelta(
-              record,
-              buildTimeseriesLiveRecordDelta(record, next, {
-                range,
-                bucketSeconds: next.bucketSeconds,
-                settlementHour: normalizedOptions.settlementHour,
-              }),
-              untrackedInFlightCountsRef.current,
-              untrackedInFlightClaimSnapshotIdRef.current,
-            );
-          const result = upsertTimeseriesLiveRecord(next, record, previousDelta, {
-            range,
-            bucketSeconds: next.bucketSeconds,
-            settlementHour: normalizedOptions.settlementHour,
-          });
-          next = result.next ?? next;
-          trackTimeseriesLiveRecordDelta(
-            liveRecordDeltaRef.current,
-            settledLiveRecordUpdatedAtRef.current,
-            key,
-            record,
-            result.delta,
-          );
-        }
-        if (next !== current) {
-          dataRef.current = next;
-          localRevisionRef.current += 1;
-          if (next) {
-            writeTimeseriesRemountCache(
-              range,
-              normalizedOptions,
-              next,
-              Date.now(),
-              liveRecordDeltaRef.current,
-              settledLiveRecordUpdatedAtRef.current,
-              untrackedInFlightCountsRef.current,
-              untrackedInFlightClaimSnapshotIdRef.current,
-            );
-          }
-        }
-        return next;
-      });
-    });
-    return unsubscribe;
-  }, [
-    normalizedOptions,
-    normalizedOptions.bucket,
-    normalizedOptions.settlementHour,
-    normalizedOptions.upstreamAccountId,
-    range,
-    syncPolicy.mode,
-    triggerOpenResync,
-    triggerRecordsResync,
-  ]);
-
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const resyncOnOpen = () => {
-      const resyncMode = getVisibilityOpenResyncMode(range, syncPolicy.mode, dataRef.current);
-      triggerOpenResync(
-        resyncMode === "force" ? { bypassCooldown: true, forceLoad: true } : undefined,
-      );
-    };
-    const onVisibilityChange = () => {
-      if (document.visibilityState !== "visible") return;
-      resyncOnOpen();
-    };
-    const onPageShow = (event: PageTransitionEvent) => {
-      if (!event.persisted) return;
-      resyncOnOpen();
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener("pageshow", onPageShow);
-    return () => {
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener("pageshow", onPageShow);
-    };
-  }, [range, syncPolicy.mode, triggerOpenResync]);
-
-  useEffect(() => {
-    const unsubscribe = subscribeToSseOpen(() => {
-      triggerOpenResync(getSseOpenResyncOptions(range, syncPolicy.mode, dataRef.current));
-    });
-    return unsubscribe;
-  }, [range, syncPolicy.mode, triggerOpenResync]);
-
-  useEffect(() => {
-    clearDayRolloverTimer();
-    const refreshEpoch = getTimeseriesDayRolloverRefreshEpoch(range, syncPolicy.mode, data);
-    if (refreshEpoch == null) {
-      return;
-    }
-    const delay = Math.max(0, refreshEpoch * 1000 - Date.now() + 50);
-    dayRolloverTimerRef.current = setTimeout(() => {
-      void load({ silent: true, force: true });
-    }, delay);
-    return clearDayRolloverTimer;
-  }, [clearDayRolloverTimer, data, load, range, syncPolicy.mode]);
-
-  useEffect(
-    () => () => {
-      requestSeqRef.current += 1;
-      activeRequestControllerRef.current?.abort();
-      activeRequestControllerRef.current = null;
-      clearPendingLoad();
-      clearPendingRefreshTimer();
-      clearDayRolloverTimer();
-      pendingOpenResyncRef.current = false;
-      untrackedInFlightClaimSnapshotIdRef.current = null;
-    },
-    [clearDayRolloverTimer, clearPendingLoad, clearPendingRefreshTimer],
-  );
+  const data = supportsPureSse ? (sse.data ?? initialCachedTimeseries?.data ?? null) : httpData;
+  const isLoading = supportsPureSse ? sse.isLoading && data == null : httpLoading;
+  const error = supportsPureSse ? sse.error : httpError;
+  const refresh = supportsPureSse ? sse.refresh : loadHttpTimeseries;
 
   return {
     data,
     isLoading,
     error,
-    refresh: load,
+    refresh,
   };
 }
 

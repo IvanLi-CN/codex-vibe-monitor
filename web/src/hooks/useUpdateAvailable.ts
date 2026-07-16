@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchVersion } from "../lib/api";
-import { subscribeToSseOpen } from "../lib/sse";
+import type { VersionResponse } from "../lib/api";
+import { buildTopicDescriptor, subscribeToTopic } from "../lib/sse";
 
 const DISMISS_KEY = "update-dismissed-version";
 
@@ -18,31 +18,10 @@ export function useUpdateAvailable() {
     }
   }, []);
 
-  const loadVersion = useCallback(async () => {
-    try {
-      const v = await fetchVersion();
-      return v.backend;
-    } catch {
-      return null;
-    }
-  }, []);
-
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const v = await loadVersion();
-      if (cancelled) return;
-      setCurrentVersion(v);
-      initialVersionRef.current = v;
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [loadVersion]);
-
-  useEffect(() => {
-    const unsubscribe = subscribeToSseOpen(async () => {
-      const next = await loadVersion();
+    const topic = buildTopicDescriptor("app.version");
+    const unsubscribe = subscribeToTopic<VersionResponse>(topic, (event) => {
+      const next = event.payload.backend ?? null;
       if (!next) return;
       const initial = initialVersionRef.current;
       if (!initial) {
@@ -50,13 +29,14 @@ export function useUpdateAvailable() {
         setCurrentVersion(next);
         return;
       }
+      setCurrentVersion(next);
       if (next !== initial && next !== dismissed) {
         setAvailableVersion(next);
         setVisible(true);
       }
     });
     return unsubscribe;
-  }, [dismissed, loadVersion]);
+  }, [dismissed]);
 
   const dismiss = useCallback(() => {
     if (availableVersion) {

@@ -1,20 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ApiInvocation, BroadcastPayload } from "../lib/api";
-import { fetchInvocations } from "../lib/api";
-import { invocationStableKey } from "../lib/invocation";
-import {
-  matchesInvocationLiveFilters,
-  mergeInvocationWindowRecords,
-} from "../lib/invocationRecordsLive";
-import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
+import { useEffect, useMemo, useRef } from "react";
+import type { ApiInvocation, ListResponse } from "../lib/api";
+import { buildTopicDescriptor } from "../lib/sse";
+import { useSubscriptionTopic } from "./useSubscriptionTopic";
 
 export interface InvocationFilters {
   model?: string;
   status?: string;
-}
-
-function recordKey(record: ApiInvocation) {
-  return invocationStableKey(record);
 }
 
 function recordsChanged(next: ApiInvocation[], current: ApiInvocation[]) {
@@ -31,29 +22,12 @@ function recordsChanged(next: ApiInvocation[], current: ApiInvocation[]) {
   );
 }
 
-function mergeRecords(
-  incoming: ApiInvocation[],
-  current: ApiInvocation[],
-  limit: number,
-  filters?: InvocationFilters,
-  hiddenKeys?: Set<string>,
-) {
-  const currentKeys = new Set(current.map((record) => recordKey(record)));
-  const nextHidden = new Set(hiddenKeys ?? []);
-  const merged = mergeInvocationWindowRecords(current, incoming, {
-    filters,
-    sortBy: "occurredAt",
-    sortOrder: "desc",
-    limit: Math.max(limit, current.length + incoming.length),
-  }).filter((record) => {
-    const key = recordKey(record);
-    return !nextHidden.has(key) || currentKeys.has(key);
+function buildInvocationsTopic(limit: number, filters?: InvocationFilters) {
+  return buildTopicDescriptor("invocations.window", {
+    limit,
+    model: filters?.model,
+    status: filters?.status,
   });
-  const visible = merged.slice(0, limit);
-  for (const record of merged.slice(limit)) {
-    nextHidden.add(recordKey(record));
-  }
-  return { records: visible, hiddenKeys: nextHidden };
 }
 
 export function useInvocationStream(
@@ -62,192 +36,32 @@ export function useInvocationStream(
   onNewRecords?: (records: ApiInvocation[]) => void,
   options?: { enableStream?: boolean },
 ) {
-  const [records, setRecords] = useState<ApiInvocation[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const enableStream = options?.enableStream ?? true;
-  const hasHydratedRef = useRef(false);
-  const pendingOpenResyncRef = useRef(false);
-  const lastResyncAtRef = useRef(0);
-  const requestSeqRef = useRef(0);
-  const recordsRef = useRef<ApiInvocation[]>([]);
-  const hiddenKeysRef = useRef<Set<string>>(new Set());
-  const onNewRecordsRef = useRef(onNewRecords);
-
-  useEffect(() => {
-    onNewRecordsRef.current = onNewRecords;
-  }, [onNewRecords]);
-
-  useEffect(() => {
-    recordsRef.current = records;
-  }, [records]);
-
-  const load = useCallback(
-    async (opts?: { silent?: boolean }) => {
-      const requestSeq = requestSeqRef.current + 1;
-      requestSeqRef.current = requestSeq;
-      const suppressError = Boolean(opts?.silent && hasHydratedRef.current);
-      const shouldShowLoading = !(opts?.silent && hasHydratedRef.current);
-      const baselineKeys = new Set(recordsRef.current.map((record) => recordKey(record)));
-      if (shouldShowLoading) {
-        setIsLoading(true);
-      }
-      try {
-        const response = await fetchInvocations(limit, filters);
-        if (requestSeq !== requestSeqRef.current) {
-          return;
-        }
-        setRecords((current) => {
-          hiddenKeysRef.current = new Set();
-          const authoritative = mergeRecords(
-            response.records,
-            [],
-            limit,
-            filters,
-            hiddenKeysRef.current,
-          );
-          const concurrent = current.filter(
-            (record) =>
-              matchesInvocationLiveFilters(record, filters) && !baselineKeys.has(recordKey(record)),
-          );
-          const nextState = mergeRecords(
-            authoritative.records,
-            concurrent,
-            limit,
-            filters,
-            authoritative.hiddenKeys,
-          );
-          const next = nextState.records;
-          hiddenKeysRef.current = nextState.hiddenKeys;
-          recordsRef.current = next;
-          if (onNewRecordsRef.current && recordsChanged(next, current)) {
-            onNewRecordsRef.current(next);
-          }
-          return next;
-        });
-        hasHydratedRef.current = true;
-        lastResyncAtRef.current = Date.now();
-        if (pendingOpenResyncRef.current) {
-          pendingOpenResyncRef.current = false;
-          queueMicrotask(() => {
-            void load({ silent: true });
-          });
-        }
-        setError(null);
-      } catch (err) {
-        if (requestSeq !== requestSeqRef.current) {
-          return;
-        }
-        if (!suppressError) {
-          setError(err instanceof Error ? err.message : String(err));
-        }
-      } finally {
-        if (requestSeq === requestSeqRef.current) {
-          setIsLoading(false);
-        }
-      }
-    },
-    [filters, limit],
+  const topic = enableStream ? buildInvocationsTopic(limit, filters) : null;
+  const { data, isLoading, error, refresh } = useSubscriptionTopic<ListResponse>(
+    topic,
+    enableStream,
   );
+  const records = useMemo(() => data?.records ?? [], [data]);
+  const previousRecordsRef = useRef<ApiInvocation[]>([]);
 
   useEffect(() => {
-    return () => {
-      requestSeqRef.current += 1;
-    };
-  }, []);
-
-  useEffect(() => {
-    hasHydratedRef.current = false;
-    pendingOpenResyncRef.current = false;
-    lastResyncAtRef.current = 0;
-    hiddenKeysRef.current = new Set();
-    void load();
-  }, [load]);
-
-  // Auto-retry if initial load failed (e.g., backend temporarily unavailable)
-  useEffect(() => {
-    if (!error || records.length > 0) return;
-    const id = setTimeout(() => {
-      void load();
-    }, 2000);
-    return () => clearTimeout(id);
-  }, [error, load, records.length]);
-
-  const requestResync = useCallback(
-    (opts?: { force?: boolean }) => {
-      const force = opts?.force ?? false;
-      if (!force && typeof document !== "undefined" && document.visibilityState !== "visible")
-        return;
-      const now = Date.now();
-      if (!force && now - lastResyncAtRef.current < 3000) return;
-      lastResyncAtRef.current = now;
-      void load({ silent: true });
-    },
-    [load],
-  );
-
-  useEffect(() => {
-    if (!enableStream) {
+    if (!onNewRecords) {
+      previousRecordsRef.current = records;
       return;
     }
-
-    const unsubscribe = subscribeToSse((payload: BroadcastPayload) => {
-      if (payload.type !== "records") return;
-      setRecords((current) => {
-        const nextState = mergeRecords(
-          payload.records,
-          current,
-          limit,
-          filters,
-          hiddenKeysRef.current,
-        );
-        const next = nextState.records;
-        hiddenKeysRef.current = nextState.hiddenKeys;
-        recordsRef.current = next;
-        if (onNewRecordsRef.current) {
-          if (recordsChanged(next, current)) {
-            onNewRecordsRef.current(next);
-          }
-        }
-        return next;
-      });
-    });
-
-    return unsubscribe;
-  }, [enableStream, filters, limit]);
-
-  useEffect(() => {
-    if (!enableStream) {
-      return;
+    const previous = previousRecordsRef.current;
+    if (recordsChanged(records, previous)) {
+      onNewRecords(records);
     }
-    const unsubscribe = subscribeToSseOpen(() => {
-      if (!hasHydratedRef.current) {
-        pendingOpenResyncRef.current = true;
-        return;
-      }
-      requestResync({ force: true });
-    });
-    return unsubscribe;
-  }, [enableStream, requestResync]);
-
-  useEffect(() => {
-    if (typeof document === "undefined" || !enableStream) {
-      return;
-    }
-    const onVisibilityChange = () => {
-      if (document.visibilityState !== "visible") return;
-      requestResync();
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, [enableStream, requestResync]);
-
-  const hasData = useMemo(() => records.length > 0, [records]);
+    previousRecordsRef.current = records;
+  }, [onNewRecords, records]);
 
   return {
     records,
     isLoading,
     error,
-    hasData,
+    hasData: records.length > 0,
+    refresh,
   };
 }

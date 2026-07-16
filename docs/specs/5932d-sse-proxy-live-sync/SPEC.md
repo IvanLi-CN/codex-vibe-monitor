@@ -1,155 +1,200 @@
-# SSE 驱动的请求记录与统计实时更新（#5932d）
+# 主应用常驻订阅纯 SSE 化与统一快照/回放基础设施（#5932d）
+
+> 当前有效规范以本文为准；实现覆盖见 `./IMPLEMENTATION.md`，关键演进原因见 `./HISTORY.md`。
 
 ## 背景 / 问题陈述
 
-- 前端 `Dashboard` 与 `Live` 已订阅 SSE，但当前代理链路写库成功后不会即时推送 `records`/`summary`/`quota`。
-- 后端 `records` 广播仅来自轮询任务，导致代理请求产生后 UI 需要等待下一轮轮询或手动刷新。
-- 目标是让代理请求写库后 <1s 在 UI 可见，并且统计卡片与配额快照同步刷新。
+- 主应用常驻订阅此前长期混用 `records` SSE、HTTP bootstrap、SSE `open` 后回源、定时 reconcile 与页面私有 fallback。
+- 这种“推拉并存”把订阅 UI 变成了多套状态机：同一块面板既吃 SSE，又等 HTTP 校准，还要处理重连、乱序与 stale 覆盖。
+- `dashboard.activity`、working conversations、prompt-cache、summary、timeseries、parallel-work、quota、forward-proxy live 这些 owner-facing 当前态，本质上都属于“订阅 topic 的权威读模型”，不该再让前端从 `records/recent/timeseries` 反推其它面板。
 
 ## 目标 / 非目标
 
 ### Goals
 
-- 代理请求写库成功后，立即广播 `records`（仅新增记录）。
-- 同步广播最新 `summary`（既有窗口集合）与 `quota` 快照。
-- 前端在 SSE 重连后做一次静默回源，补齐重连窗口内可能丢失的记录。
-- 保持现有 HTTP API 与 SSE payload schema 不变。
+- 主应用常驻订阅统一收口到单 `/events`，使用显式 `topics + resume` 请求合同。
+- 订阅响应统一为 `snapshot -> replay -> live` 三类 envelope；覆盖范围内不再使用 `records` 事件驱动额外 HTTP reconcile。
+- 首屏 hydration 改为纯 SSE：连接建立后先收到对应 topic 的 authoritative `snapshot`，再进入增量更新。
+- 恢复规则统一为“能 replay 才 replay，否则直接新 snapshot 覆盖”，不再为单个页面保留私有 fallback。
+- 订阅 topic 由后端直接产出权威 payload，前端只消费 topic 数据，不再拼装二次聚合真相。
 
 ### Non-goals
 
-- 不新增 SSE event type。
-- 不改动 Dashboard/Live 组件接口与页面结构。
-- 不引入 schema migration。
+- 不把导入校验、批量同步、后台任务进度等任务型专用 SSE endpoint 并入这次总线。
+- 不把 `yesterday`、闭合自然日、纯历史列表、长历史 bucket 强行改成持续推送。
+- 不引入 WebSocket。
+- 不要求 replay 窗口跨服务重启持久化；进程重启后允许直接用新 `snapshot` 恢复。
 
 ## 范围（Scope）
 
 ### In scope
 
-- `src/main.rs`：代理落库路径与广播逻辑抽取。
-- `web/src/hooks/useInvocations.ts`：SSE open 后的静默回源补齐。
-- 相关测试与验证命令更新（Rust + Web）。
+- `src/api/slices/subscriptions.rs` 与 `/events`：topic descriptor、resume cursor、snapshot/replay/live envelope、单连接多 topic fanout。
+- `src/runtime.rs` / `src/app_state.rs`：主应用订阅 hub、内存 snapshot cache 与 replay ring 生命周期。
+- `web/src/lib/sse.ts` 与 `web/src/hooks/useSubscriptionTopic.ts`：单连接 topic registry、cursor 持有、topic 集变更重连、统一恢复。
+- 主应用当前常驻订阅消费者迁移：
+  - `dashboard.activity.current`
+  - `dashboard.working-conversations.current`
+  - `invocations.window`
+  - `prompt-cache.window`
+  - `prompt-cache.sticky.window`
+  - `stats.summary.current`
+  - `stats.timeseries.open-window`
+  - `stats.parallel-work.current`
+  - `forward-proxy.live`
+  - `quota.current`
+  - `invocation.pool-attempts`
+  - `app.version`
 
 ### Out of scope
 
-- 轮询任务广播策略重构。
-- 新增前端轮询兜底主机制。
+- 纯历史窗口与历史分页仍通过现有 HTTP 读取。
+- 非主应用实时消费者可以继续保留既有语义，后续再单独收口。
 
 ## 需求（Requirements）
 
 ### MUST
 
-- 新增内部 helper 统一“代理落库后广播”流程，替换代理链路的所有落库调用点。
-- `INSERT OR IGNORE` 未插入时，不广播 `records`。
-- 广播 `records`、`summary`、`quota` 之间错误隔离，任何广播失败仅记录 `warn`，不影响代理响应。
-- 保持 `t_total_ms`/`t_persist_ms` 的现有更新语义，不得回归。
+- `/events` 请求继续保留单入口，但客户端必须显式携带 `topics` 与可选 `resume`。
+- 服务端对主应用 topic 只发送 `SubscriptionEventEnvelope::Snapshot | Replay | Live`；覆盖范围内不再向前端暴露 “收到 `records` 后自己回源” 这一合同。
+- 覆盖范围内页面首屏不得先发 HTTP bootstrap；可见数据 hydration 必须等待 topic `snapshot` 或可恢复的 `replay` 完成。
+- 健康连接状态下，覆盖范围内页面不得触发后台 HTTP reconcile、`subscribeToSseOpen` resync fetch、定时拉取校准或页面私有 fallback。
+- 恢复规则只允许二选一：
+  - client cursor 仍在该 topic replay 窗口内，且 `schemaEpoch` 一致、gap 连续、回放批次未超预算时，发送 `replay`
+  - 否则直接发送新的 `snapshot`
+- replay 保留层使用“每 topic 最近权威 snapshot + 进程内 replay ring”：
+  - 最近 `60s`
+  - 每 topic 最多 `512` 个事件
+  - 每 topic 最多约 `1 MiB` 序列化体积
+  - 单次 gap 超过 `128` 个事件或约 `256 KiB` 时直接 snapshot
+- topic 参数必须 canonicalize；相同 topic + 相同参数组合必须稳定生成同一个 `topic_key`。
+- 闭合历史窗口、非订阅页面和任务型专用 SSE 不得被这次纯 SSE 改造误伤。
 
 ### SHOULD
 
-- 复用 `collect_summary_snapshots` 与 `QuotaSnapshotResponse::fetch_latest`。
-- 避免在多个错误/成功分支复制广播逻辑。
-- Dashboard 实时消费应拆分“用户可见轻量补丁”和“HTTP 全量 reconcile”两类节奏，避免高频 SSE 记录把整页统计与图表一起重算。
+- 后端 topic payload 尽量直接复用现有 authoritative 读路径，而不是重复实现一套只给 SSE 用的聚合逻辑。
+- 结构化日志或 diagnostics 至少覆盖：replay hit/miss、miss reason、snapshot build latency、fanout receivers、cursor gap、cache pruning。
 
 ## 功能与行为规格（Functional/Behavior Spec）
 
 ### Core flows
 
-- 代理请求落库成功且为新插入记录时：
-  - 广播 `BroadcastPayload::Records { records: vec![record] }`
-  - 广播全部 summary 窗口 payload
-  - 广播最新 quota（存在时）
-- 代理请求命中重复写入（未插入）时：
-  - 不广播 `records`，并且不触发额外 summary/quota 广播。
-- 前端连接 SSE 成功（open）后：
-  - 对 `useInvocationStream` 执行一次静默 `fetchInvocations(...)` 回源并合并去重。
-- Dashboard `today` summary:
-  - SSE `summary` payload 是 KPI 数字的快速路径，匹配窗口时直接提交并保持 ≤1s 可见。
-  - `records` payload 只触发 HTTP reconcile，不作为 KPI 快速路径；calendar-window HTTP reconcile 必须节流到不超过每 5 秒一次。
-  - 当主 Dashboard 已经持有当前可见 `today` / `yesterday` 的 `dashboardActivity` snapshot 时，自然日总览卡片必须直接复用该 snapshot 里的同窗口 summary / rate truth，不得再为同一窗口额外挂载第二条 `useSummary(window)` 订阅；仅比较窗口（如 `yesterday`、`previous7d`）允许继续独立读取。
-- Dashboard 顶部 `today`/`yesterday` 1 分钟粒度活动图：
-  - 继续使用既有 Recharts 图表、tooltip、1 分钟 bucket 与交互结构。
-  - `today` 图表接收的 timeseries response 允许高频到达，但提交给图表渲染的数据快照必须独立节流到不超过每 5 秒一次。
-  - closed natural day（例如 `yesterday`）不需要延迟提交。
-- Dashboard working conversations:
-  - SSE `records` 对已加载会话的本地可见 patch 必须 1 秒合批提交，避免逐条记录触发卡片重排。
-  - 新会话、排序锚点变化或 head 需要重算时，HTTP head/snapshot reconcile 必须节流到不超过每 5 秒一次。
-  - 当前卡片列表只使用“最近 5 分钟终态会话 + 任意尚未 terminal/tombstone 的 `running/pending` 会话”决定展示集合。
-  - 卡片内 `requestCount`、`totalTokens`、`totalCost`、`createdAt` 与 `lastActivityAt` 使用该 `promptCacheKey` 在 snapshot 边界内的完整生命周期聚合；activity window 只决定是否入选列表，不裁剪卡片自身 totals。
-- Proxy runtime snapshots:
-  - 对 tracked proxy capture endpoints，服务在请求 admit 并分配 `invokeId + occurredAt` 后，必须立即把最小 `running` shell record 写入进程内 runtime store 并广播 SSE；该可见性不得等待 request body 读完、body parse、账号路由或上游 attempt start。
-  - admit-time shell record 可以只包含已知字段，例如 endpoint、requester IP、header sticky/prompt-cache key 与 `status=running`；后续 body-parsed / attempt-start / response-ready snapshot 必须用同一 `invokeId + occurredAt` 覆盖补全，不得制造重复行。
-  - `running` / `pending` 过程态以进程内共享 runtime store 为当前真相源，并通过 SSE `records` 立即广播。
-  - HTTP current-window reconcile 必须在 DB 结果上 overlay 同一份内存 runtime store，覆盖 records、summary、timeseries、account activity 与 working conversations，避免 DB 不再常规刷新 running 行后出现短暂丢行。
-  - Memory overlay 中的 `running` / `pending` 记录不受 activity window、natural-day 或 5 分钟工作集限制；只要尚未 terminal/tombstone，current summary、account activity 与 working conversations 都必须展示。历史 terminal DB 行仍按所选窗口过滤。
-  - terminal success/failure 记录是 P1 观测事实，必须构造成完整 terminal record 后进入 SQLite write controller；代理业务响应不等待 SQLite 落库，入队或 flush 失败只记录结构化证据。
-  - terminal record 入队后必须 tombstone/remove 对应内存 running 记录；HTTP overlay 中已存在的 terminal DB 事实始终优先于 memory running。
-  - body read timeout、route validation failure、owner unavailable、pool no account 与 upstream send timeout 等终态失败必须先发布 terminal overlay 并 tombstone/remove 对应 running shell；不得依赖 SQLite flush 成功来避免 UI 假 running。
-  - active SSE subscriber 场景下，terminal overlay 是 UI 的立即收敛来源；summary/quota follow-up 可以延迟到 write controller 后续 flush 后自然一致，不得为了 follow-up 强制制造同步 SQLite flush barrier。
-  - 优雅停机只尽力 drain P1 terminal/route 状态记录；P2 running snapshot 不强制逐条写回 SQLite。
-- `/api/stats/parallel-work`:
-  - JSON shape 与字段集合必须保持不变。
-  - 服务端可以通过 ETag / `If-None-Match` / `304 Not Modified` 或等价 version 机制减少未变化 payload 传输。
+- 客户端启动主应用订阅时：
+  - 汇总当前需要的 topic descriptor 集合。
+  - 以单条 EventSource 连接 `/events?topics=...&resume=...`。
+  - 先接收每个 topic 的 `snapshot` 或 `replay`，再进入 `live`。
+- 当 topic 集发生变化时：
+  - 关闭旧连接。
+  - 用新的去重 topic 集重连。
+  - 将旧连接已持有的每 topic cursor 作为 `resume` 携带。
+- 当连接短暂断开并恢复时：
+  - 若 cursor 仍在 replay 窗口内，服务端发送缺口 `replay`。
+  - 若服务重启、schema epoch 变化、topic 参数变化或 replay gap 超预算，则服务端直接发送新 `snapshot`。
+- 当某个 topic 收到内部广播影响时：
+  - 后端刷新该 topic 的 authoritative payload。
+  - 更新 snapshot cache。
+  - 在允许 replay 的场景下把该 payload 追加进 replay ring。
+  - 对活动连接 fanout `live`。
 
-### Edge cases / errors
+### Recovery semantics
 
-- summary 计算失败：记录 `warn`，继续执行 quota 广播尝试。
-- quota 拉取失败：记录 `warn`，不影响请求主流程。
-- SSE 广播通道拥塞/lag：记录 `warn`，代理请求照常返回。
-- Dashboard HTTP reconcile 失败不得清空已有 SSE 驱动 KPI、working conversations 或 parallel-work 数据；下一次 SSE/open/timer 仍可继续触发 reconcile。
+- `schemaEpoch` 是恢复边界的一部分；epoch 不一致时不得回放旧事件。
+- `topic_key` 必须包含 canonicalized params；参数变化视为新订阅，不共享旧 cursor。
+- 进程重启后 replay ring 为空时，不再补 HTTP，只通过新的 `snapshot` 恢复。
 
 ## 接口契约（Interfaces & Contracts）
 
-- HTTP API: 兼容扩展。
-- SSE schema: 保持现有 `records` / `summary` / `quota` / `version` 结构；`summary` 可扩展轻量 KPI 字段，但不得改写既有 totals 含义。
-- `/api/stats/parallel-work`: response body schema 不变；成功响应应带 `ETag`，匹配 `If-None-Match` 时可返回 `304` 且不带 body。
-- Dashboard 顶部 Today KPI 中的当前活跃调用必须以后端 `inProgressPhaseCounts` 为真相源：
-  - “进行中”=`requesting + responding`
-  - “排队中”=`queued`
-  - 旧 `inProgressConversationCount` / `inFlightCount` 字段保留为兼容合计字段。
-- Timeseries `TimeseriesPoint` 兼容新增 `inFlightPhaseCounts: { queued, requesting, responding }`；`inFlightCount` 继续等于 queued/requesting/responding 的合计或旧聚合合计。
-- Dashboard Today 图表把 in-flight 调用按 `running=requesting+responding` 与 `queued` 拆成两组正向堆叠 bar；缺少 phase 明细的旧 bucket 可回退到 `inFlightCount`。
-- Stats 页 `parallel-work` 继续表示 bucket 内发生过请求的 distinct `promptCacheKey` 数量，不承担严格瞬时进行中对话语义。
-- Dashboard 总览卡片若保留次级展示数据，允许继续复用 `parallel-work` 的 bucket 趋势统计作为参考项，但这些次级项不得反向决定主值，也不得改变 `/api/stats/parallel-work` 的既有接口语义。
+### Shared wire types
+
+- `SubscriptionTopicDescriptor`
+  - `topic: string`
+  - `params: Record<string, string>`
+- `SubscriptionResumeCursor`
+  - `topicKey: string`
+  - `cursor: number`
+  - `schemaEpoch: string`
+- `SubscriptionEventEnvelope`
+  - `type: "snapshot" | "replay" | "live"`
+  - `topic`
+  - `topicKey`
+  - `schemaEpoch`
+  - `cursor`
+  - `payload`
+
+### Topic inventory
+
+- `app.version`
+- `quota.current`
+- `dashboard.activity.current`
+- `dashboard.working-conversations.current`
+- `invocations.window`
+- `prompt-cache.window`
+- `prompt-cache.sticky.window`
+- `stats.summary.current`
+- `stats.timeseries.open-window`
+- `stats.parallel-work.current`
+- `forward-proxy.live`
+- `invocation.pool-attempts`
+
+### HTTP coexistence
+
+- 现有 HTTP 读取端点继续保留给：
+  - 闭合历史窗口
+  - 非订阅页面
+  - 调试与手动读取
+- 但主应用订阅类 UI 在健康态与恢复态都不能再依赖这些 HTTP 端点完成“当前态校准”。
 
 ## 验收标准（Acceptance Criteria）
 
-- Given 代理请求构造出 running 或 terminal record，When 订阅 `/events`，Then 在 1 秒内收到包含新增 `invokeId` 的 `records` 事件，即使 SQLite 记录落库仍在 write controller 队列中。
-- Given tracked proxy capture 请求已经被本服务 admit，When request body 尚未读完或尚未完成上游路由，Then 订阅 `/events` 与 HTTP runtime overlay 均能看到同一 `invokeId` 的最小 `running` 记录，后续解析/attempt 快照只补全该记录。
-- Given 同一代理请求，When `records` 事件发送后，Then 后续 summary/quota 通过 SSE 或 HTTP reconcile 最终补齐，且 SQLite locked 不得阻断业务响应。
-- Given 请求在 body/route/upstream 阶段失败，When 已经存在 admit-time running shell，Then 后端必须广播 terminal overlay 并清理 running 可见态，即使 terminal 记录尚未 flush 到 SQLite。
-- Given 命中 `INSERT OR IGNORE` 未插入，When 请求完成，Then 不重复发送 `records` 事件。
-- Given SSE 发生断线并恢复，When 连接 open，Then 前端列表通过静默回源补齐，且与后端一致。
-- Given Dashboard 收到 `today` 的 SSE `summary`，When payload 匹配当前窗口，Then KPI 数字不等待 HTTP reconcile 即可提交。
-- Given Dashboard 当前可见 `today` 或 `yesterday` 面板已经持有同窗口 `dashboardActivity` snapshot，When 活动总览渲染，Then 同窗口 KPI / rate 直接来自该 snapshot，且不再触发额外的同窗口 `useSummary` 订阅或回源。
-- Given Dashboard 高频收到 `records`，When 需要更新 calendar-window summary、顶部 today 图表或 working conversation head，Then 对应 HTTP / chart commit 不超过每 5 秒一次。
-- Given working conversations 高频收到同一秒内多条 `records`，When 这些 records 命中已加载会话，Then 本地可见 patch 合并为 1 秒批次提交。
-- Given 一个 `pending` 或 `running` 调用 started 超过 5 分钟，When 查询 Dashboard 当前 summary、account activity 或 working conversations，Then 该调用仍计入 active phase counts 并出现在当前卡片列表。
-- Given working conversation 历史跨 hourly rollup、exact DB 与 runtime overlay，When 查询当前卡片，Then 卡片 totals 使用该 prompt-cache key 的完整生命周期聚合，不随 5 分钟筛选窗口缩水。
-- Given timeseries bucket 内含 queued/requesting/responding，When 返回 `TimeseriesPoint`，Then `inFlightPhaseCounts` 明细正确且 `inFlightCount` 保持兼容合计。
-- Given parallel-work payload 未变化，When 客户端带上前次 `ETag` 请求 `/api/stats/parallel-work`，Then 服务端可返回 `304`，客户端复用既有数据且不改变 JSON shape。
+- Given 主应用订阅页面首屏加载，When 建立 `/events` 连接，Then 覆盖范围内 topic 必须先收到 authoritative `snapshot` 或可恢复 `replay`，而不是先发 HTTP bootstrap。
+- Given 主应用连接健康，When 观察网络请求，Then 覆盖范围内页面不会触发后台 HTTP reconcile、`subscribeToSseOpen` resync fetch 或定时拉取。
+- Given `dashboard.activity`、working conversations、prompt-cache、summary、timeseries、parallel-work 收到增量，When 页面更新，Then 它们只消费自己的 topic `snapshot/replay/live`，不再通过 `records` 驱动额外重拉。
+- Given 客户端断线后重连且 cursor 仍在 replay 窗口内，When 连接恢复，Then 服务端发送 `replay` 补齐 gap，而不是额外 HTTP。
+- Given cursor 不可恢复、`schemaEpoch` 变化、topic 参数变化、gap 超预算或服务重启，When 连接恢复，Then 服务端直接发送新的 `snapshot` 覆盖旧状态。
+- Given 关闭历史窗口或非订阅页面仍使用 HTTP，When 本轮纯 SSE 改造完成，Then 它们现有语义保持不变。
 
-### Performance & Reliability
+## 验收清单（Acceptance checklist）
 
-- 代理主链路不可因广播失败、terminal 记录入队失败或 write controller flush 失败而失败；这些失败必须结构化记录并计数。
-- 不新增显著阻塞路径与重复广播噪声。
-- Dashboard 高频 SSE 消费不得让顶部图表、working conversation head reconcile 或 parallel-work 统计在每条记录上全量重渲染。
+- [x] 主应用常驻订阅边界已冻结。
+- [x] 纯 SSE topic 合同已定义。
+- [x] 恢复规则已统一为 snapshot/replay 二选一。
+- [x] 覆盖范围与非目标已明确写清。
 
-## 风险 / 假设
+## 非功能性验收 / 质量门槛（Quality Gates）
 
-- 风险：summary/quota 查询在高频代理流量下增加读压；通过错误隔离和轻量查询控制影响。
-- 假设：`invoke_id + occurred_at` 仍然可用于去重语义，不需要新增唯一键策略。
+### Testing
+
+- Rust:
+  - topic descriptor canonicalization
+  - replay hit / miss reason
+  - schema epoch mismatch
+  - replay window miss / replay budget exceeded
+  - replay window pruning
+- Web:
+  - 单连接 topic registry
+  - 首屏纯 SSE hydration
+  - topic 集变化重连
+  - cursor 恢复
+  - 无 HTTP 健康态 fallback
+  - 关键主应用订阅消费者迁移回归
+
+### Verification
+
+- `cargo check`
+- `cargo test subscriptions -- --nocapture`
+- `cd web && bun x tsc -b --pretty false`
+- `cd web && bun run test -- useDashboardWorkingConversations.test.tsx useDashboardUpstreamAccountActivity.test.tsx useInvocations.test.tsx useStats.integration.test.tsx useTimeseries.integration.test.tsx`
 
 ## Visual Evidence
 
-- source_type=storybook_canvas
-- target_program=mock-only
-- capture_scope=browser-viewport
-- requested_viewport=1660x960
-- viewport_strategy=devtools-emulate
-- sensitive_exclusion=N/A
-- submission_gate=owner-approved
-- story_id_or_title=pages-dashboardpage--full-page-desktop
-- state=desktop full page
-- evidence_note=验证完整桌面端总览页面在保留原布局与全部总览数据项的前提下，“进行中对话”主值取严格进行中的对话数，底部“较昨日 / 日均”仍显示 parallel-work 历史统计，且页面 shell、图表与 working conversations 区块数据完整。
+- 2026-07-16：主应用 `/#/live` 纯 SSE drill 的 owner-facing 页面证据已确认。
+  - Immutable snapshot: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__d7e3b892/2026/07/16/20260716T110814Z-live-sse-drill-evidence-cac8522a.png`
+  - 验证重点：页面已由 topic `snapshot` 正常完成 hydration，且在 `app.version` topic 迁移后不再依赖 `/api/version` 首屏 bootstrap。
 
-PR: include
-![Dashboard 完整桌面页 Storybook 证据](./assets/dashboard-page-full-desktop1660-storybook.png)
+## References
+
+- `docs/solutions/performance/realtime-dashboard-reconcile-budget.md`
+- `docs/specs/z6ysw-dashboard-account-activity-tabs/SPEC.md`
+- `src/api/slices/subscriptions.rs`
+- `web/src/lib/sse.ts`
+- `web/src/hooks/useSubscriptionTopic.ts`

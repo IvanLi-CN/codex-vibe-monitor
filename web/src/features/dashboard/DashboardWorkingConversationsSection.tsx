@@ -3526,7 +3526,7 @@ export function DashboardWorkingConversationsSection({
       onUpstreamAccountPolicyChanged?.();
       return;
     }
-    void hookUpstreamAccountActivity.reload({ silent: true });
+    hookUpstreamAccountActivity.reload();
   }, [
     hasExternalUpstreamAccountActivity,
     hookUpstreamAccountActivity,

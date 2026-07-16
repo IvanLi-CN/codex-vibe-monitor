@@ -22,7 +22,7 @@
 
 ### Non-goals
 
-- 不把现有 `对话` tab 改成跟随总览范围；它继续保持当前 5 分钟工作集与现有 SSE patch 行为。
+- 不把现有 `对话` tab 改成跟随总览范围；它继续保持当前 5 分钟工作集与对应 topic 订阅语义。
 - 不把账号视图做成账号池 roster/table 的嵌入版，也不复用账号详情抽屉的整页布局。
 - 不支持 `usage` 范围下的账号活动聚合，也不为此新增替代语义。
 - 不引入账号卡展开态、二级 tabs、四小格内层卡片或额外 drill-down 交互。
@@ -52,7 +52,7 @@
 ### MUST
 
 - Dashboard 工作区区块右上必须新增 `对话 / 上游账号` tabs，默认保持在 `对话`。
-- `上游账号` tab 首次打开前不得发请求；首次激活后才加载，并在 tab 未激活时不参与 SSE/records 刷新预算。
+- `上游账号` tab 首次打开前不得发请求；首次激活后才加载，并在 tab 未激活时不参与对应 topic 订阅。
 - `上游账号` 视图只展示当前共享 range 内“至少有 1 条调用”的账号；账号标题直接使用 `displayName`。
 - `上游账号` 视图仅支持 `today / yesterday / 1d / 7d`；当共享 range 为 `usage` 时，该 tab 必须 disabled，且若当前停留在账号 tab，必须自动回退到 `对话`。
 - 账号活动接口必须一次返回每个账号的 `upstreamAccountId`、`displayName`、`groupName`、`planType`、`enabled`、`displayStatus`、`enableStatus`、`workStatus`、`healthStatus`、`syncState`、`lastError`、`lastActionReasonMessage`、`requestCount`、`successCount`、`failureCount`、`nonSuccessCount`、`totalTokens`、`successTokens`、`nonSuccessTokens`、`failureTokens`、`cacheHitRate`、`tokensPerMinute`、`spendRate`、`totalCost`、`failureCost`、`firstByteAvgMs`、`avgTotalMs`、`inProgressInvocationCount`、`inProgressPhaseCounts`、`retryInvocationCount`、`effectiveRoutingRule` 与 `recentInvocations[4]`。
@@ -78,7 +78,7 @@
 - 工作区在 `对话 / 上游账号` tabs 右侧必须显示当前排序名称的循环按钮；点击按 `createdAt -> lastInvocation -> cost -> tokens` 循环。两个视图分别使用独立 localStorage key，首次均默认 `createdAt`，切换视图不得覆盖另一视图的选择。
 - 对话的 `createdAt`、`lastInvocation`、`cost` 与 `tokens` 必须全部按倒序排列；缺失时间置后，最终以 `promptCacheKey` 作为稳定次级排序。
 - 账号活动响应必须返回 `latestConversationCreatedAt` 与 `lastInvocationAt`。前者取账号关联对话中最新的真实 conversation `createdAt`，后者取账号关联调用的最新 `occurredAt`；不得用账号创建时间或 recent preview 的截断结果替代。账号排序使用这两个时间字段与成本/Token 全部按倒序排列，最终以 `accountKey` / 账号 ID 稳定排序；其中 `isUnassigned=true` 或 `upstreamAccountId=null` 的 `unassigned` 聚合项必须统一排在所有已分配账号之后，再在未分配项内部应用当前倒序规则。
-- 排序只能从现有 SSE patch 或账号活动快照派生，不得新增请求或改变 refresh cadence；重排后继续复用既有虚拟列表锚定逻辑。
+- 排序只能从对应 topic 的 `snapshot/replay/live` 或同源账号活动快照派生，不得新增请求；重排后继续复用既有虚拟列表锚定逻辑。
 - 摘要区不得加入低价值说明型文案；“按调用计数，不按对话去重”、“仍在重试链路中的调用”、“账号状态说明条”之类解释性文字不得出现在卡面常驻内容里。
 - 请求数、成本与 Token 附加分解摘要在卡面常驻态只显示色点与数值；不得出现任何可见文字标签（包括单字、缩写、短标签）。完整 `label + value` 只通过 hover / title 暴露，不得额外占用版面。
 - 账号卡内部所有结构性描边（外框、摘要格子、recent 行、分隔线）必须统一使用低对比中性边框，不得把主题主色、语义色或任意彩色边框用于结构分割；颜色只保留给状态点、数值与徽章等语义元素。
@@ -109,14 +109,14 @@
 
 ### SHOULD
 
-- 当前进行中、重试和阶段计数必须由后端基于一次 runtime store 读取生成版本化 `dashboardActivityLive` SSE 快照；前端不得从 recent/records 自行推导。历史聚合、recent 与账号元数据继续沿用 5 秒 HTTP reconcile budget。
-- `dashboardActivityLive.revision` 必须单调递增；其快照由 SQLite live read model 与 runtime overlay 的同一合并算法生成。`GET /api/stats/dashboard-activity.liveRevision` 标识 HTTP 返回的实时字段版本。前端不得用较旧 HTTP 或 SSE revision 覆盖较新的实时字段，SSE 重连必须立即下发当前快照。
+- 当前进行中、重试和阶段计数必须由后端 `dashboard.activity.current` topic 的 authoritative payload 直接给出；前端不得从 recent/records 自行推导，也不得再依赖页面私有 HTTP 校准。
+- `dashboard.activity.current` 的恢复必须遵守统一 topic SSE 合同：`schemaEpoch` 一致且 gap 可回放时走 `replay`，否则直接发新 `snapshot`。前端不得用较旧 cursor 对应的 payload 覆盖较新的 topic 状态。
 - Dashboard 默认 `对话` 视图不得预取账号活动；进入 `上游账号` 后必须按“账号卡骨架 -> 汇总卡片 -> recent 调用”渐进展示。只有汇总请求成功且账号数组确实为空时才允许显示真实空态。
 - `GET /api/stats/dashboard-activity` 新增可选 `includeRecent`；省略时默认 `true` 保持兼容。Dashboard 第一阶段必须发送 `includeAccounts=true&includeRecent=false`，使账号身份、状态、策略和聚合指标不等待 recent invocation。
 - `GET /api/stats/dashboard-activity/recent` 必须接收第一阶段响应的 `rangeStart/rangeEnd/snapshotId` 与 `recentLimit`，用一次批量读取返回所有活动账号的 bounded recent rows；不得逐账号发 SQL，也不得以并发 N 个 SQL 伪装批量读取。响应必须回显快照边界，前端只合并当前请求序列与当前快照一致的结果。
-- 首次账号汇总加载时计数 badge 不得显示误导性的 `0`；范围切换与静默校准应保留旧卡片并标注更新中。已有卡片时，更新提示必须收口到头部紧凑状态表达，而不是在卡片网格上方插入临时行；桌面端显示非 badge 的 spinner + `刷新中` 文本，并固定放在“当前活动账号”计数 badge 左侧，移动端只保留 spinner 视觉表现。刷新状态在 idle 时不得保留隐藏占位或固定宽度空白；background refresh 持续超过 `300ms` 后才允许出现，且出现后最少保留 `600ms`，避免高频 reconcile 造成闪烁。新汇总原子替换后，其 recent 区域独立加载；recent 失败不得撤销汇总卡片，必须提供局部错误与重试。
+- 首次账号汇总加载时计数 badge 不得显示误导性的 `0`；范围切换与连接恢复应保留旧卡片并标注更新中。已有卡片时，更新提示必须收口到头部紧凑状态表达，而不是在卡片网格上方插入临时行；桌面端显示非 badge 的 spinner + `刷新中` 文本，并固定放在“当前活动账号”计数 badge 左侧，移动端只保留 spinner 视觉表现。刷新状态在 idle 时不得保留隐藏占位或固定宽度空白；background refresh 持续超过 `300ms` 后才允许出现，且出现后最少保留 `600ms`，避免高频 topic snapshot 切换造成闪烁。新汇总原子替换后，其 recent 区域独立加载；recent 失败不得撤销汇总卡片，必须提供局部错误与重试。
 - 账号视图切换后的下一次绘制必须出现稳定骨架；固定多账号本地 fixture 下，第一阶段账号汇总应在 1 秒内完成，且第一阶段 SQL 数量不得随账号数量线性增长。
-- 当前实现中，账号视图与 current summary 一样统一收口到 `5s` reconcile/open-resync 预算；任何更激进的 cadence 变更都必须先补充 slow-path 证据。
+- 当前实现中，账号视图与当前总览都统一走主应用 topic SSE 合同；任何额外引入页面私有 HTTP fallback 或第二套实时 cadence 的方案，都必须先补充 slow-path 证据并更新主订阅规范。
 - 共享 range 状态应继续使用现有 localStorage key，避免打断用户已保存的 Dashboard 偏好。
 - 账号卡内的最近调用记录应复用已有 invocation 语义 helper，保证状态、模型、耗时与账号 badge 文案一致。
 
@@ -176,7 +176,7 @@
 - `GET /api/stats/upstream-account-activity.accounts[]` 与 `GET /api/stats/dashboard-activity.accounts[]` 的状态字段复用账号池状态模型：`enabled/displayStatus/enableStatus/workStatus/healthStatus/syncState/lastError/lastActionReasonMessage`，前端只把异常/注意态渲染为状态 badge。
 - Dashboard 快捷策略写入复用 `PATCH /api/pool/upstream-accounts/:id`，payload 仅包含 `routingRule` 中被触碰过的账号级覆盖字段；该入口不支持恢复继承。
 - `GET /api/stats/dashboard-activity.summary` 复用 `StatsResponse` wire shape，并额外返回 `tokensPerMinute`、`spendRate`、`currentFirstResponseByteTotalAvgMs` 与 `currentAvgTotalMs`；`accounts[]` 复用账号活动卡片所需字段，并允许 `upstreamAccountId: null` 的 `isUnassigned` 聚合项。
-- SSE `dashboardActivityLive` 返回 `revision/generatedAt`、总览进行中/重试/阶段计数和按 `accountKey` 分组的相同计数；账号无 live 项时其实时字段归零。
+- `/events` topic `dashboard.activity.current` 返回该范围的 authoritative account-activity snapshot；恢复期先发 `snapshot` 或 `replay`，健康态再发 `live`，账号无 live 项时其实时字段归零。
 - `GET /api/stats/dashboard-activity.rateWindow` 固定描述当前速率算法来源；当前 owner-facing 合同为 `mode=last_complete_1m_sma`、`windowMinutes=1`，`start/end` 必须落在最近完整分钟边界，不代表 timeseries 图上任一 bucket 的历史事实。
 - 前端共享 `PromptCacheConversationInvocationPreview` 合同同步包含 `promptCacheKey?: string | null`；`DashboardWorkingConversationInvocationSelection.promptCacheKey` 语义不变，仍表示真实对话键。
 
@@ -199,7 +199,7 @@
 - Given 查看账号卡四组周期统计，When 对任一统计卡 hover、focus、点击或移动端长按，Then 整张统计卡打开结构化浮层，浮层明确展示主字段名和值、卡面已有分解字段名和值，以及 0 到 3 个相关补充数据。
 - Given 查看账号卡四组周期统计，When 卡片常驻态渲染完成，Then 卡内分解段落不再各自创建独立 tooltip trigger，避免和整卡浮层形成嵌套触发区域。
 - Given 两个工作区视图分别选择了不同排序，When 切换标签或刷新页面，Then 每个标签恢复自己的选择，并显示对应排序名称。
-- Given 多个对话或账号收到 SSE patch / 活动快照更新，When 当前排序字段发生变化，Then 卡片立即按当前模式重排，且不产生额外刷新请求。
+- Given 多个对话或账号收到 topic `snapshot/replay/live` / 活动快照更新，When 当前排序字段发生变化，Then 卡片立即按当前模式重排，且不产生额外刷新请求。
 - Given 账号或对话存在多个候选项，When 选择 `createdAt / lastInvocation / cost / tokens` 任一排序模式，Then 4 种模式都按倒序排列；时间缺失项继续置后且平局稳定。
 - Given 账号列表中同时存在已分配账号和 `未分配上游账号` 聚合项，When 切换任意工作区排序模式，Then `未分配上游账号` 始终排在所有已分配账号之后，并只在未分配项内部继续应用当前倒序规则。
 - Given 某账号有至少 4 条范围内调用，When 查看账号卡底部，Then 只显示最近 4 条，按 `occurredAt DESC` 排序。
@@ -215,7 +215,7 @@
 - Given Dashboard 顶部 KPI 使用 `StatsResponse.inProgressConversationCount` / `inProgressRetryConversationCount`，When 显示 owner-facing 文案，Then 标签为“进行中调用 / 重试调用”，并按 invocation-based 计数，而不是按 prompt-cache 对话去重。
 - Given 后端账号活动接口需要账号摘要与最近 4 条记录，When 发起请求，Then 响应来自单个 batch endpoint，不依赖前端 fanout `upstream-account detail` 或 `window-usage`。
 - Given 同一个 mock/fixture 返回 `dashboard-activity` full snapshot，When 同屏渲染顶部 KPI 与账号卡片，Then `top.inProgressInvocationCount === sum(accounts.inProgressInvocationCount)`。
-- Given 已收到 revision 更高的 `dashboardActivityLive`，When 较旧 HTTP reconcile 或乱序 SSE 到达，Then 顶部与账号卡保持较新 live 数值且不会回退为 0。
+- Given 已收到较新的 `dashboard.activity.current` cursor，When 较旧 cursor 的乱序 payload 到达，Then 顶部与账号卡保持较新 topic 状态且不会回退为 0。
 - Given 同一个 mock/fixture 返回 `dashboard-activity` full snapshot，When 同屏渲染顶部 KPI 与账号卡片，Then `top.tokensPerMinute === sum(accounts.tokensPerMinute)`，允许仅因小数格式化产生显示级差异。
 - Given 同一个 mock/fixture 返回 `dashboard-activity` full snapshot，When 同屏渲染顶部 KPI 与账号卡片，Then `top.spendRate === sum(accounts.spendRate)`，允许仅因货币格式化产生显示级差异。
 - Given 最近完整分钟完全空桶，When `dashboard-activity` 返回 summary，Then `tokensPerMinute=0`、`spendRate=0`、`currentFirstResponseByteTotalAvgMs=null`、`currentAvgTotalMs=null`，且前端必须显示 `TPM 0`、`消费速率 0`、`首字用时 —`、`响应时间 —`。

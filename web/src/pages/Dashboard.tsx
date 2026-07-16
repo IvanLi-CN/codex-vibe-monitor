@@ -250,7 +250,7 @@ export default function DashboardPage() {
         upstreamAccountRecentPreviewLimit={upstreamAccountRecentPreviewLimit}
         onUpstreamAccountActivityEnabledChange={setIncludeUpstreamAccountActivity}
         onUpstreamAccountPolicyChanged={() => {
-          void reloadDashboardActivity({ silent: true });
+          reloadDashboardActivity();
         }}
       />
       <DashboardInvocationDetailDrawer
