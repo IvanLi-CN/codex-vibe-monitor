@@ -140,6 +140,11 @@ enum SubscriptionTopic {
         include_accounts: bool,
         include_recent: bool,
     },
+    DashboardNetworkTimeseriesWindow {
+        range: String,
+        time_zone: String,
+        upstream_account_id: Option<i64>,
+    },
     DashboardWorkingConversationsCurrent {
         page_size: i64,
         recent_invocation_limit: i64,
@@ -559,6 +564,11 @@ impl SubscriptionTopic {
                 include_accounts: parse_bool_param(params, "includeAccounts", Some(true))?,
                 include_recent: parse_bool_param(params, "includeRecent", Some(true))?,
             }),
+            "dashboard.network-timeseries.window" => Ok(Self::DashboardNetworkTimeseriesWindow {
+                range: param_or_default(params, "range", "today"),
+                time_zone: param_or_default(params, "timeZone", SUBSCRIPTION_DEFAULT_TIME_ZONE),
+                upstream_account_id: parse_optional_i64_param(params, "upstreamAccountId")?,
+            }),
             "dashboard.working-conversations.current" => {
                 Ok(Self::DashboardWorkingConversationsCurrent {
                     page_size: parse_i64_param(
@@ -655,6 +665,25 @@ impl SubscriptionTopic {
                     ("includeRecent", include_recent.to_string()),
                 ]),
             },
+            Self::DashboardNetworkTimeseriesWindow {
+                range,
+                time_zone,
+                upstream_account_id,
+            } => {
+                let mut params = btree_map_from_pairs([
+                    ("range", range.clone()),
+                    ("timeZone", time_zone.clone()),
+                ]);
+                insert_optional_param(
+                    &mut params,
+                    "upstreamAccountId",
+                    upstream_account_id.map(|value| value.to_string()),
+                );
+                SubscriptionTopicDescriptor {
+                    topic: self.name().to_string(),
+                    params,
+                }
+            }
             Self::DashboardWorkingConversationsCurrent {
                 page_size,
                 recent_invocation_limit,
@@ -803,6 +832,7 @@ impl SubscriptionTopic {
             Self::AppVersion => "app.version",
             Self::QuotaCurrent => "quota.current",
             Self::DashboardActivityCurrent { .. } => "dashboard.activity.current",
+            Self::DashboardNetworkTimeseriesWindow { .. } => "dashboard.network-timeseries.window",
             Self::DashboardWorkingConversationsCurrent { .. } => {
                 "dashboard.working-conversations.current"
             }
@@ -822,6 +852,9 @@ impl SubscriptionTopic {
             Self::AppVersion => "app.version/v1".to_string(),
             Self::QuotaCurrent => "quota.current/v1".to_string(),
             Self::DashboardActivityCurrent { .. } => "dashboard.activity.current/v2".to_string(),
+            Self::DashboardNetworkTimeseriesWindow { .. } => {
+                "dashboard.network-timeseries.window/v1".to_string()
+            }
             Self::DashboardWorkingConversationsCurrent { .. } => {
                 "dashboard.working-conversations.current/v1".to_string()
             }
@@ -845,6 +878,7 @@ impl SubscriptionTopic {
             BroadcastPayload::Records { .. } => matches!(
                 self,
                 Self::DashboardActivityCurrent { .. }
+                    | Self::DashboardNetworkTimeseriesWindow { .. }
                     | Self::DashboardWorkingConversationsCurrent { .. }
                     | Self::InvocationWindow { .. }
                     | Self::PromptCacheWindow { .. }
@@ -855,7 +889,11 @@ impl SubscriptionTopic {
                     | Self::ForwardProxyLive
             ),
             BroadcastPayload::DashboardActivityLive { .. } => {
-                matches!(self, Self::DashboardActivityCurrent { .. })
+                matches!(
+                    self,
+                    Self::DashboardActivityCurrent { .. }
+                        | Self::DashboardNetworkTimeseriesWindow { .. }
+                )
             }
             BroadcastPayload::PoolAttempts { invoke_id, .. } => matches!(
                 self,
@@ -892,6 +930,22 @@ impl SubscriptionTopic {
                         time_zone: Some(time_zone.clone()),
                         include_accounts: *include_accounts,
                         include_recent: Some(*include_recent),
+                    }),
+                )
+                .await?;
+                Ok(serde_json::to_value(response)?)
+            }
+            Self::DashboardNetworkTimeseriesWindow {
+                range,
+                time_zone,
+                upstream_account_id,
+            } => {
+                let Json(response) = fetch_dashboard_network_timeseries(
+                    State(state),
+                    Query(DashboardNetworkTimeseriesQuery {
+                        range: range.clone(),
+                        time_zone: Some(time_zone.clone()),
+                        upstream_account_id: *upstream_account_id,
                     }),
                 )
                 .await?;

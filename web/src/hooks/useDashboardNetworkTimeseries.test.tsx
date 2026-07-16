@@ -2,48 +2,32 @@
 import type React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { BroadcastPayload, DashboardNetworkTimeseriesResponse } from "../lib/api";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { DashboardNetworkTimeseriesResponse } from "../lib/api";
 import { useDashboardNetworkTimeseries } from "./useDashboardNetworkTimeseries";
 
-const apiMocks = vi.hoisted(() => ({
-  fetchDashboardNetworkTimeseries:
-    vi.fn<
-      (
-        range: string,
-        options?: {
-          timeZone?: string;
-          upstreamAccountId?: number;
-          signal?: AbortSignal;
-        },
-      ) => Promise<DashboardNetworkTimeseriesResponse>
-    >(),
-}));
-
-const sseMocks = vi.hoisted(() => ({
-  listener: null as null | ((payload: BroadcastPayload) => void),
-  openListener: null as null | (() => void),
-}));
-
-vi.mock("../lib/api", async () => {
-  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
-  return {
-    ...actual,
-    fetchDashboardNetworkTimeseries: apiMocks.fetchDashboardNetworkTimeseries,
-  };
-});
-
-vi.mock("../lib/sse", () => ({
-  subscribeToSse: (listener: (payload: BroadcastPayload) => void) => {
-    sseMocks.listener = listener;
-    return () => {
-      sseMocks.listener = null;
-    };
+const topicMocks = vi.hoisted(() => ({
+  calls: [] as Array<{ descriptor: unknown; enabled: boolean }>,
+  refresh: vi.fn(),
+  state: {
+    data: null as DashboardNetworkTimeseriesResponse | null,
+    isLoading: false,
+    error: null as string | null,
   },
-  subscribeToSseOpen: (listener: () => void) => {
-    sseMocks.openListener = listener;
-    return () => {
-      sseMocks.openListener = null;
+}));
+
+vi.mock("../lib/timeZone", () => ({
+  getBrowserTimeZone: () => "Asia/Shanghai",
+}));
+
+vi.mock("./useSubscriptionTopic", () => ({
+  useSubscriptionTopic: (descriptor: unknown, enabled: boolean) => {
+    topicMocks.calls.push({ descriptor, enabled });
+    return {
+      data: topicMocks.state.data,
+      isLoading: topicMocks.state.isLoading,
+      error: topicMocks.state.error,
+      refresh: topicMocks.refresh,
     };
   },
 }));
@@ -51,16 +35,12 @@ vi.mock("../lib/sse", () => ({
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 
-beforeAll(() => {
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
-    configurable: true,
-    writable: true,
-    value: true,
-  });
-});
-
 beforeEach(() => {
-  vi.useFakeTimers();
+  topicMocks.calls = [];
+  topicMocks.refresh.mockReset();
+  topicMocks.state.data = null;
+  topicMocks.state.isLoading = false;
+  topicMocks.state.error = null;
 });
 
 afterEach(() => {
@@ -70,20 +50,13 @@ afterEach(() => {
   host?.remove();
   host = null;
   root = null;
-  sseMocks.listener = null;
-  sseMocks.openListener = null;
-  vi.clearAllMocks();
-  vi.useRealTimers();
 });
 
-function createResponse(
-  range: "today" | "yesterday" | "1d",
-  pointOverrides: Partial<DashboardNetworkTimeseriesResponse["points"][number]> = {},
-): DashboardNetworkTimeseriesResponse {
+function createResponse(): DashboardNetworkTimeseriesResponse {
   return {
-    range,
+    range: "today",
     rangeStart: "2026-07-16T10:00:00.000Z",
-    rangeEnd: "2026-07-16T10:05:30.000Z",
+    rangeEnd: "2026-07-16T10:05:00.000Z",
     snapshotId: 1,
     bucketSeconds: 300,
     points: [
@@ -95,26 +68,21 @@ function createResponse(
         uploadBytes: 307200,
         downloadBytes: 614400,
         isLiveBucket: true,
-        ...pointOverrides,
       },
     ],
   };
 }
 
 function render(ui: React.ReactNode) {
+  act(() => {
+    root?.unmount();
+  });
+  host?.remove();
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
   act(() => {
     root?.render(ui);
-  });
-}
-
-async function flushAsync() {
-  await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
   });
 }
 
@@ -135,149 +103,65 @@ function Probe({
   enabled?: boolean;
   upstreamAccountId?: number;
 }) {
-  const { data, isLoading, isRefreshing, error } = useDashboardNetworkTimeseries(
+  const { data, isLoading, isRefreshing, error, reload } = useDashboardNetworkTimeseries(
     range,
     enabled,
     upstreamAccountId,
   );
-  const lastPoint = data?.points[data.points.length - 1];
   return (
     <div>
       <div data-testid="loading">{isLoading ? "true" : "false"}</div>
       <div data-testid="refreshing">{isRefreshing ? "true" : "false"}</div>
       <div data-testid="error">{error ?? ""}</div>
       <div data-testid="point-count">{String(data?.points.length ?? 0)}</div>
-      <div data-testid="download-rate">{String(lastPoint?.downloadBytesPerSecond ?? 0)}</div>
-      <div data-testid="bucket-start">{lastPoint?.bucketStart ?? ""}</div>
+      <button type="button" data-testid="reload" onClick={() => void reload()} />
     </div>
   );
 }
 
 describe("useDashboardNetworkTimeseries", () => {
-  it("hydrates once and does not poll on an interval", async () => {
-    apiMocks.fetchDashboardNetworkTimeseries.mockResolvedValue(createResponse("today"));
+  it("subscribes to the dashboard network topic and exposes topic state", () => {
+    topicMocks.state.data = createResponse();
 
-    render(<Probe />);
-    await flushAsync();
+    render(<Probe upstreamAccountId={7} />);
 
-    expect(apiMocks.fetchDashboardNetworkTimeseries).toHaveBeenCalledTimes(1);
-    expect(text("download-rate")).toBe("2048");
-
-    act(() => {
-      vi.advanceTimersByTime(10_000);
+    expect(topicMocks.calls.at(-1)).toEqual({
+      descriptor: {
+        topic: "dashboard.network-timeseries.window",
+        params: {
+          range: "today",
+          timeZone: "Asia/Shanghai",
+          upstreamAccountId: "7",
+        },
+      },
+      enabled: true,
     });
-    await flushAsync();
-
-    expect(apiMocks.fetchDashboardNetworkTimeseries).toHaveBeenCalledTimes(1);
+    expect(text("loading")).toBe("false");
+    expect(text("refreshing")).toBe("false");
+    expect(text("point-count")).toBe("1");
   });
 
-  it("merges pushed live bucket updates without issuing another fetch", async () => {
-    apiMocks.fetchDashboardNetworkTimeseries.mockResolvedValue(createResponse("today"));
+  it("disables the topic when the hook is not enabled and forwards manual refresh", () => {
+    render(<Probe enabled={false} range="1d" />);
 
+    expect(topicMocks.calls.at(-1)).toEqual({
+      descriptor: null,
+      enabled: false,
+    });
+
+    topicMocks.state.data = createResponse();
+    topicMocks.state.isLoading = true;
     render(<Probe />);
-    await flushAsync();
 
     act(() => {
-      sseMocks.listener?.({
-        type: "dashboardActivityLive",
-        snapshot: {
-          revision: 2,
-          generatedAt: "2026-07-16T10:05:20.000Z",
-          inProgressInvocationCount: 1,
-          inProgressPhaseCounts: { queued: 0, requesting: 0, responding: 1 },
-          retryInvocationCount: 0,
-          networkLiveBucket: {
-            bucketStart: "2026-07-16T10:00:00.000Z",
-            bucketEnd: "2026-07-16T10:05:00.000Z",
-            uploadBytesPerSecond: 1024,
-            downloadBytesPerSecond: 4096,
-            uploadBytes: 307200,
-            downloadBytes: 1228800,
-            isLiveBucket: true,
-          },
-          accounts: [],
-        },
-      });
+      const button = host?.querySelector('[data-testid="reload"]');
+      if (!(button instanceof HTMLButtonElement)) {
+        throw new Error("Missing reload button");
+      }
+      button.click();
     });
 
-    expect(text("download-rate")).toBe("4096");
-    expect(apiMocks.fetchDashboardNetworkTimeseries).toHaveBeenCalledTimes(1);
-  });
-
-  it("ignores live bucket pushes for the yesterday range", async () => {
-    apiMocks.fetchDashboardNetworkTimeseries.mockResolvedValue(createResponse("yesterday"));
-
-    render(<Probe range="yesterday" />);
-    await flushAsync();
-
-    act(() => {
-      sseMocks.listener?.({
-        type: "dashboardActivityLive",
-        snapshot: {
-          revision: 3,
-          generatedAt: "2026-07-16T10:05:20.000Z",
-          inProgressInvocationCount: 0,
-          inProgressPhaseCounts: { queued: 0, requesting: 0, responding: 0 },
-          retryInvocationCount: 0,
-          networkLiveBucket: {
-            bucketStart: "2026-07-16T10:00:00.000Z",
-            bucketEnd: "2026-07-16T10:05:00.000Z",
-            uploadBytesPerSecond: 1024,
-            downloadBytesPerSecond: 8192,
-            uploadBytes: 307200,
-            downloadBytes: 2457600,
-            isLiveBucket: true,
-          },
-          accounts: [],
-        },
-      });
-    });
-
-    expect(text("download-rate")).toBe("2048");
-    expect(apiMocks.fetchDashboardNetworkTimeseries).toHaveBeenCalledTimes(1);
-  });
-
-  it("resyncs once when the pushed live bucket rolls into a new bucket", async () => {
-    apiMocks.fetchDashboardNetworkTimeseries
-      .mockResolvedValueOnce(createResponse("today"))
-      .mockResolvedValueOnce(
-        createResponse("today", {
-          bucketStart: "2026-07-16T10:05:00.000Z",
-          bucketEnd: "2026-07-16T10:10:00.000Z",
-          downloadBytesPerSecond: 5120,
-          downloadBytes: 1536000,
-        }),
-      );
-
-    render(<Probe />);
-    await flushAsync();
-
-    act(() => {
-      sseMocks.listener?.({
-        type: "dashboardActivityLive",
-        snapshot: {
-          revision: 4,
-          generatedAt: "2026-07-16T10:05:20.000Z",
-          inProgressInvocationCount: 1,
-          inProgressPhaseCounts: { queued: 0, requesting: 1, responding: 0 },
-          retryInvocationCount: 0,
-          networkLiveBucket: {
-            bucketStart: "2026-07-16T10:05:00.000Z",
-            bucketEnd: "2026-07-16T10:10:00.000Z",
-            uploadBytesPerSecond: 1024,
-            downloadBytesPerSecond: 5120,
-            uploadBytes: 307200,
-            downloadBytes: 1536000,
-            isLiveBucket: true,
-          },
-          accounts: [],
-        },
-      });
-    });
-    await flushAsync();
-
-    expect(apiMocks.fetchDashboardNetworkTimeseries).toHaveBeenCalledTimes(2);
-    expect(text("bucket-start")).toBe("2026-07-16T10:05:00.000Z");
-    expect(text("download-rate")).toBe("5120");
+    expect(text("loading")).toBe("true");
+    expect(topicMocks.refresh).toHaveBeenCalledTimes(1);
   });
 });
