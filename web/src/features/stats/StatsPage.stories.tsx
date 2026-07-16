@@ -1,5 +1,5 @@
-import { useEffect } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { useEffect } from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type {
@@ -324,7 +324,8 @@ function buildStatsStoryFixtures() {
   };
 
   const buildParallelWorkForRange = (range: string, bucket: string, timeZone: string) => {
-    const bucketSeconds = bucket === "1m" ? 60 : bucket === "30m" ? 1800 : bucket === "1h" ? 3600 : 900;
+    const bucketSeconds =
+      bucket === "1m" ? 60 : bucket === "30m" ? 1800 : bucket === "1h" ? 3600 : 900;
     return buildParallelWorkResponse({
       rangeStart: new Date(rangeStartByRange(range)).toISOString(),
       rangeEnd: new Date(now).toISOString(),
@@ -372,9 +373,7 @@ function buildStatsRequestHandler(scenario: StatsScenario = "default") {
     if (url.pathname === "/api/stats/parallel-work") {
       const range = url.searchParams.get("range") ?? "today";
       const bucket = url.searchParams.get("bucket") ?? (range === "7d" ? "1h" : "15m");
-      return jsonResponse(
-        fixtures.buildParallelWorkForRange(range, bucket, getBrowserTimeZone()),
-      );
+      return jsonResponse(fixtures.buildParallelWorkForRange(range, bucket, getBrowserTimeZone()));
     }
 
     return undefined;
