@@ -279,7 +279,7 @@ async fn spawn_raw_payload_file_write_skips_new_request_raw_files_when_disabled(
     .await;
 
     assert!(meta.path.is_none());
-    assert_eq!(meta.size_bytes, 0);
+    assert_eq!(meta.size_bytes, br#"{"request":true}"#.len() as i64);
     assert!(!meta.truncated);
     assert!(meta.truncated_reason.is_none());
 }
@@ -899,6 +899,79 @@ async fn persist_proxy_capture_record_preserves_warning_success_diagnostics() {
 }
 
 #[tokio::test]
+async fn persist_proxy_capture_runtime_record_keeps_response_size_when_preview_disabled() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct InvocationRow {
+        raw_response: String,
+        response_raw_path: Option<String>,
+        response_raw_size: Option<i64>,
+    }
+
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    let persisted = persist_proxy_capture_runtime_record(
+        &pool,
+        ProxyCaptureRecord {
+            invoke_id: "proxy-test-runtime-response-body-disabled".to_string(),
+            occurred_at: "2026-04-10 00:00:00".to_string(),
+            model: Some("gpt-5.4".to_string()),
+            usage: ParsedUsage::default(),
+            cost: None,
+            cost_breakdown: None,
+            cost_estimated: false,
+            price_version: None,
+            status: "running".to_string(),
+            error_message: None,
+            failure_kind: None,
+            payload: Some("{\"endpoint\":\"/v1/responses\"}".to_string()),
+            raw_response: "{\"ok\":true}".to_string(),
+            response_body_preview_enabled: false,
+            req_raw: RawPayloadMeta::default(),
+            resp_raw: RawPayloadMeta {
+                path: Some("proxy_raw_payloads/runtime-disabled-response.bin".to_string()),
+                size_bytes: 17,
+                truncated: false,
+                truncated_reason: None,
+            },
+            timings: StageTimings {
+                t_total_ms: 0.0,
+                t_req_read_ms: 0.0,
+                t_req_parse_ms: 0.0,
+                t_upstream_connect_ms: 0.0,
+                t_upstream_ttfb_ms: 0.0,
+                t_upstream_stream_ms: 0.0,
+                t_resp_parse_ms: 0.0,
+                t_persist_ms: 0.0,
+            },
+        },
+    )
+    .await
+    .expect("persist runtime record")
+    .expect("persisted invocation should be returned");
+
+    assert_eq!(persisted.response_raw_path, None);
+    assert_eq!(persisted.response_raw_size, Some(17));
+    let row = sqlx::query_as::<_, InvocationRow>(
+        r#"
+        SELECT raw_response, response_raw_path, response_raw_size
+        FROM codex_invocations
+        WHERE invoke_id = ?1
+        "#,
+    )
+    .bind("proxy-test-runtime-response-body-disabled")
+    .fetch_one(&pool)
+    .await
+    .expect("load persisted runtime invocation");
+
+    assert_eq!(row.raw_response, "");
+    assert!(row.response_raw_path.is_none());
+    assert_eq!(row.response_raw_size, Some(17));
+}
+
+#[tokio::test]
 async fn persist_proxy_capture_record_omits_response_preview_and_raw_path_when_disabled() {
     #[derive(Debug, sqlx::FromRow)]
     struct InvocationRow {
@@ -954,7 +1027,7 @@ async fn persist_proxy_capture_record_omits_response_preview_and_raw_path_when_d
     .expect("persisted invocation should be returned");
 
     assert_eq!(persisted.response_raw_path, None);
-    assert_eq!(persisted.response_raw_size, None);
+    assert_eq!(persisted.response_raw_size, Some(17));
     let row = sqlx::query_as::<_, InvocationRow>(
         r#"
         SELECT raw_response, response_raw_path, response_raw_size
@@ -969,7 +1042,7 @@ async fn persist_proxy_capture_record_omits_response_preview_and_raw_path_when_d
 
     assert_eq!(row.raw_response, "");
     assert!(row.response_raw_path.is_none());
-    assert!(row.response_raw_size.is_none());
+    assert_eq!(row.response_raw_size, Some(17));
 }
 
 #[test]

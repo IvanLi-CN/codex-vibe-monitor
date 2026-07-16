@@ -727,6 +727,7 @@ export interface DashboardActivityLiveAccount {
   retryInvocationCount: number;
   uploadBytesPerSecond: number;
   downloadBytesPerSecond: number;
+  networkLiveBucket?: DashboardNetworkTimeseriesPoint | null;
 }
 
 export interface DashboardActivityLiveSnapshot {
@@ -735,6 +736,7 @@ export interface DashboardActivityLiveSnapshot {
   inProgressInvocationCount: number;
   inProgressPhaseCounts: InvocationPhaseCounts;
   retryInvocationCount: number;
+  networkLiveBucket?: DashboardNetworkTimeseriesPoint | null;
   accounts: DashboardActivityLiveAccount[];
 }
 

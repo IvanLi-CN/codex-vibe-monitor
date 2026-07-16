@@ -21,6 +21,9 @@
 ## 前端
 
 - 新增 `web/src/hooks/useDashboardNetworkTimeseries.ts`，仅在 `network` metric 激活时加载。
+  - 首次通过 HTTP hydrate 全量 5 分钟桶。
+  - `today / 1d` steady-state 改为消费 `dashboardActivityLive` SSE 推送的当前开放桶。
+  - 桶切换或 SSE 重连时只做静默回补，不再每秒轮询整段时序。
 - 新增 `web/src/features/dashboard/DashboardNetworkActivityChart.tsx`，使用 Recharts 双面积图展示上传/下载速率。
 - `DashboardActivityOverview`：
   - `today / yesterday` 的 metric toggle 新增 `network`，保留 `trend`。

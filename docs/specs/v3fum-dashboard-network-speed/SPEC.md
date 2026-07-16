@@ -52,7 +52,7 @@
 
 ### SHOULD
 
-- dashboard-only 网速接口只在 `网速` tab 激活时由前端加载；非网速指标不引入额外轮询。
+- dashboard-only 网速接口只在 `网速` tab 激活时由前端加载；`today / 1d` 初次 hydrate 后依赖 `dashboardActivityLive` SSE 推送当前桶，只有桶切换或 SSE 重连时才允许静默回补。
 - 账号级实时网速与 dashboard live snapshot 保持同一 SSE/HTTP 合并策略，不因较旧 HTTP 响应回退到旧值。
 - 上传优先按请求体字节、下载优先按已转发响应字节；缺失字段按 `0` 处理而不是推断。
 
@@ -82,7 +82,7 @@
 | `DashboardActivityAccountResponse.*BytesPerSecond` | http-response-field | external      | Add            | backend/stats   | Dashboard upstream cards    | 账号级 15 秒滚动均值                          |
 | `DashboardActivityLiveAccount.*BytesPerSecond`     | sse/http-live-field | external      | Add            | backend/stats   | Dashboard live merge        | 与 in-progress live snapshot 同步更新         |
 | `DashboardNetworkSpeedCache`                       | runtime-cache       | internal      | Add            | backend/proxy   | proxy dispatch / stats read | 维护秒桶、开放 5 分钟桶、lazy seed 与心跳预算 |
-| `useDashboardNetworkTimeseries`                    | ui-hook             | internal      | Add            | web/dashboard   | Dashboard activity overview | 仅在 `network` metric 激活时拉取              |
+| `useDashboardNetworkTimeseries`                    | ui-hook             | internal      | Add            | web/dashboard   | Dashboard activity overview | 初次 hydrate + SSE 合并当前开放桶             |
 
 ## 验收标准（Acceptance Criteria）
 
@@ -97,7 +97,7 @@
 ### Testing
 
 - Backend tests: runtime speed cache 秒桶/开放桶/lazy seed/心跳预算。
-- Frontend tests: SSE live merge、网速 metric 可见性、24 小时 heatmap -> network chart 切换、账号卡网速渲染。
+- Frontend tests: SSE live merge、无 steady-state 轮询、网速 metric 可见性、24 小时 heatmap -> network chart 切换、账号卡网速渲染。
 
 ### Quality checks
 
@@ -116,6 +116,12 @@
   scenario: `activity overview today network tab`
   evidence_note: `验证今日活动总览切到网速后，右上 metric toggle 出现 Network，图表切换为双平滑半透明面积，标题提示当前桶实时更新。`
   ![Dashboard activity overview network tab](./assets/dashboard-network-today-storybook.png)
+- SHA `worktree`
+- source_type: `storybook_canvas`
+  story_id_or_title: `dashboard-dashboardnetworkactivitychart--tooltip-upload-download`
+  scenario: `network tooltip upload/download labels`
+  evidence_note: `验证网速 tooltip 按系列 dataKey 正确显示一条上行、一条下行，不再出现重复“下行”；同时保留各自行的速率与桶内累计字节。`
+  ![Dashboard network tooltip upload/download labels](./assets/dashboard-network-tooltip-upload-download-fix-storybook.png)
 - SHA `worktree`
 - source_type: `storybook_canvas`
   story_id_or_title: `dashboard-workingconversationssection--conversation-tab-with-upstream-network-speed`
