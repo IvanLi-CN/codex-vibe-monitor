@@ -4085,6 +4085,7 @@ pub(crate) async fn test_app_state_with_config_and_parallelism(
         oauth_installation_seed: [0_u8; 32],
         http_clients,
         broadcaster,
+        subscription_hub: Arc::new(crate::SubscriptionHub::new()),
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache {
             summaries: HashMap::new(),
             quota: None,

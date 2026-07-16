@@ -28,7 +28,7 @@ import {
   resolveInvocationImageIntentDisplay,
   resolveInvocationModelDisplay,
 } from "../../lib/invocation";
-import { subscribeToSse } from "../../lib/sse";
+import { buildTopicDescriptor, subscribeToTopic } from "../../lib/sse";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
 import {
@@ -1243,57 +1243,67 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
   }, [expandedRecord]);
 
   useEffect(() => {
-    const unsubscribe = subscribeToSse((payload) => {
-      if (payload.type !== "pool_attempts") return;
-      const activeInvokeId = activeExpandedInvokeIdRef.current;
-      const currentBuffered = bufferedSnapshotsRef.current[payload.invokeId];
-      const currentVisible =
-        payload.invokeId === activeInvokeId
-          ? attemptsRef.current[payload.invokeId]
-          : currentBuffered;
-      if (!shouldReplacePoolAttemptSnapshot(currentVisible, payload.attempts)) return;
+    const activeInvokeId = activeExpandedInvokeIdRef.current;
+    if (!activeInvokeId) {
+      return;
+    }
+    const unsubscribe = subscribeToTopic<ApiPoolUpstreamRequestAttempt[]>(
+      buildTopicDescriptor("invocation.pool-attempts", {
+        invokeId: activeInvokeId,
+      }),
+      (event) => {
+        const payloadInvokeId = activeInvokeId;
+        const payloadAttempts = event.payload;
+        const activeVisibleInvokeId = activeExpandedInvokeIdRef.current;
+        const currentBuffered = bufferedSnapshotsRef.current[payloadInvokeId];
+        const currentVisible =
+          payloadInvokeId === activeVisibleInvokeId
+            ? attemptsRef.current[payloadInvokeId]
+            : currentBuffered;
+        if (!shouldReplacePoolAttemptSnapshot(currentVisible, payloadAttempts)) return;
 
-      const nextBuffered = {
-        ...bufferedSnapshotsRef.current,
-        [payload.invokeId]: payload.attempts,
-      };
-      const nextOrder = [
-        payload.invokeId,
-        ...bufferedSnapshotOrderRef.current.filter((invokeId) => invokeId !== payload.invokeId),
-      ];
-      while (nextOrder.length > MAX_BUFFERED_POOL_ATTEMPT_SNAPSHOTS) {
-        const evictedInvokeId = nextOrder.pop();
-        if (!evictedInvokeId) break;
-        delete nextBuffered[evictedInvokeId];
-      }
-      bufferedSnapshotsRef.current = nextBuffered;
-      bufferedSnapshotOrderRef.current = nextOrder;
-      versionRef.current = {
-        ...versionRef.current,
-        [payload.invokeId]: (versionRef.current[payload.invokeId] ?? 0) + 1,
-      };
-      if (payload.invokeId !== activeInvokeId) {
-        return;
-      }
+        const nextBuffered = {
+          ...bufferedSnapshotsRef.current,
+          [payloadInvokeId]: payloadAttempts,
+        };
+        const nextOrder = [
+          payloadInvokeId,
+          ...bufferedSnapshotOrderRef.current.filter((invokeId) => invokeId !== payloadInvokeId),
+        ];
+        while (nextOrder.length > MAX_BUFFERED_POOL_ATTEMPT_SNAPSHOTS) {
+          const evictedInvokeId = nextOrder.pop();
+          if (!evictedInvokeId) break;
+          delete nextBuffered[evictedInvokeId];
+        }
+        bufferedSnapshotsRef.current = nextBuffered;
+        bufferedSnapshotOrderRef.current = nextOrder;
+        versionRef.current = {
+          ...versionRef.current,
+          [payloadInvokeId]: (versionRef.current[payloadInvokeId] ?? 0) + 1,
+        };
+        if (payloadInvokeId !== activeVisibleInvokeId) {
+          return;
+        }
 
-      const nextAttempts = {
-        ...attemptsRef.current,
-        [payload.invokeId]: payload.attempts,
-      };
-      attemptsRef.current = nextAttempts;
-      setPoolAttemptsByInvokeId(nextAttempts);
-      setPoolAttemptLoadingByInvokeId((current) => ({
-        ...current,
-        [payload.invokeId]: false,
-      }));
-      setPoolAttemptErrorByInvokeId((current) => ({
-        ...current,
-        [payload.invokeId]: null,
-      }));
-    });
+        const nextAttempts = {
+          ...attemptsRef.current,
+          [payloadInvokeId]: payloadAttempts,
+        };
+        attemptsRef.current = nextAttempts;
+        setPoolAttemptsByInvokeId(nextAttempts);
+        setPoolAttemptLoadingByInvokeId((current) => ({
+          ...current,
+          [payloadInvokeId]: false,
+        }));
+        setPoolAttemptErrorByInvokeId((current) => ({
+          ...current,
+          [payloadInvokeId]: null,
+        }));
+      },
+    );
 
     return unsubscribe;
-  }, []);
+  }, [expandedRecord]);
 
   const expandedPoolAttemptRouteMode = expandedRecord?.routeMode ?? null;
   const expandedPoolAttemptInvokeId = expandedRecord?.invokeId ?? null;

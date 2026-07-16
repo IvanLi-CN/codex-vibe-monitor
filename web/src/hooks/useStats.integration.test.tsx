@@ -1,23 +1,24 @@
 /** @vitest-environment jsdom */
+import type React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { BroadcastPayload, StatsResponse } from "../lib/api";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { StatsResponse } from "../lib/api";
 import { clearSummaryRemountCache, useSummary } from "./useStats";
 
 const apiMocks = vi.hoisted(() => ({
-  fetchSummary:
-    vi.fn<
-      (
-        window: string,
-        options?: { limit?: number; timeZone?: string; signal?: AbortSignal },
-      ) => Promise<StatsResponse>
-    >(),
+  fetchSummary: vi.fn<() => Promise<StatsResponse>>(),
 }));
 
-const sseMocks = vi.hoisted(() => ({
-  listeners: new Set<(payload: BroadcastPayload) => void>(),
-  openListeners: new Set<() => void>(),
+const topicMocks = vi.hoisted(() => ({
+  state: {
+    data: null as StatsResponse | null,
+    isLoading: false,
+    error: null as string | null,
+    refresh: vi.fn(),
+  },
+  lastDescriptor: null as Record<string, unknown> | null,
+  lastEnabled: true,
 }));
 
 vi.mock("../lib/api", async () => {
@@ -28,14 +29,11 @@ vi.mock("../lib/api", async () => {
   };
 });
 
-vi.mock("../lib/sse", () => ({
-  subscribeToSse: (listener: (payload: BroadcastPayload) => void) => {
-    sseMocks.listeners.add(listener);
-    return () => sseMocks.listeners.delete(listener);
-  },
-  subscribeToSseOpen: (listener: () => void) => {
-    sseMocks.openListeners.add(listener);
-    return () => sseMocks.openListeners.delete(listener);
+vi.mock("./useSubscriptionTopic", () => ({
+  useSubscriptionTopic: (descriptor: Record<string, unknown> | null, enabled = true) => {
+    topicMocks.lastDescriptor = descriptor;
+    topicMocks.lastEnabled = enabled;
+    return topicMocks.state;
   },
 }));
 
@@ -50,6 +48,16 @@ beforeAll(() => {
   });
 });
 
+beforeEach(() => {
+  topicMocks.state.data = null;
+  topicMocks.state.isLoading = false;
+  topicMocks.state.error = null;
+  topicMocks.state.refresh.mockReset();
+  topicMocks.lastDescriptor = null;
+  topicMocks.lastEnabled = true;
+  apiMocks.fetchSummary.mockReset();
+});
+
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -58,9 +66,6 @@ afterEach(() => {
   host = null;
   root = null;
   clearSummaryRemountCache();
-  sseMocks.listeners.clear();
-  sseMocks.openListeners.clear();
-  vi.useRealTimers();
   vi.clearAllMocks();
 });
 
@@ -73,12 +78,11 @@ function render(ui: React.ReactNode) {
   });
 }
 
-async function flushAsync(turns = 3) {
-  for (let index = 0; index < turns; index += 1) {
-    await act(async () => {
-      await Promise.resolve();
-    });
-  }
+async function flushAsync() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 }
 
 function text(testId: string) {
@@ -89,65 +93,53 @@ function text(testId: string) {
   return element.textContent ?? "";
 }
 
-function emitSseOpen() {
-  act(() => {
-    sseMocks.openListeners.forEach((listener) => {
-      listener();
-    });
-  });
-}
-
-function createSummary(totalCount: number): StatsResponse {
-  return {
-    totalCount,
-    successCount: Math.max(0, totalCount - 1),
-    failureCount: totalCount > 0 ? 1 : 0,
-    totalCost: totalCount * 0.1,
-    totalTokens: totalCount * 100,
-  };
-}
-
 function Probe({ window }: { window: string }) {
-  const { summary, isLoading, error } = useSummary(window);
-
+  const { summary, isLoading } = useSummary(window);
   return (
     <div>
-      <div data-testid="loading">{isLoading ? "true" : "false"}</div>
-      <div data-testid="error">{error ?? ""}</div>
       <div data-testid="total">{String(summary?.totalCount ?? 0)}</div>
+      <div data-testid="loading">{isLoading ? "true" : "false"}</div>
     </div>
   );
 }
 
-describe("useSummary SSE reconnect behavior", () => {
-  it("forces a stale yesterday summary refresh on SSE reopen even inside the cooldown window", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(2026, 3, 8, 23, 59, 59, 500));
+describe("useSummary", () => {
+  it("subscribes to stats.summary.current for open windows", () => {
+    topicMocks.state.data = {
+      totalCount: 11,
+      successCount: 10,
+      failureCount: 1,
+      totalCost: 1.1,
+      totalTokens: 1100,
+    } as StatsResponse;
 
-    apiMocks.fetchSummary
-      .mockResolvedValueOnce(createSummary(7))
-      .mockResolvedValueOnce(createSummary(7))
-      .mockResolvedValueOnce(createSummary(9));
+    render(<Probe window="current" />);
+
+    expect(topicMocks.lastDescriptor).toEqual({
+      topic: "stats.summary.current",
+      params: expect.objectContaining({
+        window: "current",
+      }),
+    });
+    expect(topicMocks.lastEnabled).toBe(true);
+    expect(text("total")).toBe("11");
+  });
+
+  it("uses HTTP for yesterday summaries", async () => {
+    apiMocks.fetchSummary.mockResolvedValue({
+      totalCount: 7,
+      successCount: 6,
+      failureCount: 1,
+      totalCost: 0.7,
+      totalTokens: 700,
+    } as StatsResponse);
 
     render(<Probe window="yesterday" />);
     await flushAsync();
 
+    expect(topicMocks.lastDescriptor).toBeNull();
+    expect(topicMocks.lastEnabled).toBe(false);
     expect(apiMocks.fetchSummary).toHaveBeenCalledTimes(1);
-    expect(text("loading")).toBe("false");
-    expect(text("error")).toBe("");
     expect(text("total")).toBe("7");
-
-    emitSseOpen();
-    await flushAsync();
-
-    expect(apiMocks.fetchSummary).toHaveBeenCalledTimes(2);
-    expect(text("total")).toBe("7");
-
-    vi.setSystemTime(new Date(2026, 3, 9, 0, 0, 1, 500));
-    emitSseOpen();
-    await flushAsync();
-
-    expect(apiMocks.fetchSummary).toHaveBeenCalledTimes(3);
-    expect(text("total")).toBe("9");
   });
 });

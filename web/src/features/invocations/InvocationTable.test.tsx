@@ -6,12 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider, useTranslation } from "../../i18n";
-import type {
-  ApiInvocation,
-  BroadcastPayload,
-  ForwardProxyBindingNode,
-  UpstreamAccountDetail,
-} from "../../lib/api";
+import type { ApiInvocation, ForwardProxyBindingNode, UpstreamAccountDetail } from "../../lib/api";
 import {
   areInvocationModelsEquivalent,
   formatProxyWeightDelta,
@@ -43,7 +38,9 @@ const apiMocks = vi.hoisted(() => ({
 }));
 
 const sseMocks = vi.hoisted(() => ({
-  onMessage: null as null | ((payload: BroadcastPayload) => void),
+  onMessage: null as
+    | null
+    | ((payload: { type: string; invokeId: string; attempts: unknown[] }) => void),
 }));
 
 vi.mock("../../lib/api", async () => {
@@ -56,14 +53,28 @@ vi.mock("../../lib/api", async () => {
   };
 });
 
-vi.mock("../../lib/sse", () => ({
-  subscribeToSse: (handler: (payload: BroadcastPayload) => void) => {
-    sseMocks.onMessage = handler;
-    return () => {
-      sseMocks.onMessage = null;
-    };
-  },
-}));
+vi.mock("../../lib/sse", async () => {
+  const actual = await vi.importActual<typeof import("../../lib/sse")>("../../lib/sse");
+  return {
+    ...actual,
+    subscribeToTopic: (
+      descriptor: { params?: Record<string, string> },
+      listener: (event: { payload: unknown[] }) => void,
+    ) => {
+      const invokeId = descriptor.params?.invokeId;
+      const handler = (payload: { type: string; invokeId: string; attempts: unknown[] }) => {
+        if (payload.type !== "pool_attempts" || payload.invokeId !== invokeId) return;
+        listener({ payload: payload.attempts });
+      };
+      sseMocks.onMessage = handler;
+      return () => {
+        if (sseMocks.onMessage === handler) {
+          sseMocks.onMessage = null;
+        }
+      };
+    },
+  };
+});
 
 const LONG_PROXY_NAME = "ivan-hkl-vless-vision-01KFXRNYWYXKN4JHCF3CCV78GD";
 let host: HTMLDivElement | null = null;
@@ -1969,116 +1980,6 @@ describe("InvocationTable", () => {
     expect(document.body.textContent).toContain("成功");
     expect(document.body.textContent).toContain("req_sse_terminal");
     expect(document.body.textContent).not.toContain("进行中");
-  });
-
-  it("keeps pool-attempt SSE payloads fresh for invocations that are not expanded", async () => {
-    apiMocks.fetchInvocationPoolAttempts
-      .mockResolvedValueOnce([
-        {
-          id: 11,
-          invokeId: "invocation-expanded-a",
-          occurredAt: "2026-03-07T03:13:51Z",
-          endpoint: "/v1/responses",
-          upstreamAccountId: 7,
-          upstreamAccountName: "pool-account-a",
-          attemptIndex: 1,
-          distinctAccountIndex: 1,
-          sameAccountRetryIndex: 1,
-          startedAt: "2026-03-07T03:13:51Z",
-          finishedAt: null,
-          status: "pending",
-          httpStatus: null,
-          connectLatencyMs: null,
-          firstByteLatencyMs: null,
-          streamLatencyMs: null,
-          upstreamRequestId: null,
-          createdAt: "2026-03-07T03:13:51Z",
-        },
-      ])
-      .mockResolvedValueOnce([]);
-
-    await renderInteractiveTable([
-      {
-        id: 50,
-        invokeId: "invocation-expanded-a",
-        occurredAt: "2026-03-07T03:13:51Z",
-        createdAt: "2026-03-07T03:13:51Z",
-        source: "proxy",
-        routeMode: "pool",
-        upstreamAccountId: 7,
-        upstreamAccountName: "pool-account-a",
-        endpoint: "/v1/responses",
-        model: "gpt-5.4",
-        status: "running",
-        poolAttemptCount: 1,
-      },
-      {
-        id: 51,
-        invokeId: "invocation-collapsed-b",
-        occurredAt: "2026-03-07T03:13:52Z",
-        createdAt: "2026-03-07T03:13:52Z",
-        source: "proxy",
-        routeMode: "pool",
-        upstreamAccountId: 8,
-        upstreamAccountName: "pool-account-b",
-        endpoint: "/v1/responses",
-        model: "gpt-5.4",
-        status: "running",
-        poolAttemptCount: 1,
-      },
-    ]);
-
-    const toggles = Array.from(document.querySelectorAll("button")).filter(
-      (button) => button.getAttribute("aria-expanded") === "false",
-    );
-    expect(toggles.length).toBeGreaterThanOrEqual(2);
-
-    await act(async () => {
-      toggles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
-    });
-
-    await waitForCondition(() => document.body.textContent?.includes("pool-account-a") === true);
-
-    await act(async () => {
-      sseMocks.onMessage?.({
-        type: "pool_attempts",
-        invokeId: "invocation-collapsed-b",
-        attempts: [
-          {
-            id: 12,
-            invokeId: "invocation-collapsed-b",
-            occurredAt: "2026-03-07T03:13:52Z",
-            endpoint: "/v1/responses",
-            upstreamAccountId: 8,
-            upstreamAccountName: "pool-account-b",
-            attemptIndex: 1,
-            distinctAccountIndex: 1,
-            sameAccountRetryIndex: 1,
-            startedAt: "2026-03-07T03:13:52Z",
-            finishedAt: "2026-03-07T03:13:53Z",
-            status: "success",
-            httpStatus: 200,
-            connectLatencyMs: 25,
-            firstByteLatencyMs: 11,
-            streamLatencyMs: 40,
-            upstreamRequestId: "req_ignored",
-            createdAt: "2026-03-07T03:13:53Z",
-          },
-        ],
-      });
-      await Promise.resolve();
-    });
-
-    await act(async () => {
-      toggles[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
-    });
-
-    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenCalledTimes(1);
-    await waitForCondition(() => document.body.textContent?.includes("req_ignored") === true);
-    expect(document.body.textContent).toContain("req_ignored");
-    expect(document.body.textContent).not.toContain("未找到号池尝试记录");
   });
 
   it("does not replace live pool attempts with a stale REST load error", async () => {

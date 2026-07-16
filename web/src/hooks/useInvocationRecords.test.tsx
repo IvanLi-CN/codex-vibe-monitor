@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   BroadcastPayload,
   InvocationRecordsNewCountResponse,
@@ -21,9 +21,14 @@ const apiMocks = vi.hoisted(() => ({
     vi.fn<(query: InvocationRecordsQuery) => Promise<InvocationRecordsNewCountResponse>>(),
 }));
 
-const sseMocks = vi.hoisted(() => ({
-  onMessage: null as null | ((payload: BroadcastPayload) => void),
-  onOpen: null as null | (() => void),
+const realtimeMocks = vi.hoisted(() => ({
+  latest: null as null | {
+    onRecordsChange: (
+      next: InvocationRecordsResponse["records"],
+      meta: { visibleInsertedKeys: string[]; payload: BroadcastPayload & { type: "records" } },
+    ) => void;
+    onOpenResync: () => void;
+  },
 }));
 
 vi.mock("../lib/api", async () => {
@@ -36,18 +41,15 @@ vi.mock("../lib/api", async () => {
   };
 });
 
-vi.mock("../lib/sse", () => ({
-  subscribeToSse: (handler: (payload: BroadcastPayload) => void) => {
-    sseMocks.onMessage = handler;
-    return () => {
-      sseMocks.onMessage = null;
-    };
-  },
-  subscribeToSseOpen: (handler: () => void) => {
-    sseMocks.onOpen = handler;
-    return () => {
-      sseMocks.onOpen = null;
-    };
+vi.mock("./useInvocationRecordsRealtime", () => ({
+  useInvocationRecordsRealtime: (options: {
+    onRecordsChange: (
+      next: InvocationRecordsResponse["records"],
+      meta: { visibleInsertedKeys: string[]; payload: BroadcastPayload & { type: "records" } },
+    ) => void;
+    onOpenResync: () => void;
+  }) => {
+    realtimeMocks.latest = options;
   },
 }));
 
@@ -62,6 +64,13 @@ beforeAll(() => {
   });
 });
 
+beforeEach(() => {
+  apiMocks.fetchInvocationRecords.mockReset();
+  apiMocks.fetchInvocationRecordsSummary.mockReset();
+  apiMocks.fetchInvocationRecordsNewCount.mockReset();
+  realtimeMocks.latest = null;
+});
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -73,9 +82,7 @@ afterEach(() => {
   host?.remove();
   host = null;
   root = null;
-  vi.clearAllMocks();
-  sseMocks.onMessage = null;
-  sseMocks.onOpen = null;
+  realtimeMocks.latest = null;
 });
 
 function render(ui: React.ReactNode) {
@@ -125,6 +132,28 @@ async function waitFor(check: () => void, attempts = 20) {
     }
   }
   throw lastError;
+}
+
+function invocationKey(record: InvocationRecordsResponse["records"][number]) {
+  return `${record.invokeId}-${record.occurredAt}`;
+}
+
+function emitRealtimeRecords(
+  next: InvocationRecordsResponse["records"],
+  visibleInsertedKeys: string[] = [],
+) {
+  if (!realtimeMocks.latest) {
+    throw new Error("Missing realtime hook registration");
+  }
+  act(() => {
+    realtimeMocks.latest?.onRecordsChange(next, {
+      visibleInsertedKeys,
+      payload: {
+        type: "records",
+        records: next,
+      } as BroadcastPayload & { type: "records" },
+    });
+  });
 }
 
 function createListResponse(
@@ -568,7 +597,7 @@ describe("useInvocationRecords", () => {
     expect(text("summary-loading")).toBe("no");
   });
 
-  it("merges matching SSE records into the current window and reconciles on SSE open", async () => {
+  it("merges matching realtime records into the current window", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-10T02:00:00Z"));
 
@@ -626,35 +655,32 @@ describe("useInvocationRecords", () => {
     expect(text("total")).toBe("2");
     expect(text("model")).toBe("baseline-model");
 
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          createRecord({
-            id: 1,
-            invokeId: "invoke-running",
-            occurredAt: "2026-03-10T00:00:00Z",
-            createdAt: "2026-03-10T00:00:00Z",
-            status: "success",
-            totalTokens: 777,
-          }),
-          createRecord({
-            id: 2,
-            invokeId: "invoke-new",
-            occurredAt: "2026-03-10T00:01:00Z",
-            createdAt: "2026-03-10T00:01:00Z",
-            status: "success",
-            model: "new-model",
-          }),
-        ],
-      });
+    emitRealtimeRecords(
+      [
+        createRecord({
+          id: 2,
+          invokeId: "invoke-new",
+          occurredAt: "2026-03-10T00:01:00Z",
+          createdAt: "2026-03-10T00:01:00Z",
+          status: "success",
+          model: "new-model",
+        }),
+        createRecord({
+          id: 1,
+          invokeId: "invoke-running",
+          occurredAt: "2026-03-10T00:00:00Z",
+          createdAt: "2026-03-10T00:00:00Z",
+          status: "success",
+          totalTokens: 777,
+        }),
+      ],
+      ["invoke-new-2026-03-10T00:01:00Z"],
+    );
+    await waitFor(() => {
+      expect(text("snapshot")).toBe("42");
+      expect(text("total")).toBe("3");
+      expect(text("model")).toBe("new-model");
     });
-
-    await flushAsync();
-
-    expect(text("snapshot")).toBe("42");
-    expect(text("total")).toBe("3");
-    expect(text("model")).toBe("new-model");
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(RECORDS_NEW_COUNT_POLL_INTERVAL_MS);
@@ -662,24 +688,9 @@ describe("useInvocationRecords", () => {
     await flushAsync();
 
     expect(text("new-count")).toBe("1");
-
-    act(() => {
-      sseMocks.onOpen?.();
-    });
-    await waitFor(() => {
-      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
-      expect(apiMocks.fetchInvocationRecordsSummary).toHaveBeenCalledTimes(2);
-      expect(text("snapshot")).toBe("84");
-      expect(text("total")).toBe("2");
-      expect(text("summary-snapshot")).toBe("84");
-      expect(text("new-count")).toBe("0");
-    });
-
-    const reconcileQuery = apiMocks.fetchInvocationRecords.mock.calls.at(-1)?.[0];
-    expect(reconcileQuery?.snapshotId).toBeUndefined();
   });
 
-  it("drops visible transient running SSE records across an authoritative SSE-open resync", async () => {
+  it("drops visible transient running records after an applied refresh restores authoritative data", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-10T02:00:00Z"));
 
@@ -727,41 +738,42 @@ describe("useInvocationRecords", () => {
     render(<Probe />);
     await flushAsync();
 
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          createRecord({
-            id: 0,
-            invokeId: "invoke-running-transient",
-            occurredAt: "2026-03-10T00:01:00Z",
-            createdAt: "2026-03-10T00:01:00Z",
-            status: "running",
-            model: "live-running-model",
-          }),
-        ],
-      });
-    });
+    emitRealtimeRecords(
+      [
+        createRecord({
+          id: 0,
+          invokeId: "invoke-running-transient",
+          occurredAt: "2026-03-10T00:01:00Z",
+          createdAt: "2026-03-10T00:01:00Z",
+          status: "running",
+          model: "live-running-model",
+        }),
+        createRecord({
+          id: 1,
+          invokeId: "invoke-existing",
+          occurredAt: "2026-03-10T00:00:00Z",
+          createdAt: "2026-03-10T00:00:00Z",
+          status: "success",
+          model: "baseline-model",
+        }),
+      ],
+      ["invoke-running-transient-2026-03-10T00:01:00Z"],
+    );
     await flushAsync();
 
     expect(text("model")).toBe("live-running-model");
     expect(text("total")).toBe("2");
 
-    act(() => {
-      sseMocks.onOpen?.();
-    });
+    click("refresh-applied");
     await waitFor(() => {
       expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
       expect(text("snapshot")).toBe("84");
       expect(text("model")).toBe("baseline-model");
       expect(text("total")).toBe("1");
     });
-
-    const reconcileQuery = apiMocks.fetchInvocationRecords.mock.calls.at(-1)?.[0];
-    expect(reconcileQuery?.snapshotId).toBeUndefined();
   });
 
-  it("keeps visible transient running SSE records across page fetches before DB flush catches up", async () => {
+  it("keeps visible transient running realtime records across page fetches before DB flush catches up", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-10T02:00:00Z"));
 
@@ -802,21 +814,27 @@ describe("useInvocationRecords", () => {
     render(<Probe />);
     await flushAsync();
 
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          createRecord({
-            id: 0,
-            invokeId: "invoke-running-transient",
-            occurredAt: "2026-03-10T00:01:00Z",
-            createdAt: "2026-03-10T00:01:00Z",
-            status: "running",
-            model: "live-running-model",
-          }),
-        ],
-      });
-    });
+    emitRealtimeRecords(
+      [
+        createRecord({
+          id: 0,
+          invokeId: "invoke-running-transient",
+          occurredAt: "2026-03-10T00:01:00Z",
+          createdAt: "2026-03-10T00:01:00Z",
+          status: "running",
+          model: "live-running-model",
+        }),
+        createRecord({
+          id: 1,
+          invokeId: "invoke-existing",
+          occurredAt: "2026-03-10T00:00:00Z",
+          createdAt: "2026-03-10T00:00:00Z",
+          status: "success",
+          model: "baseline-model",
+        }),
+      ],
+      ["invoke-running-transient-2026-03-10T00:01:00Z"],
+    );
     await flushAsync();
 
     expect(text("model")).toBe("live-running-model");
@@ -833,62 +851,6 @@ describe("useInvocationRecords", () => {
     const pageQuery = apiMocks.fetchInvocationRecords.mock.calls.at(-1)?.[0];
     expect(pageQuery?.snapshotId).toBe(42);
     expect(pageQuery?.page).toBe(2);
-  });
-
-  it("coalesces repeated SSE-open reconciles within the cooldown window", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-03-10T02:00:00Z"));
-
-    apiMocks.fetchInvocationRecords.mockResolvedValue(
-      createListResponse({
-        snapshotId: 42,
-        records: [
-          createRecord({
-            id: 1,
-            invokeId: "invoke-stable",
-            occurredAt: "2026-03-10T00:00:00Z",
-            createdAt: "2026-03-10T00:00:00Z",
-            status: "success",
-          }),
-        ],
-      }),
-    );
-    apiMocks.fetchInvocationRecordsSummary.mockResolvedValue(
-      createSummaryResponse({ snapshotId: 42, newRecordsCount: 0, totalCount: 1 }),
-    );
-    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(
-      createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }),
-    );
-
-    render(<Probe />);
-    await flushAsync();
-
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
-
-    act(() => {
-      sseMocks.onOpen?.();
-    });
-    await waitFor(() => {
-      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
-    });
-
-    act(() => {
-      sseMocks.onOpen?.();
-    });
-    await flushAsync();
-
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3001);
-    });
-
-    act(() => {
-      sseMocks.onOpen?.();
-    });
-    await waitFor(() => {
-      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(3);
-    });
   });
 
   it("increments the visible total when page-one SSE inserts add matching rows", async () => {
@@ -910,8 +872,8 @@ describe("useInvocationRecords", () => {
           createRecord({
             id: 2,
             invokeId: "invoke-existing-b",
-            occurredAt: "2026-03-09T23:59:00Z",
-            createdAt: "2026-03-09T23:59:00Z",
+            occurredAt: "2026-03-10T00:00:30Z",
+            createdAt: "2026-03-10T00:00:30Z",
             status: "success",
           }),
         ],
@@ -929,24 +891,37 @@ describe("useInvocationRecords", () => {
 
     expect(text("total")).toBe("2");
 
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          createRecord({
-            id: 3,
-            invokeId: "invoke-live-added",
-            occurredAt: "2026-03-10T00:01:00Z",
-            createdAt: "2026-03-10T00:01:00Z",
-            status: "success",
-          }),
-        ],
-      });
+    emitRealtimeRecords(
+      [
+        createRecord({
+          id: 3,
+          invokeId: "invoke-live-added",
+          occurredAt: "2026-03-10T00:01:00Z",
+          createdAt: "2026-03-10T00:01:00Z",
+          status: "success",
+          model: "live-added-model",
+        }),
+        createRecord({
+          id: 1,
+          invokeId: "invoke-existing-a",
+          occurredAt: "2026-03-10T00:00:00Z",
+          createdAt: "2026-03-10T00:00:00Z",
+          status: "success",
+        }),
+        createRecord({
+          id: 2,
+          invokeId: "invoke-existing-b",
+          occurredAt: "2026-03-10T00:00:30Z",
+          createdAt: "2026-03-10T00:00:30Z",
+          status: "success",
+        }),
+      ],
+      ["invoke-live-added-2026-03-10T00:01:00Z"],
+    );
+    await waitFor(() => {
+      expect(text("model")).toBe("live-added-model");
+      expect(text("total")).toBe("3");
     });
-    await flushAsync();
-
-    expect(text("model")).toBe("baseline-model");
-    expect(text("total")).toBe("3");
   });
 
   it("applies visible SSE updates when only non-sort detail fields change", async () => {
@@ -982,190 +957,21 @@ describe("useInvocationRecords", () => {
     expect(text("model")).toBe("baseline-model");
     expect(text("account-name")).toBe("Old Account");
 
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          createRecord({
-            id: 1,
-            invokeId: "invoke-detail-update",
-            occurredAt: "2026-03-10T00:00:00Z",
-            createdAt: "2026-03-10T00:00:00Z",
-            status: "success",
-            model: "refined-model",
-            upstreamAccountName: "New Account",
-          }),
-        ],
-      });
-    });
+    emitRealtimeRecords([
+      createRecord({
+        id: 1,
+        invokeId: "invoke-detail-update",
+        occurredAt: "2026-03-10T00:00:00Z",
+        createdAt: "2026-03-10T00:00:00Z",
+        status: "success",
+        model: "refined-model",
+        upstreamAccountName: "New Account",
+      }),
+    ]);
     await flushAsync();
 
     expect(text("model")).toBe("refined-model");
     expect(text("account-name")).toBe("New Account");
-  });
-
-  it("drops visible rows that no longer match the active filters after SSE updates", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-03-10T02:00:00Z"));
-
-    apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
-      if (query.status === "failed") {
-        return createListResponse({
-          snapshotId: 42,
-          records: [
-            createRecord({
-              id: 1,
-              invokeId: "invoke-filter-drop",
-              occurredAt: "2026-03-10T00:00:00Z",
-              createdAt: "2026-03-10T00:00:00Z",
-              status: "failed",
-              errorMessage: "boom",
-            }),
-          ],
-        });
-      }
-
-      return createListResponse({
-        snapshotId: 21,
-        records: [],
-      });
-    });
-    apiMocks.fetchInvocationRecordsSummary.mockResolvedValue(
-      createSummaryResponse({ snapshotId: 42, newRecordsCount: 0, failureCount: 1 }),
-    );
-    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(
-      createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }),
-    );
-
-    render(<Probe />);
-    await flushAsync();
-
-    click("failed-status");
-    click("search");
-    await flushAsync();
-
-    expect(text("model")).toBe("baseline-model");
-    expect(text("total")).toBe("2");
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          createRecord({
-            id: 1,
-            invokeId: "invoke-filter-drop",
-            occurredAt: "2026-03-10T00:00:00Z",
-            createdAt: "2026-03-10T00:00:00Z",
-            status: "success",
-            errorMessage: "",
-            failureClass: "none",
-          }),
-        ],
-      });
-    });
-    await flushAsync();
-
-    expect(text("applied-model")).toBe("");
-    expect(text("total")).toBe("1");
-  });
-
-  it("restores the new-data count when a live-inserted row later falls out of the visible window", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-03-10T02:00:00Z"));
-
-    apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
-      if (query.status === "failed") {
-        return createListResponse({
-          snapshotId: 42,
-          total: 2,
-          page: 1,
-          pageSize: query.pageSize ?? 20,
-          records: [
-            createRecord({
-              id: 1,
-              invokeId: "invoke-failed-baseline-a",
-              occurredAt: "2026-03-10T00:00:00Z",
-              createdAt: "2026-03-10T00:00:00Z",
-              status: "failed",
-              model: "baseline-failed-a",
-              errorMessage: "boom-a",
-            }),
-            createRecord({
-              id: 2,
-              invokeId: "invoke-failed-baseline-b",
-              occurredAt: "2026-03-09T23:59:00Z",
-              createdAt: "2026-03-09T23:59:00Z",
-              status: "failed",
-              model: "baseline-failed-b",
-              errorMessage: "boom-b",
-            }),
-          ],
-        });
-      }
-
-      return createListResponse({ snapshotId: 21, records: [] });
-    });
-    apiMocks.fetchInvocationRecordsSummary.mockResolvedValue(
-      createSummaryResponse({ snapshotId: 42, newRecordsCount: 0 }),
-    );
-    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(
-      createNewCountResponse({ snapshotId: 42, newRecordsCount: 2 }),
-    );
-
-    render(<Probe />);
-    await flushAsync();
-
-    click("failed-status");
-    click("search");
-    await flushAsync();
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          createRecord({
-            id: 3,
-            invokeId: "invoke-live-failed",
-            occurredAt: "2026-03-10T00:01:00Z",
-            createdAt: "2026-03-10T00:01:00Z",
-            status: "failed",
-            model: "live-failed",
-            errorMessage: "boom-live",
-          }),
-        ],
-      });
-    });
-    await flushAsync();
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(RECORDS_NEW_COUNT_POLL_INTERVAL_MS);
-    });
-    await flushAsync();
-
-    expect(text("model")).toBe("live-failed");
-    expect(text("new-count")).toBe("1");
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          createRecord({
-            id: 3,
-            invokeId: "invoke-live-failed",
-            occurredAt: "2026-03-10T00:01:00Z",
-            createdAt: "2026-03-10T00:01:00Z",
-            status: "success",
-            model: "live-failed-recovered",
-            errorMessage: "",
-            failureClass: "none",
-          }),
-        ],
-      });
-    });
-    await flushAsync();
-
-    expect(text("model")).toBe("baseline-failed-a");
-    expect(text("new-count")).toBe("2");
   });
 
   it("ignores stale overlapping new-count polls for the same snapshot", async () => {
@@ -1418,7 +1224,7 @@ describe("useInvocationRecords", () => {
     expect(text("new-count")).toBe("9");
   });
 
-  it("keeps records visible when an SSE-open summary refresh fails", async () => {
+  it("keeps records visible when an applied refresh summary fails", async () => {
     vi.useFakeTimers();
 
     apiMocks.fetchInvocationRecords
@@ -1464,9 +1270,7 @@ describe("useInvocationRecords", () => {
     expect(text("records-error")).toBe("");
     expect(text("summary-error")).toBe("");
 
-    act(() => {
-      sseMocks.onOpen?.();
-    });
+    click("refresh-applied");
     await flushAsync();
 
     await waitFor(() => {

@@ -1692,53 +1692,10 @@ pub(crate) async fn broadcast_quota_if_changed(
 }
 
 pub(crate) async fn sse_stream(
-    State(state): State<Arc<AppState>>,
-) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
-    let rx = state.broadcaster.subscribe();
-    let broadcast = BroadcastStream::new(rx).filter_map(|res| async {
-        match res {
-            Ok(payload) => match Event::default().json_data(&payload) {
-                Ok(event) => Some(Ok(event)),
-                Err(err) => {
-                    warn!(?err, "failed to serialize sse payload");
-                    None
-                }
-            },
-            Err(err) => {
-                warn!(?err, "sse broadcast stream lagging");
-                None
-            }
-        }
-    });
-    // Seed connection state so a reconnect does not wait for the next invocation mutation.
-    let initial = {
-        let (backend, _frontend) = detect_versions(state.config.static_dir.as_deref());
-        let live = match capture_dashboard_activity_live_snapshot(state.as_ref()).await {
-            Ok(snapshot) => snapshot,
-            Err(err) => {
-                warn!(
-                    ?err,
-                    "failed to capture initial dashboard activity live snapshot"
-                );
-                build_dashboard_activity_live_snapshot(
-                    current_dashboard_activity_live_revision(),
-                    state.proxy_runtime_invocations.snapshot(),
-                )
-            }
-        };
-        let events = [
-            BroadcastPayload::Version { version: backend },
-            BroadcastPayload::DashboardActivityLive { snapshot: live },
-        ]
-        .into_iter()
-        .filter_map(|payload| Event::default().json_data(&payload).ok().map(Ok))
-        .collect::<Vec<_>>();
-        schedule_dashboard_activity_live_snapshot(state.as_ref());
-        stream::iter(events)
-    };
-
-    let merged = initial.chain(broadcast);
-    Sse::new(merged).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+    state: State<Arc<AppState>>,
+    query: Query<SubscriptionStreamQuery>,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    topic_sse_stream(state, query).await
 }
 
 #[derive(Debug, Clone, Serialize)]

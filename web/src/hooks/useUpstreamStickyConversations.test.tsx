@@ -1,7 +1,8 @@
 /** @vitest-environment jsdom */
+import type React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   StickyKeyConversationSelection,
   UpstreamStickyConversationsResponse,
@@ -14,39 +15,37 @@ import {
   useUpstreamStickyConversations,
 } from "./useUpstreamStickyConversations";
 
-const apiMocks = vi.hoisted(() => ({
-  fetchUpstreamStickyConversations:
-    vi.fn<
-      (
-        accountId: number,
-        selection: StickyKeyConversationSelection,
-        signal?: AbortSignal,
-      ) => Promise<UpstreamStickyConversationsResponse>
-    >(),
+const topicMocks = vi.hoisted(() => ({
+  calls: [] as Array<{ descriptor: unknown; enabled: boolean }>,
+  refresh: vi.fn(),
+  state: {
+    data: null as UpstreamStickyConversationsResponse | null,
+    isLoading: false,
+    error: null as string | null,
+  },
 }));
 
-vi.mock("../lib/api", async () => {
-  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
-  return {
-    ...actual,
-    fetchUpstreamStickyConversations: apiMocks.fetchUpstreamStickyConversations,
-  };
-});
-
-vi.mock("../lib/sse", () => ({
-  subscribeToSse: () => () => {},
-  subscribeToSseOpen: () => () => {},
+vi.mock("./useSubscriptionTopic", () => ({
+  useSubscriptionTopic: (descriptor: unknown, enabled = true) => {
+    topicMocks.calls.push({ descriptor, enabled });
+    return {
+      data: topicMocks.state.data,
+      isLoading: topicMocks.state.isLoading,
+      error: topicMocks.state.error,
+      refresh: topicMocks.refresh,
+    };
+  },
 }));
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 
-beforeAll(() => {
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
-    configurable: true,
-    writable: true,
-    value: true,
-  });
+beforeEach(() => {
+  topicMocks.calls = [];
+  topicMocks.refresh.mockReset();
+  topicMocks.state.data = null;
+  topicMocks.state.isLoading = false;
+  topicMocks.state.error = null;
 });
 
 afterEach(() => {
@@ -56,28 +55,18 @@ afterEach(() => {
   host?.remove();
   host = null;
   root = null;
-  vi.clearAllMocks();
 });
 
 function render(ui: React.ReactNode) {
+  act(() => {
+    root?.unmount();
+  });
+  host?.remove();
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
   act(() => {
     root?.render(ui);
-  });
-}
-
-function rerender(ui: React.ReactNode) {
-  act(() => {
-    root?.render(ui);
-  });
-}
-
-async function flushAsync() {
-  await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
   });
 }
 
@@ -115,16 +104,6 @@ function createResponse(stickyKey: string): UpstreamStickyConversationsResponse 
   };
 }
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
 function Probe({
   accountId,
   selection,
@@ -134,13 +113,18 @@ function Probe({
   selection: StickyKeyConversationSelection;
   enabled?: boolean;
 }) {
-  const { stats, isLoading, error } = useUpstreamStickyConversations(accountId, selection, enabled);
+  const { stats, isLoading, error, refresh } = useUpstreamStickyConversations(
+    accountId,
+    selection,
+    enabled,
+  );
 
   return (
     <div>
       <div data-testid="sticky-key">{stats?.conversations[0]?.stickyKey ?? ""}</div>
       <div data-testid="loading">{isLoading ? "true" : "false"}</div>
       <div data-testid="error">{error ?? ""}</div>
+      <button type="button" data-testid="refresh" onClick={() => void refresh()} />
     </div>
   );
 }
@@ -171,50 +155,64 @@ describe("useUpstreamStickyConversations sync guards", () => {
     const allowed = shouldTriggerUpstreamStickyOpenResync(40_000, 40_100, true);
     expect(allowed).toBe(true);
   });
+});
 
-  it("ignores stale responses after account switches", async () => {
-    const first = deferred<UpstreamStickyConversationsResponse>();
-    const second = deferred<UpstreamStickyConversationsResponse>();
-    apiMocks.fetchUpstreamStickyConversations
-      .mockImplementationOnce(async () => first.promise)
-      .mockImplementationOnce(async () => second.promise);
+describe("useUpstreamStickyConversations", () => {
+  it("subscribes to the sticky conversation topic and exposes topic state", () => {
+    topicMocks.state.data = createResponse("sticky-routing");
+    topicMocks.state.error = "topic warning";
 
     render(<Probe accountId={101} selection={{ mode: "count", limit: 20 }} />);
-    expect(text("loading")).toBe("true");
 
-    rerender(<Probe accountId={202} selection={{ mode: "count", limit: 20 }} />);
-    await flushAsync();
-
-    second.resolve(createResponse("sticky-b"));
-    await flushAsync();
-    expect(text("sticky-key")).toBe("sticky-b");
-
-    first.resolve(createResponse("sticky-a"));
-    await flushAsync();
-    expect(text("sticky-key")).toBe("sticky-b");
-    expect(text("error")).toBe("");
+    expect(topicMocks.calls.at(-1)).toEqual({
+      descriptor: {
+        topic: "prompt-cache.sticky.window",
+        params: {
+          accountId: "101",
+          limit: "20",
+        },
+      },
+      enabled: true,
+    });
+    expect(text("sticky-key")).toBe("sticky-routing");
+    expect(text("error")).toBe("topic warning");
   });
 
-  it("does not load until enabled and then hydrates the current account", async () => {
-    apiMocks.fetchUpstreamStickyConversations.mockResolvedValue(createResponse("sticky-routing"));
+  it("disables the topic until an account is available and forwards manual refresh", () => {
+    render(<Probe accountId={null} selection={{ mode: "activityWindow", activityHours: 6 }} />);
 
-    render(<Probe accountId={101} selection={{ mode: "count", limit: 20 }} enabled={false} />);
-    await flushAsync();
-
-    expect(apiMocks.fetchUpstreamStickyConversations).not.toHaveBeenCalled();
-    expect(text("loading")).toBe("false");
+    expect(topicMocks.calls.at(-1)).toEqual({
+      descriptor: null,
+      enabled: false,
+    });
     expect(text("sticky-key")).toBe("");
-
-    rerender(<Probe accountId={101} selection={{ mode: "count", limit: 20 }} enabled />);
-    await flushAsync();
-
-    expect(apiMocks.fetchUpstreamStickyConversations).toHaveBeenCalledTimes(1);
-    expect(apiMocks.fetchUpstreamStickyConversations).toHaveBeenCalledWith(
-      101,
-      { mode: "count", limit: 20 },
-      expect.any(AbortSignal),
-    );
-    expect(text("sticky-key")).toBe("sticky-routing");
     expect(text("loading")).toBe("false");
+
+    topicMocks.state.data = createResponse("sticky-window");
+    topicMocks.state.isLoading = true;
+    render(<Probe accountId={202} selection={{ mode: "activityWindow", activityHours: 6 }} />);
+
+    expect(topicMocks.calls.at(-1)).toEqual({
+      descriptor: {
+        topic: "prompt-cache.sticky.window",
+        params: {
+          accountId: "202",
+          activityHours: "6",
+        },
+      },
+      enabled: true,
+    });
+
+    act(() => {
+      const button = host?.querySelector('[data-testid="refresh"]');
+      if (!(button instanceof HTMLButtonElement)) {
+        throw new Error("Missing refresh button");
+      }
+      button.click();
+    });
+
+    expect(text("sticky-key")).toBe("sticky-window");
+    expect(text("loading")).toBe("true");
+    expect(topicMocks.refresh).toHaveBeenCalledTimes(1);
   });
 });

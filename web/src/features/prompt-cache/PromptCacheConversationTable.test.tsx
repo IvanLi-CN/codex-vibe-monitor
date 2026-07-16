@@ -8,7 +8,6 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
 import type {
-  BroadcastPayload,
   PromptCacheConversation,
   PromptCacheConversationBindingResponse,
   PromptCacheConversationsResponse,
@@ -25,11 +24,6 @@ const apiMocks = vi.hoisted(() => ({
     vi.fn<(promptCacheKey: string) => Promise<PromptCacheConversationBindingResponse>>(),
   fetchUpstreamAccounts: vi.fn(),
   updatePromptCacheConversationBinding: vi.fn(),
-}));
-
-const sseMocks = vi.hoisted(() => ({
-  listeners: new Set<(payload: BroadcastPayload) => void>(),
-  openListeners: new Set<() => void>(),
 }));
 
 class MockPointerEvent extends MouseEvent {
@@ -60,16 +54,13 @@ vi.mock("../../lib/api", async () => {
   };
 });
 
-vi.mock("../../lib/sse", () => ({
-  subscribeToSse: (listener: (payload: BroadcastPayload) => void) => {
-    sseMocks.listeners.add(listener);
-    return () => sseMocks.listeners.delete(listener);
-  },
-  subscribeToSseOpen: (listener: () => void) => {
-    sseMocks.openListeners.add(listener);
-    return () => sseMocks.openListeners.delete(listener);
-  },
-}));
+vi.mock("../../lib/sse", async () => {
+  const actual = await vi.importActual<typeof import("../../lib/sse")>("../../lib/sse");
+  return {
+    ...actual,
+    subscribeToTopic: () => () => {},
+  };
+});
 
 function renderTable(stats: PromptCacheConversationsResponse) {
   return renderToStaticMarkup(
@@ -280,8 +271,6 @@ describe("PromptCacheConversationTable", () => {
     host?.remove();
     host = null;
     root = null;
-    sseMocks.listeners.clear();
-    sseMocks.openListeners.clear();
     consoleErrorSpy?.mockRestore();
     consoleErrorSpy = null;
     vi.useRealTimers();
@@ -333,14 +322,6 @@ describe("PromptCacheConversationTable", () => {
     expect(tab).toBeTruthy();
     await user.click(tab!);
     await flushInteractive();
-  }
-
-  function emitSseRecords(payload: BroadcastPayload) {
-    act(() => {
-      sseMocks.listeners.forEach((listener) => {
-        listener(payload);
-      });
-    });
   }
 
   async function flushInteractive() {
@@ -2746,363 +2727,5 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).toContain("01/01");
     expect(document.body.textContent).toContain("03/03");
     expect(document.body.textContent).toContain("图表采样最近 1,000 / 1,001 条匹配调用");
-  });
-
-  it("streams live history rows into the open drawer and replaces running snapshots with final records", async () => {
-    let resolveRefresh!: (value: {
-      snapshotId: number;
-      total: number;
-      page: number;
-      pageSize: number;
-      records: Array<Record<string, unknown>>;
-    }) => void;
-    const refreshPromise = new Promise<{
-      snapshotId: number;
-      total: number;
-      page: number;
-      pageSize: number;
-      records: Array<Record<string, unknown>>;
-    }>((resolve) => {
-      resolveRefresh = resolve;
-    });
-
-    apiMocks.fetchInvocationRecords.mockImplementation(
-      async (query: {
-        page?: number;
-        snapshotId?: number;
-        sortOrder?: string;
-        pageSize?: number;
-        signal?: AbortSignal;
-      }) => {
-        if (query.pageSize === 200) {
-          return {
-            snapshotId: 900,
-            total: 0,
-            page: 1,
-            pageSize: 200,
-            records: [],
-          };
-        }
-        if (query.page === 1 && query.snapshotId == null) {
-          return {
-            snapshotId: 902,
-            total: 1,
-            page: 1,
-            pageSize: 200,
-            records: [
-              {
-                id: 61,
-                invokeId: "history-base-61",
-                occurredAt: "2026-03-02T12:10:00Z",
-                status: "completed",
-                failureClass: "none",
-                totalTokens: 900,
-                cost: 0.2,
-                endpoint: "/v1/responses",
-                promptCacheKey: "pck-history-live",
-                upstreamAccountId: 101,
-                upstreamAccountName: "Pool Alpha",
-                proxyDisplayName: "Proxy Base",
-                createdAt: "2026-03-02T12:10:00Z",
-              },
-            ],
-          };
-        }
-        return refreshPromise;
-      },
-    );
-
-    renderInteractive({
-      rangeStart: "2026-03-02T00:00:00Z",
-      rangeEnd: "2026-03-03T00:00:00Z",
-      selectionMode: "count",
-      selectedLimit: 50,
-      selectedActivityHours: null,
-      implicitFilter: { kind: null, filteredCount: 0 },
-      conversations: [
-        createConversation({
-          promptCacheKey: "pck-history-live",
-          requestCount: 2,
-          totalTokens: 2400,
-          totalCost: 0.51,
-          createdAt: "2026-03-02T10:00:00Z",
-          lastActivityAt: "2026-03-02T12:35:00Z",
-          last24hRequests: [],
-        }),
-      ],
-    });
-
-    const historyButton = findButtonByAriaLabel("打开全部调用记录");
-    expect(historyButton).toBeTruthy();
-
-    await act(async () => {
-      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    await clickDrawerTab("调用");
-    expect(document.body.textContent).toContain("Proxy Base");
-
-    emitSseRecords({
-      type: "records",
-      records: [
-        {
-          id: 62,
-          invokeId: "history-live-62",
-          occurredAt: "2026-03-02T12:35:00Z",
-          createdAt: "2026-03-02T12:35:00Z",
-          status: "running",
-          promptCacheKey: "pck-history-live",
-          totalTokens: 0,
-          cost: 0,
-          proxyDisplayName: "Proxy Running",
-        },
-      ],
-    });
-    await flushInteractive();
-
-    expect(document.body.textContent).toContain("Proxy Running");
-    expect(document.body.textContent).toContain("共 2 条保留调用记录");
-
-    emitSseRecords({
-      type: "records",
-      records: [
-        {
-          id: 62,
-          invokeId: "history-live-62",
-          occurredAt: "2026-03-02T12:35:00Z",
-          createdAt: "2026-03-02T12:35:00Z",
-          status: "completed",
-          promptCacheKey: "pck-history-live",
-          totalTokens: 1500,
-          cost: 0.31,
-          proxyDisplayName: "Proxy Final",
-        },
-      ],
-    });
-    await flushInteractive();
-
-    expect(document.body.textContent).toContain("Proxy Final");
-    expect(document.body.textContent).not.toContain("Proxy Running");
-
-    await act(async () => {
-      resolveRefresh({
-        snapshotId: 903,
-        total: 2,
-        page: 1,
-        pageSize: 50,
-        records: [
-          {
-            id: 62,
-            invokeId: "history-live-62",
-            occurredAt: "2026-03-02T12:35:00Z",
-            status: "completed",
-            failureClass: "none",
-            totalTokens: 1500,
-            cost: 0.31,
-            endpoint: "/v1/responses",
-            promptCacheKey: "pck-history-live",
-            upstreamAccountId: 101,
-            upstreamAccountName: "Pool Alpha",
-            proxyDisplayName: "Proxy Final",
-            createdAt: "2026-03-02T12:35:00Z",
-          },
-          {
-            id: 61,
-            invokeId: "history-base-61",
-            occurredAt: "2026-03-02T12:10:00Z",
-            status: "completed",
-            failureClass: "none",
-            totalTokens: 900,
-            cost: 0.2,
-            endpoint: "/v1/responses",
-            promptCacheKey: "pck-history-live",
-            upstreamAccountId: 101,
-            upstreamAccountName: "Pool Alpha",
-            proxyDisplayName: "Proxy Base",
-            createdAt: "2026-03-02T12:10:00Z",
-          },
-        ],
-      });
-      await refreshPromise;
-    });
-    await flushInteractive();
-
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
-      promptCacheKey: "pck-history-live",
-      page: 1,
-      pageSize: 50,
-      sortBy: "occurredAt",
-      sortOrder: "desc",
-      signal: expect.any(AbortSignal),
-    });
-    expect(document.body.textContent).toContain("Proxy Final");
-    expect(document.body.textContent).not.toContain("Proxy Running");
-  });
-
-  it("continues from page 2 after a silent refresh adopts a new history snapshot", async () => {
-    let pageOneRequests = 0;
-    apiMocks.fetchInvocationRecords.mockImplementation(
-      async (query: { page?: number; snapshotId?: number; pageSize?: number }) => {
-        if (query.pageSize === 200) {
-          return {
-            snapshotId: 900,
-            total: 0,
-            page: 1,
-            pageSize: 200,
-            records: [],
-          };
-        }
-        if (query.page === 1 && query.snapshotId == null) {
-          pageOneRequests += 1;
-          const snapshotId = pageOneRequests === 1 ? 902 : 903;
-          return {
-            snapshotId,
-            total: 120,
-            page: 1,
-            pageSize: 50,
-            records: [
-              {
-                id: snapshotId,
-                invokeId: `history-snapshot-${snapshotId}`,
-                occurredAt: "2026-03-02T12:35:00Z",
-                status: "completed",
-                promptCacheKey: "pck-history-snapshot",
-                totalTokens: 1500,
-                cost: 0.31,
-                proxyDisplayName: `Proxy Snapshot ${snapshotId}`,
-                createdAt: "2026-03-02T12:35:00Z",
-              },
-            ],
-          };
-        }
-        if (query.page === 2) {
-          const snapshotId = query.snapshotId ?? 903;
-          return {
-            snapshotId,
-            total: 120,
-            page: 2,
-            pageSize: 50,
-            records: [
-              {
-                id: 51,
-                invokeId: "history-snapshot-page-2",
-                occurredAt: "2026-03-02T12:10:00Z",
-                status: "completed",
-                promptCacheKey: "pck-history-snapshot",
-                totalTokens: 900,
-                cost: 0.2,
-                proxyDisplayName: `Proxy Snapshot Page 2 ${snapshotId}`,
-                createdAt: "2026-03-02T12:10:00Z",
-              },
-            ],
-          };
-        }
-        throw new Error(`unexpected page ${query.page}`);
-      },
-    );
-
-    renderInteractive({
-      rangeStart: "2026-03-02T00:00:00Z",
-      rangeEnd: "2026-03-03T00:00:00Z",
-      selectionMode: "count",
-      selectedLimit: 50,
-      selectedActivityHours: null,
-      implicitFilter: { kind: null, filteredCount: 0 },
-      conversations: [
-        createConversation({
-          promptCacheKey: "pck-history-snapshot",
-          requestCount: 120,
-          totalTokens: 2400,
-          totalCost: 0.51,
-          createdAt: "2026-03-02T10:00:00Z",
-          lastActivityAt: "2026-03-02T12:35:00Z",
-          last24hRequests: [],
-        }),
-      ],
-    });
-
-    const historyButton = findButtonByAriaLabel("打开全部调用记录");
-    expect(historyButton).toBeTruthy();
-
-    await act(async () => {
-      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
-    });
-    await flushInteractive();
-
-    await clickDrawerTab("调用");
-    expect(document.body.textContent).toContain("Proxy Snapshot 902");
-
-    const drawerBody = document.querySelector(".drawer-body");
-    expect(drawerBody).toBeTruthy();
-    Object.defineProperties(drawerBody as HTMLElement, {
-      scrollHeight: { configurable: true, value: 1_000 },
-      clientHeight: { configurable: true, value: 500 },
-      scrollTop: { configurable: true, value: 500 },
-    });
-    await act(async () => {
-      drawerBody?.dispatchEvent(new Event("scroll", { bubbles: true }));
-    });
-    await flushInteractive();
-
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
-      promptCacheKey: "pck-history-snapshot",
-      page: 2,
-      pageSize: 50,
-      sortBy: "occurredAt",
-      sortOrder: "desc",
-      snapshotId: 902,
-      signal: expect.any(AbortSignal),
-    });
-    await flushInteractive();
-    expect(document.body.textContent).toContain("已加载 2 / 120");
-
-    emitSseRecords({
-      type: "records",
-      records: [
-        {
-          id: 121,
-          invokeId: "history-snapshot-live",
-          occurredAt: "2026-03-02T12:40:00Z",
-          createdAt: "2026-03-02T12:40:00Z",
-          status: "completed",
-          promptCacheKey: "pck-history-snapshot",
-          totalTokens: 0,
-          cost: 0,
-          proxyDisplayName: "Proxy Snapshot Live",
-        },
-      ],
-    });
-    await flushInteractive();
-
-    expect(document.body.textContent).toContain("Proxy Snapshot 903");
-    expect(document.body.textContent).toContain("已加载 4 / 121");
-
-    await act(async () => {
-      drawerBody?.dispatchEvent(new Event("scroll", { bubbles: true }));
-    });
-    await flushInteractive();
-
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
-      promptCacheKey: "pck-history-snapshot",
-      page: 2,
-      pageSize: 50,
-      sortBy: "occurredAt",
-      sortOrder: "desc",
-      snapshotId: 903,
-      signal: expect.any(AbortSignal),
-    });
-    expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalledWith(
-      expect.objectContaining({
-        promptCacheKey: "pck-history-snapshot",
-        page: 3,
-        pageSize: 50,
-        snapshotId: 903,
-      }),
-    );
-    await flushInteractive();
-    expect(document.body.textContent).toContain("已加载 4 / 121");
   });
 });

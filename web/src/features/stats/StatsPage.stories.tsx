@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { useEffect } from "react";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type {
   ErrorDistributionResponse,
@@ -10,11 +11,14 @@ import type {
   TimeseriesPoint,
   TimeseriesResponse,
 } from "../../lib/api";
+import { buildTopicDescriptor, type SubscriptionTopicEnvelope } from "../../lib/sse";
+import { getBrowserTimeZone } from "../../lib/timeZone";
 import StatsPage from "../../pages/Stats";
 import {
   FullPageStorySurface,
   StorybookPageEnvironment,
 } from "../../storybook/storybookPageHelpers";
+import { getStorybookPageSseController } from "../../storybook/storybookPageSse";
 import { jsonResponse } from "../../storybook/storybookResponse";
 
 type StatsScenario = "default" | "timeseries-error";
@@ -213,7 +217,7 @@ function buildParallelWorkResponse(options: {
   };
 }
 
-function buildStatsRequestHandler(scenario: StatsScenario = "default") {
+function buildStatsStoryFixtures() {
   const now = Date.parse("2026-04-06T12:00:00.000Z");
   const todayStart = Date.parse("2026-04-06T00:00:00.000Z");
   const dayStart = now - 24 * 60 * 60 * 1000;
@@ -267,10 +271,86 @@ function buildStatsRequestHandler(scenario: StatsScenario = "default") {
     actionableFailureRate: 0.864,
   };
 
+  const buildTimeseriesForRange = (range: string, bucket: string) => {
+    const rangeStart = rangeStartByRange(range);
+    if (range === "7d") {
+      const bucketSeconds =
+        bucket === "1d" ? 86400 : bucket === "12h" ? 43200 : bucket === "6h" ? 21600 : 3600;
+      return buildTimeseriesResponse({
+        rangeStart: new Date(weekStart).toISOString(),
+        rangeEnd: new Date(now).toISOString(),
+        bucketSeconds,
+        effectiveBucket: bucket,
+        availableBuckets: ["1h", "6h", "12h", "1d"],
+        points: buildTimeseriesPoints({
+          count: bucket === "1d" ? 7 : bucket === "12h" ? 14 : bucket === "6h" ? 28 : 7 * 24,
+          bucketSeconds,
+          startMs: weekStart,
+          offset: 3,
+        }),
+      });
+    }
+    const bucketSeconds =
+      bucket === "1m"
+        ? 60
+        : bucket === "5m"
+          ? 300
+          : bucket === "30m"
+            ? 1800
+            : bucket === "1h"
+              ? 3600
+              : 900;
+    return buildTimeseriesResponse({
+      rangeStart: new Date(rangeStart).toISOString(),
+      rangeEnd: new Date(now).toISOString(),
+      bucketSeconds,
+      effectiveBucket: bucket,
+      availableBuckets: ["1m", "15m", "30m", "1h", "6h"],
+      points: buildTimeseriesPoints({
+        count:
+          bucket === "1m"
+            ? 24 * 60
+            : bucket === "1h"
+              ? 24
+              : bucket === "30m"
+                ? 48
+                : bucket === "5m"
+                  ? 288
+                  : 96,
+        bucketSeconds,
+        startMs: rangeStart,
+      }),
+    });
+  };
+
+  const buildParallelWorkForRange = (range: string, bucket: string, timeZone: string) => {
+    const bucketSeconds =
+      bucket === "1m" ? 60 : bucket === "30m" ? 1800 : bucket === "1h" ? 3600 : 900;
+    return buildParallelWorkResponse({
+      rangeStart: new Date(rangeStartByRange(range)).toISOString(),
+      rangeEnd: new Date(now).toISOString(),
+      bucketSeconds,
+      effectiveTimeZone: timeZone,
+    });
+  };
+
+  return {
+    now,
+    summaryByWindow,
+    errorDistribution,
+    failureSummary,
+    buildTimeseriesForRange,
+    buildParallelWorkForRange,
+  };
+}
+
+function buildStatsRequestHandler(scenario: StatsScenario = "default") {
+  const fixtures = buildStatsStoryFixtures();
+
   return ({ url }: { url: URL }) => {
     if (url.pathname === "/api/stats/summary") {
       const window = url.searchParams.get("window") ?? "today";
-      return jsonResponse(summaryByWindow[window] ?? summaryByWindow.today);
+      return jsonResponse(fixtures.summaryByWindow[window] ?? fixtures.summaryByWindow.today);
     }
 
     if (url.pathname === "/api/stats/timeseries") {
@@ -279,94 +359,96 @@ function buildStatsRequestHandler(scenario: StatsScenario = "default") {
       }
       const range = url.searchParams.get("range") ?? "today";
       const bucket = url.searchParams.get("bucket") ?? (range === "7d" ? "1h" : "15m");
-      const rangeStart = rangeStartByRange(range);
-      if (range === "7d") {
-        return jsonResponse(
-          buildTimeseriesResponse({
-            rangeStart: new Date(weekStart).toISOString(),
-            rangeEnd: new Date(now).toISOString(),
-            bucketSeconds:
-              bucket === "1d" ? 86400 : bucket === "12h" ? 43200 : bucket === "6h" ? 21600 : 3600,
-            effectiveBucket: bucket,
-            availableBuckets: ["1h", "6h", "12h", "1d"],
-            points: buildTimeseriesPoints({
-              count: bucket === "1d" ? 7 : bucket === "12h" ? 14 : bucket === "6h" ? 28 : 7 * 24,
-              bucketSeconds:
-                bucket === "1d" ? 86400 : bucket === "12h" ? 43200 : bucket === "6h" ? 21600 : 3600,
-              startMs: weekStart,
-              offset: 3,
-            }),
-          }),
-        );
-      }
-      return jsonResponse(
-        buildTimeseriesResponse({
-          rangeStart: new Date(rangeStart).toISOString(),
-          rangeEnd: new Date(now).toISOString(),
-          bucketSeconds:
-            bucket === "1m"
-              ? 60
-              : bucket === "5m"
-                ? 300
-                : bucket === "30m"
-                  ? 1800
-                  : bucket === "1h"
-                    ? 3600
-                    : 900,
-          effectiveBucket: bucket,
-          availableBuckets: ["1m", "15m", "30m", "1h", "6h"],
-          points: buildTimeseriesPoints({
-            count:
-              bucket === "1m"
-                ? 24 * 60
-                : bucket === "1h"
-                  ? 24
-                  : bucket === "30m"
-                    ? 48
-                    : bucket === "5m"
-                      ? 288
-                      : 96,
-            bucketSeconds:
-              bucket === "1m"
-                ? 60
-                : bucket === "5m"
-                  ? 300
-                  : bucket === "30m"
-                    ? 1800
-                    : bucket === "1h"
-                      ? 3600
-                      : 900,
-            startMs: rangeStart,
-          }),
-        }),
-      );
+      return jsonResponse(fixtures.buildTimeseriesForRange(range, bucket));
     }
 
     if (url.pathname === "/api/stats/errors") {
-      return jsonResponse(errorDistribution);
+      return jsonResponse(fixtures.errorDistribution);
     }
 
     if (url.pathname === "/api/stats/failures/summary") {
-      return jsonResponse(failureSummary);
+      return jsonResponse(fixtures.failureSummary);
     }
 
     if (url.pathname === "/api/stats/parallel-work") {
       const range = url.searchParams.get("range") ?? "today";
       const bucket = url.searchParams.get("bucket") ?? (range === "7d" ? "1h" : "15m");
-      const bucketSeconds =
-        bucket === "1m" ? 60 : bucket === "30m" ? 1800 : bucket === "1h" ? 3600 : 900;
-      const rangeStart = new Date(rangeStartByRange(range)).toISOString();
-      return jsonResponse(
-        buildParallelWorkResponse({
-          rangeStart,
-          rangeEnd: new Date(now).toISOString(),
-          bucketSeconds,
-        }),
-      );
+      return jsonResponse(fixtures.buildParallelWorkForRange(range, bucket, getBrowserTimeZone()));
     }
 
     return undefined;
   };
+}
+
+function StatsPageSseBootstrap({ scenario }: { scenario: StatsScenario }) {
+  useEffect(() => {
+    const controller = getStorybookPageSseController();
+    if (!controller) return;
+
+    const fixtures = buildStatsStoryFixtures();
+    const timeZone = getBrowserTimeZone();
+    let cursor = 1;
+
+    const emitSnapshot = <T,>(descriptor: ReturnType<typeof buildTopicDescriptor>, payload: T) => {
+      controller.emit({
+        type: "snapshot",
+        topic: descriptor,
+        topicKey: `storybook:${descriptor.topic}:${cursor}`,
+        schemaEpoch: "storybook-stats-page-v1",
+        cursor,
+        payload,
+      } satisfies SubscriptionTopicEnvelope<T>);
+      cursor += 1;
+    };
+
+    const timer = window.setTimeout(() => {
+      controller.emitOpen();
+      emitSnapshot(
+        buildTopicDescriptor("stats.summary.current", { window: "today", timeZone }),
+        fixtures.summaryByWindow.today,
+      );
+      emitSnapshot(
+        buildTopicDescriptor("stats.summary.current", { window: "7d", timeZone }),
+        fixtures.summaryByWindow["7d"],
+      );
+      emitSnapshot(
+        buildTopicDescriptor("stats.timeseries.open-window", {
+          range: "today",
+          bucket: "15m",
+          timeZone,
+        }),
+        fixtures.buildTimeseriesForRange("today", "15m"),
+      );
+      emitSnapshot(
+        buildTopicDescriptor("stats.timeseries.open-window", {
+          range: "7d",
+          bucket: "1h",
+          timeZone,
+        }),
+        fixtures.buildTimeseriesForRange("7d", "1h"),
+      );
+      emitSnapshot(
+        buildTopicDescriptor("stats.parallel-work.current", {
+          range: "today",
+          bucket: "15m",
+          timeZone,
+        }),
+        fixtures.buildParallelWorkForRange("today", "15m", timeZone),
+      );
+      emitSnapshot(
+        buildTopicDescriptor("stats.parallel-work.current", {
+          range: "7d",
+          bucket: "1h",
+          timeZone,
+        }),
+        fixtures.buildParallelWorkForRange("7d", "1h", timeZone),
+      );
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [scenario]);
+
+  return null;
 }
 
 const meta = {
@@ -385,6 +467,7 @@ const meta = {
       return (
         <I18nProvider>
           <StorybookPageEnvironment onRequest={buildStatsRequestHandler(scenario)}>
+            <StatsPageSseBootstrap scenario={scenario} />
             <FullPageStorySurface>
               <Story />
             </FullPageStorySurface>
@@ -433,7 +516,7 @@ export const MinuteBucketOptions: Story = {
   render: () => <StatsPage />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByTestId("parallel-work-conversation-gantt")).toBeVisible();
+    await expect(await canvas.findByTestId("parallel-work-conversation-gantt")).toBeVisible();
     const bucketTrigger = canvas.getByTestId("stats-bucket-select-trigger");
     await expect(bucketTrigger).toHaveTextContent("每 15 分钟");
     await userEvent.click(bucketTrigger);
@@ -475,8 +558,13 @@ export const EvidenceSevenDayRechartsPage: Story = {
     await userEvent.click(within(document.body).getByText("最近 7 天"));
     await expect(canvas.getByTestId("stats-range-select-trigger")).toHaveTextContent("最近 7 天");
     await expect(canvas.queryByTestId("parallel-work-conversation-gantt")).toBeNull();
-    const chart = canvasElement.querySelector('[data-chart-kind="parallel-work-sparkline"]');
-    await expect(chart).toHaveAttribute("data-chart-mode", "recharts-area");
+    await waitFor(() => {
+      const chart = canvasElement.querySelector('[data-chart-kind="parallel-work-sparkline"]');
+      if (!(chart instanceof HTMLElement || chart instanceof SVGElement)) {
+        throw new Error("parallel-work-sparkline chart unavailable");
+      }
+      expect(chart).toHaveAttribute("data-chart-mode", "recharts-area");
+    });
   },
 };
 

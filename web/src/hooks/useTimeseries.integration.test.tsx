@@ -1,36 +1,24 @@
 /** @vitest-environment jsdom */
+import type React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type {
-  ApiInvocation,
-  BroadcastPayload,
-  InvocationRecordsQuery,
-  InvocationRecordsResponse,
-  TimeseriesResponse,
-} from "../lib/api";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { TimeseriesResponse } from "../lib/api";
 import { clearTimeseriesRemountCache, useTimeseries } from "./useTimeseries";
 
 const apiMocks = vi.hoisted(() => ({
-  fetchTimeseries:
-    vi.fn<
-      (
-        range: string,
-        params?: {
-          bucket?: string;
-          settlementHour?: number;
-          timeZone?: string;
-          signal?: AbortSignal;
-        },
-      ) => Promise<TimeseriesResponse>
-    >(),
-  fetchInvocationRecords:
-    vi.fn<(query: InvocationRecordsQuery) => Promise<InvocationRecordsResponse>>(),
+  fetchTimeseries: vi.fn<() => Promise<TimeseriesResponse>>(),
 }));
 
-const sseMocks = vi.hoisted(() => ({
-  listeners: new Set<(payload: BroadcastPayload) => void>(),
-  openListeners: new Set<() => void>(),
+const topicMocks = vi.hoisted(() => ({
+  state: {
+    data: null as TimeseriesResponse | null,
+    isLoading: false,
+    error: null as string | null,
+    refresh: vi.fn(),
+  },
+  lastDescriptor: null as Record<string, unknown> | null,
+  lastEnabled: true,
 }));
 
 vi.mock("../lib/api", async () => {
@@ -38,18 +26,14 @@ vi.mock("../lib/api", async () => {
   return {
     ...actual,
     fetchTimeseries: apiMocks.fetchTimeseries,
-    fetchInvocationRecords: apiMocks.fetchInvocationRecords,
   };
 });
 
-vi.mock("../lib/sse", () => ({
-  subscribeToSse: (listener: (payload: BroadcastPayload) => void) => {
-    sseMocks.listeners.add(listener);
-    return () => sseMocks.listeners.delete(listener);
-  },
-  subscribeToSseOpen: (listener: () => void) => {
-    sseMocks.openListeners.add(listener);
-    return () => sseMocks.openListeners.delete(listener);
+vi.mock("./useSubscriptionTopic", () => ({
+  useSubscriptionTopic: (descriptor: Record<string, unknown> | null, enabled = true) => {
+    topicMocks.lastDescriptor = descriptor;
+    topicMocks.lastEnabled = enabled;
+    return topicMocks.state;
   },
 }));
 
@@ -64,6 +48,16 @@ beforeAll(() => {
   });
 });
 
+beforeEach(() => {
+  topicMocks.state.data = null;
+  topicMocks.state.isLoading = false;
+  topicMocks.state.error = null;
+  topicMocks.state.refresh.mockReset();
+  topicMocks.lastDescriptor = null;
+  topicMocks.lastEnabled = true;
+  apiMocks.fetchTimeseries.mockReset();
+});
+
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -72,9 +66,6 @@ afterEach(() => {
   host = null;
   root = null;
   clearTimeseriesRemountCache();
-  sseMocks.listeners.clear();
-  sseMocks.openListeners.clear();
-  vi.useRealTimers();
   vi.clearAllMocks();
 });
 
@@ -87,21 +78,11 @@ function render(ui: React.ReactNode) {
   });
 }
 
-function unmountCurrent() {
-  act(() => {
-    root?.unmount();
+async function flushAsync() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
   });
-  host?.remove();
-  host = null;
-  root = null;
-}
-
-async function flushAsync(turns = 3) {
-  for (let index = 0; index < turns; index += 1) {
-    await act(async () => {
-      await Promise.resolve();
-    });
-  }
 }
 
 function text(testId: string) {
@@ -112,656 +93,60 @@ function text(testId: string) {
   return element.textContent ?? "";
 }
 
-function dispatchPageShow({ persisted }: { persisted: boolean }) {
-  const event = new Event("pageshow");
-  Object.defineProperty(event, "persisted", {
-    configurable: true,
-    value: persisted,
-  });
-  window.dispatchEvent(event);
-}
-
-function emitRecords(records: ApiInvocation[]) {
-  act(() => {
-    sseMocks.listeners.forEach((listener) => {
-      listener({ type: "records", records });
-    });
-  });
-}
-
-function createBaseTimeseries(
-  overrides?: Partial<TimeseriesResponse["points"][number]>,
-  responseOverrides?: Partial<Omit<TimeseriesResponse, "points">>,
-): TimeseriesResponse {
+function createTimeseries(points = 2): TimeseriesResponse {
   return {
-    rangeStart: "2026-03-01T00:00:00Z",
-    rangeEnd: "2026-03-08T00:00:00Z",
-    bucketSeconds: 3600,
-    snapshotId: 100,
-    ...responseOverrides,
-    points: [
-      {
-        bucketStart: "2026-03-07T23:00:00Z",
-        bucketEnd: "2026-03-08T00:00:00Z",
-        totalCount: 1,
-        successCount: 0,
-        failureCount: 0,
-        totalTokens: 0,
-        totalCost: 0,
-        ...overrides,
-      },
-    ],
-  };
-}
-
-function createRunningRecord(): ApiInvocation {
-  return {
-    id: 91,
-    invokeId: "cached-running",
-    occurredAt: "2026-03-07T23:30:00Z",
-    status: "running",
-    totalTokens: 0,
-    cost: 0,
-    createdAt: "2026-03-07T23:30:00Z",
-  };
-}
-
-function createSettledRecord(): ApiInvocation {
-  return {
-    ...createRunningRecord(),
-    status: "failed",
-    totalTokens: 22,
-    cost: 0.18,
-    errorMessage: "upstream timed out",
-    failureKind: "upstream_timeout",
-  };
-}
-
-function createRecordsPage(records: ApiInvocation[]): InvocationRecordsResponse {
-  return {
+    rangeStart: "2026-07-16T00:00:00Z",
+    rangeEnd: "2026-07-16T10:00:00Z",
+    bucketSeconds: 60,
     snapshotId: 1,
-    total: records.length,
-    page: 1,
-    pageSize: Math.max(1, records.length),
-    records,
+    points: Array.from({ length: points }, (_, index) => ({
+      bucketStart: `2026-07-16T10:0${index}:00Z`,
+      bucketEnd: `2026-07-16T10:0${index + 1}:00Z`,
+      totalCount: index + 1,
+      successCount: index + 1,
+      failureCount: 0,
+      totalTokens: (index + 1) * 100,
+      totalCost: (index + 1) * 0.1,
+    })),
   };
 }
 
-function Probe() {
-  const { data, error, isLoading } = useTimeseries("7d", { bucket: "1h" });
-  const point = data?.points[0];
-
+function Probe({ range }: { range: string }) {
+  const { data, isLoading } = useTimeseries(range, { bucket: "1m" });
   return (
     <div>
+      <div data-testid="points">{String(data?.points.length ?? 0)}</div>
       <div data-testid="loading">{isLoading ? "true" : "false"}</div>
-      <div data-testid="error">{error ?? ""}</div>
-      <div data-testid="total">{String(point?.totalCount ?? 0)}</div>
-      <div data-testid="success">{String(point?.successCount ?? 0)}</div>
-      <div data-testid="failure">{String(point?.failureCount ?? 0)}</div>
-      <div data-testid="tokens">{String(point?.totalTokens ?? 0)}</div>
-      <div data-testid="cost">{String(point?.totalCost ?? 0)}</div>
     </div>
   );
 }
 
-function CurrentDayProbe() {
-  const { isLoading, error } = useTimeseries("6mo", { bucket: "1d" });
-
-  return (
-    <div>
-      <div data-testid="loading">{isLoading ? "true" : "false"}</div>
-      <div data-testid="error">{error ?? ""}</div>
-    </div>
-  );
-}
-
-function TodayProbe() {
-  const { data, isLoading, error } = useTimeseries("today", { bucket: "1m" });
-  const point = data?.points[0];
-
-  return (
-    <div>
-      <div data-testid="loading">{isLoading ? "true" : "false"}</div>
-      <div data-testid="error">{error ?? ""}</div>
-      <div data-testid="range-end">{data?.rangeEnd ?? ""}</div>
-      <div data-testid="total">{String(point?.totalCount ?? 0)}</div>
-      <div data-testid="latency">{String(point?.firstResponseByteTotalAvgMs ?? "")}</div>
-    </div>
-  );
-}
-
-describe("useTimeseries remount cache hydration", () => {
-  it("restores cached live deltas before applying a remount SSE settle", async () => {
-    const response = createBaseTimeseries();
-    const runningRecord = createRunningRecord();
-    const settledRecord = createSettledRecord();
-    const silentRefresh: { resolve: (value: TimeseriesResponse) => void } = {
-      resolve: () => {
-        throw new Error("expected silent refresh resolver");
-      },
-    };
-
-    apiMocks.fetchTimeseries.mockResolvedValueOnce(response).mockImplementationOnce(
-      () =>
-        new Promise<TimeseriesResponse>((resolve) => {
-          silentRefresh.resolve = resolve as (value: TimeseriesResponse) => void;
-        }),
-    );
-    apiMocks.fetchInvocationRecords.mockImplementation(async ({ status }) =>
-      createRecordsPage(status === "running" ? [runningRecord] : []),
-    );
-
-    render(<Probe />);
-    await flushAsync();
-
-    expect(text("total")).toBe("1");
-    expect(text("failure")).toBe("0");
-    unmountCurrent();
-
-    render(<Probe />);
-    await flushAsync(1);
-
-    expect(text("loading")).toBe("false");
-    expect(text("total")).toBe("1");
-
-    emitRecords([settledRecord]);
-
-    expect(text("total")).toBe("1");
-    expect(text("success")).toBe("0");
-    expect(text("failure")).toBe("1");
-    expect(text("error")).toBe("");
-
-    silentRefresh.resolve(response);
-    await flushAsync();
-  });
-
-  it("does not double-count a record that settles between the base fetch and the live seed fetch", async () => {
-    const response = createBaseTimeseries();
-    const settledRecord = createSettledRecord();
-
-    apiMocks.fetchTimeseries.mockResolvedValue(response);
-    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
-
-    render(<Probe />);
-    await flushAsync();
-
-    expect(text("loading")).toBe("false");
-    expect(text("total")).toBe("1");
-    expect(text("failure")).toBe("0");
-
-    emitRecords([settledRecord]);
-
-    expect(text("total")).toBe("1");
-    expect(text("success")).toBe("0");
-    expect(text("failure")).toBe("1");
-    expect(text("tokens")).toBe("22");
-    expect(text("cost")).toBe("0.18");
-    expect(text("error")).toBe("");
-  });
-
-  it("does not let a new post-load record consume an older anonymous in-flight placeholder from the same bucket", async () => {
-    const response = createBaseTimeseries(undefined, {
-      rangeEnd: "2026-03-07T23:45:00Z",
-      snapshotId: 100,
-    });
-    const newSettledRecord: ApiInvocation = {
-      ...createSettledRecord(),
-      id: 101,
-      invokeId: "new-after-load",
-      occurredAt: "2026-03-07T23:46:00Z",
-      createdAt: "2026-03-07T23:46:00Z",
-    };
-
-    apiMocks.fetchTimeseries.mockResolvedValue(response);
-    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
-
-    render(<Probe />);
-    await flushAsync();
-
-    emitRecords([newSettledRecord]);
-
-    expect(text("total")).toBe("2");
-    expect(text("success")).toBe("0");
-    expect(text("failure")).toBe("1");
-    expect(text("tokens")).toBe("22");
-    expect(text("cost")).toBe("0.18");
-  });
-
-  it("does not reclaim an older anonymous placeholder for a different same-bucket record created after load", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-03-07T23:50:00Z"));
-
-    const response = createBaseTimeseries(undefined, {
-      snapshotId: 100,
-    });
-    const newSettledRecord: ApiInvocation = {
-      ...createSettledRecord(),
-      id: 101,
-      invokeId: "same-bucket-after-load",
-      occurredAt: "2026-03-07T23:55:00Z",
-      createdAt: "2026-03-07T23:55:00Z",
-    };
-
-    apiMocks.fetchTimeseries.mockResolvedValue(response);
-    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
-
-    render(<Probe />);
-    await flushAsync();
-
-    emitRecords([newSettledRecord]);
-
-    expect(text("total")).toBe("2");
-    expect(text("success")).toBe("0");
-    expect(text("failure")).toBe("1");
-    expect(text("tokens")).toBe("22");
-    expect(text("cost")).toBe("0.18");
-    expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(1);
-  });
-
-  it("uses the authoritative snapshotId instead of response timing when reclaiming old placeholders", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-03-07T23:49:55Z"));
-
-    const response = createBaseTimeseries(undefined, {
-      snapshotId: 100,
-    });
-    const settledRecord: ApiInvocation = {
-      ...createSettledRecord(),
-      id: 99,
-      invokeId: "server-clock-placeholder",
-      occurredAt: "2026-03-07T23:49:58Z",
-      createdAt: "2026-03-07T23:49:58Z",
-    };
-
-    apiMocks.fetchTimeseries.mockResolvedValue(response);
-    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
-
-    render(<Probe />);
-    await flushAsync();
-
-    emitRecords([settledRecord]);
-
-    expect(text("total")).toBe("1");
-    expect(text("success")).toBe("0");
-    expect(text("failure")).toBe("1");
-    expect(text("tokens")).toBe("22");
-    expect(text("cost")).toBe("0.18");
-  });
-
-  it("rehydrates recent settled deltas across remounts to absorb duplicate SSE deliveries", async () => {
-    const response = createBaseTimeseries();
-    const settledRecord = createSettledRecord();
-    const silentRefresh: { resolve: (value: TimeseriesResponse) => void } = {
-      resolve: () => {
-        throw new Error("expected silent refresh resolver");
-      },
-    };
-
-    apiMocks.fetchTimeseries.mockResolvedValueOnce(response).mockImplementationOnce(
-      () =>
-        new Promise<TimeseriesResponse>((resolve) => {
-          silentRefresh.resolve = resolve as (value: TimeseriesResponse) => void;
-        }),
-    );
-    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
-
-    render(<Probe />);
-    await flushAsync();
-
-    emitRecords([settledRecord]);
-    expect(text("failure")).toBe("1");
-
-    unmountCurrent();
-
-    render(<Probe />);
-    await flushAsync(1);
-
-    expect(text("loading")).toBe("false");
-    expect(text("total")).toBe("1");
-    expect(text("failure")).toBe("1");
-
-    emitRecords([settledRecord]);
-
-    expect(text("total")).toBe("1");
-    expect(text("success")).toBe("0");
-    expect(text("failure")).toBe("1");
-    expect(text("tokens")).toBe("22");
-    expect(text("cost")).toBe("0.18");
-
-    silentRefresh.resolve(response);
-    await flushAsync();
-
-    emitRecords([settledRecord]);
-
-    expect(text("total")).toBe("1");
-    expect(text("success")).toBe("0");
-    expect(text("failure")).toBe("1");
-    expect(text("tokens")).toBe("22");
-    expect(text("cost")).toBe("0.18");
-  });
-
-  it("does not restore settled buckets that fall out of range after a silent refresh", async () => {
-    const response = createBaseTimeseries({
-      bucketStart: "2026-03-01T00:00:00Z",
-      bucketEnd: "2026-03-01T01:00:00Z",
-    });
-    const shiftedResponse: TimeseriesResponse = {
-      ...response,
-      rangeStart: "2026-03-01T01:00:00Z",
-      rangeEnd: "2026-03-08T01:00:00Z",
-      points: [],
-    };
-    const settledRecord: ApiInvocation = {
-      ...createSettledRecord(),
-      invokeId: "range-edge-settled",
-      occurredAt: "2026-03-01T00:30:00Z",
-      createdAt: "2026-03-01T00:30:00Z",
-    };
-    const silentRefresh: { resolve: (value: TimeseriesResponse) => void } = {
-      resolve: () => {
-        throw new Error("expected silent refresh resolver");
-      },
-    };
-
-    apiMocks.fetchTimeseries.mockResolvedValueOnce(response).mockImplementationOnce(
-      () =>
-        new Promise<TimeseriesResponse>((resolve) => {
-          silentRefresh.resolve = resolve as (value: TimeseriesResponse) => void;
-        }),
-    );
-    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
-
-    render(<Probe />);
-    await flushAsync();
-
-    emitRecords([settledRecord]);
-    expect(text("total")).toBe("1");
-    expect(text("failure")).toBe("1");
-
-    unmountCurrent();
-
-    render(<Probe />);
-    await flushAsync(1);
-
-    expect(text("loading")).toBe("false");
-    expect(text("total")).toBe("1");
-    expect(text("failure")).toBe("1");
-
-    silentRefresh.resolve(shiftedResponse);
-    await flushAsync();
-
-    expect(text("total")).toBe("0");
-    expect(text("success")).toBe("0");
-    expect(text("failure")).toBe("0");
-    expect(text("tokens")).toBe("0");
-    expect(text("cost")).toBe("0");
-  });
-
-  it("commits authoritative refreshes even when SSE patches land during the load", async () => {
-    const initialResponse = createBaseTimeseries();
-    const refreshedResponse = createBaseTimeseries(
-      {
-        totalCount: 2,
-        successCount: 1,
-        failureCount: 1,
-        totalTokens: 30,
-        totalCost: 0.25,
-      },
-      {
-        snapshotId: 12,
-      },
-    );
-    const settledRecord = createSettledRecord();
-    const silentRefresh: { resolve: (value: TimeseriesResponse) => void } = {
-      resolve: () => {
-        throw new Error("expected silent refresh resolver");
-      },
-    };
-
-    apiMocks.fetchTimeseries
-      .mockResolvedValueOnce(initialResponse)
-      .mockImplementationOnce(
-        () =>
-          new Promise<TimeseriesResponse>((resolve) => {
-            silentRefresh.resolve = resolve as (value: TimeseriesResponse) => void;
-          }),
-      )
-      .mockResolvedValue(refreshedResponse);
-    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
-
-    render(<Probe />);
-    await flushAsync();
-
-    unmountCurrent();
-
-    render(<Probe />);
-    await flushAsync(1);
-
-    emitRecords([settledRecord]);
-
-    expect(text("total")).toBe("1");
-    expect(text("success")).toBe("0");
-    expect(text("failure")).toBe("1");
-    expect(text("tokens")).toBe("22");
-    expect(text("cost")).toBe("0.18");
-
-    silentRefresh.resolve(refreshedResponse);
-    await flushAsync();
-
-    expect(text("loading")).toBe("false");
-    expect(text("error")).toBe("");
-    expect(text("total")).toBe("2");
-    expect(text("success")).toBe("1");
-    expect(text("failure")).toBe("1");
-    expect(text("tokens")).toBe("30");
-    expect(text("cost")).toBe("0.25");
-    expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(2);
-  });
-
-  it("keeps the fetched chart data visible when in-flight seeding fails", async () => {
-    const response = createBaseTimeseries({
-      totalTokens: 10,
-      totalCost: 0.1,
-    });
-    const settledRecord = createSettledRecord();
-
-    apiMocks.fetchTimeseries.mockResolvedValue(response);
-    apiMocks.fetchInvocationRecords.mockRejectedValue(new Error("seed sync unavailable"));
-
-    render(<Probe />);
-    await flushAsync();
-
-    expect(text("loading")).toBe("false");
-    expect(text("total")).toBe("1");
-    expect(text("failure")).toBe("0");
-    expect(text("tokens")).toBe("10");
-    expect(text("cost")).toBe("0.1");
-    expect(text("error")).toBe("");
-
-    emitRecords([settledRecord]);
-
-    expect(text("total")).toBe("1");
-    expect(text("failure")).toBe("1");
-    expect(text("tokens")).toBe("22");
-    expect(text("cost")).toBe("0.18");
-  });
-
-  it("restricts current-day local seed queries to the active day bucket", async () => {
-    apiMocks.fetchTimeseries.mockResolvedValue({
-      rangeStart: "2026-03-01T00:00:00Z",
-      rangeEnd: "2026-03-08T00:00:00Z",
-      bucketSeconds: 86_400,
-      snapshotId: 1,
-      points: [
-        {
-          bucketStart: "2026-03-06T00:00:00Z",
-          bucketEnd: "2026-03-07T00:00:00Z",
-          totalCount: 0,
-          successCount: 0,
-          failureCount: 0,
-          totalTokens: 0,
-          totalCost: 0,
-        },
-        {
-          bucketStart: "2026-03-07T00:00:00Z",
-          bucketEnd: "2026-03-08T00:00:00Z",
-          totalCount: 1,
-          successCount: 0,
-          failureCount: 0,
-          totalTokens: 0,
-          totalCost: 0,
-        },
-      ],
-    });
-    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
-
-    render(<CurrentDayProbe />);
-    await flushAsync();
-
-    expect(text("loading")).toBe("false");
-    expect(text("error")).toBe("");
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        from: "2026-03-07T00:00:00Z",
-        to: "2026-03-08T00:00:00Z",
-        status: "running",
-        sortBy: "occurredAt",
-        sortOrder: "desc",
-        page: 1,
-        pageSize: 500,
+describe("useTimeseries", () => {
+  it("subscribes to stats.timeseries.open-window for open ranges", () => {
+    topicMocks.state.data = createTimeseries(3);
+
+    render(<Probe range="today" />);
+
+    expect(topicMocks.lastDescriptor).toEqual({
+      topic: "stats.timeseries.open-window",
+      params: expect.objectContaining({
+        range: "today",
+        bucket: "1m",
       }),
-    );
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        from: "2026-03-07T00:00:00Z",
-        to: "2026-03-08T00:00:00Z",
-        status: "pending",
-        sortBy: "occurredAt",
-        sortOrder: "desc",
-        page: 1,
-        pageSize: 500,
-        snapshotId: 1,
-      }),
-    );
-  });
-});
-
-describe("useTimeseries page restore resync", () => {
-  function createTodayTimeseries(
-    rangeEnd: string,
-    totalCount: number,
-    latencyMs: number,
-  ): TimeseriesResponse {
-    return {
-      rangeStart: "2026-04-10T00:00:00Z",
-      rangeEnd,
-      bucketSeconds: 60,
-      snapshotId: totalCount,
-      points: [
-        {
-          bucketStart: "2026-04-10T00:00:00Z",
-          bucketEnd: "2026-04-10T00:01:00Z",
-          totalCount,
-          successCount: totalCount,
-          failureCount: 0,
-          inFlightCount: 0,
-          totalTokens: 100 * totalCount,
-          totalCost: totalCount,
-          firstResponseByteTotalSampleCount: totalCount,
-          firstResponseByteTotalAvgMs: latencyMs,
-        },
-      ],
-    };
-  }
-
-  it("force-refreshes today's timeseries on persisted pageshow so restored tabs match a full reload", async () => {
-    apiMocks.fetchTimeseries
-      .mockResolvedValueOnce(createTodayTimeseries("2026-04-10T00:01:00Z", 1, 500))
-      .mockResolvedValueOnce(createTodayTimeseries("2026-04-10T00:02:00Z", 2, 750));
-    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
-
-    render(<TodayProbe />);
-    await flushAsync();
-
-    expect(text("range-end")).toBe("2026-04-10T00:01:00Z");
-    expect(text("total")).toBe("1");
-    expect(text("latency")).toBe("500");
-
-    await act(async () => {
-      dispatchPageShow({ persisted: true });
-      await Promise.resolve();
     });
-    await flushAsync();
-
-    expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(2);
-    expect(text("range-end")).toBe("2026-04-10T00:02:00Z");
-    expect(text("total")).toBe("2");
-    expect(text("latency")).toBe("750");
+    expect(topicMocks.lastEnabled).toBe(true);
+    expect(text("points")).toBe("3");
   });
 
-  it("does not refresh today's timeseries on normal pageshow", async () => {
-    apiMocks.fetchTimeseries.mockResolvedValue(
-      createTodayTimeseries("2026-04-10T00:01:00Z", 1, 500),
-    );
-    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
+  it("uses HTTP hydration for yesterday", async () => {
+    apiMocks.fetchTimeseries.mockResolvedValue(createTimeseries(1));
 
-    render(<TodayProbe />);
+    render(<Probe range="yesterday" />);
     await flushAsync();
 
-    await act(async () => {
-      dispatchPageShow({ persisted: false });
-      await Promise.resolve();
-    });
-    await flushAsync();
-
+    expect(topicMocks.lastDescriptor).toBeNull();
+    expect(topicMocks.lastEnabled).toBe(false);
     expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(1);
-    expect(text("range-end")).toBe("2026-04-10T00:01:00Z");
-    expect(text("total")).toBe("1");
-    expect(text("latency")).toBe("500");
-  });
-
-  it("force-refreshes today's timeseries on visible restore without open-resync cooldown", async () => {
-    apiMocks.fetchTimeseries
-      .mockResolvedValueOnce(createTodayTimeseries("2026-04-10T00:01:00Z", 1, 500))
-      .mockResolvedValueOnce(createTodayTimeseries("2026-04-10T00:02:00Z", 3, 825));
-    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
-
-    render(<TodayProbe />);
-    await flushAsync();
-
-    await act(async () => {
-      document.dispatchEvent(new Event("visibilitychange"));
-      await Promise.resolve();
-    });
-    await flushAsync();
-
-    expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(2);
-    expect(text("total")).toBe("3");
-    expect(text("latency")).toBe("825");
-  });
-
-  it("removes restore listeners on unmount", async () => {
-    apiMocks.fetchTimeseries.mockResolvedValue(
-      createTodayTimeseries("2026-04-10T00:01:00Z", 1, 500),
-    );
-    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
-
-    render(<TodayProbe />);
-    await flushAsync();
-    expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(1);
-
-    unmountCurrent();
-
-    await act(async () => {
-      dispatchPageShow({ persisted: true });
-      document.dispatchEvent(new Event("visibilitychange"));
-      await Promise.resolve();
-    });
-    await flushAsync();
-
-    expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(1);
+    expect(text("points")).toBe("1");
   });
 });

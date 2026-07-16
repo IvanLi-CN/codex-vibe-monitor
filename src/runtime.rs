@@ -128,6 +128,7 @@ pub(crate) async fn run() -> Result<()> {
     );
     sqlite_batch_writer.set_terminal_runtime_store(proxy_runtime_invocations.clone());
     let pool_account_selection_runtime = Arc::new(PoolAccountSelectionRuntime::default());
+    let subscription_hub = Arc::new(SubscriptionHub::new());
 
     let state = Arc::new(AppState {
         config: config.clone(),
@@ -142,6 +143,7 @@ pub(crate) async fn run() -> Result<()> {
         http_clients,
         broadcaster: tx.clone(),
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
+        subscription_hub: subscription_hub.clone(),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
         proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
@@ -173,6 +175,7 @@ pub(crate) async fn run() -> Result<()> {
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts,
     });
+    spawn_subscription_broadcast_listener(state.clone());
     warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
 
     let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());

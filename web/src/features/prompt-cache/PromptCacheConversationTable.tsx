@@ -66,7 +66,6 @@ import { resolvePromptCacheInvocationOutcome } from "../../lib/conversationReque
 import { invocationStableKey } from "../../lib/invocation";
 import { mergeInvocationRecordCollections } from "../../lib/invocationLiveMerge";
 import { buildInvocationFromPromptCachePreview } from "../../lib/promptCacheLive";
-import { subscribeToSse, subscribeToSseOpen } from "../../lib/sse";
 import type { ThemeMode } from "../../theme";
 import { AccountDetailDrawerShell } from "../account-pool/AccountDetailDrawerShell";
 import {
@@ -104,8 +103,6 @@ const PROMPT_CACHE_CHART_MAX_WINDOW_MS = 24 * 3_600_000;
 const PROMPT_CACHE_HISTORY_PAGE_SIZE = 50;
 const PROMPT_CACHE_ACTIVITY_PAGE_SIZE = 200;
 const PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS = 1_000;
-const PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS = 1_000;
-const PROMPT_CACHE_ACTIVITY_RESYNC_THROTTLE_MS = 1_000;
 const CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS = 30;
 const CONVERSATION_ACTIVITY_WHEEL_THRESHOLD = 2;
 const CONVERSATION_ACTIVITY_WHEEL_ZOOM_INTENSITY = 0.0018;
@@ -1592,9 +1589,7 @@ function ConversationActivityChart({
 function PromptCacheConversationActivityOverview({
   open,
   conversationKey,
-  disableLiveUpdates,
   historyQueryForConversationKey,
-  historyRecordMatchesConversationKey,
   t,
 }: {
   open: boolean;
@@ -1617,8 +1612,6 @@ function PromptCacheConversationActivityOverview({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestSeqRef = useRef(0);
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastRefreshAtRef = useRef(0);
   const activeLoadControllerRef = useRef<AbortController | null>(null);
   const isLoadingRef = useRef(false);
 
@@ -1760,10 +1753,6 @@ function PromptCacheConversationActivityOverview({
     requestSeqRef.current += 1;
     activeLoadControllerRef.current?.abort();
     activeLoadControllerRef.current = null;
-    if (refreshTimerRef.current) {
-      clearTimeout(refreshTimerRef.current);
-      refreshTimerRef.current = null;
-    }
     if (!open || !conversationKey) {
       setSummary(null);
       setRecords([]);
@@ -1787,54 +1776,11 @@ function PromptCacheConversationActivityOverview({
     void load();
   }, [conversationKey, load, open]);
 
-  const triggerRefresh = useCallback(() => {
-    const now = Date.now();
-    const delay = Math.max(
-      0,
-      PROMPT_CACHE_ACTIVITY_RESYNC_THROTTLE_MS - (now - lastRefreshAtRef.current),
-    );
-    const run = () => {
-      refreshTimerRef.current = null;
-      lastRefreshAtRef.current = Date.now();
-      void load({ silent: true });
-    };
-    if (delay === 0) {
-      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-      run();
-      return;
-    }
-    if (refreshTimerRef.current) return;
-    refreshTimerRef.current = setTimeout(run, delay);
-  }, [load]);
-
-  useEffect(() => {
-    if (disableLiveUpdates) return;
-    if (!open || !conversationKey) return;
-    const unsubscribe = subscribeToSse((payload) => {
-      if (payload.type !== "records") return;
-      const matching = payload.records.some(
-        (record) =>
-          historyRecordMatchesConversationKey?.(record, conversationKey) ??
-          record.promptCacheKey?.trim() === conversationKey,
-      );
-      if (!matching) return;
-      triggerRefresh();
-    });
-    return unsubscribe;
-  }, [
-    conversationKey,
-    disableLiveUpdates,
-    historyRecordMatchesConversationKey,
-    open,
-    triggerRefresh,
-  ]);
-
   useEffect(
     () => () => {
       requestSeqRef.current += 1;
       activeLoadControllerRef.current?.abort();
       activeLoadControllerRef.current = null;
-      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     },
     [],
   );
@@ -1982,9 +1928,7 @@ export function PromptCacheConversationHistoryDrawer({
   const hasHydratedRef = useRef(false);
   const inFlightRef = useRef(false);
   const pendingLoadRef = useRef<{ silent?: boolean; append?: boolean } | null>(null);
-  const pendingOpenResyncRef = useRef(false);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastRefreshAtRef = useRef(0);
   const activeLoadControllerRef = useRef<AbortController | null>(null);
   const historySnapshotIdRef = useRef<number | undefined>(undefined);
   const historyNextPageRef = useRef(1);
@@ -2130,11 +2074,6 @@ export function PromptCacheConversationHistoryDrawer({
           current.filter((record) => !loadedStableKeys.has(invocationStableKey(record))),
         );
         setError(null);
-        if (pendingOpenResyncRef.current) {
-          pendingOpenResyncRef.current = false;
-          const pendingSilent = pendingLoadRef.current?.silent ?? true;
-          pendingLoadRef.current = { silent: pendingSilent };
-        }
       } catch (err) {
         if (requestSeq !== requestSeqRef.current) return;
         if (
@@ -2181,49 +2120,11 @@ export function PromptCacheConversationHistoryDrawer({
     [runLoad],
   );
 
-  const triggerSseRefresh = useCallback(() => {
-    const now = Date.now();
-    const delay = Math.max(
-      0,
-      PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS - (now - lastRefreshAtRef.current),
-    );
-    const run = () => {
-      refreshTimerRef.current = null;
-      lastRefreshAtRef.current = Date.now();
-      void load({ silent: true });
-    };
-    if (delay === 0) {
-      clearPendingRefreshTimer();
-      run();
-      return;
-    }
-    if (refreshTimerRef.current) return;
-    refreshTimerRef.current = setTimeout(run, delay);
-  }, [clearPendingRefreshTimer, load]);
-
-  const triggerOpenResync = useCallback(
-    (force = false) => {
-      if (!hasHydratedRef.current) {
-        pendingOpenResyncRef.current = true;
-        return;
-      }
-      const now = Date.now();
-      if (!force && now - lastRefreshAtRef.current < PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS) {
-        return;
-      }
-      lastRefreshAtRef.current = now;
-      void load({ silent: true });
-    },
-    [load],
-  );
-
   useEffect(() => {
     requestSeqRef.current += 1;
     hasHydratedRef.current = false;
     inFlightRef.current = false;
     pendingLoadRef.current = null;
-    pendingOpenResyncRef.current = false;
-    lastRefreshAtRef.current = 0;
     activeLoadControllerRef.current?.abort();
     activeLoadControllerRef.current = null;
     historySnapshotIdRef.current = undefined;
@@ -2331,49 +2232,11 @@ export function PromptCacheConversationHistoryDrawer({
     return () => controller.abort();
   }, [conversationKey, open]);
 
-  useEffect(() => {
-    if (disableLiveUpdates) return;
-    if (!open || !conversationKey) return;
-    const unsubscribe = subscribeToSse((payload) => {
-      if (payload.type !== "records") return;
-      const matching = payload.records.filter(
-        (record) =>
-          historyRecordMatchesConversationKey?.(record, conversationKey) ??
-          record.promptCacheKey?.trim() === conversationKey,
-      );
-      if (matching.length === 0) return;
-      setLiveRecords((current) =>
-        mergeInvocationRecordCollections(matching, current).slice(
-          0,
-          PROMPT_CACHE_HISTORY_PAGE_SIZE,
-        ),
-      );
-      triggerSseRefresh();
-    });
-    return unsubscribe;
-  }, [
-    conversationKey,
-    disableLiveUpdates,
-    historyRecordMatchesConversationKey,
-    open,
-    triggerSseRefresh,
-  ]);
-
-  useEffect(() => {
-    if (disableLiveUpdates) return;
-    if (!open) return;
-    const unsubscribe = subscribeToSseOpen(() => {
-      triggerOpenResync(true);
-    });
-    return unsubscribe;
-  }, [disableLiveUpdates, open, triggerOpenResync]);
-
   useEffect(
     () => () => {
       activeLoadControllerRef.current?.abort();
       clearPendingRefreshTimer();
       pendingLoadRef.current = null;
-      pendingOpenResyncRef.current = false;
     },
     [clearPendingRefreshTimer],
   );

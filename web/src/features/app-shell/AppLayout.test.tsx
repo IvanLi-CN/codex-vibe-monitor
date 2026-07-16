@@ -8,7 +8,7 @@ import { AppLayout, HEADER_BRAND_ACTIVITY_HOLD_MS } from "./AppLayout";
 const sseMocks = vi.hoisted(() => {
   const state = {
     lastMessageListener: null as ((payload?: unknown) => void) | null,
-    subscribeToSse: vi.fn((listener: (payload?: unknown) => void) => {
+    subscribeToSseActivity: vi.fn((listener: (payload?: unknown) => void) => {
       state.lastMessageListener = listener;
       return () => {
         if (state.lastMessageListener === listener) {
@@ -22,6 +22,12 @@ const sseMocks = vi.hoisted(() => {
 });
 
 const hookMocks = vi.hoisted(() => ({
+  useAppVersion: vi.fn(() => ({
+    versionInfo: { backend: "v0.2.0" },
+    isLoading: false,
+    error: null,
+    refresh: vi.fn(),
+  })),
   useSseStatus: vi.fn(() => ({
     phase: "connected",
     downtimeMs: 0,
@@ -35,11 +41,10 @@ const hookMocks = vi.hoisted(() => ({
     dismiss: vi.fn(),
     reload: vi.fn(),
   })),
-  fetchVersion: vi.fn(() => Promise.resolve({ backend: "v0.2.0" })),
 }));
 
 vi.mock("../../lib/sse", () => ({
-  subscribeToSse: sseMocks.subscribeToSse,
+  subscribeToSseActivity: sseMocks.subscribeToSseActivity,
   requestImmediateReconnect: sseMocks.requestImmediateReconnect,
 }));
 
@@ -47,17 +52,13 @@ vi.mock("../../hooks/useSseStatus", () => ({
   default: hookMocks.useSseStatus,
 }));
 
+vi.mock("../../hooks/useAppVersion", () => ({
+  useAppVersion: hookMocks.useAppVersion,
+}));
+
 vi.mock("../../hooks/useUpdateAvailable", () => ({
   default: hookMocks.useUpdateAvailable,
 }));
-
-vi.mock("../../lib/api", async () => {
-  const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
-  return {
-    ...actual,
-    fetchVersion: hookMocks.fetchVersion,
-  };
-});
 
 vi.mock("../../i18n", () => ({
   supportedLocales: ["zh", "en"],
@@ -202,7 +203,12 @@ describe("AppLayout", () => {
       autoReconnect: true,
       nextRetryAt: null,
     });
-    hookMocks.fetchVersion.mockResolvedValue({ backend: "v0.2.0" });
+    hookMocks.useAppVersion.mockReturnValue({
+      versionInfo: { backend: "v0.2.0" },
+      isLoading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
 
     render("/dashboard");
 
@@ -257,7 +263,12 @@ describe("AppLayout", () => {
       autoReconnect: true,
       nextRetryAt: null,
     });
-    hookMocks.fetchVersion.mockResolvedValue({ backend: "v0.2.0" });
+    hookMocks.useAppVersion.mockReturnValue({
+      versionInfo: { backend: "v0.2.0" },
+      isLoading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
 
     render("/dashboard");
 

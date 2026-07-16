@@ -163,6 +163,7 @@ pub(crate) async fn spawn_kaisoumail_test_harness(
         oauth_installation_seed: [0_u8; 32],
         http_clients,
         broadcaster,
+        subscription_hub: Arc::new(crate::SubscriptionHub::new()),
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache {
             summaries: HashMap::new(),
             quota: None,

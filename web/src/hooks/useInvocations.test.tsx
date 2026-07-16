@@ -1,42 +1,27 @@
 /** @vitest-environment jsdom */
-import { act, useMemo } from "react";
+import type React from "react";
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { BroadcastPayload, ListResponse } from "../lib/api";
-import { resolveInvocationAccountLabel } from "../lib/invocation";
-import { resolveInvocationDisplayStatus } from "../lib/invocationStatus";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ApiInvocation, ListResponse } from "../lib/api";
 import { useInvocationStream } from "./useInvocations";
 
-const apiMocks = vi.hoisted(() => ({
-  fetchInvocations:
-    vi.fn<(limit: number, params?: { model?: string; status?: string }) => Promise<ListResponse>>(),
-}));
-
-const sseMocks = vi.hoisted(() => ({
-  onMessage: null as null | ((payload: BroadcastPayload) => void),
-  onOpen: null as null | (() => void),
-}));
-
-vi.mock("../lib/api", async () => {
-  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
-  return {
-    ...actual,
-    fetchInvocations: apiMocks.fetchInvocations,
-  };
-});
-
-vi.mock("../lib/sse", () => ({
-  subscribeToSse: (handler: (payload: BroadcastPayload) => void) => {
-    sseMocks.onMessage = handler;
-    return () => {
-      sseMocks.onMessage = null;
-    };
+const topicMocks = vi.hoisted(() => ({
+  state: {
+    data: null as ListResponse | null,
+    isLoading: false,
+    error: null as string | null,
+    refresh: vi.fn(),
   },
-  subscribeToSseOpen: (handler: () => void) => {
-    sseMocks.onOpen = handler;
-    return () => {
-      sseMocks.onOpen = null;
-    };
+  lastDescriptor: null as Record<string, unknown> | null,
+  lastEnabled: true,
+}));
+
+vi.mock("./useSubscriptionTopic", () => ({
+  useSubscriptionTopic: (descriptor: Record<string, unknown> | null, enabled = true) => {
+    topicMocks.lastDescriptor = descriptor;
+    topicMocks.lastEnabled = enabled;
+    return topicMocks.state;
   },
 }));
 
@@ -51,6 +36,15 @@ beforeAll(() => {
   });
 });
 
+beforeEach(() => {
+  topicMocks.state.data = null;
+  topicMocks.state.isLoading = false;
+  topicMocks.state.error = null;
+  topicMocks.state.refresh.mockReset();
+  topicMocks.lastDescriptor = null;
+  topicMocks.lastEnabled = true;
+});
+
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -58,8 +52,6 @@ afterEach(() => {
   host?.remove();
   host = null;
   root = null;
-  sseMocks.onMessage = null;
-  sseMocks.onOpen = null;
   vi.clearAllMocks();
 });
 
@@ -72,10 +64,9 @@ function render(ui: React.ReactNode) {
   });
 }
 
-async function flushAsync() {
-  await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
+function rerender(ui: React.ReactNode) {
+  act(() => {
+    root?.render(ui);
   });
 }
 
@@ -87,531 +78,95 @@ function text(testId: string) {
   return element.textContent ?? "";
 }
 
-function Probe() {
-  const filters = useMemo(() => ({ status: "failed" as const }), []);
-  const { records } = useInvocationStream(20, filters, undefined, {
-    enableStream: true,
-  });
+function createRecord(overrides: Partial<ApiInvocation> = {}): ApiInvocation {
+  return {
+    id: overrides.id ?? 1,
+    invokeId: overrides.invokeId ?? "invoke-1",
+    occurredAt: overrides.occurredAt ?? "2026-07-16T10:00:00Z",
+    createdAt: overrides.createdAt ?? overrides.occurredAt ?? "2026-07-16T10:00:00Z",
+    status: overrides.status ?? "success",
+    ...overrides,
+  };
+}
 
-  return (
-    <div>
-      <div data-testid="count">{records.length}</div>
-      <div data-testid="first-status">{records[0]?.status ?? ""}</div>
-    </div>
+function Probe({
+  limit = 20,
+  enableStream = true,
+  onNewRecords,
+}: {
+  limit?: number;
+  enableStream?: boolean;
+  onNewRecords?: (records: ApiInvocation[]) => void;
+}) {
+  const { records, hasData, isLoading } = useInvocationStream(
+    limit,
+    { model: "gpt-5.4", status: "failed" },
+    onNewRecords,
+    { enableStream },
   );
-}
-
-function StreamProbe({ limit = 20 }: { limit?: number }) {
-  const { records } = useInvocationStream(limit, undefined, undefined, {
-    enableStream: true,
-  });
 
   return (
     <div>
-      <div data-testid="count">{records.length}</div>
-      <div data-testid="first-status">{records[0]?.status ?? ""}</div>
-      <div data-testid="first-key">
-        {records[0] ? `${records[0].invokeId}@${records[0].occurredAt}` : ""}
-      </div>
-      <div data-testid="first-upstream-request-id">{records[0]?.upstreamRequestId ?? ""}</div>
-      <div data-testid="first-terminal-reason">{records[0]?.poolAttemptTerminalReason ?? ""}</div>
-      <div data-testid="keys">
-        {records.map((record) => `${record.invokeId}:${record.status}`).join("|")}
-      </div>
-    </div>
-  );
-}
-
-function AccountLabelProbe() {
-  const { records } = useInvocationStream(5, undefined, undefined, {
-    enableStream: true,
-  });
-  const label = records[0]
-    ? resolveInvocationAccountLabel(
-        records[0].routeMode,
-        resolveInvocationDisplayStatus(records[0]),
-        records[0].failureKind,
-        records[0].errorMessage,
-        records[0].upstreamAccountName,
-        records[0].upstreamAccountId,
-        "反向代理",
-        "号池路由中",
-        "号池账号未知",
-        "未分配上游账号",
-      )
-    : "";
-
-  return <div data-testid="first-account-label">{label}</div>;
-}
-
-function PoolFailoverProbe() {
-  const { records } = useInvocationStream(5, undefined, undefined, {
-    enableStream: true,
-  });
-  const first = records[0];
-
-  return (
-    <div>
-      <div data-testid="first-pool-attempt-count">{first?.poolAttemptCount ?? ""}</div>
-      <div data-testid="first-pool-distinct-account-count">
-        {first?.poolDistinctAccountCount ?? ""}
-      </div>
-      <div data-testid="first-pool-account-id">{first?.upstreamAccountId ?? ""}</div>
-      <div data-testid="first-pool-account-name">{first?.upstreamAccountName ?? ""}</div>
+      <div data-testid="count">{String(records.length)}</div>
+      <div data-testid="first-id">{records[0]?.invokeId ?? ""}</div>
+      <div data-testid="has-data">{hasData ? "true" : "false"}</div>
+      <div data-testid="loading">{isLoading ? "true" : "false"}</div>
     </div>
   );
 }
 
 describe("useInvocationStream", () => {
-  it("treats failed filters as resolved failures for incoming SSE records", async () => {
-    apiMocks.fetchInvocations.mockResolvedValue({ records: [] });
+  it("subscribes to the invocations.window topic and exposes authoritative records", () => {
+    topicMocks.state.data = {
+      records: [
+        createRecord({ invokeId: "invoke-a" }),
+        createRecord({ invokeId: "invoke-b", id: 2 }),
+      ],
+    } as ListResponse;
 
     render(<Probe />);
-    await flushAsync();
 
-    expect(apiMocks.fetchInvocations).toHaveBeenCalledWith(20, {
-      status: "failed",
+    expect(topicMocks.lastDescriptor).toEqual({
+      topic: "invocations.window",
+      params: {
+        limit: "20",
+        model: "gpt-5.4",
+        status: "failed",
+      },
     });
+    expect(topicMocks.lastEnabled).toBe(true);
+    expect(text("count")).toBe("2");
+    expect(text("first-id")).toBe("invoke-a");
+    expect(text("has-data")).toBe("true");
+  });
+
+  it("fires onNewRecords only when the authoritative topic payload changes", () => {
+    const onNewRecords = vi.fn();
+    topicMocks.state.data = {
+      records: [createRecord({ invokeId: "invoke-a" })],
+    } as ListResponse;
+
+    render(<Probe onNewRecords={onNewRecords} />);
+    expect(onNewRecords).toHaveBeenCalledTimes(1);
+
+    rerender(<Probe onNewRecords={onNewRecords} />);
+    expect(onNewRecords).toHaveBeenCalledTimes(1);
+
+    topicMocks.state.data = {
+      records: [createRecord({ invokeId: "invoke-b", id: 2 })],
+    } as ListResponse;
+    rerender(<Probe onNewRecords={onNewRecords} />);
+    expect(onNewRecords).toHaveBeenCalledTimes(2);
+    expect(onNewRecords).toHaveBeenLastCalledWith([
+      expect.objectContaining({ invokeId: "invoke-b" }),
+    ]);
+  });
+
+  it("disables the topic subscription when stream is turned off", () => {
+    render(<Probe enableStream={false} />);
+
+    expect(topicMocks.lastDescriptor).toBeNull();
+    expect(topicMocks.lastEnabled).toBe(false);
     expect(text("count")).toBe("0");
-
-    if (!sseMocks.onMessage) {
-      throw new Error("missing SSE handler");
-    }
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          {
-            id: 1,
-            invokeId: "invoke-http-502",
-            occurredAt: "2026-03-10T00:00:00Z",
-            createdAt: "2026-03-10T00:00:00Z",
-            status: "http_502",
-            failureClass: "service_failure",
-          },
-          {
-            id: 2,
-            invokeId: "invoke-success",
-            occurredAt: "2026-03-10T00:01:00Z",
-            createdAt: "2026-03-10T00:01:00Z",
-            status: "success",
-            failureClass: "none",
-          },
-        ],
-      });
-    });
-
-    expect(text("count")).toBe("1");
-    expect(text("first-status")).toBe("http_502");
-  });
-
-  it("does not reinsert records that already fell outside the current limit window", async () => {
-    apiMocks.fetchInvocations.mockResolvedValue({
-      records: [
-        {
-          id: 10,
-          invokeId: "invocation-a",
-          occurredAt: "2026-03-10T00:02:00Z",
-          createdAt: "2026-03-10T00:02:00Z",
-          status: "success",
-        },
-        {
-          id: 11,
-          invokeId: "invocation-b",
-          occurredAt: "2026-03-10T00:01:00Z",
-          createdAt: "2026-03-10T00:01:00Z",
-          status: "success",
-        },
-      ],
-    });
-
-    render(<StreamProbe limit={2} />);
-    await flushAsync();
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          {
-            id: -1,
-            invokeId: "invocation-c",
-            occurredAt: "2026-03-10T00:03:00Z",
-            createdAt: "2026-03-10T00:03:00Z",
-            status: "running",
-          },
-        ],
-      });
-    });
-
-    expect(text("keys")).toBe("invocation-c:running|invocation-a:success");
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          {
-            id: -2,
-            invokeId: "invocation-b",
-            occurredAt: "2026-03-10T00:01:00Z",
-            createdAt: "2026-03-10T00:01:00Z",
-            status: "running",
-          },
-        ],
-      });
-    });
-
-    expect(text("keys")).toBe("invocation-c:running|invocation-a:success");
-  });
-
-  it("keeps the Live window filled when a hidden overflow record reappears ahead of the cutoff", async () => {
-    apiMocks.fetchInvocations.mockResolvedValue({
-      records: [
-        {
-          id: 10,
-          invokeId: "invocation-a",
-          occurredAt: "2026-03-10T00:02:00Z",
-          createdAt: "2026-03-10T00:02:00Z",
-          status: "success",
-        },
-        {
-          id: 11,
-          invokeId: "invocation-b",
-          occurredAt: "2026-03-10T00:01:00Z",
-          createdAt: "2026-03-10T00:01:00Z",
-          status: "success",
-        },
-      ],
-    });
-
-    render(<StreamProbe limit={2} />);
-    await flushAsync();
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          {
-            id: -1,
-            invokeId: "invocation-c",
-            occurredAt: "2026-03-10T00:03:00Z",
-            createdAt: "2026-03-10T00:03:00Z",
-            status: "running",
-          },
-        ],
-      });
-    });
-
-    expect(text("keys")).toBe("invocation-c:running|invocation-a:success");
-    expect(text("count")).toBe("2");
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          {
-            id: -2,
-            invokeId: "invocation-b",
-            occurredAt: "2026-03-10T00:04:00Z",
-            createdAt: "2026-03-10T00:04:00Z",
-            status: "running",
-          },
-        ],
-      });
-    });
-
-    expect(text("keys")).toBe("invocation-b:running|invocation-c:running");
-    expect(text("count")).toBe("2");
-  });
-
-  it("keeps the terminal record when a stale running snapshot arrives later", async () => {
-    apiMocks.fetchInvocations.mockResolvedValue({ records: [] });
-
-    render(<StreamProbe limit={5} />);
-    await flushAsync();
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          {
-            id: 20,
-            invokeId: "invocation-terminal",
-            occurredAt: "2026-03-10T00:04:00Z",
-            createdAt: "2026-03-10T00:04:00Z",
-            status: "success",
-            totalTokens: 18,
-            cost: 0.0025,
-            tTotalMs: 2400,
-          },
-        ],
-      });
-    });
-
-    expect(text("keys")).toBe("invocation-terminal:success");
-    expect(text("first-status")).toBe("success");
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          {
-            id: -20,
-            invokeId: "invocation-terminal",
-            occurredAt: "2026-03-10T00:04:00Z",
-            createdAt: "2026-03-10T00:04:00Z",
-            status: "running",
-          },
-        ],
-      });
-    });
-
-    expect(text("keys")).toBe("invocation-terminal:success");
-    expect(text("first-status")).toBe("success");
-  });
-
-  it("upgrades the displayed account label when a richer pool snapshot arrives later", async () => {
-    apiMocks.fetchInvocations.mockResolvedValue({ records: [] });
-
-    render(<AccountLabelProbe />);
-    await flushAsync();
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          {
-            id: -30,
-            invokeId: "invocation-pool-upgrade",
-            occurredAt: "2026-03-10T00:05:00Z",
-            createdAt: "2026-03-10T00:05:00Z",
-            routeMode: "pool",
-            status: "running",
-          },
-        ],
-      });
-    });
-
-    expect(text("first-account-label")).toBe("号池路由中");
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          {
-            id: 30,
-            invokeId: "invocation-pool-upgrade",
-            occurredAt: "2026-03-10T00:05:00Z",
-            createdAt: "2026-03-10T00:05:00Z",
-            routeMode: "pool",
-            upstreamAccountId: 42,
-            upstreamAccountName: "Pool Alpha",
-            status: "success",
-            totalTokens: 128,
-            tTotalMs: 1400,
-          },
-        ],
-      });
-    });
-
-    expect(text("first-account-label")).toBe("Pool Alpha");
-  });
-
-  it("uses the unassigned-account label only for true pool_no_available_account failures", async () => {
-    apiMocks.fetchInvocations.mockResolvedValue({ records: [] });
-
-    render(<AccountLabelProbe />);
-    await flushAsync();
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          {
-            id: 31,
-            invokeId: "invocation-pool-generic-failure",
-            occurredAt: "2026-03-10T00:05:30Z",
-            createdAt: "2026-03-10T00:05:30Z",
-            routeMode: "pool",
-            status: "failed",
-            failureClass: "service_failure",
-            failureKind: "upstream_response_failed",
-            errorMessage: "[upstream_response_failed] server_error",
-          },
-        ],
-      });
-    });
-
-    expect(text("first-account-label")).toBe("号池账号未知");
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          {
-            id: 315,
-            invokeId: "invocation-pool-routing-blocked",
-            occurredAt: "2026-03-10T00:05:30.500Z",
-            createdAt: "2026-03-10T00:05:30.500Z",
-            routeMode: "pool",
-            status: "failed",
-            failureClass: "service_failure",
-            failureKind: "pool_routing_blocked",
-            errorMessage:
-              '[pool_routing_blocked] upstream account group "node-shunt-live" has no selectable forward proxy nodes',
-          },
-        ],
-      });
-    });
-
-    expect(text("first-account-label")).toBe("未分配上游账号");
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          {
-            id: 316,
-            invokeId: "invocation-pool-sticky-policy-blocked",
-            occurredAt: "2026-03-10T00:05:30.750Z",
-            createdAt: "2026-03-10T00:05:30.750Z",
-            routeMode: "pool",
-            status: "failed",
-            failureClass: "service_failure",
-            failureKind: "pool_routing_blocked",
-            errorMessage:
-              "[pool_routing_blocked] sticky conversation cannot cut out of the current account because a tag rule forbids it",
-          },
-        ],
-      });
-    });
-
-    expect(text("first-account-label")).toBe("号池账号未知");
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          {
-            id: 32,
-            invokeId: "invocation-pool-no-account",
-            occurredAt: "2026-03-10T00:05:31Z",
-            createdAt: "2026-03-10T00:05:31Z",
-            routeMode: "pool",
-            status: "failed",
-            failureClass: "service_failure",
-            failureKind: "pool_no_available_account",
-            errorMessage: "[pool_no_available_account] no assignable upstream account remains",
-          },
-        ],
-      });
-    });
-
-    expect(text("first-account-label")).toBe("未分配上游账号");
-  });
-
-  it("advances running pool snapshots when failover moves to a later attempt", async () => {
-    apiMocks.fetchInvocations.mockResolvedValue({ records: [] });
-
-    render(<PoolFailoverProbe />);
-    await flushAsync();
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          {
-            id: -40,
-            invokeId: "invocation-pool-failover",
-            occurredAt: "2026-03-10T00:06:00Z",
-            createdAt: "2026-03-10T00:06:00Z",
-            routeMode: "pool",
-            status: "running",
-            upstreamAccountId: 7,
-            upstreamAccountName: "Pool Alpha",
-            poolAttemptCount: 1,
-            poolDistinctAccountCount: 1,
-          },
-        ],
-      });
-    });
-
-    expect(text("first-pool-attempt-count")).toBe("1");
-    expect(text("first-pool-distinct-account-count")).toBe("1");
-    expect(text("first-pool-account-id")).toBe("7");
-    expect(text("first-pool-account-name")).toBe("Pool Alpha");
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          {
-            id: -41,
-            invokeId: "invocation-pool-failover",
-            occurredAt: "2026-03-10T00:06:00Z",
-            createdAt: "2026-03-10T00:06:00Z",
-            routeMode: "pool",
-            status: "running",
-            upstreamAccountId: 8,
-            upstreamAccountName: "Pool Beta",
-            poolAttemptCount: 2,
-            poolDistinctAccountCount: 2,
-          },
-        ],
-      });
-    });
-
-    expect(text("first-pool-attempt-count")).toBe("2");
-    expect(text("first-pool-distinct-account-count")).toBe("2");
-    expect(text("first-pool-account-id")).toBe("8");
-    expect(text("first-pool-account-name")).toBe("Pool Beta");
-  });
-
-  it("prefers a later same-rank record snapshot when it fills in metadata", async () => {
-    apiMocks.fetchInvocations.mockResolvedValue({ records: [] });
-
-    render(<StreamProbe limit={5} />);
-    await flushAsync();
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          {
-            id: -50,
-            invokeId: "invocation-metadata-refresh",
-            occurredAt: "2026-03-10T00:07:00Z",
-            createdAt: "2026-03-10T00:07:00Z",
-            routeMode: "pool",
-            status: "success",
-          },
-        ],
-      });
-    });
-
-    expect(text("first-status")).toBe("success");
-    expect(text("first-upstream-request-id")).toBe("");
-    expect(text("first-terminal-reason")).toBe("");
-
-    act(() => {
-      sseMocks.onMessage?.({
-        type: "records",
-        records: [
-          {
-            id: -51,
-            invokeId: "invocation-metadata-refresh",
-            occurredAt: "2026-03-10T00:07:00Z",
-            createdAt: "2026-03-10T00:07:00Z",
-            routeMode: "pool",
-            status: "success",
-            upstreamRequestId: "req_refresh_123",
-            poolAttemptTerminalReason: "transport_failure",
-          },
-        ],
-      });
-    });
-
-    expect(text("first-upstream-request-id")).toBe("req_refresh_123");
-    expect(text("first-terminal-reason")).toBe("transport_failure");
   });
 });

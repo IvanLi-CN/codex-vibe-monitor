@@ -53,13 +53,13 @@
 - 已实现：Dashboard 工作区 `对话` 当前/最近调用错误摘要与 `上游账号` recent 行错误摘要统一接入共享 `InvocationErrorSummary`；inline 文案固定单行省略并保持 `min-w-0` 布局约束，完整错误只通过现有 UI tooltip 在 hover / focus / long-press 时披露，不再依赖原生 `title`。
 - 已实现：Dashboard `warning_success` 的 icon-only 紧凑状态位改为复用共享 `Tooltip` 组件，状态文案与 downstream 诊断不再通过浏览器原生 `title` 披露。
 - 已实现：上游账号宽屏双列 grid 使用 `minmax(0, 1fr)` track，账号卡、recent 行和共享错误 trigger 均显式允许收缩；错误摘要无法再通过 intrinsic width 撑开调用行或父账号卡。现役 feature 的 unit、Storybook play 契约与 Playwright 几何回归共同覆盖该链路。
-- 已实现：Dashboard 相关的 working-set / account-activity 派生维护继续遵守 `<=5s` bounded freshness；proxy capture 请求尾的 rollup/live progress、upstream account touch 与 attempt 中间进度已迁入 SQLite batch writer，避免 Dashboard reconcile 与请求收尾派生写在 SQLite 单写者上持续争用。
-- 已实现：Dashboard current records、summary/timeseries、上游账号活动与工作区 `对话` tab 的 running 视图统一 overlay 进程内 runtime invocation store。SSE 仍即时广播 `running/pending` 记录，HTTP open-resync/current reconcile 即使 DB 不再刷新 running 行也不会短暂丢行；terminal DB 事实优先并会移除对应内存记录。
-- 已实现：terminal invocation 记录进入 SQLite write controller，代理业务响应不等待落库。Dashboard 账号 recent reconcile 会先合并 runtime running / pending / terminal 候选，并与 SQLite 行按稳定调用键去重；统计聚合仍以持久化 terminal 事实为准，running snapshot 不再产生 DB/batch 写入。
+- 已实现：Dashboard 相关的 working-set / account-activity 派生维护继续复用 write-side read model 与 runtime overlay；proxy capture 请求尾的 rollup/live progress、upstream account touch 与 attempt 中间进度已迁入 SQLite batch writer，避免主订阅 topic refresh 与请求收尾派生写在 SQLite 单写者上持续争用。
+- 已实现：Dashboard current records、summary/timeseries、上游账号活动与工作区 `对话` tab 的 running 视图统一 overlay 进程内 runtime invocation store。主应用连接现在只消费 topic `snapshot/replay/live`，不再依赖 HTTP open-resync/current reconcile 补 running 行；terminal DB 事实优先并会移除对应内存记录。
+- 已实现：terminal invocation 记录进入 SQLite write controller，代理业务响应不等待落库。Dashboard 账号 recent 仍会先合并 runtime running / pending / terminal 候选，并与 SQLite 行按稳定调用键去重；统计聚合仍以持久化 terminal 事实为准，running snapshot 不再产生 DB/batch 写入。
 - 已实现：新增 `GET /api/stats/dashboard-activity` 活动快照读路径；请求开始时固定 `rangeEnd`，一次读取 runtime overlay，并返回 summary-only 或 summary + accounts 两种形态。
 - 已实现：Dashboard 顶部当前 `TPM / 消费速率 / 进行中调用` 改读 `dashboard-activity.summary`；账号 tab 打开后升级为 `includeAccounts=true`，顶部 KPI 与账号卡片共享同一个 `snapshotId/rangeEnd` 响应。
-- 已实现：Dashboard 当前进行中、重试与阶段计数改由后端 SQLite live read model 加 runtime overlay 的统一算法生成版本化 `dashboardActivityLive` SSE 快照；前端按 revision 覆盖顶部与账号卡 live 字段，旧 HTTP reconcile 不再把新状态回写为 0，重连时服务端立即种入当前快照。
-- 已实现：运行态变更只无阻塞地递增 live snapshot 序列号；单个后台 worker 在 100ms 合并窗口内收敛多次变更后读取 SQLite 并广播，避免把实时查询放进代理上游派发和首字节关键路径。
+- 已实现：Dashboard 当前进行中、重试与阶段计数改由后端 SQLite live read model 加 runtime overlay 的统一算法生成 `dashboard.activity.current` authoritative topic payload；前端直接消费 topic `snapshot/replay/live`，不再把旧 HTTP reconcile 当成当前态校准来源。
+- 已实现：运行态变更只无阻塞地触发受影响 topic refresh；单个后台 worker 在短合并窗口内收敛多次变更后读取 SQLite 并 fanout live envelope，避免把实时查询放进代理上游派发和首字节关键路径。
 - 已实现：`dashboard-activity.summary` 的 `tokensPerMinute`、`spendRate` 与 in-progress 调用数由账号聚合结果求和得到；无账号流量进入 `unassigned` 聚合项，避免顶部数字无法由同屏明细解释。
 - 已实现：via-pool 请求级 cleanup guard 在响应消费期间保留 `pool-via-*` synthetic runtime snapshot，并随最终 stream task 生命周期收口；成功、失败、所有重试耗尽、下游断开或任务取消后清除残留非终态 snapshot，单次 upstream attempt 终结不会提前移除；普通 invocation runtime 与短暂终态 overlay 仍由其原有终态持久化路径负责。
 - 已实现：timeseries 继续只服务趋势图与日均比较，不再作为 Dashboard 顶部当前速率类 KPI 的事实来源；`buildDashboardTodayRateSnapshot`、timeseries recent snapshot 与 `modelPerformance.total.*` 已退出顶部当前值驱动链。

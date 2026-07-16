@@ -1,96 +1,74 @@
 ---
-title: Realtime dashboard reconcile budget
+title: Main-app pure SSE topic subscriptions
 module: web-dashboard
-problem_type: performance
-component: React dashboard hooks
+problem_type: architecture
+component: Main-app realtime subscriptions
 tags:
   - dashboard
   - sse
-  - throttle
-  - conditional-http
+  - subscriptions
+  - snapshot
+  - replay
 status: active
 related_specs:
   - docs/specs/5932d-sse-proxy-live-sync/SPEC.md
   - docs/specs/z6ysw-dashboard-account-activity-tabs/SPEC.md
 ---
 
-# Realtime dashboard reconcile budget
+# Main-app pure SSE topic subscriptions
 
 ## Context
 
-Dashboard surfaces often consume the same SSE `records` stream for several different jobs: KPI counters, dense charts, working conversation cards, and heavier aggregate sections. Treating every SSE record as permission to refetch and rerender every surface creates avoidable CPU and network load.
+主应用当前态面板曾长期混用三种机制：
+
+- `records` SSE 作为“有变化了”的通知，
+- 页面各自的 HTTP bootstrap / open-resync / timer reconcile，
+- 前端从 records、recent、timeseries 再拼出其它聚合面板。
+
+这种设计把订阅 UI 变成多套真相源，恢复语义也无法统一。
 
 ## Symptoms
 
-- KPI numbers need to feel live, but charts and aggregate sections churn on every record.
-- Working conversation cards repaint repeatedly while a burst of records belongs to the same visible conversation.
-- Large aggregate payloads such as `parallel-work` are requested frequently even when the response body is unchanged.
+- 首屏先等 HTTP，再接 SSE，导致“当前态”并不真正由订阅驱动。
+- 断线恢复后常常通过隐式 HTTP 回补，owner-facing 看起来像推送，实际上还是拉。
+- 同一屏不同面板使用不同 cadence 与不同聚合来源，容易出现同屏口径漂移。
 
 ## Root Cause
 
-The stream mixes three update classes with different budgets:
+根因不是 SSE 太弱，而是把 SSE 当成“更新提示”，没有把 topic 定义成权威读模型。
 
-- visible lightweight state that can be patched locally,
-- authoritative HTTP reconcile that can lag by a few seconds,
-- large aggregate payloads that often do not change between adjacent reconciles.
+只要前端仍然需要：
 
-Using one cadence for all three overfits the most urgent surface and overloads the rest.
+- 从 `records` 推导其它面板，
+- 在 `open` 或 timer 时再打 HTTP 校准，
+- 为每个页面保留独立 fallback，
+
+那么订阅层就永远无法真正纯化。
 
 ## Resolution
 
-- Let SSE summary payloads drive KPI-style counters directly when the payload already contains the authoritative window.
-- For account-level current state, publish one revisioned backend live snapshot from the bounded SQLite live read model plus the runtime-store overlay. Merge only its live fields into the heavier HTTP snapshot, reject lower revisions, and seed the current snapshot on SSE reconnect; do not turn records events into permission to rerun a multi-second historical aggregate query.
-- Trigger that snapshot through a bounded background coalescer, not by awaiting database reads in proxy request handling. The mutation path should only signal the worker; the worker may batch briefly while preserving the realtime budget.
-- Keep lightweight live KPI semantics separate from heavy aggregate endpoint semantics. If the KPI means “strictly in progress now”, expose that directly on the summary path instead of reusing the latest point from a historical bucket series.
-- When a top-level KPI and a visible breakdown explain the same live quantity, serve them from one backend activity snapshot with one `rangeEnd`, one runtime overlay read, and one aggregation algorithm. Do not let the top KPI use frontend timeseries math while the breakdown uses backend account aggregation.
-- Prefer account-first aggregation for visible account breakdowns: calculate account rows, add an explicit unassigned bucket for traffic without an account, then derive summary rates and live counts by summing the rows. This keeps the visible decomposition able to explain the top number.
-- Keep summary-only activity snapshots genuinely lightweight. A request that omits account rows should read bounded summary/read-model data plus the short active-tail rate window, not build and sort the full account preview/archive row set before dropping it from JSON.
-- For account activity cards, split the read contract into a summary snapshot and a snapshot-bound recent hydration request. The summary path must not read recent rows when `includeRecent=false`; hydrate all account previews with one live/archive batch keyed by the returned snapshot boundaries, then reject stale or cross-snapshot merges in the client. Preserve the legacy combined response for callers that omit the option.
-- When replacing a per-account recent query loop, batch the live rows once and group them in memory before applying each account's limit. Do not trade serial N+1 queries for concurrent N queries, and keep the legacy ordering rule explicit when compatibility callers still request the combined payload.
-- When a dashboard card combines a live main value with historical comparison rows, keep the semantic split explicit: the main value can come from a strict real-time read model, while comparison rows can continue to use a stable historical aggregate as long as they remain clearly secondary and do not overwrite the live truth source.
-- If a page-level activity snapshot already includes the visible natural-day summary and rate window, consume that snapshot directly for the main card truth. Fetch only comparison windows separately instead of layering a second same-window summary subscription under the same visible panel.
-- Batch visible local patches separately from head/snapshot reconcile. A 1 second visible patch batch is responsive enough for card updates while avoiding per-record rerenders.
-- Put expensive HTTP reconcile and dense chart data commits behind a separate 5 second budget.
-- For large aggregate endpoints that must keep their JSON shape, add conditional HTTP (`ETag` and `304 Not Modified`) instead of trimming fields.
-- Add lightweight diagnostics counters for each path: visible patch count, head fetch count, SSE summary commit count, HTTP reconcile count, chart data commit count, and conditional fetch hit count.
-- Keep `current` summary and dashboard account-activity reconcile on the same 5 second budget. A faster current-window reconcile without a matching backend live read model simply turns SQLite scan cost into a tighter request loop.
-- When an endpoint still needs strict “currently in progress” truth, move that truth into a write-side live table or read model and let the 5 second reconcile read that bounded surface instead of rescanning the historical raw table.
-- Treat dashboard working-set surfaces the same way: the 5-minute working-conversations head/count and snapshot pagination/count can both read a write-side bounded working-set table. Keep the response shape and main ordering stable, but accept `<=5s` bounded freshness instead of strict historical snapshot recomputation from the raw invocation table.
-- Align write-side maintenance with the same freshness budget. If Dashboard accepts `<=5s` reconcile, request-tail derived writes that feed those read models can use short-window coalescing/batch flush, while terminal invocation and terminal attempt facts remain synchronous.
-- For high-frequency `running` process state, prefer one shared in-process runtime store plus SSE/HTTP overlay over writing every progress snapshot into SQLite. Create the first minimal running shell as soon as the service admits a tracked proxy request, then enrich the same runtime key after body parse and upstream attempt progress. Records/current summary/current timeseries/account-activity should read DB terminal facts first and overlay only `running/pending` memory rows; terminal DB facts always win.
-- Give every synthetic runtime snapshot an explicit lifecycle owner at the same scope as its key. Because `pool-via-*` identifies the whole proxy request rather than one upstream attempt, keep its cleanup guard alive across retries and move it into the final stream task; remove remaining non-terminal snapshots only when the overall request succeeds, exhausts retries, disconnects downstream, or is cancelled. Ordinary invocation terminal overlays remain owned by their separate persistence lifecycle.
-- Do not apply activity-window or natural-day filters to strict current-live counters backed by memory `running/pending` overlay rows. A request that started earlier than the current 5-minute working set is still “current” for in-progress counts until terminal/tombstone; range totals, rate input rows, and recent previews must remain bounded by the selected reporting window.
-- If terminal records are queued through a SQLite write controller, treat the immediate SSE terminal payload and runtime-store tombstone as the short-lived UI truth until the DB row catches up. HTTP reconcile must not interpret a temporarily missing terminal DB row as a deletion; it should preserve visible SSE state within the bounded freshness window.
-- Account-level recent-invocation reconcile must merge runtime `running/pending/terminal` candidates with bounded SQLite rows, prefer runtime data for the same `(invokeId, occurredAt)`, sort once, and then apply the visible limit. Keep this recent-only overlay separate from terminal aggregates so a terminal row that exists in both stores is not counted twice.
-- Prompt-cache working-set overlays must apply the same freshness predicate to terminal runtime tombstones that SQL applies to terminal DB rows. Keep `running/pending` runtime rows independent of the activity window, but exclude terminal runtime rows older than the selected working window before merging pages, counting `totalMatched`, or hydrating recent invocations.
-- For future regressions, slow-path evidence needs to identify the class of work, not just that something was slow: emit endpoint/window/source-scope plus key counts or cache-hit state so operators can tell apart request-time scans, maintenance-time rebuilds, and cache hydration misses.
+- 把主应用常驻订阅统一收口到单 `/events`，请求显式声明 `topics + resume`。
+- 把每个 topic 定义成后端直接产出的权威读模型；前端只消费该 topic 的 `snapshot/replay/live`。
+- 首屏 hydration 只等 topic `snapshot` 或可恢复的 `replay`，不再先发 HTTP bootstrap。
+- 恢复规则固定为：
+  - `schemaEpoch` 一致且 cursor 仍在 replay 窗口内时 replay
+  - 否则直接发送新 snapshot
+- replay 窗口用有界内存实现即可；进程重启后直接以新 snapshot 恢复，不额外补 HTTP。
+- 闭合历史窗口、历史分页、非订阅页面继续走现有 HTTP，不必为了“纯 SSE”强行实时化。
 
 ## Guardrails / Reuse Notes
 
-- Do not delay KPI counters if the SSE payload is already authoritative for the selected window.
-- Do not reuse a long-horizon aggregate endpoint as a shortcut for a real-time KPI when their semantic boundaries differ, even if the payload looks close enough.
-- Do not reuse chart timeseries as the source of a current KPI when the same screen also shows a live breakdown. The chart can legitimately differ because it is trend history; the current KPI should come from the shared activity snapshot.
-- Do not mount both a visible `dashboardActivity` snapshot consumer and a same-window `useSummary(window)` subscription for the same `today` / `yesterday` panel. That duplicates SSE listeners, open-resync, and refresh churn without improving owner-facing truth.
-- Do not simplify chart visuals to solve render pressure; throttle the data commit feeding the chart instead.
-- Keep timer constants exported when tests need to assert cadence without duplicating magic numbers.
-- `304` handling must preserve the previous UI data and clear transient errors; it is a successful no-body response, not a failed fetch.
-- Closed historical windows can commit immediately because they do not receive live churn.
-- Large retained-history drawers need a separate history budget: load the first visible page only, fetch additional pages from the drawer scroll threshold, and let SSE refresh merge the already loaded range rather than replaying from page 1 to `total`.
-- Virtualize dense invocation surfaces at the shared table component, and render only the active responsive layout. Hidden desktop/mobile duplicates still contribute DOM and event-handler pressure.
-- Do not let HTTP open-resync depend on DB persistence of transient runtime rows. If DB writes are intentionally skipped for `running` snapshots, open-resync must overlay the same runtime store used by SSE across records, summary, timeseries, account activity, and prompt-cache working conversations; otherwise the UI will flicker or lose visible in-flight rows until terminal.
-- Apply terminal-DB exclusion to every runtime overlay path, including stats summary live augmentation. A runtime memory row may outlive terminal persistence after a missed cleanup, so overlay code must query terminal DB keys and skip matching memory rows before counting in-progress totals, retry totals, or wait averages.
-- Do not use a runtime-age cutoff to compensate for a synthetic snapshot lifecycle leak. An age filter hides the ownership defect and can remove a genuine long-running request from strict current-live counters; repair the terminal cleanup path instead.
+- 不要把 `records` 事件继续暴露成“页面自己决定要不要重拉”的契约；主应用订阅面应该直接消费 topic payload。
+- 不要为覆盖范围内页面保留健康态 timer reconcile、open-resync 或页面私有 fallback；那会重新引入第二真相源。
+- 不要把 closed-range / history-only 页面硬塞进持续推送；纯 SSE 的边界是“常驻当前态订阅”，不是“所有页面都实时化”。
+- 不要为 replay 失败发明第三条恢复路径。恢复规则只应是 replay 或 snapshot。
+- topic 参数必须 canonicalize；否则 resume cursor 与 cache key 会漂移。
+- SSE envelope 字段名也必须在端到端 drill 中被校验。若后端真实发出的字段名与前端 registry 读取约定不一致，即便 topic 设计本身是纯推送，页面仍会静默丢弃 snapshot，看起来像“连接正常但数据不动”。
+- 主应用 shell 也属于订阅覆盖面的一部分。像版本信息这类看似外围的小数据，只要已声明为 `app.version` topic，就不应再额外保留 `/api/version` 首屏 bootstrap，否则网络面上仍然是混合推拉。
 
 ## References
 
 - `docs/specs/5932d-sse-proxy-live-sync/SPEC.md`
 - `docs/specs/z6ysw-dashboard-account-activity-tabs/SPEC.md`
-- `web/src/hooks/useStats.ts`
-- `web/src/hooks/useDashboardWorkingConversations.ts`
-- `web/src/hooks/useParallelWorkStats.ts`
-- `web/src/components/DashboardActivityOverview.tsx`
-- `web/src/components/PromptCacheConversationTable.tsx`
-- `web/src/components/InvocationTable.tsx`
-- `src/api/slices/prompt_cache_and_timeseries/timeseries.rs`
-- `src/app_state.rs`
-- `src/proxy/request_entry.rs`
+- `src/api/slices/subscriptions.rs`
+- `web/src/lib/sse.ts`

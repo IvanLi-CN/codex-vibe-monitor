@@ -398,6 +398,7 @@ pub(crate) struct AppState {
     pub(crate) http_clients: HttpClients,
     pub(crate) broadcaster: broadcast::Sender<BroadcastPayload>,
     pub(crate) broadcast_state_cache: Arc<Mutex<BroadcastStateCache>>,
+    pub(crate) subscription_hub: Arc<SubscriptionHub>,
     pub(crate) proxy_summary_quota_broadcast_seq: Arc<AtomicU64>,
     pub(crate) proxy_summary_quota_broadcast_running: Arc<AtomicBool>,
     pub(crate) proxy_summary_quota_broadcast_handle: Arc<Mutex<Vec<JoinHandle<()>>>>,

@@ -95,6 +95,7 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         oauth_installation_seed: [0_u8; 32],
         http_clients,
         broadcaster,
+        subscription_hub: Arc::new(crate::SubscriptionHub::new()),
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),

@@ -1,13 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { ApiInvocation, StatsResponse } from "../lib/api";
 import { fetchSummary } from "../lib/api";
-import {
-  recordCurrentSummaryOpenResync,
-  recordCurrentSummaryRefresh,
-  recordTodaySummaryRefresh,
-  recordTodaySummarySseCommit,
-} from "../lib/dashboardPerformanceDiagnostics";
-import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
+import { buildTopicDescriptor } from "../lib/sse";
+import { getBrowserTimeZone } from "../lib/timeZone";
+import { useSubscriptionTopic } from "./useSubscriptionTopic";
 
 interface UseSummaryOptions {
   limit?: number;
@@ -31,18 +27,6 @@ export const CURRENT_SUMMARY_REQUEST_TIMEOUT_MS = 10_000;
 export const CURRENT_SUMMARY_RETRY_DELAY_MS = 2_000;
 export const CURRENT_SUMMARY_MAX_RETRY_ATTEMPTS = 3;
 export const SUMMARY_REMOUNT_CACHE_TTL_MS = 30_000;
-
-interface LoadOptions {
-  silent?: boolean;
-  force?: boolean;
-  trackCurrentThrottle?: boolean;
-}
-
-interface PendingLoad {
-  silent: boolean;
-  trackCurrentThrottle: boolean;
-  waiters: Array<() => void>;
-}
 
 export interface UnsupportedRefreshGate {
   inFlight: boolean;
@@ -234,15 +218,6 @@ export function shouldRetryCurrentSummaryError(error: string): boolean {
   );
 }
 
-function resolvePendingLoad(pending: PendingLoad | null) {
-  if (!pending) {
-    return;
-  }
-  pending.waiters.forEach((resolve) => {
-    resolve();
-  });
-}
-
 async function runThrottledSummaryRefresh(
   gate: UnsupportedRefreshGate,
   now: number,
@@ -294,383 +269,74 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     SUMMARY_REMOUNT_CACHE_TTL_MS,
     options?.upstreamAccountId,
   );
-  const [stats, setStats] = useState<StatsResponse | null>(
+  const supportsPureSse = window !== "yesterday";
+  const topic = supportsPureSse
+    ? buildTopicDescriptor("stats.summary.current", {
+        window,
+        limit: options?.limit,
+        upstreamAccountId: options?.upstreamAccountId,
+        timeZone: getBrowserTimeZone(),
+      })
+    : null;
+  const sse = useSubscriptionTopic<StatsResponse>(topic, supportsPureSse);
+  const [httpSummary, setHttpSummary] = useState<StatsResponse | null>(
     () => initialCachedSummary?.stats ?? null,
   );
-  const [isLoading, setIsLoading] = useState(() => initialCachedSummary == null);
-  const [error, setError] = useState<string | null>(null);
-  const unsupportedRefreshRef = useRef<UnsupportedRefreshGate>(createUnsupportedRefreshGate());
-  const calendarRefreshRef = useRef<UnsupportedRefreshGate>(createUnsupportedRefreshGate());
-  const summaryContextRef = useRef<{ window: string; limit?: number; upstreamAccountId?: number }>({
-    window,
-    limit: options?.limit,
-    upstreamAccountId: options?.upstreamAccountId,
-  });
-  const hasHydratedRef = useRef(initialCachedSummary != null);
-  const activeLoadCountRef = useRef(0);
-  const pendingLoadRef = useRef<PendingLoad | null>(null);
-  const pendingOpenResyncRef = useRef(false);
-  const requestSeqRef = useRef(0);
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const dayRolloverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const activeRequestControllerRef = useRef<AbortController | null>(null);
-  const lastCurrentRecordsRefreshAtRef = useRef(0);
-  const lastOpenResyncAtRef = useRef(0);
-  const currentRetryAttemptRef = useRef(0);
-  const lastNaturalDayLoadStartEpochRef = useRef<number | null>(
-    isDayBoundarySummaryWindow(window) ? getLocalDayStartEpoch() : null,
+  const [httpLoading, setHttpLoading] = useState(
+    () => !supportsPureSse && initialCachedSummary == null,
   );
-  summaryContextRef.current.window = window;
-  summaryContextRef.current.limit = options?.limit;
-  summaryContextRef.current.upstreamAccountId = options?.upstreamAccountId;
+  const [httpError, setHttpError] = useState<string | null>(null);
 
-  const clearPendingRefreshTimer = useCallback(() => {
-    if (!refreshTimerRef.current) return;
-    clearTimeout(refreshTimerRef.current);
-    refreshTimerRef.current = null;
-  }, []);
-
-  const clearDayRolloverTimer = useCallback(() => {
-    if (!dayRolloverTimerRef.current) return;
-    clearTimeout(dayRolloverTimerRef.current);
-    dayRolloverTimerRef.current = null;
-  }, []);
-
-  const clearPendingLoad = useCallback(() => {
-    resolvePendingLoad(pendingLoadRef.current);
-    pendingLoadRef.current = null;
-  }, []);
-
-  const runLoad = useCallback(async ({ silent = false }: LoadOptions = {}) => {
-    activeLoadCountRef.current += 1;
-    const requestSeq = requestSeqRef.current + 1;
-    requestSeqRef.current = requestSeq;
-    const shouldShowLoading = !(silent && hasHydratedRef.current);
-    const isCurrentWindow = summaryContextRef.current.window === "current";
-    const controller = new AbortController();
-    const timeoutHandle = isCurrentWindow
-      ? setTimeout(() => controller.abort(), CURRENT_SUMMARY_REQUEST_TIMEOUT_MS)
-      : null;
-    activeRequestControllerRef.current = controller;
-    if (shouldShowLoading) {
-      setIsLoading(true);
-    }
+  const loadHttpSummary = useCallback(async () => {
+    setHttpLoading(true);
     try {
-      const response = await fetchSummary(summaryContextRef.current.window, {
-        limit: summaryContextRef.current.limit,
-        upstreamAccountId: summaryContextRef.current.upstreamAccountId,
-        signal: controller.signal,
+      const response = await fetchSummary(window, {
+        limit: options?.limit,
+        upstreamAccountId: options?.upstreamAccountId,
       });
-      if (requestSeq !== requestSeqRef.current) return;
-      setStats(response);
+      setHttpSummary(response);
       writeSummaryRemountCache(
-        summaryContextRef.current.window,
-        summaryContextRef.current.limit,
+        window,
+        options?.limit,
         response,
         Date.now(),
-        summaryContextRef.current.upstreamAccountId,
+        options?.upstreamAccountId,
       );
-      recordTodaySummaryRefresh(summaryContextRef.current.window);
-      recordCurrentSummaryRefresh(summaryContextRef.current.window);
-      lastNaturalDayLoadStartEpochRef.current = isDayBoundarySummaryWindow(
-        summaryContextRef.current.window,
-      )
-        ? getLocalDayStartEpoch()
-        : null;
-      hasHydratedRef.current = true;
-      currentRetryAttemptRef.current = 0;
-      setError(null);
-      if (pendingOpenResyncRef.current) {
-        pendingOpenResyncRef.current = false;
-        lastOpenResyncAtRef.current = Date.now();
-        if (pendingLoadRef.current) {
-          pendingLoadRef.current.silent = mergePendingSummarySilentOption(
-            pendingLoadRef.current.silent,
-            true,
-          );
-        } else {
-          pendingLoadRef.current = { silent: true, trackCurrentThrottle: false, waiters: [] };
-        }
-      }
-    } catch (err) {
-      if (requestSeq !== requestSeqRef.current) return;
-      if (timeoutHandle != null && err instanceof Error && err.name === "AbortError") {
-        setError(
-          `summary request timed out after ${Math.floor(CURRENT_SUMMARY_REQUEST_TIMEOUT_MS / 1000)}s`,
-        );
-      } else {
-        setError(err instanceof Error ? err.message : String(err));
-      }
+      setHttpError(null);
+    } catch (error) {
+      setHttpError(error instanceof Error ? error.message : String(error));
     } finally {
-      if (timeoutHandle != null) {
-        clearTimeout(timeoutHandle);
-      }
-      if (activeRequestControllerRef.current === controller) {
-        activeRequestControllerRef.current = null;
-      }
-      if (requestSeq === requestSeqRef.current && shouldShowLoading) {
-        setIsLoading(false);
-      }
-      activeLoadCountRef.current = Math.max(0, activeLoadCountRef.current - 1);
+      setHttpLoading(false);
     }
-  }, []);
-
-  const load = useCallback(
-    async (loadOptions: LoadOptions = {}) => {
-      const silent = loadOptions.silent ?? false;
-      const force = loadOptions.force ?? false;
-      const trackCurrentThrottle = loadOptions.trackCurrentThrottle ?? false;
-      if (force) {
-        // Force refresh keeps the freshest context: cancel current request and drop stale queued refreshes.
-        activeRequestControllerRef.current?.abort();
-        clearPendingLoad();
-        clearPendingRefreshTimer();
-        if (window === "current") {
-          lastCurrentRecordsRefreshAtRef.current = Date.now();
-        }
-      }
-
-      if (!force && activeLoadCountRef.current > 0) {
-        return new Promise<void>((resolve) => {
-          if (pendingLoadRef.current) {
-            pendingLoadRef.current.silent = mergePendingSummarySilentOption(
-              pendingLoadRef.current.silent,
-              silent,
-            );
-            pendingLoadRef.current.trackCurrentThrottle ||= trackCurrentThrottle;
-            pendingLoadRef.current.waiters.push(resolve);
-            return;
-          }
-          pendingLoadRef.current = { silent, trackCurrentThrottle, waiters: [resolve] };
-        });
-      }
-
-      if (trackCurrentThrottle) {
-        lastCurrentRecordsRefreshAtRef.current = Date.now();
-      }
-      await runLoad({ silent });
-
-      while (activeLoadCountRef.current === 0 && pendingLoadRef.current) {
-        const pending = pendingLoadRef.current;
-        pendingLoadRef.current = null;
-        if (pending.trackCurrentThrottle) {
-          lastCurrentRecordsRefreshAtRef.current = Date.now();
-        }
-        await runLoad({ silent: pending.silent });
-        pending.waiters.forEach((resolve) => {
-          resolve();
-        });
-      }
-    },
-    [clearPendingLoad, clearPendingRefreshTimer, runLoad, window],
-  );
-
-  const triggerCurrentWindowRefresh = useCallback(() => {
-    const now = Date.now();
-    const delay = getCurrentSummarySseRefreshDelay(lastCurrentRecordsRefreshAtRef.current, now);
-    const run = () => {
-      refreshTimerRef.current = null;
-      void load({ silent: true, trackCurrentThrottle: true });
-    };
-
-    if (delay === 0) {
-      clearPendingRefreshTimer();
-      run();
-      return;
-    }
-
-    if (refreshTimerRef.current) {
-      return;
-    }
-    refreshTimerRef.current = setTimeout(run, delay);
-  }, [clearPendingRefreshTimer, load]);
-
-  const triggerOpenResync = useCallback(
-    (force = false) => {
-      if (!hasHydratedRef.current) {
-        pendingOpenResyncRef.current = true;
-        return;
-      }
-      const now = Date.now();
-      if (!shouldTriggerCurrentSummaryOpenResync(lastOpenResyncAtRef.current, now, force)) {
-        return;
-      }
-      lastOpenResyncAtRef.current = now;
-      recordCurrentSummaryOpenResync();
-      void load({ silent: true, force: true });
-    },
-    [load],
-  );
+  }, [options?.limit, options?.upstreamAccountId, window]);
 
   useEffect(() => {
-    // Invalidate prior async loads when summary query context changes.
-    const cachedSummary = readSummaryRemountCache(
-      window,
-      options?.limit,
-      Date.now(),
-      SUMMARY_REMOUNT_CACHE_TTL_MS,
-      options?.upstreamAccountId,
-    );
-    requestSeqRef.current += 1;
-    setStats(cachedSummary?.stats ?? null);
-    setError(null);
-    setIsLoading(cachedSummary == null);
-    hasHydratedRef.current = cachedSummary != null;
-    pendingOpenResyncRef.current = false;
-    lastCurrentRecordsRefreshAtRef.current = 0;
-    lastOpenResyncAtRef.current = 0;
-    currentRetryAttemptRef.current = 0;
-    unsupportedRefreshRef.current = createUnsupportedRefreshGate();
-    calendarRefreshRef.current = createUnsupportedRefreshGate();
-    lastNaturalDayLoadStartEpochRef.current = isDayBoundarySummaryWindow(window)
-      ? getLocalDayStartEpoch()
-      : null;
-    clearPendingLoad();
-    clearPendingRefreshTimer();
-    clearDayRolloverTimer();
-    if (!cachedSummary) {
-      void load({ force: true });
-      return;
+    if (!supportsPureSse) {
+      void loadHttpSummary();
     }
-    void load({ silent: true, force: true });
-  }, [
-    clearDayRolloverTimer,
-    clearPendingLoad,
-    clearPendingRefreshTimer,
-    load,
-    options?.limit,
-    options?.upstreamAccountId,
-    window,
-  ]);
+  }, [loadHttpSummary, supportsPureSse]);
 
   useEffect(() => {
-    if (!error || window !== "current" || !shouldRetryCurrentSummaryError(error)) {
-      return;
-    }
-    if (currentRetryAttemptRef.current >= CURRENT_SUMMARY_MAX_RETRY_ATTEMPTS) {
-      return;
-    }
-    currentRetryAttemptRef.current += 1;
-    const delay = CURRENT_SUMMARY_RETRY_DELAY_MS * currentRetryAttemptRef.current;
-    const timer = setTimeout(() => {
-      void load({ silent: true, force: true });
-    }, delay);
-    return () => clearTimeout(timer);
-  }, [error, load, window]);
-
-  useEffect(
-    () => () => {
-      requestSeqRef.current += 1;
-      activeRequestControllerRef.current?.abort();
-      activeRequestControllerRef.current = null;
-      clearPendingLoad();
-      pendingOpenResyncRef.current = false;
-      currentRetryAttemptRef.current = 0;
-      clearPendingRefreshTimer();
-      clearDayRolloverTimer();
-    },
-    [clearDayRolloverTimer, clearPendingLoad, clearPendingRefreshTimer],
-  );
-
-  const supportsSse = useMemo(
-    () => options?.upstreamAccountId == null && SUPPORTED_SSE_WINDOWS.has(window),
-    [options?.upstreamAccountId, window],
-  );
-
-  useEffect(() => {
-    const unsubscribe = subscribeToSse((payload) => {
-      if (payload.type === "summary") {
-        if (options?.upstreamAccountId != null) return;
-        if (payload.window === window) {
-          setStats(payload.summary);
-          writeSummaryRemountCache(window, options?.limit, payload.summary);
-          recordTodaySummarySseCommit(window);
-          lastNaturalDayLoadStartEpochRef.current = isDayBoundarySummaryWindow(window)
-            ? getLocalDayStartEpoch()
-            : null;
-          hasHydratedRef.current = true;
-          setError(null);
-          setIsLoading(false);
-        } else if (shouldHandleUnsupportedSummaryRefresh(payload.window, window, supportsSse)) {
-          void runUnsupportedSummaryRefresh(unsupportedRefreshRef.current, Date.now(), () =>
-            load({ silent: true }),
-          );
-        }
-      } else if (payload.type === "records") {
-        const scopedRecords =
-          options?.upstreamAccountId == null
-            ? payload.records
-            : payload.records.filter(
-                (record) => record.upstreamAccountId === options.upstreamAccountId,
-              );
-        if (scopedRecords.length === 0) return;
-        if (window === "current") {
-          // current 窗口通过节流静默刷新，避免高频事件导致闪烁。
-          triggerCurrentWindowRefresh();
-        } else if (
-          options?.upstreamAccountId != null
-            ? shouldRefreshScopedSummaryOnRecords(window, scopedRecords)
-            : shouldRefreshCalendarSummaryOnRecords(window) ||
-              (window === "yesterday" && shouldRefreshYesterdaySummaryOnRecords(scopedRecords))
-        ) {
-          // calendar windows keep SSE summary as the fast path and use HTTP as a 5s reconcile.
-          void runCalendarSummaryRefresh(calendarRefreshRef.current, Date.now(), () =>
-            load({ silent: true }),
-          );
-        }
-      }
-    });
-    return unsubscribe;
-  }, [
-    load,
-    options?.limit,
-    options?.upstreamAccountId,
-    supportsSse,
-    triggerCurrentWindowRefresh,
-    window,
-  ]);
-
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const onVisibilityChange = () => {
-      if (document.visibilityState !== "visible") return;
-      if (!isDayBoundarySummaryWindow(window)) {
-        return;
-      }
-      triggerOpenResync(
-        shouldForceCalendarSummaryOpenResync(window, lastNaturalDayLoadStartEpochRef.current),
+    if (supportsPureSse && sse.data) {
+      writeSummaryRemountCache(
+        window,
+        options?.limit,
+        sse.data,
+        Date.now(),
+        options?.upstreamAccountId,
       );
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, [triggerOpenResync, window]);
-
-  useEffect(() => {
-    const unsubscribe = subscribeToSseOpen(() => {
-      triggerOpenResync(
-        shouldForceCalendarSummaryOpenResync(window, lastNaturalDayLoadStartEpochRef.current),
-      );
-    });
-    return unsubscribe;
-  }, [triggerOpenResync, window]);
-
-  useEffect(() => {
-    clearDayRolloverTimer();
-    const refreshEpoch = getCalendarSummaryDayRolloverRefreshEpoch(window);
-    if (refreshEpoch == null) {
-      return;
     }
-    const delay = Math.max(0, refreshEpoch * 1000 - Date.now() + 50);
-    dayRolloverTimerRef.current = setTimeout(() => {
-      void load({ silent: true, force: true });
-    }, delay);
-    return clearDayRolloverTimer;
-  }, [clearDayRolloverTimer, load, window]);
+  }, [options?.limit, options?.upstreamAccountId, sse.data, supportsPureSse, window]);
+
+  const summary = supportsPureSse ? (sse.data ?? initialCachedSummary?.stats ?? null) : httpSummary;
+  const isLoading = supportsPureSse ? sse.isLoading && summary == null : httpLoading;
+  const error = supportsPureSse ? sse.error : httpError;
+  const refresh = supportsPureSse ? sse.refresh : loadHttpSummary;
 
   return {
-    summary: stats,
+    summary,
     isLoading,
     error,
-    refresh: load,
+    refresh,
   };
 }

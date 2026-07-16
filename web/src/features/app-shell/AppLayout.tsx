@@ -3,12 +3,11 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Button } from "../../components/ui/button";
 import { SegmentedControl } from "../../components/ui/segmented-control";
 import { segmentedControlItemVariants } from "../../components/ui/segmented-control.variants";
+import { useAppVersion } from "../../hooks/useAppVersion";
 import useSseStatus from "../../hooks/useSseStatus";
 import useUpdateAvailable from "../../hooks/useUpdateAvailable";
 import { type Locale, supportedLocales, useTranslation } from "../../i18n";
-import type { VersionResponse } from "../../lib/api";
-import { fetchVersion } from "../../lib/api";
-import { requestImmediateReconnect, subscribeToSse } from "../../lib/sse";
+import { requestImmediateReconnect, subscribeToSseActivity } from "../../lib/sse";
 import { frontendVersion, normalizeVersion } from "../../lib/version";
 import { useTheme } from "../../theme";
 import { AppIcon } from "../shared/AppIcon";
@@ -35,8 +34,7 @@ export function AppLayout() {
   const { themeMode, toggleTheme } = useTheme();
   const [hasRecentActivity, setHasRecentActivity] = useState(false);
   const activityTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [versionInfo, setVersionInfo] = useState<VersionResponse | null>(null);
-  const [backendLoading, setBackendLoading] = useState(true);
+  const { versionInfo, isLoading: backendLoading } = useAppVersion();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const update = useUpdateAvailable();
   const sseStatus = useSseStatus();
@@ -70,7 +68,7 @@ export function AppLayout() {
       }
     };
 
-    const unsubscribe = subscribeToSse(() => {
+    const unsubscribe = subscribeToSseActivity(() => {
       if (sseStatus.phase !== "connected") return;
       setHasRecentActivity(true);
       clearActivityWindow();
@@ -93,14 +91,6 @@ export function AppLayout() {
     }
     setHasRecentActivity(false);
   }, [sseStatus.phase]);
-
-  useEffect(() => {
-    setBackendLoading(true);
-    fetchVersion()
-      .then(setVersionInfo)
-      .catch(() => setVersionInfo(null))
-      .finally(() => setBackendLoading(false));
-  }, []);
 
   const handleLocaleChange = (next: Locale) => {
     if (next !== locale) {

@@ -1,8 +1,9 @@
 /** @vitest-environment jsdom */
+import type React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { ApiRequestError, type BroadcastPayload, type ParallelWorkStatsResponse } from "../lib/api";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiRequestError, type ParallelWorkStatsResponse } from "../lib/api";
 import {
   getParallelWorkRecordsResyncDelay,
   PARALLEL_WORK_OPEN_RESYNC_COOLDOWN_MS,
@@ -12,61 +13,41 @@ import {
   useParallelWorkStats,
 } from "./useParallelWorkStats";
 
-const apiMocks = vi.hoisted(() => ({
-  fetchParallelWorkStatsConditional:
-    vi.fn<
-      (options?: {
-        range?: string;
-        bucket?: string;
-        timeZone?: string;
-        upstreamAccountId?: number;
-        signal?: AbortSignal;
-        etag?: string | null;
-      }) => Promise<{
-        data: ParallelWorkStatsResponse | null;
-        etag: string | null;
-        notModified: boolean;
-      }>
-    >(),
-}));
-
-type ConditionalParallelWorkStatsResponse = Awaited<
-  ReturnType<typeof apiMocks.fetchParallelWorkStatsConditional>
->;
-
-const sseMocks = vi.hoisted(() => ({
-  listeners: new Set<(payload: BroadcastPayload) => void>(),
-  openListeners: new Set<() => void>(),
-}));
-
-vi.mock("../lib/api", async () => {
-  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
-  return {
-    ...actual,
-    fetchParallelWorkStatsConditional: apiMocks.fetchParallelWorkStatsConditional,
-  };
-});
-
-vi.mock("../lib/sse", () => ({
-  subscribeToSse: (listener: (payload: BroadcastPayload) => void) => {
-    sseMocks.listeners.add(listener);
-    return () => sseMocks.listeners.delete(listener);
+const topicMocks = vi.hoisted(() => ({
+  calls: [] as Array<{ descriptor: unknown; enabled: boolean }>,
+  refresh: vi.fn(),
+  state: {
+    data: null as ParallelWorkStatsResponse | null,
+    isLoading: false,
+    error: null as string | null,
   },
-  subscribeToSseOpen: (listener: () => void) => {
-    sseMocks.openListeners.add(listener);
-    return () => sseMocks.openListeners.delete(listener);
+}));
+
+vi.mock("../lib/timeZone", () => ({
+  getBrowserTimeZone: () => "Asia/Shanghai",
+}));
+
+vi.mock("./useSubscriptionTopic", () => ({
+  useSubscriptionTopic: (descriptor: unknown, enabled = true) => {
+    topicMocks.calls.push({ descriptor, enabled });
+    return {
+      data: topicMocks.state.data,
+      isLoading: topicMocks.state.isLoading,
+      error: topicMocks.state.error,
+      refresh: topicMocks.refresh,
+    };
   },
 }));
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 
-beforeAll(() => {
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
-    configurable: true,
-    writable: true,
-    value: true,
-  });
+beforeEach(() => {
+  topicMocks.calls = [];
+  topicMocks.refresh.mockReset();
+  topicMocks.state.data = null;
+  topicMocks.state.isLoading = false;
+  topicMocks.state.error = null;
 });
 
 afterEach(() => {
@@ -76,41 +57,7 @@ afterEach(() => {
   host?.remove();
   host = null;
   root = null;
-  sseMocks.listeners.clear();
-  sseMocks.openListeners.clear();
-  vi.useRealTimers();
-  vi.clearAllMocks();
 });
-
-function render(ui: React.ReactNode) {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  root = createRoot(host);
-  act(() => {
-    root?.render(ui);
-  });
-}
-
-async function flushAsync() {
-  await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
-  });
-}
-
-async function waitFor(check: () => void, attempts = 20) {
-  let lastError: unknown = null;
-  for (let index = 0; index < attempts; index += 1) {
-    try {
-      check();
-      return;
-    } catch (error) {
-      lastError = error;
-      await flushAsync();
-    }
-  }
-  throw lastError;
-}
 
 function createStats(): ParallelWorkStatsResponse {
   const current = {
@@ -126,6 +73,7 @@ function createStats(): ParallelWorkStatsResponse {
       { bucketStart: "2026-03-07T10:00:00Z", bucketEnd: "2026-03-07T10:01:00Z", parallelCount: 1 },
     ],
   };
+
   return {
     current,
     minute7d: current,
@@ -166,38 +114,51 @@ function createStats(): ParallelWorkStatsResponse {
   };
 }
 
-function fullStatsResponse(stats = createStats(), etag = '"parallel-work-test"') {
-  return {
-    data: stats,
-    etag,
-    notModified: false,
-  };
+function render(ui: React.ReactNode) {
+  act(() => {
+    root?.unmount();
+  });
+  host?.remove();
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  root = createRoot(host);
+  act(() => {
+    root?.render(ui);
+  });
 }
 
-function notModifiedResponse(etag = '"parallel-work-test"') {
-  return {
-    data: null,
-    etag,
-    notModified: true,
-  };
+function text(testId: string) {
+  const element = host?.querySelector(`[data-testid="${testId}"]`);
+  if (!(element instanceof HTMLElement)) {
+    throw new Error(`Missing element: ${testId}`);
+  }
+  return element.textContent ?? "";
 }
 
-function Probe() {
-  const { data, isLoading, error } = useParallelWorkStats({ range: "7d", bucket: "1m" });
+function Probe({
+  range = "7d",
+  bucket = "1m",
+  upstreamAccountId,
+  enabled = true,
+}: {
+  range?: string;
+  bucket?: string;
+  upstreamAccountId?: number;
+  enabled?: boolean;
+}) {
+  const { data, isLoading, error, refresh } = useParallelWorkStats({
+    range,
+    bucket,
+    upstreamAccountId,
+    enabled,
+  });
+
   return (
     <div>
       <div data-testid="loading">{isLoading ? "true" : "false"}</div>
       <div data-testid="error">{error ?? ""}</div>
       <div data-testid="current-count">{String(data?.current.points[0]?.parallelCount ?? 0)}</div>
-    </div>
-  );
-}
-
-function AccountProbe() {
-  const { data } = useParallelWorkStats({ range: "today", bucket: "1m", upstreamAccountId: 42 });
-  return (
-    <div data-testid="account-current-count">
-      {String(data?.current.points[0]?.parallelCount ?? 0)}
+      <button type="button" data-testid="refresh" onClick={() => void refresh()} />
     </div>
   );
 }
@@ -233,230 +194,50 @@ describe("useParallelWorkStats helpers", () => {
 });
 
 describe("useParallelWorkStats", () => {
-  it("throttles records-triggered silent refreshes to the configured interval", async () => {
-    vi.useFakeTimers();
-    apiMocks.fetchParallelWorkStatsConditional.mockResolvedValue(fullStatsResponse());
+  it("subscribes to the parallel-work topic and exposes topic state", () => {
+    topicMocks.state.data = createStats();
+    topicMocks.state.error = "topic warning";
 
-    render(<Probe />);
-    await flushAsync();
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(1);
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenLastCalledWith(
-      expect.objectContaining({ range: "7d", bucket: "1m", etag: null }),
-    );
-    expect(host?.querySelector('[data-testid="current-count"]')?.textContent).toBe("1");
+    render(<Probe upstreamAccountId={42} />);
 
-    act(() => {
-      sseMocks.listeners.forEach((listener) => {
-        listener({ type: "records", records: [] });
-      });
+    expect(topicMocks.calls.at(-1)).toEqual({
+      descriptor: {
+        topic: "stats.parallel-work.current",
+        params: {
+          range: "7d",
+          bucket: "1m",
+          timeZone: "Asia/Shanghai",
+          upstreamAccountId: "42",
+        },
+      },
+      enabled: true,
     });
-    await flushAsync();
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2);
-
-    act(() => {
-      sseMocks.listeners.forEach((listener) => {
-        listener({ type: "records", records: [] });
-      });
-    });
-    await vi.advanceTimersByTimeAsync(PARALLEL_WORK_REFRESH_THROTTLE_MS - 1);
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2);
-
-    await vi.advanceTimersByTimeAsync(1);
-    await flushAsync();
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(3);
+    expect(text("current-count")).toBe("1");
+    expect(text("loading")).toBe("false");
+    expect(text("error")).toBe("topic warning");
   });
 
-  it("passes upstreamAccountId through to the conditional fetch", async () => {
-    apiMocks.fetchParallelWorkStatsConditional.mockResolvedValue(fullStatsResponse());
+  it("disables the topic when the hook is not enabled and forwards manual refresh", () => {
+    render(<Probe enabled={false} range="today" bucket="5m" />);
 
-    render(<AccountProbe />);
-    await flushAsync();
+    expect(topicMocks.calls.at(-1)).toEqual({
+      descriptor: null,
+      enabled: false,
+    });
 
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(1);
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledWith(
-      expect.objectContaining({
-        range: "today",
-        bucket: "1m",
-        upstreamAccountId: 42,
-        etag: null,
-      }),
-    );
-    expect(host?.querySelector('[data-testid="account-current-count"]')?.textContent).toBe("1");
-  });
-
-  it("respects the SSE-open cooldown before queueing another refresh", async () => {
-    vi.useFakeTimers();
-    apiMocks.fetchParallelWorkStatsConditional.mockResolvedValue(fullStatsResponse());
-
-    render(<Probe />);
-    await flushAsync();
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(1);
+    topicMocks.state.data = createStats();
+    topicMocks.state.isLoading = true;
+    render(<Probe range="today" bucket="5m" />);
 
     act(() => {
-      sseMocks.openListeners.forEach((listener) => {
-        listener();
-      });
-    });
-    await flushAsync();
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2);
-
-    act(() => {
-      sseMocks.openListeners.forEach((listener) => {
-        listener();
-      });
-    });
-    await flushAsync();
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2);
-
-    await vi.advanceTimersByTimeAsync(PARALLEL_WORK_OPEN_RESYNC_COOLDOWN_MS);
-    act(() => {
-      sseMocks.openListeners.forEach((listener) => {
-        listener();
-      });
-    });
-    await flushAsync();
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(3);
-  });
-
-  it("reuses the prior payload when the server returns 304", async () => {
-    vi.useFakeTimers();
-    apiMocks.fetchParallelWorkStatsConditional
-      .mockResolvedValueOnce(fullStatsResponse(createStats(), '"parallel-work-a"'))
-      .mockResolvedValueOnce(notModifiedResponse('"parallel-work-a"'));
-
-    render(<Probe />);
-    await flushAsync();
-    expect(host?.querySelector('[data-testid="current-count"]')?.textContent).toBe("1");
-
-    act(() => {
-      sseMocks.listeners.forEach((listener) => {
-        listener({ type: "records", records: [] });
-      });
-    });
-    await flushAsync();
-
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2);
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenLastCalledWith(
-      expect.objectContaining({ etag: '"parallel-work-a"' }),
-    );
-    expect(host?.querySelector('[data-testid="current-count"]')?.textContent).toBe("1");
-    expect(host?.querySelector('[data-testid="error"]')?.textContent).toBe("");
-  });
-
-  it("queues SSE-open refreshes instead of aborting an in-flight request", async () => {
-    let resolveRefresh: ((value: ConditionalParallelWorkStatsResponse) => void) | null = null;
-    let refreshSignal: AbortSignal | undefined;
-    apiMocks.fetchParallelWorkStatsConditional
-      .mockResolvedValueOnce(fullStatsResponse())
-      .mockImplementationOnce(
-        ({ signal } = {}) =>
-          new Promise<ConditionalParallelWorkStatsResponse>((resolve) => {
-            refreshSignal = signal;
-            resolveRefresh = resolve;
-          }),
-      )
-      .mockResolvedValueOnce(fullStatsResponse());
-
-    render(<Probe />);
-    await flushAsync();
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(1);
-
-    act(() => {
-      sseMocks.listeners.forEach((listener) => {
-        listener({ type: "records", records: [] });
-      });
-    });
-    await flushAsync();
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2);
-    expect(refreshSignal?.aborted).toBe(false);
-
-    act(() => {
-      sseMocks.openListeners.forEach((listener) => {
-        listener();
-      });
-    });
-    await flushAsync();
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2);
-    expect(refreshSignal?.aborted).toBe(false);
-
-    await act(async () => {
-      resolveRefresh?.(fullStatsResponse());
-      await Promise.resolve();
-      await Promise.resolve();
+      const button = host?.querySelector('[data-testid="refresh"]');
+      if (!(button instanceof HTMLButtonElement)) {
+        throw new Error("Missing refresh button");
+      }
+      button.click();
     });
 
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(3);
-  });
-
-  it("queues a follow-up silent refresh when SSE-open arrives during hydration", async () => {
-    let resolveInitialLoad: ((value: ConditionalParallelWorkStatsResponse) => void) | null = null;
-    apiMocks.fetchParallelWorkStatsConditional
-      .mockImplementationOnce(
-        () =>
-          new Promise<ConditionalParallelWorkStatsResponse>((resolve) => {
-            resolveInitialLoad = resolve;
-          }),
-      )
-      .mockResolvedValueOnce(fullStatsResponse());
-
-    render(<Probe />);
-    await flushAsync();
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(1);
-
-    act(() => {
-      sseMocks.openListeners.forEach((listener) => {
-        listener();
-      });
-    });
-
-    await act(async () => {
-      resolveInitialLoad?.(fullStatsResponse());
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not auto-retry permanent client errors", async () => {
-    vi.useFakeTimers();
-    apiMocks.fetchParallelWorkStatsConditional.mockRejectedValue(
-      new ApiRequestError(
-        400,
-        "Request failed: 400 unsupported timeZone for historical parallel-work rollups",
-      ),
-    );
-
-    render(<Probe />);
-    await flushAsync();
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(1);
-    expect(host?.querySelector('[data-testid="error"]')?.textContent).toContain(
-      "Request failed: 400",
-    );
-
-    await vi.advanceTimersByTimeAsync(2_000);
-    await flushAsync();
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps auto-retrying transient server failures", async () => {
-    vi.useFakeTimers();
-    apiMocks.fetchParallelWorkStatsConditional
-      .mockRejectedValueOnce(new ApiRequestError(503, "Request failed: 503 gateway timeout"))
-      .mockResolvedValueOnce(fullStatsResponse());
-
-    render(<Probe />);
-    await flushAsync();
-    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(1);
-    expect(host?.querySelector('[data-testid="error"]')?.textContent).toContain(
-      "Request failed: 503",
-    );
-
-    await vi.advanceTimersByTimeAsync(2_000);
-    await waitFor(() => {
-      expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2);
-      expect(host?.querySelector('[data-testid="error"]')?.textContent).toBe("");
-    });
-    expect(host?.querySelector('[data-testid="current-count"]')?.textContent).toBe("1");
+    expect(text("loading")).toBe("true");
+    expect(topicMocks.refresh).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import type {
   ApiInvocation,
   BroadcastPayload,
   InvocationRecordsQuery,
   InvocationSortBy,
   InvocationSortOrder,
+  ListResponse,
 } from "../lib/api";
 import { invocationStableKey } from "../lib/invocation";
-import { mergeInvocationWindowRecords } from "../lib/invocationRecordsLive";
-import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
+import { buildTopicDescriptor, subscribeToTopic } from "../lib/sse";
 
 type RealtimeFilters = Pick<
   InvocationRecordsQuery,
@@ -58,6 +58,58 @@ function recordsChanged(next: ApiInvocation[], current: ApiInvocation[]) {
   );
 }
 
+function supportsRealtimeTopic(
+  filters: RealtimeFilters | undefined,
+  sortBy: InvocationSortBy,
+  sortOrder: InvocationSortOrder,
+) {
+  if (sortBy !== "occurredAt" || sortOrder !== "desc") {
+    return false;
+  }
+  const {
+    from,
+    to,
+    endpoint,
+    requestId,
+    failureClass,
+    failureKind,
+    promptCacheKey,
+    stickyKey,
+    requesterIp,
+    upstreamAccountId,
+    keyword,
+    minTotalTokens,
+    maxTotalTokens,
+    minTotalMs,
+    maxTotalMs,
+  } = filters ?? {};
+  return !(
+    from ||
+    to ||
+    endpoint ||
+    requestId ||
+    failureClass ||
+    failureKind ||
+    promptCacheKey ||
+    stickyKey ||
+    requesterIp ||
+    upstreamAccountId != null ||
+    keyword ||
+    minTotalTokens != null ||
+    maxTotalTokens != null ||
+    minTotalMs != null ||
+    maxTotalMs != null
+  );
+}
+
+function buildInvocationsTopic(limit: number, filters?: RealtimeFilters) {
+  return buildTopicDescriptor("invocations.window", {
+    limit,
+    model: filters?.model,
+    status: filters?.status,
+  });
+}
+
 export function useInvocationRecordsRealtime({
   enabled,
   isHydrated,
@@ -68,14 +120,9 @@ export function useInvocationRecordsRealtime({
   allowVisibleInsertions = true,
   getRecords,
   onRecordsChange,
-  onOpenResync,
-  openResyncCooldownMs = 3000,
 }: UseInvocationRecordsRealtimeOptions) {
   const getRecordsRef = useRef(getRecords);
   const onRecordsChangeRef = useRef(onRecordsChange);
-  const onOpenResyncRef = useRef(onOpenResync);
-  const pendingOpenResyncRef = useRef(false);
-  const lastOpenResyncAtRef = useRef(0);
 
   useEffect(() => {
     getRecordsRef.current = getRecords;
@@ -86,71 +133,31 @@ export function useInvocationRecordsRealtime({
   }, [onRecordsChange]);
 
   useEffect(() => {
-    onOpenResyncRef.current = onOpenResync;
-  }, [onOpenResync]);
+    if (!enabled || !isHydrated) return;
+    if (!supportsRealtimeTopic(filters, sortBy, sortOrder)) return;
 
-  const requestOpenResync = useCallback(
-    (force = false) => {
-      if (!enabled) return;
-      if (!isHydrated) {
-        pendingOpenResyncRef.current = true;
-        return;
-      }
-      const now = Date.now();
-      if (!force && now - lastOpenResyncAtRef.current < openResyncCooldownMs) {
-        return;
-      }
-      lastOpenResyncAtRef.current = now;
-      pendingOpenResyncRef.current = false;
-      onOpenResyncRef.current();
-    },
-    [enabled, isHydrated, openResyncCooldownMs],
-  );
-
-  useEffect(() => {
-    if (!enabled || !isHydrated || !pendingOpenResyncRef.current) return;
-    requestOpenResync(true);
-  }, [enabled, isHydrated, requestOpenResync]);
-
-  useEffect(() => {
-    if (!enabled) {
-      pendingOpenResyncRef.current = false;
-      return;
-    }
-
-    const unsubscribe = subscribeToSse((payload: BroadcastPayload) => {
-      if (payload.type !== "records") return;
+    const topic = buildInvocationsTopic(limit, filters);
+    const unsubscribe = subscribeToTopic<ListResponse>(topic, (event) => {
       const current = getRecordsRef.current();
       const currentKeySet = new Set(current.map((record) => invocationStableKey(record)));
-      const incoming = allowVisibleInsertions
-        ? payload.records
-        : payload.records.filter((record) => currentKeySet.has(invocationStableKey(record)));
-      const mergedPayload = { ...payload, records: incoming } as BroadcastPayload & {
-        type: "records";
-      };
-      const mergedNext = mergeInvocationWindowRecords(current, incoming, {
-        filters,
-        sortBy,
-        sortOrder,
-        limit,
-      });
-      if (!recordsChanged(mergedNext, current)) {
+      const nextRecords = allowVisibleInsertions
+        ? event.payload.records
+        : event.payload.records.filter((record) => currentKeySet.has(invocationStableKey(record)));
+      if (!recordsChanged(nextRecords, current)) {
         return;
       }
-      const visibleInsertedKeys = mergedNext
+      const visibleInsertedKeys = nextRecords
         .map((record) => invocationStableKey(record))
         .filter((key) => !currentKeySet.has(key));
-      onRecordsChangeRef.current(mergedNext, { visibleInsertedKeys, payload: mergedPayload });
+      onRecordsChangeRef.current(nextRecords, {
+        visibleInsertedKeys,
+        payload: {
+          type: "records",
+          records: nextRecords,
+        } as BroadcastPayload & { type: "records" },
+      });
     });
 
     return unsubscribe;
-  }, [allowVisibleInsertions, enabled, filters, limit, sortBy, sortOrder]);
-
-  useEffect(() => {
-    if (!enabled) return;
-    const unsubscribe = subscribeToSseOpen(() => {
-      requestOpenResync();
-    });
-    return unsubscribe;
-  }, [enabled, requestOpenResync]);
+  }, [allowVisibleInsertions, enabled, filters, isHydrated, limit, sortBy, sortOrder]);
 }

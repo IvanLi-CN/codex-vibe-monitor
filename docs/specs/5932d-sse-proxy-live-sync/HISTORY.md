@@ -1,27 +1,25 @@
-# SSE 驱动的请求记录与统计实时更新 - History
-
-## Migration
-
-- Canonical docs taxonomy migration created or normalized this companion history file.
-- Canonical spec: `docs/specs/5932d-sse-proxy-live-sync/SPEC.md`
+# 主应用常驻订阅纯 SSE 化与统一快照/回放基础设施 - History
 
 ## Key Decisions
 
-- No separate historical decision record was present before this migration.
-- Dashboard live updates separate fast visible paths from heavier reconcile paths: SSE summary updates KPI numbers immediately, working conversations apply 1s visible patch batches, and chart/head/aggregate reconciles use a 5s budget.
-- `parallel-work` keeps its existing response JSON shape; bandwidth reduction is handled through ETag / 304 conditional HTTP rather than trimming fields.
-- 2026-06-21: 继续把“活动中的调用记录列表”统一收口到现有 `records` SSE + open 后静默回源链路，明确覆盖 `Live`、`/records` 与账号详情抽屉 records tab；历史回放类抽屉保留各自 snapshot/history 语义，不强行改造成全量实时流。
-- 2026-06-29: Dashboard current-window summary reconcile 不再保留比 calendar window 更激进的 cadence；`current summary` 与 `upstream account activity` 统一收口到 `5s` refresh/open-resync 预算，避免前端更快回源把后端请求级 SQLite 热点放大成持续 CPU 压力。
-- 2026-06-30: 第二轮 CPU 止血把 Dashboard working conversations 当前 head/count 的真相源前移到 write-side `prompt_cache_working_set_live`，接受 `<=5s` bounded freshness，但不再让 5 分钟工作集每次 reconcile 都重扫 `codex_invocations`。
-- 2026-06-30: 第三轮 CPU 止血继续把 working conversations 的 snapshot count/page 从 `WITH recent_terminal` 历史重算收口到 live working-set truth。接口继续保留 `snapshot_at`、cursor 与字段 shape，但 snapshot 聚合不再承诺严格历史时点重算，只承诺 `<=5s` bounded freshness。
-- 2026-07-01: 第四轮 SQLite 止血明确不降低代理并发，也不把 terminal `codex_invocations` 主事实改成 write-behind；仅把 attempt 中间进度、invocation rollup/live progress、upstream account touch 与 system task finish 这类可接受 `<=5s` 新鲜度的派生写放入有界 batch writer。
-- 2026-07-02: 第五轮 SQLite 止血继续保持代理并发与 terminal 主事实同步落盘，terminal invocation 写入改为 existing-row 窄更新优先、缺行 guarded insert，summary/attempt snapshot broadcast 在 `database is locked` 下 fail-soft skip 并由 SSE / HTTP reconcile 补齐。
-- 2026-07-02: 第六轮 SQLite 止血把高频 `running` runtime snapshot 从同步主表写改成内存/SSE 立即广播 + batch writer 有界占位落库；账号选择 `last_selected_at` 从路由前台同步写锁中移出，改由进程内公平性锚点叠加排序并批量 coalesce 落库。terminal 主事实、usage、失败分类、raw metadata 与账号 status/cooldown/failure 继续同步可靠写入。
-- 2026-07-03: 第七轮 SQLite 止血把 `running` runtime snapshot 进一步收口为进程内共享 runtime store + SSE/HTTP overlay；DB 只保留首次极窄恢复占位，后续 refresh 不再常规 enqueue SQLite running placeholder。优雅停机只 drain P0/P1 主事实，P2 running 过程态记录 skip 证据；terminal 主事实继续同步落库并清除内存 running 行。
-- 2026-07-03: 第八轮 SQLite 止血按“业务优先于记录”重新定义 proxy capture 记录边界：terminal invocation 记录进入 SQLite write controller 的 P1 best-effort 队列，代理响应不等待落库；running snapshot 完全退出 DB/batch 写路径；terminal 派生 rollup/account-touch 延后到后续 P2 flush，避免和 terminal 记录共享同一个 SQLite 锁窗口。
-- 2026-07-04: 修正 running 可见性边界：tracked proxy capture 请求在本服务 admit 后立即创建最小内存 running shell record，不再等 body 读完、body parse、账号路由或上游 attempt start；后续 snapshot 只补全同一 `invokeId + occurredAt` runtime key。
-- 2026-07-04: 修复 Dashboard 当前 working conversations 在 running snapshot 纯内存化后漏行的问题。`/api/stats/prompt-cache-conversations` 的 activity-window head/page 会把进程内 runtime store 合入 working-set aggregate 和 recent preview，并按 DB working-set key 去重 `totalMatched`，避免 open-resync 只显示已落库 terminal conversations。
-- 2026-07-04: 明确并修正 current in-flight 语义：进程内 `running/pending` overlay 不受 5 分钟 activity window 或自然日窗口限制。Dashboard 当前 summary、当前 working conversations 与上游账号活动都必须展示所有仍在内存中的进行中调用；历史 terminal DB 行继续按所选窗口过滤。
-- 2026-07-05: `/v1/*` 请求入口在 route context 解析前就创建 admit-time running shell；route validation failure 会 terminalize 同一 runtime key，避免前端看到假 running。terminal follow-up 不再强制 `flush_now` SQLite barrier，active subscriber 先依赖 terminal overlay 收敛，summary/quota 后续最终一致。
-- 2026-07-07: Dashboard active truth 从“唯一 promptCacheKey 进行中对话”修正为 invocation phase counts。`queued` 单独展示为排队中，`requesting + responding` 展示为进行中；working conversation 卡片列表仍用 5 分钟工作集筛选，但卡片 totals 使用 prompt-cache key 完整生命周期聚合，并在 snapshot 分页下遵守 snapshot 边界。
-- 2026-07-09: Dashboard 主活动总览在顶层已持有 `dashboardActivity` snapshot 时，不再为可见 `today` / `yesterday` 面板额外挂载同窗口 `useSummary`。同窗口 KPI 与 rate 改由 snapshot 直接驱动，只保留 `yesterday` / `previous7d` 等比较窗口的独立 summary 读取，避免重复 SSE/HTTP reconcile 放大。
+- 2026-07-16：主应用常驻订阅从“`records` SSE + HTTP bootstrap/open-resync/reconcile + 页面私有 fallback”一次性切到单 `/events` 的 topic SSE 合同。覆盖范围内连接只消费 `snapshot/replay/live` envelope；恢复只走 replay 或新 snapshot，不再偷偷打 HTTP。
+- 2026-07-16：订阅 topic 被定义为权威读模型，而不是前端二次聚合状态机。`dashboard.activity`、working conversations、summary、timeseries、parallel-work、prompt-cache、quota、forward-proxy live 等当前态统一以后端 topic payload 为真相源。
+- 2026-07-16：replay 保留层明确为进程内有界窗口，不做跨重启持久化。服务重启、schema epoch 变化、topic 参数变化与 gap 超预算都统一降级为发送新 snapshot。
+- 2026-07-16：端到端 drill 暴露出两个真实收口缺口，并在同轮修复：一是主应用 shell 仍额外拉 `/api/version`，现已改为纯 `app.version` topic；二是后端 envelope 实际发送 `topic_key/schema_epoch`，前端纯 SSE 消费器只认 camelCase，现已统一对外发 `topicKey/schemaEpoch`，并保留前端兼容读取。
+- 2026-07-13：Dashboard 账号活动已先从“收到 `records` 就重查 HTTP”收敛为后端权威当前态快照，为后续纳入统一 topic SSE 总线提供了读模型基础。
+- 2026-07-03 到 2026-07-05：runtime invocation store、admit-time running shell、terminal overlay 与 write-controller 分层完成，确保“当前进行中真相”可以通过统一读模型与 SSE 暴露，而不是依赖同步落库。
+- 2026-06-21：活动调用记录列表曾统一收口到 `records` SSE + open 后静默回源；这一阶段解决了列表实时性，但仍保留了主应用订阅面的大量混合推拉语义，现已被 topic SSE 方案取代。
+
+## Replacements
+
+- 旧合同：`records` 事件通知页面自行回源
+  - 新合同：topic authoritative payload + `snapshot/replay/live`
+- 旧合同：SSE 重连后统一 HTTP open-resync
+  - 新合同：cursor + `schemaEpoch` 驱动 replay，失败则 snapshot
+- 旧合同：健康态定时 reconcile 校准主应用订阅 UI
+  - 新合同：健康态只消费 SSE topic；HTTP 仅保留给闭合历史窗口与非订阅页面
+
+## References
+
+- `./SPEC.md`
+- `./IMPLEMENTATION.md`

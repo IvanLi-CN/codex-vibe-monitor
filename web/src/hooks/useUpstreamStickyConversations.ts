@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  fetchUpstreamStickyConversations,
-  type StickyKeyConversationSelection,
-  type UpstreamStickyConversationsResponse,
+import type {
+  StickyKeyConversationSelection,
+  UpstreamStickyConversationsResponse,
 } from "../lib/api";
-import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
+import { buildTopicDescriptor } from "../lib/sse";
+import { useSubscriptionTopic } from "./useSubscriptionTopic";
 
 export const UPSTREAM_STICKY_SSE_REFRESH_THROTTLE_MS = 5_000;
 export const UPSTREAM_STICKY_POLLING_REFRESH_INTERVAL_MS = 60_000;
@@ -23,24 +22,13 @@ export function shouldTriggerUpstreamStickyOpenResync(
   return now - lastResyncAt >= UPSTREAM_STICKY_OPEN_RESYNC_COOLDOWN_MS;
 }
 
-interface LoadOptions {
-  silent?: boolean;
-}
-
-function isAbortError(error: unknown) {
-  return error instanceof DOMException && error.name === "AbortError";
-}
-
-function isSameSelection(
-  left: StickyKeyConversationSelection,
-  right: StickyKeyConversationSelection,
-) {
-  return (
-    left.mode === right.mode &&
-    (left.mode === "count"
-      ? right.mode === "count" && left.limit === right.limit
-      : right.mode === "activityWindow" && left.activityHours === right.activityHours)
-  );
+function buildStickyTopic(accountId: number, selection: StickyKeyConversationSelection) {
+  return buildTopicDescriptor("prompt-cache.sticky.window", {
+    accountId,
+    ...(selection.mode === "count"
+      ? { limit: selection.limit }
+      : { activityHours: selection.activityHours }),
+  });
 }
 
 export function useUpstreamStickyConversations(
@@ -48,211 +36,14 @@ export function useUpstreamStickyConversations(
   selection: StickyKeyConversationSelection,
   enabled = true,
 ) {
-  const [stats, setStats] = useState<UpstreamStickyConversationsResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const accountIdRef = useRef(accountId);
-  const selectionRef = useRef(selection);
-  const enabledRef = useRef(enabled);
-  const hasHydratedRef = useRef(false);
-  const inFlightRef = useRef(false);
-  const pendingLoadRef = useRef<LoadOptions | null>(null);
-  const pendingOpenResyncRef = useRef(false);
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastRefreshAtRef = useRef(0);
-  const lastOpenResyncAtRef = useRef(0);
-  const requestSeqRef = useRef(0);
-  const abortControllerRef = useRef<AbortController | null>(null);
-
-  const clearPendingRefreshTimer = useCallback(() => {
-    if (!refreshTimerRef.current) return;
-    clearTimeout(refreshTimerRef.current);
-    refreshTimerRef.current = null;
-  }, []);
-
-  useEffect(() => {
-    accountIdRef.current = accountId;
-  }, [accountId]);
-
-  useEffect(() => {
-    selectionRef.current = selection;
-  }, [selection]);
-
-  useEffect(() => {
-    enabledRef.current = enabled;
-  }, [enabled]);
-
-  const invalidateCurrentRequest = useCallback(() => {
-    requestSeqRef.current += 1;
-    abortControllerRef.current?.abort();
-    abortControllerRef.current = null;
-    inFlightRef.current = false;
-    pendingLoadRef.current = null;
-    pendingOpenResyncRef.current = false;
-  }, []);
-
-  const runLoad = useCallback(async ({ silent = false }: LoadOptions = {}) => {
-    const targetAccountId = accountIdRef.current;
-    if (!enabledRef.current || targetAccountId == null) {
-      setStats(null);
-      setError(null);
-      setIsLoading(false);
-      hasHydratedRef.current = false;
-      return;
-    }
-
-    inFlightRef.current = true;
-    const requestSeq = requestSeqRef.current + 1;
-    requestSeqRef.current = requestSeq;
-    const requestedSelection = selectionRef.current;
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-    const shouldShowLoading = !(silent && hasHydratedRef.current);
-    if (shouldShowLoading) setIsLoading(true);
-    try {
-      const response = await fetchUpstreamStickyConversations(
-        targetAccountId,
-        requestedSelection,
-        controller.signal,
-      );
-      if (
-        requestSeq !== requestSeqRef.current ||
-        accountIdRef.current !== targetAccountId ||
-        !isSameSelection(selectionRef.current, requestedSelection) ||
-        !enabledRef.current
-      ) {
-        return;
-      }
-      setStats(response);
-      hasHydratedRef.current = true;
-      setError(null);
-      if (pendingOpenResyncRef.current) {
-        pendingOpenResyncRef.current = false;
-        const pendingSilent = pendingLoadRef.current?.silent ?? true;
-        pendingLoadRef.current = { silent: pendingSilent };
-      }
-    } catch (err) {
-      if (isAbortError(err)) return;
-      if (requestSeq !== requestSeqRef.current) return;
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (requestSeq === requestSeqRef.current) {
-        abortControllerRef.current = null;
-      }
-      if (requestSeq === requestSeqRef.current && shouldShowLoading) setIsLoading(false);
-      if (requestSeq === requestSeqRef.current) {
-        inFlightRef.current = false;
-      }
-      const pendingLoad = pendingLoadRef.current;
-      if (requestSeq === requestSeqRef.current && pendingLoad) {
-        pendingLoadRef.current = null;
-        void runLoad(pendingLoad);
-      }
-    }
-  }, []);
-
-  const load = useCallback(
-    async (options: LoadOptions = {}) => {
-      const silent = options.silent ?? false;
-      if (!enabledRef.current || accountIdRef.current == null) {
-        setStats(null);
-        setError(null);
-        setIsLoading(false);
-        hasHydratedRef.current = false;
-        return;
-      }
-      if (inFlightRef.current) {
-        const pendingSilent = pendingLoadRef.current?.silent ?? true;
-        pendingLoadRef.current = { silent: pendingSilent && silent };
-        return;
-      }
-      await runLoad({ silent });
-    },
-    [runLoad],
-  );
-
-  const triggerSseRefresh = useCallback(() => {
-    if (!enabledRef.current || accountIdRef.current == null) return;
-    const now = Date.now();
-    const delay = getUpstreamStickySseRefreshDelay(lastRefreshAtRef.current, now);
-    const run = () => {
-      refreshTimerRef.current = null;
-      lastRefreshAtRef.current = Date.now();
-      void load({ silent: true });
-    };
-    if (delay === 0) {
-      clearPendingRefreshTimer();
-      run();
-      return;
-    }
-    if (refreshTimerRef.current) return;
-    refreshTimerRef.current = setTimeout(run, delay);
-  }, [clearPendingRefreshTimer, load]);
-
-  const triggerOpenResync = useCallback(
-    (force = false) => {
-      if (!enabledRef.current || accountIdRef.current == null) return;
-      if (!hasHydratedRef.current) {
-        pendingOpenResyncRef.current = true;
-        return;
-      }
-      const now = Date.now();
-      if (!shouldTriggerUpstreamStickyOpenResync(lastOpenResyncAtRef.current, now, force)) return;
-      lastOpenResyncAtRef.current = now;
-      void load({ silent: true });
-    },
-    [load],
-  );
-
-  useEffect(() => {
-    invalidateCurrentRequest();
-    if (!enabled || accountId == null) {
-      setStats(null);
-      setError(null);
-      setIsLoading(false);
-      hasHydratedRef.current = false;
-      return;
-    }
-    void load();
-  }, [accountId, enabled, invalidateCurrentRequest, load]);
-
-  useEffect(() => {
-    const unsubscribe = subscribeToSse((payload) => {
-      if (payload.type !== "records") return;
-      triggerSseRefresh();
-    });
-    return unsubscribe;
-  }, [triggerSseRefresh]);
-
-  useEffect(() => {
-    const unsubscribe = subscribeToSseOpen(() => {
-      triggerOpenResync();
-    });
-    return unsubscribe;
-  }, [triggerOpenResync]);
-
-  useEffect(() => {
-    if (!enabled || accountId == null) return undefined;
-    const timer = setInterval(() => {
-      void load({ silent: true });
-    }, UPSTREAM_STICKY_POLLING_REFRESH_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [accountId, enabled, load]);
-
-  useEffect(
-    () => () => {
-      abortControllerRef.current?.abort();
-      clearPendingRefreshTimer();
-      pendingLoadRef.current = null;
-      pendingOpenResyncRef.current = false;
-    },
-    [clearPendingRefreshTimer],
-  );
+  const topic = enabled && accountId != null ? buildStickyTopic(accountId, selection) : null;
+  const { data, isLoading, error, refresh } =
+    useSubscriptionTopic<UpstreamStickyConversationsResponse>(topic, enabled && accountId != null);
 
   return {
-    stats,
+    stats: data,
     isLoading,
     error,
-    refresh: load,
+    refresh,
   };
 }
