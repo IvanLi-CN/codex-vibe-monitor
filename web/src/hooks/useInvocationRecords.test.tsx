@@ -676,11 +676,11 @@ describe("useInvocationRecords", () => {
       ],
       ["invoke-new-2026-03-10T00:01:00Z"],
     );
-    await flushAsync();
-
-    expect(text("snapshot")).toBe("42");
-    expect(text("total")).toBe("3");
-    expect(text("model")).toBe("new-model");
+    await waitFor(() => {
+      expect(text("snapshot")).toBe("42");
+      expect(text("total")).toBe("3");
+      expect(text("model")).toBe("new-model");
+    });
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(RECORDS_NEW_COUNT_POLL_INTERVAL_MS);
@@ -899,6 +899,7 @@ describe("useInvocationRecords", () => {
           occurredAt: "2026-03-10T00:01:00Z",
           createdAt: "2026-03-10T00:01:00Z",
           status: "success",
+          model: "live-added-model",
         }),
         createRecord({
           id: 1,
@@ -917,10 +918,10 @@ describe("useInvocationRecords", () => {
       ],
       ["invoke-live-added-2026-03-10T00:01:00Z"],
     );
-    await flushAsync();
-
-    expect(text("model")).toBe("baseline-model");
-    expect(text("total")).toBe("3");
+    await waitFor(() => {
+      expect(text("model")).toBe("live-added-model");
+      expect(text("total")).toBe("3");
+    });
   });
 
   it("applies visible SSE updates when only non-sort detail fields change", async () => {
