@@ -59,6 +59,7 @@ export default function DashboardPage() {
     loadMore,
     recentPreviewLimit,
     setRefreshTargetCount,
+    refresh: refreshWorkingConversations,
   } = useDashboardWorkingConversations();
   const dashboardActivityEnabled = activeRange !== "usage";
   const {
@@ -251,6 +252,9 @@ export default function DashboardPage() {
         onUpstreamAccountActivityEnabledChange={setIncludeUpstreamAccountActivity}
         onUpstreamAccountPolicyChanged={() => {
           reloadDashboardActivity();
+        }}
+        onConversationsChanged={() => {
+          refreshWorkingConversations();
         }}
       />
       <DashboardInvocationDetailDrawer

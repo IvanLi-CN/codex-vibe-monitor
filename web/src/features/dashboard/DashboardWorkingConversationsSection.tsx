@@ -1,6 +1,7 @@
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   useCallback,
   useEffect,
@@ -9,11 +10,23 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { InvocationErrorSummary } from "../../components/InvocationErrorSummary";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
+import { BubblePopoverContent } from "../../components/ui/bubble-popover";
 import { Button } from "../../components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../../components/ui/dialog";
+import { Popover, PopoverTrigger } from "../../components/ui/popover";
 import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
+import { SelectField } from "../../components/ui/select-field";
 import { Spinner } from "../../components/ui/spinner";
 import { Tooltip } from "../../components/ui/tooltip";
 import { useDashboardUpstreamAccountActivity } from "../../hooks/useDashboardUpstreamAccountActivity";
@@ -22,13 +35,20 @@ import type { TranslationKey } from "../../i18n";
 import { useTranslation } from "../../i18n";
 import type {
   ModelPerformance,
+  PromptCacheConversationRewriteMode,
   TagFastModeRewriteMode,
   TagPriorityTier,
   UpdateGroupAccountRoutingRulePayload,
   UpstreamAccountActivityAccount,
   UpstreamAccountActivityResponse,
+  UpstreamAccountGroupSummary,
+  UpstreamAccountSummary,
 } from "../../lib/api";
-import { updateUpstreamAccount } from "../../lib/api";
+import {
+  bulkUpdatePromptCacheConversationBindings,
+  fetchUpstreamAccounts,
+  updateUpstreamAccount,
+} from "../../lib/api";
 import type {
   DashboardWorkingConversationCardModel,
   DashboardWorkingConversationInvocationModel,
@@ -121,6 +141,7 @@ interface DashboardWorkingConversationsSectionProps {
   upstreamAccountRecentPreviewLimit?: number;
   onUpstreamAccountActivityEnabledChange?: (enabled: boolean) => void;
   onUpstreamAccountPolicyChanged?: () => void;
+  onConversationsChanged?: () => void;
 }
 
 export interface DashboardWorkingConversationSelection {
@@ -166,6 +187,27 @@ type DashboardManualBindingBadgeMeta = {
   toneClassName: string;
 };
 
+type DashboardConversationBulkBindTargetKind = "group" | "upstreamAccount";
+
+type DashboardConversationBulkFeedback = {
+  variant: "success" | "warning" | "error";
+  message: string;
+};
+
+type DashboardConversationBulkBindingTargetsState = {
+  accounts: UpstreamAccountSummary[];
+  groups: string[];
+  loading: boolean;
+  loaded: boolean;
+  error: string | null;
+};
+
+function hasMultiSelectModifier(
+  event: Pick<ReactMouseEvent<HTMLElement>, "metaKey" | "ctrlKey" | "button">,
+) {
+  return event.button === 0 && (event.metaKey || event.ctrlKey);
+}
+
 function resolveDashboardManualBindingBadgeMeta(
   binding: DashboardWorkingConversationCardModel["manualBinding"],
   t: (key: TranslationKey, params?: Record<string, string | number>) => string,
@@ -194,6 +236,57 @@ function resolveDashboardManualBindingBadgeMeta(
     }),
     toneClassName: "border-secondary/45 bg-secondary/14 text-secondary",
   };
+}
+
+function conversationBindingAccountLabel(account: UpstreamAccountSummary) {
+  const identity = account.email?.trim() || account.displayName.trim();
+  const group = account.groupName?.trim();
+  return group ? `${identity} · ${group}` : identity;
+}
+
+function accountCanBePromptCacheBindingTarget(account: UpstreamAccountSummary) {
+  if (account.provider !== "codex" || !account.enabled || account.status !== "active") {
+    return false;
+  }
+  if (account.kind === "api_key_codex") {
+    return Boolean(account.maskedApiKey?.trim());
+  }
+  if (account.kind === "oauth_codex") {
+    return account.hasRefreshToken !== false;
+  }
+  return true;
+}
+
+function normalizeConversationBindingGroups(
+  groups: UpstreamAccountGroupSummary[],
+  accounts: UpstreamAccountSummary[],
+  localeTag: string,
+) {
+  return Array.from(
+    new Set(
+      [
+        ...groups.map((group) => group.groupName?.trim() ?? ""),
+        ...accounts.map((account) => account.groupName?.trim() ?? ""),
+      ].filter((groupName) => groupName.length > 0),
+    ),
+  ).sort((left, right) => left.localeCompare(right, localeTag));
+}
+
+function formatDashboardConversationBulkFailureMessage(
+  failedItems: Array<{ promptCacheKey: string; error: string | null }>,
+  locale: "zh" | "en",
+) {
+  if (failedItems.length === 0) return null;
+  const sample = failedItems
+    .slice(0, 3)
+    .map((item) =>
+      item.error?.trim() ? `${item.promptCacheKey}: ${item.error.trim()}` : item.promptCacheKey,
+    )
+    .join(" · ");
+  if (locale === "zh") {
+    return `有 ${failedItems.length} 个对话批量操作失败：${sample}`;
+  }
+  return `${failedItems.length} conversations failed to update: ${sample}`;
 }
 
 type StatusMeta = {
@@ -1989,6 +2082,7 @@ function InvocationSlot({
   promptCacheKey,
   nowMs,
   locale,
+  interactionsDisabled = false,
   onOpenUpstreamAccount,
   onOpenInvocation,
 }: {
@@ -1999,6 +2093,7 @@ function InvocationSlot({
   promptCacheKey: string;
   nowMs: number;
   locale: "zh" | "en";
+  interactionsDisabled?: boolean;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   onOpenInvocation?: (selection: DashboardWorkingConversationInvocationSelection) => void;
 }) {
@@ -2045,7 +2140,7 @@ function InvocationSlot({
       accountClickable: boolean,
       className?: string,
     ) => {
-      if (!accountClickable || accountId == null) {
+      if (interactionsDisabled || !accountClickable || accountId == null) {
         return (
           <span className={cn("truncate", className)} title={accountLabel}>
             {accountLabel}
@@ -2138,13 +2233,21 @@ function InvocationSlot({
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${label} · ${displayConversationSequenceId} · ${invocation.record.invokeId}`;
 
   const handleOpenInvocation = useCallback(() => {
+    if (interactionsDisabled) return;
     onOpenInvocation?.({
       slotKind,
       conversationSequenceId,
       promptCacheKey,
       invocation,
     });
-  }, [conversationSequenceId, invocation, onOpenInvocation, promptCacheKey, slotKind]);
+  }, [
+    conversationSequenceId,
+    interactionsDisabled,
+    invocation,
+    onOpenInvocation,
+    promptCacheKey,
+    slotKind,
+  ]);
 
   const handleSlotKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -2158,18 +2261,20 @@ function InvocationSlot({
 
   return (
     <div
-      role="button"
-      tabIndex={0}
-      aria-label={invocationActionLabel}
+      role={interactionsDisabled ? undefined : "button"}
+      tabIndex={interactionsDisabled ? undefined : 0}
+      aria-label={interactionsDisabled ? undefined : invocationActionLabel}
       data-testid="dashboard-working-conversation-slot"
       data-slot-kind={slotKind}
       className={cn(
         SLOT_CLASS_NAME,
         statusMeta.slotSurfaceClassName,
-        "cursor-pointer transition-colors duration-200 hover:bg-base-100/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+        interactionsDisabled
+          ? "transition-colors duration-200"
+          : "cursor-pointer transition-colors duration-200 hover:bg-base-100/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
       )}
-      onClick={handleOpenInvocation}
-      onKeyDown={handleSlotKeyDown}
+      onClick={interactionsDisabled ? undefined : handleOpenInvocation}
+      onKeyDown={interactionsDisabled ? undefined : handleSlotKeyDown}
     >
       <div
         data-testid="dashboard-working-conversation-slot-header"
@@ -2246,31 +2351,50 @@ function InvocationSlot({
             >
               <div className="flex min-w-[7rem] max-w-full flex-1 items-baseline gap-1.5 font-mono font-semibold">
                 {viewModel.accountClickable && viewModel.accountId != null ? (
-                  <button
-                    type="button"
-                    data-testid="dashboard-working-conversation-account-chip"
-                    className={cn(
-                      "inline-flex min-w-0 max-w-full cursor-pointer appearance-none items-baseline border-0 bg-transparent p-0 text-left font-mono text-[9.5px] font-semibold text-base-content no-underline transition-colors duration-200 hover:text-primary focus-visible:rounded-[0.2rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-                      viewModel.accountRoutingInProgress &&
-                        INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
-                    )}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onOpenUpstreamAccount?.(viewModel.accountId ?? 0, viewModel.accountLabel);
-                    }}
-                    onKeyDown={(event) => {
-                      event.stopPropagation();
-                    }}
-                    title={viewModel.accountLabel}
-                    aria-label={viewModel.accountLabel}
-                  >
+                  interactionsDisabled ? (
                     <span
-                      data-testid="dashboard-working-conversation-account-name"
-                      className="block min-w-0 truncate whitespace-nowrap text-left"
+                      data-testid="dashboard-working-conversation-account-chip"
+                      className={cn(
+                        "inline-flex min-w-0 max-w-full items-baseline font-mono text-[9.5px] font-semibold text-base-content",
+                        viewModel.accountRoutingInProgress &&
+                          INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
+                      )}
+                      title={viewModel.accountLabel}
                     >
-                      {viewModel.accountLabel}
+                      <span
+                        data-testid="dashboard-working-conversation-account-name"
+                        className="block min-w-0 truncate whitespace-nowrap text-left"
+                      >
+                        {viewModel.accountLabel}
+                      </span>
                     </span>
-                  </button>
+                  ) : (
+                    <button
+                      type="button"
+                      data-testid="dashboard-working-conversation-account-chip"
+                      className={cn(
+                        "inline-flex min-w-0 max-w-full cursor-pointer appearance-none items-baseline border-0 bg-transparent p-0 text-left font-mono text-[9.5px] font-semibold text-base-content no-underline transition-colors duration-200 hover:text-primary focus-visible:rounded-[0.2rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                        viewModel.accountRoutingInProgress &&
+                          INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
+                      )}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onOpenUpstreamAccount?.(viewModel.accountId ?? 0, viewModel.accountLabel);
+                      }}
+                      onKeyDown={(event) => {
+                        event.stopPropagation();
+                      }}
+                      title={viewModel.accountLabel}
+                      aria-label={viewModel.accountLabel}
+                    >
+                      <span
+                        data-testid="dashboard-working-conversation-account-name"
+                        className="block min-w-0 truncate whitespace-nowrap text-left"
+                      >
+                        {viewModel.accountLabel}
+                      </span>
+                    </button>
+                  )
                 ) : (
                   <span
                     data-testid="dashboard-working-conversation-account-chip"
@@ -3412,6 +3536,7 @@ export function DashboardWorkingConversationsSection({
   upstreamAccountRecentPreviewLimit: externalUpstreamAccountRecentPreviewLimit,
   onUpstreamAccountActivityEnabledChange,
   onUpstreamAccountPolicyChanged,
+  onConversationsChanged,
 }: DashboardWorkingConversationsSectionProps) {
   const { t, locale } = useTranslation();
   const [preferredView, setPreferredView] = useState<DashboardWorkspaceView>(() =>
@@ -3441,8 +3566,32 @@ export function DashboardWorkingConversationsSection({
   const upstreamAccountRefreshChipVisibleAtRef = useRef<number | null>(null);
   const upstreamAccountRefreshChipShowTimerRef = useRef<number | null>(null);
   const upstreamAccountRefreshChipHideTimerRef = useRef<number | null>(null);
+  const fastModeTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [isUpstreamAccountRefreshChipVisible, setIsUpstreamAccountRefreshChipVisible] =
     useState(false);
+  const [selectionModeEnabled, setSelectionModeEnabled] = useState(false);
+  const [selectedPromptCacheKeys, setSelectedPromptCacheKeys] = useState<string[]>([]);
+  const [routeBindDialogOpen, setRouteBindDialogOpen] = useState(false);
+  const [clearAffinityDialogOpen, setClearAffinityDialogOpen] = useState(false);
+  const [fastModePopoverOpen, setFastModePopoverOpen] = useState(false);
+  const [routeBindTargetKind, setRouteBindTargetKind] =
+    useState<DashboardConversationBulkBindTargetKind>("group");
+  const [routeBindGroupName, setRouteBindGroupName] = useState("");
+  const [routeBindAccountId, setRouteBindAccountId] = useState("");
+  const [bulkFastModeRewriteMode, setBulkFastModeRewriteMode] =
+    useState<PromptCacheConversationRewriteMode>("keep_original");
+  const [bulkActionBusy, setBulkActionBusy] = useState<
+    "bind" | "clearAndResetAffinity" | "setFastModeRewriteMode" | null
+  >(null);
+  const [bulkFeedback, setBulkFeedback] = useState<DashboardConversationBulkFeedback | null>(null);
+  const [bindingTargets, setBindingTargets] =
+    useState<DashboardConversationBulkBindingTargetsState>({
+      accounts: [],
+      groups: [],
+      loading: false,
+      loaded: false,
+      error: null,
+    });
   const setGridContainerRef = useCallback((node: HTMLDivElement | null) => {
     setGridElement(node);
   }, []);
@@ -3475,6 +3624,26 @@ export function DashboardWorkingConversationsSection({
       }),
     [localeTag],
   );
+  const selectedPromptCacheKeySet = useMemo(
+    () => new Set(selectedPromptCacheKeys),
+    [selectedPromptCacheKeys],
+  );
+  const currentPromptCacheKeySet = useMemo(
+    () => new Set(cards.map((card) => card.promptCacheKey)),
+    [cards],
+  );
+  const selectedConversationCount = selectedPromptCacheKeys.length;
+  const closeConversationBulkDialogs = useCallback(() => {
+    setRouteBindDialogOpen(false);
+    setClearAffinityDialogOpen(false);
+    setFastModePopoverOpen(false);
+  }, []);
+  const resetConversationSelectionState = useCallback(() => {
+    setSelectionModeEnabled(false);
+    setSelectedPromptCacheKeys([]);
+    setBulkFeedback(null);
+    closeConversationBulkDialogs();
+  }, [closeConversationBulkDialogs]);
   const upstreamAccountsDisabled = activeRange === "usage";
   const activeView: DashboardWorkspaceView =
     upstreamAccountsDisabled && preferredView === "upstreamAccounts"
@@ -3588,6 +3757,174 @@ export function DashboardWorkingConversationsSection({
       upstreamAccountActivity != null ||
       showUpstreamAccountActivityLoading ||
       upstreamAccountActivityEnabled);
+
+  useEffect(() => {
+    if (activeView === "conversations") return;
+    resetConversationSelectionState();
+  }, [activeView, resetConversationSelectionState]);
+
+  useEffect(() => {
+    setSelectedPromptCacheKeys((current) =>
+      current.filter((promptCacheKey) => currentPromptCacheKeySet.has(promptCacheKey)),
+    );
+  }, [currentPromptCacheKeySet]);
+
+  useEffect(() => {
+    if (selectedPromptCacheKeys.length > 0) return;
+    closeConversationBulkDialogs();
+  }, [closeConversationBulkDialogs, selectedPromptCacheKeys.length]);
+
+  const loadConversationBindingTargets = useCallback(async () => {
+    setBindingTargets((current) => ({
+      ...current,
+      loading: true,
+      error: null,
+    }));
+    try {
+      const response = await fetchUpstreamAccounts({
+        includeAll: true,
+        pageSize: 500,
+      });
+      const accounts = response.items.filter(accountCanBePromptCacheBindingTarget);
+      const groups = normalizeConversationBindingGroups(response.groups, accounts, localeTag);
+      setBindingTargets({
+        accounts,
+        groups,
+        loading: false,
+        loaded: true,
+        error: null,
+      });
+      setRouteBindTargetKind((current) => {
+        if (current === "group" && groups.length === 0 && accounts.length > 0) {
+          return "upstreamAccount";
+        }
+        if (current === "upstreamAccount" && accounts.length === 0 && groups.length > 0) {
+          return "group";
+        }
+        return current;
+      });
+      setRouteBindGroupName((current) => current || groups[0] || "");
+      setRouteBindAccountId((current) => current || (accounts[0] ? String(accounts[0].id) : ""));
+    } catch (err) {
+      setBindingTargets((current) => ({
+        ...current,
+        loading: false,
+        loaded: false,
+        error: err instanceof Error ? err.message : String(err),
+      }));
+    }
+  }, [localeTag]);
+
+  useEffect(() => {
+    if (
+      !routeBindDialogOpen ||
+      bindingTargets.loaded ||
+      bindingTargets.loading ||
+      bindingTargets.error != null
+    )
+      return;
+    void loadConversationBindingTargets();
+  }, [
+    bindingTargets.error,
+    bindingTargets.loaded,
+    bindingTargets.loading,
+    loadConversationBindingTargets,
+    routeBindDialogOpen,
+  ]);
+
+  useEffect(() => {
+    if (bindingTargets.groups.length > 0 && !bindingTargets.groups.includes(routeBindGroupName)) {
+      setRouteBindGroupName(bindingTargets.groups[0] ?? "");
+    }
+  }, [bindingTargets.groups, routeBindGroupName]);
+
+  useEffect(() => {
+    if (
+      bindingTargets.accounts.length > 0 &&
+      !bindingTargets.accounts.some((account) => String(account.id) === routeBindAccountId)
+    ) {
+      setRouteBindAccountId(String(bindingTargets.accounts[0]?.id ?? ""));
+    }
+  }, [bindingTargets.accounts, routeBindAccountId]);
+
+  const applyBulkConversationAction = useCallback(
+    async (
+      payload:
+        | {
+            action: "bind";
+            bindingKind: "group";
+            groupName: string;
+          }
+        | {
+            action: "bind";
+            bindingKind: "upstreamAccount";
+            upstreamAccountId: number;
+          }
+        | {
+            action: "clearAndResetAffinity";
+          }
+        | {
+            action: "setFastModeRewriteMode";
+            fastModeRewriteMode: PromptCacheConversationRewriteMode;
+          },
+    ) => {
+      if (selectedPromptCacheKeys.length === 0) return;
+      setBulkActionBusy(payload.action);
+      setBulkFeedback(null);
+      try {
+        const response = await bulkUpdatePromptCacheConversationBindings({
+          ...payload,
+          promptCacheKeys: selectedPromptCacheKeys,
+        });
+        const succeededKeys = new Set(
+          response.items.filter((item) => item.ok).map((item) => item.promptCacheKey),
+        );
+        const failedItems = response.items.filter((item) => !item.ok);
+        if (succeededKeys.size > 0) {
+          setSelectedPromptCacheKeys((current) =>
+            current.filter((promptCacheKey) => !succeededKeys.has(promptCacheKey)),
+          );
+          onConversationsChanged?.();
+        }
+        const failureMessage = formatDashboardConversationBulkFailureMessage(failedItems, locale);
+        if (failedItems.length === 0) {
+          setBulkFeedback({
+            variant: "success",
+            message:
+              locale === "zh"
+                ? `已更新 ${response.totalSucceeded} 个对话。`
+                : `Updated ${response.totalSucceeded} conversations.`,
+          });
+        } else if (response.totalSucceeded > 0) {
+          setBulkFeedback({
+            variant: "warning",
+            message:
+              locale === "zh"
+                ? `已更新 ${response.totalSucceeded} 个对话。${failureMessage ?? ""}`
+                : `Updated ${response.totalSucceeded} conversations. ${failureMessage ?? ""}`,
+          });
+        } else {
+          setBulkFeedback({
+            variant: "error",
+            message:
+              failureMessage ??
+              (locale === "zh"
+                ? "批量操作失败，请稍后重试。"
+                : "Bulk action failed. Please try again."),
+          });
+        }
+        closeConversationBulkDialogs();
+      } catch (err) {
+        setBulkFeedback({
+          variant: "error",
+          message: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        setBulkActionBusy(null);
+      }
+    },
+    [closeConversationBulkDialogs, locale, onConversationsChanged, selectedPromptCacheKeys],
+  );
   useEffect(() => {
     if (!shouldReserveUpstreamAccountRefreshChip || upstreamAccounts.length === 0) {
       clearUpstreamAccountRefreshChipTimers();
@@ -3891,6 +4228,347 @@ export function DashboardWorkingConversationsSection({
     visibleAnchorRef.current = nextAnchor?.hasHiddenContentAbove ? nextAnchor : null;
   }, [cards, columnCount, gridElement, rows, upstreamAccounts, visibleAnchorTarget]);
 
+  const selectionModeButtonLabel =
+    locale === "zh"
+      ? selectionModeEnabled
+        ? "退出选择"
+        : "选择模式"
+      : selectionModeEnabled
+        ? "Exit selection"
+        : "Selection mode";
+  const selectionSummaryLabel =
+    locale === "zh"
+      ? `已选 ${selectedConversationCount} 个对话`
+      : `${selectedConversationCount} conversations selected`;
+  const routeBindDialogTitle = locale === "zh" ? "批量路由绑定" : "Bulk route binding";
+  const routeBindDialogDescription =
+    locale === "zh"
+      ? "支持批量绑定到分组或上游账号；如果要清空绑定，可在此弹窗底部直接进入强操作确认。"
+      : "Bind the selected conversations to a group or upstream account. If you need to clear bindings instead, use the destructive action shortcut in this dialog footer.";
+  const clearAffinityDialogTitle =
+    locale === "zh" ? "清空绑定并重选" : "Clear bindings and reselect";
+  const clearAffinityDialogDescription =
+    locale === "zh"
+      ? "会删除对话级手动绑定，并同时清掉 sticky route 与加密 owner lock，下一次调用重新选择上游账号。"
+      : "This removes conversation bindings, sticky routes, and encrypted owner locks so the next request reselects an upstream account.";
+  const clearAffinityCalloutTitle =
+    locale === "zh"
+      ? "会立即清理以下会话级锁定痕迹"
+      : "This immediately clears the following conversation-level affinity locks";
+  const clearAffinityCalloutDescription =
+    locale === "zh"
+      ? "下一次调用不再沿用当前 sticky / owner 归属，会重新选择上游账号。"
+      : "The next request will reselect an upstream account instead of reusing the current sticky or owner affinity.";
+  const clearAffinityCalloutItems =
+    locale === "zh"
+      ? [
+          {
+            key: "manual-binding",
+            label: "对话级手动绑定",
+            detail: "conversation manual binding",
+          },
+          {
+            key: "sticky-route",
+            label: "池 sticky route",
+            detail: "pool sticky route",
+          },
+          {
+            key: "owner-lock",
+            label: "加密 owner lock",
+            detail: "encrypted owner lock",
+          },
+        ]
+      : [
+          {
+            key: "manual-binding",
+            label: "Conversation manual binding",
+            detail: "Conversation-level account override.",
+          },
+          {
+            key: "sticky-route",
+            label: "Pool sticky route",
+            detail: "Sticky upstream affinity for this conversation.",
+          },
+          {
+            key: "owner-lock",
+            label: "Encrypted owner lock",
+            detail: "Encrypted ownership marker used for reuse.",
+          },
+        ];
+  const fastModePopoverTitle = locale === "zh" ? "FAST 模式" : "FAST mode";
+  const fastModePopoverDescription =
+    locale === "zh"
+      ? "从下列策略中点选一项，立即批量写入 conversation 级 FAST 改写策略。"
+      : "Pick a policy below to apply a conversation-level FAST rewrite mode immediately.";
+  const fastModeOptions = useMemo(
+    () => [
+      {
+        value: "keep_original" as PromptCacheConversationRewriteMode,
+        label: t("live.conversations.drawer.policy.rewrite.keepOriginal"),
+        description:
+          locale === "zh"
+            ? "保持原样，不主动补 Fast，也不主动移除 Fast。"
+            : "Leave FAST unchanged for selected conversations.",
+      },
+      {
+        value: "fill_missing" as PromptCacheConversationRewriteMode,
+        label: t("live.conversations.drawer.policy.rewrite.fillMissing"),
+        description:
+          locale === "zh"
+            ? "只有原请求没带 Fast 时才补上。"
+            : "Add FAST only when the original request does not already include it.",
+      },
+      {
+        value: "force_add" as PromptCacheConversationRewriteMode,
+        label: t("live.conversations.drawer.policy.rewrite.forceAdd"),
+        description:
+          locale === "zh"
+            ? "强制为所选对话加上 Fast。"
+            : "Force FAST onto every selected conversation.",
+      },
+      {
+        value: "force_remove" as PromptCacheConversationRewriteMode,
+        label: t("live.conversations.drawer.policy.rewrite.forceRemove"),
+        description:
+          locale === "zh"
+            ? "无论原请求如何，都移除 Fast。"
+            : "Remove FAST even when it was originally requested.",
+      },
+    ],
+    [locale, t],
+  );
+  const conversationBulkActionPanel =
+    activeView === "conversations" && selectedConversationCount > 0 ? (
+      <div
+        className="dashboard-floating-action-shell"
+        data-testid="dashboard-working-conversations-bulk-panel-shell"
+      >
+        <div
+          className="dashboard-floating-action-panel"
+          data-testid="dashboard-working-conversations-bulk-panel"
+        >
+          <div className="flex flex-col gap-3 px-4 py-4 sm:px-5">
+            <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-[0.72rem] font-semibold uppercase tracking-[0.14em] text-info/78">
+                  <AppIcon name="check-circle-outline" className="h-3.5 w-3.5" aria-hidden />
+                  <span>{locale === "zh" ? "批量操作" : "Bulk actions"}</span>
+                </div>
+                <p className="mt-1 text-sm font-semibold text-base-content">
+                  {selectionSummaryLabel}
+                </p>
+                <p className="mt-1 text-xs text-base-content/68">
+                  {locale === "zh"
+                    ? "成功项会自动出列，失败项会保留选中。"
+                    : "Successful items leave the selection automatically; failed items stay selected."}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  disabled={bulkActionBusy != null}
+                  data-testid="dashboard-working-conversations-route-bind-button"
+                  onClick={() => {
+                    if (bindingTargets.error) {
+                      setBindingTargets((current) => ({
+                        ...current,
+                        loaded: false,
+                        error: null,
+                      }));
+                    }
+                    setRouteBindDialogOpen(true);
+                  }}
+                >
+                  {locale === "zh" ? "路由绑定" : "Bind route"}
+                </Button>
+                <Popover
+                  open={fastModePopoverOpen}
+                  onOpenChange={(nextOpen) => {
+                    if (bulkActionBusy == null) setFastModePopoverOpen(nextOpen);
+                  }}
+                >
+                  <PopoverTrigger asChild>
+                    <Button
+                      ref={fastModeTriggerRef}
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      disabled={bulkActionBusy != null}
+                      data-testid="dashboard-working-conversations-fast-mode-button"
+                      className={cn(
+                        "gap-2 pr-2.5",
+                        fastModePopoverOpen &&
+                          "border-info/55 bg-info/16 text-info shadow-[0_0_0_1px_rgba(72,186,255,0.14)]",
+                      )}
+                    >
+                      <span>FAST 模式</span>
+                      {bulkActionBusy === "setFastModeRewriteMode" ? (
+                        <Spinner size="sm" />
+                      ) : (
+                        <AppIcon
+                          name={fastModePopoverOpen ? "chevron-up" : "chevron-down"}
+                          className="h-3.5 w-3.5"
+                          aria-hidden
+                        />
+                      )}
+                    </Button>
+                  </PopoverTrigger>
+                  <BubblePopoverContent
+                    anchorElement={fastModeTriggerRef.current}
+                    side="top"
+                    align="end"
+                    sideOffset={10}
+                    collisionPadding={12}
+                    className="w-[min(24rem,calc(100vw-1rem))] rounded-[1.35rem] px-4 py-4 shadow-[0_24px_70px_rgba(4,12,26,0.44)]"
+                    data-testid="dashboard-working-conversations-fast-mode-popover"
+                    onOpenAutoFocus={(event) => event.preventDefault()}
+                    onCloseAutoFocus={(event) => event.preventDefault()}
+                  >
+                    <div className="space-y-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-semibold text-base-content">
+                            {fastModePopoverTitle}
+                          </p>
+                          <span className="rounded-full border border-base-300/70 bg-base-200/58 px-2.5 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-base-content/72">
+                            {selectedConversationCount}
+                          </span>
+                        </div>
+                        <p className="text-xs font-medium text-base-content/72">
+                          {selectionSummaryLabel}
+                        </p>
+                        <p className="text-xs leading-5 text-base-content/62">
+                          {fastModePopoverDescription}
+                        </p>
+                      </div>
+                      <div
+                        role="radiogroup"
+                        aria-label={locale === "zh" ? "批量 FAST 模式" : "Bulk FAST mode"}
+                        aria-busy={bulkActionBusy === "setFastModeRewriteMode"}
+                        className="grid gap-2"
+                      >
+                        {fastModeOptions.map((option) => {
+                          const active = option.value === bulkFastModeRewriteMode;
+                          return (
+                            <button
+                              key={option.value}
+                              type="button"
+                              role="radio"
+                              aria-checked={active}
+                              disabled={bulkActionBusy === "setFastModeRewriteMode"}
+                              data-testid="dashboard-working-conversations-fast-mode-option"
+                              data-value={option.value}
+                              className={cn(
+                                "rounded-[1.05rem] border px-3.5 py-3 text-left transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/35 disabled:cursor-not-allowed disabled:opacity-70",
+                                active
+                                  ? "border-info/60 bg-info/14 text-base-content shadow-[inset_0_0_0_1px_rgba(72,186,255,0.16)]"
+                                  : "border-base-300/70 bg-base-200/55 text-base-content/82 hover:border-info/28 hover:bg-base-200/78",
+                              )}
+                              onClick={() => {
+                                setBulkFastModeRewriteMode(option.value);
+                                void applyBulkConversationAction({
+                                  action: "setFastModeRewriteMode",
+                                  fastModeRewriteMode: option.value,
+                                });
+                              }}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="font-semibold">{option.label}</div>
+                                  <p className="mt-1 text-xs leading-5 text-base-content/62">
+                                    {option.description}
+                                  </p>
+                                </div>
+                                <span
+                                  className={cn(
+                                    "mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors duration-150",
+                                    active
+                                      ? "border-info/55 bg-info/18 text-info"
+                                      : "border-base-300/75 bg-base-100/60 text-base-content/30",
+                                  )}
+                                >
+                                  <AppIcon name="check-bold" className="h-3.5 w-3.5" aria-hidden />
+                                </span>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </BubblePopoverContent>
+                </Popover>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  disabled={bulkActionBusy != null}
+                  data-testid="dashboard-working-conversations-clear-affinity-button"
+                  onClick={() => setClearAffinityDialogOpen(true)}
+                >
+                  {locale === "zh" ? "清空绑定并重选" : "Clear and reselect"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  disabled={bulkActionBusy != null}
+                  data-testid="dashboard-working-conversations-clear-selection-button"
+                  onClick={() => setSelectedPromptCacheKeys([])}
+                >
+                  {locale === "zh" ? "取消选择" : "Clear selection"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    ) : null;
+  const routeBindSubmitDisabled =
+    bulkActionBusy != null ||
+    bindingTargets.loading ||
+    (routeBindTargetKind === "group" ? !routeBindGroupName : !routeBindAccountId);
+  const toggleConversationSelection = useCallback((promptCacheKey: string) => {
+    setSelectedPromptCacheKeys((current) =>
+      current.includes(promptCacheKey)
+        ? current.filter((candidate) => candidate !== promptCacheKey)
+        : [...current, promptCacheKey],
+    );
+  }, []);
+  const toggleModifierConversationSelection = useCallback(
+    (promptCacheKey: string) => {
+      setBulkFeedback(null);
+      toggleConversationSelection(promptCacheKey);
+    },
+    [toggleConversationSelection],
+  );
+  const handleConversationCardClickCapture = useCallback(
+    (event: ReactMouseEvent<HTMLElement>, promptCacheKey: string) => {
+      if (!hasMultiSelectModifier(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      toggleModifierConversationSelection(promptCacheKey);
+    },
+    [toggleModifierConversationSelection],
+  );
+  const handleSelectionCardClick = useCallback(
+    (event: ReactMouseEvent<HTMLElement>, promptCacheKey: string) => {
+      if (hasMultiSelectModifier(event)) return;
+      toggleConversationSelection(promptCacheKey);
+    },
+    [toggleConversationSelection],
+  );
+  const handleSelectionCardKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLElement>, promptCacheKey: string) => {
+      if (event.target !== event.currentTarget) return;
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      toggleConversationSelection(promptCacheKey);
+    },
+    [toggleConversationSelection],
+  );
+
   if (error && cards.length === 0) {
     return (
       <section className="surface-panel" data-testid="dashboard-working-conversations">
@@ -3975,6 +4653,35 @@ export function DashboardWorkingConversationsSection({
                 {countBadgeLabel}
               </Badge>
             </div>
+            {activeView === "conversations" ? (
+              <Button
+                type="button"
+                variant={selectionModeEnabled ? "secondary" : "ghost"}
+                className={cn(
+                  "h-11 min-w-0 gap-2 px-3 text-sm desktop:w-auto",
+                  selectionModeEnabled
+                    ? "border border-info/35 bg-info/10 text-info hover:bg-info/16"
+                    : "text-base-content/75 hover:bg-base-200/70 hover:text-base-content",
+                )}
+                disabled={bulkActionBusy != null}
+                onClick={() => {
+                  if (selectionModeEnabled) {
+                    resetConversationSelectionState();
+                    return;
+                  }
+                  setBulkFeedback(null);
+                  setSelectionModeEnabled(true);
+                }}
+                data-testid="dashboard-working-conversations-selection-mode-button"
+              >
+                <AppIcon
+                  name={selectionModeEnabled ? "close" : "check-circle-outline"}
+                  className="h-4 w-4 shrink-0"
+                  aria-hidden="true"
+                />
+                <span className="truncate">{selectionModeButtonLabel}</span>
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="ghost"
@@ -3997,6 +4704,12 @@ export function DashboardWorkingConversationsSection({
         {error && cards.length > 0 ? (
           <Alert variant="error">
             <span>{error}</span>
+          </Alert>
+        ) : null}
+
+        {bulkFeedback ? (
+          <Alert variant={bulkFeedback.variant}>
+            <span>{bulkFeedback.message}</span>
           </Alert>
         ) : null}
 
@@ -4098,6 +4811,7 @@ export function DashboardWorkingConversationsSection({
                           card.currentInvocation.tone,
                           card.currentInvocation.displayStatus,
                         );
+                        const isCardSelected = selectedPromptCacheKeySet.has(card.promptCacheKey);
                         const displaySequenceId = formatDashboardWorkingConversationSequenceId(
                           card.conversationSequenceId,
                         );
@@ -4128,12 +4842,65 @@ export function DashboardWorkingConversationsSection({
                             }}
                             data-testid="dashboard-working-conversation-card"
                             data-conversation-sequence-id={displaySequenceId}
-                            className={cn(CARD_CLASS_NAME, currentStatusMeta.cardToneClassName)}
+                            data-selection-mode={selectionModeEnabled ? "true" : "false"}
+                            data-selected={isCardSelected ? "true" : "false"}
+                            role={selectionModeEnabled ? "button" : undefined}
+                            tabIndex={selectionModeEnabled ? 0 : undefined}
+                            aria-pressed={selectionModeEnabled ? isCardSelected : undefined}
+                            aria-label={
+                              selectionModeEnabled
+                                ? `${selectionSummaryLabel} · ${displaySequenceId}`
+                                : undefined
+                            }
+                            className={cn(
+                              CARD_CLASS_NAME,
+                              currentStatusMeta.cardToneClassName,
+                              selectionModeEnabled &&
+                                "cursor-pointer ring-1 ring-white/8 hover:ring-info/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-info",
+                              isCardSelected &&
+                                "ring-2 ring-info/55 bg-info/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_22px_34px_rgba(2,6,23,0.24)]",
+                            )}
+                            onClickCapture={(event) =>
+                              handleConversationCardClickCapture(event, card.promptCacheKey)
+                            }
+                            onClick={
+                              selectionModeEnabled
+                                ? (event) => handleSelectionCardClick(event, card.promptCacheKey)
+                                : undefined
+                            }
+                            onKeyDown={
+                              selectionModeEnabled
+                                ? (event) => handleSelectionCardKeyDown(event, card.promptCacheKey)
+                                : undefined
+                            }
                           >
                             <div className="relative">
+                              {selectionModeEnabled || isCardSelected ? (
+                                <div className="absolute right-0 top-0 z-[1] rounded-full border border-base-100/8 bg-base-200/78 p-0.5 shadow-[0_10px_24px_rgba(2,6,23,0.26)] backdrop-blur-md">
+                                  <span
+                                    data-testid="dashboard-working-conversation-selection-indicator"
+                                    className={cn(
+                                      "inline-flex h-7 w-7 items-center justify-center rounded-full border text-[11px] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]",
+                                      isCardSelected
+                                        ? "border-info/42 bg-base-100/94 text-info"
+                                        : "border-base-300/70 bg-base-100/90 text-base-content/45",
+                                    )}
+                                  >
+                                    {isCardSelected ? (
+                                      <AppIcon
+                                        name="check-bold"
+                                        className="h-3.5 w-3.5"
+                                        aria-hidden
+                                      />
+                                    ) : (
+                                      <span className="h-2.5 w-2.5 rounded-full border border-current/45" />
+                                    )}
+                                  </span>
+                                </div>
+                              ) : null}
                               <div className="flex min-w-0 items-center justify-between gap-3">
                                 <div className="flex min-w-0 flex-1 items-center gap-2">
-                                  {onOpenConversation ? (
+                                  {onOpenConversation && !selectionModeEnabled ? (
                                     <button
                                       type="button"
                                       data-testid="dashboard-working-conversation-sequence-button"
@@ -4157,7 +4924,7 @@ export function DashboardWorkingConversationsSection({
                                     </div>
                                   )}
                                   {manualBindingBadgeMeta ? (
-                                    onOpenConversation ? (
+                                    onOpenConversation && !selectionModeEnabled ? (
                                       <button
                                         type="button"
                                         data-testid="dashboard-working-conversation-manual-binding-badge"
@@ -4245,6 +5012,7 @@ export function DashboardWorkingConversationsSection({
                                   promptCacheKey={card.promptCacheKey}
                                   nowMs={nowMs}
                                   locale={locale}
+                                  interactionsDisabled={selectionModeEnabled}
                                   onOpenUpstreamAccount={onOpenUpstreamAccount}
                                   onOpenInvocation={onOpenInvocation}
                                 />
@@ -4257,6 +5025,7 @@ export function DashboardWorkingConversationsSection({
                                     promptCacheKey={card.promptCacheKey}
                                     nowMs={nowMs}
                                     locale={locale}
+                                    interactionsDisabled={selectionModeEnabled}
                                     onOpenUpstreamAccount={onOpenUpstreamAccount}
                                     onOpenInvocation={onOpenInvocation}
                                   />
@@ -4282,6 +5051,260 @@ export function DashboardWorkingConversationsSection({
           </div>
         ) : null}
       </div>
+      <Dialog
+        open={routeBindDialogOpen}
+        onOpenChange={(nextOpen) => {
+          if (bulkActionBusy == null) setRouteBindDialogOpen(nextOpen);
+        }}
+      >
+        <DialogContent
+          className="overflow-hidden p-0"
+          data-testid="dashboard-working-conversations-route-bind-dialog"
+        >
+          <div className="border-b border-base-300/70 px-5 py-4 desktop:px-6">
+            <DialogHeader>
+              <DialogTitle>{routeBindDialogTitle}</DialogTitle>
+              <DialogDescription>{routeBindDialogDescription}</DialogDescription>
+            </DialogHeader>
+          </div>
+          <div className="space-y-4 px-5 py-5 desktop:px-6">
+            <div className="rounded-xl border border-info/20 bg-info/8 px-3 py-2 text-sm text-base-content/84">
+              {selectionSummaryLabel}
+            </div>
+            <div className="grid gap-3 sm:grid-cols-[4.75rem_minmax(0,0.82fr)_minmax(0,1.18fr)] sm:items-end">
+              <span className="field-label flex h-8 items-center sm:pb-1">
+                {locale === "zh" ? "绑定到" : "Bind to"}
+              </span>
+              <SelectField
+                value={routeBindTargetKind}
+                size="sm"
+                aria-label={locale === "zh" ? "批量绑定目标类型" : "Bulk binding target kind"}
+                data-testid="dashboard-working-conversations-route-bind-kind-select"
+                options={[
+                  {
+                    value: "group",
+                    label: locale === "zh" ? "分组" : "Group",
+                    disabled: bindingTargets.groups.length === 0,
+                  },
+                  {
+                    value: "upstreamAccount",
+                    label: locale === "zh" ? "上游账号" : "Upstream account",
+                    disabled: bindingTargets.accounts.length === 0,
+                  },
+                ]}
+                onValueChange={(nextValue) => {
+                  if (nextValue === "group" || nextValue === "upstreamAccount") {
+                    setRouteBindTargetKind(nextValue);
+                  }
+                }}
+              />
+              {routeBindTargetKind === "group" ? (
+                <SelectField
+                  value={routeBindGroupName}
+                  size="sm"
+                  disabled={bindingTargets.loading || bindingTargets.groups.length === 0}
+                  aria-label={locale === "zh" ? "批量分组绑定目标" : "Bulk group binding target"}
+                  options={bindingTargets.groups.map((groupName) => ({
+                    value: groupName,
+                    label: groupName,
+                  }))}
+                  onValueChange={setRouteBindGroupName}
+                />
+              ) : (
+                <SelectField
+                  value={routeBindAccountId}
+                  size="sm"
+                  disabled={bindingTargets.loading || bindingTargets.accounts.length === 0}
+                  aria-label={locale === "zh" ? "批量账号绑定目标" : "Bulk account binding target"}
+                  options={bindingTargets.accounts.map((account) => ({
+                    value: String(account.id),
+                    label: conversationBindingAccountLabel(account),
+                  }))}
+                  onValueChange={setRouteBindAccountId}
+                />
+              )}
+            </div>
+            {bindingTargets.loading ? (
+              <div className="flex items-center gap-2 rounded-xl border border-base-300/70 bg-base-200/45 px-3 py-3 text-sm text-base-content/72">
+                <Spinner size="sm" aria-label={locale === "zh" ? "加载绑定目标" : "Loading"} />
+                <span>{locale === "zh" ? "加载绑定目标中…" : "Loading binding targets..."}</span>
+              </div>
+            ) : null}
+            {bindingTargets.error ? (
+              <Alert variant="error">
+                <div className="flex w-full items-center justify-between gap-3">
+                  <span>{bindingTargets.error}</span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => void loadConversationBindingTargets()}
+                  >
+                    {locale === "zh" ? "重试" : "Retry"}
+                  </Button>
+                </div>
+              </Alert>
+            ) : null}
+            {!bindingTargets.loading &&
+            !bindingTargets.error &&
+            bindingTargets.groups.length === 0 &&
+            bindingTargets.accounts.length === 0 ? (
+              <Alert variant="warning">
+                <span>
+                  {locale === "zh"
+                    ? "当前没有可用于 conversation 绑定的分组或上游账号。"
+                    : "No eligible groups or upstream accounts are currently available for conversation binding."}
+                </span>
+              </Alert>
+            ) : null}
+          </div>
+          <DialogFooter className="border-t border-base-300/70 bg-base-100/92 px-5 py-4 backdrop-blur desktop:px-6">
+            <Button
+              type="button"
+              variant="destructive"
+              className="desktop:mr-auto"
+              data-testid="dashboard-working-conversations-route-bind-clear-button"
+              disabled={bulkActionBusy != null}
+              onClick={() => {
+                setRouteBindDialogOpen(false);
+                setClearAffinityDialogOpen(true);
+              }}
+            >
+              {locale === "zh" ? "清空绑定并重选" : "Clear and reselect"}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={bulkActionBusy != null}
+              onClick={() => setRouteBindDialogOpen(false)}
+            >
+              {locale === "zh" ? "取消" : "Cancel"}
+            </Button>
+            <Button
+              type="button"
+              disabled={routeBindSubmitDisabled}
+              onClick={() =>
+                void applyBulkConversationAction(
+                  routeBindTargetKind === "group"
+                    ? {
+                        action: "bind",
+                        bindingKind: "group",
+                        groupName: routeBindGroupName,
+                      }
+                    : {
+                        action: "bind",
+                        bindingKind: "upstreamAccount",
+                        upstreamAccountId: Number(routeBindAccountId),
+                      },
+                )
+              }
+            >
+              {bulkActionBusy === "bind"
+                ? locale === "zh"
+                  ? "保存中…"
+                  : "Saving..."
+                : locale === "zh"
+                  ? "应用绑定"
+                  : "Apply binding"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={clearAffinityDialogOpen}
+        onOpenChange={(nextOpen) => {
+          if (bulkActionBusy == null) setClearAffinityDialogOpen(nextOpen);
+        }}
+      >
+        <DialogContent
+          role="alertdialog"
+          className="overflow-hidden p-0"
+          data-testid="dashboard-working-conversations-clear-affinity-dialog"
+        >
+          <div className="border-b border-base-300/70 px-5 py-4 desktop:px-6">
+            <DialogHeader>
+              <DialogTitle>{clearAffinityDialogTitle}</DialogTitle>
+              <DialogDescription>{clearAffinityDialogDescription}</DialogDescription>
+            </DialogHeader>
+          </div>
+          <div className="space-y-4 px-5 py-5 desktop:px-6">
+            <div className="rounded-[1.1rem] border border-base-300/70 bg-base-200/40 px-4 py-4">
+              <div className="flex w-full items-start gap-3">
+                <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-error/28 bg-error/12 text-error">
+                  <AppIcon name="alert-circle-outline" className="h-4.5 w-4.5" aria-hidden />
+                </div>
+                <div className="min-w-0 flex-1 space-y-3">
+                  <div className="space-y-1">
+                    <p className="text-sm font-semibold text-base-content">
+                      {clearAffinityCalloutTitle}
+                    </p>
+                    <p className="text-sm leading-6 text-base-content/74">
+                      {clearAffinityCalloutDescription}
+                    </p>
+                  </div>
+                  <ul className="overflow-hidden rounded-[0.95rem] border border-base-300/64 bg-base-100/66">
+                    {clearAffinityCalloutItems.map((item) => (
+                      <li
+                        key={item.key}
+                        className="flex items-start gap-3 border-b border-base-300/58 px-3 py-2.5 last:border-b-0"
+                      >
+                        <span
+                          className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-error/72 shadow-[0_0_0_4px_hsl(var(--er)/0.10)]"
+                          aria-hidden
+                        />
+                        <span className="min-w-0">
+                          <span className="block text-sm font-medium leading-5 text-base-content/86">
+                            {item.label}
+                          </span>
+                          <span className="block text-xs leading-5 text-base-content/56">
+                            {item.detail}
+                          </span>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="flex w-full items-center justify-between gap-3 border-t border-base-300/70 bg-base-100/92 px-5 py-4 backdrop-blur desktop:px-6">
+            <p className="min-w-0 flex-1 text-sm font-medium text-base-content/76">
+              {selectionSummaryLabel}
+            </p>
+            <div className="flex shrink-0 items-center gap-3">
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={bulkActionBusy != null}
+                onClick={() => setClearAffinityDialogOpen(false)}
+              >
+                {locale === "zh" ? "取消" : "Cancel"}
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={bulkActionBusy != null}
+                onClick={() =>
+                  void applyBulkConversationAction({
+                    action: "clearAndResetAffinity",
+                  })
+                }
+              >
+                {bulkActionBusy === "clearAndResetAffinity"
+                  ? locale === "zh"
+                    ? "处理中…"
+                    : "Applying..."
+                  : locale === "zh"
+                    ? "确认清空"
+                    : "Confirm clear"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+      {conversationBulkActionPanel && typeof document !== "undefined" && document.body
+        ? createPortal(conversationBulkActionPanel, document.body)
+        : conversationBulkActionPanel}
     </section>
   );
 }

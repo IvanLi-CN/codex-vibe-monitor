@@ -15,6 +15,7 @@ export type {
   UpstreamAccountActivityResponse,
 } from "./core";
 export {
+  bulkUpdatePromptCacheConversationBindings,
   bulkUpdateUpstreamAccounts,
   cancelBulkUpstreamAccountSyncJob,
   cancelImportedOauthValidationJob,

@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import {
+  type ComponentProps,
   type ReactNode,
   useCallback,
   useEffect,
@@ -2241,6 +2242,69 @@ function DrawerPreviewStory({
         window as typeof window & { __dashboardStoryFetchLog?: string[] }
       ).__dashboardStoryFetchLog?.push(`${url.pathname}?${url.searchParams.toString()}`);
 
+      if (
+        url.pathname === "/api/stats/prompt-cache-conversation-bindings/bulk-actions" &&
+        init?.method === "POST"
+      ) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        const promptCacheKeys = Array.isArray(payload.promptCacheKeys)
+          ? payload.promptCacheKeys.map((key: unknown) => String(key))
+          : [];
+        const items = promptCacheKeys.map((promptCacheKey: string) => {
+          const current =
+            promptCacheBindingStateRef.current.get(promptCacheKey) ??
+            buildPromptCacheBindingResponse(promptCacheKey);
+          const next =
+            payload.action === "bind"
+              ? buildPromptCacheBindingResponse(promptCacheKey, {
+                  ...current,
+                  bindingKind: payload.bindingKind,
+                  groupName:
+                    payload.bindingKind === "group" ? String(payload.groupName ?? "") : null,
+                  upstreamAccountId:
+                    payload.bindingKind === "upstreamAccount"
+                      ? Number(payload.upstreamAccountId)
+                      : null,
+                  upstreamAccountName:
+                    payload.bindingKind === "upstreamAccount"
+                      ? (DASHBOARD_STORY_PROMPT_CACHE_BINDING_ACCOUNTS.find(
+                          (account) => account.id === Number(payload.upstreamAccountId),
+                        )?.displayName ?? null)
+                      : null,
+                })
+              : payload.action === "clearAndResetAffinity"
+                ? buildPromptCacheBindingResponse(promptCacheKey, {
+                    ...current,
+                    bindingKind: "none",
+                    groupName: null,
+                    upstreamAccountId: null,
+                    upstreamAccountName: null,
+                    hasEncryptedSessionOwner: false,
+                    encryptedOwnerAccountId: null,
+                    encryptedOwnerAccountName: null,
+                    encryptedOwnerGroupName: null,
+                  })
+                : buildPromptCacheBindingResponse(promptCacheKey, {
+                    ...current,
+                    fastModeRewriteMode: payload.fastModeRewriteMode ?? current.fastModeRewriteMode,
+                  });
+          promptCacheBindingStateRef.current.set(promptCacheKey, next);
+          return {
+            promptCacheKey,
+            ok: true,
+            error: null,
+            binding: next,
+          };
+        });
+        return jsonResponse({
+          action: payload.action ?? "bind",
+          totalRequested: promptCacheKeys.length,
+          totalSucceeded: promptCacheKeys.length,
+          totalFailed: 0,
+          items,
+        });
+      }
+
       const promptCacheBindingMatch = url.pathname.match(
         /^\/api\/stats\/prompt-cache-conversation-bindings\/(.+)$/,
       );
@@ -4395,6 +4459,326 @@ export const DrawerInteractionFlow: Story = {
 
     await waitFor(() => {
       expect(document.body.querySelector('[data-testid="story-account-drawer"]')).not.toBeNull();
+    });
+  },
+};
+
+function buildBulkSelectionStoryBindingResponse(
+  promptCacheKey: string,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    promptCacheKey,
+    bindingKind: "none",
+    groupName: null,
+    upstreamAccountId: null,
+    upstreamAccountName: null,
+    hasEncryptedSessionOwner: true,
+    encryptedOwnerAccountId: 21,
+    encryptedOwnerAccountName: "growth.6vv4@relay.example",
+    encryptedOwnerGroupName: "CIII",
+    timeouts: {
+      responsesFirstByteTimeoutSecs: 120,
+      compactFirstByteTimeoutSecs: 300,
+      imageFirstByteTimeoutSecs: 120,
+      responsesStreamTimeoutSecs: 300,
+      compactStreamTimeoutSecs: 300,
+    },
+    timeoutFieldSources: {
+      responsesFirstByteTimeoutSecs: "account",
+      compactFirstByteTimeoutSecs: "group",
+      imageFirstByteTimeoutSecs: "account",
+      responsesStreamTimeoutSecs: "account",
+      compactStreamTimeoutSecs: "root",
+    },
+    allowSwitchUpstream: false,
+    fastModeRewriteMode: "keep_original",
+    imageToolRewriteMode: "inherit",
+    availableModels: ["gpt-5.5", "gpt-5.5-mini"],
+    forwardProxyKey: null,
+    forwardProxyKeys: [],
+    policyFieldSources: {
+      allowSwitchUpstream: "conversation",
+      fastModeRewriteMode: "conversation",
+      imageToolRewriteMode: "group",
+      availableModels: "conversation",
+      forwardProxyKey: "account",
+    },
+    updatedAt: "2026-05-12T16:15:57Z",
+    ...overrides,
+  };
+}
+
+function BulkSelectionStorySurface({
+  theme,
+  ...props
+}: ComponentProps<typeof DashboardWorkingConversationsSection> & {
+  theme?: "vibe-light" | "vibe-dark";
+}) {
+  const originalFetchRef = useRef<typeof window.fetch | null>(null);
+  useStoryTheme(theme);
+
+  useLayoutEffect(() => {
+    if (!originalFetchRef.current) {
+      originalFetchRef.current = window.fetch.bind(window);
+    }
+
+    window.fetch = async (input, init) => {
+      const request =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const url = new URL(request, window.location.origin);
+
+      if (url.pathname === "/api/pool/upstream-accounts") {
+        return new Response(
+          JSON.stringify({
+            writesEnabled: true,
+            items: DASHBOARD_STORY_PROMPT_CACHE_BINDING_ACCOUNTS,
+            groups: [
+              { groupName: "CIII", accountCount: 1 },
+              { groupName: "Tokyo", accountCount: 1 },
+            ],
+            forwardProxyNodes: [],
+            hasUngroupedAccounts: false,
+            total: DASHBOARD_STORY_PROMPT_CACHE_BINDING_ACCOUNTS.length,
+            page: 1,
+            pageSize: DASHBOARD_STORY_PROMPT_CACHE_BINDING_ACCOUNTS.length,
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+
+      if (
+        url.pathname === "/api/stats/prompt-cache-conversation-bindings/bulk-actions" &&
+        init?.method === "POST"
+      ) {
+        const payload = init.body ? JSON.parse(String(init.body)) : {};
+        const promptCacheKeys = Array.isArray(payload.promptCacheKeys)
+          ? payload.promptCacheKeys.map((value: unknown) => String(value))
+          : [];
+        const items = promptCacheKeys.map((promptCacheKey: string) => ({
+          promptCacheKey,
+          ok: true,
+          error: null,
+          binding: buildBulkSelectionStoryBindingResponse(promptCacheKey, {
+            bindingKind:
+              payload.action === "bind"
+                ? payload.bindingKind === "upstreamAccount"
+                  ? "upstreamAccount"
+                  : "group"
+                : "none",
+            groupName: payload.bindingKind === "group" ? (payload.groupName ?? "CIII") : null,
+            upstreamAccountId:
+              payload.bindingKind === "upstreamAccount" ? (payload.upstreamAccountId ?? 101) : null,
+            upstreamAccountName:
+              payload.bindingKind === "upstreamAccount" ? "Codex Pro - Tokyo" : null,
+            hasEncryptedSessionOwner: payload.action !== "clearAndResetAffinity",
+            encryptedOwnerAccountId: payload.action === "clearAndResetAffinity" ? null : 21,
+            encryptedOwnerAccountName:
+              payload.action === "clearAndResetAffinity" ? null : "growth.6vv4@relay.example",
+            encryptedOwnerGroupName: payload.action === "clearAndResetAffinity" ? null : "CIII",
+            fastModeRewriteMode:
+              payload.action === "setFastModeRewriteMode"
+                ? (payload.fastModeRewriteMode ?? "keep_original")
+                : "keep_original",
+          }),
+        }));
+        return new Response(
+          JSON.stringify({
+            action: payload.action ?? "bind",
+            totalRequested: promptCacheKeys.length,
+            totalSucceeded: promptCacheKeys.length,
+            totalFailed: 0,
+            items,
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+
+      if (originalFetchRef.current) {
+        return originalFetchRef.current(input, init);
+      }
+      throw new Error(`Unhandled bulk selection story request: ${url}`);
+    };
+
+    return () => {
+      if (originalFetchRef.current) {
+        window.fetch = originalFetchRef.current;
+      }
+      originalFetchRef.current = null;
+    };
+  }, []);
+
+  return (
+    <ForcedWorkspaceViewStory view="conversations">
+      <DashboardWorkingConversationsSection {...props} />
+    </ForcedWorkspaceViewStory>
+  );
+}
+
+const bulkSelectionStoryArgs = {
+  activeRange: "today" as const,
+  cards: buildCards(wideDesktopResponse),
+  totalMatched: wideDesktopResponse.conversations.length,
+  isLoading: false,
+  error: null,
+};
+
+async function enableConversationSelectionMode(canvasElement: HTMLElement) {
+  const selectionModeButton = canvasElement.querySelector(
+    '[data-testid="dashboard-working-conversations-selection-mode-button"]',
+  );
+  if (!(selectionModeButton instanceof HTMLButtonElement)) {
+    throw new Error("missing selection mode button");
+  }
+
+  await userEvent.click(selectionModeButton);
+  await waitFor(() => {
+    const firstCard = canvasElement.querySelector<HTMLElement>(
+      '[data-testid="dashboard-working-conversation-card"]',
+    );
+    expect(firstCard?.getAttribute("data-selection-mode")).toBe("true");
+  });
+}
+
+async function selectConversationForBulkActions(canvasElement: HTMLElement) {
+  await enableConversationSelectionMode(canvasElement);
+
+  const firstCard = canvasElement.querySelector<HTMLElement>(
+    '[data-testid="dashboard-working-conversation-card"]',
+  );
+  if (!(firstCard instanceof HTMLElement)) {
+    throw new Error("missing selectable conversation card");
+  }
+
+  await userEvent.click(firstCard);
+  await waitFor(() => {
+    const panel = canvasElement.ownerDocument.body.querySelector(
+      '[data-testid="dashboard-working-conversations-bulk-panel"]',
+    );
+    expect(panel).not.toBeNull();
+    expect(panel?.textContent).toContain("已选 1 个对话");
+  });
+}
+
+export const ConversationSelectionOff: Story = {
+  args: bulkSelectionStoryArgs,
+  render: (args) => <BulkSelectionStorySurface {...args} />,
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+  },
+};
+
+export const ConversationSelectionOn: Story = {
+  args: bulkSelectionStoryArgs,
+  render: (args) => <BulkSelectionStorySurface {...args} />,
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+  },
+  play: async ({ canvasElement }) => {
+    await enableConversationSelectionMode(canvasElement);
+  },
+};
+
+export const ConversationBulkPanelOpen: Story = {
+  args: bulkSelectionStoryArgs,
+  render: (args) => <BulkSelectionStorySurface {...args} />,
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+  },
+  play: async ({ canvasElement }) => {
+    await selectConversationForBulkActions(canvasElement);
+  },
+};
+
+export const ConversationBulkRouteBindDialog: Story = {
+  args: bulkSelectionStoryArgs,
+  render: (args) => <BulkSelectionStorySurface {...args} />,
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+  },
+  play: async ({ canvasElement }) => {
+    await selectConversationForBulkActions(canvasElement);
+    const routeBindButton = canvasElement.ownerDocument.body.querySelector(
+      '[data-testid="dashboard-working-conversations-route-bind-button"]',
+    );
+    if (!(routeBindButton instanceof HTMLButtonElement)) {
+      throw new Error("missing route bind button");
+    }
+
+    await userEvent.click(routeBindButton);
+    await waitFor(() => {
+      expect(
+        canvasElement.ownerDocument.body.querySelector(
+          '[data-testid="dashboard-working-conversations-route-bind-dialog"]',
+        ),
+      ).not.toBeNull();
+    });
+  },
+};
+
+export const ConversationBulkClearConfirm: Story = {
+  args: bulkSelectionStoryArgs,
+  render: (args) => <BulkSelectionStorySurface {...args} theme="vibe-dark" />,
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+  },
+  play: async ({ canvasElement }) => {
+    await selectConversationForBulkActions(canvasElement);
+    const clearButton = canvasElement.ownerDocument.body.querySelector(
+      '[data-testid="dashboard-working-conversations-clear-affinity-button"]',
+    );
+    if (!(clearButton instanceof HTMLButtonElement)) {
+      throw new Error("missing clear affinity button");
+    }
+
+    await userEvent.click(clearButton);
+    await waitFor(() => {
+      expect(
+        canvasElement.ownerDocument.body.querySelector(
+          '[data-testid="dashboard-working-conversations-clear-affinity-dialog"]',
+        ),
+      ).not.toBeNull();
+    });
+  },
+};
+
+export const ConversationBulkClearConfirmLight: Story = {
+  args: bulkSelectionStoryArgs,
+  render: (args) => <BulkSelectionStorySurface {...args} theme="vibe-light" />,
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+  },
+  play: ConversationBulkClearConfirm.play,
+};
+
+export const ConversationBulkFastModeChooser: Story = {
+  args: bulkSelectionStoryArgs,
+  render: (args) => <BulkSelectionStorySurface {...args} />,
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+  },
+  play: async ({ canvasElement }) => {
+    await selectConversationForBulkActions(canvasElement);
+    const fastModeButton = canvasElement.ownerDocument.body.querySelector(
+      '[data-testid="dashboard-working-conversations-fast-mode-button"]',
+    );
+    if (!(fastModeButton instanceof HTMLButtonElement)) {
+      throw new Error("missing fast mode button");
+    }
+
+    await userEvent.click(fastModeButton);
+    await waitFor(() => {
+      expect(
+        canvasElement.ownerDocument.body.querySelector(
+          '[data-testid="dashboard-working-conversations-fast-mode-popover"]',
+        ),
+      ).not.toBeNull();
     });
   },
 };
