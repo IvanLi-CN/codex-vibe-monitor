@@ -2125,6 +2125,10 @@ export const DrawerBindingAndTimeouts: Story = {
     const drawerShell = canvasElement.ownerDocument.body.querySelector(".drawer-shell");
     await expect(drawerShell).toHaveClass("drawer-shell--detail-wide");
     await expect(drawerShell?.parentElement).toHaveClass("drawer-frame");
+    const viewportWidth = canvasElement.ownerDocument.defaultView?.innerWidth ?? 0;
+    const expectedWidth = Math.min(90 * 16, viewportWidth - 32);
+    const actualWidth = drawerShell?.getBoundingClientRect().width ?? 0;
+    await expect(Math.abs(actualWidth - expectedWidth)).toBeLessThanOrEqual(1);
     await expect(await documentScope.findByText(/路由绑定|Route binding/i)).toBeInTheDocument();
     await expect(
       documentScope.getByText(/当前对话覆盖|Conversation overrides/i),

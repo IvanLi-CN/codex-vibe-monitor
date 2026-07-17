@@ -560,7 +560,7 @@ body {
     justify-content: flex-end;
   }
 
-  .drawer-shell--detail-wide {
+  .drawer-shell.drawer-shell--detail-wide {
     width: 100%;
   }
 
@@ -582,7 +582,7 @@ body {
       padding-bottom: 0;
     }
 
-    .drawer-shell--detail-wide {
+    .drawer-shell.drawer-shell--detail-wide {
       width: min(90rem, calc(100vw - 2rem));
     }
   }
