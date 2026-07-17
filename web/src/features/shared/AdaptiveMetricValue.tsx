@@ -44,6 +44,10 @@ function useAdaptiveCandidateSelection(spec: AdaptiveDisplayValueSpec, available
       availableWidthPx != null && availableWidthPx > 0 ? availableWidthPx : container.clientWidth;
     if (availableWidth <= 0) return;
 
+    const usesExplicitAvailableWidth = availableWidthPx != null && availableWidthPx > 0;
+    const compactGutterPx = usesExplicitAvailableWidth ? ADAPTIVE_METRIC_COMPACT_GUTTER_PX : 0;
+    const upgradeHeadroomPx = usesExplicitAvailableWidth ? ADAPTIVE_METRIC_UPGRADE_HEADROOM_PX : 0;
+
     const measures = measureRefs.current;
     const candidateWidths = spec.candidates.map((candidate, index) => ({
       candidate,
@@ -57,8 +61,7 @@ function useAdaptiveCandidateSelection(spec: AdaptiveDisplayValueSpec, available
     const currentCandidateWidth = candidateWidths[currentIndex]?.requiredWidth ?? 0;
 
     const fitsWithinWidth = (requiredWidth: number, extraHeadroomPx: number) =>
-      requiredWidth > 0 &&
-      requiredWidth + ADAPTIVE_METRIC_COMPACT_GUTTER_PX + extraHeadroomPx <= availableWidth;
+      requiredWidth > 0 && requiredWidth + compactGutterPx + extraHeadroomPx <= availableWidth;
 
     let nextCandidate = spec.candidates[currentIndex] ?? spec.candidates.at(-1);
 
@@ -72,12 +75,7 @@ function useAdaptiveCandidateSelection(spec: AdaptiveDisplayValueSpec, available
       }
     } else {
       for (let index = 0; index < currentIndex; index += 1) {
-        if (
-          fitsWithinWidth(
-            candidateWidths[index]?.requiredWidth ?? 0,
-            ADAPTIVE_METRIC_UPGRADE_HEADROOM_PX,
-          )
-        ) {
+        if (fitsWithinWidth(candidateWidths[index]?.requiredWidth ?? 0, upgradeHeadroomPx)) {
           nextCandidate = candidateWidths[index]?.candidate ?? nextCandidate;
           break;
         }

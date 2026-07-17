@@ -1483,23 +1483,24 @@ describe("DashboardWorkingConversationsSection", () => {
       );
 
       expect(tpmValue?.getAttribute("data-compact")).toBe("true");
-      expect(tpmValue?.textContent).toContain("1.3M");
+      expect(tpmValue?.getAttribute("data-compact-precision")).toBe("K-0");
+      expect(tpmValue?.textContent).toContain("1,325K");
       expect(tpmValue?.getAttribute("title")).toBe("1,324,743");
 
       expect(spendRateValue?.getAttribute("data-compact")).toBe("false");
-      expect(spendRateValue?.getAttribute("data-compact-precision")).toBe("standard-1");
-      expect(spendRateValue?.textContent).toBe("39.5");
-      expect(spendRateValue?.getAttribute("title")).toBe("39.45");
+      expect(spendRateValue?.getAttribute("data-compact-precision")).toBe("full");
+      expect(spendRateValue?.textContent).toBe("39.45");
+      expect(spendRateValue?.getAttribute("title")).toBeNull();
 
       expect(tokenValue?.getAttribute("data-compact")).toBe("true");
-      expect(tokenValue?.getAttribute("data-compact-precision")).toBe("0");
-      expect(tokenValue?.textContent).toContain("88M");
+      expect(tokenValue?.getAttribute("data-compact-precision")).toBe("1");
+      expect(tokenValue?.textContent).toContain("88.1M");
       expect(tokenValue?.getAttribute("title")).toBe("88,067,672");
 
       expect(costValue?.getAttribute("data-compact")).toBe("false");
-      expect(costValue?.getAttribute("data-compact-precision")).toBe("standard-1");
-      expect(costValue?.textContent).toBe("39.5");
-      expect(costValue?.getAttribute("title")).toBe("39.45");
+      expect(costValue?.getAttribute("data-compact-precision")).toBe("full");
+      expect(costValue?.textContent).toBe("39.45");
+      expect(costValue?.getAttribute("title")).toBeNull();
     });
 
     const tpmTrigger = host?.querySelector('[aria-label="TPM 1,324,743"]');
