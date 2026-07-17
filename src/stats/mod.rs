@@ -968,6 +968,20 @@ pub(crate) struct ArchiveBatchPathRow {
     needs_failures: Option<i64>,
 }
 
+impl ArchiveBatchPathRow {
+    pub(crate) fn has_materialized_historical_rollups(&self) -> bool {
+        self.historical_rollups_materialized_at.is_some()
+    }
+
+    pub(crate) fn coverage_start_at(&self) -> Option<&str> {
+        self.coverage_start_at.as_deref()
+    }
+
+    pub(crate) fn coverage_end_at(&self) -> Option<&str> {
+        self.coverage_end_at.as_deref()
+    }
+}
+
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct ArchivedInvocationFailureRow {
     pub(crate) id: i64,

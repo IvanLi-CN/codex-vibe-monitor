@@ -14037,6 +14037,114 @@ async fn dashboard_activity_summary_only_excludes_archived_rows_for_live_ids() {
 }
 
 #[tokio::test]
+async fn dashboard_activity_summary_only_uses_rollups_when_materialized_archive_file_is_missing() {
+    let mut config = test_config();
+    config.invocation_max_days = 0;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = Utc::now()
+        .with_timezone(&Shanghai)
+        .date_naive()
+        .and_hms_opt(12, 0, 0)
+        .expect("valid local noon")
+        .checked_sub_signed(ChronoDuration::days(1))
+        .expect("valid archived dashboard summary hour");
+    let archived_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("valid archived dashboard summary invocation time"),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "dashboard-summary-only-missing-materialized-archive",
+        &[(
+            95_001_i64,
+            "dashboard-summary-only-missing-materialized",
+            archived_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            250_i64,
+            0.25_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    sqlx::query(
+        "UPDATE archive_batches \
+            SET historical_rollups_materialized_at = datetime('now'), \
+                coverage_start_at = ?2, \
+                coverage_end_at = ?3 \
+          WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(format_naive(archived_hour_local))
+    .bind(format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::hours(1))
+            .expect("valid dashboard summary archive coverage end"),
+    ))
+    .execute(&state.pool)
+    .await
+    .expect("mark dashboard summary archive as materialized");
+    fs::remove_file(&archive_path).expect("remove materialized archive raw file");
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_at)
+        .expect("dashboard summary rollup bucket start should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(250_i64)
+    .bind(0.25_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed dashboard summary materialized rollup row");
+
+    let Json(response) = fetch_dashboard_activity(
+        State(state.clone()),
+        Query(DashboardActivityQuery {
+            range: "7d".to_string(),
+            recent_limit: Some(2),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: false,
+            include_recent: Some(false),
+        }),
+    )
+    .await
+    .expect("fetch summary-only dashboard activity from materialized rollup");
+
+    assert_eq!(response.summary.stats.total_count, 1);
+    assert_eq!(response.summary.stats.success_count, 1);
+    assert_eq!(response.summary.stats.failure_count, 0);
+    assert_eq!(response.summary.stats.total_tokens, 250);
+    assert_f64_close(response.summary.stats.total_cost, 0.25);
+}
+
+#[tokio::test]
 async fn dashboard_activity_recent_excludes_archived_rows_for_all_live_ids() {
     let mut config = test_config();
     config.invocation_max_days = 0;

@@ -6484,17 +6484,31 @@ async fn query_live_model_performance_duration_overrides(
     Ok(union_state.into_overrides())
 }
 
+#[derive(Debug, Default)]
+struct QueryCompletedInvocationArchiveActivityAggregateRows {
+    aggregates: Vec<UpstreamAccountActivityAggregateRow>,
+    usage_breakdowns: Vec<UpstreamAccountUsageBreakdownAggregateRow>,
+    skipped_materialized_ranges: Vec<ExactUtcRange>,
+}
+
+fn dashboard_activity_archive_row_overlap_range(
+    archive_row: &crate::stats::ArchiveBatchPathRow,
+    requested_range: ExactUtcRange,
+) -> Option<ExactUtcRange> {
+    let coverage_start =
+        parse_to_utc_datetime(archive_row.coverage_start_at()?).unwrap_or(requested_range.start);
+    let coverage_end =
+        parse_to_utc_datetime(archive_row.coverage_end_at()?).unwrap_or(requested_range.end);
+    let start = coverage_start.max(requested_range.start);
+    let end = coverage_end.min(requested_range.end);
+    (start < end).then_some(ExactUtcRange { start, end })
+}
+
 async fn query_completed_invocation_archive_activity_aggregate_rows(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
-) -> Result<
-    (
-        Vec<UpstreamAccountActivityAggregateRow>,
-        Vec<UpstreamAccountUsageBreakdownAggregateRow>,
-    ),
-    ApiError,
-> {
+) -> Result<QueryCompletedInvocationArchiveActivityAggregateRows, ApiError> {
     let archive_rows = crate::stats::load_completed_invocation_archive_paths_in_range(
         pool,
         Some((range.start, range.end)),
@@ -6502,6 +6516,7 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
     .await?;
     let mut aggregates = Vec::new();
     let mut usage_breakdowns = Vec::new();
+    let mut skipped_materialized_ranges = Vec::new();
     let mut earliest_created_at_by_prompt_cache_key = HashMap::<String, String>::new();
     let mut prompt_cache_keys_by_account = HashMap::<Option<i64>, HashSet<String>>::new();
     for archive_row in archive_rows {
@@ -6511,6 +6526,12 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
         )
         .await?
         else {
+            if archive_row.has_materialized_historical_rollups()
+                && let Some(skipped_range) =
+                    dashboard_activity_archive_row_overlap_range(&archive_row, range)
+            {
+                skipped_materialized_ranges.push(skipped_range);
+            }
             continue;
         };
         let has_cost_breakdown_columns =
@@ -6602,7 +6623,11 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
             aggregate.latest_conversation_created_at = Some(latest_created_at.clone());
         }
     }
-    Ok((aggregates, usage_breakdowns))
+    Ok(QueryCompletedInvocationArchiveActivityAggregateRows {
+        aggregates,
+        usage_breakdowns,
+        skipped_materialized_ranges,
+    })
 }
 
 #[derive(Debug, FromRow)]
@@ -7775,6 +7800,38 @@ fn dashboard_activity_build_scope(include_accounts: bool, _include_recent: bool)
     }
 }
 
+fn dashboard_activity_stats_totals_from_aggregate_rows(
+    rows: &[UpstreamAccountActivityAggregateRow],
+) -> StatsTotals {
+    let mut totals = StatsTotals::default();
+    for row in rows {
+        totals.total_count += row.request_count;
+        totals.success_count += row.success_count;
+        totals.failure_count += row.failure_count;
+        totals.total_cost += row.total_cost;
+        totals.total_tokens += row.total_tokens;
+        totals.non_success_cost += row.non_success_cost;
+    }
+    totals
+}
+
+fn dashboard_activity_stats_totals_subtract(left: StatsTotals, right: StatsTotals) -> StatsTotals {
+    StatsTotals {
+        total_count: left.total_count.saturating_sub(right.total_count).max(0),
+        success_count: left
+            .success_count
+            .saturating_sub(right.success_count)
+            .max(0),
+        failure_count: left
+            .failure_count
+            .saturating_sub(right.failure_count)
+            .max(0),
+        total_cost: (left.total_cost - right.total_cost).max(0.0),
+        total_tokens: left.total_tokens.saturating_sub(right.total_tokens).max(0),
+        non_success_cost: (left.non_success_cost - right.non_success_cost).max(0.0),
+    }
+}
+
 fn dashboard_activity_source_scope_cache_key(source_scope: InvocationSourceScope) -> &'static str {
     match source_scope {
         InvocationSourceScope::ProxyOnly => "proxy_only",
@@ -8749,6 +8806,7 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
     let mut model_performance = ModelPerformanceAccumulator::default();
     let mut latest_first_response_byte_total_in_range = LatestTimedMetricValue::default();
     let mut latest_avg_total_in_range = LatestTimedMetricValue::default();
+    let mut materialized_archive_fallback_totals = StatsTotals::default();
     for row in query_live_upstream_account_activity_aggregate_rows(
         &state.pool,
         source_scope,
@@ -8777,13 +8835,17 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
         model_performance.add_aggregate_row(&row);
     }
     if range.start < retention_cutoff {
-        let (archived_rows, archived_usage_breakdowns) =
-            query_completed_invocation_archive_activity_aggregate_rows(
-                &state.pool,
-                source_scope,
-                range,
-            )
-            .await?;
+        let archive_rows = query_completed_invocation_archive_activity_aggregate_rows(
+            &state.pool,
+            source_scope,
+            range,
+        )
+        .await?;
+        let QueryCompletedInvocationArchiveActivityAggregateRows {
+            aggregates: archived_rows,
+            usage_breakdowns: archived_usage_breakdowns,
+            skipped_materialized_ranges,
+        } = archive_rows;
         for row in archived_rows {
             let entry = account_activity.entry(row.upstream_account_id).or_default();
             merge_upstream_account_activity_aggregate_row(entry, &row);
@@ -8791,6 +8853,28 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
         for row in archived_usage_breakdowns {
             let entry = account_activity.entry(row.upstream_account_id).or_default();
             entry.usage_breakdown.add_aggregate_row(&row);
+        }
+        for skipped_range in skipped_materialized_ranges {
+            let rollup_totals = query_hourly_backed_summary_range(
+                state,
+                skipped_range.start,
+                skipped_range.end,
+                source_scope,
+            )
+            .await?;
+            let live_totals = dashboard_activity_stats_totals_from_aggregate_rows(
+                &query_live_upstream_account_activity_aggregate_rows(
+                    &state.pool,
+                    source_scope,
+                    skipped_range,
+                    true,
+                    DashboardActivityExcludedInvocationIdsFilter::None,
+                )
+                .await?,
+            );
+            materialized_archive_fallback_totals = materialized_archive_fallback_totals.add(
+                dashboard_activity_stats_totals_subtract(rollup_totals, live_totals),
+            );
         }
     }
     if let Some(model_performance_duration_overrides) = model_performance_duration_overrides {
@@ -8904,6 +8988,12 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
         }
         None => (None, None, None),
     };
+    total_count += materialized_archive_fallback_totals.total_count;
+    success_count += materialized_archive_fallback_totals.success_count;
+    failure_count += materialized_archive_fallback_totals.failure_count;
+    total_cost += materialized_archive_fallback_totals.total_cost;
+    total_tokens += materialized_archive_fallback_totals.total_tokens;
+    non_success_cost += materialized_archive_fallback_totals.non_success_cost;
     let stats = StatsResponse {
         total_count,
         success_count,
@@ -9053,13 +9143,17 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         model_performance.add_aggregate_row(&row);
     }
     if range.start < retention_cutoff {
-        let (archived_aggregates, archived_usage_breakdowns) =
-            query_completed_invocation_archive_activity_aggregate_rows(
-                &state.pool,
-                source_scope,
-                range,
-            )
-            .await?;
+        let archive_rows = query_completed_invocation_archive_activity_aggregate_rows(
+            &state.pool,
+            source_scope,
+            range,
+        )
+        .await?;
+        let QueryCompletedInvocationArchiveActivityAggregateRows {
+            aggregates: archived_aggregates,
+            usage_breakdowns: archived_usage_breakdowns,
+            skipped_materialized_ranges: _,
+        } = archive_rows;
         for row in archived_aggregates {
             let entry = account_activity.entry(row.upstream_account_id).or_default();
             merge_latest_optional_timestamp(
