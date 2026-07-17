@@ -36,6 +36,7 @@
 | hnu7b | 移动优先导航与浮层收口                                                    | active    | `hnu7b-mobile-first-navigation-and-overlays/SPEC.md`       | `hnu7b-mobile-first-navigation-and-overlays/IMPLEMENTATION.md`       | topic anchor: mobile navigation / responsive overlays       |
 | dqstf | 调用详情可分享路由与结构化响应体查看器                                    | active    | `dqstf-invocation-detail-routing-payload-viewer/SPEC.md`   | `dqstf-invocation-detail-routing-payload-viewer/IMPLEMENTATION.md`   | topic anchor: invocation details / routing / payload viewer |
 | v3fum | Dashboard 上游账号网速与活动总览 Network Tab                              | active    | `v3fum-dashboard-network-speed/SPEC.md`                    | `v3fum-dashboard-network-speed/IMPLEMENTATION.md`                    | topic anchor: dashboard / network speed / runtime cache     |
+| m9p2w | Installable PWA 运行时与应用壳层交付                                      | active    | `m9p2w-installable-pwa-runtime/SPEC.md`                    | `m9p2w-installable-pwa-runtime/IMPLEMENTATION.md`                    | topic anchor: pwa / app shell / install runtime             |
 
 ## Archived Sources
 

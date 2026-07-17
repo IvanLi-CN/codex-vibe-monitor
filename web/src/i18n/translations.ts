@@ -46,6 +46,36 @@ const baseTranslations = {
     "app.proxySettings.defaultOff": "Default: off",
     "app.proxySettings.saving": "Saving…",
     "app.proxySettings.close": "Close",
+    "app.pwa.install.promptButton": "Install app",
+    "app.pwa.install.manualButton": "Add to Home Screen",
+    "app.pwa.install.installedButton": "Installed",
+    "app.pwa.install.switcherAria": "Open install app controls",
+    "app.pwa.install.close": "Close",
+    "app.pwa.install.closeAria": "Close install dialog",
+    "app.pwa.install.shellReady": "Offline shell ready",
+    "app.pwa.install.shellPending": "Offline shell pending",
+    "app.pwa.install.offlineChip": "Offline now",
+    "app.pwa.install.manualTitle": "Add Codex Vibe Monitor to Home Screen",
+    "app.pwa.install.manualDescription":
+      "Safari on iPhone and iPad uses the browser share sheet instead of a native install prompt.",
+    "app.pwa.install.manualStepOpenShare":
+      "Open Safari’s share sheet while this workspace is visible.",
+    "app.pwa.install.manualStepAdd": "Choose “Add to Home Screen” from the action list.",
+    "app.pwa.install.manualStepConfirm":
+      "Confirm the icon name, then launch the installed app from your Home Screen.",
+    "app.pwa.install.installedTitle": "App already installed",
+    "app.pwa.install.installedDescription":
+      "This browser is already running inside the installed Codex Vibe Monitor app shell.",
+    "app.pwa.install.installedHint":
+      "Pin the installed window for daily monitoring. The app shell stays available offline, but live proxy data resumes only after reconnect.",
+    "app.pwa.offline.title": "Offline app shell",
+    "app.pwa.offline.descriptionReady":
+      "Cached shell is still available. Live data refresh, SSE activity, and settings sync resume after the network reconnects.",
+    "app.pwa.offline.descriptionPending":
+      "This browser is offline before the app shell finished caching. Reconnect once to complete the installable shell.",
+    "app.pwa.update.available": "A new app shell is ready:",
+    "app.pwa.update.refresh": "Update app",
+    "app.pwa.update.later": "Later",
     "app.update.available": "A new version is available:",
     "app.update.current": "current",
     "app.update.refresh": "Refresh now",
@@ -2496,6 +2526,35 @@ const baseTranslations = {
     "app.proxySettings.defaultOff": "默认：关闭",
     "app.proxySettings.saving": "保存中…",
     "app.proxySettings.close": "关闭",
+    "app.pwa.install.promptButton": "安装应用",
+    "app.pwa.install.manualButton": "添加到主屏幕",
+    "app.pwa.install.installedButton": "已安装",
+    "app.pwa.install.switcherAria": "打开安装应用入口",
+    "app.pwa.install.close": "关闭",
+    "app.pwa.install.closeAria": "关闭安装说明",
+    "app.pwa.install.shellReady": "离线壳已就绪",
+    "app.pwa.install.shellPending": "离线壳待完成",
+    "app.pwa.install.offlineChip": "当前离线",
+    "app.pwa.install.manualTitle": "将 Codex Vibe Monitor 添加到主屏幕",
+    "app.pwa.install.manualDescription":
+      "iPhone / iPad 上的 Safari 不会弹原生安装提示，需要通过浏览器分享菜单手动添加。",
+    "app.pwa.install.manualStepOpenShare":
+      "在 Safari 中保持当前工作台可见，然后打开浏览器分享菜单。",
+    "app.pwa.install.manualStepAdd": "在操作列表里选择“添加到主屏幕”。",
+    "app.pwa.install.manualStepConfirm": "确认图标名称后完成添加，再从主屏幕启动独立应用窗口。",
+    "app.pwa.install.installedTitle": "应用已安装",
+    "app.pwa.install.installedDescription":
+      "当前浏览器已经运行在已安装的 Codex Vibe Monitor 独立壳层里。",
+    "app.pwa.install.installedHint":
+      "建议把独立窗口固定到常用位置，便于日常巡检。离线时仍可打开壳层，但实时代理数据需要联网后恢复。",
+    "app.pwa.offline.title": "离线应用壳层",
+    "app.pwa.offline.descriptionReady":
+      "缓存壳层仍可继续打开。实时数据刷新、SSE 活动和设置同步会在网络恢复后继续。",
+    "app.pwa.offline.descriptionPending":
+      "当前浏览器在壳层完成缓存前就离线了，请至少在线访问一次以完成 installable shell。",
+    "app.pwa.update.available": "新的应用壳层已就绪：",
+    "app.pwa.update.refresh": "更新应用",
+    "app.pwa.update.later": "稍后",
     "app.update.available": "有新版本可用：",
     "app.update.current": "当前",
     "app.update.refresh": "立即刷新",
