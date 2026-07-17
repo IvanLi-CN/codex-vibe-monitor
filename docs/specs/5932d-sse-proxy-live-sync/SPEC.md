@@ -56,6 +56,7 @@
 ### MUST
 
 - `/events` 请求继续保留单入口，但客户端必须显式携带 `topics` 与可选 `resume`。
+- `/events` 请求允许附带可选 `attempt` 与 `reason` 诊断参数；它们不得影响 snapshot/replay/live 语义，只用于前后端关联重连证据。
 - 服务端对主应用 topic 只发送 `SubscriptionEventEnvelope::Snapshot | Replay | Live`；覆盖范围内不再向前端暴露 “收到 `records` 后自己回源” 这一合同。
 - 覆盖范围内页面首屏不得先发 HTTP bootstrap；可见数据 hydration 必须等待 topic `snapshot` 或可恢复的 `replay` 完成。
 - 健康连接状态下，覆盖范围内页面不得触发后台 HTTP reconcile、`subscribeToSseOpen` resync fetch、定时拉取校准或页面私有 fallback。
@@ -74,6 +75,7 @@
 
 - 后端 topic payload 尽量直接复用现有 authoritative 读路径，而不是重复实现一套只给 SSE 用的聚合逻辑。
 - 结构化日志或 diagnostics 至少覆盖：replay hit/miss、miss reason、snapshot build latency、fanout receivers、cursor gap、cache pruning。
+- owner-facing 离线提示应能暴露最小可判责信息：最近连接 `attempt`、触发 `reason`、active/resume/forced-snapshot topic 数量、最近消息时间与最近终态。
 
 ## 功能与行为规格（Functional/Behavior Spec）
 
@@ -90,6 +92,13 @@
 - 当连接短暂断开并恢复时：
   - 若 cursor 仍在 replay 窗口内，服务端发送缺口 `replay`。
   - 若服务重启、schema epoch 变化、topic 参数变化或 replay gap 超预算，则服务端直接发送新 `snapshot`。
+- 当用户在离线提示中点击手动重连时：
+  - 前端必须对当前 active topics 强制 fresh snapshot，不再携带这些 topic 的 `resume` cursor。
+  - 前端必须保留当前路由与页面状态，不通过整页刷新恢复。
+  - 新连接必须带上新的 `attempt` 与 `reason=manual`，便于和服务端初始化结果对齐。
+- 当自动恢复由 `eventsource-error` 或 watchdog 失败触发时：
+  - 前端必须复用统一指数退避窗口，而不是 `0ms` 立即自旋重连。
+  - owner-facing diagnostics 中展示的 `attempt` 在短时间内不得失控增长到不可诊断的数量级。
 - 当某个 topic 收到内部广播影响时：
   - 后端刷新该 topic 的 authoritative payload。
   - 更新 snapshot cache。
@@ -120,6 +129,9 @@
   - `schemaEpoch`
   - `cursor`
   - `payload`
+- `/events` diagnostics query
+  - `attempt?: number`
+  - `reason?: string`
 
 ### Topic inventory
 
@@ -151,6 +163,8 @@
 - Given `dashboard.activity`、working conversations、prompt-cache、summary、timeseries、parallel-work 收到增量，When 页面更新，Then 它们只消费自己的 topic `snapshot/replay/live`，不再通过 `records` 驱动额外重拉。
 - Given 客户端断线后重连且 cursor 仍在 replay 窗口内，When 连接恢复，Then 服务端发送 `replay` 补齐 gap，而不是额外 HTTP。
 - Given cursor 不可恢复、`schemaEpoch` 变化、topic 参数变化、gap 超预算或服务重启，When 连接恢复，Then 服务端直接发送新的 `snapshot` 覆盖旧状态。
+- Given 页面仍响应且 owner 点击“立即重连”，When 前端发起新的 `/events` 连接，Then 该连接带新的 `attempt`、`reason=manual`，且 active topics 不再携带 `resume`，页面无需整页刷新即可等待 fresh snapshot 恢复。
+- Given `/events` 连续失败，When 前端进入自动恢复，Then 新的 SSE 尝试必须按退避节奏出现，而不是在数秒内打出成百上千个 `attempt`。
 - Given 关闭历史窗口或非订阅页面仍使用 HTTP，When 本轮纯 SSE 改造完成，Then 它们现有语义保持不变。
 
 ## 验收清单（Acceptance checklist）

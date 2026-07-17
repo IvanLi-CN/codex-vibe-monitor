@@ -66,6 +66,8 @@ pub(crate) enum SubscriptionEventEnvelope {
 pub(crate) struct SubscriptionStreamQuery {
     pub(crate) topics: Option<String>,
     pub(crate) resume: Option<String>,
+    pub(crate) attempt: Option<u64>,
+    pub(crate) reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +129,42 @@ impl ReplayMissReason {
             Self::UnknownTopic => "unknown_topic",
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TopicInitDisposition {
+    ReplayHit,
+    ResumeCaughtUp,
+    SnapshotNoResume,
+    SnapshotResumeMiss,
+}
+
+impl TopicInitDisposition {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::ReplayHit => "replay_hit",
+            Self::ResumeCaughtUp => "resume_caught_up",
+            Self::SnapshotNoResume => "snapshot_no_resume",
+            Self::SnapshotResumeMiss => "snapshot_resume_miss",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TopicInitOutcome {
+    pub(crate) topic_key: String,
+    pub(crate) disposition: TopicInitDisposition,
+    pub(crate) replay_event_count: usize,
+    pub(crate) replay_bytes: usize,
+    pub(crate) cursor: u64,
+    pub(crate) miss_reason: Option<&'static str>,
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedSubscriptionConnection {
+    pub(crate) initial: Vec<SubscriptionEventEnvelope>,
+    pub(crate) last_sent_cursors: HashMap<String, u64>,
+    pub(crate) outcomes: Vec<TopicInitOutcome>,
 }
 
 #[derive(Debug, Clone)]
@@ -206,13 +244,14 @@ impl SubscriptionHub {
         state: Arc<AppState>,
         descriptors: Vec<SubscriptionTopicDescriptor>,
         resume: Vec<SubscriptionResumeCursor>,
-    ) -> Result<(Vec<SubscriptionEventEnvelope>, HashMap<String, u64>), ApiError> {
+    ) -> Result<PreparedSubscriptionConnection, ApiError> {
         let resume_by_topic_key = resume
             .into_iter()
             .map(|item| (item.topic_key.clone(), item))
             .collect::<HashMap<_, _>>();
         let mut initial = Vec::new();
         let mut last_sent_cursors = HashMap::new();
+        let mut outcomes = Vec::new();
 
         for descriptor in descriptors {
             let topic = SubscriptionTopic::from_descriptor(&descriptor)?;
@@ -227,10 +266,11 @@ impl SubscriptionHub {
 
             match replay_attempt {
                 Ok(Some(events)) if !events.is_empty() => {
+                    let replay_event_count = events.len();
                     let replay_bytes = events.iter().map(|event| event.bytes).sum::<usize>();
                     tracing::debug!(
                         topic_key,
-                        replay_event_count = events.len(),
+                        replay_event_count,
                         replay_bytes,
                         "subscription replay hit"
                     );
@@ -244,9 +284,25 @@ impl SubscriptionHub {
                         });
                     }
                     last_sent_cursors.insert(topic_key.clone(), cached.cursor);
+                    outcomes.push(TopicInitOutcome {
+                        topic_key: topic_key.clone(),
+                        disposition: TopicInitDisposition::ReplayHit,
+                        replay_event_count,
+                        replay_bytes,
+                        cursor: cached.cursor,
+                        miss_reason: None,
+                    });
                 }
                 Ok(Some(_)) => {
                     last_sent_cursors.insert(topic_key.clone(), cached.cursor);
+                    outcomes.push(TopicInitOutcome {
+                        topic_key: topic_key.clone(),
+                        disposition: TopicInitDisposition::ResumeCaughtUp,
+                        replay_event_count: 0,
+                        replay_bytes: 0,
+                        cursor: cached.cursor,
+                        miss_reason: None,
+                    });
                 }
                 Ok(None) => {
                     initial.push(SubscriptionEventEnvelope::Snapshot {
@@ -257,6 +313,14 @@ impl SubscriptionHub {
                         payload: cached.snapshot_payload.clone(),
                     });
                     last_sent_cursors.insert(topic_key.clone(), cached.cursor);
+                    outcomes.push(TopicInitOutcome {
+                        topic_key: topic_key.clone(),
+                        disposition: TopicInitDisposition::SnapshotNoResume,
+                        replay_event_count: 0,
+                        replay_bytes: 0,
+                        cursor: cached.cursor,
+                        miss_reason: None,
+                    });
                 }
                 Err(reason) => {
                     tracing::debug!(
@@ -272,11 +336,23 @@ impl SubscriptionHub {
                         payload: cached.snapshot_payload.clone(),
                     });
                     last_sent_cursors.insert(topic_key.clone(), cached.cursor);
+                    outcomes.push(TopicInitOutcome {
+                        topic_key: topic_key.clone(),
+                        disposition: TopicInitDisposition::SnapshotResumeMiss,
+                        replay_event_count: 0,
+                        replay_bytes: 0,
+                        cursor: cached.cursor,
+                        miss_reason: Some(reason.as_str()),
+                    });
                 }
             }
         }
 
-        Ok((initial, last_sent_cursors))
+        Ok(PreparedSubscriptionConnection {
+            initial,
+            last_sent_cursors,
+            outcomes,
+        })
     }
 
     async fn replay_events_for_resume(
@@ -490,6 +566,7 @@ pub(crate) async fn topic_sse_stream(
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiError> {
     let descriptors = decode_topics_query(query.topics.as_deref())?;
     let resume = decode_resume_query(query.resume.as_deref())?;
+    let resume_count = resume.len();
     let mut live_receiver = state.subscription_hub.subscribe();
     let selected_topics = descriptors
         .iter()
@@ -499,10 +576,23 @@ pub(crate) async fn topic_sse_stream(
         .iter()
         .map(SubscriptionTopic::cache_key)
         .collect::<Result<HashSet<_>, _>>()?;
-    let (initial, last_seen_by_topic) = state
+    let prepared = state
         .subscription_hub
         .prepare_connection(state.clone(), descriptors, resume)
         .await?;
+    tracing::info!(
+        attempt = query.attempt,
+        reason = query.reason.as_deref().unwrap_or("unknown"),
+        topic_count = selected_topic_keys.len(),
+        resume_count,
+        init_outcomes = ?prepared.outcomes,
+        "subscription connection prepared"
+    );
+    let PreparedSubscriptionConnection {
+        initial,
+        last_sent_cursors: last_seen_by_topic,
+        outcomes: _,
+    } = prepared;
 
     let initial_stream = stream::iter(
         initial
@@ -1591,5 +1681,151 @@ mod tests {
             result,
             Err(ReplayMissReason::GapEventBudgetExceeded)
         ));
+    }
+
+    #[tokio::test]
+    async fn prepare_connection_reports_snapshot_without_resume() {
+        let state =
+            crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap())
+                .await;
+        let hub = SubscriptionHub::new();
+        let topic = summary_topic();
+        let descriptor = topic.descriptor();
+        let topic_key = topic.cache_key().expect("topic key");
+        let cached = seeded_cached_topic(topic, &[1, 2, 3], Utc::now());
+        hub.state
+            .lock()
+            .await
+            .topics
+            .insert(topic_key.clone(), cached);
+
+        let prepared = hub
+            .prepare_connection(state, vec![descriptor], Vec::new())
+            .await
+            .expect("prepare connection");
+
+        assert_eq!(prepared.initial.len(), 1);
+        assert_eq!(
+            prepared.outcomes,
+            vec![TopicInitOutcome {
+                topic_key,
+                disposition: TopicInitDisposition::SnapshotNoResume,
+                replay_event_count: 0,
+                replay_bytes: 0,
+                cursor: 3,
+                miss_reason: None,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_connection_reports_replay_hit_and_resume_caught_up() {
+        let state =
+            crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap())
+                .await;
+        let hub = SubscriptionHub::new();
+        let topic = summary_topic();
+        let descriptor = topic.descriptor();
+        let topic_key = topic.cache_key().expect("topic key");
+        let schema_epoch = topic.schema_epoch();
+        let cached = seeded_cached_topic(topic, &[1, 2, 3, 4], Utc::now());
+        hub.state
+            .lock()
+            .await
+            .topics
+            .insert(topic_key.clone(), cached);
+
+        let replay_hit = hub
+            .prepare_connection(
+                state.clone(),
+                vec![descriptor.clone()],
+                vec![SubscriptionResumeCursor {
+                    topic_key: topic_key.clone(),
+                    cursor: 2,
+                    schema_epoch: schema_epoch.clone(),
+                }],
+            )
+            .await
+            .expect("prepare connection");
+        assert_eq!(replay_hit.initial.len(), 2);
+        assert_eq!(
+            replay_hit.outcomes[0],
+            TopicInitOutcome {
+                topic_key: topic_key.clone(),
+                disposition: TopicInitDisposition::ReplayHit,
+                replay_event_count: 2,
+                replay_bytes: 64,
+                cursor: 4,
+                miss_reason: None,
+            }
+        );
+
+        let caught_up = hub
+            .prepare_connection(
+                state,
+                vec![descriptor],
+                vec![SubscriptionResumeCursor {
+                    topic_key: topic_key.clone(),
+                    cursor: 4,
+                    schema_epoch,
+                }],
+            )
+            .await
+            .expect("prepare connection");
+        assert!(caught_up.initial.is_empty());
+        assert_eq!(
+            caught_up.outcomes[0],
+            TopicInitOutcome {
+                topic_key,
+                disposition: TopicInitDisposition::ResumeCaughtUp,
+                replay_event_count: 0,
+                replay_bytes: 0,
+                cursor: 4,
+                miss_reason: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_connection_reports_snapshot_resume_miss() {
+        let state =
+            crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap())
+                .await;
+        let hub = SubscriptionHub::new();
+        let topic = summary_topic();
+        let descriptor = topic.descriptor();
+        let topic_key = topic.cache_key().expect("topic key");
+        let cached = seeded_cached_topic(topic, &[1, 2, 3], Utc::now());
+        hub.state
+            .lock()
+            .await
+            .topics
+            .insert(topic_key.clone(), cached);
+
+        let prepared = hub
+            .prepare_connection(
+                state,
+                vec![descriptor],
+                vec![SubscriptionResumeCursor {
+                    topic_key: topic_key.clone(),
+                    cursor: 2,
+                    schema_epoch: "stats.summary.current/v0".to_string(),
+                }],
+            )
+            .await
+            .expect("prepare connection");
+
+        assert_eq!(prepared.initial.len(), 1);
+        assert_eq!(
+            prepared.outcomes,
+            vec![TopicInitOutcome {
+                topic_key,
+                disposition: TopicInitDisposition::SnapshotResumeMiss,
+                replay_event_count: 0,
+                replay_bytes: 0,
+                cursor: 3,
+                miss_reason: Some("schema_epoch_mismatch"),
+            }]
+        );
     }
 }

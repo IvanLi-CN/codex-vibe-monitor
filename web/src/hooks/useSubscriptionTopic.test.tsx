@@ -6,12 +6,14 @@ import { useSubscriptionTopic } from "./useSubscriptionTopic";
 
 const sseMocks = vi.hoisted(() => ({
   getCachedTopicState: vi.fn(),
+  getTopicDescriptorKey: vi.fn(),
   requestTopicRefresh: vi.fn(),
   subscribeToTopic: vi.fn(),
 }));
 
 vi.mock("../lib/sse", () => ({
   getCachedTopicState: sseMocks.getCachedTopicState,
+  getTopicDescriptorKey: sseMocks.getTopicDescriptorKey,
   requestTopicRefresh: sseMocks.requestTopicRefresh,
   subscribeToTopic: sseMocks.subscribeToTopic,
 }));
@@ -67,6 +69,7 @@ afterEach(() => {
   root = null;
   document.body.innerHTML = "";
   sseMocks.getCachedTopicState.mockReset();
+  sseMocks.getTopicDescriptorKey.mockReset();
   sseMocks.requestTopicRefresh.mockReset();
   sseMocks.subscribeToTopic.mockReset();
 });
@@ -80,6 +83,10 @@ describe("useSubscriptionTopic", () => {
     }> = [];
     let listener: ((event: { payload: { total: number } }) => void) | null = null;
     sseMocks.getCachedTopicState.mockReturnValue(null);
+    sseMocks.getTopicDescriptorKey.mockImplementation(
+      (descriptor: { topic: string; params?: Record<string, string> }) =>
+        JSON.stringify(descriptor),
+    );
     sseMocks.subscribeToTopic.mockImplementation(
       (_descriptor: unknown, nextListener: (event: { payload: { total: number } }) => void) => {
         listener = nextListener;
@@ -117,6 +124,10 @@ describe("useSubscriptionTopic", () => {
 
   it("stays disabled when descriptor is absent or the hook is disabled", () => {
     const renders: Array<{ data: { total: number } | null; isLoading: boolean }> = [];
+    sseMocks.getTopicDescriptorKey.mockImplementation(
+      (descriptor: { topic: string; params?: Record<string, string> }) =>
+        JSON.stringify(descriptor),
+    );
 
     renderHookHarness({
       descriptor: null,
@@ -145,5 +156,37 @@ describe("useSubscriptionTopic", () => {
 
     expect(sseMocks.subscribeToTopic).not.toHaveBeenCalled();
     expect(renders.at(-1)).toMatchObject({ data: null, isLoading: false });
+  });
+
+  it("does not resubscribe when the descriptor object identity changes but the topic key stays the same", () => {
+    const unsubscribe = vi.fn();
+    sseMocks.getCachedTopicState.mockReturnValue(null);
+    sseMocks.getTopicDescriptorKey.mockImplementation(
+      (descriptor: { topic: string; params?: Record<string, string> }) =>
+        JSON.stringify({
+          topic: descriptor.topic,
+          params: descriptor.params ?? {},
+        }),
+    );
+    sseMocks.subscribeToTopic.mockImplementation(() => unsubscribe);
+
+    renderHookHarness({
+      descriptor: { topic: "stats.summary.current", params: { window: "current" } },
+      onRender: () => {},
+    });
+
+    expect(sseMocks.subscribeToTopic).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root?.render(
+        <HookHarness
+          descriptor={{ topic: "stats.summary.current", params: { window: "current" } }}
+          onRender={() => {}}
+        />,
+      );
+    });
+
+    expect(unsubscribe).not.toHaveBeenCalled();
+    expect(sseMocks.subscribeToTopic).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,12 +1,54 @@
 import { createEventSource } from "./api";
 
+declare global {
+  interface Window {
+    __CVM_SSE__?: {
+      requestImmediateReconnect: typeof requestImmediateReconnect;
+      getCurrentSseDiagnostics: typeof getCurrentSseDiagnostics;
+      getCurrentSseStatus: typeof getCurrentSseStatus;
+    };
+  }
+}
+
 export type SseConnectionPhase = "idle" | "connecting" | "reconnecting" | "connected" | "disabled";
+export type SseReconnectReason =
+  | "initial"
+  | "topic-change"
+  | "topic-refresh"
+  | "manual"
+  | "eventsource-error"
+  | "watchdog-closed"
+  | "watchdog-timeout"
+  | "visibility-visible";
+export type SseTerminalOutcome =
+  | "idle"
+  | "open"
+  | "topic-change"
+  | "eventsource-error"
+  | "watchdog-closed"
+  | "watchdog-timeout"
+  | "disabled"
+  | "unsupported"
+  | "cleanup";
 
 export interface SseStatus {
   phase: SseConnectionPhase;
   downtimeMs: number;
   nextRetryAt: number | null;
   autoReconnect: boolean;
+}
+
+export interface SseDiagnostics {
+  attempt: number | null;
+  reason: SseReconnectReason | null;
+  activeTopics: string[];
+  resumeTopics: string[];
+  forcedSnapshotTopics: string[];
+  lastMessageAt: number | null;
+  lastOpenAt: number | null;
+  lastErrorAt: number | null;
+  lastConnectionStartedAt: number | null;
+  lastTerminalOutcome: SseTerminalOutcome | null;
 }
 
 export interface SubscriptionTopicDescriptor {
@@ -40,6 +82,7 @@ export interface SubscriptionTopicState<T = unknown> {
 
 type TopicListener<T = unknown> = (event: SubscriptionTopicEnvelope<T>) => void;
 type StatusListener = (status: SseStatus) => void;
+type DiagnosticsListener = (diagnostics: SseDiagnostics) => void;
 type OpenListener = () => void;
 type ActivityListener = () => void;
 
@@ -56,6 +99,7 @@ const topicCache = new Map<string, TopicCacheEntry>();
 const openListeners = new Set<OpenListener>();
 const activityListeners = new Set<ActivityListener>();
 const statusListeners = new Set<StatusListener>();
+const diagnosticsListeners = new Set<DiagnosticsListener>();
 const forcedSnapshotDescriptors = new Set<string>();
 
 let reconnectTimer: number | null = null;
@@ -74,7 +118,21 @@ let lastStatus: SseStatus = {
   nextRetryAt: null,
   autoReconnect: true,
 };
+let lastDiagnostics: SseDiagnostics = {
+  attempt: null,
+  reason: null,
+  activeTopics: [],
+  resumeTopics: [],
+  forcedSnapshotTopics: [],
+  lastMessageAt: null,
+  lastOpenAt: null,
+  lastErrorAt: null,
+  lastConnectionStartedAt: null,
+  lastTerminalOutcome: null,
+};
 let activeConnectionSignature = "";
+let connectionAttemptCounter = 0;
+let nextConnectReason: SseReconnectReason = "initial";
 
 const BASE_RECONNECT_DELAY_MS = 2_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
@@ -102,7 +160,7 @@ export function buildTopicDescriptor(
   };
 }
 
-function descriptorKeyOf(descriptor: SubscriptionTopicDescriptor) {
+export function getTopicDescriptorKey(descriptor: SubscriptionTopicDescriptor) {
   return JSON.stringify({
     topic: descriptor.topic.trim(),
     params: normalizeTopicParams(descriptor.params),
@@ -124,16 +182,46 @@ function encodeBase64Url(raw: string) {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
-function buildConnectionPath() {
+function formatTopicLabel(descriptor: SubscriptionTopicDescriptor) {
+  const normalized = normalizeTopicParams(descriptor.params);
+  const query = new URLSearchParams(normalized).toString();
+  return query ? `${descriptor.topic.trim()}?${query}` : descriptor.topic.trim();
+}
+
+function getActiveDescriptors() {
   const descriptors = Array.from(topicEntries.values())
     .map((entry) => entry.descriptor)
-    .sort((left, right) => descriptorKeyOf(left).localeCompare(descriptorKeyOf(right)));
+    .sort((left, right) => getTopicDescriptorKey(left).localeCompare(getTopicDescriptorKey(right)));
+  return descriptors;
+}
+
+function getResumeDescriptors(descriptors = getActiveDescriptors()) {
+  return descriptors.filter((descriptor) => {
+    const descriptorKey = getTopicDescriptorKey(descriptor);
+    if (forcedSnapshotDescriptors.has(descriptorKey)) {
+      return false;
+    }
+    const cached = topicCache.get(descriptorKey);
+    return !!cached?.topicKey && cached.cursor != null && !!cached.schemaEpoch;
+  });
+}
+
+function getForcedSnapshotDescriptors(descriptors = getActiveDescriptors()) {
+  return descriptors.filter((descriptor) =>
+    forcedSnapshotDescriptors.has(getTopicDescriptorKey(descriptor)),
+  );
+}
+
+function buildConnectionRequest(attempt: number, reason: SseReconnectReason) {
+  const descriptors = getActiveDescriptors();
   if (descriptors.length === 0) {
     return null;
   }
 
+  const resumeTopics: string[] = [];
+  const forcedSnapshotTopics = getForcedSnapshotDescriptors(descriptors).map(formatTopicLabel);
   const resume = descriptors.flatMap((descriptor) => {
-    const descriptorKey = descriptorKeyOf(descriptor);
+    const descriptorKey = getTopicDescriptorKey(descriptor);
     if (forcedSnapshotDescriptors.has(descriptorKey)) {
       return [];
     }
@@ -141,6 +229,7 @@ function buildConnectionPath() {
     if (!cached?.topicKey || cached.cursor == null || !cached.schemaEpoch) {
       return [];
     }
+    resumeTopics.push(formatTopicLabel(descriptor));
     return [
       {
         topicKey: cached.topicKey,
@@ -155,12 +244,19 @@ function buildConnectionPath() {
   if (resume.length > 0) {
     search.set("resume", encodeBase64Url(JSON.stringify(resume)));
   }
-  return `/events?${search.toString()}`;
+  search.set("attempt", `${attempt}`);
+  search.set("reason", reason);
+  return {
+    path: `/events?${search.toString()}`,
+    activeTopics: descriptors.map(formatTopicLabel),
+    resumeTopics,
+    forcedSnapshotTopics,
+  };
 }
 
 function computeConnectionSignature() {
   return Array.from(topicEntries.values())
-    .map((entry) => descriptorKeyOf(entry.descriptor))
+    .map((entry) => getTopicDescriptorKey(entry.descriptor))
     .sort((left, right) => left.localeCompare(right))
     .join("|");
 }
@@ -182,6 +278,46 @@ function computeStatus(): SseStatus {
     nextRetryAt,
     autoReconnect: !sseDisabled,
   };
+}
+
+function arraysEqual(left: string[], right: string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function diagnosticsEqual(left: SseDiagnostics, right: SseDiagnostics) {
+  return (
+    left.attempt === right.attempt &&
+    left.reason === right.reason &&
+    left.lastMessageAt === right.lastMessageAt &&
+    left.lastOpenAt === right.lastOpenAt &&
+    left.lastErrorAt === right.lastErrorAt &&
+    left.lastConnectionStartedAt === right.lastConnectionStartedAt &&
+    left.lastTerminalOutcome === right.lastTerminalOutcome &&
+    arraysEqual(left.activeTopics, right.activeTopics) &&
+    arraysEqual(left.resumeTopics, right.resumeTopics) &&
+    arraysEqual(left.forcedSnapshotTopics, right.forcedSnapshotTopics)
+  );
+}
+
+function emitDiagnostics(patch: Partial<SseDiagnostics> = {}) {
+  const nextDiagnostics = {
+    ...lastDiagnostics,
+    activeTopics: getActiveDescriptors().map(formatTopicLabel),
+    resumeTopics: getResumeDescriptors().map(formatTopicLabel),
+    forcedSnapshotTopics: getForcedSnapshotDescriptors().map(formatTopicLabel),
+    ...patch,
+  };
+  if (diagnosticsEqual(lastDiagnostics, nextDiagnostics)) {
+    return;
+  }
+  lastDiagnostics = nextDiagnostics;
+  diagnosticsListeners.forEach((listener) => {
+    try {
+      listener(lastDiagnostics);
+    } catch (error) {
+      console.error("Failed to dispatch SSE diagnostics update", error);
+    }
+  });
 }
 
 function emitStatus() {
@@ -264,12 +400,13 @@ function destroyEventSource() {
   activeConnectionSignature = "";
 }
 
-function disableSse() {
+function disableSse(outcome: SseTerminalOutcome = "disabled") {
   if (sseDisabled) return;
   sseDisabled = true;
   destroyEventSource();
   stopConnectionWatchdog();
   clearReconnectTimer();
+  emitDiagnostics({ lastTerminalOutcome: outcome });
   setConnectionPhase("disabled");
 }
 
@@ -303,7 +440,7 @@ function handleMessage(event: MessageEvent<string>) {
       payload: raw.payload,
     };
     const descriptor = normalizeIncomingDescriptor(payload.topic);
-    const descriptorKey = descriptorKeyOf(descriptor);
+    const descriptorKey = getTopicDescriptorKey(descriptor);
     const nextState: TopicCacheEntry = {
       descriptor,
       topicKey: payload.topicKey,
@@ -314,6 +451,7 @@ function handleMessage(event: MessageEvent<string>) {
     };
     topicCache.set(descriptorKey, nextState);
     forcedSnapshotDescriptors.delete(descriptorKey);
+    emitDiagnostics({ lastMessageAt: Date.now() });
     const entry = topicEntries.get(descriptorKey);
     if (entry) {
       entry.listeners.forEach((listener) => {
@@ -341,8 +479,12 @@ function handleMessage(event: MessageEvent<string>) {
 
 function handleError() {
   if (!hasActiveTopicSubscribers()) return;
+  emitDiagnostics({
+    lastErrorAt: Date.now(),
+    lastTerminalOutcome: "eventsource-error",
+  });
   beginDowntimeWindow();
-  scheduleReconnect({ immediate: true });
+  scheduleReconnect({ reason: "eventsource-error" });
 }
 
 function handleOpen() {
@@ -352,6 +494,10 @@ function handleOpen() {
   nextRetryAt = null;
   clearReconnectTimer();
   resetDowntimeWindow();
+  emitDiagnostics({
+    lastOpenAt: Date.now(),
+    lastTerminalOutcome: "open",
+  });
   setConnectionPhase("connected");
   openListeners.forEach((listener) => {
     try {
@@ -370,24 +516,48 @@ function ensureEventSource() {
   if (!isEventSourceSupported()) {
     sseDisabled = true;
     clearReconnectTimer();
+    emitDiagnostics({ lastTerminalOutcome: "unsupported" });
     setConnectionPhase("disabled");
     return null;
   }
 
-  const path = buildConnectionPath();
-  if (!path) {
-    return null;
-  }
   const signature = computeConnectionSignature();
   if (eventSource && activeConnectionSignature === signature) {
+    emitDiagnostics();
     return eventSource;
   }
 
+  const reason = nextConnectReason;
+  const attempt = connectionAttemptCounter + 1;
+  const request = buildConnectionRequest(attempt, reason);
+  if (!request) {
+    return null;
+  }
+
+  if (eventSource) {
+    emitDiagnostics({ lastTerminalOutcome: "topic-change" });
+  }
   destroyEventSource();
+  connectionAttemptCounter = attempt;
   connectingSince = Date.now();
+  lastDiagnostics = {
+    ...lastDiagnostics,
+    attempt,
+    reason,
+    lastConnectionStartedAt: connectingSince,
+  };
+  nextConnectReason = "topic-change";
   setConnectionPhase(hasConnectedOnce ? "reconnecting" : "connecting");
   activeConnectionSignature = signature;
-  eventSource = createEventSource(path);
+  emitDiagnostics({
+    attempt,
+    reason,
+    activeTopics: request.activeTopics,
+    resumeTopics: request.resumeTopics,
+    forcedSnapshotTopics: request.forcedSnapshotTopics,
+    lastConnectionStartedAt: connectingSince,
+  });
+  eventSource = createEventSource(request.path);
   eventSource.addEventListener("message", handleMessage as EventListener);
   eventSource.addEventListener("error", handleError);
   eventSource.addEventListener("open", handleOpen);
@@ -405,16 +575,27 @@ function cleanupEventSource() {
   reconnectAttempts = 0;
   hasConnectedOnce = false;
   sseDisabled = false;
+  nextConnectReason = "initial";
   resetDowntimeWindow();
+  emitDiagnostics({
+    activeTopics: [],
+    resumeTopics: [],
+    forcedSnapshotTopics: [],
+    lastTerminalOutcome: "cleanup",
+  });
   setConnectionPhase("idle");
 }
 
-function scheduleReconnect(options: { immediate?: boolean } = {}) {
+function scheduleReconnect(options: { immediate?: boolean; reason?: SseReconnectReason } = {}) {
   if (!hasActiveTopicSubscribers()) return;
   if (sseDisabled) return;
-  const { immediate = false } = options;
+  const { immediate = false, reason } = options;
   if (!immediate && reconnectTimer != null) return;
 
+  if (reason) {
+    nextConnectReason = reason;
+    emitDiagnostics({ reason });
+  }
   clearReconnectTimer();
   destroyEventSource();
 
@@ -445,7 +626,8 @@ function startConnectionWatchdog() {
     }
     if (eventSource.readyState === EventSource.CLOSED) {
       beginDowntimeWindow();
-      scheduleReconnect({ immediate: true });
+      emitDiagnostics({ lastTerminalOutcome: "watchdog-closed" });
+      scheduleReconnect({ reason: "watchdog-closed" });
       return;
     }
     if (eventSource.readyState === EventSource.CONNECTING) {
@@ -454,13 +636,14 @@ function startConnectionWatchdog() {
       }
       if (connectingSince != null && Date.now() - connectingSince > CONNECTING_TIMEOUT_MS) {
         beginDowntimeWindow();
-        scheduleReconnect({ immediate: true });
+        emitDiagnostics({ lastTerminalOutcome: "watchdog-timeout" });
+        scheduleReconnect({ reason: "watchdog-timeout" });
       }
     }
   }, WATCHDOG_INTERVAL_MS);
 }
 
-function rebuildConnection() {
+function rebuildConnection(reason: SseReconnectReason) {
   if (!hasActiveTopicSubscribers()) {
     cleanupEventSource();
     return;
@@ -469,7 +652,15 @@ function rebuildConnection() {
     beginDowntimeWindow();
   }
   reconnectAttempts = 0;
-  scheduleReconnect({ immediate: true });
+  nextConnectReason = reason;
+  scheduleReconnect({ immediate: true, reason });
+}
+
+function markAllActiveTopicsForFreshSnapshot() {
+  for (const descriptorKey of topicEntries.keys()) {
+    forcedSnapshotDescriptors.add(descriptorKey);
+  }
+  emitDiagnostics();
 }
 
 export function subscribeToTopic<T = unknown>(
@@ -477,7 +668,8 @@ export function subscribeToTopic<T = unknown>(
   listener: TopicListener<T>,
 ) {
   const normalized = normalizeIncomingDescriptor(descriptor);
-  const key = descriptorKeyOf(normalized);
+  const key = getTopicDescriptorKey(normalized);
+  const hadSubscribers = hasActiveTopicSubscribers();
   const existing = topicEntries.get(key);
   if (existing) {
     existing.listeners.add(listener as TopicListener);
@@ -486,6 +678,9 @@ export function subscribeToTopic<T = unknown>(
       descriptor: normalized,
       listeners: new Set([listener as TopicListener]),
     });
+    if (hadSubscribers) {
+      nextConnectReason = "topic-change";
+    }
   }
   const cached = topicCache.get(key);
   if (cached?.payload != null && cached.topicKey && cached.cursor != null && cached.schemaEpoch) {
@@ -498,6 +693,7 @@ export function subscribeToTopic<T = unknown>(
       payload: cached.payload as T,
     });
   }
+  emitDiagnostics();
   ensureEventSource();
   return () => {
     const entry = topicEntries.get(key);
@@ -507,6 +703,7 @@ export function subscribeToTopic<T = unknown>(
       topicEntries.delete(key);
       forcedSnapshotDescriptors.delete(key);
     }
+    emitDiagnostics();
     cleanupEventSource();
   };
 }
@@ -515,16 +712,17 @@ export function getCachedTopicState<T = unknown>(
   descriptor: SubscriptionTopicDescriptor,
 ): SubscriptionTopicState<T> | null {
   const normalized = normalizeIncomingDescriptor(descriptor);
-  const cached = topicCache.get(descriptorKeyOf(normalized));
+  const cached = topicCache.get(getTopicDescriptorKey(normalized));
   if (!cached) return null;
   return cached as SubscriptionTopicState<T>;
 }
 
 export function requestTopicRefresh(descriptor: SubscriptionTopicDescriptor) {
-  const key = descriptorKeyOf(normalizeIncomingDescriptor(descriptor));
+  const key = getTopicDescriptorKey(normalizeIncomingDescriptor(descriptor));
   forcedSnapshotDescriptors.add(key);
+  emitDiagnostics();
   if (hasActiveTopicSubscribers()) {
-    rebuildConnection();
+    rebuildConnection("topic-refresh");
   }
 }
 
@@ -551,8 +749,21 @@ export function subscribeToSseStatus(listener: StatusListener) {
   };
 }
 
+export function subscribeToSseDiagnostics(listener: DiagnosticsListener) {
+  diagnosticsListeners.add(listener);
+  listener(lastDiagnostics);
+  return () => {
+    diagnosticsListeners.delete(listener);
+    cleanupEventSource();
+  };
+}
+
 export function getCurrentSseStatus() {
   return lastStatus;
+}
+
+export function getCurrentSseDiagnostics() {
+  return lastDiagnostics;
 }
 
 export function requestImmediateReconnect() {
@@ -561,9 +772,10 @@ export function requestImmediateReconnect() {
   if (sseDisabled) {
     sseDisabled = false;
   }
+  markAllActiveTopicsForFreshSnapshot();
   beginDowntimeWindow();
   reconnectAttempts = 0;
-  scheduleReconnect({ immediate: true });
+  rebuildConnection("manual");
 }
 
 if (typeof document !== "undefined") {
@@ -571,6 +783,21 @@ if (typeof document !== "undefined") {
     if (document.visibilityState !== "visible") return;
     const status = getCurrentSseStatus();
     if (status.phase === "connected" || status.phase === "idle") return;
-    requestImmediateReconnect();
+    nextConnectReason = "visibility-visible";
+    emitDiagnostics({ reason: "visibility-visible" });
+    if (sseDisabled) {
+      sseDisabled = false;
+    }
+    reconnectAttempts = 0;
+    beginDowntimeWindow();
+    rebuildConnection("visibility-visible");
   });
+}
+
+if (typeof window !== "undefined" && import.meta.env.DEV) {
+  window.__CVM_SSE__ = {
+    requestImmediateReconnect,
+    getCurrentSseDiagnostics,
+    getCurrentSseStatus,
+  };
 }
