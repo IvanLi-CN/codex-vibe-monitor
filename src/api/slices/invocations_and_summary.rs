@@ -7765,6 +7765,7 @@ pub(crate) struct DashboardActivitySnapshot {
     range_end: DateTime<Utc>,
     accounts: Vec<DashboardActivityAccountResponse>,
     summary: DashboardActivitySummaryResponse,
+    materialized_archive_fallback_totals: StatsTotals,
 }
 
 #[cfg(test)]
@@ -7830,6 +7831,68 @@ fn dashboard_activity_stats_totals_subtract(left: StatsTotals, right: StatsTotal
         total_tokens: left.total_tokens.saturating_sub(right.total_tokens).max(0),
         non_success_cost: (left.non_success_cost - right.non_success_cost).max(0.0),
     }
+}
+
+fn dashboard_activity_stats_totals_has_values(totals: StatsTotals) -> bool {
+    totals.total_count > 0
+        || totals.success_count > 0
+        || totals.failure_count > 0
+        || totals.total_cost > 0.0
+        || totals.total_tokens > 0
+        || totals.non_success_cost > 0.0
+}
+
+async fn dashboard_activity_materialized_archive_fallback_totals(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    skipped_materialized_ranges: Vec<ExactUtcRange>,
+) -> Result<StatsTotals, ApiError> {
+    let mut fallback_totals = StatsTotals::default();
+    for skipped_range in skipped_materialized_ranges {
+        let rollup_totals = query_hourly_backed_summary_range(
+            state,
+            skipped_range.start,
+            skipped_range.end,
+            source_scope,
+        )
+        .await?;
+        let live_totals = dashboard_activity_stats_totals_from_aggregate_rows(
+            &query_live_upstream_account_activity_aggregate_rows(
+                &state.pool,
+                source_scope,
+                skipped_range,
+                true,
+                DashboardActivityExcludedInvocationIdsFilter::None,
+            )
+            .await?,
+        );
+        fallback_totals = fallback_totals.add(dashboard_activity_stats_totals_subtract(
+            rollup_totals,
+            live_totals,
+        ));
+    }
+    Ok(fallback_totals)
+}
+
+fn dashboard_activity_apply_materialized_archive_fallback_to_stats(
+    stats: &mut StatsResponse,
+    fallback_totals: StatsTotals,
+) {
+    if !dashboard_activity_stats_totals_has_values(fallback_totals) {
+        return;
+    }
+
+    stats.total_count += fallback_totals.total_count;
+    stats.success_count += fallback_totals.success_count;
+    stats.failure_count += fallback_totals.failure_count;
+    stats.total_cost += fallback_totals.total_cost;
+    stats.total_tokens += fallback_totals.total_tokens;
+    stats.non_success_cost =
+        Some(stats.non_success_cost.unwrap_or_default() + fallback_totals.non_success_cost);
+    // Materialized invocation rollups do not retain model/cost-breakdown or non-success-token
+    // detail, so omit those partial fields when they would no longer align with top-level totals.
+    stats.usage_breakdown = None;
+    stats.non_success_tokens = None;
 }
 
 fn dashboard_activity_source_scope_cache_key(source_scope: InvocationSourceScope) -> &'static str {
@@ -8337,6 +8400,10 @@ async fn overlay_dashboard_activity_live_accounts(
         snapshot.summary.current_first_response_byte_total_avg_ms,
         snapshot.summary.current_avg_total_ms,
         snapshot.summary.model_performance.clone(),
+    );
+    dashboard_activity_apply_materialized_archive_fallback_to_stats(
+        &mut snapshot.summary.stats,
+        snapshot.materialized_archive_fallback_totals,
     );
 
     Ok(())
@@ -8854,28 +8921,13 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
             let entry = account_activity.entry(row.upstream_account_id).or_default();
             entry.usage_breakdown.add_aggregate_row(&row);
         }
-        for skipped_range in skipped_materialized_ranges {
-            let rollup_totals = query_hourly_backed_summary_range(
+        materialized_archive_fallback_totals =
+            dashboard_activity_materialized_archive_fallback_totals(
                 state,
-                skipped_range.start,
-                skipped_range.end,
                 source_scope,
+                skipped_materialized_ranges,
             )
             .await?;
-            let live_totals = dashboard_activity_stats_totals_from_aggregate_rows(
-                &query_live_upstream_account_activity_aggregate_rows(
-                    &state.pool,
-                    source_scope,
-                    skipped_range,
-                    true,
-                    DashboardActivityExcludedInvocationIdsFilter::None,
-                )
-                .await?,
-            );
-            materialized_archive_fallback_totals = materialized_archive_fallback_totals.add(
-                dashboard_activity_stats_totals_subtract(rollup_totals, live_totals),
-            );
-        }
     }
     if let Some(model_performance_duration_overrides) = model_performance_duration_overrides {
         model_performance.wall_clock_usage_duration_ms =
@@ -8988,13 +9040,7 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
         }
         None => (None, None, None),
     };
-    total_count += materialized_archive_fallback_totals.total_count;
-    success_count += materialized_archive_fallback_totals.success_count;
-    failure_count += materialized_archive_fallback_totals.failure_count;
-    total_cost += materialized_archive_fallback_totals.total_cost;
-    total_tokens += materialized_archive_fallback_totals.total_tokens;
-    non_success_cost += materialized_archive_fallback_totals.non_success_cost;
-    let stats = StatsResponse {
+    let mut stats = StatsResponse {
         total_count,
         success_count,
         failure_count,
@@ -9010,6 +9056,10 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
         non_success_tokens: Some(non_success_tokens),
         maintenance: None,
     };
+    dashboard_activity_apply_materialized_archive_fallback_to_stats(
+        &mut stats,
+        materialized_archive_fallback_totals,
+    );
 
     Ok(DashboardActivitySnapshot {
         range: range_name.to_string(),
@@ -9028,6 +9078,7 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
                 .or(latest_avg_total_in_range.value),
             model_performance: model_performance.into_response(range, model_performance_available),
         },
+        materialized_archive_fallback_totals,
     })
 }
 
@@ -9060,6 +9111,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
     let mut account_activity = HashMap::<Option<i64>, UpstreamAccountActivityAccumulator>::new();
     let mut model_performance = ModelPerformanceAccumulator::default();
+    let mut materialized_archive_fallback_totals = StatsTotals::default();
     let current_snapshot_by_account = if range_name == "yesterday" {
         load_dashboard_activity_current_minute_accumulators_by_account(state, source_scope, range)
             .await?
@@ -9152,7 +9204,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         let QueryCompletedInvocationArchiveActivityAggregateRows {
             aggregates: archived_aggregates,
             usage_breakdowns: archived_usage_breakdowns,
-            skipped_materialized_ranges: _,
+            skipped_materialized_ranges,
         } = archive_rows;
         for row in archived_aggregates {
             let entry = account_activity.entry(row.upstream_account_id).or_default();
@@ -9198,6 +9250,13 @@ pub(crate) async fn load_dashboard_activity_snapshot(
                 .usage_breakdown
                 .add_aggregate_row(&row);
         }
+        materialized_archive_fallback_totals =
+            dashboard_activity_materialized_archive_fallback_totals(
+                state,
+                source_scope,
+                skipped_materialized_ranges,
+            )
+            .await?;
     }
     if let Some(model_performance_duration_overrides) = model_performance_duration_overrides {
         model_performance.wall_clock_usage_duration_ms =
@@ -9671,7 +9730,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
             })
     });
 
-    let summary = build_dashboard_activity_summary(
+    let mut summary = build_dashboard_activity_summary(
         &accounts,
         range_name != "yesterday",
         current_snapshot_summary,
@@ -9679,12 +9738,17 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         latest_avg_total_in_range.value,
         model_performance.into_response(range, model_performance_available),
     );
+    dashboard_activity_apply_materialized_archive_fallback_to_stats(
+        &mut summary.stats,
+        materialized_archive_fallback_totals,
+    );
     Ok(DashboardActivitySnapshot {
         range: range_name.to_string(),
         range_start: range.start,
         range_end: range.end,
         accounts,
         summary,
+        materialized_archive_fallback_totals,
     })
 }
 

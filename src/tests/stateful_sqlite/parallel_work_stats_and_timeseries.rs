@@ -14142,6 +14142,29 @@ async fn dashboard_activity_summary_only_uses_rollups_when_materialized_archive_
     assert_eq!(response.summary.stats.failure_count, 0);
     assert_eq!(response.summary.stats.total_tokens, 250);
     assert_f64_close(response.summary.stats.total_cost, 0.25);
+    assert!(response.summary.stats.usage_breakdown.is_none());
+    assert!(response.summary.stats.non_success_tokens.is_none());
+
+    let Json(full_response) = fetch_dashboard_activity(
+        State(state.clone()),
+        Query(DashboardActivityQuery {
+            range: "7d".to_string(),
+            recent_limit: Some(2),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: true,
+            include_recent: Some(false),
+        }),
+    )
+    .await
+    .expect("fetch full dashboard activity from materialized rollup");
+
+    assert_eq!(full_response.summary.stats.total_count, 1);
+    assert_eq!(full_response.summary.stats.success_count, 1);
+    assert_eq!(full_response.summary.stats.failure_count, 0);
+    assert_eq!(full_response.summary.stats.total_tokens, 250);
+    assert_f64_close(full_response.summary.stats.total_cost, 0.25);
+    assert!(full_response.summary.stats.usage_breakdown.is_none());
+    assert!(full_response.summary.stats.non_success_tokens.is_none());
 }
 
 #[tokio::test]
