@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.37.4",
+  "base_stable_version": "2.37.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-17T04:35:59Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.37.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "539dbc3d226242248ee775423e57d98f8e69629b",
+  "pr_number": 634,
+  "pr_title": "fix(dashboard): keep current latency visible during idle",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.37.4",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.37.4",
+  "target_sha": "b1c1e16fc3e78a913f5e45212ef3c886ed5c49d3",
+  "type_label": "type:patch"
+}
