@@ -46,6 +46,18 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             compact_support_observed_at TEXT,
             compact_support_reason TEXT,
             image_tool_capability TEXT NOT NULL DEFAULT 'unknown',
+            response_endpoint_capability TEXT NOT NULL DEFAULT 'unknown',
+            response_endpoint_capability_observed_at TEXT,
+            response_endpoint_capability_reason TEXT,
+            policy_response_endpoint_capability_override TEXT,
+            image_endpoint_capability TEXT NOT NULL DEFAULT 'unknown',
+            image_endpoint_capability_observed_at TEXT,
+            image_endpoint_capability_reason TEXT,
+            policy_image_endpoint_capability_override TEXT,
+            response_image_tool_capability TEXT NOT NULL DEFAULT 'unknown',
+            response_image_tool_capability_observed_at TEXT,
+            response_image_tool_capability_reason TEXT,
+            policy_response_image_tool_capability_override TEXT,
             local_primary_limit REAL,
             local_secondary_limit REAL,
             local_limit_unit TEXT,
@@ -128,6 +140,99 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_upstream_accounts.image_tool_capability")?;
+    ensure_text_column_with_default(
+        pool,
+        "pool_upstream_accounts",
+        "response_endpoint_capability",
+        "'unknown'",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.response_endpoint_capability")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "response_endpoint_capability_observed_at",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.response_endpoint_capability_observed_at")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "response_endpoint_capability_reason",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.response_endpoint_capability_reason")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "policy_response_endpoint_capability_override",
+    )
+    .await
+    .context(
+        "failed to ensure pool_upstream_accounts.policy_response_endpoint_capability_override",
+    )?;
+    ensure_text_column_with_default(
+        pool,
+        "pool_upstream_accounts",
+        "image_endpoint_capability",
+        "'unknown'",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.image_endpoint_capability")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "image_endpoint_capability_observed_at",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.image_endpoint_capability_observed_at")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "image_endpoint_capability_reason",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.image_endpoint_capability_reason")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "policy_image_endpoint_capability_override",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.policy_image_endpoint_capability_override")?;
+    ensure_text_column_with_default(
+        pool,
+        "pool_upstream_accounts",
+        "response_image_tool_capability",
+        "'unknown'",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.response_image_tool_capability")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "response_image_tool_capability_observed_at",
+    )
+    .await
+    .context(
+        "failed to ensure pool_upstream_accounts.response_image_tool_capability_observed_at",
+    )?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "response_image_tool_capability_reason",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.response_image_tool_capability_reason")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "policy_response_image_tool_capability_override",
+    )
+    .await
+    .context(
+        "failed to ensure pool_upstream_accounts.policy_response_image_tool_capability_override",
+    )?;
     ensure_integer_column_with_default(pool, "pool_upstream_accounts", "is_mother", "0")
         .await
         .context("failed to ensure pool_upstream_accounts.is_mother")?;

@@ -1664,6 +1664,44 @@ pub(crate) async fn update_upstream_account_inner(
             }
         }
     };
+    let normalize_capability_override =
+        |field_name: &str, value: &str| -> Result<String, (StatusCode, String)> {
+            match CapabilitySupport::from_str(value) {
+                CapabilitySupport::Supported | CapabilitySupport::Unsupported => {
+                    Ok(CapabilitySupport::from_str(value).as_str().to_string())
+                }
+                CapabilitySupport::Unknown => Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("{field_name} must be supported, unsupported, or null"),
+                )),
+            }
+        };
+    let response_endpoint_capability_override = match &payload.response_endpoint_capability_override
+    {
+        OptionalField::Missing => row.policy_response_endpoint_capability_override.clone(),
+        OptionalField::Null => None,
+        OptionalField::Value(value) => Some(normalize_capability_override(
+            "responseEndpointCapabilityOverride",
+            value,
+        )?),
+    };
+    let image_endpoint_capability_override = match &payload.image_endpoint_capability_override {
+        OptionalField::Missing => row.policy_image_endpoint_capability_override.clone(),
+        OptionalField::Null => None,
+        OptionalField::Value(value) => Some(normalize_capability_override(
+            "imageEndpointCapabilityOverride",
+            value,
+        )?),
+    };
+    let response_image_tool_capability_override =
+        match &payload.response_image_tool_capability_override {
+            OptionalField::Missing => row.policy_response_image_tool_capability_override.clone(),
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(normalize_capability_override(
+                "responseImageToolCapabilityOverride",
+                value,
+            )?),
+        };
     let status_change_upstream_http_401 = match payload.routing_rule.as_ref() {
         Some(rule) => match rule
             .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401)
@@ -1868,7 +1906,10 @@ pub(crate) async fn update_upstream_account_inner(
             policy_responses_stream_timeout_secs = ?38,
             policy_compact_stream_timeout_secs = ?39,
             bound_proxy_keys_json = ?40,
-            updated_at = ?41
+            policy_response_endpoint_capability_override = ?41,
+            policy_image_endpoint_capability_override = ?42,
+            policy_response_image_tool_capability_override = ?43,
+            updated_at = ?44
         WHERE id = ?1
         "#,
     )
@@ -2053,6 +2094,9 @@ pub(crate) async fn update_upstream_account_inner(
         None => row.policy_compact_stream_timeout_secs,
     })
     .bind(next_bound_proxy_keys_json)
+    .bind(response_endpoint_capability_override)
+    .bind(image_endpoint_capability_override)
+    .bind(response_image_tool_capability_override)
     .bind(&now_iso)
     .execute(tx.as_mut())
     .await

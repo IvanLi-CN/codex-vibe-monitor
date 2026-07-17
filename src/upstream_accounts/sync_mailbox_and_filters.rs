@@ -1619,10 +1619,22 @@ pub(crate) fn decode_request_compression_level_preset(
         .unwrap_or_default()
 }
 
-pub(crate) fn decode_image_tool_capability(value: Option<&str>) -> ImageToolCapability {
+pub(crate) fn decode_capability_support(value: Option<&str>) -> CapabilitySupport {
     value
-        .map(ImageToolCapability::from_str)
-        .unwrap_or(ImageToolCapability::Unknown)
+        .map(CapabilitySupport::from_str)
+        .unwrap_or(CapabilitySupport::Unknown)
+}
+
+pub(crate) fn decode_capability_override(value: Option<&str>) -> Option<CapabilitySupport> {
+    let capability = decode_capability_support(value);
+    (!matches!(capability, CapabilitySupport::Unknown)).then_some(capability)
+}
+
+pub(crate) fn effective_capability_support(
+    observed: CapabilitySupport,
+    override_value: Option<CapabilitySupport>,
+) -> CapabilitySupport {
+    override_value.unwrap_or(observed)
 }
 
 pub(crate) fn normalize_concurrency_limit(

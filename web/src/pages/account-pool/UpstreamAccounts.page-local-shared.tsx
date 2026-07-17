@@ -65,12 +65,14 @@ import { useUpstreamStickyConversations } from "../../hooks/useUpstreamStickyCon
 import { useTranslation } from "../../i18n";
 import type {
   ApiInvocation,
+  CapabilityOverride,
   ForwardProxyBindingNode,
   StickyKeyConversationSelection,
   UpdateGroupAccountRoutingRulePayload,
   UpstreamAccountDetail,
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
+  UpstreamCapabilityState,
 } from "../../lib/api";
 import {
   ApiRequestError,
@@ -574,6 +576,165 @@ function CompactDetailField({
         </div>
       ) : null}
     </div>
+  );
+}
+
+type CapabilityOverrideField =
+  | "responseEndpointCapabilityOverride"
+  | "imageEndpointCapabilityOverride"
+  | "responseImageToolCapabilityOverride";
+
+const RESPONSE_FAMILY_CAPABILITY_ENDPOINTS = [
+  "/v1/responses",
+  "/v1/responses/compact",
+  "/v1/chat/completions",
+] as const;
+
+const DIRECT_IMAGE_CAPABILITY_ENDPOINTS = ["/v1/images/generations", "/v1/images/edits"] as const;
+
+function capabilityBadgeVariant(
+  value: UpstreamCapabilityState["effective"] | CapabilityOverride | null,
+) {
+  if (value === "supported") return "success";
+  if (value === "unsupported") return "warning";
+  return "secondary";
+}
+
+function capabilityStatusLabel(
+  state: UpstreamCapabilityState["effective"] | CapabilityOverride | null,
+  t: ReturnType<typeof useTranslation>["t"],
+) {
+  return t(`accountPool.upstreamAccounts.capability.status.${state ?? "auto"}`);
+}
+
+function AccountCapabilityCard({
+  title,
+  description,
+  endpoints,
+  state,
+  overrideField,
+  writesEnabled,
+  busy,
+  onOverrideChange,
+}: {
+  title: string;
+  description: string;
+  endpoints: readonly string[];
+  state: UpstreamCapabilityState;
+  overrideField: CapabilityOverrideField;
+  writesEnabled: boolean;
+  busy: boolean;
+  onOverrideChange: (field: CapabilityOverrideField, value: CapabilityOverride | null) => void;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <Card className="overflow-hidden border-base-300/70 bg-[radial-gradient(circle_at_top_left,rgba(71,85,105,0.08),transparent_58%),linear-gradient(180deg,rgba(255,255,255,0.9),rgba(255,255,255,0.72))] shadow-sm">
+      <CardHeader className="space-y-3 pb-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <CardTitle className="text-base">{title}</CardTitle>
+          </div>
+          <Badge variant={capabilityBadgeVariant(state.effective)} className="shrink-0 self-start">
+            {capabilityStatusLabel(state.effective, t)}
+          </Badge>
+        </div>
+        <div className="space-y-2">
+          <CardDescription className="text-sm leading-5">{description}</CardDescription>
+          <div className="space-y-1.5">
+            <p className="text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-base-content/52">
+              {t("accountPool.upstreamAccounts.capability.endpointsLabel")}
+            </p>
+            <div className="flex flex-wrap gap-2 rounded-xl border border-base-300/70 bg-base-100/78 px-3 py-2">
+              {endpoints.map((endpoint) => (
+                <code
+                  key={endpoint}
+                  className="rounded-md bg-base-200/80 px-2 py-1 font-mono text-[0.74rem] leading-5 text-base-content/82"
+                >
+                  {endpoint}
+                </code>
+              ))}
+            </div>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-3">
+        <div className="grid gap-2 text-sm text-base-content/75">
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-base-300/70 bg-base-100/70 px-3 py-2">
+            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-base-content/55">
+              {t("accountPool.upstreamAccounts.capability.observed")}
+            </span>
+            <Badge variant={capabilityBadgeVariant(state.observed)} className="max-w-full truncate">
+              {capabilityStatusLabel(state.observed, t)}
+            </Badge>
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-base-300/70 bg-base-100/70 px-3 py-2">
+            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-base-content/55">
+              {t("accountPool.upstreamAccounts.capability.override")}
+            </span>
+            <Badge
+              variant={capabilityBadgeVariant(state.override ?? null)}
+              className="max-w-full truncate"
+            >
+              {capabilityStatusLabel(state.override ?? null, t)}
+            </Badge>
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-base-300/70 bg-base-100/70 px-3 py-2">
+            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-base-content/55">
+              {t("accountPool.upstreamAccounts.capability.effective")}
+            </span>
+            <Badge
+              variant={capabilityBadgeVariant(state.effective)}
+              className="max-w-full truncate"
+            >
+              {capabilityStatusLabel(state.effective, t)}
+            </Badge>
+          </div>
+        </div>
+        <SelectField
+          className="field"
+          label={t("accountPool.upstreamAccounts.capability.overrideLabel")}
+          name={overrideField}
+          size="sm"
+          value={state.override ?? "auto"}
+          disabled={!writesEnabled || busy}
+          options={[
+            {
+              value: "auto",
+              label: t("accountPool.upstreamAccounts.capability.overrideOption.auto"),
+            },
+            {
+              value: "supported",
+              label: t("accountPool.upstreamAccounts.capability.overrideOption.supported"),
+            },
+            {
+              value: "unsupported",
+              label: t("accountPool.upstreamAccounts.capability.overrideOption.unsupported"),
+            },
+          ]}
+          onValueChange={(value) =>
+            onOverrideChange(
+              overrideField,
+              value === "supported" || value === "unsupported" ? value : null,
+            )
+          }
+        />
+        <div className="grid gap-1 text-xs leading-5 text-base-content/60">
+          <div>
+            <span className="font-semibold text-base-content/70">
+              {t("accountPool.upstreamAccounts.capability.observedAt")}
+            </span>{" "}
+            {formatDateTime(state.observedAt)}
+          </div>
+          <div>
+            <span className="font-semibold text-base-content/70">
+              {t("accountPool.upstreamAccounts.capability.reason")}
+            </span>{" "}
+            {state.reason || "—"}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -2310,6 +2471,47 @@ function SharedUpstreamAccountDetailDrawerInner({
     },
     [busyAction, handleNotFoundClose, inlinePolicyBusyField, notifyMotherChange, saveAccount],
   );
+  const handleSaveCapabilityOverride = useCallback(
+    async (
+      source: UpstreamAccountDetail,
+      field: CapabilityOverrideField,
+      value: CapabilityOverride | null,
+    ) => {
+      if (hasBusyAccountAction(busyAction, source.id)) return;
+      setActionError((current) => {
+        const nextMessages = { ...current.accountMessages };
+        delete nextMessages[source.id];
+        return { ...current, accountMessages: nextMessages };
+      });
+      setBusyAction((current) => {
+        const nextActions = new Set(current.accountActions);
+        nextActions.add(createBusyActionKey("save", source.id));
+        return { ...current, accountActions: nextActions };
+      });
+      try {
+        const response = await saveAccount(source.id, {
+          [field]: value,
+        });
+        notifyMotherChange(response);
+      } catch (err) {
+        if (handleNotFoundClose(source.id, err)) return;
+        setActionError((current) => ({
+          ...current,
+          accountMessages: {
+            ...current.accountMessages,
+            [source.id]: err instanceof Error ? err.message : String(err),
+          },
+        }));
+      } finally {
+        setBusyAction((current) => {
+          const nextActions = new Set(current.accountActions);
+          nextActions.delete(createBusyActionKey("save", source.id));
+          return { ...current, accountActions: nextActions };
+        });
+      }
+    },
+    [busyAction, handleNotFoundClose, notifyMotherChange, saveAccount],
+  );
 
   const handleSync = useCallback(
     async (source: UpstreamAccountSummary) => {
@@ -2776,7 +2978,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                 </Alert>
               ) : null}
               <SegmentedControl
-                className="w-full flex-wrap justify-start self-stretch desktop:w-auto desktop:self-start"
+                className="w-fit max-w-full flex-wrap justify-start justify-self-start"
                 role="tablist"
                 aria-label={t("accountPool.upstreamAccounts.detailTitle")}
               >
@@ -2886,31 +3088,6 @@ function SharedUpstreamAccountDetailDrawerInner({
                         value={selectedDetail.groupName ?? ""}
                         title={selectedDetail.groupName ?? undefined}
                       />
-                      {selectedDetail.kind === "oauth_codex" ? (
-                        <CompactDetailField
-                          label={t("accountPool.upstreamAccounts.fields.imageToolCapability")}
-                          value={
-                            <Badge
-                              variant={
-                                (selectedDetail.imageToolCapability ?? "unknown") === "supported"
-                                  ? "success"
-                                  : (selectedDetail.imageToolCapability ?? "unknown") ===
-                                      "unsupported"
-                                    ? "warning"
-                                    : "secondary"
-                              }
-                              className="max-w-full truncate"
-                            >
-                              {t(
-                                `accountPool.upstreamAccounts.imageToolCapability.${selectedDetail.imageToolCapability ?? "unknown"}`,
-                              )}
-                            </Badge>
-                          }
-                          title={t(
-                            `accountPool.upstreamAccounts.imageToolCapabilityHint.${selectedDetail.imageToolCapability ?? "unknown"}`,
-                          )}
-                        />
-                      ) : null}
                       <CompactDetailField
                         label={t("accountPool.upstreamAccounts.mother.fieldLabel")}
                         value={
@@ -2951,6 +3128,74 @@ function SharedUpstreamAccountDetailDrawerInner({
                         title={formatDateTime(selectedDetail.lastSuccessfulSyncAt)}
                       />
                     </div>
+                  </div>
+                  <div className="grid gap-4 lg:grid-cols-3">
+                    <AccountCapabilityCard
+                      title={t("accountPool.upstreamAccounts.capability.responseEndpoint.title")}
+                      description={t(
+                        "accountPool.upstreamAccounts.capability.responseEndpoint.description",
+                      )}
+                      endpoints={RESPONSE_FAMILY_CAPABILITY_ENDPOINTS}
+                      state={
+                        selectedDetail.responseEndpointCapability ?? {
+                          observed: "unknown",
+                          override: null,
+                          effective: "unknown",
+                          observedAt: null,
+                          reason: null,
+                        }
+                      }
+                      overrideField="responseEndpointCapabilityOverride"
+                      writesEnabled={writesEnabled}
+                      busy={hasBusyAccountAction(busyAction, selectedDetail.id)}
+                      onOverrideChange={(field, value) =>
+                        void handleSaveCapabilityOverride(selectedDetail, field, value)
+                      }
+                    />
+                    <AccountCapabilityCard
+                      title={t("accountPool.upstreamAccounts.capability.imageEndpoint.title")}
+                      description={t(
+                        "accountPool.upstreamAccounts.capability.imageEndpoint.description",
+                      )}
+                      endpoints={DIRECT_IMAGE_CAPABILITY_ENDPOINTS}
+                      state={
+                        selectedDetail.imageEndpointCapability ?? {
+                          observed: "unknown",
+                          override: null,
+                          effective: "unknown",
+                          observedAt: null,
+                          reason: null,
+                        }
+                      }
+                      overrideField="imageEndpointCapabilityOverride"
+                      writesEnabled={writesEnabled}
+                      busy={hasBusyAccountAction(busyAction, selectedDetail.id)}
+                      onOverrideChange={(field, value) =>
+                        void handleSaveCapabilityOverride(selectedDetail, field, value)
+                      }
+                    />
+                    <AccountCapabilityCard
+                      title={t("accountPool.upstreamAccounts.capability.responseImageTool.title")}
+                      description={t(
+                        "accountPool.upstreamAccounts.capability.responseImageTool.description",
+                      )}
+                      endpoints={RESPONSE_FAMILY_CAPABILITY_ENDPOINTS}
+                      state={
+                        selectedDetail.responseImageToolCapability ?? {
+                          observed: "unknown",
+                          override: null,
+                          effective: "unknown",
+                          observedAt: null,
+                          reason: null,
+                        }
+                      }
+                      overrideField="responseImageToolCapabilityOverride"
+                      writesEnabled={writesEnabled}
+                      busy={hasBusyAccountAction(busyAction, selectedDetail.id)}
+                      onOverrideChange={(field, value) =>
+                        void handleSaveCapabilityOverride(selectedDetail, field, value)
+                      }
+                    />
                   </div>
                   {selectedDetail.kind === "oauth_codex" ? (
                     <div className="grid gap-4 lg:grid-cols-2">
@@ -3734,6 +3979,17 @@ function SharedUpstreamAccountDetailDrawerInner({
                       ),
                     }}
                   />
+                  <Alert variant="info">
+                    <AppIcon name="information-outline" className="mt-0.5 h-4 w-4 shrink-0" />
+                    <div>
+                      <p className="font-medium">
+                        {t("accountPool.upstreamAccounts.capability.rewriteNoticeTitle")}
+                      </p>
+                      <p className="mt-1 text-sm text-info/90">
+                        {t("accountPool.upstreamAccounts.capability.rewriteNoticeBody")}
+                      </p>
+                    </div>
+                  </Alert>
 
                   <Card className="border-base-300/80 bg-base-100/72">
                     <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">

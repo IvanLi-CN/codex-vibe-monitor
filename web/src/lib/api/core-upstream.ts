@@ -72,10 +72,19 @@ export type TagFastModeRewriteMode =
   | "fill_missing"
   | "force_add";
 export type ImageToolRewriteMode = "keep_original" | "fill_missing" | "force_add" | "force_remove";
-export type ImageToolCapability = "supported" | "unsupported" | "unknown";
+export type CapabilitySupport = "supported" | "unsupported" | "unknown";
+export type CapabilityOverride = Exclude<CapabilitySupport, "unknown">;
 export type ImageIntent = "yes" | "direct_image" | "no" | "unknown";
 export type RequestCompressionAlgorithm = "follow" | "identity" | "gzip" | "deflate" | "zstd";
 export type RequestCompressionLevelPreset = "fast" | "balanced" | "best";
+
+export interface UpstreamCapabilityState {
+  observed: CapabilitySupport;
+  override?: CapabilityOverride | null;
+  effective: CapabilitySupport;
+  observedAt?: string | null;
+  reason?: string | null;
+}
 
 export interface TagRoutingRule {
   allowCutOut: boolean;
@@ -269,7 +278,9 @@ export interface UpstreamAccountSummary {
   localLimits?: LocalLimitSnapshot | null;
   compactSupport?: CompactSupportState | null;
   duplicateInfo?: UpstreamAccountDuplicateInfo | null;
-  imageToolCapability?: ImageToolCapability;
+  responseEndpointCapability?: UpstreamCapabilityState | null;
+  imageEndpointCapability?: UpstreamCapabilityState | null;
+  responseImageToolCapability?: UpstreamCapabilityState | null;
   tags: AccountTagSummary[];
   effectiveRoutingRule: EffectiveRoutingRule;
 }
@@ -653,6 +664,9 @@ export interface UpdateUpstreamAccountPayload {
   localSecondaryLimit?: number | null;
   localLimitUnit?: string | null;
   tagIds?: number[];
+  responseEndpointCapabilityOverride?: CapabilityOverride | null;
+  imageEndpointCapabilityOverride?: CapabilityOverride | null;
+  responseImageToolCapabilityOverride?: CapabilityOverride | null;
   routingRule?: UpdateGroupAccountRoutingRulePayload;
 }
 
@@ -921,8 +935,23 @@ function normalizeImageToolRewriteMode(raw: unknown): ImageToolRewriteMode {
     : "keep_original";
 }
 
-function normalizeImageToolCapability(raw: unknown): ImageToolCapability {
+function normalizeCapabilitySupport(raw: unknown): CapabilitySupport {
   return raw === "supported" || raw === "unsupported" ? raw : "unknown";
+}
+
+function normalizeCapabilityOverride(raw: unknown): CapabilityOverride | null {
+  return raw === "supported" || raw === "unsupported" ? raw : null;
+}
+
+function normalizeUpstreamCapabilityState(raw: unknown): UpstreamCapabilityState {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    observed: normalizeCapabilitySupport(payload.observed),
+    override: normalizeCapabilityOverride(payload.override),
+    effective: normalizeCapabilitySupport(payload.effective),
+    observedAt: typeof payload.observedAt === "string" ? payload.observedAt : null,
+    reason: typeof payload.reason === "string" ? payload.reason : null,
+  };
 }
 
 function normalizePoolRoutingTimeoutSettings(raw: unknown): PoolRoutingTimeoutSettings {
@@ -1235,7 +1264,13 @@ function normalizeUpstreamAccountSummary(raw: unknown): UpstreamAccountSummary |
     localLimits: normalizeLocalLimitSnapshot(payload.localLimits),
     compactSupport: normalizeCompactSupportState(payload.compactSupport),
     duplicateInfo: normalizeUpstreamAccountDuplicateInfo(payload.duplicateInfo),
-    imageToolCapability: normalizeImageToolCapability(payload.imageToolCapability),
+    responseEndpointCapability: normalizeUpstreamCapabilityState(
+      payload.responseEndpointCapability,
+    ),
+    imageEndpointCapability: normalizeUpstreamCapabilityState(payload.imageEndpointCapability),
+    responseImageToolCapability: normalizeUpstreamCapabilityState(
+      payload.responseImageToolCapability,
+    ),
     tags: Array.isArray(payload.tags)
       ? payload.tags
           .map(normalizeAccountTagSummary)

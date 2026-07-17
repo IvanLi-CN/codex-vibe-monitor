@@ -1895,6 +1895,7 @@ async fn account_actors_are_released_after_idle_commands_finish() {
                 local_limit_unit: None,
                 tag_ids: None,
                 routing_rule: None,
+                ..UpdateUpstreamAccountRequest::default()
             },
         )
         .await

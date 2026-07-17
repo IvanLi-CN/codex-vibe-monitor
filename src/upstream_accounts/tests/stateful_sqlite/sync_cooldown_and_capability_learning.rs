@@ -334,7 +334,14 @@ async fn image_intent_route_success_learns_supported_capability() {
         .await
         .expect("load row after image success")
         .expect("row exists after image success");
-    assert_eq!(row.image_tool_capability.as_deref(), Some("supported"));
+    assert_eq!(
+        row.response_endpoint_capability.as_deref(),
+        Some("supported")
+    );
+    assert_eq!(
+        row.response_image_tool_capability.as_deref(),
+        Some("supported")
+    );
 
     let direct_account_id =
         insert_oauth_account(&pool, "Direct Image Success Learns Supported").await;
@@ -354,7 +361,7 @@ async fn image_intent_route_success_learns_supported_capability() {
         .expect("load row after direct image success")
         .expect("row exists after direct image success");
     assert_eq!(
-        direct_row.image_tool_capability.as_deref(),
+        direct_row.image_endpoint_capability.as_deref(),
         Some("supported")
     );
 }
@@ -371,7 +378,7 @@ async fn image_intent_explicit_unsupported_failure_learns_unsupported_capability
         false,
         Some("sticky-image-unsupported"),
         StatusCode::BAD_REQUEST,
-        "pool upstream responded with 400: image_generation is not supported for this account",
+        "pool upstream responded with 400: unsupported tool: image_generation is not supported by this account",
         Some("invk_image_unsupported"),
         ImageIntent::Yes,
     )
@@ -382,7 +389,11 @@ async fn image_intent_explicit_unsupported_failure_learns_unsupported_capability
         .await
         .expect("load row after unsupported image failure")
         .expect("row exists after unsupported image failure");
-    assert_eq!(row.image_tool_capability.as_deref(), Some("unsupported"));
+    assert_eq!(row.response_endpoint_capability.as_deref(), Some("unknown"));
+    assert_eq!(
+        row.response_image_tool_capability.as_deref(),
+        Some("unsupported")
+    );
 
     let direct_account_id =
         insert_oauth_account(&pool, "Direct Image Failure Learns Unsupported").await;
@@ -393,7 +404,7 @@ async fn image_intent_explicit_unsupported_failure_learns_unsupported_capability
         false,
         Some("sticky-direct-image-unsupported"),
         StatusCode::BAD_REQUEST,
-        "pool upstream responded with 400: image_generation is not supported for this account",
+        "pool upstream responded with 400: No available channel for model gpt-image-1 under group default",
         Some("invk_direct_image_unsupported"),
         ImageIntent::DirectImage,
     )
@@ -405,7 +416,7 @@ async fn image_intent_explicit_unsupported_failure_learns_unsupported_capability
         .expect("load row after unsupported direct image failure")
         .expect("row exists after unsupported direct image failure");
     assert_eq!(
-        direct_row.image_tool_capability.as_deref(),
+        direct_row.image_endpoint_capability.as_deref(),
         Some("unsupported")
     );
 }
@@ -433,7 +444,11 @@ async fn image_intent_validation_failure_does_not_learn_unsupported_capability()
         .await
         .expect("load row after image validation failure")
         .expect("row exists after image validation failure");
-    assert_eq!(row.image_tool_capability.as_deref(), Some("unknown"));
+    assert_eq!(row.response_endpoint_capability.as_deref(), Some("unknown"));
+    assert_eq!(
+        row.response_image_tool_capability.as_deref(),
+        Some("unknown")
+    );
 }
 
 #[tokio::test]
@@ -1514,6 +1529,7 @@ async fn updating_api_key_reactivates_manually_recoverable_account() {
                 local_limit_unit: None,
                 tag_ids: None,
                 routing_rule: None,
+                ..UpdateUpstreamAccountRequest::default()
             },
         )
         .await

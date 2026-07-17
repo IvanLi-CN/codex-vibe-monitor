@@ -479,7 +479,27 @@ function createAccounts(scene: DemoScene = "operational") {
             : { hasCredits: false, unlimited: true, balance: null },
         localLimits: { primaryLimit: 4, secondaryLimit: 2, limitUnit: "concurrent requests" },
         compactSupport: { status: "supported", observedAt: recentAt(45), reason: null },
-        imageToolCapability: tagName === "image" ? "supported" : "unknown",
+        responseEndpointCapability: {
+          observed: "supported",
+          override: null,
+          effective: "supported",
+          observedAt: recentAt(30),
+          reason: "response endpoint request succeeded",
+        },
+        imageEndpointCapability: {
+          observed: tagName === "image" ? "supported" : "unknown",
+          override: null,
+          effective: tagName === "image" ? "supported" : "unknown",
+          observedAt: recentAt(28),
+          reason: tagName === "image" ? "image endpoint request succeeded" : null,
+        },
+        responseImageToolCapability: {
+          observed: tagName === "image" ? "supported" : "unknown",
+          override: null,
+          effective: tagName === "image" ? "supported" : "unknown",
+          observedAt: recentAt(26),
+          reason: tagName === "image" ? "response image tool request succeeded" : null,
+        },
         duplicateInfo:
           id === 103 ? { peerAccountIds: [101], reasons: ["sharedChatgptUserId"] } : null,
         effectiveRoutingRule: {

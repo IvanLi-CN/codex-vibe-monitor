@@ -63,29 +63,21 @@ pub(crate) fn apply_conversation_routing_override(
     }
 }
 
-pub(crate) fn account_is_image_compatible(
-    rewrite_mode: ImageToolRewriteMode,
-    capability: ImageToolCapability,
+pub(crate) fn account_accepts_request_capabilities(
+    requirements: RequestCapabilityRequirements,
+    response_endpoint_capability: CapabilitySupport,
+    image_endpoint_capability: CapabilitySupport,
+    response_image_tool_capability: CapabilitySupport,
 ) -> bool {
-    match rewrite_mode {
-        ImageToolRewriteMode::ForceAdd | ImageToolRewriteMode::FillMissing => true,
-        ImageToolRewriteMode::ForceRemove => false,
-        ImageToolRewriteMode::KeepOriginal => {
-            !matches!(capability, ImageToolCapability::Unsupported)
-        }
-    }
-}
-
-pub(crate) fn account_accepts_requested_image_intent(
-    image_intent: ImageIntent,
-    rewrite_mode: ImageToolRewriteMode,
-    capability: ImageToolCapability,
-) -> bool {
-    match image_intent {
-        ImageIntent::Yes => account_is_image_compatible(rewrite_mode, capability),
-        ImageIntent::DirectImage => !matches!(capability, ImageToolCapability::Unsupported),
-        ImageIntent::No | ImageIntent::Unknown => true,
-    }
+    (!requirements.response_endpoint
+        || !matches!(response_endpoint_capability, CapabilitySupport::Unsupported))
+        && (!requirements.image_endpoint
+            || !matches!(image_endpoint_capability, CapabilitySupport::Unsupported))
+        && (!requirements.response_image_tool
+            || !matches!(
+                response_image_tool_capability,
+                CapabilitySupport::Unsupported
+            ))
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -367,7 +359,21 @@ pub(crate) fn build_pool_resolved_account(
         fast_mode_rewrite_mode: effective_rule.fast_mode_rewrite_mode,
         image_tool_rewrite_mode: effective_rule.image_tool_rewrite_mode,
         request_compression_algorithm: effective_rule.request_compression_algorithm,
-        image_tool_capability: decode_image_tool_capability(row.image_tool_capability.as_deref()),
+        response_endpoint_capability: effective_capability_support(
+            decode_capability_support(row.response_endpoint_capability.as_deref()),
+            decode_capability_override(row.policy_response_endpoint_capability_override.as_deref()),
+        ),
+        image_endpoint_capability: effective_capability_support(
+            decode_capability_support(row.image_endpoint_capability.as_deref()),
+            decode_capability_override(row.policy_image_endpoint_capability_override.as_deref()),
+        ),
+        response_image_tool_capability: effective_capability_support(
+            decode_capability_support(row.response_image_tool_capability.as_deref()),
+            decode_capability_override(
+                row.policy_response_image_tool_capability_override
+                    .as_deref(),
+            ),
+        ),
         upstream_base_url,
         routing_source,
     }

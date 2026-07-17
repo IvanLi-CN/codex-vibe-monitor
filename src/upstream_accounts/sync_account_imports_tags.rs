@@ -16,8 +16,14 @@ pub(crate) const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
     last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
     consecutive_route_failures, temporary_route_failure_streak_started_at,
     compact_support_status, compact_support_observed_at,
-    compact_support_reason, image_tool_capability, local_primary_limit, local_secondary_limit,
-    local_limit_unit,
+    compact_support_reason,
+    response_endpoint_capability, response_endpoint_capability_observed_at,
+    response_endpoint_capability_reason, policy_response_endpoint_capability_override,
+    image_endpoint_capability, image_endpoint_capability_observed_at,
+    image_endpoint_capability_reason, policy_image_endpoint_capability_override,
+    response_image_tool_capability, response_image_tool_capability_observed_at,
+    response_image_tool_capability_reason, policy_response_image_tool_capability_override,
+    local_primary_limit, local_secondary_limit, local_limit_unit,
     policy_allow_cut_out, policy_allow_cut_in, policy_priority_tier,
     policy_fast_mode_rewrite_mode, policy_image_tool_rewrite_mode,
     policy_request_compression_algorithm, policy_concurrency_limit,
@@ -2945,6 +2951,7 @@ pub(crate) async fn apply_bulk_upstream_account_action(
             local_limit_unit: None,
             tag_ids: None,
             routing_rule: None,
+            ..UpdateUpstreamAccountRequest::default()
         },
         BULK_UPSTREAM_ACCOUNT_ACTION_DISABLE => UpdateUpstreamAccountRequest {
             display_name: None,
@@ -2966,6 +2973,7 @@ pub(crate) async fn apply_bulk_upstream_account_action(
             local_limit_unit: None,
             tag_ids: None,
             routing_rule: None,
+            ..UpdateUpstreamAccountRequest::default()
         },
         BULK_UPSTREAM_ACCOUNT_ACTION_SET_GROUP => UpdateUpstreamAccountRequest {
             display_name: None,
@@ -2987,6 +2995,7 @@ pub(crate) async fn apply_bulk_upstream_account_action(
             local_limit_unit: None,
             tag_ids: None,
             routing_rule: None,
+            ..UpdateUpstreamAccountRequest::default()
         },
         BULK_UPSTREAM_ACCOUNT_ACTION_DELETE => {
             state
@@ -3455,7 +3464,25 @@ pub(crate) fn build_summary_from_row(
         duplicate_info,
         tags,
         effective_routing_rule,
-        image_tool_capability: decode_image_tool_capability(row.image_tool_capability.as_deref()),
+        response_endpoint_capability: build_capability_state(
+            row.response_endpoint_capability.as_deref(),
+            row.response_endpoint_capability_observed_at.as_ref(),
+            row.response_endpoint_capability_reason.as_ref(),
+            row.policy_response_endpoint_capability_override.as_deref(),
+        ),
+        image_endpoint_capability: build_capability_state(
+            row.image_endpoint_capability.as_deref(),
+            row.image_endpoint_capability_observed_at.as_ref(),
+            row.image_endpoint_capability_reason.as_ref(),
+            row.policy_image_endpoint_capability_override.as_deref(),
+        ),
+        response_image_tool_capability: build_capability_state(
+            row.response_image_tool_capability.as_deref(),
+            row.response_image_tool_capability_observed_at.as_ref(),
+            row.response_image_tool_capability_reason.as_ref(),
+            row.policy_response_image_tool_capability_override
+                .as_deref(),
+        ),
     }
 }
 

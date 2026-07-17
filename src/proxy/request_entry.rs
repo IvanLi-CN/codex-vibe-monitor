@@ -1740,14 +1740,13 @@ pub(crate) fn classify_compact_support_observation(
     }
 }
 
-pub(crate) fn image_tool_capability_negative_signal(message: &str) -> bool {
-    let normalized = message.to_ascii_lowercase();
-    let has_support_failure_signal = [
-        "unsupported model",
+fn capability_support_failure_signal(normalized: &str) -> bool {
+    [
         "unsupported endpoint",
         "unsupported path",
         "unsupported route",
         "unsupported tool",
+        "unsupported model",
         "does not support",
         "is not supported",
         "not support",
@@ -1757,25 +1756,73 @@ pub(crate) fn image_tool_capability_negative_signal(message: &str) -> bool {
         "no channel",
     ]
     .iter()
-    .any(|needle| normalized.contains(needle));
-    if !has_support_failure_signal {
+    .any(|needle| normalized.contains(needle))
+}
+
+pub(crate) fn response_endpoint_capability_negative_signal(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    capability_support_failure_signal(&normalized)
+        && [
+            "/v1/responses",
+            "responses/compact",
+            "/v1/chat/completions",
+            "chat/completions",
+        ]
+        .iter()
+        .any(|needle| normalized.contains(needle))
+}
+
+pub(crate) fn response_image_tool_capability_negative_signal(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    if !capability_support_failure_signal(&normalized) {
         return false;
     }
-
     normalized.contains("image_generation")
         || normalized.contains("image generation")
         || normalized.contains("gpt-image-")
+}
+
+pub(crate) fn image_endpoint_capability_negative_signal(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    if !capability_support_failure_signal(&normalized) {
+        return false;
+    }
+    normalized.contains("gpt-image-")
         || normalized.contains("/v1/images/")
         || normalized.contains("images/generations")
         || normalized.contains("images/edits")
 }
 
-pub(crate) fn classify_image_tool_capability_observation(
+pub(crate) fn classify_response_endpoint_capability_observation(
     status: StatusCode,
     message: Option<&str>,
-) -> ImageToolCapability {
+) -> CapabilitySupport {
     if status.is_success() {
-        return ImageToolCapability::Supported;
+        return CapabilitySupport::Supported;
+    }
+    let normalized_message = message
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if matches!(
+        status,
+        StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+    ) && normalized_message
+        .as_deref()
+        .is_some_and(response_endpoint_capability_negative_signal)
+    {
+        CapabilitySupport::Unsupported
+    } else {
+        CapabilitySupport::Unknown
+    }
+}
+
+pub(crate) fn classify_response_image_tool_capability_observation(
+    status: StatusCode,
+    message: Option<&str>,
+) -> CapabilitySupport {
+    if status.is_success() {
+        return CapabilitySupport::Supported;
     }
     let normalized_message = message
         .map(str::trim)
@@ -1784,11 +1831,33 @@ pub(crate) fn classify_image_tool_capability_observation(
     if status == StatusCode::BAD_REQUEST
         && normalized_message
             .as_deref()
-            .is_some_and(image_tool_capability_negative_signal)
+            .is_some_and(response_image_tool_capability_negative_signal)
     {
-        ImageToolCapability::Unsupported
+        CapabilitySupport::Unsupported
     } else {
-        ImageToolCapability::Unknown
+        CapabilitySupport::Unknown
+    }
+}
+
+pub(crate) fn classify_image_endpoint_capability_observation(
+    status: StatusCode,
+    message: Option<&str>,
+) -> CapabilitySupport {
+    if status.is_success() {
+        return CapabilitySupport::Supported;
+    }
+    let normalized_message = message
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if status == StatusCode::BAD_REQUEST
+        && normalized_message
+            .as_deref()
+            .is_some_and(image_endpoint_capability_negative_signal)
+    {
+        CapabilitySupport::Unsupported
+    } else {
+        CapabilitySupport::Unknown
     }
 }
 
@@ -2573,6 +2642,12 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     image_tool_rewrite_mode: crate::ImageToolRewriteMode,
 ) -> Result<PreparedPoolRequestBody, PoolRequestBodyPreparationError> {
     let capture_target = capture_target_for_request(original_uri.path(), method);
+    let default_image_intent = match capture_target {
+        Some(ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits) => {
+            ImageIntent::DirectImage
+        }
+        _ => ImageIntent::Unknown,
+    };
     let fast_mode_rewrite_required = capture_target
         .is_some_and(|target| target.allows_fast_mode_rewrite())
         && fast_mode_rewrite_mode != TagFastModeRewriteMode::KeepOriginal;
@@ -2590,7 +2665,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
             snapshot: PoolReplayBodySnapshot::Empty,
             request_body_for_capture: Some(Bytes::new()),
             requested_service_tier: None,
-            requested_image_intent: ImageIntent::Unknown,
+            requested_image_intent: default_image_intent,
             snapshot_is_decoded: false,
         });
     };
@@ -2598,7 +2673,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     if !rewrite_required {
         let (request_body_for_capture, requested_service_tier, requested_image_intent) =
             match &snapshot {
-                PoolReplayBodySnapshot::Empty => (Some(Bytes::new()), None, ImageIntent::Unknown),
+                PoolReplayBodySnapshot::Empty => (Some(Bytes::new()), None, default_image_intent),
                 PoolReplayBodySnapshot::Memory(bytes) => {
                     let (requested_service_tier, requested_image_intent) =
                         serde_json::from_slice::<Value>(bytes)
@@ -2613,14 +2688,14 @@ pub(crate) async fn prepare_pool_request_body_for_account(
                                         .unwrap_or(ImageIntent::Unknown),
                                 )
                             })
-                            .unwrap_or((None, ImageIntent::Unknown));
+                            .unwrap_or((None, default_image_intent));
                     (
                         Some(bytes.clone()),
                         requested_service_tier,
                         requested_image_intent,
                     )
                 }
-                PoolReplayBodySnapshot::File { .. } => (None, None, ImageIntent::Unknown),
+                PoolReplayBodySnapshot::File { .. } => (None, None, default_image_intent),
             };
         return Ok(PreparedPoolRequestBody {
             snapshot,
@@ -2645,7 +2720,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
             snapshot,
             request_body_for_capture: Some(original_bytes),
             requested_service_tier: None,
-            requested_image_intent: ImageIntent::Unknown,
+            requested_image_intent: default_image_intent,
             snapshot_is_decoded: false,
         });
     };
@@ -2656,7 +2731,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
                 snapshot,
                 request_body_for_capture: Some(original_bytes),
                 requested_service_tier: None,
-                requested_image_intent: ImageIntent::Unknown,
+                requested_image_intent: default_image_intent,
                 snapshot_is_decoded: false,
             });
         }
@@ -3176,38 +3251,68 @@ mod tests {
     }
 
     #[test]
-    fn classify_image_tool_capability_observation_learns_success_and_explicit_unsupported() {
+    fn classify_response_endpoint_capability_observation_is_conservative() {
         assert_eq!(
-            classify_image_tool_capability_observation(StatusCode::OK, None),
-            ImageToolCapability::Supported
+            classify_response_endpoint_capability_observation(StatusCode::OK, None),
+            CapabilitySupport::Supported
         );
         assert_eq!(
-            classify_image_tool_capability_observation(
+            classify_response_endpoint_capability_observation(
+                StatusCode::BAD_REQUEST,
+                Some("unsupported endpoint: /v1/responses is not supported by this account"),
+            ),
+            CapabilitySupport::Unsupported
+        );
+        assert_eq!(
+            classify_response_endpoint_capability_observation(
                 StatusCode::BAD_REQUEST,
                 Some("unsupported tool: image_generation is not supported by this account"),
             ),
-            ImageToolCapability::Unsupported
+            CapabilitySupport::Unknown
+        );
+    }
+
+    #[test]
+    fn classify_response_image_tool_capability_observation_learns_tool_failures_only() {
+        assert_eq!(
+            classify_response_image_tool_capability_observation(StatusCode::OK, None),
+            CapabilitySupport::Supported
         );
         assert_eq!(
-            classify_image_tool_capability_observation(
+            classify_response_image_tool_capability_observation(
+                StatusCode::BAD_REQUEST,
+                Some("unsupported tool: image_generation is not supported by this account"),
+            ),
+            CapabilitySupport::Unsupported
+        );
+        assert_eq!(
+            classify_response_image_tool_capability_observation(
                 StatusCode::BAD_REQUEST,
                 Some("request body is invalid"),
             ),
-            ImageToolCapability::Unknown
+            CapabilitySupport::Unknown
         );
         assert_eq!(
-            classify_image_tool_capability_observation(
+            classify_response_image_tool_capability_observation(
                 StatusCode::BAD_REQUEST,
                 Some("invalid image size: width must be divisible by 64"),
             ),
-            ImageToolCapability::Unknown
+            CapabilitySupport::Unknown
+        );
+    }
+
+    #[test]
+    fn classify_image_endpoint_capability_observation_learns_direct_image_failures() {
+        assert_eq!(
+            classify_image_endpoint_capability_observation(StatusCode::OK, None),
+            CapabilitySupport::Supported
         );
         assert_eq!(
-            classify_image_tool_capability_observation(
+            classify_image_endpoint_capability_observation(
                 StatusCode::BAD_REQUEST,
                 Some("No available channel for model gpt-image-1 under group default"),
             ),
-            ImageToolCapability::Unsupported
+            CapabilitySupport::Unsupported
         );
     }
 }

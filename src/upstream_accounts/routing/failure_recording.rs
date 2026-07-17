@@ -1,5 +1,46 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum UpstreamCapabilityAxis {
+    ResponseEndpoint,
+    ImageEndpoint,
+    ResponseImageTool,
+}
+
+impl UpstreamCapabilityAxis {
+    fn observed_column(self) -> &'static str {
+        match self {
+            Self::ResponseEndpoint => "response_endpoint_capability",
+            Self::ImageEndpoint => "image_endpoint_capability",
+            Self::ResponseImageTool => "response_image_tool_capability",
+        }
+    }
+
+    fn observed_at_column(self) -> &'static str {
+        match self {
+            Self::ResponseEndpoint => "response_endpoint_capability_observed_at",
+            Self::ImageEndpoint => "image_endpoint_capability_observed_at",
+            Self::ResponseImageTool => "response_image_tool_capability_observed_at",
+        }
+    }
+
+    fn reason_column(self) -> &'static str {
+        match self {
+            Self::ResponseEndpoint => "response_endpoint_capability_reason",
+            Self::ImageEndpoint => "image_endpoint_capability_reason",
+            Self::ResponseImageTool => "response_image_tool_capability_reason",
+        }
+    }
+
+    fn success_reason(self) -> &'static str {
+        match self {
+            Self::ResponseEndpoint => "response endpoint request succeeded",
+            Self::ImageEndpoint => "image endpoint request succeeded",
+            Self::ResponseImageTool => "response image tool request succeeded",
+        }
+    }
+}
+
 pub(crate) async fn record_pool_route_success(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -118,39 +159,71 @@ pub(crate) async fn record_pool_route_success_with_image_intent_for_attempt(
         attempt_id,
     )
     .await?;
-    if image_intent_observes_capability(image_intent) {
-        record_image_tool_capability_observation(pool, account_id, ImageToolCapability::Supported)
-            .await?;
+    let requirements = RequestCapabilityRequirements::from_image_intent(image_intent);
+    if requirements.response_endpoint {
+        record_capability_observation(
+            pool,
+            account_id,
+            UpstreamCapabilityAxis::ResponseEndpoint,
+            CapabilitySupport::Supported,
+            Some(UpstreamCapabilityAxis::ResponseEndpoint.success_reason()),
+        )
+        .await?;
+    }
+    if requirements.image_endpoint {
+        record_capability_observation(
+            pool,
+            account_id,
+            UpstreamCapabilityAxis::ImageEndpoint,
+            CapabilitySupport::Supported,
+            Some(UpstreamCapabilityAxis::ImageEndpoint.success_reason()),
+        )
+        .await?;
+    }
+    if requirements.response_image_tool {
+        record_capability_observation(
+            pool,
+            account_id,
+            UpstreamCapabilityAxis::ResponseImageTool,
+            CapabilitySupport::Supported,
+            Some(UpstreamCapabilityAxis::ResponseImageTool.success_reason()),
+        )
+        .await?;
     }
     Ok(())
 }
 
-pub(crate) fn image_intent_observes_capability(image_intent: ImageIntent) -> bool {
-    matches!(image_intent, ImageIntent::Yes | ImageIntent::DirectImage)
-}
-
-pub(crate) async fn record_image_tool_capability_observation(
+pub(crate) async fn record_capability_observation(
     pool: &Pool<Sqlite>,
     account_id: i64,
-    capability: ImageToolCapability,
+    axis: UpstreamCapabilityAxis,
+    capability: CapabilitySupport,
+    reason: Option<&str>,
 ) -> Result<()> {
-    if matches!(capability, ImageToolCapability::Unknown) {
+    if matches!(capability, CapabilitySupport::Unknown) {
         return Ok(());
     }
     let now_iso = format_utc_iso(Utc::now());
-    sqlx::query(
+    let statement = format!(
         r#"
         UPDATE pool_upstream_accounts
-        SET image_tool_capability = ?2,
+        SET {observed_column} = ?2,
+            {observed_at_column} = ?3,
+            {reason_column} = ?4,
             updated_at = ?3
         WHERE id = ?1
         "#,
-    )
-    .bind(account_id)
-    .bind(capability.as_str())
-    .bind(now_iso)
-    .execute(pool)
-    .await?;
+        observed_column = axis.observed_column(),
+        observed_at_column = axis.observed_at_column(),
+        reason_column = axis.reason_column(),
+    );
+    sqlx::query(&statement)
+        .bind(account_id)
+        .bind(capability.as_str())
+        .bind(&now_iso)
+        .bind(reason)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -216,14 +289,43 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     image_intent: ImageIntent,
     attempt_id: Option<i64>,
 ) -> Result<()> {
-    if image_intent_observes_capability(image_intent)
-        && classify_image_tool_capability_observation(status, Some(error_message))
-            == ImageToolCapability::Unsupported
+    let requirements = RequestCapabilityRequirements::from_image_intent(image_intent);
+    if requirements.response_endpoint
+        && classify_response_endpoint_capability_observation(status, Some(error_message))
+            == CapabilitySupport::Unsupported
     {
-        record_image_tool_capability_observation(
+        record_capability_observation(
             pool,
             account_id,
-            ImageToolCapability::Unsupported,
+            UpstreamCapabilityAxis::ResponseEndpoint,
+            CapabilitySupport::Unsupported,
+            Some(error_message),
+        )
+        .await?;
+    }
+    if requirements.image_endpoint
+        && classify_image_endpoint_capability_observation(status, Some(error_message))
+            == CapabilitySupport::Unsupported
+    {
+        record_capability_observation(
+            pool,
+            account_id,
+            UpstreamCapabilityAxis::ImageEndpoint,
+            CapabilitySupport::Unsupported,
+            Some(error_message),
+        )
+        .await?;
+    }
+    if requirements.response_image_tool
+        && classify_response_image_tool_capability_observation(status, Some(error_message))
+            == CapabilitySupport::Unsupported
+    {
+        record_capability_observation(
+            pool,
+            account_id,
+            UpstreamCapabilityAxis::ResponseImageTool,
+            CapabilitySupport::Unsupported,
+            Some(error_message),
         )
         .await?;
     }
