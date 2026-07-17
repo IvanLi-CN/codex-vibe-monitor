@@ -1450,6 +1450,7 @@ function AccountInlineMetric({
   const valueTestId = metricKey
     ? `dashboard-upstream-account-inline-${metricKey}-value`
     : undefined;
+  const slotTestId = metricKey ? `dashboard-upstream-account-inline-${metricKey}-slot` : undefined;
   const valueClassName =
     value.fullText === FALLBACK_CELL
       ? "text-base-content/55"
@@ -1544,7 +1545,11 @@ function AccountInlineMetric({
   );
 
   const wrappedMetric = (
-    <span ref={fillAvailableWidth ? widthMeasureRef : undefined} className="block w-full min-w-0">
+    <span
+      ref={fillAvailableWidth ? widthMeasureRef : undefined}
+      data-testid={slotTestId}
+      className={cn("min-w-0", fillAvailableWidth ? "block w-full" : "inline-block max-w-full")}
+    >
       {modelPerformance && modelPerformanceTitle ? (
         <ModelPerformanceTrigger
           title={modelPerformanceTitle}
