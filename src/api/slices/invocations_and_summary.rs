@@ -5175,6 +5175,21 @@ impl UsageBreakdownAccumulator {
         }
     }
 
+    fn add_coarse_rollup_totals(
+        &mut self,
+        cache_write_tokens: i64,
+        cache_read_tokens: i64,
+        output_tokens: i64,
+        total_cost: f64,
+    ) {
+        self.cache_write_tokens += cache_write_tokens.max(0);
+        self.cache_read_tokens += cache_read_tokens.max(0);
+        self.output_tokens += output_tokens.max(0);
+        if total_cost > 0.0 {
+            self.add_cost_row(Some(total_cost), [None, None, None, None, None]);
+        }
+    }
+
     fn merge_response(&mut self, response: &UsageBreakdownResponse) {
         self.cache_write_tokens += response.cache_write_tokens;
         self.cache_read_tokens += response.cache_read_tokens;
@@ -7766,6 +7781,7 @@ pub(crate) struct DashboardActivitySnapshot {
     accounts: Vec<DashboardActivityAccountResponse>,
     summary: DashboardActivitySummaryResponse,
     materialized_archive_fallback_totals: StatsTotals,
+    materialized_archive_details_limited: bool,
 }
 
 #[cfg(test)]
@@ -7893,6 +7909,370 @@ fn dashboard_activity_apply_materialized_archive_fallback_to_stats(
     // detail, so omit those partial fields when they would no longer align with top-level totals.
     stats.usage_breakdown = None;
     stats.non_success_tokens = None;
+}
+
+fn dashboard_activity_clear_materialized_archive_detail_fields(stats: &mut StatsResponse) {
+    stats.usage_breakdown = None;
+    stats.non_success_tokens = None;
+}
+
+#[derive(Debug, FromRow)]
+struct DashboardActivityAccountStatsRollupAggregateRow {
+    upstream_account_id: i64,
+    request_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_input_tokens: i64,
+    total_cost: f64,
+    non_success_cost: f64,
+    first_response_byte_total_sample_count: i64,
+    first_response_byte_total_sum_ms: f64,
+    total_latency_sample_count: i64,
+    total_latency_sum_ms: f64,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct DashboardActivityUsageFallbackTotals {
+    cache_write_tokens: i64,
+    cache_read_tokens: i64,
+    output_tokens: i64,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct DashboardActivityAccountFallbackTotals {
+    request_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    non_success_count: i64,
+    total_tokens: i64,
+    success_tokens: i64,
+    non_success_tokens: i64,
+    failure_tokens: i64,
+    failure_cost: f64,
+    non_success_cost: f64,
+    cache_input_tokens: i64,
+    total_cost: f64,
+    cache_write_tokens: i64,
+    cache_read_tokens: i64,
+    output_tokens: i64,
+    first_response_byte_total_sample_count: i64,
+    first_response_byte_total_sum_ms: f64,
+    total_latency_sample_count: i64,
+    total_latency_sum_ms: f64,
+}
+
+impl DashboardActivityAccountFallbackTotals {
+    fn from_stats_totals(totals: StatsTotals) -> Self {
+        let non_success_count = totals
+            .total_count
+            .saturating_sub(totals.success_count)
+            .max(0);
+        Self {
+            request_count: totals.total_count,
+            success_count: totals.success_count,
+            failure_count: totals.failure_count,
+            non_success_count: non_success_count.max(totals.failure_count),
+            total_tokens: totals.total_tokens,
+            success_tokens: if non_success_count == 0 {
+                totals.total_tokens
+            } else {
+                0
+            },
+            non_success_tokens: if totals.success_count == 0 {
+                totals.total_tokens
+            } else {
+                0
+            },
+            failure_tokens: if totals.success_count == 0 && totals.failure_count > 0 {
+                totals.total_tokens
+            } else {
+                0
+            },
+            failure_cost: if totals.success_count == 0 && totals.failure_count > 0 {
+                totals.non_success_cost
+            } else {
+                0.0
+            },
+            non_success_cost: totals.non_success_cost,
+            total_cost: totals.total_cost,
+            ..Self::default()
+        }
+    }
+
+    fn from_rollup_minus_live(
+        row: &DashboardActivityAccountStatsRollupAggregateRow,
+        live: Option<&UpstreamAccountActivityAggregateRow>,
+        live_usage: DashboardActivityUsageFallbackTotals,
+    ) -> Self {
+        let live_request_count = live.map_or(0, |row| row.request_count);
+        let live_success_count = live.map_or(0, |row| row.success_count);
+        let live_failure_count = live.map_or(0, |row| row.failure_count);
+        let live_total_tokens = live.map_or(0, |row| row.total_tokens);
+        let live_cache_input_tokens = live.map_or(0, |row| row.cache_input_tokens);
+        let live_total_cost = live.map_or(0.0, |row| row.total_cost);
+        let live_non_success_cost = live.map_or(0.0, |row| row.non_success_cost);
+        let live_first_response_count =
+            live.map_or(0, |row| row.first_response_byte_total_sample_count);
+        let live_first_response_sum = live.map_or(0.0, |row| row.first_response_byte_total_sum_ms);
+        let live_total_latency_count = live.map_or(0, |row| row.total_latency_sample_count);
+        let live_total_latency_sum = live.map_or(0.0, |row| row.total_latency_sum_ms);
+
+        let request_count = row.request_count.saturating_sub(live_request_count).max(0);
+        let success_count = row.success_count.saturating_sub(live_success_count).max(0);
+        let failure_count = row.failure_count.saturating_sub(live_failure_count).max(0);
+        let non_success_count = request_count
+            .saturating_sub(success_count)
+            .max(failure_count);
+        let total_tokens = row.total_tokens.saturating_sub(live_total_tokens).max(0);
+        let non_success_cost = (row.non_success_cost - live_non_success_cost).max(0.0);
+        let total_cost = (row.total_cost - live_total_cost).max(0.0);
+        let cache_input_tokens = row
+            .cache_input_tokens
+            .saturating_sub(live_cache_input_tokens)
+            .max(0);
+        let rollup_cache_write_tokens = row
+            .input_tokens
+            .max(0)
+            .saturating_sub(row.cache_input_tokens.max(0))
+            .max(0);
+        let cache_write_tokens = rollup_cache_write_tokens
+            .saturating_sub(live_usage.cache_write_tokens)
+            .max(0);
+        let cache_read_tokens = row
+            .cache_input_tokens
+            .max(0)
+            .saturating_sub(live_usage.cache_read_tokens)
+            .max(0);
+        let output_tokens = row
+            .output_tokens
+            .max(0)
+            .saturating_sub(live_usage.output_tokens)
+            .max(0);
+
+        Self {
+            request_count,
+            success_count,
+            failure_count,
+            non_success_count,
+            total_tokens,
+            success_tokens: if non_success_count == 0 {
+                total_tokens
+            } else {
+                0
+            },
+            non_success_tokens: if success_count == 0 { total_tokens } else { 0 },
+            failure_tokens: if success_count == 0 && failure_count > 0 {
+                total_tokens
+            } else {
+                0
+            },
+            failure_cost: if success_count == 0 && failure_count > 0 {
+                non_success_cost
+            } else {
+                0.0
+            },
+            non_success_cost,
+            cache_input_tokens,
+            total_cost,
+            cache_write_tokens,
+            cache_read_tokens,
+            output_tokens,
+            first_response_byte_total_sample_count: row
+                .first_response_byte_total_sample_count
+                .saturating_sub(live_first_response_count)
+                .max(0),
+            first_response_byte_total_sum_ms: (row.first_response_byte_total_sum_ms
+                - live_first_response_sum)
+                .max(0.0),
+            total_latency_sample_count: row
+                .total_latency_sample_count
+                .saturating_sub(live_total_latency_count)
+                .max(0),
+            total_latency_sum_ms: (row.total_latency_sum_ms - live_total_latency_sum).max(0.0),
+        }
+    }
+
+    fn add_assign(&mut self, other: Self) {
+        self.request_count += other.request_count;
+        self.success_count += other.success_count;
+        self.failure_count += other.failure_count;
+        self.non_success_count += other.non_success_count;
+        self.total_tokens += other.total_tokens;
+        self.success_tokens += other.success_tokens;
+        self.non_success_tokens += other.non_success_tokens;
+        self.failure_tokens += other.failure_tokens;
+        self.failure_cost += other.failure_cost;
+        self.non_success_cost += other.non_success_cost;
+        self.cache_input_tokens += other.cache_input_tokens;
+        self.total_cost += other.total_cost;
+        self.cache_write_tokens += other.cache_write_tokens;
+        self.cache_read_tokens += other.cache_read_tokens;
+        self.output_tokens += other.output_tokens;
+        self.first_response_byte_total_sample_count += other.first_response_byte_total_sample_count;
+        self.first_response_byte_total_sum_ms += other.first_response_byte_total_sum_ms;
+        self.total_latency_sample_count += other.total_latency_sample_count;
+        self.total_latency_sum_ms += other.total_latency_sum_ms;
+    }
+
+    fn stats_totals(self) -> StatsTotals {
+        StatsTotals {
+            total_count: self.request_count,
+            success_count: self.success_count,
+            failure_count: self.failure_count,
+            total_cost: self.total_cost,
+            total_tokens: self.total_tokens,
+            non_success_cost: self.non_success_cost,
+        }
+    }
+}
+
+async fn query_dashboard_activity_account_stats_rollup_aggregate_rows(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+) -> Result<Vec<DashboardActivityAccountStatsRollupAggregateRow>, ApiError> {
+    let range_start_epoch = ceil_hour_epoch(range.start.timestamp());
+    let range_end_epoch = crate::stats::align_bucket_epoch(range.end.timestamp(), 3_600, 0);
+    if range_start_epoch >= range_end_epoch {
+        return Ok(Vec::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            upstream_account_id,
+            COALESCE(SUM(total_count), 0) AS request_count,
+            COALESCE(SUM(success_count), 0) AS success_count,
+            COALESCE(SUM(failure_count), 0) AS failure_count,
+            COALESCE(SUM(total_tokens), 0) AS total_tokens,
+            COALESCE(SUM(input_tokens), 0) AS input_tokens,
+            COALESCE(SUM(output_tokens), 0) AS output_tokens,
+            COALESCE(SUM(cache_input_tokens), 0) AS cache_input_tokens,
+            CAST(COALESCE(SUM(total_cost), 0.0) AS REAL) AS total_cost,
+            CAST(COALESCE(SUM(non_success_cost), 0.0) AS REAL) AS non_success_cost,
+            COALESCE(SUM(first_response_byte_total_sample_count), 0) AS first_response_byte_total_sample_count,
+            CAST(COALESCE(SUM(first_response_byte_total_sum_ms), 0.0) AS REAL) AS first_response_byte_total_sum_ms,
+            COALESCE(SUM(total_latency_sample_count), 0) AS total_latency_sample_count,
+            CAST(COALESCE(SUM(total_latency_sum_ms), 0.0) AS REAL) AS total_latency_sum_ms
+        FROM upstream_account_stats_hourly
+        WHERE bucket_start_epoch >=
+        "#,
+    );
+    query
+        .push_bind(range_start_epoch)
+        .push(" AND bucket_start_epoch < ")
+        .push_bind(range_end_epoch);
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" GROUP BY upstream_account_id");
+    Ok(query
+        .build_query_as::<DashboardActivityAccountStatsRollupAggregateRow>()
+        .fetch_all(pool)
+        .await?)
+}
+
+async fn dashboard_activity_materialized_archive_account_fallback_totals(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    skipped_materialized_ranges: &[ExactUtcRange],
+) -> Result<HashMap<Option<i64>, DashboardActivityAccountFallbackTotals>, ApiError> {
+    let mut fallback_by_account =
+        HashMap::<Option<i64>, DashboardActivityAccountFallbackTotals>::new();
+    for skipped_range in skipped_materialized_ranges {
+        let rollup_rows = query_dashboard_activity_account_stats_rollup_aggregate_rows(
+            &state.pool,
+            source_scope,
+            *skipped_range,
+        )
+        .await?;
+        if rollup_rows.is_empty() {
+            continue;
+        }
+
+        let live_rows = query_live_upstream_account_activity_aggregate_rows(
+            &state.pool,
+            source_scope,
+            *skipped_range,
+            true,
+            DashboardActivityExcludedInvocationIdsFilter::None,
+        )
+        .await?;
+        let live_by_account = live_rows
+            .iter()
+            .map(|row| (row.upstream_account_id, row))
+            .collect::<HashMap<_, _>>();
+        let mut live_usage_by_account =
+            HashMap::<Option<i64>, DashboardActivityUsageFallbackTotals>::new();
+        for row in query_live_upstream_account_usage_breakdown_rows(
+            &state.pool,
+            source_scope,
+            *skipped_range,
+            true,
+            true,
+            DashboardActivityExcludedInvocationIdsFilter::None,
+        )
+        .await?
+        {
+            let entry = live_usage_by_account
+                .entry(row.upstream_account_id)
+                .or_default();
+            entry.cache_write_tokens += row.cache_write_tokens;
+            entry.cache_read_tokens += row.cache_read_tokens;
+            entry.output_tokens += row.output_tokens;
+        }
+
+        for row in rollup_rows {
+            let account_id = Some(row.upstream_account_id);
+            let totals = DashboardActivityAccountFallbackTotals::from_rollup_minus_live(
+                &row,
+                live_by_account.get(&account_id).copied(),
+                live_usage_by_account
+                    .get(&account_id)
+                    .copied()
+                    .unwrap_or_default(),
+            );
+            if !dashboard_activity_stats_totals_has_values(totals.stats_totals()) {
+                continue;
+            }
+            fallback_by_account
+                .entry(account_id)
+                .or_default()
+                .add_assign(totals);
+        }
+    }
+    Ok(fallback_by_account)
+}
+
+fn dashboard_activity_merge_account_fallback_totals(
+    entry: &mut UpstreamAccountActivityAccumulator,
+    totals: DashboardActivityAccountFallbackTotals,
+) {
+    entry.request_count += totals.request_count;
+    entry.success_count += totals.success_count;
+    entry.failure_count += totals.failure_count;
+    entry.non_success_count += totals.non_success_count;
+    entry.total_tokens += totals.total_tokens;
+    entry.success_tokens += totals.success_tokens;
+    entry.non_success_tokens += totals.non_success_tokens;
+    entry.failure_tokens += totals.failure_tokens;
+    entry.failure_cost += totals.failure_cost;
+    entry.non_success_cost += totals.non_success_cost;
+    entry.cache_input_tokens += totals.cache_input_tokens;
+    entry.total_cost += totals.total_cost;
+    entry.first_response_byte_total_sample_count += totals.first_response_byte_total_sample_count;
+    entry.first_response_byte_total_sum_ms += totals.first_response_byte_total_sum_ms;
+    entry.total_latency_sample_count += totals.total_latency_sample_count;
+    entry.total_latency_sum_ms += totals.total_latency_sum_ms;
+    entry.usage_breakdown.add_coarse_rollup_totals(
+        totals.cache_write_tokens,
+        totals.cache_read_tokens,
+        totals.output_tokens,
+        totals.total_cost,
+    );
 }
 
 fn dashboard_activity_source_scope_cache_key(source_scope: InvocationSourceScope) -> &'static str {
@@ -8405,6 +8785,9 @@ async fn overlay_dashboard_activity_live_accounts(
         &mut snapshot.summary.stats,
         snapshot.materialized_archive_fallback_totals,
     );
+    if snapshot.materialized_archive_details_limited {
+        dashboard_activity_clear_materialized_archive_detail_fields(&mut snapshot.summary.stats);
+    }
 
     Ok(())
 }
@@ -9079,6 +9462,9 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
             model_performance: model_performance.into_response(range, model_performance_available),
         },
         materialized_archive_fallback_totals,
+        materialized_archive_details_limited: dashboard_activity_stats_totals_has_values(
+            materialized_archive_fallback_totals,
+        ),
     })
 }
 
@@ -9111,7 +9497,8 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
     let mut account_activity = HashMap::<Option<i64>, UpstreamAccountActivityAccumulator>::new();
     let mut model_performance = ModelPerformanceAccumulator::default();
-    let mut materialized_archive_fallback_totals = StatsTotals::default();
+    let materialized_archive_fallback_totals = StatsTotals::default();
+    let mut materialized_archive_details_limited = false;
     let current_snapshot_by_account = if range_name == "yesterday" {
         load_dashboard_activity_current_minute_accumulators_by_account(state, source_scope, range)
             .await?
@@ -9250,13 +9637,44 @@ pub(crate) async fn load_dashboard_activity_snapshot(
                 .usage_breakdown
                 .add_aggregate_row(&row);
         }
-        materialized_archive_fallback_totals =
-            dashboard_activity_materialized_archive_fallback_totals(
-                state,
-                source_scope,
-                skipped_materialized_ranges,
-            )
-            .await?;
+        let global_fallback_totals = dashboard_activity_materialized_archive_fallback_totals(
+            state,
+            source_scope,
+            skipped_materialized_ranges.clone(),
+        )
+        .await?;
+        if dashboard_activity_stats_totals_has_values(global_fallback_totals) {
+            materialized_archive_details_limited = true;
+            let mut account_fallback_totals =
+                dashboard_activity_materialized_archive_account_fallback_totals(
+                    state,
+                    source_scope,
+                    &skipped_materialized_ranges,
+                )
+                .await?;
+            let account_fallback_sum = account_fallback_totals
+                .values()
+                .fold(StatsTotals::default(), |total, account_totals| {
+                    total.add(account_totals.stats_totals())
+                });
+            let residual_fallback_totals = dashboard_activity_stats_totals_subtract(
+                global_fallback_totals,
+                account_fallback_sum,
+            );
+            if dashboard_activity_stats_totals_has_values(residual_fallback_totals) {
+                account_fallback_totals.entry(None).or_default().add_assign(
+                    DashboardActivityAccountFallbackTotals::from_stats_totals(
+                        residual_fallback_totals,
+                    ),
+                );
+            }
+            for (upstream_account_id, totals) in account_fallback_totals {
+                dashboard_activity_merge_account_fallback_totals(
+                    account_activity.entry(upstream_account_id).or_default(),
+                    totals,
+                );
+            }
+        }
     }
     if let Some(model_performance_duration_overrides) = model_performance_duration_overrides {
         model_performance.wall_clock_usage_duration_ms =
@@ -9742,6 +10160,9 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         &mut summary.stats,
         materialized_archive_fallback_totals,
     );
+    if materialized_archive_details_limited {
+        dashboard_activity_clear_materialized_archive_detail_fields(&mut summary.stats);
+    }
     Ok(DashboardActivitySnapshot {
         range: range_name.to_string(),
         range_start: range.start,
@@ -9749,6 +10170,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         accounts,
         summary,
         materialized_archive_fallback_totals,
+        materialized_archive_details_limited,
     })
 }
 
@@ -9760,6 +10182,7 @@ async fn load_dashboard_activity_snapshot_cached(
     recent_limit: usize,
     include_accounts: bool,
     include_recent: bool,
+    in_progress_counts_override: Option<HashMap<Option<i64>, UpstreamAccountInProgressSummary>>,
 ) -> Result<
     (
         DashboardActivitySnapshot,
@@ -9776,7 +10199,7 @@ async fn load_dashboard_activity_snapshot_cached(
             recent_limit,
             include_accounts,
             include_recent,
-            None,
+            in_progress_counts_override.clone(),
         )
         .await?;
         return Ok((
@@ -9867,7 +10290,7 @@ async fn load_dashboard_activity_snapshot_cached(
             recent_limit,
             include_accounts,
             include_recent,
-            None,
+            in_progress_counts_override.clone(),
         )
         .await;
         let db_build_elapsed_ms = build_started_at.elapsed().as_millis() as u64;
@@ -9986,6 +10409,8 @@ pub(crate) async fn fetch_dashboard_activity(
         recent_limit,
         params.include_accounts,
         include_recent,
+        live.as_ref()
+            .map(dashboard_live_snapshot_in_progress_counts),
     )
     .await?;
     let live_revision = live.as_ref().map_or(0, |snapshot| snapshot.revision);

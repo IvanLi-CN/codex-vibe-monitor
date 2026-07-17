@@ -14041,6 +14041,28 @@ async fn dashboard_activity_summary_only_uses_rollups_when_materialized_archive_
     let mut config = test_config();
     config.invocation_max_days = 0;
     let state = test_state_from_config(config, true).await;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, group_name, plan_type, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(42_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Recovered Rollup")
+    .bind("Primary")
+    .bind("enterprise")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert dashboard activity recovered rollup account");
 
     let archived_hour_local = Utc::now()
         .with_timezone(&Shanghai)
@@ -14123,6 +14145,50 @@ async fn dashboard_activity_summary_only_uses_rollups_when_materialized_archive_
     .execute(&state.pool)
     .await
     .expect("seed dashboard summary materialized rollup row");
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_account_stats_hourly (
+            bucket_start_epoch,
+            source,
+            upstream_account_id,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            total_cost,
+            non_success_cost,
+            total_latency_sample_count,
+            total_latency_sum_ms,
+            first_response_byte_total_sample_count,
+            first_response_byte_total_sum_ms,
+            first_response_byte_total_max_ms
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(42_i64)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(250_i64)
+    .bind(200_i64)
+    .bind(50_i64)
+    .bind(25_i64)
+    .bind(0.25_f64)
+    .bind(0.0_f64)
+    .bind(1_i64)
+    .bind(500.0_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .execute(&state.pool)
+    .await
+    .expect("seed dashboard account materialized rollup row");
 
     let Json(response) = fetch_dashboard_activity(
         State(state.clone()),
@@ -14165,6 +14231,46 @@ async fn dashboard_activity_summary_only_uses_rollups_when_materialized_archive_
     assert_f64_close(full_response.summary.stats.total_cost, 0.25);
     assert!(full_response.summary.stats.usage_breakdown.is_none());
     assert!(full_response.summary.stats.non_success_tokens.is_none());
+    let full_accounts = full_response
+        .accounts
+        .as_ref()
+        .expect("full dashboard accounts should be included");
+    let recovered_account = full_accounts
+        .iter()
+        .find(|account| account.upstream_account_id == Some(42))
+        .expect("full dashboard should include recovered rollup account");
+    assert_eq!(recovered_account.display_name, "Recovered Rollup");
+    assert_eq!(recovered_account.request_count, 1);
+    assert_eq!(recovered_account.success_count, 1);
+    assert_eq!(recovered_account.total_tokens, 250);
+    assert_f64_close(recovered_account.total_cost, 0.25);
+    assert_eq!(
+        full_accounts
+            .iter()
+            .map(|account| account.request_count)
+            .sum::<i64>(),
+        full_response.summary.stats.total_count,
+    );
+
+    let Json(activity) = fetch_upstream_account_activity(
+        State(state.clone()),
+        Query(UpstreamAccountActivityQuery {
+            range: "7d".to_string(),
+            recent_limit: Some(2),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch upstream account activity from materialized rollup");
+    let upstream_account = activity
+        .accounts
+        .iter()
+        .find(|account| account.upstream_account_id == 42)
+        .expect("upstream activity should include recovered rollup account");
+    assert_eq!(upstream_account.request_count, 1);
+    assert_eq!(upstream_account.success_count, 1);
+    assert_eq!(upstream_account.total_tokens, 250);
+    assert_f64_close(upstream_account.total_cost, 0.25);
 }
 
 #[tokio::test]
