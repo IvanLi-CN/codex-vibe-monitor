@@ -56,8 +56,8 @@ export interface SubscriptionTopicDescriptor {
   params?: Record<string, string | number | boolean | null | undefined>;
 }
 
-export interface SubscriptionTopicCursor {
-  topicKey: string;
+export interface SubscriptionResumeQueryCursor {
+  topicIndex: number;
   cursor: number;
   schemaEpoch: string;
 }
@@ -220,7 +220,7 @@ function buildConnectionRequest(attempt: number, reason: SseReconnectReason) {
 
   const resumeTopics: string[] = [];
   const forcedSnapshotTopics = getForcedSnapshotDescriptors(descriptors).map(formatTopicLabel);
-  const resume = descriptors.flatMap((descriptor) => {
+  const resume = descriptors.flatMap((descriptor, topicIndex) => {
     const descriptorKey = getTopicDescriptorKey(descriptor);
     if (forcedSnapshotDescriptors.has(descriptorKey)) {
       return [];
@@ -232,10 +232,10 @@ function buildConnectionRequest(attempt: number, reason: SseReconnectReason) {
     resumeTopics.push(formatTopicLabel(descriptor));
     return [
       {
-        topicKey: cached.topicKey,
+        topicIndex,
         cursor: cached.cursor,
         schemaEpoch: cached.schemaEpoch,
-      } satisfies SubscriptionTopicCursor,
+      } satisfies SubscriptionResumeQueryCursor,
     ];
   });
 

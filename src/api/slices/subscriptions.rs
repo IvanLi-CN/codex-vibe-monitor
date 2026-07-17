@@ -29,6 +29,21 @@ pub(crate) struct SubscriptionResumeCursor {
     pub(crate) schema_epoch: String,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct SubscriptionCompactResumeCursor {
+    topic_index: usize,
+    cursor: u64,
+    schema_epoch: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+enum SubscriptionResumeCursorQuery {
+    Legacy(SubscriptionResumeCursor),
+    Compact(SubscriptionCompactResumeCursor),
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub(crate) enum SubscriptionEventEnvelope {
@@ -565,7 +580,7 @@ pub(crate) async fn topic_sse_stream(
     Query(query): Query<SubscriptionStreamQuery>,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiError> {
     let descriptors = decode_topics_query(query.topics.as_deref())?;
-    let resume = decode_resume_query(query.resume.as_deref())?;
+    let resume = decode_resume_query(query.resume.as_deref(), &descriptors)?;
     let resume_count = resume.len();
     let mut live_receiver = state.subscription_hub.subscribe();
     let selected_topics = descriptors
@@ -1223,11 +1238,34 @@ fn decode_topics_query(raw: Option<&str>) -> Result<Vec<SubscriptionTopicDescrip
     decode_query_json(raw, "topics")
 }
 
-fn decode_resume_query(raw: Option<&str>) -> Result<Vec<SubscriptionResumeCursor>, ApiError> {
+fn decode_resume_query(
+    raw: Option<&str>,
+    descriptors: &[SubscriptionTopicDescriptor],
+) -> Result<Vec<SubscriptionResumeCursor>, ApiError> {
     let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(Vec::new());
     };
-    decode_query_json(raw, "resume")
+    let query_items = decode_query_json::<Vec<SubscriptionResumeCursorQuery>>(raw, "resume")?;
+    query_items
+        .into_iter()
+        .map(|item| match item {
+            SubscriptionResumeCursorQuery::Legacy(cursor) => Ok(cursor),
+            SubscriptionResumeCursorQuery::Compact(cursor) => {
+                let descriptor = descriptors.get(cursor.topic_index).ok_or_else(|| {
+                    ApiError::bad_request(anyhow!(
+                        "resume topicIndex out of range: {}",
+                        cursor.topic_index
+                    ))
+                })?;
+                let topic_key = SubscriptionTopic::from_descriptor(descriptor)?.cache_key()?;
+                Ok(SubscriptionResumeCursor {
+                    topic_key,
+                    cursor: cursor.cursor,
+                    schema_epoch: cursor.schema_epoch,
+                })
+            }
+        })
+        .collect()
 }
 
 fn decode_query_json<T: DeserializeOwned>(raw: &str, field: &str) -> Result<T, ApiError> {
@@ -1561,6 +1599,73 @@ mod tests {
         assert_eq!(encoded.get("schemaEpoch"), Some(&json!("app.version/v1")));
         assert!(encoded.get("topic_key").is_none());
         assert!(encoded.get("schema_epoch").is_none());
+    }
+
+    #[test]
+    fn decode_resume_query_accepts_legacy_topic_key_format() {
+        let descriptor = summary_topic().descriptor();
+        let topic_key = summary_topic().cache_key().expect("topic key");
+        let raw = serde_json::to_string(&vec![json!({
+            "topicKey": topic_key.clone(),
+            "cursor": 4,
+            "schemaEpoch": "stats.summary.current/v1",
+        })])
+        .expect("encode resume query");
+
+        let decoded = decode_resume_query(Some(&raw), &[descriptor]).expect("decode resume");
+
+        assert_eq!(
+            decoded,
+            vec![SubscriptionResumeCursor {
+                topic_key,
+                cursor: 4,
+                schema_epoch: "stats.summary.current/v1".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn decode_resume_query_accepts_compact_topic_index_format() {
+        let descriptor = summary_topic().descriptor();
+        let topic_key = summary_topic().cache_key().expect("topic key");
+        let raw = serde_json::to_string(&vec![json!({
+            "topicIndex": 0,
+            "cursor": 4,
+            "schemaEpoch": "stats.summary.current/v1",
+        })])
+        .expect("encode resume query");
+
+        let decoded = decode_resume_query(Some(&raw), &[descriptor]).expect("decode resume");
+
+        assert_eq!(
+            decoded,
+            vec![SubscriptionResumeCursor {
+                topic_key,
+                cursor: 4,
+                schema_epoch: "stats.summary.current/v1".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn decode_resume_query_rejects_out_of_range_compact_topic_index() {
+        let descriptor = summary_topic().descriptor();
+        let raw = serde_json::to_string(&vec![json!({
+            "topicIndex": 1,
+            "cursor": 4,
+            "schemaEpoch": "stats.summary.current/v1",
+        })])
+        .expect("encode resume query");
+
+        let error =
+            decode_resume_query(Some(&raw), &[descriptor]).expect_err("resume should reject");
+
+        match error {
+            ApiError::BadRequest(err) => {
+                assert!(format!("{err}").contains("resume topicIndex out of range: 1"));
+            }
+            other => panic!("expected bad request, got {other:?}"),
+        }
     }
 
     #[tokio::test]

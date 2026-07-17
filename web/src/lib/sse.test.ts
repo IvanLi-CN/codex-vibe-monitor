@@ -63,7 +63,7 @@ function decodePath(path: string) {
       ? decodeBase64UrlJson<Array<{ topic: string; params?: Record<string, string> }>>(rawTopics)
       : [],
     resume: rawResume
-      ? decodeBase64UrlJson<Array<{ topicKey: string; cursor: number; schemaEpoch: string }>>(
+      ? decodeBase64UrlJson<Array<{ topicIndex: number; cursor: number; schemaEpoch: string }>>(
           rawResume,
         )
       : [],
@@ -140,7 +140,7 @@ describe("sse topic registry", () => {
     ]);
     expect(decoded.resume).toEqual([
       {
-        topicKey: "summary-current",
+        topicIndex: 1,
         cursor: 4,
         schemaEpoch: "stats.summary.current/v1",
       },
@@ -298,7 +298,7 @@ describe("sse topic registry", () => {
     expect(rebuilt.reason).toBe("eventsource-error");
     expect(rebuilt.resume).toEqual([
       {
-        topicKey: "forward-proxy-live",
+        topicIndex: 0,
         cursor: 9,
         schemaEpoch: "forward-proxy.live/v1",
       },
