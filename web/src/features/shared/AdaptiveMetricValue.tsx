@@ -16,6 +16,7 @@ interface AdaptiveDisplayValueProps {
   className?: string;
   title?: string;
   animateDigits?: boolean;
+  availableWidthPx?: number;
   "data-testid"?: string;
 }
 
@@ -28,7 +29,7 @@ interface AdaptiveMetricValueProps {
   "data-testid"?: string;
 }
 
-function useAdaptiveCandidateSelection(spec: AdaptiveDisplayValueSpec) {
+function useAdaptiveCandidateSelection(spec: AdaptiveDisplayValueSpec, availableWidthPx?: number) {
   const containerRef = useRef<HTMLSpanElement | null>(null);
   const measureRefs = useRef<Array<HTMLSpanElement | null>>([]);
   const [selectedCandidateKey, setSelectedCandidateKey] = useState<string>(
@@ -39,7 +40,8 @@ function useAdaptiveCandidateSelection(spec: AdaptiveDisplayValueSpec) {
     const container = containerRef.current;
     if (!container) return;
 
-    const availableWidth = container.clientWidth;
+    const availableWidth =
+      availableWidthPx != null && availableWidthPx > 0 ? availableWidthPx : container.clientWidth;
     if (availableWidth <= 0) return;
 
     const measures = measureRefs.current;
@@ -85,7 +87,7 @@ function useAdaptiveCandidateSelection(spec: AdaptiveDisplayValueSpec) {
     setSelectedCandidateKey((current) =>
       current === (nextCandidate?.key ?? current) ? current : (nextCandidate?.key ?? current),
     );
-  }, [selectedCandidateKey, spec.candidates]);
+  }, [availableWidthPx, selectedCandidateKey, spec.candidates]);
 
   useLayoutEffect(() => {
     evaluateOverflow();
@@ -140,9 +142,13 @@ export function AdaptiveDisplayValue({
   className,
   title,
   animateDigits = false,
+  availableWidthPx,
   "data-testid": dataTestId,
 }: AdaptiveDisplayValueProps) {
-  const { containerRef, measureRefs, selectedCandidate } = useAdaptiveCandidateSelection(spec);
+  const { containerRef, measureRefs, selectedCandidate } = useAdaptiveCandidateSelection(
+    spec,
+    availableWidthPx,
+  );
   const shouldAnimateDigits =
     animateDigits &&
     selectedCandidate?.key === spec.candidates[0]?.key &&

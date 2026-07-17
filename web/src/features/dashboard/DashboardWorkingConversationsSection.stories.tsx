@@ -487,6 +487,31 @@ function createUpstreamAccountActivityStoryResponse(
   };
 }
 
+function createUpstreamAccountAdaptiveMetricsStoryResponse() {
+  const response = createUpstreamAccountActivityStoryResponse();
+  const account = response.accounts[0];
+  if (!account) return response;
+
+  account.requestCount = 739;
+  account.successCount = 644;
+  account.failureCount = 93;
+  account.nonSuccessCount = 93;
+  account.uploadBytesPerSecond = 42 * 1024;
+  account.downloadBytesPerSecond = 168 * 1024;
+  account.totalTokens = 8_806_767;
+  account.successTokens = 8_674_293;
+  account.nonSuccessTokens = 132_474;
+  account.failureTokens = 132_474;
+  account.failureCost = 39.45;
+  account.totalCost = 274.56;
+  account.tokensPerMinute = 1_324_743;
+  account.spendRate = 0.69;
+  account.firstResponseByteTotalAvgMs = 11_090;
+  account.avgTotalMs = 26_800;
+
+  return response;
+}
+
 const LONG_ERROR_SUMMARY =
   '[upstream_http_5xx] pool upstream responded with 502: {"error":{"message":"Upstream request failed","type":"upstream_error"}} event: response.failed data: {"type":"response.failed","response":{"id":"resp_story_error_summary","model":"gpt-5.4","status":"failed"}}';
 
@@ -4045,6 +4070,119 @@ export const UpstreamAccountMetricTooltips: Story = {
       description: {
         story:
           "Stable interaction coverage for the four upstream-account metric cards. Each whole metric card opens a structured tooltip with explicit field labels, values, and related computed data while the card surface stays compact.",
+      },
+    },
+  },
+};
+
+export const UpstreamAccountAdaptiveMetricOverflow: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <ForcedWorkspaceViewStory view="upstreamAccounts">
+      <DrawerPreviewStory
+        response={createResponse([
+          createConversation("pck-story-upstream-account-adaptive-overflow", [
+            createPreview({
+              id: 9832,
+              invokeId: "story-working-adaptive-overflow",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+              upstreamAccountId: 42,
+              upstreamAccountName: "Pool Alpha",
+            }),
+          ]),
+        ])}
+        upstreamAccountActivity={createUpstreamAccountAdaptiveMetricsStoryResponse()}
+      />
+    </ForcedWorkspaceViewStory>
+  ),
+  decorators: [
+    (Story) => (
+      <div
+        data-testid="dashboard-upstream-account-adaptive-evidence-frame"
+        className="dashboard-upstream-account-adaptive-overflow-story"
+      >
+        <style>{`
+          .dashboard-upstream-account-adaptive-overflow-story {
+            display: inline-block;
+            padding: 19px 19px 12px;
+            background: rgb(214, 232, 255);
+          }
+          .dashboard-upstream-account-adaptive-overflow-story [data-testid="dashboard-working-conversations"] {
+            display: inline-block;
+            width: fit-content;
+          }
+          .dashboard-upstream-account-adaptive-overflow-story
+            [data-testid="dashboard-working-conversations"]
+            > .surface-panel-body {
+            width: fit-content;
+          }
+          .dashboard-upstream-account-adaptive-overflow-story [data-testid="dashboard-upstream-account-grid"] {
+            max-width: 22rem;
+            grid-template-columns: minmax(0, 1fr) !important;
+          }
+          .dashboard-upstream-account-adaptive-overflow-story
+            [data-testid="dashboard-working-conversations-controls"] {
+            display: none;
+          }
+          .dashboard-upstream-account-adaptive-overflow-story
+            div:has(> [data-testid="story-drawer-state"]) {
+            display: none;
+          }
+        `}</style>
+        <Story />
+      </div>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+
+    await waitFor(() => {
+      expect(canvas.getByText("当前活动账号 1 个")).toBeInTheDocument();
+
+      const tpmValue = canvas.getByTestId("dashboard-upstream-account-inline-tpm-value");
+      const spendRateValue = canvas.getByTestId(
+        "dashboard-upstream-account-inline-spend-rate-value",
+      );
+      const costValue = canvas.getByTestId("dashboard-upstream-account-cost-value");
+      const tokenValue = canvas.getByTestId("dashboard-upstream-account-token-value");
+      const accountCard = canvas.getByTestId("dashboard-upstream-account-card");
+      const recentBreakdown = canvas.getByTestId("dashboard-upstream-account-recent-breakdown");
+      const phaseSegments = canvas.getAllByTestId("invocation-phase-segment");
+
+      expect(accountCard).toHaveAttribute("data-header-layout", "stacked");
+      expect(accountCard).toHaveAttribute("data-inline-metric-layout", "three-columns");
+      expect(accountCard).toHaveAttribute("data-metric-columns", "2");
+      expect(tpmValue).toHaveAttribute("data-compact", "true");
+      expect(tpmValue.textContent ?? "").toMatch(/M|B|T/);
+      expect(tpmValue).toHaveAttribute("title", "1,324,743");
+
+      expect(spendRateValue).toHaveAttribute("data-compact", "false");
+      expect(spendRateValue).toHaveTextContent("0.69");
+      expect(spendRateValue).not.toHaveAttribute("title");
+
+      expect(costValue).toHaveAttribute("data-compact", "false");
+      expect(costValue).not.toHaveTextContent("274.56");
+      expect(costValue).toHaveAttribute("title", "274.56");
+
+      expect(tokenValue).toHaveAttribute("data-compact", "true");
+      expect(tokenValue.textContent ?? "").toMatch(/M|B|T/);
+      expect(tokenValue).toHaveAttribute("title", "8,806,767");
+
+      expect(recentBreakdown.textContent ?? "").not.toContain("排队中");
+      expect(recentBreakdown.textContent ?? "").not.toContain("请求中");
+      expect(recentBreakdown.textContent ?? "").not.toContain("响应中");
+      expect(recentBreakdown.textContent ?? "").not.toContain("失败");
+      expect(recentBreakdown.textContent ?? "").not.toContain("成功");
+      expect(phaseSegments[0]).toHaveAttribute("data-phase-label-visible", "false");
+    });
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Narrow owner-facing upstream-account card that forces the red-box metrics to reuse the adaptive compact-number system. Inline TPM/spend-rate and the hero cost/token values must collapse precision or magnitude while preserving the full value in tooltips and titles.",
       },
     },
   },
