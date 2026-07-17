@@ -554,6 +554,7 @@ pub(crate) async fn header_sticky_account_matches_request_requirements(
     requested_model: Option<&str>,
     image_intent: crate::ImageIntent,
 ) -> Result<bool, (StatusCode, String)> {
+    let capability_requirements = RequestCapabilityRequirements::from_image_intent(image_intent);
     let effective_rule = load_effective_routing_rule_for_account(&state.pool, account.account_id)
         .await
         .map_err(|err| {
@@ -568,10 +569,11 @@ pub(crate) async fn header_sticky_account_matches_request_requirements(
         .is_none_or(|requested_model| {
             account_accepts_requested_model(Some(requested_model), &effective_rule)
         });
-    let image_matches = account_accepts_requested_image_intent(
-        image_intent,
-        effective_rule.image_tool_rewrite_mode,
-        account.image_tool_capability,
+    let image_matches = account_accepts_request_capabilities(
+        capability_requirements,
+        account.response_endpoint_capability,
+        account.image_endpoint_capability,
+        account.response_image_tool_capability,
     );
     Ok(model_matches && image_matches)
 }

@@ -133,7 +133,9 @@ async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
-        image_tool_capability: ImageToolCapability::Unknown,
+        response_endpoint_capability: CapabilitySupport::Unknown,
+        image_endpoint_capability: CapabilitySupport::Unknown,
+        response_image_tool_capability: CapabilitySupport::Unknown,
     };
 
     reserve_pool_routing_account(state.as_ref(), "sticky-reservation", &account);

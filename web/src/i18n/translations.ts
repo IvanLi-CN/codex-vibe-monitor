@@ -1205,7 +1205,6 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.verifiedEmail": "Verified email",
     "accountPool.upstreamAccounts.fields.accountId": "Account ID",
     "accountPool.upstreamAccounts.fields.userId": "User ID",
-    "accountPool.upstreamAccounts.fields.imageToolCapability": "Image capability",
     "accountPool.upstreamAccounts.fields.primaryLimit": "5h local limit",
     "accountPool.upstreamAccounts.fields.secondaryLimit": "7d local limit",
     "accountPool.upstreamAccounts.fields.limitUnit": "Limit unit",
@@ -1223,15 +1222,32 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.lastSyncedAt": "Last sync",
     "accountPool.upstreamAccounts.fields.lastRefreshedAt": "Last refresh",
     "accountPool.upstreamAccounts.fields.tokenExpiresAt": "Access token expires",
-    "accountPool.upstreamAccounts.imageToolCapability.supported": "Image-capable",
-    "accountPool.upstreamAccounts.imageToolCapability.unsupported": "Not image-capable",
-    "accountPool.upstreamAccounts.imageToolCapability.unknown": "Unknown",
-    "accountPool.upstreamAccounts.imageToolCapabilityHint.supported":
-      "This account can be selected for image requests.",
-    "accountPool.upstreamAccounts.imageToolCapabilityHint.unsupported":
-      "This account is filtered out of image requests.",
-    "accountPool.upstreamAccounts.imageToolCapabilityHint.unknown":
-      "The system has not observed enough evidence yet.",
+    "accountPool.upstreamAccounts.capability.status.auto": "Auto",
+    "accountPool.upstreamAccounts.capability.status.supported": "Supported",
+    "accountPool.upstreamAccounts.capability.status.unsupported": "Unsupported",
+    "accountPool.upstreamAccounts.capability.status.unknown": "Unknown",
+    "accountPool.upstreamAccounts.capability.observed": "Observed",
+    "accountPool.upstreamAccounts.capability.override": "Override",
+    "accountPool.upstreamAccounts.capability.effective": "Effective",
+    "accountPool.upstreamAccounts.capability.observedAt": "Observed at",
+    "accountPool.upstreamAccounts.capability.reason": "Reason",
+    "accountPool.upstreamAccounts.capability.overrideLabel": "Capability override",
+    "accountPool.upstreamAccounts.capability.overrideOption.auto": "Auto learning",
+    "accountPool.upstreamAccounts.capability.overrideOption.supported": "Force supported",
+    "accountPool.upstreamAccounts.capability.overrideOption.unsupported": "Force unsupported",
+    "accountPool.upstreamAccounts.capability.responseEndpoint.title": "Response endpoint",
+    "accountPool.upstreamAccounts.capability.responseEndpoint.description":
+      "Controls /v1/responses, /v1/responses/compact, and /v1/chat/completions routing eligibility.",
+    "accountPool.upstreamAccounts.capability.imageEndpoint.title": "Image endpoint",
+    "accountPool.upstreamAccounts.capability.imageEndpoint.description":
+      "Controls direct /v1/images/generations and /v1/images/edits routing eligibility.",
+    "accountPool.upstreamAccounts.capability.responseImageTool.title": "Response image-tool",
+    "accountPool.upstreamAccounts.capability.responseImageTool.description":
+      "Controls image tools or image models inside Responses-family requests only.",
+    "accountPool.upstreamAccounts.capability.rewriteNoticeTitle":
+      "Rewrite policy is not capability routing",
+    "accountPool.upstreamAccounts.capability.rewriteNoticeBody":
+      "imageToolRewriteMode only rewrites Responses-family payloads. It does not override any endpoint capability gate.",
     "accountPool.upstreamAccounts.noRefreshToken.badge": "无 RT",
     "accountPool.upstreamAccounts.fields.lastSuccessSync": "Last successful sync",
     "accountPool.upstreamAccounts.fields.credits": "Credits",
@@ -3661,7 +3677,6 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.verifiedEmail": "可信邮箱",
     "accountPool.upstreamAccounts.fields.accountId": "账号 ID",
     "accountPool.upstreamAccounts.fields.userId": "用户 ID",
-    "accountPool.upstreamAccounts.fields.imageToolCapability": "图片能力",
     "accountPool.upstreamAccounts.fields.primaryLimit": "5 小时本地限额",
     "accountPool.upstreamAccounts.fields.secondaryLimit": "7 天本地限额",
     "accountPool.upstreamAccounts.fields.limitUnit": "限额单位",
@@ -3678,14 +3693,32 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.lastSyncedAt": "最近同步",
     "accountPool.upstreamAccounts.fields.lastRefreshedAt": "最近刷新",
     "accountPool.upstreamAccounts.fields.tokenExpiresAt": "访问令牌过期时间",
-    "accountPool.upstreamAccounts.imageToolCapability.supported": "支持图片工具",
-    "accountPool.upstreamAccounts.imageToolCapability.unsupported": "不支持图片工具",
-    "accountPool.upstreamAccounts.imageToolCapability.unknown": "未知",
-    "accountPool.upstreamAccounts.imageToolCapabilityHint.supported":
-      "这个账号可以参与需要图片工具的请求。",
-    "accountPool.upstreamAccounts.imageToolCapabilityHint.unsupported":
-      "这个账号会被排除在图片请求之外。",
-    "accountPool.upstreamAccounts.imageToolCapabilityHint.unknown": "系统还没有观测到足够信息。",
+    "accountPool.upstreamAccounts.capability.status.auto": "自动",
+    "accountPool.upstreamAccounts.capability.status.supported": "支持",
+    "accountPool.upstreamAccounts.capability.status.unsupported": "不支持",
+    "accountPool.upstreamAccounts.capability.status.unknown": "未知",
+    "accountPool.upstreamAccounts.capability.observed": "观测值",
+    "accountPool.upstreamAccounts.capability.override": "覆盖值",
+    "accountPool.upstreamAccounts.capability.effective": "生效值",
+    "accountPool.upstreamAccounts.capability.observedAt": "观测时间",
+    "accountPool.upstreamAccounts.capability.reason": "原因",
+    "accountPool.upstreamAccounts.capability.overrideLabel": "能力覆盖",
+    "accountPool.upstreamAccounts.capability.overrideOption.auto": "自动学习",
+    "accountPool.upstreamAccounts.capability.overrideOption.supported": "强制支持",
+    "accountPool.upstreamAccounts.capability.overrideOption.unsupported": "强制不支持",
+    "accountPool.upstreamAccounts.capability.responseEndpoint.title": "Response 端点",
+    "accountPool.upstreamAccounts.capability.responseEndpoint.description":
+      "控制 /v1/responses、/v1/responses/compact、/v1/chat/completions 的路由可选性。",
+    "accountPool.upstreamAccounts.capability.imageEndpoint.title": "Image 端点",
+    "accountPool.upstreamAccounts.capability.imageEndpoint.description":
+      "控制直连 /v1/images/generations 和 /v1/images/edits 的路由可选性。",
+    "accountPool.upstreamAccounts.capability.responseImageTool.title": "Response 图片工具",
+    "accountPool.upstreamAccounts.capability.responseImageTool.description":
+      "只控制 Responses-family 请求里的图片工具或图片模型，不影响直连 image 端点。",
+    "accountPool.upstreamAccounts.capability.rewriteNoticeTitle":
+      "rewrite 策略不等于 capability 路由",
+    "accountPool.upstreamAccounts.capability.rewriteNoticeBody":
+      "imageToolRewriteMode 只会改写 Responses-family 的请求体，不会覆盖任何 endpoint capability gate。",
     "accountPool.upstreamAccounts.noRefreshToken.badge": "无 RT",
     "accountPool.upstreamAccounts.fields.lastSuccessSync": "最近成功同步",
     "accountPool.upstreamAccounts.fields.credits": "Credits",
