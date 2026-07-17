@@ -13142,7 +13142,10 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     .await
     .expect("load summary-only dashboard activity snapshot");
     assert!(summary_only_activity.accounts().is_empty());
-    assert!(!summary_only_activity.summary().model_performance.available);
+    assert_eq!(
+        summary_only_activity.summary().model_performance.available,
+        activity.summary().model_performance.available,
+    );
     let Json(summary_only_response) = fetch_dashboard_activity(
         State(state.clone()),
         Query(DashboardActivityQuery {
@@ -13150,7 +13153,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             recent_limit: Some(4),
             time_zone: Some("Asia/Shanghai".to_string()),
             include_accounts: false,
-            include_recent: None,
+            include_recent: Some(false),
         }),
     )
     .await
@@ -13173,14 +13176,35 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             .stats
             .in_progress_retry_conversation_count,
     );
-    assert_eq!(summary_only_activity.summary().tokens_per_minute, Some(0.0));
-    assert_eq!(summary_only_response.summary.tokens_per_minute, Some(0.0));
-    assert_f64_close(
-        summary_only_activity
-            .summary()
-            .spend_rate
-            .expect("summary-only spend rate"),
-        0.0,
+    let summary_only_tokens_per_minute = summary_only_activity
+        .summary()
+        .tokens_per_minute
+        .expect("summary-only tokens per minute");
+    let summary_only_response_tokens_per_minute = summary_only_response
+        .summary
+        .tokens_per_minute
+        .expect("summary-only response tokens per minute");
+    assert!(summary_only_tokens_per_minute > 0.0);
+    assert!(summary_only_response_tokens_per_minute > 0.0);
+    assert!(
+        (summary_only_tokens_per_minute - summary_only_response_tokens_per_minute).abs()
+            / summary_only_response_tokens_per_minute.max(1.0)
+            < 0.02
+    );
+    let summary_only_spend_rate = summary_only_activity
+        .summary()
+        .spend_rate
+        .expect("summary-only spend rate");
+    let summary_only_response_spend_rate = summary_only_response
+        .summary
+        .spend_rate
+        .expect("summary-only response spend rate");
+    assert!(summary_only_spend_rate > 0.0);
+    assert!(summary_only_response_spend_rate > 0.0);
+    assert!(
+        (summary_only_spend_rate - summary_only_response_spend_rate).abs()
+            / summary_only_response_spend_rate.max(1.0)
+            < 0.02
     );
     assert_f64_close(
         summary_only_activity

@@ -920,6 +920,85 @@ impl Drop for PromptCacheConversationFlightGuard {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct DashboardActivitySnapshotSelection {
+    pub(crate) range: String,
+    pub(crate) time_zone: String,
+    pub(crate) recent_limit: usize,
+    pub(crate) include_accounts: bool,
+    pub(crate) include_recent: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DashboardActivitySnapshotCacheEntry {
+    pub(crate) cached_at: Instant,
+    pub(crate) response: DashboardActivitySnapshot,
+}
+
+#[derive(Debug)]
+pub(crate) struct DashboardActivitySnapshotInFlight {
+    pub(crate) signal: watch::Sender<bool>,
+    pub(crate) waiter_count: usize,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct DashboardActivitySnapshotCacheState {
+    pub(crate) entries:
+        HashMap<DashboardActivitySnapshotSelection, DashboardActivitySnapshotCacheEntry>,
+    pub(crate) in_flight:
+        HashMap<DashboardActivitySnapshotSelection, DashboardActivitySnapshotInFlight>,
+}
+
+#[derive(Debug)]
+pub(crate) struct DashboardActivitySnapshotFlightGuard {
+    pub(crate) cache: Arc<Mutex<DashboardActivitySnapshotCacheState>>,
+    pub(crate) selection: DashboardActivitySnapshotSelection,
+    pub(crate) active: bool,
+}
+
+impl DashboardActivitySnapshotFlightGuard {
+    pub(crate) fn new(
+        cache: Arc<Mutex<DashboardActivitySnapshotCacheState>>,
+        selection: DashboardActivitySnapshotSelection,
+    ) -> Self {
+        Self {
+            cache,
+            selection,
+            active: true,
+        }
+    }
+
+    pub(crate) fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for DashboardActivitySnapshotFlightGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+
+        let cache = self.cache.clone();
+        let selection = self.selection.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let mut state = cache.lock().await;
+                if let Some(in_flight) = state.in_flight.remove(&selection) {
+                    let _ = in_flight.signal.send(true);
+                }
+            });
+            return;
+        }
+
+        if let Ok(mut state) = cache.try_lock()
+            && let Some(in_flight) = state.in_flight.remove(&selection)
+        {
+            let _ = in_flight.signal.send(true);
+        }
+    }
+}
+
 pub(crate) async fn invalidate_prompt_cache_conversations_cache(
     cache: &Arc<Mutex<PromptCacheConversationsCacheState>>,
 ) {

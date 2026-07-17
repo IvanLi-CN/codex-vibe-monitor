@@ -418,6 +418,7 @@ pub(crate) struct AppState {
     pub(crate) pricing_settings_update_lock: Arc<Mutex<()>>,
     pub(crate) pricing_catalog: Arc<RwLock<PricingCatalog>>,
     pub(crate) prompt_cache_conversation_cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
+    pub(crate) dashboard_activity_snapshot_cache: Arc<Mutex<DashboardActivitySnapshotCacheState>>,
     pub(crate) maintenance_stats_cache: Arc<Mutex<StatsMaintenanceCacheState>>,
     pub(crate) system_status_cache: Arc<Mutex<SystemStatusCacheState>>,
     pub(crate) pool_routing_reservations:
