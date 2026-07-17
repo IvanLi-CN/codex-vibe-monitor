@@ -60,6 +60,7 @@ export interface UsageCalendarProps {
   showMetricToggle?: boolean;
   showMeta?: boolean;
   upstreamAccountId?: number;
+  timeseriesResponse?: TimeseriesResponse | null;
 }
 
 export const HISTORY_CALENDAR_RANGE = "6mo";
@@ -73,6 +74,7 @@ export function UsageCalendar({
   showMetricToggle = true,
   showMeta = true,
   upstreamAccountId,
+  timeseriesResponse = null,
 }: UsageCalendarProps = {}) {
   const { t, locale } = useTranslation();
   const { themeMode } = useTheme();
@@ -85,7 +87,10 @@ export function UsageCalendar({
       ? { bucket: HISTORY_CALENDAR_BUCKET }
       : { bucket: HISTORY_CALENDAR_BUCKET, upstreamAccountId },
   );
-  const skeletonMode = isLoading && !data;
+  const resolvedData = timeseriesResponse ?? data;
+  const resolvedLoading = timeseriesResponse == null ? isLoading : false;
+  const resolvedError = timeseriesResponse == null ? error : null;
+  const skeletonMode = resolvedLoading && !resolvedData;
   const [blockSize, setBlockSize] = useState(DEFAULT_BLOCK_SIZE);
   const containerRef = useRef<HTMLDivElement>(null);
   const [tooltip, setTooltip] = useState<CalendarTooltipState | null>(null);
@@ -153,7 +158,10 @@ export function UsageCalendar({
     [countUnit, currencyFormatter, metric, numberFormatter, localeTag],
   );
 
-  const calendarData = useMemo(() => transformTimeseriesToActivities(data, metric), [data, metric]);
+  const calendarData = useMemo(
+    () => transformTimeseriesToActivities(resolvedData, metric),
+    [metric, resolvedData],
+  );
 
   // Minimum width to keep blocks at least DEFAULT_BLOCK_SIZE so vertical size feels balanced
   const minContainerWidth = useMemo(() => {
@@ -300,8 +308,8 @@ export function UsageCalendar({
 
       {showHeader ? <div className="panel-divider my-1 opacity-40" /> : null}
 
-      {error ? (
-        <Alert variant="error">{error}</Alert>
+      {resolvedError ? (
+        <Alert variant="error">{resolvedError}</Alert>
       ) : (
         <div className="grid gap-3">
           <div className="min-w-0">

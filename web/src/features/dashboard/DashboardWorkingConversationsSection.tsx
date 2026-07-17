@@ -133,6 +133,10 @@ interface DashboardWorkingConversationsSectionProps {
   onUpstreamAccountPolicyChanged?: () => void;
 }
 
+function readBrowserOfflineState() {
+  return typeof navigator === "undefined" ? false : !navigator.onLine;
+}
+
 export interface DashboardWorkingConversationSelection {
   conversationSequenceId: string;
   promptCacheKey: string;
@@ -3827,6 +3831,7 @@ export function DashboardWorkingConversationsSection({
   const [viewportWidth, setViewportWidth] = useState(() =>
     typeof window === "undefined" ? 0 : window.innerWidth,
   );
+  const [isBrowserOffline, setIsBrowserOffline] = useState(readBrowserOfflineState);
   const [gridElement, setGridElement] = useState<HTMLDivElement | null>(null);
   const [scrollMargin, setScrollMargin] = useState(0);
   const visibleAnchorRef = useRef<{
@@ -3987,6 +3992,25 @@ export function DashboardWorkingConversationsSection({
       upstreamAccountActivity != null ||
       showUpstreamAccountActivityLoading ||
       upstreamAccountActivityEnabled);
+  const showWorkingConversationsOfflineState =
+    activeView === "conversations" && isBrowserOffline && cards.length === 0;
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsBrowserOffline(false);
+    };
+    const handleOffline = () => {
+      setIsBrowserOffline(true);
+    };
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
   useEffect(() => {
     if (!shouldReserveUpstreamAccountRefreshChip || upstreamAccounts.length === 0) {
       clearUpstreamAccountRefreshChipTimers();
@@ -4442,14 +4466,37 @@ export function DashboardWorkingConversationsSection({
           </>
         ) : null}
 
-        {activeView === "conversations" && isLoading && cards.length === 0 ? (
+        {showWorkingConversationsOfflineState ? (
+          <Alert
+            variant="warning"
+            className="border-warning/35 bg-warning/10 text-base-content"
+            data-testid="dashboard-working-conversations-offline"
+          >
+            <div className="space-y-1">
+              <span className="font-semibold">
+                {t("dashboard.workingConversations.offlineTitle")}
+              </span>
+              <p className="text-sm text-base-content/80">
+                {t("dashboard.workingConversations.offlineDescription")}
+              </p>
+            </div>
+          </Alert>
+        ) : null}
+
+        {activeView === "conversations" &&
+        !showWorkingConversationsOfflineState &&
+        isLoading &&
+        cards.length === 0 ? (
           <div className="flex min-h-44 items-center justify-center gap-3 rounded-2xl border border-dashed border-base-300/75 bg-base-100/45">
             <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
             <span className="text-sm text-base-content/70">{t("chart.loadingDetailed")}</span>
           </div>
         ) : null}
 
-        {activeView === "conversations" && !isLoading && cards.length === 0 ? (
+        {activeView === "conversations" &&
+        !showWorkingConversationsOfflineState &&
+        !isLoading &&
+        cards.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-base-300/75 bg-base-100/45 px-5 py-8 text-sm text-base-content/65">
             {t("dashboard.workingConversations.empty")}
           </div>

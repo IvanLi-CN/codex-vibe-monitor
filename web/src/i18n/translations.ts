@@ -1765,6 +1765,14 @@ const baseTranslations = {
       "5-minute mean speed · current bucket updates live",
     "dashboard.activityOverview.networkRefreshing": "Refreshing",
     "dashboard.activityOverview.rangeToggleAria": "Switch activity range",
+    "dashboard.activityOverview.snapshotBannerTitle": "Offline snapshot",
+    "dashboard.activityOverview.snapshotBannerDescription":
+      "Showing the latest cached overview from {{cachedAt}}. Historical metrics stay readable offline, but live traffic and edits resume only after reconnect.",
+    "dashboard.activityOverview.snapshotReadyRanges": "{{count}} / {{total}} ranges cached",
+    "dashboard.activityOverview.snapshotCachedAtUnknown": "an earlier sync",
+    "dashboard.activityOverview.snapshotNotReadyTitle": "This range is not cached yet",
+    "dashboard.activityOverview.snapshotNotReadyDescription":
+      "Reconnect once while this range is visible so the overview can be saved for offline reading.",
     "dashboard.section.liveRefreshing": "Live refresh",
     "dashboard.section.workingConversationsTitle": "Current",
     "dashboard.section.workingConversationsSubtitle":
@@ -1791,6 +1799,9 @@ const baseTranslations = {
     "dashboard.upstreamAccounts.channelName": "Channel {{name}}",
     "dashboard.workingConversations.empty":
       "No working conversations match the last 5 minutes or active in-flight window.",
+    "dashboard.workingConversations.offlineTitle": "Working conversations are unavailable offline",
+    "dashboard.workingConversations.offlineDescription":
+      "This section depends on live SSE snapshots and is not cached for offline use. Reconnect to resume current conversation monitoring.",
     "dashboard.workingConversations.sequenceLabel": "Conversation",
     "dashboard.workingConversations.promptCacheKeyLabel": "Prompt cache key",
     "dashboard.workingConversations.currentInvocation": "Current invocation",
@@ -4142,6 +4153,14 @@ const baseTranslations = {
     "dashboard.activityOverview.networkLiveNote": "5 分钟均值网速，当前桶实时更新",
     "dashboard.activityOverview.networkRefreshing": "刷新中",
     "dashboard.activityOverview.rangeToggleAria": "时间范围切换",
+    "dashboard.activityOverview.snapshotBannerTitle": "离线快照",
+    "dashboard.activityOverview.snapshotBannerDescription":
+      "当前展示的是 {{cachedAt}} 保存的最近一次概览缓存。离线时仍可查看历史指标，但实时流量和编辑能力要等重新联网后才会恢复。",
+    "dashboard.activityOverview.snapshotReadyRanges": "已缓存 {{count}} / {{total}} 个范围",
+    "dashboard.activityOverview.snapshotCachedAtUnknown": "较早的一次同步",
+    "dashboard.activityOverview.snapshotNotReadyTitle": "这个范围还没有离线缓存",
+    "dashboard.activityOverview.snapshotNotReadyDescription":
+      "请在联网状态下至少打开一次当前范围，概览才会被保存下来供离线查看。",
     "dashboard.section.liveRefreshing": "实时刷新",
     "dashboard.section.workingConversationsTitle": "当前",
     "dashboard.section.workingConversationsSubtitle":
@@ -4167,6 +4186,9 @@ const baseTranslations = {
     "dashboard.upstreamAccounts.channelName": "渠道 {{name}}",
     "dashboard.workingConversations.empty":
       "最近 5 分钟内暂无终态调用，且当前也没有运行中 / 排队中的对话。",
+    "dashboard.workingConversations.offlineTitle": "离线时无法读取 working conversations",
+    "dashboard.workingConversations.offlineDescription":
+      "这个区域依赖在线 SSE 快照，不会做离线缓存；重新联网后才会恢复当前对话监控。",
     "dashboard.workingConversations.sequenceLabel": "对话序列",
     "dashboard.workingConversations.promptCacheKeyLabel": "Prompt Cache Key",
     "dashboard.workingConversations.currentInvocation": "当前调用",

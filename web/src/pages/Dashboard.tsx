@@ -13,6 +13,7 @@ import {
 } from "../features/dashboard/dashboardActivityRange";
 import { PromptCacheConversationHistoryDrawer } from "../features/prompt-cache/PromptCacheConversationTable";
 import { useCompactViewport } from "../hooks/useCompactViewport";
+import useDashboardOverviewSnapshotRuntime from "../hooks/useDashboardOverviewSnapshotRuntime";
 import { useDashboardActivitySnapshot } from "../hooks/useDashboardUpstreamAccountActivity";
 import { useDashboardWorkingConversations } from "../hooks/useDashboardWorkingConversations";
 import { usePromptCacheConversationRoute } from "../hooks/usePromptCacheConversationRoute";
@@ -61,6 +62,7 @@ export default function DashboardPage() {
     setRefreshTargetCount,
   } = useDashboardWorkingConversations();
   const dashboardActivityEnabled = activeRange !== "usage";
+  const overviewSnapshotRuntime = useDashboardOverviewSnapshotRuntime(activeRange);
   const {
     data: dashboardActivity,
     isLoading: dashboardActivityLoading,
@@ -182,6 +184,8 @@ export default function DashboardPage() {
         dashboardActivity={dashboardActivity}
         dashboardActivityLoading={dashboardActivityLoading}
         dashboardActivityError={dashboardActivityError}
+        snapshotStatus={overviewSnapshotRuntime.status}
+        snapshotBundle={overviewSnapshotRuntime.bundle}
       />
       <DashboardPerformanceDiagnostics />
 

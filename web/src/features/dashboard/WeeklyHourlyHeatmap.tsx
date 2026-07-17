@@ -4,7 +4,7 @@ import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segm
 import { useTimeseries } from "../../hooks/useTimeseries";
 import type { TranslationKey } from "../../i18n";
 import { useTranslation } from "../../i18n";
-import type { TimeseriesPoint } from "../../lib/api";
+import type { TimeseriesPoint, TimeseriesResponse } from "../../lib/api";
 import { heatmapLevels, metricAccent } from "../../lib/chartTheme";
 import { formatTokensShort } from "../../lib/numberFormatters";
 import { useTheme } from "../../theme";
@@ -30,6 +30,7 @@ export interface WeeklyHourlyHeatmapProps {
   showHeader?: boolean;
   showSurface?: boolean;
   upstreamAccountId?: number;
+  timeseriesResponse?: TimeseriesResponse | null;
 }
 
 function parseDateTimeParts(value: string) {
@@ -107,6 +108,7 @@ export function WeeklyHourlyHeatmap({
   showHeader = true,
   showSurface = true,
   upstreamAccountId,
+  timeseriesResponse = null,
 }: WeeklyHourlyHeatmapProps) {
   const { t, locale } = useTranslation();
   const { themeMode } = useTheme();
@@ -116,6 +118,9 @@ export function WeeklyHourlyHeatmap({
     "7d",
     upstreamAccountId == null ? { bucket: "1h" } : { bucket: "1h", upstreamAccountId },
   );
+  const resolvedData = timeseriesResponse ?? data;
+  const resolvedLoading = timeseriesResponse == null ? isLoading : false;
+  const resolvedError = timeseriesResponse == null ? error : null;
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
   const currencyFormatter = useMemo(
@@ -129,7 +134,10 @@ export function WeeklyHourlyHeatmap({
     [t],
   );
 
-  const grid = useMemo(() => compute7x24(data?.points ?? [], metric), [data?.points, metric]);
+  const grid = useMemo(
+    () => compute7x24(resolvedData?.points ?? [], metric),
+    [metric, resolvedData?.points],
+  );
   const levelPalette = useMemo(() => heatmapLevels(metric, themeMode), [metric, themeMode]);
 
   const formatValue = (value: number) => {
@@ -179,8 +187,8 @@ export function WeeklyHourlyHeatmap({
         </div>
       )}
 
-      {error ? (
-        <Alert variant="error">{error}</Alert>
+      {resolvedError ? (
+        <Alert variant="error">{resolvedError}</Alert>
       ) : grid.days.length > 0 ? (
         <div className="w-full overflow-x-auto no-scrollbar">
           <div className="flex justify-center">
@@ -255,7 +263,7 @@ export function WeeklyHourlyHeatmap({
             </div>
           </div>
         </div>
-      ) : isLoading ? (
+      ) : resolvedLoading ? (
         <div className="h-40 w-full animate-pulse rounded-xl border border-base-300/70 bg-base-200/55" />
       ) : (
         <div className="text-base-content/70">{noDataText}</div>
