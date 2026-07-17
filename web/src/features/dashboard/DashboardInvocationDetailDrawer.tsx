@@ -88,6 +88,7 @@ export function DashboardInvocationDetailDrawer({
   invocationId,
   selection,
   onClose,
+  onOpenUpstreamAccount,
 }: DashboardInvocationDetailDrawerProps) {
   const { t, locale } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
@@ -244,7 +245,11 @@ export function DashboardInvocationDetailDrawer({
         </div>
       ) : (
         <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-4">
-          <InvocationWorkflowDetailPanel record={fullRecord} size="default" />
+          <InvocationWorkflowDetailPanel
+            record={fullRecord}
+            size="default"
+            onOpenUpstreamAccount={onOpenUpstreamAccount}
+          />
         </div>
       )}
     </AccountDetailDrawerShell>

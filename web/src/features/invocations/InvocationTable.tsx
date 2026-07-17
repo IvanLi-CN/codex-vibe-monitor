@@ -860,6 +860,7 @@ export function InvocationTable({
                       record={row.record}
                       focusedAttemptId={isHighlighted ? (scrollTarget?.attemptId ?? null) : null}
                       size="compact"
+                      onOpenUpstreamAccount={onOpenUpstreamAccount}
                     />
                   </div>
                 )}
@@ -1198,6 +1199,7 @@ export function InvocationTable({
                                 isHighlighted ? (scrollTarget?.attemptId ?? null) : null
                               }
                               size="default"
+                              onOpenUpstreamAccount={onOpenUpstreamAccount}
                             />
                           </div>
                         </td>

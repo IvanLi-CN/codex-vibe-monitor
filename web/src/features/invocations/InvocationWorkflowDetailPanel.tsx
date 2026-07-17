@@ -45,6 +45,7 @@ interface InvocationWorkflowDetailPanelProps {
   record: ApiInvocation;
   focusedAttemptId?: string | null;
   size?: DetailPanelSize;
+  onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
 }
 
 const FALLBACK_CELL = "—";
@@ -785,15 +786,16 @@ function SummaryRows({
     label: string;
     value: string;
     variant?: "default" | "secondary" | "success" | "warning" | "error";
+    action?: {
+      title: string;
+      onClick: () => void;
+    };
   }>;
 }) {
   return (
     <dl className="divide-y divide-base-300/62">
       {rows.map((row) => (
-        <div
-          key={`${row.label}-${row.value}`}
-          className="flex items-start justify-between gap-4 py-3"
-        >
+        <div key={row.label} className="flex items-start justify-between gap-4 py-3">
           <dt className="text-[11px] font-medium text-base-content/58">{row.label}</dt>
           <dd
             className={cn(
@@ -804,7 +806,18 @@ function SummaryRows({
               row.variant === "default" && "text-info",
             )}
           >
-            <span className="break-all">{row.value}</span>
+            {row.action ? (
+              <button
+                type="button"
+                title={row.action.title}
+                className="break-all text-right underline decoration-dotted underline-offset-2 transition hover:text-primary"
+                onClick={row.action.onClick}
+              >
+                {row.value}
+              </button>
+            ) : (
+              <span className="break-all">{row.value}</span>
+            )}
           </dd>
         </div>
       ))}
@@ -1794,6 +1807,7 @@ export function InvocationWorkflowDetailPanel({
   record,
   focusedAttemptId = null,
   size = "default",
+  onOpenUpstreamAccount,
 }: InvocationWorkflowDetailPanelProps) {
   const { locale } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
@@ -1951,15 +1965,26 @@ export function InvocationWorkflowDetailPanel({
   const finalStatusRaw =
     hero.finalStatus ?? resolveInvocationDisplayStatus(record) ?? record.status ?? FALLBACK_CELL;
   const finalStatusMeta = resolveStatusMeta(finalStatusRaw, isZh);
+  const finalAccountLabel =
+    formatOptionalText(hero.upstreamAccountName ?? record.upstreamAccountName) !== FALLBACK_CELL
+      ? formatOptionalText(hero.upstreamAccountName ?? record.upstreamAccountName)
+      : typeof (hero.upstreamAccountId ?? record.upstreamAccountId) === "number"
+        ? `#${hero.upstreamAccountId ?? record.upstreamAccountId}`
+        : FALLBACK_CELL;
+  const finalAccountId = hero.upstreamAccountId ?? record.upstreamAccountId;
   const summaryRows = [
     {
       label: isZh ? "最终账号" : "Final Account",
-      value:
-        formatOptionalText(hero.upstreamAccountName ?? record.upstreamAccountName) !== FALLBACK_CELL
-          ? formatOptionalText(hero.upstreamAccountName ?? record.upstreamAccountName)
-          : typeof (hero.upstreamAccountId ?? record.upstreamAccountId) === "number"
-            ? `#${hero.upstreamAccountId ?? record.upstreamAccountId}`
-            : FALLBACK_CELL,
+      value: finalAccountLabel,
+      action:
+        onOpenUpstreamAccount &&
+        typeof finalAccountId === "number" &&
+        finalAccountLabel !== FALLBACK_CELL
+          ? {
+              title: finalAccountLabel,
+              onClick: () => onOpenUpstreamAccount(finalAccountId, finalAccountLabel),
+            }
+          : undefined,
     },
     {
       label: isZh ? "下游状态" : "Downstream Status",
