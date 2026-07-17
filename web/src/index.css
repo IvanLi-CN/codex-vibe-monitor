@@ -594,6 +594,41 @@ body {
     @apply flex flex-col p-5;
   }
 
+  .dashboard-floating-action-shell {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: max(1rem, calc(env(safe-area-inset-bottom) + 0.75rem));
+    z-index: 72;
+    display: flex;
+    justify-content: center;
+    padding-inline: 0.75rem;
+    pointer-events: none;
+  }
+
+  .dashboard-floating-action-panel {
+    pointer-events: auto;
+    width: 100%;
+    max-width: 46rem;
+    border: 1px solid var(--app-surface-border);
+    border-radius: var(--radius-box);
+    background: linear-gradient(
+      180deg,
+      oklch(var(--color-base-100) / 0.95),
+      oklch(var(--color-base-100) / 0.9)
+    );
+    box-shadow:
+      0 24px 60px rgba(15, 23, 42, 0.18),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(18px);
+  }
+
+  [data-theme="vibe-dark"] .dashboard-floating-action-panel {
+    box-shadow:
+      0 28px 72px rgba(2, 6, 23, 0.48),
+      inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+
   /* Compact pages use one page gutter. Panels become structural wrappers so
      nested surfaces do not consume the working width before data begins. */
   @media (max-width: 768px) {
@@ -607,6 +642,11 @@ body {
 
     .surface-panel-body {
       padding: 0;
+    }
+
+    .dashboard-floating-action-shell {
+      bottom: max(0.5rem, calc(env(safe-area-inset-bottom) + 0.5rem));
+      padding-inline: 0.5rem;
     }
 
     .mobile-flat-surface {

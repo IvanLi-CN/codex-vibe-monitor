@@ -1342,7 +1342,9 @@ pub(crate) async fn reserve_test_pool_routing_account(
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
-        image_tool_capability: ImageToolCapability::Unknown,
+        response_endpoint_capability: CapabilitySupport::Unknown,
+        image_endpoint_capability: CapabilitySupport::Unknown,
+        response_image_tool_capability: CapabilitySupport::Unknown,
     };
     reserve_pool_routing_account(state.as_ref(), reservation_key, &account);
 }

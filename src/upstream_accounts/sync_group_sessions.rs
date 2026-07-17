@@ -749,6 +749,23 @@ pub(crate) fn build_compact_support_state(row: &UpstreamAccountRow) -> CompactSu
     }
 }
 
+pub(crate) fn build_capability_state(
+    observed_value: Option<&str>,
+    observed_at: Option<&String>,
+    reason: Option<&String>,
+    override_value: Option<&str>,
+) -> UpstreamCapabilityState {
+    let observed = decode_capability_support(observed_value);
+    let override_value = decode_capability_override(override_value);
+    UpstreamCapabilityState {
+        observed,
+        override_value,
+        effective: effective_capability_support(observed, override_value),
+        observed_at: observed_at.cloned(),
+        reason: reason.cloned(),
+    }
+}
+
 pub(crate) fn build_action_event_from_row(
     row: &UpstreamAccountActionEventRow,
 ) -> UpstreamAccountActionEvent {

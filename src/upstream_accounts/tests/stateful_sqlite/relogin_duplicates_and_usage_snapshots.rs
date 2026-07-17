@@ -1511,6 +1511,7 @@ async fn update_uses_latest_sample_plan_type_for_current_mixed_plan_same_name_ex
                 local_limit_unit: None,
                 tag_ids: None,
                 routing_rule: None,
+                ..UpdateUpstreamAccountRequest::default()
             },
         )
         .await
@@ -1568,6 +1569,7 @@ async fn update_account_preserves_system_tags_when_empty_tag_ids_are_sent() {
                 local_limit_unit: None,
                 tag_ids: Some(vec![]),
                 routing_rule: None,
+                ..UpdateUpstreamAccountRequest::default()
             },
         )
         .await

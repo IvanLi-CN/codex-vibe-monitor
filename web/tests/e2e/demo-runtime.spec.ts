@@ -58,8 +58,17 @@ test.describe("Web Demo runtime", () => {
   for (const scene of scenes) {
     test(`resolves every production route in ${scene}`, async ({ page }) => {
       for (const route of allRoutes) {
-        await page.goto(routeWithScene(route.path, scene), { waitUntil: "domcontentloaded" });
-        await expectDemoShell(page, route.expectedPath);
+        const routePage = route === allRoutes[0] ? page : await page.context().newPage();
+        try {
+          await routePage.goto(routeWithScene(route.path, scene), {
+            waitUntil: "domcontentloaded",
+          });
+          await expectDemoShell(routePage, route.expectedPath);
+        } finally {
+          if (routePage !== page) {
+            await routePage.close();
+          }
+        }
       }
     });
   }

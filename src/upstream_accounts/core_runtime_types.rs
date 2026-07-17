@@ -1188,14 +1188,14 @@ impl RequestCompressionLevelPreset {
 
 #[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ImageToolCapability {
+pub(crate) enum CapabilitySupport {
     Supported,
     Unsupported,
     #[default]
     Unknown,
 }
 
-impl ImageToolCapability {
+impl CapabilitySupport {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Supported => "supported",
@@ -1211,6 +1211,17 @@ impl ImageToolCapability {
             _ => Self::Unknown,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamCapabilityState {
+    pub(crate) observed: CapabilitySupport,
+    #[serde(rename = "override")]
+    pub(crate) override_value: Option<CapabilitySupport>,
+    pub(crate) effective: CapabilitySupport,
+    pub(crate) observed_at: Option<String>,
+    pub(crate) reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1238,6 +1249,40 @@ impl ImageIntent {
             "direct_image" => Self::DirectImage,
             "no" => Self::No,
             _ => Self::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RequestCapabilityRequirements {
+    pub(crate) response_endpoint: bool,
+    pub(crate) image_endpoint: bool,
+    pub(crate) response_image_tool: bool,
+}
+
+impl RequestCapabilityRequirements {
+    pub(crate) fn from_image_intent(image_intent: ImageIntent) -> Self {
+        match image_intent {
+            ImageIntent::DirectImage => Self::direct_image_endpoint(),
+            ImageIntent::Yes | ImageIntent::No | ImageIntent::Unknown => {
+                Self::response_family(image_intent)
+            }
+        }
+    }
+
+    pub(crate) fn direct_image_endpoint() -> Self {
+        Self {
+            response_endpoint: false,
+            image_endpoint: true,
+            response_image_tool: false,
+        }
+    }
+
+    pub(crate) fn response_family(image_intent: ImageIntent) -> Self {
+        Self {
+            response_endpoint: true,
+            image_endpoint: false,
+            response_image_tool: matches!(image_intent, ImageIntent::Yes),
         }
     }
 }
@@ -1614,7 +1659,9 @@ pub(crate) struct UpstreamAccountSummary {
     pub(crate) duplicate_info: Option<DuplicateInfo>,
     pub(crate) tags: Vec<AccountTagSummary>,
     pub(crate) effective_routing_rule: EffectiveRoutingRule,
-    pub(crate) image_tool_capability: ImageToolCapability,
+    pub(crate) response_endpoint_capability: UpstreamCapabilityState,
+    pub(crate) image_endpoint_capability: UpstreamCapabilityState,
+    pub(crate) response_image_tool_capability: UpstreamCapabilityState,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2511,7 +2558,7 @@ pub(crate) struct ImportedOauthImportResponse {
     pub(crate) results: Vec<ImportedOauthImportResult>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateUpstreamAccountRequest {
     pub(crate) display_name: Option<String>,
@@ -2538,6 +2585,12 @@ pub(crate) struct UpdateUpstreamAccountRequest {
     pub(crate) local_secondary_limit: Option<f64>,
     pub(crate) local_limit_unit: Option<String>,
     pub(crate) tag_ids: Option<Vec<i64>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(crate) response_endpoint_capability_override: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(crate) image_endpoint_capability_override: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(crate) response_image_tool_capability_override: OptionalField<String>,
     pub(crate) routing_rule: Option<UpdateGroupAccountRoutingRuleRequest>,
 }
 

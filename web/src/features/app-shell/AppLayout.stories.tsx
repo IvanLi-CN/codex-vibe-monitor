@@ -1,11 +1,36 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { type ReactNode, useLayoutEffect, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { expect, userEvent, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import AccountPoolLayout from "../../pages/account-pool/AccountPoolLayout";
 import SystemLayout from "../../pages/system/SystemLayout";
 import { AppLayout } from "./AppLayout";
+
+type StorybookSseState = {
+  status: {
+    phase: "connecting" | "reconnecting" | "disabled";
+    downtimeMs: number;
+    nextRetryAt: number | null;
+    autoReconnect: boolean;
+  };
+  diagnostics: {
+    attempt: number;
+    reason: string;
+    activeTopics: string[];
+    resumeTopics: string[];
+    forcedSnapshotTopics: string[];
+    lastMessageAgeMs: number | null;
+    lastOpenAgeMs: number | null;
+    lastErrorAgeMs: number | null;
+    lastConnectionStartedAgeMs: number | null;
+    lastTerminalOutcome: string;
+  };
+};
+
+function ageToTimestamp(now: number, ageMs: number | null) {
+  return ageMs == null ? null : now - ageMs;
+}
 
 class MockEventSource implements EventTarget {
   static CONNECTING = 0;
@@ -142,114 +167,172 @@ function StorybookAppShellMock({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+function StorybookSseStateController({
+  children,
+  state,
+}: {
+  children: ReactNode;
+  state?: StorybookSseState;
+}) {
+  const [revision, setRevision] = useState(0);
+
+  useLayoutEffect(() => {
+    if (!state || typeof window === "undefined" || !window.__CVM_SSE__) {
+      return;
+    }
+
+    const now = Date.now();
+    const status = window.__CVM_SSE__.getCurrentSseStatus();
+    const diagnostics = window.__CVM_SSE__.getCurrentSseDiagnostics();
+    const previousStatus = { ...status };
+    const previousDiagnostics = {
+      ...diagnostics,
+      activeTopics: [...diagnostics.activeTopics],
+      resumeTopics: [...diagnostics.resumeTopics],
+      forcedSnapshotTopics: [...diagnostics.forcedSnapshotTopics],
+    };
+
+    Object.assign(status, state.status);
+    Object.assign(diagnostics, {
+      attempt: state.diagnostics.attempt,
+      reason: state.diagnostics.reason,
+      activeTopics: [...state.diagnostics.activeTopics],
+      resumeTopics: [...state.diagnostics.resumeTopics],
+      forcedSnapshotTopics: [...state.diagnostics.forcedSnapshotTopics],
+      lastMessageAt: ageToTimestamp(now, state.diagnostics.lastMessageAgeMs),
+      lastOpenAt: ageToTimestamp(now, state.diagnostics.lastOpenAgeMs),
+      lastErrorAt: ageToTimestamp(now, state.diagnostics.lastErrorAgeMs),
+      lastConnectionStartedAt: ageToTimestamp(now, state.diagnostics.lastConnectionStartedAgeMs),
+      lastTerminalOutcome: state.diagnostics.lastTerminalOutcome,
+    });
+
+    setRevision((current) => current + 1);
+
+    return () => {
+      Object.assign(status, previousStatus);
+      Object.assign(diagnostics, previousDiagnostics);
+    };
+  }, [state]);
+
+  return <div key={revision}>{children}</div>;
+}
+
 const meta = {
   title: "Shell/Layout/App Layout",
   component: AppLayout,
   tags: ["autodocs"],
   decorators: [
-    (Story) => (
+    (Story, context) => (
       <I18nProvider>
         <StorybookAppShellMock>
-          <MemoryRouter initialEntries={["/account-pool/upstream-accounts"]}>
-            <Routes>
-              <Route path="/" element={<Story />}>
-                <Route
-                  path="dashboard"
-                  element={
-                    <MockPage
-                      title="Dashboard overview"
-                      description="Global site layout preview with dashboard content mounted in the outlet."
-                    />
-                  }
-                />
-                <Route
-                  path="stats"
-                  element={
-                    <MockPage
-                      title="Stats workspace"
-                      description="The same app shell can host time-series analytics and quota summaries."
-                    />
-                  }
-                />
-                <Route
-                  path="live"
-                  element={
-                    <MockPage
-                      title="Live monitor"
-                      description="Realtime stream tables render inside the same site-wide shell."
-                    />
-                  }
-                />
-                <Route path="account-pool" element={<AccountPoolLayout />}>
+          <StorybookSseStateController
+            state={context.parameters.sseState as StorybookSseState | undefined}
+          >
+            <MemoryRouter
+              initialEntries={[
+                context.parameters.initialEntry ?? "/account-pool/upstream-accounts",
+              ]}
+            >
+              <Routes>
+                <Route path="/" element={<Story />}>
                   <Route
-                    path="upstream-accounts"
+                    path="dashboard"
                     element={
                       <MockPage
-                        title="Account Pool module active"
-                        description="This story shows the whole site shell while the account-pool module is the active top-level tab."
+                        title="Dashboard overview"
+                        description="Global site layout preview with dashboard content mounted in the outlet."
                       />
                     }
                   />
                   <Route
-                    path="groups"
+                    path="stats"
                     element={
                       <MockPage
-                        title="Account groups"
-                        description="Mobile navigation can jump directly into grouped account operations without rendering a second nav row."
+                        title="Stats workspace"
+                        description="The same app shell can host time-series analytics and quota summaries."
                       />
                     }
                   />
                   <Route
-                    path="maintenance-records"
+                    path="live"
                     element={
                       <MockPage
-                        title="Maintenance timeline"
-                        description="Maintenance history stays reachable from the shared hamburger menu on compact screens."
+                        title="Live monitor"
+                        description="Realtime stream tables render inside the same site-wide shell."
                       />
                     }
                   />
+                  <Route path="account-pool" element={<AccountPoolLayout />}>
+                    <Route
+                      path="upstream-accounts"
+                      element={
+                        <MockPage
+                          title="Account Pool module active"
+                          description="This story shows the whole site shell while the account-pool module is the active top-level tab."
+                        />
+                      }
+                    />
+                    <Route
+                      path="groups"
+                      element={
+                        <MockPage
+                          title="Account groups"
+                          description="Mobile navigation can jump directly into grouped account operations without rendering a second nav row."
+                        />
+                      }
+                    />
+                    <Route
+                      path="maintenance-records"
+                      element={
+                        <MockPage
+                          title="Maintenance timeline"
+                          description="Maintenance history stays reachable from the shared hamburger menu on compact screens."
+                        />
+                      }
+                    />
+                  </Route>
+                  <Route path="system" element={<SystemLayout />}>
+                    <Route
+                      path="status"
+                      element={
+                        <MockPage
+                          title="System workspace"
+                          description="The top-level system workspace hosts status, tasks, shared settings, and forward proxy operations."
+                        />
+                      }
+                    />
+                    <Route
+                      path="tasks"
+                      element={
+                        <MockPage
+                          title="Task activity"
+                          description="Task history remains reachable from the compact navigation drawer."
+                        />
+                      }
+                    />
+                    <Route
+                      path="settings"
+                      element={
+                        <MockPage
+                          title="System settings"
+                          description="Shared settings become a first-class compact-navigation destination."
+                        />
+                      }
+                    />
+                    <Route
+                      path="proxy"
+                      element={
+                        <MockPage
+                          title="Proxy operations"
+                          description="Forward proxy maintenance also routes through the unified mobile menu."
+                        />
+                      }
+                    />
+                  </Route>
                 </Route>
-                <Route path="system" element={<SystemLayout />}>
-                  <Route
-                    path="status"
-                    element={
-                      <MockPage
-                        title="System workspace"
-                        description="The top-level system workspace hosts status, tasks, shared settings, and forward proxy operations."
-                      />
-                    }
-                  />
-                  <Route
-                    path="tasks"
-                    element={
-                      <MockPage
-                        title="Task activity"
-                        description="Task history remains reachable from the compact navigation drawer."
-                      />
-                    }
-                  />
-                  <Route
-                    path="settings"
-                    element={
-                      <MockPage
-                        title="System settings"
-                        description="Shared settings become a first-class compact-navigation destination."
-                      />
-                    }
-                  />
-                  <Route
-                    path="proxy"
-                    element={
-                      <MockPage
-                        title="Proxy operations"
-                        description="Forward proxy maintenance also routes through the unified mobile menu."
-                      />
-                    }
-                  />
-                </Route>
-              </Route>
-            </Routes>
-          </MemoryRouter>
+              </Routes>
+            </MemoryRouter>
+          </StorybookSseStateController>
         </StorybookAppShellMock>
       </I18nProvider>
     ),
@@ -307,5 +390,55 @@ export const TabletNavigationMenu: Story = {
     await expect(documentScope.getByRole("link", { name: "设置" })).toBeVisible();
     await userEvent.click(documentScope.getByRole("link", { name: "设置" }));
     await expect(canvas.getByRole("heading", { name: "System settings" })).toBeVisible();
+  },
+};
+
+export const OfflineReconnectBanner: Story = {
+  parameters: {
+    initialEntry: "/dashboard",
+    sseState: {
+      status: {
+        phase: "reconnecting",
+        downtimeMs: 4 * 60 * 1000 + 39 * 1000,
+        nextRetryAt: Date.now() + 8_000,
+        autoReconnect: true,
+      },
+      diagnostics: {
+        attempt: 26,
+        reason: "manual",
+        activeTopics: [
+          "overview?t=day",
+          "overview-counters?t=day",
+          "timeseries?t=day",
+          "model-breakdown?t=day",
+          "tokens-breakdown?t=day",
+          "cost-breakdown?t=day",
+          "requests-breakdown?t=day",
+          "latency-breakdown?t=day",
+        ],
+        resumeTopics: [],
+        forcedSnapshotTopics: [
+          "overview?t=day",
+          "overview-counters?t=day",
+          "timeseries?t=day",
+          "model-breakdown?t=day",
+          "tokens-breakdown?t=day",
+          "cost-breakdown?t=day",
+          "requests-breakdown?t=day",
+          "latency-breakdown?t=day",
+        ],
+        lastMessageAgeMs: 4 * 60 * 1000 + 39 * 1000,
+        lastOpenAgeMs: 5 * 60 * 1000,
+        lastErrorAgeMs: 2_000,
+        lastConnectionStartedAgeMs: 1_000,
+        lastTerminalOutcome: "eventsource-error",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement.ownerDocument.body);
+    await expect(canvas.getByText("实时连接已中断")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "立即重连" })).toBeVisible();
+    await expect(canvas.getByTestId("app-sse-diagnostics")).toBeVisible();
   },
 };

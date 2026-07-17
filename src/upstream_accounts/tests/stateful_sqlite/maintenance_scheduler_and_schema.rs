@@ -339,56 +339,36 @@ fn test_effective_routing_rule(concurrency_limit: i64) -> EffectiveRoutingRule {
 }
 
 #[test]
-fn image_intent_routes_to_image_compatible_accounts() {
-    assert!(account_accepts_requested_image_intent(
-        ImageIntent::Yes,
-        ImageToolRewriteMode::KeepOriginal,
-        ImageToolCapability::Unknown,
+fn request_capabilities_route_by_three_independent_axes() {
+    assert!(account_accepts_request_capabilities(
+        RequestCapabilityRequirements::from_image_intent(ImageIntent::Yes),
+        CapabilitySupport::Unknown,
+        CapabilitySupport::Unsupported,
+        CapabilitySupport::Supported,
     ));
-    assert!(account_accepts_requested_image_intent(
-        ImageIntent::Yes,
-        ImageToolRewriteMode::KeepOriginal,
-        ImageToolCapability::Supported,
+    assert!(!account_accepts_request_capabilities(
+        RequestCapabilityRequirements::from_image_intent(ImageIntent::Yes),
+        CapabilitySupport::Supported,
+        CapabilitySupport::Supported,
+        CapabilitySupport::Unsupported,
     ));
-    assert!(!account_accepts_requested_image_intent(
-        ImageIntent::Yes,
-        ImageToolRewriteMode::KeepOriginal,
-        ImageToolCapability::Unsupported,
+    assert!(account_accepts_request_capabilities(
+        RequestCapabilityRequirements::from_image_intent(ImageIntent::DirectImage),
+        CapabilitySupport::Unsupported,
+        CapabilitySupport::Supported,
+        CapabilitySupport::Unsupported,
     ));
-    assert!(account_accepts_requested_image_intent(
-        ImageIntent::Yes,
-        ImageToolRewriteMode::FillMissing,
-        ImageToolCapability::Unsupported,
+    assert!(!account_accepts_request_capabilities(
+        RequestCapabilityRequirements::from_image_intent(ImageIntent::DirectImage),
+        CapabilitySupport::Supported,
+        CapabilitySupport::Unsupported,
+        CapabilitySupport::Supported,
     ));
-    assert!(account_accepts_requested_image_intent(
-        ImageIntent::Yes,
-        ImageToolRewriteMode::ForceAdd,
-        ImageToolCapability::Unsupported,
-    ));
-    assert!(!account_accepts_requested_image_intent(
-        ImageIntent::Yes,
-        ImageToolRewriteMode::ForceRemove,
-        ImageToolCapability::Supported,
-    ));
-    assert!(account_accepts_requested_image_intent(
-        ImageIntent::DirectImage,
-        ImageToolRewriteMode::ForceRemove,
-        ImageToolCapability::Supported,
-    ));
-    assert!(account_accepts_requested_image_intent(
-        ImageIntent::DirectImage,
-        ImageToolRewriteMode::ForceRemove,
-        ImageToolCapability::Unknown,
-    ));
-    assert!(!account_accepts_requested_image_intent(
-        ImageIntent::DirectImage,
-        ImageToolRewriteMode::ForceAdd,
-        ImageToolCapability::Unsupported,
-    ));
-    assert!(account_accepts_requested_image_intent(
-        ImageIntent::Unknown,
-        ImageToolRewriteMode::ForceRemove,
-        ImageToolCapability::Unsupported,
+    assert!(account_accepts_request_capabilities(
+        RequestCapabilityRequirements::from_image_intent(ImageIntent::Unknown),
+        CapabilitySupport::Supported,
+        CapabilitySupport::Unsupported,
+        CapabilitySupport::Unsupported,
     ));
 }
 
@@ -1528,6 +1508,7 @@ async fn maintenance_sync_does_not_block_unrelated_account_updates() {
                 local_limit_unit: None,
                 tag_ids: None,
                 routing_rule: None,
+                ..UpdateUpstreamAccountRequest::default()
             },
         )
         .await
@@ -1709,6 +1690,7 @@ async fn same_account_updates_wait_for_inflight_maintenance() {
                         local_limit_unit: None,
                         tag_ids: None,
                         routing_rule: None,
+                        ..UpdateUpstreamAccountRequest::default()
                     },
                 )
                 .await
@@ -4277,6 +4259,7 @@ async fn update_upstream_account_preserves_account_policy_when_routing_rule_is_m
                 local_limit_unit: None,
                 tag_ids: None,
                 routing_rule: None,
+                ..UpdateUpstreamAccountRequest::default()
             },
         )
         .await
@@ -4367,6 +4350,7 @@ async fn update_upstream_account_clears_individual_account_policy_override() {
                     status_change_reasons: None,
                     timeouts: None,
                 }),
+                ..UpdateUpstreamAccountRequest::default()
             },
         )
         .await
@@ -4457,6 +4441,7 @@ async fn update_upstream_account_patches_one_timeout_without_clearing_other_over
                         compact_stream_timeout_secs: OptionalField::Missing,
                     }),
                 }),
+                ..UpdateUpstreamAccountRequest::default()
             },
         )
         .await
@@ -4586,6 +4571,7 @@ async fn update_upstream_account_writes_positive_new_conversation_policy() {
                     status_change_reasons: None,
                     timeouts: None,
                 }),
+                ..UpdateUpstreamAccountRequest::default()
             },
         )
         .await
@@ -4662,6 +4648,7 @@ async fn update_upstream_account_preserves_priority_tier_when_omitted() {
                     status_change_reasons: None,
                     timeouts: None,
                 }),
+                ..UpdateUpstreamAccountRequest::default()
             },
         )
         .await
@@ -4721,6 +4708,7 @@ async fn update_upstream_account_accepts_no_new_priority_write() {
                     status_change_reasons: None,
                     timeouts: None,
                 }),
+                ..UpdateUpstreamAccountRequest::default()
             },
         )
         .await
@@ -4797,6 +4785,7 @@ async fn update_upstream_account_does_not_change_priority_tier_when_omitted() {
                     status_change_reasons: None,
                     timeouts: None,
                 }),
+                ..UpdateUpstreamAccountRequest::default()
             },
         )
         .await
@@ -4856,6 +4845,7 @@ async fn update_upstream_account_persists_empty_available_models_as_deny_all() {
                     status_change_reasons: None,
                     timeouts: None,
                 }),
+                ..UpdateUpstreamAccountRequest::default()
             },
         )
         .await
@@ -4913,6 +4903,7 @@ async fn update_upstream_account_rejects_invalid_routing_policy_enums() {
                     status_change_reasons: None,
                     timeouts: None,
                 }),
+                ..UpdateUpstreamAccountRequest::default()
             },
         )
         .await

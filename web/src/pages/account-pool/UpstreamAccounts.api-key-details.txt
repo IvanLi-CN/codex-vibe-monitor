@@ -41,7 +41,27 @@ describe("UpstreamAccountsPage api key details", () => {
         email: "gateway@example.com",
         chatgptAccountId: "org_should_not_render",
         chatgptUserId: "user_should_not_render",
-        imageToolCapability: "supported",
+        responseEndpointCapability: {
+          observed: "supported",
+          override: null,
+          effective: "supported",
+          observedAt: "2026-07-17T08:00:00Z",
+          reason: "response endpoint succeeded",
+        },
+        imageEndpointCapability: {
+          observed: "supported",
+          override: null,
+          effective: "supported",
+          observedAt: "2026-07-17T08:05:00Z",
+          reason: "image endpoint succeeded",
+        },
+        responseImageToolCapability: {
+          observed: "unsupported",
+          override: "supported",
+          effective: "supported",
+          observedAt: "2026-07-17T08:10:00Z",
+          reason: "manual override for responses image tools",
+        },
         maskedApiKey: "sk-gate••••",
         history: [],
         note: null,
@@ -81,6 +101,9 @@ describe("UpstreamAccountsPage api key details", () => {
     clickFirstRosterRow();
 
     const overviewText = document.body.textContent ?? "";
+    expect(overviewText).toMatch(/Response endpoint/i);
+    expect(overviewText).toMatch(/Image endpoint/i);
+    expect(overviewText).toMatch(/Response image-tool/i);
     expect(overviewText).not.toMatch(/Image tool capability/i);
     expect(overviewText).not.toMatch(/Account ID/i);
     expect(overviewText).not.toMatch(/User ID/i);

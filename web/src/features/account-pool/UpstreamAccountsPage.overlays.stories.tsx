@@ -143,7 +143,11 @@ export const DetailDrawerOverview: Story = {
       "aria-selected",
       "true",
     );
-    await expect(within(dialog).getByText(/图片能力|image capability/i)).toBeInTheDocument();
+    await expect(within(dialog).getByText(/Response 端点|response endpoint/i)).toBeInTheDocument();
+    await expect(within(dialog).getByText(/Image 端点|image endpoint/i)).toBeInTheDocument();
+    await expect(
+      within(dialog).getByText(/Response 图片工具|response image-tool/i),
+    ).toBeInTheDocument();
     await expect(
       within(dialog).getByText(/账号活动总览|account activity overview/i),
     ).toBeInTheDocument();
@@ -749,9 +753,11 @@ export const MissingWindowPlaceholders: Story = {
     const dialog = await documentScope.findByRole("dialog", {
       name: /Team key - missing weekly limit/i,
     });
+    await expect(within(dialog).getByText(/Response 端点|response endpoint/i)).toBeInTheDocument();
+    await expect(within(dialog).getByText(/Image 端点|image endpoint/i)).toBeInTheDocument();
     await expect(
-      within(dialog).queryByText(/图片工具能力|image tool capability/i),
-    ).not.toBeInTheDocument();
+      within(dialog).getByText(/Response 图片工具|response image-tool/i),
+    ).toBeInTheDocument();
     await expect(within(dialog).queryByText(/账号 ID|Account ID/i)).not.toBeInTheDocument();
     await expect(within(dialog).queryByText(/User ID/i)).not.toBeInTheDocument();
     await expect(within(dialog).queryByText(/5 小时窗口|5h window/i)).not.toBeInTheDocument();

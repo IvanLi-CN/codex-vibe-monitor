@@ -485,7 +485,9 @@ async fn pool_route_large_oauth_responses_file_backed_body_rewrites_and_replaces
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
-        image_tool_capability: ImageToolCapability::Unknown,
+        response_endpoint_capability: CapabilitySupport::Unknown,
+        image_endpoint_capability: CapabilitySupport::Unknown,
+        response_image_tool_capability: CapabilitySupport::Unknown,
     };
 
     let upstream = send_pool_request_with_failover(
@@ -959,7 +961,9 @@ async fn pool_route_oauth_responses_file_backed_body_above_rewrite_limit_stays_p
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
-        image_tool_capability: ImageToolCapability::Unknown,
+        response_endpoint_capability: CapabilitySupport::Unknown,
+        image_endpoint_capability: CapabilitySupport::Unknown,
+        response_image_tool_capability: CapabilitySupport::Unknown,
     };
 
     let upstream = send_pool_request_with_failover(
@@ -1094,7 +1098,9 @@ async fn pool_route_oauth_responses_compressed_file_backed_body_stays_passthroug
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
-        image_tool_capability: ImageToolCapability::Unknown,
+        response_endpoint_capability: CapabilitySupport::Unknown,
+        image_endpoint_capability: CapabilitySupport::Unknown,
+        response_image_tool_capability: CapabilitySupport::Unknown,
     };
 
     let upstream = send_pool_request_with_failover(
@@ -1406,7 +1412,9 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
-        image_tool_capability: ImageToolCapability::Unknown,
+        response_endpoint_capability: CapabilitySupport::Unknown,
+        image_endpoint_capability: CapabilitySupport::Unknown,
+        response_image_tool_capability: CapabilitySupport::Unknown,
     };
 
     assert_eq!(

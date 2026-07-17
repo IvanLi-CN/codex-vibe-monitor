@@ -132,7 +132,27 @@ pub(crate) fn test_summary_with_statuses(
                 compact_stream_timeout_secs: "root".to_string(),
             },
         },
-        image_tool_capability: ImageToolCapability::Unknown,
+        response_endpoint_capability: UpstreamCapabilityState {
+            observed: CapabilitySupport::Unknown,
+            override_value: None,
+            effective: CapabilitySupport::Unknown,
+            observed_at: None,
+            reason: None,
+        },
+        image_endpoint_capability: UpstreamCapabilityState {
+            observed: CapabilitySupport::Unknown,
+            override_value: None,
+            effective: CapabilitySupport::Unknown,
+            observed_at: None,
+            reason: None,
+        },
+        response_image_tool_capability: UpstreamCapabilityState {
+            observed: CapabilitySupport::Unknown,
+            override_value: None,
+            effective: CapabilitySupport::Unknown,
+            observed_at: None,
+            reason: None,
+        },
     }
 }
 
@@ -2848,6 +2868,7 @@ async fn update_upstream_account_persists_node_shunt_for_existing_multi_account_
             local_limit_unit: None,
             tag_ids: None,
             routing_rule: None,
+            ..UpdateUpstreamAccountRequest::default()
         }),
     )
     .await
@@ -3199,7 +3220,18 @@ async fn resolve_pool_account_upstream_base_url_only_overrides_api_key_accounts(
             compact_support_status: None,
             compact_support_observed_at: None,
             compact_support_reason: None,
-            image_tool_capability: None,
+            response_endpoint_capability: None,
+            response_endpoint_capability_observed_at: None,
+            response_endpoint_capability_reason: None,
+            policy_response_endpoint_capability_override: None,
+            image_endpoint_capability: None,
+            image_endpoint_capability_observed_at: None,
+            image_endpoint_capability_reason: None,
+            policy_image_endpoint_capability_override: None,
+            response_image_tool_capability: None,
+            response_image_tool_capability_observed_at: None,
+            response_image_tool_capability_reason: None,
+            policy_response_image_tool_capability_override: None,
             local_primary_limit: None,
             local_secondary_limit: None,
             local_limit_unit: None,

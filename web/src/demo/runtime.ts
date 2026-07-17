@@ -76,12 +76,21 @@ export function isEmbeddedDemoViewport(
 export async function initializeDemoRuntime(): Promise<void> {
   if (!isDemoRuntime()) return;
 
-  const [{ isCommonAssetRequest }, { demoModel }, { worker }] = await Promise.all([
+  const [
+    { isCommonAssetRequest },
+    { demoModel },
+    { worker },
+    { installDemoFetchFallback },
+    { handleDemoRequest },
+  ] = await Promise.all([
     import("msw"),
     import("./model"),
     import("./browser"),
+    import("./fallback"),
+    import("./handlers"),
   ]);
   demoModel.setScene(sceneFromLocation());
+  installDemoFetchFallback(handleDemoRequest);
   await worker.start({
     serviceWorker: {
       url: `${import.meta.env.BASE_URL}mockServiceWorker.js`,

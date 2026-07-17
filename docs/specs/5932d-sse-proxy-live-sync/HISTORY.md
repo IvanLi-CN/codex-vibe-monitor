@@ -2,6 +2,8 @@
 
 ## Key Decisions
 
+- 2026-07-17：手动“立即重连”被收紧为同页 fresh snapshot 恢复，而不是“复用旧 resume 的软重连”或整页刷新。前端现在为每次连接分配 `attempt` 和 `reason`，手动重连会对当前 active topics 全量 forced snapshot，并把同一轮证据同时暴露到黄条诊断文本与后端 `/events` 初始化日志。
+- 2026-07-17：浏览器 drill 暴露出一个更底层的缺口：等价 topic descriptor 在 React 重渲时会反复退订/重订，叠加 `eventsource-error` 的立即重连，能把 `attempt` 冲到数千次。现已把订阅稳定性下沉到 `useSubscriptionTopic` 的语义 key，并把失败恢复重新收紧为指数退避。
 - 2026-07-16：主应用常驻订阅从“`records` SSE + HTTP bootstrap/open-resync/reconcile + 页面私有 fallback”一次性切到单 `/events` 的 topic SSE 合同。覆盖范围内连接只消费 `snapshot/replay/live` envelope；恢复只走 replay 或新 snapshot，不再偷偷打 HTTP。
 - 2026-07-16：订阅 topic 被定义为权威读模型，而不是前端二次聚合状态机。`dashboard.activity`、working conversations、summary、timeseries、parallel-work、prompt-cache、quota、forward-proxy live 等当前态统一以后端 topic payload 为真相源。
 - 2026-07-16：replay 保留层明确为进程内有界窗口，不做跨重启持久化。服务重启、schema epoch 变化、topic 参数变化与 gap 超预算都统一降级为发送新 snapshot。

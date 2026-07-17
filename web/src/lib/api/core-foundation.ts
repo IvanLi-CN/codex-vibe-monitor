@@ -1581,6 +1581,47 @@ export type UpdatePromptCacheConversationBindingPayload =
       forwardProxyKeys?: string[] | null;
     };
 
+export type BulkPromptCacheConversationBindActionPayload =
+  | {
+      action: "bind";
+      bindingKind: "group";
+      groupName: string;
+      promptCacheKeys: string[];
+    }
+  | {
+      action: "bind";
+      bindingKind: "upstreamAccount";
+      upstreamAccountId: number;
+      promptCacheKeys: string[];
+    };
+
+export type BulkPromptCacheConversationBindingActionPayload =
+  | BulkPromptCacheConversationBindActionPayload
+  | {
+      action: "clearAndResetAffinity";
+      promptCacheKeys: string[];
+    }
+  | {
+      action: "setFastModeRewriteMode";
+      fastModeRewriteMode: PromptCacheConversationRewriteMode;
+      promptCacheKeys: string[];
+    };
+
+export interface BulkPromptCacheConversationBindingItemResponse {
+  promptCacheKey: string;
+  ok: boolean;
+  error: string | null;
+  binding: PromptCacheConversationBindingResponse | null;
+}
+
+export interface BulkPromptCacheConversationBindingActionResponse {
+  action: "bind" | "clearAndResetAffinity" | "setFastModeRewriteMode";
+  totalRequested: number;
+  totalSucceeded: number;
+  totalFailed: number;
+  items: BulkPromptCacheConversationBindingItemResponse[];
+}
+
 export type PromptCacheConversationSelectionMode = "count" | "activityWindow";
 export type PromptCacheConversationDetailLevel = "full" | "compact";
 
@@ -2782,6 +2823,54 @@ function normalizePromptCacheConversationBindingResponse(
   };
 }
 
+function normalizeBulkPromptCacheConversationBindingItemResponse(
+  raw: unknown,
+): BulkPromptCacheConversationBindingItemResponse | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const promptCacheKey =
+    typeof payload.promptCacheKey === "string" ? payload.promptCacheKey.trim() : "";
+  if (!promptCacheKey) return null;
+  const ok = payload.ok === true;
+  const binding =
+    payload.binding && typeof payload.binding === "object"
+      ? normalizePromptCacheConversationBindingResponse(
+          payload.binding as Record<string, unknown>,
+          promptCacheKey,
+        )
+      : null;
+  return {
+    promptCacheKey,
+    ok,
+    error: typeof payload.error === "string" && payload.error.trim() ? payload.error.trim() : null,
+    binding,
+  };
+}
+
+function normalizeBulkPromptCacheConversationBindingActionResponse(
+  raw: unknown,
+): BulkPromptCacheConversationBindingActionResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const action =
+    payload.action === "bind" ||
+    payload.action === "clearAndResetAffinity" ||
+    payload.action === "setFastModeRewriteMode"
+      ? payload.action
+      : null;
+  if (action == null) {
+    throw new Error("Request failed: invalid bulk prompt cache conversation binding payload");
+  }
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  return {
+    action,
+    totalRequested: normalizeFiniteNumber(payload.totalRequested) ?? 0,
+    totalSucceeded: normalizeFiniteNumber(payload.totalSucceeded) ?? 0,
+    totalFailed: normalizeFiniteNumber(payload.totalFailed) ?? 0,
+    items: items
+      .map(normalizeBulkPromptCacheConversationBindingItemResponse)
+      .filter((item): item is BulkPromptCacheConversationBindingItemResponse => item != null),
+  };
+}
+
 export function normalizeCompactSupportState(raw: unknown): CompactSupportState {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const status =
@@ -3363,7 +3452,12 @@ export async function validateForwardProxyCandidate(payload: {
 
 export async function fetchSummary(
   window: string,
-  options?: { limit?: number; timeZone?: string; upstreamAccountId?: number; signal?: AbortSignal },
+  options?: {
+    limit?: number;
+    timeZone?: string;
+    upstreamAccountId?: number;
+    signal?: AbortSignal;
+  },
 ) {
   const search = new URLSearchParams();
   search.set("window", window);
@@ -3524,6 +3618,21 @@ export async function updatePromptCacheConversationBinding(
     },
   );
   return normalizePromptCacheConversationBindingResponse(raw, promptCacheKey);
+}
+
+export async function bulkUpdatePromptCacheConversationBindings(
+  payload: BulkPromptCacheConversationBindingActionPayload,
+  signal?: AbortSignal,
+): Promise<BulkPromptCacheConversationBindingActionResponse> {
+  const raw = await fetchJson<unknown>(
+    "/api/stats/prompt-cache-conversation-bindings/bulk-actions",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+      signal,
+    },
+  );
+  return normalizeBulkPromptCacheConversationBindingActionResponse(raw);
 }
 
 export async function fetchPromptCacheConversationsPage(

@@ -689,6 +689,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     conversation_override: Option<&ConversationRoutingOverride>,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolution> {
+    let capability_requirements = RequestCapabilityRequirements::from_image_intent(image_intent);
     let now = Utc::now();
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
     let mut saw_rate_limited_candidate = false;
@@ -825,14 +826,26 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 if sticky_source_rule.as_ref().is_none_or(|rule| {
                     (bypass_requested_model_filter && !conversation_available_models_override)
                         || account_accepts_requested_model(requested_model, rule)
-                }) && account_accepts_requested_image_intent(
-                    image_intent,
-                    sticky_source_rule
-                        .as_ref()
-                        .map(|rule| rule.image_tool_rewrite_mode)
-                        .unwrap_or(ImageToolRewriteMode::KeepOriginal),
-                    crate::ImageToolCapability::from_str(
-                        row.image_tool_capability.as_deref().unwrap_or("unknown"),
+                }) && account_accepts_request_capabilities(
+                    capability_requirements,
+                    effective_capability_support(
+                        decode_capability_support(row.response_endpoint_capability.as_deref()),
+                        decode_capability_override(
+                            row.policy_response_endpoint_capability_override.as_deref(),
+                        ),
+                    ),
+                    effective_capability_support(
+                        decode_capability_support(row.image_endpoint_capability.as_deref()),
+                        decode_capability_override(
+                            row.policy_image_endpoint_capability_override.as_deref(),
+                        ),
+                    ),
+                    effective_capability_support(
+                        decode_capability_support(row.response_image_tool_capability.as_deref()),
+                        decode_capability_override(
+                            row.policy_response_image_tool_capability_override
+                                .as_deref(),
+                        ),
                     ),
                 ) {
                     sticky_route_still_reusable = true;
@@ -1117,11 +1130,26 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             saw_other_non_rate_limited_routing_candidate = true;
             continue;
         }
-        if !account_accepts_requested_image_intent(
-            image_intent,
-            effective_rule.image_tool_rewrite_mode,
-            crate::ImageToolCapability::from_str(
-                row.image_tool_capability.as_deref().unwrap_or("unknown"),
+        if !account_accepts_request_capabilities(
+            capability_requirements,
+            effective_capability_support(
+                decode_capability_support(row.response_endpoint_capability.as_deref()),
+                decode_capability_override(
+                    row.policy_response_endpoint_capability_override.as_deref(),
+                ),
+            ),
+            effective_capability_support(
+                decode_capability_support(row.image_endpoint_capability.as_deref()),
+                decode_capability_override(
+                    row.policy_image_endpoint_capability_override.as_deref(),
+                ),
+            ),
+            effective_capability_support(
+                decode_capability_support(row.response_image_tool_capability.as_deref()),
+                decode_capability_override(
+                    row.policy_response_image_tool_capability_override
+                        .as_deref(),
+                ),
             ),
         ) {
             saw_other_non_rate_limited_routing_candidate = true;

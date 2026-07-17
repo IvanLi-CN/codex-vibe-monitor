@@ -13,6 +13,9 @@
 - [x] Conversation runtime policy override columns and per-field PATCH semantics.
 - [x] Account-pool runtime routing constraints.
 - [x] Conversation overrides for upstream switching, FAST mode, image tool, available models, and a hard multi-node forward-proxy binding list.
+- [x] Dashboard conversations multi-select, including persistent selection mode and temporary `Cmd`/`Ctrl` modifier selection keyed by `promptCacheKey`.
+- [x] Dashboard floating bulk action bar with route binding, clear-and-reset affinity, FAST mode, and cancel-selection actions.
+- [x] Bulk Prompt Cache conversation binding API for bind, clear/reset affinity, and FAST mode writes with per-item result snapshots.
 - [x] Forced upstream account binding bypasses sticky cut-in/cut-out policy while preserving health, quota, guard, concurrency, route-key, and forward-proxy checks.
 - [x] Manual group binding bypasses sticky source cut-out policy while preserving target cut-in and target account eligibility.
 - [x] Automatic sticky escape for non-explicit routes after account-global consecutive transport/decode-shaped `upstream_stream_error` failures, while preserving explicit upstream-account operator overrides and group-only reselection semantics.
@@ -25,6 +28,13 @@
 - [x] Prompt Cache conversation history drawer loads retained invocation records in 50-row scroll pages instead of hydrating all pages on open.
 - [x] `InvocationTable` virtualizes desktop table rows and mobile cards, mounting only the active breakpoint layout.
 - [x] Unit, integration, Storybook, and visual evidence coverage.
+
+## Dashboard Bulk Actions Update
+
+- Dashboard conversation cards now support two selection entry points: explicit `选择模式` and temporary `Cmd`/`Ctrl` modifier selection that does not flip the page into persistent selection mode.
+- The bottom bulk action bar is viewport-anchored, theme-aligned, and clears only successful items after each action so failed items remain selected for retry.
+- The bulk route-bind dialog now uses compact dropdowns on a single row (`绑定到 / kind / target`) instead of the previous segmented switch, while destructive clear/reset remains a separate footer action.
+- `POST /api/stats/prompt-cache-conversation-bindings/bulk-actions` validates the shared action payload first, then executes each selected `promptCacheKey` through the same save/clear helpers as the single-conversation surface and returns a per-item binding snapshot for UI recovery.
 
 ## Multi-Proxy Binding Update
 
@@ -60,14 +70,21 @@
 - `cargo test resolver_prompt_cache_group_binding_reselects_within_group_after_recent_stream_errors -- --nocapture`
 - `cargo test resolver_explicit_prompt_cache_account_binding_keeps_operator_override_after_recent_stream_errors -- --nocapture`
 - `cargo test prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slots -- --nocapture`
+- `cargo test bulk_prompt_cache_conversation_bindings_bind_to_upstream_account_across_keys`
+- `cargo test bulk_prompt_cache_conversation_bindings_clear_and_reset_affinity_removes_all_affinity_rows`
+- `cargo test bulk_prompt_cache_conversation_bindings_set_fast_mode_rewrite_mode_preserves_binding_kind`
+- `cargo test bulk_prompt_cache_conversation_bindings_reject_invalid_target_without_partial_writes`
 - `cd web && bunx vitest run src/features/account-pool/EffectiveRoutingRuleCard.test.tsx src/features/prompt-cache/PromptCacheConversationTable.test.tsx`
 - `cd web && bunx vitest run src/lib/api.test.ts src/features/prompt-cache/PromptCacheConversationTable.test.tsx`
 - `cd web && bun run test -- --run PromptCacheConversationTable.test.tsx api.test.ts`
+- `cd web && bun run test -- DashboardWorkingConversationsSection.test.tsx`
 - `cd web && npm test -- --run PromptCacheConversationTable.test.tsx`
 - `cd web && bun run build`
 - `cd web && npm run build`
 - `cd web && bun run test-storybook -- --run PromptCacheConversationTable.stories.tsx DashboardWorkingConversationsSection.stories.tsx`
 - `cd web && bunx vitest run src/features/invocations/InvocationTable.test.tsx src/features/prompt-cache/PromptCacheConversationTable.test.tsx`
+- Web demo `attention` scene evidence: `./assets/dashboard-bulk-actions-selection-panel-web-demo.png` shows viewport-bottom bulk actions and modifier-key selection without entering persistent selection mode.
+- Web demo `attention` scene evidence: `./assets/dashboard-bulk-route-bind-dropdown-open-current.png` shows the compact one-line route-bind dialog while the route-bind kind dropdown is expanded with `分组` and `上游账号` choices.
 - Storybook `LargeHistoryVirtualizedDrawer` browser evidence: 15,000 total retained records, 50 initial drawer records, 100 after one scroll-triggered page, 28 mounted table rows, first page still visible at the nested table offset, account-binding combobox opened in about 169 ms.
 - Storybook `DrawerBindingAndTimeouts` mock evidence: one drawer shows binding controls plus the timeout subpanel, with mixed `conversation/account/root` source badges, collapsed inherited rows, expanded conversation-owned timeout rows, and editable timeout-only persistence when `bindingKind='none'`.
 - Storybook `DrawerBindingAndTimeouts` mock evidence: one drawer shows the “对话详情” title, conversation-level policy override rows with source badges, binding controls, and the timeout subpanel in the Settings tab.

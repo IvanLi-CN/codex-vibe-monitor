@@ -72,10 +72,6 @@ pub(crate) fn normalize_pool_attempt_group_name(group_name: Option<String>) -> O
         .filter(|value| !value.is_empty())
 }
 
-pub(crate) fn pool_attempt_image_intent_observes_capability(image_intent: ImageIntent) -> bool {
-    matches!(image_intent, ImageIntent::Yes | ImageIntent::DirectImage)
-}
-
 pub(crate) async fn resolve_pool_account_for_request_with_wait(
     state: &AppState,
     sticky_key: Option<&str>,
@@ -2455,23 +2451,67 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             "failed to record compact support observation"
                         );
                     }
-                    if pool_attempt_image_intent_observes_capability(
+                    let capability_requirements = RequestCapabilityRequirements::from_image_intent(
                         attempted_requested_image_intent,
-                    ) && classify_image_tool_capability_observation(
-                        status,
-                        Some(route_error_message.as_str()),
-                    ) == ImageToolCapability::Unsupported
-                        && let Err(observation_err) = record_image_tool_capability_observation(
+                    );
+                    if capability_requirements.response_endpoint
+                        && classify_response_endpoint_capability_observation(
+                            status,
+                            Some(route_error_message.as_str()),
+                        ) == CapabilitySupport::Unsupported
+                        && let Err(observation_err) = record_capability_observation(
                             &state.pool,
                             account.account_id,
-                            ImageToolCapability::Unsupported,
+                            UpstreamCapabilityAxis::ResponseEndpoint,
+                            CapabilitySupport::Unsupported,
+                            Some(route_error_message.as_str()),
                         )
                         .await
                     {
                         warn!(
                             account_id = account.account_id,
                             error = %observation_err,
-                            "failed to record image tool capability observation"
+                            "failed to record response endpoint capability observation"
+                        );
+                    }
+                    if capability_requirements.image_endpoint
+                        && classify_image_endpoint_capability_observation(
+                            status,
+                            Some(route_error_message.as_str()),
+                        ) == CapabilitySupport::Unsupported
+                        && let Err(observation_err) = record_capability_observation(
+                            &state.pool,
+                            account.account_id,
+                            UpstreamCapabilityAxis::ImageEndpoint,
+                            CapabilitySupport::Unsupported,
+                            Some(route_error_message.as_str()),
+                        )
+                        .await
+                    {
+                        warn!(
+                            account_id = account.account_id,
+                            error = %observation_err,
+                            "failed to record image endpoint capability observation"
+                        );
+                    }
+                    if capability_requirements.response_image_tool
+                        && classify_response_image_tool_capability_observation(
+                            status,
+                            Some(route_error_message.as_str()),
+                        ) == CapabilitySupport::Unsupported
+                        && let Err(observation_err) = record_capability_observation(
+                            &state.pool,
+                            account.account_id,
+                            UpstreamCapabilityAxis::ResponseImageTool,
+                            CapabilitySupport::Unsupported,
+                            Some(route_error_message.as_str()),
+                        )
+                        .await
+                    {
+                        warn!(
+                            account_id = account.account_id,
+                            error = %observation_err,
+                            "failed to record response image-tool capability observation"
                         );
                     }
 
