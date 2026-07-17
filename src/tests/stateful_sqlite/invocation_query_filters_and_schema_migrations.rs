@@ -4356,6 +4356,339 @@ async fn prompt_cache_group_binding_promotes_to_account_after_encrypted_owner_lo
 }
 
 #[tokio::test]
+async fn bulk_prompt_cache_conversation_bindings_bind_to_upstream_account_across_keys() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let group_name = "bulk-prompt-cache-bind-group";
+    ensure_test_group_binding(&state.pool, group_name, None).await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Bulk Prompt Cache Binding",
+        "sk-bulk-prompt-cache-binding",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_keys = ["bulk-bind-key-1", "bulk-bind-key-2"];
+
+    let payload: BulkPromptCacheConversationBindingsRequest = serde_json::from_value(json!({
+        "promptCacheKeys": ["  bulk-bind-key-1  ", "bulk-bind-key-2"],
+        "action": "bind",
+        "bindingKind": "upstreamAccount",
+        "upstreamAccountId": account_id,
+    }))
+    .expect("deserialize bulk bind payload");
+    let Json(response) =
+        post_bulk_prompt_cache_conversation_bindings(State(state.clone()), Json(payload))
+            .await
+            .expect("bulk bind should succeed");
+    assert_eq!(response.action, "bind");
+    assert_eq!(response.total_requested, prompt_cache_keys.len());
+    assert_eq!(response.total_succeeded, prompt_cache_keys.len());
+    assert_eq!(response.total_failed, 0);
+
+    for prompt_cache_key in prompt_cache_keys {
+        let item = response
+            .items
+            .iter()
+            .find(|candidate| candidate.prompt_cache_key == prompt_cache_key)
+            .expect("bulk bind response should include each key");
+        assert!(item.ok);
+        assert_eq!(item.error, None);
+        let binding = item
+            .binding
+            .as_ref()
+            .expect("successful bind should include binding snapshot");
+        assert_eq!(binding.binding_kind, "upstreamAccount");
+        assert_eq!(binding.upstream_account_id, Some(account_id));
+        assert_eq!(
+            binding.upstream_account_name.as_deref(),
+            Some("Bulk Prompt Cache Binding")
+        );
+
+        let binding_row = load_prompt_cache_conversation_binding_row(&state.pool, prompt_cache_key)
+            .await
+            .expect("bulk bind row should load")
+            .expect("bulk bind row should exist");
+        assert_eq!(
+            binding_row.binding_kind,
+            PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT
+        );
+        assert_eq!(binding_row.upstream_account_id, Some(account_id));
+
+        let sticky_account_id: i64 =
+            sqlx::query_scalar("SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1")
+                .bind(prompt_cache_key)
+                .fetch_one(&state.pool)
+                .await
+                .expect("bulk bind should align sticky route");
+        assert_eq!(sticky_account_id, account_id);
+    }
+}
+
+#[tokio::test]
+async fn bulk_prompt_cache_conversation_bindings_clear_and_reset_affinity_removes_all_affinity_rows()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
+    let group_name = "bulk-prompt-cache-clear-group";
+    ensure_test_group_binding(&state.pool, group_name, None).await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Bulk Prompt Cache Clear",
+        "sk-bulk-prompt-cache-clear",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "bulk-clear-affinity-key";
+
+    let binding_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "upstreamAccount",
+            "upstreamAccountId": account_id,
+        }))
+        .expect("deserialize setup binding payload");
+    let Json(setup_response) = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(binding_payload),
+    )
+    .await
+    .expect("setup account binding should succeed");
+    assert_eq!(setup_response.binding_kind, "upstreamAccount");
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, account_id)
+        .await
+        .expect("seed encrypted session owner");
+
+    let payload: BulkPromptCacheConversationBindingsRequest = serde_json::from_value(json!({
+        "promptCacheKeys": [prompt_cache_key],
+        "action": "clearAndResetAffinity",
+    }))
+    .expect("deserialize bulk clear payload");
+    let Json(response) =
+        post_bulk_prompt_cache_conversation_bindings(State(state.clone()), Json(payload))
+            .await
+            .expect("bulk clear should succeed");
+    assert_eq!(response.action, "clearAndResetAffinity");
+    assert_eq!(response.total_requested, 1);
+    assert_eq!(response.total_succeeded, 1);
+    assert_eq!(response.total_failed, 0);
+
+    let item = response
+        .items
+        .first()
+        .expect("bulk clear should return one item");
+    assert!(item.ok);
+    let binding = item
+        .binding
+        .as_ref()
+        .expect("successful clear should include binding snapshot");
+    assert_eq!(binding.binding_kind, "none");
+    assert!(!binding.has_encrypted_session_owner);
+    assert_eq!(binding.upstream_account_id, None);
+
+    let binding_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversation_bindings WHERE prompt_cache_key = ?1",
+    )
+    .bind(prompt_cache_key)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count binding rows after bulk clear");
+    assert_eq!(binding_count, 0);
+
+    let sticky_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_sticky_routes WHERE sticky_key = ?1")
+            .bind(prompt_cache_key)
+            .fetch_one(&state.pool)
+            .await
+            .expect("count sticky rows after bulk clear");
+    assert_eq!(sticky_count, 0);
+
+    let owner_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_encrypted_session_owners WHERE prompt_cache_key = ?1",
+    )
+    .bind(prompt_cache_key)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count encrypted owner rows after bulk clear");
+    assert_eq!(owner_count, 0);
+
+    let owner_row = load_prompt_cache_encrypted_session_owner_row(&state.pool, prompt_cache_key)
+        .await
+        .expect("load encrypted owner row after clear");
+    assert!(owner_row.is_none());
+
+    let effective_constraint = resolve_prompt_cache_effective_routing_constraint(
+        &state.pool,
+        Some(prompt_cache_key),
+        true,
+        true,
+    )
+    .await
+    .expect("resolve routing constraint after bulk clear");
+    assert!(effective_constraint.0.is_none());
+    assert!(!effective_constraint.1);
+}
+
+#[tokio::test]
+async fn bulk_prompt_cache_conversation_bindings_set_fast_mode_rewrite_mode_preserves_binding_kind()
+{
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let group_name = "bulk-prompt-cache-fast-mode-group";
+    ensure_test_group_binding(&state.pool, group_name, None).await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Bulk Prompt Cache Fast Mode",
+        "sk-bulk-prompt-cache-fast-mode",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key_none = "bulk-fast-mode-none-key";
+    let prompt_cache_key_account = "bulk-fast-mode-account-key";
+
+    let account_binding_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "upstreamAccount",
+            "upstreamAccountId": account_id,
+        }))
+        .expect("deserialize setup account binding payload");
+    let Json(account_binding_response) = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key_account.to_string()),
+        Json(account_binding_payload),
+    )
+    .await
+    .expect("setup account binding should succeed");
+    assert_eq!(account_binding_response.binding_kind, "upstreamAccount");
+
+    let payload: BulkPromptCacheConversationBindingsRequest = serde_json::from_value(json!({
+        "promptCacheKeys": [prompt_cache_key_none, prompt_cache_key_account],
+        "action": "setFastModeRewriteMode",
+        "fastModeRewriteMode": "fill_missing",
+    }))
+    .expect("deserialize bulk fast mode payload");
+    let Json(response) =
+        post_bulk_prompt_cache_conversation_bindings(State(state.clone()), Json(payload))
+            .await
+            .expect("bulk fast mode update should succeed");
+    assert_eq!(response.action, "setFastModeRewriteMode");
+    assert_eq!(response.total_requested, 2);
+    assert_eq!(response.total_succeeded, 2);
+    assert_eq!(response.total_failed, 0);
+
+    let none_item = response
+        .items
+        .iter()
+        .find(|candidate| candidate.prompt_cache_key == prompt_cache_key_none)
+        .expect("response should include unbound key");
+    assert!(none_item.ok);
+    let none_binding = none_item
+        .binding
+        .as_ref()
+        .expect("successful fast mode write should include binding snapshot");
+    assert_eq!(none_binding.binding_kind, "none");
+    assert_eq!(
+        none_binding.fast_mode_rewrite_mode,
+        Some(TagFastModeRewriteMode::FillMissing)
+    );
+
+    let account_item = response
+        .items
+        .iter()
+        .find(|candidate| candidate.prompt_cache_key == prompt_cache_key_account)
+        .expect("response should include bound key");
+    assert!(account_item.ok);
+    let account_binding = account_item
+        .binding
+        .as_ref()
+        .expect("successful fast mode write should include binding snapshot");
+    assert_eq!(account_binding.binding_kind, "upstreamAccount");
+    assert_eq!(account_binding.upstream_account_id, Some(account_id));
+    assert_eq!(
+        account_binding.fast_mode_rewrite_mode,
+        Some(TagFastModeRewriteMode::FillMissing)
+    );
+
+    let none_row = load_prompt_cache_conversation_binding_row(&state.pool, prompt_cache_key_none)
+        .await
+        .expect("load none-row after bulk fast mode")
+        .expect("none-row should exist after bulk fast mode");
+    assert_eq!(none_row.binding_kind, PROMPT_CACHE_BINDING_KIND_NONE);
+    assert_eq!(
+        none_row.fast_mode_rewrite_mode.as_deref(),
+        Some("fill_missing")
+    );
+
+    let account_row =
+        load_prompt_cache_conversation_binding_row(&state.pool, prompt_cache_key_account)
+            .await
+            .expect("load account-row after bulk fast mode")
+            .expect("account-row should exist after bulk fast mode");
+    assert_eq!(
+        account_row.binding_kind,
+        PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT
+    );
+    assert_eq!(account_row.upstream_account_id, Some(account_id));
+    assert_eq!(
+        account_row.fast_mode_rewrite_mode.as_deref(),
+        Some("fill_missing")
+    );
+}
+
+#[tokio::test]
+async fn bulk_prompt_cache_conversation_bindings_reject_invalid_target_without_partial_writes() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let prompt_cache_keys = ["bulk-invalid-target-a", "bulk-invalid-target-b"];
+    let payload: BulkPromptCacheConversationBindingsRequest = serde_json::from_value(json!({
+        "promptCacheKeys": prompt_cache_keys,
+        "action": "bind",
+        "bindingKind": "group",
+        "groupName": "missing-bulk-target-group",
+    }))
+    .expect("deserialize invalid bulk bind payload");
+
+    let err = post_bulk_prompt_cache_conversation_bindings(State(state.clone()), Json(payload))
+        .await
+        .expect_err("invalid target should fail before partial writes");
+    assert!(matches!(err, ApiError::BadRequest(_)));
+
+    for prompt_cache_key in prompt_cache_keys {
+        let binding_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM prompt_cache_conversation_bindings WHERE prompt_cache_key = ?1",
+        )
+        .bind(prompt_cache_key)
+        .fetch_one(&state.pool)
+        .await
+        .expect("count bindings after invalid bulk request");
+        assert_eq!(binding_count, 0);
+
+        let sticky_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM pool_sticky_routes WHERE sticky_key = ?1")
+                .bind(prompt_cache_key)
+                .fetch_one(&state.pool)
+                .await
+                .expect("count sticky routes after invalid bulk request");
+        assert_eq!(sticky_count, 0);
+    }
+}
+
+#[tokio::test]
 async fn prompt_cache_same_account_binding_newer_than_owner_keeps_owner_guard_active() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

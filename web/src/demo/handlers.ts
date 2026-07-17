@@ -1664,7 +1664,7 @@ function recordsToSuggestionCounts<T>(
   );
 }
 
-async function handleRequest(request: Request) {
+export async function handleDemoRequest(request: Request) {
   const url = new URL(request.url);
   const pathname = apiPathname(url.pathname);
   if (demoModel.snapshot.scene === "network-failure") return HttpResponse.error();
@@ -2188,4 +2188,4 @@ async function handleRequest(request: Request) {
   return json({ error: `Unhandled demo API route: ${pathname}` }, { status: 501 });
 }
 
-export const apiHandlers = [http.all(/\/api\/.*/, ({ request }) => handleRequest(request))];
+export const apiHandlers = [http.all(/\/api\/.*/, ({ request }) => handleDemoRequest(request))];

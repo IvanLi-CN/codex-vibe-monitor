@@ -12,6 +12,8 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - Add per-conversation request-path timeout overrides that can exist with or without a manual binding target.
 - Add per-conversation runtime policy overrides for upstream switching, FAST mode rewrite, image tool rewrite, available models, and a hard list of forward-proxy binding nodes.
 - Expose the binding on the Prompt Cache conversation detail drawer.
+- Add a Dashboard-scoped bulk workflow for route binding, affinity reset, and FAST mode rewrites across multiple Prompt Cache conversations.
+- Add conversation-card selection affordances on the Dashboard grid, including temporary modifier-key selection without entering persistent selection mode.
 - Apply the binding when the proxy can observe the same `promptCacheKey` before account-pool selection.
 - Keep group binding and upstream account binding mutually exclusive at both API and UI layers.
 
@@ -19,7 +21,7 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 
 - Do not change Prompt Cache conversation aggregation, historical invocation records, rollups, or SSE payload semantics.
 - Do not migrate existing sticky routes into conversation bindings.
-- Do not add tag-based, policy-based, or bulk binding workflows.
+- Do not add cross-page, cross-filter, or long-lived bulk-binding state beyond the current Dashboard conversation grid.
 - Do not change account-pool group, tag, or policy inheritance semantics.
 - Do not make tags participate in timeout inheritance or timeout source display.
 - Do not add arbitrary proxy URL input; conversation proxy override selects existing forward-proxy binding nodes, including direct.
@@ -33,6 +35,13 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - `group` requires a non-empty existing group with at least one upstream account.
 - `upstream_account` requires an existing account that can participate in account-pool routing.
 - API payloads that try to set both `groupName` and `upstreamAccountId` are rejected.
+- The Dashboard conversations header exposes a conversations-only `选择模式` toggle in the existing action area.
+- When selection mode is on, conversation cards use `promptCacheKey` as the stable selection key, and card click, `Enter`, and `Space` toggle selection instead of opening drawers or following nested navigation affordances.
+- A `Cmd`/`Ctrl`-modified card click toggles only the clicked card's selection without switching the header into persistent selection mode.
+- Any non-zero selection shows a fixed bottom-center floating bulk action bar with selected count, route binding, clear-and-reset affinity, FAST mode, and cancel-selection actions.
+- Bulk route binding supports only `group` and `upstreamAccount` targets; clearing remains a separate destructive action.
+- Bulk clear-and-reset affinity removes the manual conversation binding, `pool_sticky_routes`, and `prompt_cache_encrypted_session_owners` rows for each selected key so the next request reselects an upstream account from normal routing.
+- Bulk FAST mode writes one of the four concrete rewrite modes per selected key and preserves the key's current binding kind.
 - Conversation timeout overrides reuse only the existing request-path timeout fields:
   - `responsesFirstByteTimeoutSecs`
   - `compactFirstByteTimeoutSecs`
@@ -92,6 +101,14 @@ The row is deleted only when there is no binding target, all four timeout overri
   - `{ "bindingKind": "group", "groupName": "prod" }` binds a group.
   - `{ "bindingKind": "upstreamAccount", "upstreamAccountId": 123 }` binds an account.
   - All variants may also include `timeouts`, `allowSwitchUpstream`, `fastModeRewriteMode`, `imageToolRewriteMode`, `availableModels`, `forwardProxyKey`, and `forwardProxyKeys`.
+- `POST /api/stats/prompt-cache-conversation-bindings/bulk-actions`
+  - Accepts `{ promptCacheKeys, action }` where `action` is one of:
+    - `{ "action": "bind", "bindingKind": "group", "groupName": "prod" }`
+    - `{ "action": "bind", "bindingKind": "upstreamAccount", "upstreamAccountId": 123 }`
+    - `{ "action": "clearAndResetAffinity" }`
+    - `{ "action": "setFastModeRewriteMode", "fastModeRewriteMode": "fill_missing" }`
+  - `bind` rejects `bindingKind: "none"` and rejects invalid or missing targets before any per-key writes begin.
+  - Returns `{ action, totalRequested, totalSucceeded, totalFailed, items }`, and each `items[]` entry includes `promptCacheKey`, `ok`, `error`, and the post-write binding snapshot when that key succeeds.
 
 Timeout patch semantics are field-local:
 
@@ -129,6 +146,9 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - A conversation “切出” override allows routing to move the conversation away from the original/sticky upstream account. It is not a cut-in override and does not force another account to accept otherwise invalid traffic.
 - Saving an upstream account binding immediately updates `pool_sticky_routes` for that `promptCacheKey` to the bound account so future requests and operator views agree on the effective assignment.
 - Clearing a binding removes only the binding row; any existing sticky route remains ordinary sticky-routing state and is governed by the normal sticky reuse and cut-out policy.
+- Bulk bind reuses the single-key save path per selected `promptCacheKey`; successful upstream-account bulk binds also align each selected key's sticky route to the chosen account.
+- Bulk clear-and-reset affinity removes the manual binding row, sticky route, and encrypted owner lock for each selected key, so later routing starts from an unconstrained conversation state.
+- Bulk FAST mode writes only the conversation-level FAST rewrite field for each selected key and leaves the current manual binding target, or `bindingKind='none'`, intact.
 - `binding_kind='none'` timeout-only rows do not count as manual binding overrides for sticky cut-out or encrypted-session owner guard logic.
 - Group binding remains a hard target filter; it does not bypass target cut-in policy or target account eligibility.
 - `binding_kind='group'` is a group-scoped operator constraint, not a hard binding to one concrete account. If the current sticky account accumulates the configured transport/decode-shaped stream-failure threshold, routing may reselect another eligible account inside the same group.
@@ -160,10 +180,47 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given the conversation detail drawer is open, the operator can override or clear one timeout field without rewriting untouched timeout fields.
 - Given the conversation detail drawer is open on the Settings tab, the operator can see effective values plus source badges for 切出, FAST mode, image tool, available models, and one proxy node, then override or clear each field independently.
 - Given a conversation has thousands of retained records, opening the detail drawer loads only the first 50 records, keeps the binding controls interactive, and loads the next 50 records only after drawer scrolling reaches the load threshold.
+- Given the Dashboard conversations grid is not in persistent selection mode, when the operator `Cmd`/`Ctrl`-clicks a card, then only that card toggles selection and the header toggle remains in its default non-selection state.
+- Given Dashboard selection mode is on, when the operator clicks a card body or presses `Enter`/`Space` on it, then the card toggles selection instead of opening the conversation or invocation drawers.
+- Given selected Dashboard conversations and a bulk bind payload to an upstream account, when the request succeeds, then every successful item returns an `upstreamAccount` binding snapshot and the selected keys' sticky routes align to that account.
+- Given a selected conversation has a manual binding, sticky route, and encrypted owner lock, when the operator runs bulk clear-and-reset affinity, then all three affinity rows are removed and the next routing constraint resolves as unconstrained.
+- Given selected conversations with mixed existing binding kinds, when the operator applies bulk FAST mode, then each selected key stores the requested FAST rewrite mode and keeps its previous binding kind.
+- Given a bulk bind request references an invalid group or account target, when the server rejects the shared target validation, then the response is `400` and no selected key is partially written.
 
 ## Visual Evidence
 
-PR: include
+Recommended PR subset for this Dashboard bulk-actions change: the two web-demo captures in the first section below.
+
+### Dashboard Bulk Actions (Web Demo)
+
+![Dashboard bulk action bar and selected conversation card](./assets/dashboard-bulk-actions-selection-panel-web-demo.png)
+
+- source_type: web_demo
+- target_program: mock-only
+- capture_scope: page
+- requested_viewport: desktop1440
+- viewport_strategy: fixed demo route
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- demo_route: `/dashboard?demoScene=attention&demoTheme=light`
+- state: one conversation selected via `Cmd`/`Ctrl`-modified click while persistent selection mode remains off
+- evidence_note: verifies the selected-card affordance, fixed bottom-center floating bulk action bar, and temporary modifier-key selection path without flipping the header into selection mode.
+
+![Dashboard bulk route bind kind dropdown](./assets/dashboard-bulk-route-bind-dropdown-open-current.png)
+
+- source_type: web_demo
+- target_program: mock-only
+- capture_scope: dialog
+- requested_viewport: desktop1440
+- viewport_strategy: fixed demo route
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- demo_route: `/dashboard?demoScene=attention&demoTheme=light`
+- state: route-bind kind selector opened with `分组` and `上游账号` options while the dialog still keeps the single-row `绑定到 / kind / target` layout
+- evidence_note: verifies the dialog no longer uses the earlier segmented switch, keeps the compact one-line binding row, and exposes the kind chooser as a dropdown instead of a persistent tabbed control.
+
+### Conversation Drawer Controls (Storybook)
+
 ![Conversation image-tool policy editor remains expanded after save](./assets/conversation-policy-editor-stays-expanded.png)
 
 - source_type: storybook_canvas
@@ -185,7 +242,6 @@ The Storybook `DrawerBindingControls` scenario renders the Prompt Cache conversa
 
 The Storybook `LargeHistoryVirtualizedDrawer` scenario renders a 15,000-record retained-history drawer. The evidence image shows the binding controls, summary chart, opened account binding target listbox, and virtualized invocation table after loading the second 50-record page (`已加载 100 / 15000 条保留调用记录`). Browser verification observed 28 mounted table rows and 4,248 total DOM elements, rather than mounting rows proportional to the 15,000-record total.
 
-PR: include
 ![Prompt Cache drawer binding and timeout overrides](./assets/drawer-binding-timeouts-story.png)
 
 The Storybook `DrawerBindingAndTimeouts` scenario renders the conversation drawer with an upstream-account binding plus mixed conversation/account/root timeout sources. The timeout subpanel now follows the same summary-row + field-local expansion contract as the effective routing rule card: inherited rows stay collapsed, conversation-owned timeout rows expand when edited, and timeout-only persistence remains visible even when `bindingKind='none'`.
@@ -194,5 +250,6 @@ The Storybook `DrawerBindingAndTimeouts` scenario renders the conversation drawe
 
 The Storybook `DrawerBindingAndTimeouts` scenario now also renders the widened conversation detail drawer on the Settings tab with the same summary-row and field-local editing skeleton used by account routing: the separate route-binding block remains intact, conversation-owned rows and timeouts are expanded by default, account-only routing rows stay hidden, available models and proxy bindings render as the shared chip-based controls, and the drawer width remains fixed while the account-style routing form grows vertically.
 
-PR: include
 ![Conversation settings multi proxy](./assets/conversation-settings-multi-proxy-story.png)
+
+The Storybook `DrawerBindingAndTimeouts` scenario also shows a multi-node conversation proxy list so the drawer contract remains reviewable alongside the Dashboard bulk-entry points.
