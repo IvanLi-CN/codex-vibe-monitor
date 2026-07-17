@@ -16,6 +16,7 @@ import DashboardPage from "./Dashboard";
 
 const hookMocks = vi.hoisted(() => ({
   useDashboardWorkingConversations: vi.fn(),
+  useDashboardOverviewSnapshotRuntime: vi.fn(),
   useSummary: vi.fn(),
   useTimeseries: vi.fn(),
   useParallelWorkStats: vi.fn(),
@@ -25,6 +26,11 @@ vi.mock("../hooks/useDashboardWorkingConversations", () => ({
   DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX: 16,
   DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN: 4,
   useDashboardWorkingConversations: hookMocks.useDashboardWorkingConversations,
+}));
+
+vi.mock("../hooks/useDashboardOverviewSnapshotRuntime", () => ({
+  useDashboardOverviewSnapshotRuntime: hookMocks.useDashboardOverviewSnapshotRuntime,
+  default: hookMocks.useDashboardOverviewSnapshotRuntime,
 }));
 
 vi.mock("../hooks/useStats", () => ({
@@ -416,7 +422,19 @@ function render(ui: React.ReactNode, initialEntry = "/dashboard") {
   });
 }
 
+function installSnapshotRuntimeMock() {
+  hookMocks.useDashboardOverviewSnapshotRuntime.mockReturnValue({
+    status: {
+      mode: "live",
+      cachedAt: null,
+      readyRanges: [],
+    },
+    bundle: null,
+  });
+}
+
 function installSummaryMocks() {
+  installSnapshotRuntimeMock();
   hookMocks.useSummary.mockImplementation((window: string) => {
     if (window === "today") {
       return { summary: { totalCount: 12 }, isLoading: false, error: null };

@@ -112,11 +112,24 @@ Codex Vibe Monitor 是一套面向自部署的 **OpenAI 兼容代理观测工作
 ### 7. 完整的开发与验收面
 
 - React + Vite 应用
+- Installable PWA：桌面 Chromium / Android Chrome 原生安装入口 + Safari 手动添加指引
 - Storybook 页面 / 组件证据
 - Web Demo：mock-only 全产品路由预览
 - public docs 站点 `docs-site/`
 - 内部 UI 规范 `docs/ui/`
 - Rust + Vitest + Storybook build 验证链路
+
+## Installable PWA 浏览器合同
+
+- 正式支持：
+  - 桌面 Chromium（Chrome / Edge）：原生 install prompt、独立窗口启动、prompt-style update
+  - Android Chrome：原生安装入口与独立应用壳层
+  - Safari / iOS：提供明确的 `Add to Home Screen` 手动指引
+- 离线边界：
+  - 首次在线访问后，应用壳层和静态资源可离线打开
+  - 实时数据、SSE 活动和设置同步不会在离线时继续工作；界面会明确提示 data unavailable / reconnect
+- 更新边界：
+  - 新前端版本部署后，页面只在用户确认时切换到 waiting service worker，不会在排障中的会话里自动刷新
 
 ## 页面地图
 
@@ -200,6 +213,13 @@ bun run dev
 - docs-site: `http://127.0.0.1:60081`
 - Storybook: `http://127.0.0.1:60082`
 - Web Demo: 使用当前 worktree 的租约端口
+
+PWA 专项回归：
+
+```bash
+cd web
+bun run test:e2e:pwa
+```
 
 ## Worktree bootstrap
 

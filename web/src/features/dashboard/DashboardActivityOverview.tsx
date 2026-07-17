@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { Alert } from "../../components/ui/alert";
 import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { SelectField } from "../../components/ui/select-field";
 import { useDashboardNetworkTimeseries } from "../../hooks/useDashboardNetworkTimeseries";
@@ -19,6 +20,10 @@ import {
   persistDashboardActivityRange,
   readPersistedDashboardActivityRange,
 } from "./dashboardActivityRange";
+import type {
+  DashboardOverviewSnapshotBundle,
+  DashboardOverviewSnapshotStatus,
+} from "./dashboardOverviewSnapshots";
 import { Last24hTenMinuteHeatmap, type MetricKey } from "./Last24hTenMinuteHeatmap";
 import { TodayStatsOverview } from "./TodayStatsOverview";
 import { UsageCalendar } from "./UsageCalendar";
@@ -27,6 +32,7 @@ import { WeeklyHourlyHeatmap } from "./WeeklyHourlyHeatmap";
 type OverviewMetricKey = MetricKey | "network";
 type NaturalDayChartMetric = OverviewMetricKey | "trend";
 type Dashboard24HourMetric = OverviewMetricKey;
+type DashboardOverviewLocale = "zh-CN" | "en-US";
 
 const LIVE_RATE_REFRESH_MS = 15_000;
 export const DASHBOARD_TOP_CHART_DATA_COMMIT_INTERVAL_MS = 5_000;
@@ -56,6 +62,114 @@ const RANGE_24H_METRIC_OPTIONS: Array<{ key: Dashboard24HourMetric; labelKey: st
   ...METRIC_OPTIONS,
   NETWORK_METRIC_OPTION,
 ];
+
+function buildDashboardActivityRate(dashboardActivity: DashboardActivityResponse) {
+  return {
+    tokensPerMinute: dashboardActivity.summary.tokensPerMinute ?? 0,
+    spendRate: dashboardActivity.summary.spendRate ?? 0,
+    windowMinutes: dashboardActivity.rateWindow.windowMinutes,
+    available: true,
+    currentFirstResponseByteTotalAvgMs:
+      dashboardActivity.summary.currentFirstResponseByteTotalAvgMs ?? null,
+    currentAvgTotalMs: dashboardActivity.summary.currentAvgTotalMs ?? null,
+  };
+}
+
+function useSnapshotRateNow(enabled: boolean) {
+  const [rateNow, setRateNow] = useState(() => new Date());
+
+  useEffect(() => {
+    if (!enabled) return;
+    setRateNow(new Date());
+    const timer = window.setInterval(() => {
+      setRateNow(new Date());
+    }, LIVE_RATE_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [enabled]);
+
+  return rateNow;
+}
+
+function formatDashboardSnapshotCachedAt(value: string | null, localeTag: DashboardOverviewLocale) {
+  if (!value) return null;
+  const epoch = Date.parse(value);
+  if (!Number.isFinite(epoch)) return null;
+  return new Intl.DateTimeFormat(localeTag, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(epoch));
+}
+
+function DashboardOverviewSnapshotBanner({
+  mode,
+  cachedAtLabel,
+  readyRangeCount,
+  totalRangeCount,
+  t,
+}: {
+  mode: DashboardOverviewSnapshotStatus["mode"];
+  cachedAtLabel: string | null;
+  readyRangeCount: number;
+  totalRangeCount: number;
+  t: (key: string, values?: Record<string, string | number>) => string;
+}) {
+  if (mode === "live") return null;
+
+  if (mode === "cached-offline") {
+    return (
+      <Alert
+        className="border-warning/35 bg-warning/10 text-base-content"
+        data-testid="dashboard-overview-snapshot-banner"
+      >
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold">
+              {t("dashboard.activityOverview.snapshotBannerTitle")}
+            </span>
+            <span className="rounded-full border border-warning/35 bg-base-100/70 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/75">
+              {t("dashboard.activityOverview.snapshotReadyRanges", {
+                count: readyRangeCount,
+                total: totalRangeCount,
+              })}
+            </span>
+          </div>
+          <p className="text-sm leading-6 text-base-content/80">
+            {t("dashboard.activityOverview.snapshotBannerDescription", {
+              cachedAt: cachedAtLabel ?? t("dashboard.activityOverview.snapshotCachedAtUnknown"),
+            })}
+          </p>
+        </div>
+      </Alert>
+    );
+  }
+
+  return (
+    <div
+      className="rounded-xl border border-base-300/70 bg-base-200/55 px-4 py-4"
+      data-testid="dashboard-overview-snapshot-empty"
+    >
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="text-sm font-semibold text-base-content">
+            {t("dashboard.activityOverview.snapshotNotReadyTitle")}
+          </h3>
+          <span className="rounded-full border border-base-300/80 bg-base-100/75 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/70">
+            {t("dashboard.activityOverview.snapshotReadyRanges", {
+              count: readyRangeCount,
+              total: totalRangeCount,
+            })}
+          </span>
+        </div>
+        <p className="max-w-[72ch] text-sm leading-6 text-base-content/75">
+          {t("dashboard.activityOverview.snapshotNotReadyDescription")}
+        </p>
+      </div>
+    </div>
+  );
+}
 
 function resolveDashboardMetricAccent(metric: OverviewMetricKey, themeMode: "light" | "dark") {
   if (metric === "network") {
@@ -767,6 +881,191 @@ function DashboardUsageRangePanel({
   );
 }
 
+function DashboardTodaySnapshotRangePanel({
+  metric,
+  bundle,
+}: {
+  metric: NaturalDayChartMetric;
+  bundle: DashboardOverviewSnapshotBundle;
+}) {
+  const dashboardActivity = bundle.dashboardActivity;
+  const rateNow = useSnapshotRateNow(true);
+
+  return (
+    <div
+      className="flex flex-col gap-5"
+      data-testid="dashboard-activity-range-today"
+      data-active="true"
+    >
+      <TodayStatsOverview
+        stats={dashboardActivity?.summary.stats ?? null}
+        loading={false}
+        error={null}
+        rate={dashboardActivity ? buildDashboardActivityRate(dashboardActivity) : null}
+        rateLoading={false}
+        rateError={null}
+        now={rateNow}
+        timeseries={bundle.timeseries ?? null}
+        comparisonStats={bundle.comparisonSummary ?? null}
+        comparisonTimeseries={bundle.comparisonTimeseries ?? null}
+        previous7dStats={bundle.previous7dSummary ?? null}
+        parallelWorkStats={bundle.parallelWorkStats ?? null}
+        comparisonParallelWorkStats={bundle.comparisonParallelWorkStats ?? null}
+        showInProgressConversations
+        dayKind="today"
+        showSurface={false}
+        showHeader={false}
+        showDayBadge={false}
+        modelPerformance={dashboardActivity?.summary.modelPerformance ?? null}
+      />
+      <DashboardNaturalDayChartSection
+        response={bundle.timeseries ?? null}
+        loading={false}
+        error={null}
+        metric={metric}
+        closedNaturalDay={false}
+        networkResponse={bundle.networkTimeseries ?? null}
+        networkLoading={false}
+        networkError={null}
+      />
+    </div>
+  );
+}
+
+function DashboardYesterdaySnapshotRangePanel({
+  metric,
+  bundle,
+}: {
+  metric: NaturalDayChartMetric;
+  bundle: DashboardOverviewSnapshotBundle;
+}) {
+  const dashboardActivity = bundle.dashboardActivity;
+  const rateNow = useSnapshotRateNow(true);
+
+  return (
+    <div
+      className="flex flex-col gap-5"
+      data-testid="dashboard-activity-range-yesterday"
+      data-active="true"
+    >
+      <TodayStatsOverview
+        stats={dashboardActivity?.summary.stats ?? null}
+        loading={false}
+        error={null}
+        rate={dashboardActivity ? buildDashboardActivityRate(dashboardActivity) : null}
+        rateLoading={false}
+        rateError={null}
+        now={rateNow}
+        timeseries={bundle.timeseries ?? null}
+        comparisonStats={null}
+        comparisonTimeseries={null}
+        previous7dStats={bundle.previous7dSummary ?? null}
+        parallelWorkStats={bundle.parallelWorkStats ?? null}
+        comparisonParallelWorkStats={null}
+        showInProgressConversations
+        dayKind="yesterday"
+        showSurface={false}
+        showHeader={false}
+        showDayBadge={false}
+        modelPerformance={dashboardActivity?.summary.modelPerformance ?? null}
+      />
+      <DashboardNaturalDayChartSection
+        response={bundle.timeseries ?? null}
+        loading={false}
+        error={null}
+        metric={metric}
+        closedNaturalDay
+        networkResponse={bundle.networkTimeseries ?? null}
+        networkLoading={false}
+        networkError={null}
+      />
+    </div>
+  );
+}
+
+function Dashboard24HourSnapshotRangePanel({
+  metric,
+  bundle,
+}: {
+  metric: Dashboard24HourMetric;
+  bundle: DashboardOverviewSnapshotBundle;
+}) {
+  return (
+    <div
+      className="flex flex-col gap-5"
+      data-testid="dashboard-activity-range-1d"
+      data-active="true"
+    >
+      <StatsCards
+        stats={bundle.dashboardActivity?.summary.stats ?? bundle.summary ?? null}
+        loading={false}
+        error={null}
+      />
+      {metric === "network" ? (
+        <DashboardNetworkActivityChart
+          response={bundle.networkTimeseries ?? null}
+          loading={false}
+          error={null}
+        />
+      ) : (
+        <Last24hTenMinuteHeatmap
+          metric={metric}
+          showHeader={false}
+          timeseriesResponse={bundle.timeseries ?? null}
+        />
+      )}
+    </div>
+  );
+}
+
+function Dashboard7DaySnapshotRangePanel({
+  metric,
+  bundle,
+}: {
+  metric: MetricKey;
+  bundle: DashboardOverviewSnapshotBundle;
+}) {
+  return (
+    <div
+      className="flex flex-col gap-5"
+      data-testid="dashboard-activity-range-7d"
+      data-active="true"
+    >
+      <StatsCards
+        stats={bundle.dashboardActivity?.summary.stats ?? bundle.summary ?? null}
+        loading={false}
+        error={null}
+      />
+      <WeeklyHourlyHeatmap
+        metric={metric}
+        showHeader={false}
+        showSurface={false}
+        timeseriesResponse={bundle.timeseries ?? null}
+      />
+    </div>
+  );
+}
+
+function DashboardUsageSnapshotRangePanel({
+  metric,
+  bundle,
+}: {
+  metric: MetricKey;
+  bundle: DashboardOverviewSnapshotBundle;
+}) {
+  return (
+    <div data-testid="dashboard-activity-range-usage" data-active="true">
+      <UsageCalendar
+        metric={metric}
+        showSurface={false}
+        showMetricToggle={false}
+        showMeta={false}
+        timeseriesResponse={bundle.timeseries ?? null}
+      />
+    </div>
+  );
+}
+
 export interface DashboardActivityOverviewProps {
   title?: string;
   storageKey?: string;
@@ -778,6 +1077,8 @@ export interface DashboardActivityOverviewProps {
   dashboardActivity?: DashboardActivityResponse | null;
   dashboardActivityLoading?: boolean;
   dashboardActivityError?: string | null;
+  snapshotStatus?: DashboardOverviewSnapshotStatus | null;
+  snapshotBundle?: DashboardOverviewSnapshotBundle | null;
 }
 
 export function DashboardActivityOverview({
@@ -791,8 +1092,10 @@ export function DashboardActivityOverview({
   dashboardActivity,
   dashboardActivityLoading = false,
   dashboardActivityError = null,
+  snapshotStatus = null,
+  snapshotBundle = null,
 }: DashboardActivityOverviewProps) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const { themeMode } = useTheme();
   const [uncontrolledActiveRange, setUncontrolledActiveRange] = useState<DashboardActivityRangeKey>(
     () => readPersistedDashboardActivityRange(storageKey),
@@ -835,6 +1138,18 @@ export function DashboardActivityOverview({
           : activeRange === "7d"
             ? metric7d
             : metricUsage;
+  const snapshotMode = upstreamAccountId == null ? (snapshotStatus?.mode ?? "live") : "live";
+  const snapshotReadyRanges = snapshotStatus?.readyRanges ?? [];
+  const snapshotCachedAtLabel = formatDashboardSnapshotCachedAt(
+    snapshotStatus?.cachedAt ?? null,
+    locale === "zh" ? "zh-CN" : "en-US",
+  );
+  const showSnapshotEmptyState = upstreamAccountId == null && snapshotMode === "not-cached-yet";
+  const showSnapshotRange =
+    upstreamAccountId == null &&
+    snapshotMode === "cached-offline" &&
+    snapshotBundle != null &&
+    snapshotBundle.range === activeRange;
 
   useEffect(() => {
     if (controlledActiveRange == null) {
@@ -864,7 +1179,13 @@ export function DashboardActivityOverview({
   };
 
   return (
-    <section className={className} data-testid={testId}>
+    <section
+      className={className}
+      data-testid={testId}
+      data-snapshot-mode={snapshotMode}
+      data-snapshot-ready-ranges={snapshotReadyRanges.join(",")}
+      data-snapshot-cached-at={snapshotStatus?.cachedAt ?? ""}
+    >
       <div className="surface-panel-body gap-6">
         <div className="space-y-3 min-[769px]:flex min-[769px]:items-start min-[769px]:justify-between min-[769px]:gap-3 min-[769px]:space-y-0">
           <div className="flex max-w-full items-center gap-3">
@@ -951,7 +1272,18 @@ export function DashboardActivityOverview({
             />
           </div>
         </div>
-        {activeRange === "today" ? (
+        <DashboardOverviewSnapshotBanner
+          mode={snapshotMode}
+          cachedAtLabel={snapshotCachedAtLabel}
+          readyRangeCount={snapshotReadyRanges.length}
+          totalRangeCount={RANGE_OPTIONS.length}
+          t={t}
+        />
+        {showSnapshotEmptyState ? null : activeRange === "today" &&
+          showSnapshotRange &&
+          snapshotBundle ? (
+          <DashboardTodaySnapshotRangePanel metric={metricToday} bundle={snapshotBundle} />
+        ) : activeRange === "today" ? (
           <DashboardTodayRangePanel
             metric={metricToday}
             upstreamAccountId={upstreamAccountId}
@@ -960,7 +1292,11 @@ export function DashboardActivityOverview({
             dashboardActivityError={dashboardActivityError}
           />
         ) : null}
-        {activeRange === "yesterday" ? (
+        {showSnapshotEmptyState ? null : activeRange === "yesterday" &&
+          showSnapshotRange &&
+          snapshotBundle ? (
+          <DashboardYesterdaySnapshotRangePanel metric={metricYesterday} bundle={snapshotBundle} />
+        ) : activeRange === "yesterday" ? (
           <DashboardYesterdayRangePanel
             metric={metricYesterday}
             upstreamAccountId={upstreamAccountId}
@@ -969,7 +1305,11 @@ export function DashboardActivityOverview({
             dashboardActivityError={dashboardActivityError}
           />
         ) : null}
-        {activeRange === "1d" ? (
+        {showSnapshotEmptyState ? null : activeRange === "1d" &&
+          showSnapshotRange &&
+          snapshotBundle ? (
+          <Dashboard24HourSnapshotRangePanel metric={metric24h} bundle={snapshotBundle} />
+        ) : activeRange === "1d" ? (
           <Dashboard24HourRangePanel
             metric={metric24h}
             upstreamAccountId={upstreamAccountId}
@@ -978,7 +1318,11 @@ export function DashboardActivityOverview({
             dashboardActivityError={dashboardActivityError}
           />
         ) : null}
-        {activeRange === "7d" ? (
+        {showSnapshotEmptyState ? null : activeRange === "7d" &&
+          showSnapshotRange &&
+          snapshotBundle ? (
+          <Dashboard7DaySnapshotRangePanel metric={metric7d} bundle={snapshotBundle} />
+        ) : activeRange === "7d" ? (
           <Dashboard7DayRangePanel
             metric={metric7d}
             upstreamAccountId={upstreamAccountId}
@@ -987,7 +1331,11 @@ export function DashboardActivityOverview({
             dashboardActivityError={dashboardActivityError}
           />
         ) : null}
-        {activeRange === "usage" ? (
+        {showSnapshotEmptyState ? null : activeRange === "usage" &&
+          showSnapshotRange &&
+          snapshotBundle ? (
+          <DashboardUsageSnapshotRangePanel metric={metricUsage} bundle={snapshotBundle} />
+        ) : activeRange === "usage" ? (
           <DashboardUsageRangePanel metric={metricUsage} upstreamAccountId={upstreamAccountId} />
         ) : null}
       </div>

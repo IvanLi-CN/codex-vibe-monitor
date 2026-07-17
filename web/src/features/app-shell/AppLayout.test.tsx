@@ -41,6 +41,20 @@ const hookMocks = vi.hoisted(() => ({
     dismiss: vi.fn(),
     reload: vi.fn(),
   })),
+  usePwaRuntime: vi.fn(() => ({
+    installMode: "unsupported",
+    installSupported: false,
+    isOffline: false,
+    shellReady: false,
+    update: {
+      currentVersion: "v0.2.0",
+      availableVersion: null,
+      visible: false,
+    },
+    promptInstall: vi.fn(),
+    applyUpdate: vi.fn(),
+    dismissUpdate: vi.fn(),
+  })),
 }));
 
 vi.mock("../../lib/sse", () => ({
@@ -58,6 +72,10 @@ vi.mock("../../hooks/useAppVersion", () => ({
 
 vi.mock("../../hooks/useUpdateAvailable", () => ({
   default: hookMocks.useUpdateAvailable,
+}));
+
+vi.mock("../../hooks/usePwaRuntime", () => ({
+  default: hookMocks.usePwaRuntime,
 }));
 
 vi.mock("../../i18n", () => ({
@@ -99,6 +117,52 @@ vi.mock("../../i18n", () => ({
           return "English";
         case "app.language.switcherAria":
           return "切换语言";
+        case "app.pwa.install.promptButton":
+          return "安装应用";
+        case "app.pwa.install.manualButton":
+          return "添加到主屏幕";
+        case "app.pwa.install.installedButton":
+          return "已安装";
+        case "app.pwa.install.switcherAria":
+          return "打开安装应用入口";
+        case "app.pwa.install.close":
+          return "关闭";
+        case "app.pwa.install.closeAria":
+          return "关闭安装说明";
+        case "app.pwa.install.shellReady":
+          return "离线壳已就绪";
+        case "app.pwa.install.shellPending":
+          return "离线壳待完成";
+        case "app.pwa.install.offlineChip":
+          return "当前离线";
+        case "app.pwa.install.manualTitle":
+          return "添加到主屏幕";
+        case "app.pwa.install.manualDescription":
+          return "Safari 手动添加";
+        case "app.pwa.install.manualStepOpenShare":
+          return "打开分享菜单";
+        case "app.pwa.install.manualStepAdd":
+          return "选择添加到主屏幕";
+        case "app.pwa.install.manualStepConfirm":
+          return "确认图标名称";
+        case "app.pwa.install.installedTitle":
+          return "应用已安装";
+        case "app.pwa.install.installedDescription":
+          return "已运行在独立壳层";
+        case "app.pwa.install.installedHint":
+          return "壳层可离线打开";
+        case "app.pwa.offline.title":
+          return "离线应用壳层";
+        case "app.pwa.offline.descriptionReady":
+          return "缓存壳层仍可继续打开";
+        case "app.pwa.offline.descriptionPending":
+          return "请先在线访问一次";
+        case "app.pwa.update.available":
+          return "新的应用壳层已就绪";
+        case "app.pwa.update.refresh":
+          return "更新应用";
+        case "app.pwa.update.later":
+          return "稍后";
         case "app.footer.newVersionAvailable":
           return "新版本可用";
         case "app.footer.frontendVersion":
@@ -140,7 +204,19 @@ vi.mock("../../theme", () => ({
 }));
 
 vi.mock("./UpdateAvailableBanner", () => ({
-  UpdateAvailableBanner: () => null,
+  UpdateAvailableBanner: ({
+    currentVersion,
+    availableVersion,
+  }: {
+    currentVersion: string;
+    availableVersion: string;
+  }) => (
+    <div
+      data-testid="update-available-banner-mock"
+      data-current-version={currentVersion}
+      data-available-version={availableVersion}
+    />
+  ),
 }));
 
 let host: HTMLDivElement | null = null;
@@ -209,6 +285,20 @@ describe("AppLayout", () => {
       error: null,
       refresh: vi.fn(),
     });
+    hookMocks.usePwaRuntime.mockReturnValue({
+      installMode: "prompt",
+      installSupported: true,
+      isOffline: false,
+      shellReady: true,
+      update: {
+        currentVersion: "v0.2.0",
+        availableVersion: null,
+        visible: false,
+      },
+      promptInstall: vi.fn(),
+      applyUpdate: vi.fn(),
+      dismissUpdate: vi.fn(),
+    });
 
     render("/dashboard");
 
@@ -220,6 +310,9 @@ describe("AppLayout", () => {
     const desktopNavigation = navGroup?.parentElement;
     const mobileMenuButton = host?.querySelector(
       'button[aria-label="app.nav.openMenu"]',
+    ) as HTMLButtonElement | null;
+    const installButton = host?.querySelector(
+      '[data-testid="pwa-install-control"]',
     ) as HTMLButtonElement | null;
     const dashboardLink = host?.querySelector('a[href="/dashboard"]');
     const systemLink = host?.querySelector('a[href="/system"]');
@@ -237,6 +330,7 @@ describe("AppLayout", () => {
     expect(logoMark?.className).toContain("h-10");
     expect(logoMark?.className).toContain("w-10");
     expect(logoImage).not.toBeNull();
+    expect(installButton?.getAttribute("data-install-mode")).toBe("prompt");
 
     expect(mobileMenuButton).not.toBeNull();
     expect(mobileMenuButton?.className).toContain("desktop:!hidden");
@@ -305,5 +399,42 @@ describe("AppLayout", () => {
       await Promise.resolve();
     });
     expect(logoMark?.getAttribute("data-logo-state")).toBe("idle");
+  });
+
+  it("prioritizes the app-shell update banner and shows an offline shell notice", async () => {
+    hookMocks.useUpdateAvailable.mockReturnValue({
+      currentVersion: "v0.2.0",
+      availableVersion: "v0.3.0",
+      visible: true,
+      dismiss: vi.fn(),
+      reload: vi.fn(),
+    });
+    hookMocks.usePwaRuntime.mockReturnValue({
+      installMode: "installed",
+      installSupported: true,
+      isOffline: true,
+      shellReady: true,
+      update: {
+        currentVersion: "v0.2.0",
+        availableVersion: "v0.2.1",
+        visible: true,
+      },
+      promptInstall: vi.fn(),
+      applyUpdate: vi.fn(),
+      dismissUpdate: vi.fn(),
+    });
+
+    render("/dashboard");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const banner = host?.querySelector('[data-testid="update-available-banner-mock"]');
+    const offlineBanner = host?.querySelector('[data-testid="pwa-offline-banner"]');
+
+    expect(offlineBanner).not.toBeNull();
+    expect(banner?.getAttribute("data-current-version")).toBe("v0.2.0");
+    expect(banner?.getAttribute("data-available-version")).toBe("v0.2.1");
   });
 });

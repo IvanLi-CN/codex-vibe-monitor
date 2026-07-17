@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Button } from "../../components/ui/button";
 import { SegmentedControl } from "../../components/ui/segmented-control";
 import { segmentedControlItemVariants } from "../../components/ui/segmented-control.variants";
 import { useAppVersion } from "../../hooks/useAppVersion";
+import usePwaRuntime from "../../hooks/usePwaRuntime";
 import useSseStatus from "../../hooks/useSseStatus";
 import useUpdateAvailable from "../../hooks/useUpdateAvailable";
 import { type Locale, supportedLocales, useTranslation } from "../../i18n";
@@ -18,6 +19,7 @@ import {
   mobileNavigationGroups,
   resolveAppNavigation,
 } from "./navigation";
+import { PwaInstallControl } from "./PwaInstallControl";
 import { UpdateAvailableBanner } from "./UpdateAvailableBanner";
 
 const repositoryUrl = "https://github.com/IvanLi-CN/codex-vibe-monitor";
@@ -28,6 +30,11 @@ const LOCALE_FLAG: Record<Locale, string> = {
 const OFFLINE_NOTICE_THRESHOLD_MS = 2 * 60 * 1000;
 export const HEADER_BRAND_ACTIVITY_HOLD_MS = 3200;
 
+type InstallableControlMode = Extract<
+  ReturnType<typeof usePwaRuntime>["installMode"],
+  "prompt" | "manual-ios" | "installed"
+>;
+
 export function AppLayout() {
   const location = useLocation();
   const { t, locale, setLocale } = useTranslation();
@@ -37,12 +44,14 @@ export function AppLayout() {
   const { versionInfo, isLoading: backendLoading } = useAppVersion();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const update = useUpdateAvailable();
+  const pwaRuntime = usePwaRuntime();
   const sseStatus = useSseStatus();
 
   const isReconnecting = sseStatus.phase === "connecting" || sseStatus.phase === "reconnecting";
   const isSseDisabled = sseStatus.phase === "disabled";
-  const isOffline = sseStatus.phase !== "connected" && sseStatus.phase !== "idle";
-  const showOfflineBanner = isOffline && sseStatus.downtimeMs >= OFFLINE_NOTICE_THRESHOLD_MS;
+  const isRealtimeOffline = sseStatus.phase !== "connected" && sseStatus.phase !== "idle";
+  const showOfflineBanner =
+    isRealtimeOffline && sseStatus.downtimeMs >= OFFLINE_NOTICE_THRESHOLD_MS;
   const downtimeSeconds = Math.max(Math.floor(sseStatus.downtimeMs / 1000), 0);
   const downtimeMinutesPart = Math.floor(downtimeSeconds / 60);
   const downtimeSecondsPart = downtimeSeconds % 60;
@@ -127,7 +136,9 @@ export function AppLayout() {
     setLanguageMenuOpen((open) => !open);
   };
 
-  const closeLanguageMenu = () => setLanguageMenuOpen(false);
+  const closeLanguageMenu = useCallback(() => {
+    setLanguageMenuOpen(false);
+  }, []);
 
   const handleManualReconnect = () => {
     requestImmediateReconnect();
@@ -217,6 +228,11 @@ export function AppLayout() {
       : hasRecentActivity
         ? "active"
         : "idle";
+  const installControlMode = pwaRuntime.installSupported
+    ? (pwaRuntime.installMode as InstallableControlMode)
+    : null;
+  const showVersionUpdateBanner = pwaRuntime.update.visible || update.visible;
+  const stackedStatusBannerTopClass = showVersionUpdateBanner ? "top-[146px]" : "top-[78px]";
 
   return (
     <div className="app-shell min-h-screen flex flex-col text-base-content">
@@ -281,6 +297,34 @@ export function AppLayout() {
                 ))}
               </SegmentedControl>
             </div>
+
+            {installControlMode ? (
+              <PwaInstallControl
+                mode={installControlMode}
+                shellReady={pwaRuntime.shellReady}
+                isOffline={pwaRuntime.isOffline}
+                onPromptInstall={pwaRuntime.promptInstall}
+                labels={{
+                  promptButton: t("app.pwa.install.promptButton"),
+                  manualButton: t("app.pwa.install.manualButton"),
+                  installedButton: t("app.pwa.install.installedButton"),
+                  switcherAria: t("app.pwa.install.switcherAria"),
+                  closeButton: t("app.pwa.install.close"),
+                  closeAria: t("app.pwa.install.closeAria"),
+                  shellReady: t("app.pwa.install.shellReady"),
+                  shellPending: t("app.pwa.install.shellPending"),
+                  offlineChip: t("app.pwa.install.offlineChip"),
+                  manualTitle: t("app.pwa.install.manualTitle"),
+                  manualDescription: t("app.pwa.install.manualDescription"),
+                  manualStepOpenShare: t("app.pwa.install.manualStepOpenShare"),
+                  manualStepAdd: t("app.pwa.install.manualStepAdd"),
+                  manualStepConfirm: t("app.pwa.install.manualStepConfirm"),
+                  installedTitle: t("app.pwa.install.installedTitle"),
+                  installedDescription: t("app.pwa.install.installedDescription"),
+                  installedHint: t("app.pwa.install.installedHint"),
+                }}
+              />
+            ) : null}
 
             <button
               type="button"
@@ -436,8 +480,45 @@ export function AppLayout() {
           </aside>
         </div>
       ) : null}
+      {pwaRuntime.isOffline ? (
+        <div
+          className={`fixed left-1/2 z-[62] w-full max-w-3xl -translate-x-1/2 px-4 ${stackedStatusBannerTopClass}`}
+        >
+          <div
+            className="flex w-full flex-col gap-3 rounded-xl border border-warning/45 bg-base-100/95 p-4 text-base-content shadow-lg backdrop-blur sm:flex-row sm:items-center"
+            role="status"
+            aria-live="assertive"
+            data-testid="pwa-offline-banner"
+          >
+            <div className="flex min-w-0 flex-1 items-center gap-3">
+              <AppIcon
+                name="link-variant-off"
+                className="h-6 w-6 flex-shrink-0 text-warning"
+                aria-hidden
+              />
+              <div className="min-w-0 space-y-1">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="font-semibold">{t("app.pwa.offline.title")}</span>
+                  <span className="rounded-full bg-warning/12 px-2 py-0.5 text-xs font-medium text-warning-content">
+                    {pwaRuntime.shellReady
+                      ? t("app.pwa.install.shellReady")
+                      : t("app.pwa.install.shellPending")}
+                  </span>
+                </div>
+                <p className="text-sm text-base-content/78">
+                  {pwaRuntime.shellReady
+                    ? t("app.pwa.offline.descriptionReady")
+                    : t("app.pwa.offline.descriptionPending")}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {showOfflineBanner && (
-        <div className="fixed left-1/2 top-[78px] z-[60] w-full max-w-3xl -translate-x-1/2 px-4">
+        <div
+          className={`fixed left-1/2 z-[60] w-full max-w-3xl -translate-x-1/2 px-4 ${stackedStatusBannerTopClass}`}
+        >
           <div
             className="flex w-full flex-col gap-3 rounded-xl border border-warning/60 bg-warning/90 p-4 text-warning-content shadow-lg sm:flex-row sm:items-center"
             role="status"
@@ -468,7 +549,20 @@ export function AppLayout() {
           </div>
         </div>
       )}
-      {update.visible && update.availableVersion && (
+      {pwaRuntime.update.visible && (
+        <UpdateAvailableBanner
+          currentVersion={pwaRuntime.update.currentVersion}
+          availableVersion={pwaRuntime.update.availableVersion ?? pwaRuntime.update.currentVersion}
+          onReload={pwaRuntime.applyUpdate}
+          onDismiss={pwaRuntime.dismissUpdate}
+          labels={{
+            available: t("app.pwa.update.available"),
+            refresh: t("app.pwa.update.refresh"),
+            later: t("app.pwa.update.later"),
+          }}
+        />
+      )}
+      {!pwaRuntime.update.visible && update.visible && update.availableVersion && (
         <UpdateAvailableBanner
           currentVersion={versionInfo?.backend ?? t("app.update.current")}
           availableVersion={update.availableVersion}
