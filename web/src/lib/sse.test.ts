@@ -63,10 +63,12 @@ function decodePath(path: string) {
       ? decodeBase64UrlJson<Array<{ topic: string; params?: Record<string, string> }>>(rawTopics)
       : [],
     resume: rawResume
-      ? decodeBase64UrlJson<Array<{ topicKey: string; cursor: number; schemaEpoch: string }>>(
+      ? decodeBase64UrlJson<Array<{ topicIndex: number; cursor: number; schemaEpoch: string }>>(
           rawResume,
         )
       : [],
+    attempt: url.searchParams.get("attempt"),
+    reason: url.searchParams.get("reason"),
   };
 }
 
@@ -138,7 +140,7 @@ describe("sse topic registry", () => {
     ]);
     expect(decoded.resume).toEqual([
       {
-        topicKey: "summary-current",
+        topicIndex: 1,
         cursor: 4,
         schemaEpoch: "stats.summary.current/v1",
       },
@@ -193,5 +195,121 @@ describe("sse topic registry", () => {
 
     unsubscribeSecond();
     unsubscribeFirst();
+  });
+
+  it("forces fresh snapshots for every active topic on manual reconnect and records diagnostics", async () => {
+    const sse = await loadSseModule();
+    const summaryTopic = sse.buildTopicDescriptor("stats.summary.current", {
+      limit: 20,
+      window: "current",
+    });
+    const quotaTopic = sse.buildTopicDescriptor("quota.current");
+
+    const unsubscribeSummary = sse.subscribeToTopic(summaryTopic, vi.fn());
+    const firstConnection = FakeEventSource.instances[0];
+    firstConnection.emit("open", new Event("open"));
+    firstConnection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic: summaryTopic,
+          topicKey: "summary-current",
+          schemaEpoch: "stats.summary.current/v1",
+          cursor: 4,
+          payload: { total: 7 },
+        }),
+      }),
+    );
+
+    const unsubscribeQuota = sse.subscribeToTopic(quotaTopic, vi.fn());
+    expect(createEventSourceMock).toHaveBeenCalledTimes(2);
+    const secondConnection = FakeEventSource.instances[1];
+    secondConnection.emit("open", new Event("open"));
+    secondConnection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic: quotaTopic,
+          topicKey: "quota-current",
+          schemaEpoch: "quota.current/v1",
+          cursor: 8,
+          payload: { usd: 17 },
+        }),
+      }),
+    );
+
+    sse.requestImmediateReconnect();
+    vi.advanceTimersByTime(0);
+
+    expect(createEventSourceMock).toHaveBeenCalledTimes(3);
+    const rebuilt = decodePath(createEventSourceMock.mock.calls[2][0] as string);
+    expect(rebuilt.resume).toEqual([]);
+    expect(rebuilt.reason).toBe("manual");
+    expect(rebuilt.attempt).toBe("3");
+    expect(sse.getCurrentSseDiagnostics()).toMatchObject({
+      attempt: 3,
+      reason: "manual",
+      activeTopics: ["quota.current", "stats.summary.current?limit=20&window=current"],
+      resumeTopics: [],
+      forcedSnapshotTopics: ["quota.current", "stats.summary.current?limit=20&window=current"],
+    });
+
+    unsubscribeQuota();
+    unsubscribeSummary();
+  });
+
+  it("preserves resume cursors on automatic reconnect after an eventsource error with backoff", async () => {
+    const sse = await loadSseModule();
+    const topic = sse.buildTopicDescriptor("forward-proxy.live");
+    const unsubscribe = sse.subscribeToTopic(topic, vi.fn());
+
+    const firstConnection = FakeEventSource.instances[0];
+    firstConnection.emit("open", new Event("open"));
+    firstConnection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic,
+          topicKey: "forward-proxy-live",
+          schemaEpoch: "forward-proxy.live/v1",
+          cursor: 9,
+          payload: { activeRequests: 3 },
+        }),
+      }),
+    );
+
+    firstConnection.emit("error", new Event("error"));
+    expect(createEventSourceMock).toHaveBeenCalledTimes(1);
+
+    const retryAt = sse.getCurrentSseStatus().nextRetryAt;
+    expect(retryAt).not.toBeNull();
+    expect(sse.getCurrentSseStatus().phase).toBe("reconnecting");
+
+    vi.advanceTimersByTime(1_999);
+    expect(createEventSourceMock).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(1);
+
+    expect(createEventSourceMock).toHaveBeenCalledTimes(2);
+    const rebuilt = decodePath(createEventSourceMock.mock.calls[1][0] as string);
+    expect(rebuilt.reason).toBe("eventsource-error");
+    expect(rebuilt.resume).toEqual([
+      {
+        topicIndex: 0,
+        cursor: 9,
+        schemaEpoch: "forward-proxy.live/v1",
+      },
+    ]);
+    expect(sse.getCurrentSseDiagnostics()).toMatchObject({
+      attempt: 2,
+      reason: "eventsource-error",
+      resumeTopics: ["forward-proxy.live"],
+      lastTerminalOutcome: "eventsource-error",
+    });
+
+    unsubscribe();
   });
 });

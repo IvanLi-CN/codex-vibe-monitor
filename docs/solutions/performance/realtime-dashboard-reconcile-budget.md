@@ -62,9 +62,11 @@ related_specs:
 - 不要为覆盖范围内页面保留健康态 timer reconcile、open-resync 或页面私有 fallback；那会重新引入第二真相源。
 - 不要把 closed-range / history-only 页面硬塞进持续推送；纯 SSE 的边界是“常驻当前态订阅”，不是“所有页面都实时化”。
 - 不要为 replay 失败发明第三条恢复路径。恢复规则只应是 replay 或 snapshot。
+- 手动“立即重连”不应偷偷复用旧 `resume` 去赌 replay 命中。若产品语义是“人工要求重新拉一份当前态”，前端就应该对 active topics 强制 fresh snapshot，并给这次连接分配独立 `attempt/reason` 供前后端对账。
 - topic 参数必须 canonicalize；否则 resume cursor 与 cache key 会漂移。
 - SSE envelope 字段名也必须在端到端 drill 中被校验。若后端真实发出的字段名与前端 registry 读取约定不一致，即便 topic 设计本身是纯推送，页面仍会静默丢弃 snapshot，看起来像“连接正常但数据不动”。
 - 主应用 shell 也属于订阅覆盖面的一部分。像版本信息这类看似外围的小数据，只要已声明为 `app.version` topic，就不应再额外保留 `/api/version` 首屏 bootstrap，否则网络面上仍然是混合推拉。
+- owner-facing 离线提示不能只说“断线了”。至少要暴露最近连接 `attempt`、触发 `reason`、active/resume/forced-snapshot topic 数量、最近消息时间与最近终态；否则“刷新能恢复但按钮不能”的问题在现场没有可判责证据。
 
 ## References
 

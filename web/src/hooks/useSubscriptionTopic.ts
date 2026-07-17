@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   getCachedTopicState,
+  getTopicDescriptorKey,
   requestTopicRefresh,
   type SubscriptionTopicDescriptor,
   subscribeToTopic,
@@ -10,6 +11,7 @@ export function useSubscriptionTopic<T>(
   descriptor: SubscriptionTopicDescriptor | null,
   enabled = true,
 ) {
+  const descriptorKey = descriptor ? getTopicDescriptorKey(descriptor) : null;
   const [data, setData] = useState<T | null>(() =>
     descriptor && enabled ? (getCachedTopicState<T>(descriptor)?.payload ?? null) : null,
   );
@@ -31,13 +33,13 @@ export function useSubscriptionTopic<T>(
       setIsLoading(false);
     });
     return unsubscribe;
-  }, [descriptor, enabled]);
+  }, [descriptorKey, enabled]);
 
   const refresh = useCallback(() => {
     if (!descriptor || !enabled) return;
     setIsLoading(true);
     requestTopicRefresh(descriptor);
-  }, [descriptor, enabled]);
+  }, [descriptorKey, enabled]);
 
   return {
     data,

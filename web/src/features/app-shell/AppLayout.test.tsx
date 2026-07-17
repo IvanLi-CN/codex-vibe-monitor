@@ -28,6 +28,18 @@ const hookMocks = vi.hoisted(() => ({
     error: null,
     refresh: vi.fn(),
   })),
+  useSseDiagnostics: vi.fn(() => ({
+    attempt: 3,
+    reason: "manual",
+    activeTopics: ["dashboard.activity.current", "stats.summary.current"],
+    resumeTopics: [],
+    forcedSnapshotTopics: ["dashboard.activity.current", "stats.summary.current"],
+    lastMessageAt: null,
+    lastOpenAt: null,
+    lastErrorAt: null,
+    lastConnectionStartedAt: null,
+    lastTerminalOutcome: "eventsource-error",
+  })),
   useSseStatus: vi.fn(() => ({
     phase: "connected",
     downtimeMs: 0,
@@ -64,6 +76,10 @@ vi.mock("../../lib/sse", () => ({
 
 vi.mock("../../hooks/useSseStatus", () => ({
   default: hookMocks.useSseStatus,
+}));
+
+vi.mock("../../hooks/useSseDiagnostics", () => ({
+  default: hookMocks.useSseDiagnostics,
 }));
 
 vi.mock("../../hooks/useAppVersion", () => ({
@@ -187,6 +203,54 @@ vi.mock("../../i18n", () => ({
           return "SSE 断开";
         case "app.sse.banner.reconnectButton":
           return "立即重连";
+        case "app.sse.banner.diagnostics":
+          return `Attempt ${values?.attempt ?? "-"} · ${values?.reason ?? "unknown"} · topics ${
+            values?.topics ?? 0
+          } · resume ${values?.resume ?? 0} · forced snapshot ${values?.fresh ?? 0} · last msg ${
+            values?.lastMessageAge ?? "never"
+          } · ${values?.outcome ?? "unknown"}`;
+        case "app.sse.banner.diagAgeNever":
+          return "never";
+        case "app.sse.banner.diagAgeSeconds":
+          return `${values?.seconds ?? 0}s ago`;
+        case "app.sse.banner.diagAgeMinutesSeconds":
+          return `${values?.minutes ?? 0}m ${values?.seconds ?? 0}s ago`;
+        case "app.sse.banner.diagUnknown":
+          return "unknown";
+        case "app.sse.reason.initial":
+          return "initial";
+        case "app.sse.reason.topicChange":
+          return "topic change";
+        case "app.sse.reason.topicRefresh":
+          return "topic refresh";
+        case "app.sse.reason.manual":
+          return "manual reconnect";
+        case "app.sse.reason.eventsourceError":
+          return "event error";
+        case "app.sse.reason.watchdogClosed":
+          return "connection closed";
+        case "app.sse.reason.watchdogTimeout":
+          return "connection timeout";
+        case "app.sse.reason.visibilityVisible":
+          return "tab visible";
+        case "app.sse.outcome.idle":
+          return "idle";
+        case "app.sse.outcome.open":
+          return "opened";
+        case "app.sse.outcome.topicChange":
+          return "replaced for topic change";
+        case "app.sse.outcome.eventsourceError":
+          return "event error";
+        case "app.sse.outcome.watchdogClosed":
+          return "closed";
+        case "app.sse.outcome.watchdogTimeout":
+          return "timeout";
+        case "app.sse.outcome.disabled":
+          return "disabled";
+        case "app.sse.outcome.unsupported":
+          return "unsupported";
+        case "app.sse.outcome.cleanup":
+          return "cleaned up";
         case "app.version.loading":
           return "加载中";
         default:
@@ -436,5 +500,55 @@ describe("AppLayout", () => {
     expect(offlineBanner).not.toBeNull();
     expect(banner?.getAttribute("data-current-version")).toBe("v0.2.0");
     expect(banner?.getAttribute("data-available-version")).toBe("v0.2.1");
+  });
+
+  it("renders SSE diagnostics in the offline banner and routes reconnect clicks through the manual reconnect action", async () => {
+    hookMocks.useUpdateAvailable.mockReturnValue({
+      currentVersion: null,
+      availableVersion: null,
+      visible: false,
+      dismiss: vi.fn(),
+      reload: vi.fn(),
+    });
+    hookMocks.useSseStatus.mockReturnValue({
+      phase: "reconnecting",
+      downtimeMs: 130_000,
+      autoReconnect: true,
+      nextRetryAt: null,
+    });
+    hookMocks.useSseDiagnostics.mockReturnValue({
+      attempt: 7,
+      reason: "manual",
+      activeTopics: ["dashboard.activity.current", "stats.summary.current"],
+      resumeTopics: [],
+      forcedSnapshotTopics: ["dashboard.activity.current", "stats.summary.current"],
+      lastMessageAt: null,
+      lastOpenAt: null,
+      lastErrorAt: Date.now() - 5_000,
+      lastConnectionStartedAt: Date.now() - 3_000,
+      lastTerminalOutcome: "eventsource-error",
+    });
+
+    render("/dashboard");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const diagnostics = host?.querySelector('[data-testid="app-sse-diagnostics"]');
+    expect(diagnostics?.textContent).toContain("Attempt 7");
+    expect(diagnostics?.textContent).toContain("manual reconnect");
+    expect(diagnostics?.textContent).toContain("topics 2");
+    expect(diagnostics?.textContent).toContain("resume 0");
+    expect(diagnostics?.textContent).toContain("forced snapshot 2");
+    expect(diagnostics?.textContent).toContain("event error");
+
+    const reconnectButton = Array.from(host?.querySelectorAll("button") ?? []).find((button) =>
+      button.textContent?.includes("立即重连"),
+    );
+    act(() => {
+      reconnectButton?.click();
+    });
+    expect(sseMocks.requestImmediateReconnect).toHaveBeenCalledTimes(1);
   });
 });
