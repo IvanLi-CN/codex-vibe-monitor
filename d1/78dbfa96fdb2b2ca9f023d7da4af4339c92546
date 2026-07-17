@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.37.5",
+  "base_stable_version": "2.37.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-17T06:11:31Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.37.5",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "769bc7fd1da75377d9225ddac5bcc8bed314fffc",
+  "pr_number": 635,
+  "pr_title": "fix(web): adapt upstream account metrics",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.37.5",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.37.5",
+  "target_sha": "d178dbfa96fdb2b2ca9f023d7da4af4339c92546",
+  "type_label": "type:patch"
+}
