@@ -127,6 +127,7 @@ interface InvocationPhaseSegmentsProps {
   showZero?: boolean;
   appearance?: "badge" | "inline";
   motion?: InvocationPhaseMotion;
+  showLabel?: boolean;
 }
 
 export function InvocationPhaseSegments({
@@ -136,6 +137,7 @@ export function InvocationPhaseSegments({
   showZero = true,
   appearance = "badge",
   motion = "static",
+  showLabel = true,
 }: InvocationPhaseSegmentsProps) {
   const { t } = useTranslation();
   if (counts == null) return null;
@@ -152,19 +154,31 @@ export function InvocationPhaseSegments({
 
   if (appearance === "inline") {
     return (
-      <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-1.5", className)}>
+      <div
+        className={cn(
+          "flex flex-wrap items-center gap-y-1.5",
+          showLabel ? "gap-x-3" : "gap-x-2.5",
+          className,
+        )}
+      >
         {items.map((item) => {
           const display = getInvocationPhaseDisplay(item.phase);
+          const label = t(display.labelKey);
           return (
             <span
               key={item.phase}
               data-testid="invocation-phase-segment"
               data-phase={item.phase}
               data-phase-motion={motion}
+              data-phase-label-visible={showLabel ? "true" : "false"}
+              role={showLabel ? undefined : "img"}
               className={cn(
-                "inline-flex items-center gap-1.5 whitespace-nowrap text-[11px] font-semibold leading-none tabular-nums text-base-content/68",
+                "inline-flex items-center whitespace-nowrap text-[11px] font-semibold leading-none tabular-nums text-base-content/68",
+                showLabel ? "gap-1.5" : "gap-1",
                 itemClassName,
               )}
+              aria-label={showLabel ? undefined : `${label} ${item.value}`}
+              title={showLabel ? undefined : `${label} ${item.value}`}
             >
               <AppIcon
                 name={phaseIconName(item.phase, motion)}
@@ -177,7 +191,7 @@ export function InvocationPhaseSegments({
                 )}
                 aria-hidden="true"
               />
-              <span>{t(display.labelKey)}</span>
+              {showLabel ? <span>{label}</span> : null}
               <span className="font-mono text-base-content/86">{item.value}</span>
             </span>
           );

@@ -4,7 +4,7 @@ import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segm
 import { useTimeseries } from "../../hooks/useTimeseries";
 import type { TranslationKey } from "../../i18n";
 import { useTranslation } from "../../i18n";
-import type { TimeseriesPoint } from "../../lib/api";
+import type { TimeseriesPoint, TimeseriesResponse } from "../../lib/api";
 import { heatmapLevels, metricAccent } from "../../lib/chartTheme";
 import { formatTokensShort } from "../../lib/numberFormatters";
 import { useTheme } from "../../theme";
@@ -102,6 +102,7 @@ export interface Last24hTenMinuteHeatmapProps {
   onChangeMetric?: (m: MetricKey) => void;
   showHeader?: boolean;
   upstreamAccountId?: number;
+  timeseriesResponse?: TimeseriesResponse | null;
 }
 
 export function Last24hTenMinuteHeatmap({
@@ -109,6 +110,7 @@ export function Last24hTenMinuteHeatmap({
   onChangeMetric,
   showHeader = true,
   upstreamAccountId,
+  timeseriesResponse = null,
 }: Last24hTenMinuteHeatmapProps) {
   const { t, locale } = useTranslation();
   const { themeMode } = useTheme();
@@ -119,6 +121,9 @@ export function Last24hTenMinuteHeatmap({
     "1d",
     upstreamAccountId == null ? { bucket: "1m" } : { bucket: "1m", upstreamAccountId },
   );
+  const resolvedData = timeseriesResponse ?? data;
+  const resolvedLoading = timeseriesResponse == null ? isLoading : false;
+  const resolvedError = timeseriesResponse == null ? error : null;
 
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
@@ -133,7 +138,10 @@ export function Last24hTenMinuteHeatmap({
     [t],
   );
 
-  const grid = useMemo(() => compute24h6(data?.points ?? [], metric), [data?.points, metric]);
+  const grid = useMemo(
+    () => compute24h6(resolvedData?.points ?? [], metric),
+    [metric, resolvedData?.points],
+  );
   const levelPalette = useMemo(() => heatmapLevels(metric, themeMode), [metric, themeMode]);
 
   const formatValue = (value: number) => {
@@ -187,8 +195,8 @@ export function Last24hTenMinuteHeatmap({
           </div>
         )}
 
-        {error ? (
-          <Alert variant="error">{error}</Alert>
+        {resolvedError ? (
+          <Alert variant="error">{resolvedError}</Alert>
         ) : grid.hasData ? (
           <div className="w-full overflow-x-auto no-scrollbar">
             <div className="flex justify-center">
@@ -283,7 +291,7 @@ export function Last24hTenMinuteHeatmap({
               </div>
             </div>
           </div>
-        ) : isLoading ? (
+        ) : resolvedLoading ? (
           <div className="h-40 w-full animate-pulse rounded-xl border border-base-300/70 bg-base-200/55" />
         ) : (
           <div className="text-base-content/70">{noDataText}</div>

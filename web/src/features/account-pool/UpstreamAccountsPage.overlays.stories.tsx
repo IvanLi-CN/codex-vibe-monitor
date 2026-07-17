@@ -71,8 +71,11 @@ async function findTokyoDetailDialog(documentScope: ReturnType<typeof within>) {
 
 async function expectFixedDesktopDrawerWidth(dialog: HTMLElement) {
   await expect(dialog).toHaveClass("drawer-shell--detail-wide");
+  const viewportWidth = dialog.ownerDocument.defaultView?.innerWidth ?? 0;
+  const expectedWidth = Math.min(90 * 16, viewportWidth - 32);
   const width = dialog.getBoundingClientRect().width;
   await expect(width).toBeGreaterThan(0);
+  await expect(Math.abs(width - expectedWidth)).toBeLessThanOrEqual(1);
   return width;
 }
 

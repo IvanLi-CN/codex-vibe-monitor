@@ -2,19 +2,20 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
+import type { TimeseriesPoint, TimeseriesResponse } from "../../lib/api";
 import { DashboardActivityOverview } from "./DashboardActivityOverview";
 import { DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY } from "./dashboardActivityRange";
+import type {
+  DashboardOverviewSnapshotBundle,
+  DashboardOverviewSnapshotStatus,
+} from "./dashboardOverviewSnapshots";
 
 type SummaryKey = "today" | "yesterday" | "previous7d" | "1d" | "7d";
 type TimeseriesKey = "today:1m" | "yesterday:1m" | "1d:1m" | "7d:1h" | "6mo:1d";
 type DashboardNetworkTimeseriesKey = "today:5m" | "yesterday:5m" | "1d:5m";
 type PersistedRange = "today" | "yesterday" | "1d" | "7d" | "usage" | null;
 type SummaryFixture = ReturnType<typeof createSummary>;
-type TimeseriesFixture =
-  | ReturnType<typeof buildTodayMinutePoints>
-  | ReturnType<typeof build24HourPoints>
-  | ReturnType<typeof buildHourlyPoints>
-  | ReturnType<typeof buildDailyPoints>;
+type TimeseriesFixture = TimeseriesResponse;
 type DashboardNetworkTimeseriesFixture = ReturnType<typeof buildDashboardNetworkPoints>;
 type WindowWithDashboardFetchLog = Window & {
   __dashboardOverviewFetchLog__?: string[];
@@ -65,6 +66,48 @@ function createSummary(
   };
 }
 
+function buildSnapshotDashboardActivityResponse({
+  range,
+  summary,
+  tokensPerMinute,
+  spendRate,
+}: {
+  range: "today" | "yesterday" | "1d" | "7d";
+  summary: SummaryFixture;
+  tokensPerMinute: number;
+  spendRate: number;
+}) {
+  return {
+    range,
+    rangeStart:
+      range === "yesterday"
+        ? "2026-04-08T00:00:00.000Z"
+        : range === "1d"
+          ? "2026-04-08T12:20:00.000Z"
+          : range === "7d"
+            ? "2026-04-02T12:20:00.000Z"
+            : "2026-04-09T00:00:00.000Z",
+    rangeEnd: "2026-04-09T12:20:00.000Z",
+    snapshotId: 1775718000000,
+    rateWindow: {
+      start: "2026-04-09T12:19:00.000Z",
+      end: "2026-04-09T12:20:00.000Z",
+      windowMinutes: 1,
+      mode: "last_complete_1m_sma",
+    },
+    summary: {
+      stats: {
+        ...summary,
+        inProgressConversationCount: Math.max(1, Math.round(summary.successCount / 320)),
+        inProgressRetryConversationCount: Math.max(0, Math.round(summary.failureCount / 64)),
+        inProgressAvgWaitMs: 1680,
+      },
+      tokensPerMinute,
+      spendRate,
+    },
+  };
+}
+
 function deriveNonSuccessCost(totalCost: number, failureCount: number, totalCount: number) {
   if (totalCost <= 0 || failureCount <= 0 || totalCount <= 0) {
     return 0;
@@ -76,10 +119,10 @@ function deriveNonSuccessCost(totalCost: number, failureCount: number, totalCoun
 const TODAY_SUMMARY_FIXTURE = createSummary(3428, 3296, 132, 42.86, 18764200);
 const YESTERDAY_SUMMARY_FIXTURE = createSummary(4876, 4718, 158, 61.72, 26918400);
 
-function buildTodayMinutePoints(summary = TODAY_SUMMARY_FIXTURE) {
+function buildTodayMinutePoints(summary = TODAY_SUMMARY_FIXTURE): TimeseriesResponse {
   const rangeStart = new Date("2026-04-09T00:00:00+08:00");
   const rangeEnd = new Date("2026-04-09T12:24:00+08:00");
-  const points: Array<Record<string, number | string | null>> = [];
+  const points: TimeseriesPoint[] = [];
   const minuteCount = Math.floor((rangeEnd.getTime() - rangeStart.getTime()) / 60_000) + 1;
   const minuteIndexes = Array.from({ length: minuteCount }, (_, index) => index);
   const successCounts = distributeInteger(
@@ -143,11 +186,11 @@ function buildTodayMinutePoints(summary = TODAY_SUMMARY_FIXTURE) {
   };
 }
 
-function buildYesterdayMinutePoints(summary = YESTERDAY_SUMMARY_FIXTURE) {
+function buildYesterdayMinutePoints(summary = YESTERDAY_SUMMARY_FIXTURE): TimeseriesResponse {
   const rangeStart = new Date("2026-04-08T00:00:00+08:00");
   const activityEnd = new Date("2026-04-08T18:36:00+08:00");
   const rangeEnd = new Date("2026-04-09T00:00:00+08:00");
-  const points: Array<Record<string, number | string | null>> = [];
+  const points: TimeseriesPoint[] = [];
   const minuteCount = Math.floor((activityEnd.getTime() - rangeStart.getTime()) / 60_000) + 1;
   const minuteIndexes = Array.from({ length: minuteCount }, (_, index) => index);
   const successCounts = distributeInteger(
@@ -211,10 +254,10 @@ function buildYesterdayMinutePoints(summary = YESTERDAY_SUMMARY_FIXTURE) {
   };
 }
 
-function build24HourPoints() {
+function build24HourPoints(): TimeseriesResponse {
   const end = new Date("2026-04-09T12:20:00+08:00");
   const start = new Date(end.getTime() - 24 * 60 * 60_000);
-  const points: Array<Record<string, number | string | null>> = [];
+  const points: TimeseriesPoint[] = [];
   for (let index = 0; index < 24 * 60; index += 1) {
     const bucketStart = new Date(start.getTime() + index * 60_000);
     const bucketEnd = new Date(bucketStart.getTime() + 60_000);
@@ -253,10 +296,10 @@ function build24HourPoints() {
   };
 }
 
-function buildHourlyPoints() {
+function buildHourlyPoints(): TimeseriesResponse {
   const end = new Date("2026-04-09T00:00:00+08:00");
   const start = new Date(end.getTime() - 7 * 24 * 60 * 60_000);
-  const points: Array<Record<string, number | string | null>> = [];
+  const points: TimeseriesPoint[] = [];
   for (let index = 0; index < 7 * 24; index += 1) {
     const bucketStart = new Date(start.getTime() + index * 60 * 60_000);
     const bucketEnd = new Date(bucketStart.getTime() + 60 * 60_000);
@@ -295,11 +338,11 @@ function buildHourlyPoints() {
   };
 }
 
-function buildDailyPoints() {
+function buildDailyPoints(): TimeseriesResponse {
   const endExclusive = new Date("2026-04-09T00:00:00+08:00");
   const start = new Date(endExclusive);
   start.setDate(start.getDate() - 180);
-  const points: Array<Record<string, number | string | null>> = [];
+  const points: TimeseriesPoint[] = [];
   for (let index = 0; index < 180; index += 1) {
     const bucketStart = new Date(start);
     bucketStart.setDate(start.getDate() + index);
@@ -368,6 +411,44 @@ function buildDashboardNetworkPoints(range: "today" | "yesterday" | "1d") {
   };
 }
 
+function buildParallelWorkWindow(counts: number[], rangeStart: string, bucketSeconds: number) {
+  const startMs = Date.parse(rangeStart);
+  return {
+    rangeStart,
+    rangeEnd: new Date(startMs + counts.length * bucketSeconds * 1000).toISOString(),
+    bucketSeconds,
+    completeBucketCount: counts.length,
+    activeBucketCount: counts.filter((count) => count > 0).length,
+    minCount: counts.length > 0 ? Math.min(...counts) : null,
+    maxCount: counts.length > 0 ? Math.max(...counts) : null,
+    avgCount:
+      counts.length > 0
+        ? Number((counts.reduce((sum, count) => sum + count, 0) / counts.length).toFixed(2))
+        : null,
+    effectiveTimeZone: "Asia/Shanghai",
+    timeZoneFallback: false,
+    points: counts.map((parallelCount, index) => ({
+      bucketStart: new Date(startMs + index * bucketSeconds * 1000).toISOString(),
+      bucketEnd: new Date(startMs + (index + 1) * bucketSeconds * 1000).toISOString(),
+      parallelCount,
+    })),
+    conversations: [],
+  };
+}
+
+function buildParallelWorkResponse(
+  currentCounts: number[],
+  historyCounts: number[],
+  rangeStart: string,
+) {
+  return {
+    current: buildParallelWorkWindow(currentCounts, rangeStart, 60),
+    minute7d: buildParallelWorkWindow(historyCounts, "2026-04-03T00:00:00.000Z", 60),
+    hour30d: buildParallelWorkWindow([5, 6, 7, 8], "2026-03-11T00:00:00.000Z", 3600),
+    dayAll: buildParallelWorkWindow([7], "2026-04-08T00:00:00.000Z", 86400),
+  };
+}
+
 const SUMMARY_FIXTURES: Record<SummaryKey, ReturnType<typeof createSummary>> = {
   today: TODAY_SUMMARY_FIXTURE,
   yesterday: YESTERDAY_SUMMARY_FIXTURE,
@@ -376,13 +457,7 @@ const SUMMARY_FIXTURES: Record<SummaryKey, ReturnType<typeof createSummary>> = {
   "7d": createSummary(182904, 171240, 11664, 8422.18, 21640351742),
 };
 
-const TIMESERIES_FIXTURES: Record<
-  TimeseriesKey,
-  | ReturnType<typeof buildTodayMinutePoints>
-  | ReturnType<typeof build24HourPoints>
-  | ReturnType<typeof buildHourlyPoints>
-  | ReturnType<typeof buildDailyPoints>
-> = {
+const TIMESERIES_FIXTURES: Record<TimeseriesKey, TimeseriesFixture> = {
   "today:1m": buildTodayMinutePoints(),
   "yesterday:1m": buildYesterdayMinutePoints(),
   "1d:1m": build24HourPoints(),
@@ -397,6 +472,97 @@ const DASHBOARD_NETWORK_TIMESERIES_FIXTURES: Record<
   "today:5m": buildDashboardNetworkPoints("today"),
   "yesterday:5m": buildDashboardNetworkPoints("yesterday"),
   "1d:5m": buildDashboardNetworkPoints("1d"),
+};
+
+function buildSnapshotBundle(
+  range: "today" | "yesterday" | "1d" | "7d" | "usage",
+): DashboardOverviewSnapshotBundle {
+  if (range === "today") {
+    return {
+      range,
+      dashboardActivity: buildSnapshotDashboardActivityResponse({
+        range: "today",
+        summary: TODAY_SUMMARY_FIXTURE,
+        tokensPerMinute: 1340,
+        spendRate: 1.02,
+      }),
+      timeseries: TIMESERIES_FIXTURES["today:1m"],
+      comparisonSummary: YESTERDAY_SUMMARY_FIXTURE,
+      comparisonTimeseries: TIMESERIES_FIXTURES["yesterday:1m"],
+      previous7dSummary: SUMMARY_FIXTURES.previous7d,
+      parallelWorkStats: buildParallelWorkResponse(
+        [8, 10, 12, 9],
+        [6, 7, 8, 9],
+        "2026-04-09T00:00:00.000Z",
+      ),
+      comparisonParallelWorkStats: buildParallelWorkResponse(
+        [6, 7, 8, 7],
+        [5, 6, 7, 8],
+        "2026-04-08T00:00:00.000Z",
+      ),
+      networkTimeseries: DASHBOARD_NETWORK_TIMESERIES_FIXTURES["today:5m"],
+    };
+  }
+
+  if (range === "yesterday") {
+    return {
+      range,
+      dashboardActivity: buildSnapshotDashboardActivityResponse({
+        range: "yesterday",
+        summary: YESTERDAY_SUMMARY_FIXTURE,
+        tokensPerMinute: 1210,
+        spendRate: 0.88,
+      }),
+      timeseries: TIMESERIES_FIXTURES["yesterday:1m"],
+      previous7dSummary: SUMMARY_FIXTURES.previous7d,
+      parallelWorkStats: buildParallelWorkResponse(
+        [6, 7, 8, 7],
+        [5, 6, 7, 8],
+        "2026-04-08T00:00:00.000Z",
+      ),
+      networkTimeseries: DASHBOARD_NETWORK_TIMESERIES_FIXTURES["yesterday:5m"],
+    };
+  }
+
+  if (range === "1d") {
+    return {
+      range,
+      dashboardActivity: buildSnapshotDashboardActivityResponse({
+        range: "1d",
+        summary: SUMMARY_FIXTURES["1d"],
+        tokensPerMinute: 2580,
+        spendRate: 3.14,
+      }),
+      summary: SUMMARY_FIXTURES["1d"],
+      timeseries: TIMESERIES_FIXTURES["1d:1m"],
+      networkTimeseries: DASHBOARD_NETWORK_TIMESERIES_FIXTURES["1d:5m"],
+    };
+  }
+
+  if (range === "7d") {
+    return {
+      range,
+      dashboardActivity: buildSnapshotDashboardActivityResponse({
+        range: "7d",
+        summary: SUMMARY_FIXTURES["7d"],
+        tokensPerMinute: 6840,
+        spendRate: 8.44,
+      }),
+      summary: SUMMARY_FIXTURES["7d"],
+      timeseries: TIMESERIES_FIXTURES["7d:1h"],
+    };
+  }
+
+  return {
+    range,
+    timeseries: TIMESERIES_FIXTURES["6mo:1d"],
+  };
+}
+
+const OFFLINE_SNAPSHOT_STATUS: DashboardOverviewSnapshotStatus = {
+  mode: "cached-offline",
+  cachedAt: "2026-04-09T12:26:00.000Z",
+  readyRanges: ["today", "yesterday", "1d", "7d", "usage"],
 };
 
 function buildActivityWeight(index: number, mode: "success" | "failure") {
@@ -1121,6 +1287,48 @@ export const HistoryView: Story = {
     });
     await expect(canvas.getByTestId("usage-calendar-card")).toBeVisible();
     await expect(canvas.queryByText(/总 TOKENS|total tokens/i)).toBeNull();
+  },
+};
+
+export const OfflineCachedToday: Story = {
+  render: () => (
+    <DashboardActivityOverview
+      activeRange="today"
+      snapshotStatus={OFFLINE_SNAPSHOT_STATUS}
+      snapshotBundle={buildSnapshotBundle("today")}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => {
+      expect(canvas.getByTestId("dashboard-overview-snapshot-banner")).toBeVisible();
+      expect(canvas.getByTestId("today-stats-value-tpm")).toBeVisible();
+      expect(canvas.getByTestId("dashboard-activity-range-today")).toHaveAttribute(
+        "data-active",
+        "true",
+      );
+    });
+  },
+};
+
+export const OfflineRangeNotCachedYet: Story = {
+  render: () => (
+    <DashboardActivityOverview
+      activeRange="usage"
+      snapshotStatus={{
+        mode: "not-cached-yet",
+        cachedAt: null,
+        readyRanges: ["today", "yesterday"],
+      }}
+      snapshotBundle={null}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => {
+      expect(canvas.getByTestId("dashboard-overview-snapshot-empty")).toBeVisible();
+      expect(canvas.queryByTestId("usage-calendar-card")).toBeNull();
+    });
   },
 };
 

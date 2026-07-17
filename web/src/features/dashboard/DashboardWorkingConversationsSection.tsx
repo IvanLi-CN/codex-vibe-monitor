@@ -66,8 +66,18 @@ import {
   REASONING_EFFORT_TONE_CLASSNAMES,
 } from "../invocations/invocation-table-reasoning";
 import { renderInvocationTransportBadge } from "../invocations/invocation-transport-badge";
+import { AdaptiveDisplayValue } from "../shared/AdaptiveMetricValue";
 import { AnimatedDigits } from "../shared/AnimatedDigits";
 import { AppIcon, type AppIconName } from "../shared/AppIcon";
+import {
+  type AdaptiveDisplayValueSpec,
+  buildAdaptiveCurrencyAmountTextSpec,
+  buildAdaptiveCurrencyTextSpec,
+  buildAdaptiveDurationTextSpec,
+  buildAdaptiveNumberTextSpec,
+  buildAdaptivePercentTextSpec,
+  buildAdaptiveTextSpec,
+} from "../shared/adaptiveMetricValueSpec";
 import {
   DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY,
   type DashboardActivityRangeKey,
@@ -121,6 +131,10 @@ interface DashboardWorkingConversationsSectionProps {
   upstreamAccountRecentPreviewLimit?: number;
   onUpstreamAccountActivityEnabledChange?: (enabled: boolean) => void;
   onUpstreamAccountPolicyChanged?: () => void;
+}
+
+function readBrowserOfflineState() {
+  return typeof navigator === "undefined" ? false : !navigator.onLine;
 }
 
 export interface DashboardWorkingConversationSelection {
@@ -229,6 +243,10 @@ const UPSTREAM_ACCOUNT_RECENT_IDENTITY_CHIP_CLASS_NAME =
 
 const ACCOUNT_HEADER_BADGE_CLASS_NAME =
   "inline-flex h-6 shrink-0 items-center rounded-full border px-2.5 text-[11px] font-semibold leading-none";
+const ACCOUNT_CARD_STACKED_HEADER_BREAKPOINT_PX = 620;
+const ACCOUNT_CARD_HERO_SINGLE_COLUMN_BREAKPOINT_PX = 300;
+const ACCOUNT_CARD_HERO_TWO_COLUMN_BREAKPOINT_PX = 760;
+const ACCOUNT_CARD_RECENT_STACK_BREAKPOINT_PX = 520;
 
 const UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONE_CLASSNAMES = [
   "dashboard-upstream-account-identity-chip--tone-sky",
@@ -627,18 +645,6 @@ function formatAccountCurrencyValue(
   }).format(value);
 }
 
-function formatAccountCurrencyAmountValue(
-  value: number | null | undefined,
-  localeTag: string,
-  maximumFractionDigits = 2,
-) {
-  if (value == null || !Number.isFinite(value)) return FALLBACK_CELL;
-  return new Intl.NumberFormat(localeTag, {
-    minimumFractionDigits: maximumFractionDigits,
-    maximumFractionDigits,
-  }).format(value);
-}
-
 function formatAccountDurationValue(value: number | null | undefined, localeTag: string) {
   if (value == null || !Number.isFinite(value)) return FALLBACK_CELL;
   const abs = Math.abs(value);
@@ -731,6 +737,107 @@ type AccountMetricDetailSection = {
   rows: AccountMetricDetailRow[];
 };
 
+type AccountDisplayValue = {
+  spec: AdaptiveDisplayValueSpec;
+  fullText: string;
+  ariaText: string;
+};
+
+function toAccountDisplayValue(spec: AdaptiveDisplayValueSpec): AccountDisplayValue {
+  return {
+    spec,
+    fullText: spec.fullValue,
+    ariaText: spec.fullValue,
+  };
+}
+
+function buildAccountPercentDisplayValue(value: number | null | undefined, localeTag: string) {
+  return toAccountDisplayValue(
+    buildAdaptivePercentTextSpec(value ?? null, localeTag, {
+      maximumFractionDigits: 1,
+    }),
+  );
+}
+
+function buildAccountNumberDisplayValue(
+  value: number | null | undefined,
+  localeTag: string,
+  maximumFractionDigits = 0,
+) {
+  return toAccountDisplayValue(
+    buildAdaptiveNumberTextSpec(value ?? null, localeTag, maximumFractionDigits),
+  );
+}
+
+function buildAccountCurrencyDisplayValue(
+  value: number | null | undefined,
+  localeTag: string,
+  maximumFractionDigits = 2,
+) {
+  if (value == null || !Number.isFinite(value)) {
+    return toAccountDisplayValue(
+      buildAdaptiveTextSpec(FALLBACK_CELL, [
+        { key: "placeholder", value: FALLBACK_CELL, priority: 0 },
+      ]),
+    );
+  }
+
+  const precisionCandidates = Array.from(
+    { length: maximumFractionDigits + 1 },
+    (_, index) => maximumFractionDigits - index,
+  );
+  const fullValue = new Intl.NumberFormat(localeTag, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: maximumFractionDigits,
+    maximumFractionDigits,
+  }).format(value);
+
+  return toAccountDisplayValue(
+    buildAdaptiveTextSpec(fullValue, [
+      {
+        key: "full",
+        value: fullValue,
+        priority: 0,
+      },
+      ...precisionCandidates
+        .filter((precision) => precision !== maximumFractionDigits)
+        .map((precision, index) => ({
+          key: `standard-${precision}`,
+          value: new Intl.NumberFormat(localeTag, {
+            style: "currency",
+            currency: "USD",
+            minimumFractionDigits: precision,
+            maximumFractionDigits: precision,
+          }).format(value),
+          priority: index + 1,
+        })),
+      ...buildAdaptiveCurrencyTextSpec(value, localeTag).candidates.map((candidate, index) => ({
+        key: candidate.key,
+        value: candidate.value,
+        priority: 20 + index,
+      })),
+    ]),
+  );
+}
+
+function buildAccountCurrencyAmountDisplayValue(
+  value: number | null | undefined,
+  localeTag: string,
+  maximumFractionDigits = 2,
+) {
+  return toAccountDisplayValue(
+    buildAdaptiveCurrencyAmountTextSpec(value ?? null, localeTag, {
+      maximumFractionDigits,
+      minimumFractionDigits: maximumFractionDigits,
+    }),
+  );
+}
+
+function buildAccountDurationDisplayValue(value: number | null | undefined, localeTag: string) {
+  return toAccountDisplayValue(buildAdaptiveDurationTextSpec(value ?? null, localeTag));
+}
+
 const ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES: Record<AccountMetricTone, string> = {
   neutral: "text-base-content",
   primary: "text-primary",
@@ -750,6 +857,8 @@ const ACCOUNT_METRIC_DOT_TONE_CLASSNAMES: Record<AccountMetricTone, string> = {
   error: "bg-error/90",
   info: "bg-info/90",
 };
+
+const ACCOUNT_INLINE_METRIC_ICON_AND_GAP_PX = 26;
 
 type AccountQuickPolicyDraft = {
   priorityTier: TagPriorityTier;
@@ -1153,7 +1262,7 @@ function AccountHeroMetric({
   children,
 }: {
   label: string;
-  value: string;
+  value: AccountDisplayValue;
   tone: "neutral" | "primary" | "secondary" | "success" | "warning" | "info";
   iconName: AppIconName;
   hint?: string;
@@ -1162,6 +1271,7 @@ function AccountHeroMetric({
   metricKey?: string;
   children?: ReactNode;
 }) {
+  const valueTestId = metricKey ? `dashboard-upstream-account-${metricKey}-value` : undefined;
   const toneSurfaceClassName = {
     neutral: cn("bg-base-100/72 ring-1 ring-inset", ACCOUNT_CARD_INNER_RING_CLASS_NAME),
     primary: cn("bg-base-100/72 ring-1 ring-inset", ACCOUNT_CARD_INNER_RING_CLASS_NAME),
@@ -1171,11 +1281,11 @@ function AccountHeroMetric({
     info: cn("bg-base-100/72 ring-1 ring-inset", ACCOUNT_CARD_INNER_RING_CLASS_NAME),
   }[tone];
   const valueClassName =
-    value === FALLBACK_CELL
+    value.fullText === FALLBACK_CELL
       ? "text-base-content/55"
       : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[tone === "neutral" ? "neutral" : tone];
   const iconClassName =
-    value === FALLBACK_CELL
+    value.fullText === FALLBACK_CELL
       ? "text-base-content/45"
       : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[tone === "neutral" ? "neutral" : tone];
 
@@ -1210,7 +1320,12 @@ function AccountHeroMetric({
             valueClassName,
           )}
         >
-          <AnimatedDigits value={value} />
+          <AdaptiveDisplayValue
+            spec={value.spec}
+            className="block min-w-0 max-w-full"
+            data-testid={valueTestId}
+            animateDigits
+          />
         </div>
       </div>
       {hint ? <div className="mt-1 text-[11px] leading-4 text-base-content/58">{hint}</div> : null}
@@ -1236,7 +1351,7 @@ function AccountHeroMetric({
         tooltipContent ?? (
           <AccountMetricDetailTooltip
             label={label}
-            value={value}
+            value={value.fullText}
             valueClassName={valueClassName}
             sections={detailSections ?? []}
           />
@@ -1244,7 +1359,7 @@ function AccountHeroMetric({
       }
       triggerProps={{
         tabIndex: 0,
-        "aria-label": `${label} ${value}`,
+        "aria-label": `${label} ${value.ariaText}`,
       }}
     >
       {card}
@@ -1314,23 +1429,94 @@ function AccountInlineMetric({
   value,
   tone,
   iconName,
+  metricKey,
+  className,
+  alignment = "start",
+  fillAvailableWidth = false,
   modelPerformance,
   modelPerformanceTitle,
 }: {
   label: string;
-  value: string;
+  value: AccountDisplayValue;
   tone: AccountMetricTone;
   iconName: AppIconName;
+  metricKey?: string;
+  className?: string;
+  alignment?: "start" | "center" | "end";
+  fillAvailableWidth?: boolean;
   modelPerformance?: ModelPerformance | null;
   modelPerformanceTitle?: string;
 }) {
+  const valueTestId = metricKey
+    ? `dashboard-upstream-account-inline-${metricKey}-value`
+    : undefined;
   const valueClassName =
-    value === FALLBACK_CELL ? "text-base-content/55" : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[tone];
+    value.fullText === FALLBACK_CELL
+      ? "text-base-content/55"
+      : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[tone];
   const iconClassName =
-    value === FALLBACK_CELL ? "text-base-content/45" : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[tone];
+    value.fullText === FALLBACK_CELL
+      ? "text-base-content/45"
+      : ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[tone];
+  const iconAdjustmentClassName =
+    iconName === "send"
+      ? "-rotate-45 -translate-y-[0.5px]"
+      : iconName === "speedometer"
+        ? "-translate-y-px"
+        : iconName === "cash-clock"
+          ? "translate-y-[0.5px]"
+          : null;
+  const widthMeasureRef = useRef<HTMLSpanElement | null>(null);
+  const [availableWidthPx, setAvailableWidthPx] = useState<number | undefined>(undefined);
+
+  useLayoutEffect(() => {
+    if (!fillAvailableWidth) {
+      setAvailableWidthPx(undefined);
+      return undefined;
+    }
+
+    const element = widthMeasureRef.current;
+    if (!element) return undefined;
+
+    const syncWidth = () => {
+      const nextWidth = Math.max(0, element.clientWidth - ACCOUNT_INLINE_METRIC_ICON_AND_GAP_PX);
+      setAvailableWidthPx((current) => (current === nextWidth ? current : nextWidth));
+    };
+
+    syncWidth();
+    window.addEventListener("resize", syncWidth);
+
+    if (typeof ResizeObserver === "undefined") {
+      return () => {
+        window.removeEventListener("resize", syncWidth);
+      };
+    }
+
+    const observer = new ResizeObserver(() => {
+      syncWidth();
+    });
+    observer.observe(element);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", syncWidth);
+    };
+  }, [fillAvailableWidth]);
+
+  const triggerAlignmentClassName =
+    alignment === "center"
+      ? "justify-center"
+      : alignment === "end"
+        ? "justify-end"
+        : "justify-start";
 
   const metric = (
-    <span className="inline-flex min-w-0 items-center gap-1.5 whitespace-nowrap">
+    <span
+      className={cn(
+        "inline-flex h-[1.35rem] min-w-0 max-w-full shrink-0 items-center gap-1.5 whitespace-nowrap",
+        className,
+      )}
+    >
       <span
         aria-hidden
         className={cn(
@@ -1338,45 +1524,64 @@ function AccountInlineMetric({
           iconClassName,
         )}
       >
-        <AppIcon name={iconName} className={cn(iconName === "send" && "-rotate-45")} />
+        <AppIcon name={iconName} className={iconAdjustmentClassName ?? undefined} />
       </span>
-      <span className={cn("font-mono text-[1.02rem] font-semibold leading-none", valueClassName)}>
-        <AnimatedDigits value={value} />
+      <span
+        className={cn(
+          "inline-flex h-[1.2rem] min-w-0 items-center overflow-hidden font-mono text-[1.02rem] font-semibold leading-none",
+          valueClassName,
+        )}
+      >
+        <AdaptiveDisplayValue
+          spec={value.spec}
+          className="block min-w-0 max-w-full"
+          availableWidthPx={availableWidthPx}
+          data-testid={valueTestId}
+          animateDigits
+        />
       </span>
     </span>
   );
 
-  if (modelPerformance && modelPerformanceTitle) {
-    return (
-      <ModelPerformanceTrigger
-        title={modelPerformanceTitle}
-        ariaLabel={`${label} ${modelPerformanceTitle}`}
-        performance={modelPerformance}
-        className="rounded-md"
-      >
-        {metric}
-      </ModelPerformanceTrigger>
-    );
-  }
-
-  return (
-    <Tooltip
-      content={
-        <span className="font-medium">
-          {label}
-          <span className="font-mono font-semibold"> {value}</span>
-        </span>
-      }
-      clickToOpen
-      className="rounded-md"
-      triggerProps={{
-        tabIndex: 0,
-        "aria-label": `${label} ${value}`,
-      }}
-    >
-      {metric}
-    </Tooltip>
+  const wrappedMetric = (
+    <span ref={fillAvailableWidth ? widthMeasureRef : undefined} className="block w-full min-w-0">
+      {modelPerformance && modelPerformanceTitle ? (
+        <ModelPerformanceTrigger
+          title={modelPerformanceTitle}
+          ariaLabel={`${label} ${modelPerformanceTitle}`}
+          performance={modelPerformance}
+          className={cn(
+            "rounded-md",
+            fillAvailableWidth ? `w-full ${triggerAlignmentClassName}` : null,
+          )}
+        >
+          {metric}
+        </ModelPerformanceTrigger>
+      ) : (
+        <Tooltip
+          content={
+            <span className="font-medium">
+              {label}
+              <span className="font-mono font-semibold"> {value.fullText}</span>
+            </span>
+          }
+          clickToOpen
+          className={cn(
+            "rounded-md",
+            fillAvailableWidth ? `w-full ${triggerAlignmentClassName}` : null,
+          )}
+          triggerProps={{
+            tabIndex: 0,
+            "aria-label": `${label} ${value.ariaText}`,
+          }}
+        >
+          {metric}
+        </Tooltip>
+      )}
+    </span>
   );
+
+  return wrappedMetric;
 }
 
 function sumUpstreamAccountNetworkSpeed(
@@ -1426,7 +1631,7 @@ function NetworkSpeedInline({
     <div
       data-testid={testId}
       className={cn(
-        "inline-flex min-w-0 items-center gap-3 rounded-full border border-base-300/65 bg-base-100/78 px-2.5 py-1",
+        "inline-flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-full border border-base-300/65 bg-base-100/78 px-2.5 py-1",
         className,
       )}
       aria-label={`${uploadLabel} ${uploadValue}; ${downloadLabel} ${downloadValue}`}
@@ -1453,22 +1658,24 @@ function AccountSegmentList({
   className,
   testId,
   showLabel = false,
+  showIconWhenLabelHidden = false,
   enableTooltips = true,
 }: {
   segments: Array<{
     label: string;
-    value: ReactNode;
+    value: AccountDisplayValue;
     tone: AccountMetricTone;
     iconName?: AppIconName;
   }>;
   className?: string;
   testId?: string;
   showLabel?: boolean;
+  showIconWhenLabelHidden?: boolean;
   enableTooltips?: boolean;
 }) {
   const renderedSegments = segments.map((segment) => (
     <span
-      key={`${segment.label}-${String(segment.value)}`}
+      key={`${segment.label}-${segment.value.fullText}`}
       data-testid="dashboard-upstream-account-segment"
       data-motion-surface
       className={cn(
@@ -1502,21 +1709,32 @@ function AccountSegmentList({
         </>
       ) : null}
       {!showLabel ? (
-        <span
-          className={cn(
-            "h-1.5 w-1.5 rounded-full",
-            ACCOUNT_METRIC_DOT_TONE_CLASSNAMES[segment.tone],
-          )}
-          aria-hidden="true"
-        />
+        showIconWhenLabelHidden && segment.iconName ? (
+          <AppIcon
+            name={segment.iconName}
+            className={cn(
+              "h-3.5 w-3.5 shrink-0",
+              ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[segment.tone],
+            )}
+            aria-hidden
+          />
+        ) : (
+          <span
+            className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              ACCOUNT_METRIC_DOT_TONE_CLASSNAMES[segment.tone],
+            )}
+            aria-hidden="true"
+          />
+        )
       ) : null}
       <span
         className={cn(
-          "font-mono text-[12px] font-semibold leading-none",
+          "min-w-0 font-mono text-[12px] font-semibold leading-none",
           ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES[segment.tone],
         )}
       >
-        {segment.value}
+        <AdaptiveDisplayValue spec={segment.value.spec} className="block min-w-0 max-w-full" />
       </span>
     </span>
   ));
@@ -1525,7 +1743,7 @@ function AccountSegmentList({
     <div
       data-testid={testId}
       aria-label={segments
-        .map((segment) => `${segment.label} ${String(segment.value)}`)
+        .map((segment) => `${segment.label} ${segment.value.ariaText}`)
         .join(" · ")}
       className={cn(
         "flex flex-wrap items-center gap-x-3 gap-y-1.5",
@@ -1536,18 +1754,18 @@ function AccountSegmentList({
       {enableTooltips
         ? segments.map((segment, index) => (
             <Tooltip
-              key={`${segment.label}-${String(segment.value)}`}
+              key={`${segment.label}-${segment.value.fullText}`}
               content={
                 <span className="font-medium">
                   {segment.label}
-                  <span className="font-mono font-semibold"> {String(segment.value)}</span>
+                  <span className="font-mono font-semibold"> {segment.value.fullText}</span>
                 </span>
               }
               clickToOpen
               className="rounded-md"
               triggerProps={{
                 tabIndex: 0,
-                "aria-label": `${segment.label} ${String(segment.value)}`,
+                "aria-label": `${segment.label} ${segment.value.ariaText}`,
               }}
             >
               {renderedSegments[index]}
@@ -2492,6 +2710,8 @@ function DashboardUpstreamAccountActivityCard({
   onRetryRecent?: () => void;
 }) {
   const { t } = useTranslation();
+  const cardRef = useRef<HTMLElement | null>(null);
+  const [cardWidth, setCardWidth] = useState(0);
   const serverPolicyDraft = useMemo(() => accountPolicyDraftFromRule(account), [account]);
   const [policyDraft, setPolicyDraft] = useState<AccountQuickPolicyDraft>(serverPolicyDraft);
   const [policySaveError, setPolicySaveError] = useState<string | null>(null);
@@ -2517,6 +2737,35 @@ function DashboardUpstreamAccountActivityCard({
       tab: "healthEvents",
     });
   }, [account.displayName, account.upstreamAccountId, onOpenUpstreamAccount]);
+  useLayoutEffect(() => {
+    const card = cardRef.current;
+    if (!card) return undefined;
+
+    const updateCardWidth = () => {
+      const nextWidth = card.clientWidth;
+      setCardWidth((current) => (Math.abs(current - nextWidth) > 0.5 ? nextWidth : current));
+    };
+
+    updateCardWidth();
+    const frame = window.requestAnimationFrame(updateCardWidth);
+    window.addEventListener("resize", updateCardWidth);
+
+    if (typeof ResizeObserver === "undefined") {
+      return () => {
+        window.cancelAnimationFrame(frame);
+        window.removeEventListener("resize", updateCardWidth);
+      };
+    }
+
+    const observer = new ResizeObserver(updateCardWidth);
+    observer.observe(card);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", updateCardWidth);
+      observer.disconnect();
+    };
+  }, []);
   useEffect(() => {
     lastCommittedPolicyRef.current = serverPolicyDraft;
     if (!debounceTimerRef.current && !isSavingPolicy) {
@@ -2625,17 +2874,17 @@ function DashboardUpstreamAccountActivityCard({
     () => [
       {
         label: locale === "zh" ? "成功" : "Success",
-        value: formatAccountNumberValue(account.successCount, localeTag, 0),
+        value: buildAccountNumberDisplayValue(account.successCount, localeTag, 0),
         tone: "success" as const,
       },
       {
         label: locale === "zh" ? "失败" : "Failure",
-        value: formatAccountNumberValue(account.failureCount, localeTag, 0),
+        value: buildAccountNumberDisplayValue(account.failureCount, localeTag, 0),
         tone: "error" as const,
       },
       {
         label: locale === "zh" ? "其他" : "Other",
-        value: formatAccountNumberValue(
+        value: buildAccountNumberDisplayValue(
           Math.max(0, account.nonSuccessCount - account.failureCount),
           localeTag,
           0,
@@ -2650,12 +2899,12 @@ function DashboardUpstreamAccountActivityCard({
     return [
       {
         label: locale === "zh" ? "失败" : "Failure",
-        value: formatAccountCurrencyValue(account.failureCost, localeTag, 2),
+        value: buildAccountCurrencyDisplayValue(account.failureCost, localeTag, 2),
         tone: "error" as const,
       },
       {
         label: locale === "zh" ? "失败成本比率" : "Failure cost ratio",
-        value: formatAccountPercentValue(failureCostShare, localeTag),
+        value: buildAccountPercentDisplayValue(failureCostShare, localeTag),
         tone: "error" as const,
       },
     ];
@@ -2664,12 +2913,12 @@ function DashboardUpstreamAccountActivityCard({
     () => [
       {
         label: locale === "zh" ? "缓存命中率" : "Cache hit",
-        value: formatAccountPercentValue(account.cacheHitRate, localeTag),
+        value: buildAccountPercentDisplayValue(account.cacheHitRate, localeTag),
         tone: "secondary" as const,
       },
       {
         label: locale === "zh" ? "失败" : "Failure",
-        value: formatAccountNumberValue(account.failureTokens, localeTag, 0),
+        value: buildAccountNumberDisplayValue(account.failureTokens, localeTag, 0),
         tone: "error" as const,
       },
     ],
@@ -2680,7 +2929,7 @@ function DashboardUpstreamAccountActivityCard({
     if (account.failureCount > 0) {
       segments.push({
         label: locale === "zh" ? "失败" : "Failure",
-        value: formatAccountNumberValue(account.failureCount, localeTag, 0),
+        value: buildAccountNumberDisplayValue(account.failureCount, localeTag, 0),
         tone: "error" as const,
         iconName: "alert-circle-outline" as const,
       });
@@ -2688,7 +2937,7 @@ function DashboardUpstreamAccountActivityCard({
     if (account.nonSuccessCount > account.failureCount) {
       segments.push({
         label: locale === "zh" ? "非成功" : "Non-success",
-        value: formatAccountNumberValue(
+        value: buildAccountNumberDisplayValue(
           account.nonSuccessCount - account.failureCount,
           localeTag,
           0,
@@ -2700,26 +2949,42 @@ function DashboardUpstreamAccountActivityCard({
     if (account.successCount > 0) {
       segments.push({
         label: locale === "zh" ? "成功" : "Success",
-        value: formatAccountNumberValue(account.successCount, localeTag, 0),
+        value: buildAccountNumberDisplayValue(account.successCount, localeTag, 0),
         tone: "success" as const,
         iconName: "check-circle-outline" as const,
       });
     }
     return segments;
   }, [account.failureCount, account.nonSuccessCount, account.successCount, locale, localeTag]);
-  const currentFirstByteValue = formatAccountDurationValue(
+  const currentFirstByteDisplayValue = buildAccountDurationDisplayValue(
     account.currentFirstResponseByteTotalAvgMs,
     localeTag,
   );
-  const currentAvgTotalValue = formatAccountDurationValue(account.currentAvgTotalMs, localeTag);
+  const currentAvgTotalDisplayValue = buildAccountDurationDisplayValue(
+    account.currentAvgTotalMs,
+    localeTag,
+  );
   const rangeFirstByteValue = formatAccountDurationValue(
     account.firstResponseByteTotalAvgMs ?? account.firstByteAvgMs,
     localeTag,
   );
   const rangeAvgTotalValue = formatAccountDurationValue(account.avgTotalMs, localeTag);
-  const totalRequestValue = formatAccountNumberValue(account.requestCount, localeTag, 0);
-  const totalCostValue = formatAccountCurrencyAmountValue(account.totalCost, localeTag, 2);
-  const totalTokenValue = formatAccountNumberValue(account.totalTokens, localeTag, 0);
+  const totalRequestDisplayValue = buildAccountNumberDisplayValue(
+    account.requestCount,
+    localeTag,
+    0,
+  );
+  const totalCostDisplayValue = buildAccountCurrencyAmountDisplayValue(
+    account.totalCost,
+    localeTag,
+    2,
+  );
+  const totalTokenDisplayValue = buildAccountNumberDisplayValue(account.totalTokens, localeTag, 0);
+  const currentFirstByteValue = currentFirstByteDisplayValue.fullText;
+  const currentAvgTotalValue = currentAvgTotalDisplayValue.fullText;
+  const totalRequestValue = totalRequestDisplayValue.fullText;
+  const totalCostValue = totalCostDisplayValue.fullText;
+  const totalTokenValue = totalTokenDisplayValue.fullText;
   const usageDetailsLabel = t("dashboard.usageBreakdown.title");
   const usageBreakdownLabels =
     locale === "zh"
@@ -3024,21 +3289,55 @@ function DashboardUpstreamAccountActivityCard({
     localeTag,
     totalTokenValue,
   ]);
+  const inProgressDisplayValue = buildAccountNumberDisplayValue(
+    account.inProgressInvocationCount,
+    localeTag,
+    0,
+  );
+  const tokensPerMinuteDisplayValue = buildAccountNumberDisplayValue(
+    account.tokensPerMinute,
+    localeTag,
+    0,
+  );
+  const spendRateDisplayValue = buildAccountCurrencyAmountDisplayValue(
+    account.spendRate,
+    localeTag,
+    2,
+  );
   const modelPerformanceTitle = `${account.displayName} · ${t("dashboard.modelPerformance.title")}`;
   const networkUploadLabel = t("dashboard.activityOverview.networkUpload");
   const networkDownloadLabel = t("dashboard.activityOverview.networkDownload");
+  const headerLayout =
+    cardWidth > 0 && cardWidth < ACCOUNT_CARD_STACKED_HEADER_BREAKPOINT_PX ? "stacked" : "split";
+  const inlineMetricLayout = headerLayout === "stacked" ? "three-columns" : "inline";
+  const heroMetricColumnCount =
+    cardWidth > 0 && cardWidth < ACCOUNT_CARD_HERO_SINGLE_COLUMN_BREAKPOINT_PX
+      ? 1
+      : cardWidth > 0 && cardWidth < ACCOUNT_CARD_HERO_TWO_COLUMN_BREAKPOINT_PX
+        ? 2
+        : 4;
+  const recentBreakdownLayout =
+    cardWidth > 0 && cardWidth < ACCOUNT_CARD_RECENT_STACK_BREAKPOINT_PX ? "stacked" : "inline";
   return (
     <article
+      ref={cardRef}
       data-testid="dashboard-upstream-account-card"
       data-account-key={account.accountKey ?? account.upstreamAccountId ?? "unassigned"}
+      data-header-layout={headerLayout}
+      data-inline-metric-layout={inlineMetricLayout}
+      data-metric-columns={String(heroMetricColumnCount)}
+      data-recent-breakdown-layout={recentBreakdownLayout}
       className={ACCOUNT_CARD_CLASS_NAME}
     >
       <div className="flex flex-col gap-2">
         <div
           data-testid="dashboard-upstream-account-header-row"
-          className="grid items-start gap-x-4 gap-y-2 xl:grid-cols-[minmax(0,1fr)_auto]"
+          className={cn(
+            "grid items-start gap-x-4 gap-y-2",
+            headerLayout === "stacked" ? "grid-cols-1" : "grid-cols-[minmax(0,1fr)_auto]",
+          )}
         >
-          <div className="flex min-w-0 flex-wrap items-center gap-2 xl:col-start-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <button
               type="button"
               data-motion-surface
@@ -3085,38 +3384,94 @@ function DashboardUpstreamAccountActivityCard({
               onToggleCutIn={handleToggleCutIn}
             />
           </div>
-          <div className="flex min-w-0 flex-wrap items-center justify-start gap-x-5 gap-y-1.5 text-right xl:col-start-2 xl:justify-end xl:self-start">
-            <NetworkSpeedInline
-              uploadBytesPerSecond={account.uploadBytesPerSecond}
-              downloadBytesPerSecond={account.downloadBytesPerSecond}
-              localeTag={localeTag}
-              uploadLabel={networkUploadLabel}
-              downloadLabel={networkDownloadLabel}
-              testId="dashboard-upstream-account-network-speed"
-            />
-            <AccountInlineMetric
-              label={t("dashboard.today.inProgressConversations")}
-              value={formatAccountNumberValue(account.inProgressInvocationCount, localeTag, 0)}
-              tone="secondary"
-              iconName="send"
-            />
-            <AccountInlineMetric
-              label="TPM"
-              value={formatAccountNumberValue(account.tokensPerMinute, localeTag, 0)}
-              tone="primary"
-              iconName="speedometer"
-              modelPerformance={account.modelPerformance}
-              modelPerformanceTitle={modelPerformanceTitle}
-            />
-            <AccountInlineMetric
-              label={t("dashboard.today.spendRate")}
-              value={formatAccountCurrencyAmountValue(account.spendRate, localeTag, 2)}
-              tone="warning"
-              iconName="cash-clock"
-              modelPerformance={account.modelPerformance}
-              modelPerformanceTitle={modelPerformanceTitle}
-            />
-          </div>
+          {headerLayout === "stacked" ? (
+            <div className="flex w-full min-w-0 flex-col gap-y-1.5 text-right self-start">
+              <NetworkSpeedInline
+                uploadBytesPerSecond={account.uploadBytesPerSecond}
+                downloadBytesPerSecond={account.downloadBytesPerSecond}
+                localeTag={localeTag}
+                uploadLabel={networkUploadLabel}
+                downloadLabel={networkDownloadLabel}
+                testId="dashboard-upstream-account-network-speed"
+                className="w-full justify-between"
+              />
+              <div className="grid w-full min-w-0 grid-cols-3 items-center gap-x-3">
+                <div className="min-w-0">
+                  <AccountInlineMetric
+                    label={t("dashboard.today.inProgressConversations")}
+                    value={inProgressDisplayValue}
+                    tone="secondary"
+                    iconName="send"
+                    metricKey="in-progress"
+                    alignment="start"
+                    fillAvailableWidth
+                  />
+                </div>
+                <div className="min-w-0">
+                  <AccountInlineMetric
+                    label="TPM"
+                    value={tokensPerMinuteDisplayValue}
+                    tone="primary"
+                    iconName="speedometer"
+                    metricKey="tpm"
+                    alignment="center"
+                    fillAvailableWidth
+                    modelPerformance={account.modelPerformance}
+                    modelPerformanceTitle={modelPerformanceTitle}
+                  />
+                </div>
+                <div className="min-w-0">
+                  <AccountInlineMetric
+                    label={t("dashboard.today.spendRate")}
+                    value={spendRateDisplayValue}
+                    tone="warning"
+                    iconName="cash-clock"
+                    metricKey="spend-rate"
+                    alignment="end"
+                    fillAvailableWidth
+                    modelPerformance={account.modelPerformance}
+                    modelPerformanceTitle={modelPerformanceTitle}
+                  />
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex min-w-0 flex-wrap items-center justify-end gap-x-5 gap-y-1.5 text-right self-start">
+              <NetworkSpeedInline
+                uploadBytesPerSecond={account.uploadBytesPerSecond}
+                downloadBytesPerSecond={account.downloadBytesPerSecond}
+                localeTag={localeTag}
+                uploadLabel={networkUploadLabel}
+                downloadLabel={networkDownloadLabel}
+                testId="dashboard-upstream-account-network-speed"
+              />
+              <AccountInlineMetric
+                label={t("dashboard.today.inProgressConversations")}
+                value={inProgressDisplayValue}
+                tone="secondary"
+                iconName="send"
+                metricKey="in-progress"
+              />
+              <AccountInlineMetric
+                label="TPM"
+                value={tokensPerMinuteDisplayValue}
+                tone="primary"
+                iconName="speedometer"
+                metricKey="tpm"
+                modelPerformance={account.modelPerformance}
+                modelPerformanceTitle={modelPerformanceTitle}
+              />
+              <AccountInlineMetric
+                label={t("dashboard.today.spendRate")}
+                value={spendRateDisplayValue}
+                tone="warning"
+                iconName="cash-clock"
+                metricKey="spend-rate"
+                modelPerformance={account.modelPerformance}
+                modelPerformanceTitle={modelPerformanceTitle}
+              />
+            </div>
+          )}
         </div>
         {policySaveError ? (
           <div
@@ -3131,10 +3486,19 @@ function DashboardUpstreamAccountActivityCard({
       </div>
 
       <div className="mt-4 flex flex-col gap-2.5">
-        <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
+        <div
+          className={cn(
+            "grid gap-2.5",
+            heroMetricColumnCount === 1
+              ? "grid-cols-1"
+              : heroMetricColumnCount === 2
+                ? "grid-cols-2"
+                : "grid-cols-4",
+          )}
+        >
           <AccountHeroMetric
             label={t("dashboard.today.firstResponseTime")}
-            value={currentFirstByteValue}
+            value={currentFirstByteDisplayValue}
             tone={currentFirstByteValue === FALLBACK_CELL ? "neutral" : "secondary"}
             iconName="timer-outline"
             metricKey="latency"
@@ -3144,7 +3508,7 @@ function DashboardUpstreamAccountActivityCard({
               segments={[
                 {
                   label: t("dashboard.today.responseTime"),
-                  value: currentAvgTotalValue,
+                  value: currentAvgTotalDisplayValue,
                   tone: currentAvgTotalValue === FALLBACK_CELL ? "neutral" : "primary",
                 },
               ]}
@@ -3154,7 +3518,7 @@ function DashboardUpstreamAccountActivityCard({
           </AccountHeroMetric>
           <AccountHeroMetric
             label={locale === "zh" ? "请求数" : "Requests"}
-            value={totalRequestValue}
+            value={totalRequestDisplayValue}
             tone="neutral"
             iconName="counter"
             metricKey="requests"
@@ -3168,7 +3532,7 @@ function DashboardUpstreamAccountActivityCard({
           </AccountHeroMetric>
           <AccountHeroMetric
             label={locale === "zh" ? "成本" : "Cost"}
-            value={totalCostValue}
+            value={totalCostDisplayValue}
             tone="warning"
             iconName="currency-usd"
             metricKey="cost"
@@ -3192,7 +3556,7 @@ function DashboardUpstreamAccountActivityCard({
           </AccountHeroMetric>
           <AccountHeroMetric
             label="Token"
-            value={totalTokenValue}
+            value={totalTokenDisplayValue}
             tone="success"
             iconName="database-outline"
             metricKey="token"
@@ -3223,26 +3587,38 @@ function DashboardUpstreamAccountActivityCard({
           ACCOUNT_CARD_INNER_BORDER_CLASS_NAME,
         )}
       >
-        <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+        <div
+          className={cn(
+            "mb-2 flex flex-wrap gap-x-3 gap-y-1.5",
+            recentBreakdownLayout === "stacked"
+              ? "items-start justify-start"
+              : "items-center justify-between",
+          )}
+        >
           <div className="text-xs font-semibold leading-5 tracking-[0.06em] text-base-content/62">
             {t("dashboard.upstreamAccounts.recentInvocations", {
               count: recentPreviewLimit,
             })}
           </div>
           <div
-            className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5"
+            className={cn(
+              "flex flex-wrap gap-x-3 gap-y-1.5",
+              recentBreakdownLayout === "stacked" ? "justify-start" : "items-center justify-end",
+            )}
             data-testid="dashboard-upstream-account-recent-breakdown"
           >
             <InvocationPhaseSegments
               counts={account.inProgressPhaseCounts}
               appearance="inline"
               motion="static"
+              showLabel={recentBreakdownLayout !== "stacked"}
               className="justify-end"
             />
             {recentBridgeSegments.length > 0 ? (
               <AccountSegmentList
                 segments={recentBridgeSegments}
-                showLabel
+                showLabel={recentBreakdownLayout !== "stacked"}
+                showIconWhenLabelHidden
                 className="justify-end"
               />
             ) : null}
@@ -3455,6 +3831,7 @@ export function DashboardWorkingConversationsSection({
   const [viewportWidth, setViewportWidth] = useState(() =>
     typeof window === "undefined" ? 0 : window.innerWidth,
   );
+  const [isBrowserOffline, setIsBrowserOffline] = useState(readBrowserOfflineState);
   const [gridElement, setGridElement] = useState<HTMLDivElement | null>(null);
   const [scrollMargin, setScrollMargin] = useState(0);
   const visibleAnchorRef = useRef<{
@@ -3615,6 +3992,25 @@ export function DashboardWorkingConversationsSection({
       upstreamAccountActivity != null ||
       showUpstreamAccountActivityLoading ||
       upstreamAccountActivityEnabled);
+  const showWorkingConversationsOfflineState =
+    activeView === "conversations" && isBrowserOffline && cards.length === 0;
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsBrowserOffline(false);
+    };
+    const handleOffline = () => {
+      setIsBrowserOffline(true);
+    };
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
   useEffect(() => {
     if (!shouldReserveUpstreamAccountRefreshChip || upstreamAccounts.length === 0) {
       clearUpstreamAccountRefreshChipTimers();
@@ -3974,7 +4370,7 @@ export function DashboardWorkingConversationsSection({
             data-testid="dashboard-working-conversations-actions"
           >
             <div
-              className="inline-flex min-w-0 shrink-0 items-center gap-2 desktop:flex desktop:min-w-0 desktop:flex-wrap desktop:justify-end"
+              className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-2 desktop:flex desktop:min-w-0 desktop:justify-end"
               data-testid="dashboard-working-conversations-badges"
             >
               {shouldReserveUpstreamAccountRefreshChip ? (
@@ -4070,14 +4466,37 @@ export function DashboardWorkingConversationsSection({
           </>
         ) : null}
 
-        {activeView === "conversations" && isLoading && cards.length === 0 ? (
+        {showWorkingConversationsOfflineState ? (
+          <Alert
+            variant="warning"
+            className="border-warning/35 bg-warning/10 text-base-content"
+            data-testid="dashboard-working-conversations-offline"
+          >
+            <div className="space-y-1">
+              <span className="font-semibold">
+                {t("dashboard.workingConversations.offlineTitle")}
+              </span>
+              <p className="text-sm text-base-content/80">
+                {t("dashboard.workingConversations.offlineDescription")}
+              </p>
+            </div>
+          </Alert>
+        ) : null}
+
+        {activeView === "conversations" &&
+        !showWorkingConversationsOfflineState &&
+        isLoading &&
+        cards.length === 0 ? (
           <div className="flex min-h-44 items-center justify-center gap-3 rounded-2xl border border-dashed border-base-300/75 bg-base-100/45">
             <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
             <span className="text-sm text-base-content/70">{t("chart.loadingDetailed")}</span>
           </div>
         ) : null}
 
-        {activeView === "conversations" && !isLoading && cards.length === 0 ? (
+        {activeView === "conversations" &&
+        !showWorkingConversationsOfflineState &&
+        !isLoading &&
+        cards.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-base-300/75 bg-base-100/45 px-5 py-8 text-sm text-base-content/65">
             {t("dashboard.workingConversations.empty")}
           </div>
