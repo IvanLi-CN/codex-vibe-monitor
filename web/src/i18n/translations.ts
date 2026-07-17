@@ -1802,11 +1802,11 @@ const baseTranslations = {
     "dashboard.today.todayTokens": "Today Token",
     "dashboard.today.yesterdayTokens": "Yesterday Token",
     "dashboard.today.tokensPerMinuteDescription":
-      "Tokens per minute averaged across the complete selected time range.",
+      "Tokens per minute over the latest rolling 60-second window; empty traffic windows show 0.",
     "dashboard.today.spendRateDescription":
-      "Cost per minute averaged across the complete selected time range.",
+      "Spend per minute over the latest rolling 60-second window; empty traffic windows show 0.",
     "dashboard.today.responseTimeDescription":
-      "Average system-to-first-byte time across the complete selected time range.",
+      "Time to first byte and response time prefer the latest rolling 60-second success samples, then fall back to the latest valid result in the current range.",
     "dashboard.modelPerformance.title": "Model performance",
     "dashboard.modelPerformance.description":
       "Complete-range metrics for successful billed calls, grouped by response model and reasoning effort.",
@@ -4148,11 +4148,11 @@ const baseTranslations = {
     "dashboard.today.todayTokens": "今日 Token",
     "dashboard.today.yesterdayTokens": "昨日 Token",
     "dashboard.today.tokensPerMinuteDescription":
-      "每分钟 Tokens，按最近 1 个完整分钟聚合；当前未闭合分钟不计入，空桶显示 0。",
+      "每分钟 Tokens，按最近 60 秒滚动窗口计算；窗口无合格流量时显示 0。",
     "dashboard.today.spendRateDescription":
-      "每分钟消费金额，按最近 1 个完整分钟聚合；当前未闭合分钟不计入，空桶显示 0。",
+      "每分钟消费金额，按最近 60 秒滚动窗口计算；窗口无合格流量时显示 0。",
     "dashboard.today.responseTimeDescription":
-      "首字总耗时与响应时间按最近 1 个完整分钟的成功样本计算；空桶或无有效样本时显示为空。",
+      "首字总耗时与响应时间优先显示最近 60 秒滚动成功样本；窗口无新样本时保留当前范围最近一次有效结果。",
     "dashboard.modelPerformance.title": "模型性能",
     "dashboard.modelPerformance.description":
       "仅统计成功且已计费调用，按响应模型与思考程度汇总当前范围完整周期的指标。",

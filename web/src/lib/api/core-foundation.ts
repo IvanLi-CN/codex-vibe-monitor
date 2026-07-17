@@ -777,6 +777,8 @@ export interface UpstreamAccountActivityAccount {
   firstByteAvgMs?: number | null;
   firstResponseByteTotalAvgMs?: number | null;
   avgTotalMs?: number | null;
+  currentFirstResponseByteTotalAvgMs?: number | null;
+  currentAvgTotalMs?: number | null;
   inProgressInvocationCount?: number | null;
   inProgressPhaseCounts?: InvocationPhaseCounts | null;
   retryInvocationCount?: number | null;
@@ -2912,6 +2914,10 @@ function normalizeUpstreamAccountActivityAccount(
     firstByteAvgMs: normalizeFiniteNumber(payload.firstByteAvgMs),
     firstResponseByteTotalAvgMs: normalizeFiniteNumber(payload.firstResponseByteTotalAvgMs),
     avgTotalMs: normalizeFiniteNumber(payload.avgTotalMs),
+    currentFirstResponseByteTotalAvgMs: normalizeFiniteNumber(
+      payload.currentFirstResponseByteTotalAvgMs,
+    ),
+    currentAvgTotalMs: normalizeFiniteNumber(payload.currentAvgTotalMs),
     inProgressInvocationCount: normalizeFiniteNumber(payload.inProgressInvocationCount),
     inProgressPhaseCounts: normalizeInvocationPhaseCounts(payload.inProgressPhaseCounts),
     retryInvocationCount: normalizeFiniteNumber(payload.retryInvocationCount),

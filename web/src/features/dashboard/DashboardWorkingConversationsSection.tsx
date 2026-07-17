@@ -2707,14 +2707,16 @@ function DashboardUpstreamAccountActivityCard({
     }
     return segments;
   }, [account.failureCount, account.nonSuccessCount, account.successCount, locale, localeTag]);
-  const firstByteValue =
-    (account.firstResponseByteTotalAvgMs ?? account.firstByteAvgMs) == null
-      ? FALLBACK_CELL
-      : formatAccountDurationValue(
-          account.firstResponseByteTotalAvgMs ?? account.firstByteAvgMs,
-          localeTag,
-        );
-  const avgTotalValue = formatAccountDurationValue(account.avgTotalMs, localeTag);
+  const currentFirstByteValue = formatAccountDurationValue(
+    account.currentFirstResponseByteTotalAvgMs,
+    localeTag,
+  );
+  const currentAvgTotalValue = formatAccountDurationValue(account.currentAvgTotalMs, localeTag);
+  const rangeFirstByteValue = formatAccountDurationValue(
+    account.firstResponseByteTotalAvgMs ?? account.firstByteAvgMs,
+    localeTag,
+  );
+  const rangeAvgTotalValue = formatAccountDurationValue(account.avgTotalMs, localeTag);
   const totalRequestValue = formatAccountNumberValue(account.requestCount, localeTag, 0);
   const totalCostValue = formatAccountCurrencyAmountValue(account.totalCost, localeTag, 2);
   const totalTokenValue = formatAccountNumberValue(account.totalTokens, localeTag, 0);
@@ -2773,9 +2775,10 @@ function DashboardUpstreamAccountActivityCard({
   const formatBreakdownCurrency = (value: number) =>
     formatAccountCurrencyValue(value, localeTag, 4);
   const latencyDetailSections = useMemo<AccountMetricDetailSection[]>(() => {
+    const currentFirstByteMs = finiteNumber(account.currentFirstResponseByteTotalAvgMs);
     const firstByteMs = finiteNumber(account.firstResponseByteTotalAvgMs ?? account.firstByteAvgMs);
     const stageFirstByteMs = finiteNumber(account.firstByteAvgMs);
-    const avgTotalMs = finiteNumber(account.avgTotalMs);
+    const currentAvgTotalMs = finiteNumber(account.currentAvgTotalMs);
     const relatedRows: AccountMetricDetailRow[] = [];
 
     if (
@@ -2789,27 +2792,47 @@ function DashboardUpstreamAccountActivityCard({
         tone: "secondary",
       });
     }
-    if (firstByteMs != null && avgTotalMs != null && avgTotalMs > 0 && firstByteMs <= avgTotalMs) {
+    if (
+      currentFirstByteMs != null &&
+      currentAvgTotalMs != null &&
+      currentAvgTotalMs > 0 &&
+      currentFirstByteMs <= currentAvgTotalMs
+    ) {
       relatedRows.push({
         label: locale === "zh" ? "首字占比" : "First-byte share",
-        value: formatAccountPercentValue(firstByteMs / avgTotalMs, localeTag),
+        value: formatAccountPercentValue(currentFirstByteMs / currentAvgTotalMs, localeTag),
         tone: "secondary",
       });
     }
 
     return [
       {
-        title: locale === "zh" ? "当前字段" : "Current fields",
+        title: locale === "zh" ? "当前显示值" : "Current display",
         rows: [
           {
             label: t("dashboard.today.firstResponseTime"),
-            value: firstByteValue,
-            tone: firstByteValue === FALLBACK_CELL ? "neutral" : "secondary",
+            value: currentFirstByteValue,
+            tone: currentFirstByteValue === FALLBACK_CELL ? "neutral" : "secondary",
           },
           {
             label: t("dashboard.today.responseTime"),
-            value: avgTotalValue,
-            tone: avgTotalValue === FALLBACK_CELL ? "neutral" : "primary",
+            value: currentAvgTotalValue,
+            tone: currentAvgTotalValue === FALLBACK_CELL ? "neutral" : "primary",
+          },
+        ],
+      },
+      {
+        title: locale === "zh" ? "当前范围统计" : "Current range stats",
+        rows: [
+          {
+            label: t("dashboard.today.firstResponseTime"),
+            value: rangeFirstByteValue,
+            tone: rangeFirstByteValue === FALLBACK_CELL ? "neutral" : "secondary",
+          },
+          {
+            label: t("dashboard.today.responseTime"),
+            value: rangeAvgTotalValue,
+            tone: rangeAvgTotalValue === FALLBACK_CELL ? "neutral" : "primary",
           },
         ],
       },
@@ -2824,12 +2847,16 @@ function DashboardUpstreamAccountActivityCard({
     ];
   }, [
     account.avgTotalMs,
+    account.currentAvgTotalMs,
+    account.currentFirstResponseByteTotalAvgMs,
     account.firstByteAvgMs,
     account.firstResponseByteTotalAvgMs,
-    avgTotalValue,
-    firstByteValue,
+    currentAvgTotalValue,
+    currentFirstByteValue,
     locale,
     localeTag,
+    rangeAvgTotalValue,
+    rangeFirstByteValue,
     t,
   ]);
   const requestDetailSections = useMemo<AccountMetricDetailSection[]>(() => {
@@ -3107,8 +3134,8 @@ function DashboardUpstreamAccountActivityCard({
         <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
           <AccountHeroMetric
             label={t("dashboard.today.firstResponseTime")}
-            value={firstByteValue}
-            tone={firstByteValue === FALLBACK_CELL ? "neutral" : "secondary"}
+            value={currentFirstByteValue}
+            tone={currentFirstByteValue === FALLBACK_CELL ? "neutral" : "secondary"}
             iconName="timer-outline"
             metricKey="latency"
             detailSections={latencyDetailSections}
@@ -3117,8 +3144,8 @@ function DashboardUpstreamAccountActivityCard({
               segments={[
                 {
                   label: t("dashboard.today.responseTime"),
-                  value: avgTotalValue,
-                  tone: avgTotalValue === FALLBACK_CELL ? "neutral" : "primary",
+                  value: currentAvgTotalValue,
+                  tone: currentAvgTotalValue === FALLBACK_CELL ? "neutral" : "primary",
                 },
               ]}
               testId="dashboard-upstream-account-latency-breakdown"

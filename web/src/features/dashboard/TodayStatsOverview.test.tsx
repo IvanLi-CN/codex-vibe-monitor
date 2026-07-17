@@ -18,7 +18,7 @@ vi.mock("../../i18n", () => ({
         "dashboard.today.responseTime": "Response time",
         "dashboard.today.firstResponseTime": "Time to first byte",
         "dashboard.today.responseTimeDescription":
-          "Response time uses the latest 5-minute active tail.",
+          "Time to first byte and response time prefer the latest rolling 60-second success samples, then fall back to the latest valid result in the current range.",
         "dashboard.today.inProgressConversations": "In progress",
         "dashboard.today.queuedInvocations": "Queued",
         "dashboard.today.parallelConversations": "Parallel conversations",
@@ -27,9 +27,9 @@ vi.mock("../../i18n", () => ({
         "dashboard.today.todayTokens": "Today Token",
         "dashboard.today.yesterdayTokens": "Yesterday Token",
         "dashboard.today.tokensPerMinuteDescription":
-          "TPM uses the active tail inside the latest 5-minute window.",
+          "TPM uses the latest rolling 60-second window.",
         "dashboard.today.spendRateDescription":
-          "Spend rate uses the active tail inside the latest 5-minute window.",
+          "Spend rate uses the latest rolling 60-second window.",
         "dashboard.today.inProgressConversationsDescription":
           "Current running or pending invocations, counted per invocation.",
         "dashboard.today.queuedInvocationsDescription":
@@ -1135,7 +1135,7 @@ describe("TodayStatsOverview", () => {
     });
 
     const tooltip = document.body.querySelector('[role="tooltip"]');
-    expect(tooltip?.textContent).toContain("active tail inside the latest 5-minute window");
+    expect(tooltip?.textContent).toContain("latest rolling 60-second window");
   });
 
   it("keeps the field description tooltip when a summary has no usage breakdown", () => {
