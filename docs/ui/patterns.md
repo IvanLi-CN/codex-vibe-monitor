@@ -14,6 +14,8 @@
 - 仪表盘、设置、记录页与标签页都偏向 surface-first 布局：先给一层卡片/面板，再在内部使用 section heading、divider 与 metric grid。
 - 抽屉优先使用 `web/src/index.css` 里的 `drawer-shell`、`drawer-header`、`drawer-body`；模态对话框优先使用 `web/src/components/ui/dialog.tsx` 提供的 `Dialog` 体系，不重复实现浮层外壳。
 - KPI 与 summary 卡片应优先采用“标签小、数字大、辅助说明轻”的三段结构。
+- 普通页面内容不应重复堆叠高透明 `bg-base-100` 与亮 `border-base-300`；外层用 `surface-card`，内部低对比区块用 `surface-subtle` 或 `surface-inset`。
+- Dialog / drawer 的 sticky header、footer 和底部操作栏使用 `dialog-chrome-surface`；内容区继续用普通正文 surface，避免 chrome 与正文亮度混在一起。
 
 ### 列表 / 表格 / 详情展开
 
@@ -43,6 +45,7 @@
 
 - 新页面应先判定自己属于“仪表盘总览”“数据列表分析”“设置表单”“模块管理台”中的哪一类，再复用对应现有模式。
 - 新的页面级 pattern 只有在被两个以上场景复用时才进入本文件；单次 feature 特例仍保留在 feature spec 中。
+- 设置页、账号池详情和 Dashboard bulk action 这类高密度配置/确认流程必须使用共享 surface vocabulary，避免每个页面独立调透明度造成 light/dark 对比漂移。
 - 响应式设计先保证信息架构不丢失，再考虑桌面视觉丰满度；移动端退化应是设计好的收敛，而不是简单隐藏信息。
 - 同一个页面内若同时存在实时数据、筛选与详情，优先保持“筛选在前、列表在中、详情在近处”的结构，减少跨区域跳转。
 

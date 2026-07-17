@@ -12,6 +12,7 @@
 
 ## 当前真相源
 
+- 根级产品与视觉上下文：`PRODUCT.md`、`DESIGN.md`
 - 主题与全局样式：`web/src/index.css`
 - 主题切换机制：`web/src/theme/context.tsx`
 - 图表配色：`web/src/lib/chartTheme.ts`
@@ -27,6 +28,7 @@
 ## 后续新增规则
 
 - 新增基础样式 token、组件状态或通用布局模式时，必须先判断应该补到哪一份文档，而不是只写在单个 feature spec 里。
+- 新增 card、内部块、输入框、菜单或 dialog chrome 时，优先使用共享 surface class，不要在页面里直接拼 `border-base-300/*` 和 `bg-base-100/*`。
 - 新增可复用组件时，优先补充对应 Storybook story，再在 `components.md` 或 `patterns.md` 里补使用约束。
 - 新增页面级或领域级组件时，优先放入 `web/src/features/<domain>/`；`web/src/components/` 仅保留 `ui/` 基础组件层，避免业务组件回流到根目录。
 - 若 public docs 中的 Storybook 入口口径发生变化，需同步更新 `docs-site/docs/storybook.mdx`。

@@ -629,7 +629,7 @@ function AccountCapabilityCard({
   const { t } = useTranslation();
 
   return (
-    <Card className="overflow-hidden border-base-300/70 bg-[radial-gradient(circle_at_top_left,rgba(71,85,105,0.08),transparent_58%),linear-gradient(180deg,rgba(255,255,255,0.9),rgba(255,255,255,0.72))] shadow-sm">
+    <Card className="overflow-hidden">
       <CardHeader className="space-y-3 pb-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
@@ -645,7 +645,7 @@ function AccountCapabilityCard({
             <p className="text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-base-content/52">
               {t("accountPool.upstreamAccounts.capability.endpointsLabel")}
             </p>
-            <div className="flex flex-wrap gap-2 rounded-xl border border-base-300/70 bg-base-100/78 px-3 py-2">
+            <div className="surface-subtle flex flex-wrap gap-2 rounded-xl px-3 py-2">
               {endpoints.map((endpoint) => (
                 <code
                   key={endpoint}
@@ -660,7 +660,7 @@ function AccountCapabilityCard({
       </CardHeader>
       <CardContent className="grid gap-3">
         <div className="grid gap-2 text-sm text-base-content/75">
-          <div className="flex items-center justify-between gap-3 rounded-lg border border-base-300/70 bg-base-100/70 px-3 py-2">
+          <div className="surface-subtle flex items-center justify-between gap-3 rounded-lg px-3 py-2">
             <span className="text-xs font-semibold uppercase tracking-[0.08em] text-base-content/55">
               {t("accountPool.upstreamAccounts.capability.observed")}
             </span>
@@ -668,7 +668,7 @@ function AccountCapabilityCard({
               {capabilityStatusLabel(state.observed, t)}
             </Badge>
           </div>
-          <div className="flex items-center justify-between gap-3 rounded-lg border border-base-300/70 bg-base-100/70 px-3 py-2">
+          <div className="surface-subtle flex items-center justify-between gap-3 rounded-lg px-3 py-2">
             <span className="text-xs font-semibold uppercase tracking-[0.08em] text-base-content/55">
               {t("accountPool.upstreamAccounts.capability.override")}
             </span>
@@ -679,7 +679,7 @@ function AccountCapabilityCard({
               {capabilityStatusLabel(state.override ?? null, t)}
             </Badge>
           </div>
-          <div className="flex items-center justify-between gap-3 rounded-lg border border-base-300/70 bg-base-100/70 px-3 py-2">
+          <div className="surface-subtle flex items-center justify-between gap-3 rounded-lg px-3 py-2">
             <span className="text-xs font-semibold uppercase tracking-[0.08em] text-base-content/55">
               {t("accountPool.upstreamAccounts.capability.effective")}
             </span>
@@ -813,7 +813,7 @@ export function RoutingSettingsDialog({
           if (busy) event.preventDefault();
         }}
       >
-        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-base-300/80 px-5 py-4 desktop:px-6 desktop:py-5">
+        <div className="dialog-chrome-surface flex shrink-0 items-start justify-between gap-4 border-b px-5 py-4 desktop:px-6 desktop:py-5">
           <DialogHeader className="min-w-0 max-w-[28rem]">
             <DialogTitle>{title}</DialogTitle>
             <DialogDescription>{description}</DialogDescription>
@@ -822,7 +822,7 @@ export function RoutingSettingsDialog({
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 desktop:px-6 desktop:py-6">
           <div className="space-y-4">
-            <div className="space-y-3 rounded-2xl border border-base-300/80 bg-base-100/70 p-4">
+            <div className="surface-subtle space-y-3 rounded-2xl p-4">
               <div className="space-y-1">
                 <p className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
                   {t("accountPool.upstreamAccounts.routing.apiKeySectionTitle")}
@@ -865,12 +865,12 @@ export function RoutingSettingsDialog({
                   data-1p-ignore="true"
                   data-lpignore="true"
                   disabled={busy || !apiKeyWritesEnabled}
-                  className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono placeholder:text-base-content/58"
+                  className="h-12 rounded-xl px-4 text-[15px] font-mono placeholder:text-base-content/58"
                 />
               </div>
             </div>
 
-            <div className="space-y-4 rounded-2xl border border-base-300/80 bg-base-100/70 p-4">
+            <div className="surface-subtle space-y-4 rounded-2xl p-4">
               <div className="space-y-1">
                 <p className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
                   {t("accountPool.upstreamAccounts.routing.maintenanceSectionTitle")}
@@ -899,7 +899,7 @@ export function RoutingSettingsDialog({
                     onChange={(event) => onPrimarySyncIntervalChange(event.target.value)}
                     placeholder="300"
                     disabled={busy || !maintenanceWritesEnabled}
-                    className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
+                    className="h-12 rounded-xl px-4"
                   />
                 </div>
                 <div className="field">
@@ -920,7 +920,7 @@ export function RoutingSettingsDialog({
                     onChange={(event) => onSecondarySyncIntervalChange(event.target.value)}
                     placeholder="1800"
                     disabled={busy || !maintenanceWritesEnabled}
-                    className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
+                    className="h-12 rounded-xl px-4"
                   />
                 </div>
               </div>
@@ -942,13 +942,13 @@ export function RoutingSettingsDialog({
                   onChange={(event) => onPriorityAvailableAccountCapChange(event.target.value)}
                   placeholder="100"
                   disabled={busy || !maintenanceWritesEnabled}
-                  className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
+                  className="h-12 rounded-xl px-4"
                 />
               </div>
             </div>
           </div>
         </div>
-        <DialogFooter className="shrink-0 border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur desktop:px-6 desktop:py-5">
+        <DialogFooter className="dialog-chrome-surface shrink-0 border-t px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 desktop:px-6 desktop:py-5">
           <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
             {cancelLabel}
           </Button>
@@ -2708,7 +2708,7 @@ function SharedUpstreamAccountDetailDrawerInner({
               </div>
               {selected ? (
                 <div className="flex flex-wrap items-center gap-2">
-                  <div className="flex items-center gap-2 rounded-full border border-base-300/80 bg-base-100/70 px-3 py-2 text-sm">
+                  <div className="surface-subtle flex items-center gap-2 rounded-full px-3 py-2 text-sm">
                     <span className="text-base-content/60">
                       {t("accountPool.upstreamAccounts.actions.enable")}
                     </span>
@@ -2785,7 +2785,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                             deleteConfirmCancelRef.current?.focus();
                           }}
                         >
-                          <div className="shrink-0 border-b border-base-300/80 px-5 py-4 desktop:px-6">
+                          <div className="dialog-chrome-surface shrink-0 border-b px-5 py-4 desktop:px-6">
                             <DialogHeader className="min-w-0">
                               <div className="flex items-start gap-3">
                                 <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-error text-error-content shadow-sm">
@@ -2810,7 +2810,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                               </div>
                             </DialogHeader>
                           </div>
-                          <DialogFooter className="shrink-0 border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur desktop:px-6 desktop:py-4">
+                          <DialogFooter className="dialog-chrome-surface shrink-0 border-t px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 desktop:px-6 desktop:py-4">
                             <Button
                               ref={deleteConfirmCancelRef}
                               type="button"
@@ -3345,7 +3345,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   role="tabpanel"
                   aria-labelledby={detailTabIds.edit.tab}
                 >
-                  <Card className="border-base-300/80 bg-base-100/72">
+                  <Card>
                     <CardHeader>
                       <CardTitle>{t("accountPool.upstreamAccounts.editTitle")}</CardTitle>
                       <CardDescription>
@@ -3498,7 +3498,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                       </label>
                       <div className="field gap-3 md:col-span-2">
                         <span className="field-label">{t("accountPool.tags.field.label")}</span>
-                        <div className="flex min-h-12 flex-wrap items-center gap-2 rounded-[1.2rem] border border-base-300/80 bg-base-100/55 px-3 py-2 shadow-sm">
+                        <div className="surface-subtle flex min-h-12 flex-wrap items-center gap-2 rounded-[1.2rem] px-3 py-2 shadow-sm">
                           {(selectedDetail.tags ?? []).length > 0 ? (
                             selectedDetail.tags.map((tag) => (
                               <Badge
@@ -3662,7 +3662,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                       container={detailDrawerPortalContainer}
                       className="!bottom-0 !top-auto flex max-h-[calc(100dvh-0.75rem)] w-full !translate-y-0 flex-col overflow-hidden rounded-b-none border-base-300 bg-base-100 p-0 desktop:!bottom-auto desktop:!top-1/2 desktop:max-h-[calc(100dvh-2rem)] desktop:w-[min(48rem,calc(100vw-4rem))] desktop:!translate-y-[-50%] desktop:rounded-[1.25rem]"
                     >
-                      <div className="flex shrink-0 items-start justify-between gap-4 border-b border-base-300/80 px-5 py-4 desktop:px-6">
+                      <div className="dialog-chrome-surface flex shrink-0 items-start justify-between gap-4 border-b px-5 py-4 desktop:px-6">
                         <DialogHeader className="min-w-0">
                           <DialogTitle className="text-lg">
                             {t("accountPool.upstreamAccounts.proxyBindings.dialogTitle")}
@@ -3721,7 +3721,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                           scrollRegionClassName="max-h-[min(29rem,58dvh)]"
                         />
                       </div>
-                      <DialogFooter className="border-t border-base-300/80 bg-base-100/94 px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 backdrop-blur desktop:justify-end desktop:px-6">
+                      <DialogFooter className="dialog-chrome-surface border-t px-5 pb-[max(env(safe-area-inset-bottom),1rem)] pt-4 desktop:justify-end desktop:px-6">
                         <Button
                           type="button"
                           variant="ghost"
@@ -3991,7 +3991,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                     </div>
                   </Alert>
 
-                  <Card className="border-base-300/80 bg-base-100/72">
+                  <Card>
                     <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                       <div>
                         <CardTitle>
@@ -4056,7 +4056,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   aria-labelledby={detailTabIds.healthEvents.tab}
                   className="grid gap-5"
                 >
-                  <Card className="border-base-300/80 bg-base-100/72">
+                  <Card>
                     <CardHeader>
                       <CardTitle>{t("accountPool.upstreamAccounts.healthTitle")}</CardTitle>
                       <CardDescription>
@@ -4107,7 +4107,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                           t("accountPool.upstreamAccounts.unavailable")
                         }
                       />
-                      <div className="md:col-span-2 xl:col-span-4 rounded-[1.2rem] border border-base-300/80 bg-base-100/75 p-4">
+                      <div className="surface-subtle md:col-span-2 xl:col-span-4 rounded-[1.2rem] p-4">
                         {selectedRecoveryHint ? (
                           <Alert variant="warning" className="mb-4">
                             <AppIcon
@@ -4199,7 +4199,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                     </CardContent>
                   </Card>
 
-                  <Card className="border-base-300/80 bg-base-100/72">
+                  <Card>
                     <CardHeader>
                       <CardTitle>{t("accountPool.upstreamAccounts.recentActions.title")}</CardTitle>
                       <CardDescription>
@@ -4214,10 +4214,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                       ) : (
                         <div className="space-y-2">
                           {selectedRecentActions.map((actionEvent) => (
-                            <div
-                              key={actionEvent.id}
-                              className="rounded-[1rem] border border-base-300/70 bg-base-100/70 p-3"
-                            >
+                            <div key={actionEvent.id} className="surface-subtle rounded-[1rem] p-3">
                               <div className="flex flex-wrap items-center gap-2">
                                 <Badge variant="secondary">
                                   {accountActionLabel(actionEvent.action) ??

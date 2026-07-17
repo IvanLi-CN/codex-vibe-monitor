@@ -1698,7 +1698,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       {showGeneralSettings ? (
         <div className="grid items-start gap-6 lg:grid-cols-2">
           <div className="space-y-6">
-            <Card className="mobile-flat-surface overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
+            <Card className="mobile-flat-surface overflow-hidden">
               <CardHeader className="mobile-flat-surface-header gap-2 border-b border-base-300/70 pb-4">
                 <CardTitle>{t("settings.proxy.title")}</CardTitle>
                 <CardDescription>{t("settings.proxy.description")}</CardDescription>
@@ -1706,7 +1706,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
 
               <CardContent className="mobile-flat-surface-body space-y-4 pt-4">
                 <div className="grid gap-4 xl:grid-cols-2">
-                  <div className="rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+                  <div className="surface-inset rounded-xl p-4">
                     <div className="flex items-start justify-between gap-4">
                       <div className="space-y-1">
                         <div className="font-medium leading-snug">
@@ -1726,7 +1726,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                     </div>
                   </div>
 
-                  <div className="rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+                  <div className="surface-inset rounded-xl p-4">
                     <div className="flex items-start justify-between gap-4">
                       <div className="space-y-1">
                         <div className="font-medium leading-snug">
@@ -1752,7 +1752,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                   </div>
                 </div>
 
-                <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+                <div className="surface-inset space-y-3 rounded-xl p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="space-y-1">
                       <div className="font-medium leading-snug">
@@ -1767,7 +1767,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                     </Badge>
                   </div>
 
-                  <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
+                  <div className="surface-subtle rounded-lg p-3.5">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 space-y-1">
                         <div className="font-medium leading-snug">
@@ -1803,7 +1803,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                   </div>
                 </div>
 
-                <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+                <div className="surface-inset space-y-3 rounded-xl p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="space-y-1">
                       <div className="font-medium leading-snug">
@@ -1819,7 +1819,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                   </div>
 
                   <div className="grid gap-3 xl:grid-cols-2">
-                    <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
+                    <div className="surface-subtle rounded-lg p-3.5">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 space-y-1">
                           <div className="font-medium leading-snug">
@@ -1848,7 +1848,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                       </div>
                     </div>
 
-                    <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
+                    <div className="surface-subtle rounded-lg p-3.5">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 space-y-1">
                           <div className="font-medium leading-snug">
@@ -1883,7 +1883,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                   </div>
                 </div>
 
-                <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+                <div className="surface-inset space-y-3 rounded-xl p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="space-y-1">
                       <div className="font-medium leading-snug">
@@ -1899,7 +1899,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                   </div>
 
                   <div className="grid gap-3 xl:grid-cols-2">
-                    <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
+                    <div className="surface-subtle rounded-lg p-3.5">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 space-y-1">
                           <div className="font-medium leading-snug">
@@ -1929,7 +1929,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                       </div>
                     </div>
 
-                    <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
+                    <div className="surface-subtle rounded-lg p-3.5">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 space-y-1">
                           <div className="font-medium leading-snug">
@@ -1965,7 +1965,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                   </p>
                 </div>
 
-                <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+                <div className="surface-inset space-y-3 rounded-xl p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div className="font-medium">{t("settings.proxy.presetModels")}</div>
                     <span className="text-xs text-base-content/70">
@@ -1983,9 +1983,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                           key={modelId}
                           className={cn(
                             "flex min-h-12 items-center gap-3 rounded-lg border px-3.5 py-2.5",
-                            enabled
-                              ? "border-primary/45 bg-primary/10"
-                              : "border-base-300/85 bg-base-100/68",
+                            enabled ? "border-primary/45 bg-primary/10" : "surface-subtle",
                             isProxySaving ? "opacity-70" : "hover:border-primary/40",
                           )}
                         >
@@ -2036,7 +2034,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                 onSave={() => void saveRoutingDefaults()}
               />
             ) : (
-              <Card className="mobile-flat-surface overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
+              <Card className="mobile-flat-surface overflow-hidden">
                 <CardHeader className="mobile-flat-surface-header gap-2 border-b border-base-300/70 pb-4">
                   <CardTitle>{t("settings.routing.title")}</CardTitle>
                   <CardDescription>{t("settings.routing.description")}</CardDescription>
@@ -2049,7 +2047,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
               </Card>
             )}
 
-            <Card className="mobile-flat-surface overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
+            <Card className="mobile-flat-surface overflow-hidden">
               <CardHeader className="mobile-flat-surface-header flex-row items-start justify-between gap-3 space-y-0 border-b border-base-300/70 pb-4">
                 <div className="space-y-1.5">
                   <CardTitle>{t("settings.pricing.title")}</CardTitle>
@@ -2093,7 +2091,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                   {pricingDraft.entries.map((entry, index) => (
                     <article
                       key={`mobile-pricing-${index}`}
-                      className="rounded-xl border border-base-300/80 bg-base-100/72 p-4"
+                      className="surface-subtle rounded-xl p-4"
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 space-y-2">
@@ -2197,7 +2195,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                   ))}
                 </div>
 
-                <div className="hidden overflow-x-auto rounded-xl border border-base-300/80 bg-base-100/72 desktop:block">
+                <div className="surface-subtle hidden overflow-x-auto rounded-xl desktop:block">
                   <table className="w-full min-w-[56rem] table-fixed text-sm">
                     <thead className="bg-base-200/70 text-[11px] uppercase tracking-[0.08em] text-base-content/65">
                       <tr>
@@ -2370,13 +2368,13 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       ) : null}
 
       {showForwardProxySettings ? (
-        <Card className="mobile-flat-surface overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
+        <Card className="mobile-flat-surface overflow-hidden">
           <CardHeader className="mobile-flat-surface-header gap-2 border-b border-base-300/70 pb-4">
             <CardTitle>{t("settings.forwardProxy.title")}</CardTitle>
             <CardDescription>{t("settings.forwardProxy.description")}</CardDescription>
           </CardHeader>
           <CardContent className="mobile-flat-surface-body space-y-5 pt-4">
-            <div className="flex flex-wrap items-center gap-3 rounded-xl border border-base-300/80 bg-base-100/72 px-3.5 py-3">
+            <div className="surface-subtle flex flex-wrap items-center gap-3 rounded-xl px-3.5 py-3">
               <Button
                 type="button"
                 size="sm"
@@ -2440,7 +2438,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
             </div>
 
             <div className="grid gap-3 lg:grid-cols-2">
-              <section className="rounded-xl border border-base-300/80 bg-base-100/72 p-3">
+              <section className="surface-subtle rounded-xl p-3">
                 <header className="mb-2 flex items-center justify-between gap-2">
                   <h4 className="text-sm font-medium text-base-content/85">
                     {t("settings.forwardProxy.proxyUrls")}
@@ -2456,7 +2454,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                     {forwardProxyUrls.map((proxyUrl, index) => (
                       <li
                         key={`proxy-url-${proxyUrl}`}
-                        className="flex items-center gap-2 rounded-lg border border-base-300/70 bg-base-100/75 px-2.5 py-1.5"
+                        className="surface-subtle flex items-center gap-2 rounded-lg px-2.5 py-1.5"
                       >
                         <div className="min-w-0 flex-1 text-sm font-medium">
                           <div className="truncate whitespace-nowrap">
@@ -2486,7 +2484,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                 )}
               </section>
 
-              <section className="rounded-xl border border-base-300/80 bg-base-100/72 p-3">
+              <section className="surface-subtle rounded-xl p-3">
                 <header className="mb-2 flex items-center justify-between gap-2">
                   <h4 className="text-sm font-medium text-base-content/85">
                     {t("settings.forwardProxy.subscriptionUrls")}
@@ -2504,7 +2502,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                     {forwardProxySubscriptionUrls.map((subscriptionUrl, index) => (
                       <li
                         key={`subscription-url-${subscriptionUrl}`}
-                        className="flex items-center gap-2 rounded-lg border border-base-300/70 bg-base-100/75 px-2.5 py-1.5"
+                        className="surface-subtle flex items-center gap-2 rounded-lg px-2.5 py-1.5"
                       >
                         <div className="min-w-0 flex-1 text-sm font-medium">
                           <div className="truncate whitespace-nowrap">
@@ -2548,7 +2546,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                   id="forward-proxy-interval"
                   name="forwardProxyInterval"
                   className="mt-2"
-                  triggerClassName="h-10 min-w-48 border-base-300/80 bg-base-100/70"
+                  triggerClassName="h-10 min-w-48"
                   value={forwardProxyIntervalSecs}
                   options={forwardProxyIntervalOptions}
                   onValueChange={(value) => {
@@ -2580,7 +2578,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                   <article
                     key={`mobile-${node.key}`}
                     className={cn(
-                      "rounded-xl border border-base-300/80 bg-base-100/72 p-3",
+                      "surface-subtle rounded-xl p-3",
                       node.penalized ? "bg-warning/8" : "",
                     )}
                   >
@@ -2617,7 +2615,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                       {windows.map((window) => (
                         <div
                           key={`${node.key}-${window.label}`}
-                          className="rounded-lg border border-base-300/70 bg-base-100/75 p-2"
+                          className="surface-subtle rounded-lg p-2"
                         >
                           <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
                             {window.label}
@@ -2635,13 +2633,13 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                 );
               })}
               {forwardProxyTableNodes.length === 0 && (
-                <div className="rounded-xl border border-base-300/80 bg-base-100/72 px-4 py-6 text-center text-xs text-base-content/60">
+                <div className="surface-subtle rounded-xl px-4 py-6 text-center text-xs text-base-content/60">
                   {t("settings.forwardProxy.table.empty")}
                 </div>
               )}
             </div>
 
-            <div className="hidden overflow-hidden rounded-xl border border-base-300/80 bg-base-100/72 md:block">
+            <div className="surface-subtle hidden overflow-hidden rounded-xl md:block">
               <table
                 className="w-full table-fixed text-xs"
                 data-testid="settings-forward-proxy-desktop-table"

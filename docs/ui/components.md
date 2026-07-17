@@ -8,7 +8,7 @@
 
 - `web/src/components/ui/button.tsx`：`default / secondary / outline / ghost / destructive` 五种按钮语义，以及 `default / sm / lg / icon` 四种尺寸。
 - `web/src/components/ui/input.tsx`：标准输入框，包含边框、placeholder、focus ring、disabled 透明度约束。
-- `web/src/components/ui/card.tsx`：`Card / CardHeader / CardTitle / CardDescription / CardContent / CardFooter`。
+- `web/src/components/ui/card.tsx`：`Card / CardHeader / CardTitle / CardDescription / CardContent / CardFooter`，默认外观由 `surface-card` 提供。
 - `web/src/components/ui/badge.tsx`：`default / accent / secondary / success / info / warning / error` 七类状态徽标。
 - `web/src/components/ui/alert.tsx`：`default / info / success / warning / error` 五类提示面板。
 - `web/src/components/ui/switch.tsx`：布尔开关，`checked` 态使用 `primary`，`unchecked` 态停留在 `base-300`。
@@ -23,7 +23,8 @@
 
 - 表单标签优先使用 `.field`、`.field-label` 与 `FormFieldFeedback`，而不是每个页面自己拼标签和错误提示布局。
 - simple dropdown 统一走 `SelectField`，不要回退到浏览器原生 `<select>` 或页面内手写 `SelectTrigger/Content/Item`。
-- 输入类组件统一使用 focus ring，而不是只依赖边框变色。
+- 输入类组件统一使用 `field-surface` 与 focus ring，而不是页面私有底色或只依赖边框变色。
+- Select / menu 类弹出层统一使用 `menu-surface`，避免在浮层里重复写 `bg-base-100`、`border-base-300` 或半透明白底。
 - 错误态允许在 field feedback 中出现较长文案，但输入本体仍应保持单一职责，不嵌入多段说明。
 
 ### 状态语义
@@ -45,7 +46,8 @@
 - 新增基础组件前，先确认能否通过现有 `web/src/components/ui/` 目录下的 primitive 组合完成；只有当模式被多处复用且现有组合已经开始重复时，才上升为基础组件。
 - 路由驱动的导航如果与 segmented control 共用视觉语言，必须复用 `segmentedControlItemVariants(...)` 这类共享 helper，而不是复制一套新的 active class。
 - 新增按钮、徽标、提示变体时，必须落在既有语义色集合里；不要为了单个页面新增特例 variant。
-- 新增输入控件时，必须同时定义：默认态、focus 态、disabled 态、error 态、空数据或无匹配文案。
+- 新增输入控件时，必须复用 `field-surface`，并同时定义：默认态、focus 态、disabled 态、error 态、空数据或无匹配文案。
+- 新增可复用内容容器时，默认从 `Card` / `surface-card` 起步；内部行和配置组使用 `surface-subtle` 或 `surface-inset`，不要让页面承担 primitive 的底色和边框职责。
 - 所有可复用组件在进入多页面复用前，应至少具备一个 Storybook story 或可替代的独立验证入口。
 - 组件文案密度保持“标题短、说明简洁、错误明确”，避免把业务解释堆进组件本身。
 
