@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.38.1",
+  "base_stable_version": "2.38.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-17T07:45:00Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.38.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "7fb62303752b3a7d60557cf8968faca7050a5169",
+  "pr_number": 637,
+  "pr_title": "fix(web): restore wide drawer width contract",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.38.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.38.1",
+  "target_sha": "ef0590985510ab80c143b2bce4da3d0df416c566",
+  "type_label": "type:patch"
+}
