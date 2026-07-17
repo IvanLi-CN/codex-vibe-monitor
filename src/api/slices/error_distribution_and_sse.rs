@@ -1874,7 +1874,13 @@ mod tests {
     fn response_body_falls_back_to_preview_when_complete() {
         let row = InvocationResponseBodyRow {
             id: 1,
+            invoke_id: "invoke-preview".to_string(),
+            payload: None,
             raw_response: "{\"error\":\"preview\"}".to_string(),
+            request_raw_path: None,
+            request_raw_size: None,
+            request_raw_truncated: None,
+            request_raw_truncated_reason: None,
             response_raw_path: None,
             response_raw_size: Some(19),
             response_raw_truncated: Some(0),
@@ -1896,7 +1902,13 @@ mod tests {
     fn response_body_reports_detail_pruned_when_structured_only_preview_missing() {
         let row = InvocationResponseBodyRow {
             id: 2,
+            invoke_id: "invoke-pruned".to_string(),
+            payload: None,
             raw_response: String::new(),
+            request_raw_path: None,
+            request_raw_size: None,
+            request_raw_truncated: None,
+            request_raw_truncated_reason: None,
             response_raw_path: None,
             response_raw_size: None,
             response_raw_truncated: Some(0),
