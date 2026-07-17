@@ -3,7 +3,7 @@ use anyhow::anyhow;
 use chrono::Timelike;
 use futures_util::TryStreamExt;
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use sqlx::FromRow;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
@@ -636,6 +636,22 @@ pub(crate) struct InvocationResponseBodyResponse {
     pub(crate) body_text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) unavailable_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) headers: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) routing: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) body_size: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) body_truncated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) body_truncated_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) detail_level: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) detail_prune_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) capture_source: Option<String>,
 }
 
 pub(crate) fn normalize_query_text(raw: Option<&str>) -> Option<String> {
@@ -2592,9 +2608,1060 @@ pub(crate) async fn fetch_invocation_pool_attempts(
 }
 
 #[derive(Debug, FromRow)]
+struct InvocationWorkflowIdentityRow {
+    id: i64,
+    invoke_id: String,
+    occurred_at: String,
+    timeline_json: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct InvocationWorkflowAttemptRow {
+    attempt_id: Option<String>,
+    invoke_id: String,
+    occurred_at: String,
+    endpoint: String,
+    sticky_key: Option<String>,
+    upstream_account_id: Option<i64>,
+    upstream_account_name: Option<String>,
+    upstream_route_key: Option<String>,
+    proxy_binding_key_snapshot: Option<String>,
+    attempt_index: i64,
+    distinct_account_index: i64,
+    same_account_retry_index: i64,
+    requester_ip: Option<String>,
+    started_at: Option<String>,
+    finished_at: Option<String>,
+    status: String,
+    phase: Option<String>,
+    http_status: Option<i64>,
+    downstream_http_status: Option<i64>,
+    failure_kind: Option<String>,
+    error_message: Option<String>,
+    downstream_error_message: Option<String>,
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
+    stream_latency_ms: Option<f64>,
+    upstream_request_id: Option<String>,
+    upstream_request_compression_algorithm: Option<String>,
+    upstream_request_compression_mode: Option<String>,
+    compact_support_status: Option<String>,
+    compact_support_reason: Option<String>,
+    request_summary_json: Option<String>,
+    response_summary_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationWorkflowDetailResponse {
+    pub(crate) hero: InvocationWorkflowHero,
+    pub(crate) timeline: Vec<InvocationWorkflowTimelineEntry>,
+    pub(crate) reconstructed: bool,
+    pub(crate) partial: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) partial_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationWorkflowHero {
+    pub(crate) record_id: i64,
+    pub(crate) invoke_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) prompt_cache_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) route_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) request_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) response_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) final_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) failure_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) downstream_status_code: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) upstream_account_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) upstream_account_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) total_duration_ms: Option<f64>,
+    pub(crate) timeline_attempt_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) pool_attempt_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) total_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cost: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) occurred_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationWorkflowAttempt {
+    pub(crate) synthetic: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) attempt_id: Option<String>,
+    pub(crate) occurred_at: String,
+    pub(crate) endpoint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) sticky_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) upstream_account_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) upstream_account_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) request_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) response_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) upstream_route_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) proxy_binding_key_snapshot: Option<String>,
+    pub(crate) attempt_index: i64,
+    pub(crate) distinct_account_index: i64,
+    pub(crate) same_account_retry_index: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) requester_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) finished_at: Option<String>,
+    pub(crate) status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) phase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) http_status: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) downstream_http_status: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) failure_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) error_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) downstream_error_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) connect_latency_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) first_byte_latency_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) stream_latency_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) upstream_request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) request_summary: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) response_summary: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationWorkflowResponseBody {
+    pub(crate) available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) body_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationWorkflowTimelineEntry {
+    pub(crate) block_id: String,
+    pub(crate) kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) occurred_at: Option<String>,
+    pub(crate) title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) subtitle: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) attempt: Option<InvocationWorkflowAttempt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) detail: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) response_body: Option<InvocationWorkflowResponseBody>,
+}
+
+fn normalize_optional_timestamp(value: Option<&str>) -> Option<String> {
+    let normalized = value?.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    parse_to_utc_datetime(normalized)
+        .map(format_utc_iso)
+        .or_else(|| Some(normalized.to_string()))
+}
+
+fn parse_summary_json_or_fallback(
+    raw: Option<&str>,
+    fallback: impl FnOnce() -> Value,
+) -> Option<Value> {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(raw) => serde_json::from_str::<Value>(raw)
+            .ok()
+            .or_else(|| Some(fallback())),
+        None => Some(fallback()),
+    }
+}
+
+fn parse_optional_json_value(raw: Option<&str>) -> Option<Value> {
+    raw.and_then(|value| {
+        let normalized = value.trim();
+        if normalized.is_empty() {
+            None
+        } else {
+            serde_json::from_str::<Value>(normalized).ok()
+        }
+    })
+}
+
+fn payload_value<'a>(payload: Option<&'a Value>, keys: &[&str]) -> Option<&'a Value> {
+    let object = payload?.as_object()?;
+    keys.iter().find_map(|key| object.get(*key))
+}
+
+fn payload_string(payload: Option<&Value>, keys: &[&str]) -> Option<String> {
+    payload_value(payload, keys)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn payload_bool(payload: Option<&Value>, keys: &[&str]) -> Option<bool> {
+    payload_value(payload, keys).and_then(Value::as_bool)
+}
+
+fn payload_i64(payload: Option<&Value>, keys: &[&str]) -> Option<i64> {
+    payload_value(payload, keys).and_then(Value::as_i64)
+}
+
+fn payload_u64(payload: Option<&Value>, keys: &[&str]) -> Option<u64> {
+    payload_value(payload, keys).and_then(Value::as_u64)
+}
+
+fn payload_string_array(payload: Option<&Value>, keys: &[&str]) -> Option<Vec<String>> {
+    payload_value(payload, keys)
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .filter(|entries| !entries.is_empty())
+}
+
+fn payload_clone(payload: Option<&Value>, keys: &[&str]) -> Option<Value> {
+    payload_value(payload, keys).cloned()
+}
+
+fn build_request_header_snapshot(payload: Option<&Value>) -> Value {
+    json!({
+        "userAgent": payload_string(payload, &["requestUserAgent"]),
+        "xForwardedFor": payload_string(payload, &["requestXForwardedFor"]),
+        "forwarded": payload_string(payload, &["requestForwarded"]),
+        "xRealIp": payload_string(payload, &["requestXRealIp"]),
+    })
+}
+
+fn build_request_routing_snapshot(
+    record: &ApiInvocation,
+    attempt: Option<&InvocationWorkflowAttemptRow>,
+    payload: Option<&Value>,
+) -> Value {
+    json!({
+        "routeMode": record.route_mode.clone(),
+        "upstreamScope": payload_string(payload, &["upstreamScope"]),
+        "stickyKey": attempt
+            .and_then(|row| row.sticky_key.clone())
+            .or_else(|| record.sticky_key.clone())
+            .or_else(|| payload_string(payload, &["stickyKey"])),
+        "promptCacheKey": record
+            .prompt_cache_key
+            .clone()
+            .or_else(|| payload_string(payload, &["promptCacheKey"])),
+        "proxyDisplayName": payload_string(payload, &["proxyDisplayName"]),
+        "upstreamRouteKey": attempt
+            .and_then(|row| row.upstream_route_key.clone())
+            .or_else(|| payload_string(payload, &["upstreamRouteKey"])),
+        "proxyBindingKey": attempt
+            .and_then(|row| row.proxy_binding_key_snapshot.clone())
+            .or_else(|| payload_string(payload, &["proxyBindingKey", "proxyBindingKeySnapshot"])),
+        "clientFingerprint": payload_string(payload, &["clientFingerprint"]),
+        "clientHeaderFingerprints": payload_clone(payload, &["clientHeaderFingerprints"]),
+        "oauthForwardedHeaderNames": payload_string_array(payload, &["oauthForwardedHeaderNames"]),
+        "oauthPromptCacheHeaderForwarded": payload_bool(payload, &["oauthPromptCacheHeaderForwarded"]),
+    })
+}
+
+fn build_request_client_snapshot(payload: Option<&Value>) -> Value {
+    json!({
+        "requestContainsEncryptedContent": payload_bool(payload, &["requestContainsEncryptedContent"]),
+        "requestParseError": payload_string(payload, &["requestParseError"]),
+        "oauthAccountHeaderAttached": payload_bool(payload, &["oauthAccountHeaderAttached"]),
+        "oauthAccountIdShape": payload_string(payload, &["oauthAccountIdShape"]),
+        "oauthRequestBodyPrefixFingerprint": payload_string(payload, &["oauthRequestBodyPrefixFingerprint"]),
+        "oauthRequestBodyPrefixBytes": payload_u64(payload, &["oauthRequestBodyPrefixBytes"]),
+        "oauthRequestBodySnapshotKind": payload_string(payload, &["oauthRequestBodySnapshotKind"]),
+        "oauthResponsesBodyMode": payload_string(payload, &["oauthResponsesBodyMode"]),
+        "oauthResponsesRewrite": payload_clone(payload, &["oauthResponsesRewrite"]),
+    })
+}
+
+fn build_response_header_snapshot(record: &ApiInvocation, payload: Option<&Value>) -> Value {
+    json!({
+        "contentEncoding": record
+            .response_content_encoding
+            .clone()
+            .or_else(|| payload_string(payload, &["responseContentEncoding"])),
+        "contentEncodingChain": payload_string(payload, &["contentEncodingChain"]),
+        "upstreamRequestId": record
+            .upstream_request_id
+            .clone()
+            .or_else(|| payload_string(payload, &["upstreamRequestId"])),
+        "cvmInvokeId": Some(record.invoke_id.clone()),
+    })
+}
+
+fn build_response_delivery_snapshot(payload: Option<&Value>) -> Value {
+    json!({
+        "forwardedChunkCount": payload_u64(payload, &["forwardedChunkCount"]),
+        "forwardedBytes": payload_u64(payload, &["forwardedBytes"]),
+        "usageObserved": payload_bool(payload, &["usageObserved"]),
+        "downstreamClosePhase": payload_string(payload, &["downstreamClosePhase"]),
+        "downstreamWriteErrorKind": payload_string(payload, &["downstreamWriteErrorKind"]),
+        "lastUpstreamChunkGapMs": payload_u64(payload, &["lastUpstreamChunkGapMs"]),
+        "streamFailureOrigin": payload_string(payload, &["streamFailureOrigin"]),
+        "upstreamReadErrorKind": payload_string(payload, &["upstreamReadErrorKind"]),
+        "responseContainsEncryptedContent": payload_bool(payload, &["responseContainsEncryptedContent"]),
+    })
+}
+
+fn invocation_status_is_success_like(record: &ApiInvocation) -> bool {
+    matches!(
+        normalized_runtime_text(record.status.as_deref()).as_str(),
+        "success" | "completed" | "warning_success"
+    )
+}
+
+fn build_workflow_hero(
+    record: &ApiInvocation,
+    timeline_attempt_count: usize,
+) -> InvocationWorkflowHero {
+    InvocationWorkflowHero {
+        record_id: record.id,
+        invoke_id: record.invoke_id.clone(),
+        prompt_cache_key: record.prompt_cache_key.clone(),
+        route_mode: record.route_mode.clone(),
+        endpoint: record.endpoint.clone(),
+        request_model: record.request_model.clone(),
+        response_model: record
+            .response_model
+            .clone()
+            .or_else(|| record.model.clone()),
+        final_status: record.status.clone(),
+        failure_class: record.failure_class.clone(),
+        downstream_status_code: record.downstream_status_code,
+        upstream_account_id: record.upstream_account_id,
+        upstream_account_name: record.upstream_account_name.clone(),
+        total_duration_ms: record.t_total_ms,
+        timeline_attempt_count,
+        pool_attempt_count: record.pool_attempt_count,
+        total_tokens: record.total_tokens,
+        cost: record.cost,
+        occurred_at: Some(record.occurred_at.clone()),
+    }
+}
+
+fn build_attempt_request_summary(
+    record: &ApiInvocation,
+    attempt: &InvocationWorkflowAttemptRow,
+    payload: Option<&Value>,
+) -> Value {
+    json!({
+        "endpoint": attempt.endpoint.clone(),
+        "routeMode": record.route_mode.clone(),
+        "transport": record.transport.clone(),
+        "requestModel": record.request_model.clone(),
+        "responseModel": record.response_model.as_ref().or(record.model.as_ref()),
+        "requestedServiceTier": record.requested_service_tier.clone(),
+        "reasoningEffort": record.reasoning_effort.clone(),
+        "compactionRequestKind": record.compaction_request_kind.clone(),
+        "imageIntent": record.image_intent.clone(),
+        "promptCacheKey": record.prompt_cache_key.clone(),
+        "stickyKey": attempt.sticky_key.as_ref().or(record.sticky_key.as_ref()),
+        "requesterIp": attempt.requester_ip.as_ref().or(record.requester_ip.as_ref()),
+        "account": {
+            "id": attempt.upstream_account_id,
+            "name": attempt.upstream_account_name.as_ref().or(record.upstream_account_name.as_ref()),
+        },
+        "routing": {
+            "upstreamRouteKey": attempt.upstream_route_key.clone(),
+            "proxyBindingKey": attempt.proxy_binding_key_snapshot.clone(),
+            "proxyDisplayName": record.proxy_display_name.clone(),
+            "upstreamScope": payload_string(payload, &["upstreamScope"]),
+            "clientFingerprint": payload_string(payload, &["clientFingerprint"]),
+            "oauthForwardedHeaderNames": payload_string_array(payload, &["oauthForwardedHeaderNames"]),
+            "oauthPromptCacheHeaderForwarded": payload_bool(payload, &["oauthPromptCacheHeaderForwarded"]),
+        },
+        "headers": build_request_header_snapshot(payload),
+        "client": build_request_client_snapshot(payload),
+        "compression": {
+            "algorithm": attempt.upstream_request_compression_algorithm.clone(),
+            "mode": attempt.upstream_request_compression_mode.clone(),
+        },
+        "bodyCapture": {
+            "availableAtInvocationLevel": record.request_raw_path.is_some(),
+            "size": record.request_raw_size,
+            "truncated": record.request_raw_truncated.unwrap_or_default() != 0,
+            "truncatedReason": record.request_raw_truncated_reason.clone(),
+            "detailLevel": record.detail_level.clone(),
+            "detailPruneReason": record.detail_prune_reason.clone(),
+        },
+    })
+}
+
+fn build_attempt_response_summary(
+    record: &ApiInvocation,
+    attempt: &InvocationWorkflowAttemptRow,
+    payload: Option<&Value>,
+    include_usage: bool,
+) -> Value {
+    json!({
+        "status": attempt.status.clone(),
+        "phase": attempt.phase.clone(),
+        "httpStatus": attempt.http_status,
+        "compactionResponseKind": record.compaction_response_kind.clone(),
+        "failureKind": attempt.failure_kind.as_ref().or(record.failure_kind.as_ref()),
+        "errorMessage": attempt.error_message.as_ref().or(record.error_message.as_ref()),
+        "downstreamErrorMessage": attempt
+            .downstream_error_message
+            .as_ref()
+            .or(record.downstream_error_message.as_ref()),
+        "upstreamRequestId": attempt.upstream_request_id.as_ref().or(record.upstream_request_id.as_ref()),
+        "upstreamErrorCode": record.upstream_error_code.clone(),
+        "upstreamErrorMessage": record.upstream_error_message.clone(),
+        "streamTerminalEvent": record.stream_terminal_event.clone(),
+        "responseContentEncoding": record.response_content_encoding.clone(),
+        "serviceTier": record.service_tier.clone(),
+        "billingServiceTier": record.billing_service_tier.clone(),
+        "headers": build_response_header_snapshot(record, payload),
+        "delivery": build_response_delivery_snapshot(payload),
+        "compactSupport": {
+            "status": attempt.compact_support_status.clone(),
+            "reason": attempt.compact_support_reason.clone(),
+        },
+        "latencyMs": {
+            "connect": attempt.connect_latency_ms.or(record.t_upstream_connect_ms),
+            "firstByte": attempt.first_byte_latency_ms.or(record.t_upstream_ttfb_ms),
+            "stream": attempt.stream_latency_ms.or(record.t_upstream_stream_ms),
+            "requestRead": record.t_req_read_ms,
+            "requestParse": record.t_req_parse_ms,
+            "responseParse": record.t_resp_parse_ms,
+            "persist": record.t_persist_ms,
+            "total": record.t_total_ms,
+        },
+        "responseBodyCapture": {
+            "availableAtInvocationLevel": record.response_raw_path.is_some(),
+            "size": record.response_raw_size,
+            "truncated": record.response_raw_truncated.unwrap_or_default() != 0,
+            "truncatedReason": record.response_raw_truncated_reason.clone(),
+            "detailLevel": record.detail_level.clone(),
+            "detailPruneReason": record.detail_prune_reason.clone(),
+        },
+        "usage": include_usage.then(|| {
+            json!({
+                "inputTokens": record.input_tokens,
+                "outputTokens": record.output_tokens,
+                "cacheInputTokens": record.cache_input_tokens,
+                "reasoningTokens": record.reasoning_tokens,
+                "totalTokens": record.total_tokens,
+                "cost": record.cost,
+            })
+        }),
+    })
+}
+
+fn build_workflow_attempt_from_row(
+    record: &ApiInvocation,
+    attempt: &InvocationWorkflowAttemptRow,
+    payload: Option<&Value>,
+    include_usage: bool,
+) -> InvocationWorkflowAttempt {
+    InvocationWorkflowAttempt {
+        synthetic: false,
+        attempt_id: attempt.attempt_id.clone(),
+        occurred_at: attempt.occurred_at.clone(),
+        endpoint: attempt.endpoint.clone(),
+        sticky_key: attempt.sticky_key.clone(),
+        upstream_account_id: attempt.upstream_account_id,
+        upstream_account_name: attempt.upstream_account_name.clone(),
+        request_model: record.request_model.clone(),
+        response_model: record
+            .response_model
+            .clone()
+            .or_else(|| record.model.clone()),
+        upstream_route_key: attempt.upstream_route_key.clone(),
+        proxy_binding_key_snapshot: attempt.proxy_binding_key_snapshot.clone(),
+        attempt_index: attempt.attempt_index,
+        distinct_account_index: attempt.distinct_account_index,
+        same_account_retry_index: attempt.same_account_retry_index,
+        requester_ip: attempt
+            .requester_ip
+            .clone()
+            .or_else(|| record.requester_ip.clone()),
+        started_at: normalize_optional_timestamp(attempt.started_at.as_deref()),
+        finished_at: normalize_optional_timestamp(attempt.finished_at.as_deref()),
+        status: attempt.status.clone(),
+        phase: attempt.phase.clone(),
+        http_status: attempt.http_status,
+        downstream_http_status: attempt.downstream_http_status,
+        failure_kind: attempt
+            .failure_kind
+            .clone()
+            .or_else(|| record.failure_kind.clone()),
+        error_message: attempt
+            .error_message
+            .clone()
+            .or_else(|| record.error_message.clone()),
+        downstream_error_message: attempt
+            .downstream_error_message
+            .clone()
+            .or_else(|| record.downstream_error_message.clone()),
+        connect_latency_ms: attempt.connect_latency_ms.or(record.t_upstream_connect_ms),
+        first_byte_latency_ms: attempt.first_byte_latency_ms.or(record.t_upstream_ttfb_ms),
+        stream_latency_ms: attempt.stream_latency_ms.or(record.t_upstream_stream_ms),
+        upstream_request_id: attempt
+            .upstream_request_id
+            .clone()
+            .or_else(|| record.upstream_request_id.clone()),
+        request_summary: parse_summary_json_or_fallback(
+            attempt.request_summary_json.as_deref(),
+            || build_attempt_request_summary(record, attempt, payload),
+        ),
+        response_summary: parse_summary_json_or_fallback(
+            attempt.response_summary_json.as_deref(),
+            || build_attempt_response_summary(record, attempt, payload, include_usage),
+        ),
+    }
+}
+
+fn build_synthetic_workflow_attempt(
+    record: &ApiInvocation,
+    payload: Option<&Value>,
+) -> InvocationWorkflowAttempt {
+    let request_summary = json!({
+        "endpoint": record.endpoint.clone(),
+        "routeMode": record.route_mode.clone(),
+        "transport": record.transport.clone(),
+        "requestModel": record.request_model.clone(),
+        "responseModel": record.response_model.as_ref().or(record.model.as_ref()),
+        "requestedServiceTier": record.requested_service_tier.clone(),
+        "reasoningEffort": record.reasoning_effort.clone(),
+        "compactionRequestKind": record.compaction_request_kind.clone(),
+        "imageIntent": record.image_intent.clone(),
+        "promptCacheKey": record.prompt_cache_key.clone(),
+        "stickyKey": record.sticky_key.clone(),
+        "requesterIp": record.requester_ip.clone(),
+        "account": {
+            "id": record.upstream_account_id,
+            "name": record.upstream_account_name.clone(),
+        },
+        "routing": {
+            "proxyDisplayName": record.proxy_display_name.clone(),
+            "upstreamScope": payload_string(payload, &["upstreamScope"]),
+            "clientFingerprint": payload_string(payload, &["clientFingerprint"]),
+            "oauthForwardedHeaderNames": payload_string_array(payload, &["oauthForwardedHeaderNames"]),
+            "oauthPromptCacheHeaderForwarded": payload_bool(payload, &["oauthPromptCacheHeaderForwarded"]),
+        },
+        "headers": build_request_header_snapshot(payload),
+        "client": build_request_client_snapshot(payload),
+        "bodyCapture": {
+            "availableAtInvocationLevel": record.request_raw_path.is_some(),
+            "size": record.request_raw_size,
+            "truncated": record.request_raw_truncated.unwrap_or_default() != 0,
+            "truncatedReason": record.request_raw_truncated_reason.clone(),
+            "detailLevel": record.detail_level.clone(),
+            "detailPruneReason": record.detail_prune_reason.clone(),
+        },
+    });
+    let response_summary = json!({
+        "status": record.status.clone(),
+        "phase": record.live_phase.clone(),
+        "downstreamHttpStatus": record.downstream_status_code,
+        "failureKind": record.failure_kind.clone(),
+        "errorMessage": record.error_message.clone(),
+        "downstreamErrorMessage": record.downstream_error_message.clone(),
+        "upstreamRequestId": record.upstream_request_id.clone(),
+        "upstreamErrorCode": record.upstream_error_code.clone(),
+        "upstreamErrorMessage": record.upstream_error_message.clone(),
+        "streamTerminalEvent": record.stream_terminal_event.clone(),
+        "responseContentEncoding": record.response_content_encoding.clone(),
+        "serviceTier": record.service_tier.clone(),
+        "billingServiceTier": record.billing_service_tier.clone(),
+        "headers": build_response_header_snapshot(record, payload),
+        "delivery": build_response_delivery_snapshot(payload),
+        "latencyMs": {
+            "connect": record.t_upstream_connect_ms,
+            "firstByte": record.t_upstream_ttfb_ms,
+            "stream": record.t_upstream_stream_ms,
+            "requestRead": record.t_req_read_ms,
+            "requestParse": record.t_req_parse_ms,
+            "responseParse": record.t_resp_parse_ms,
+            "persist": record.t_persist_ms,
+            "total": record.t_total_ms,
+        },
+        "responseBodyCapture": {
+            "availableAtInvocationLevel": record.response_raw_path.is_some(),
+            "size": record.response_raw_size,
+            "truncated": record.response_raw_truncated.unwrap_or_default() != 0,
+            "truncatedReason": record.response_raw_truncated_reason.clone(),
+            "detailLevel": record.detail_level.clone(),
+            "detailPruneReason": record.detail_prune_reason.clone(),
+        },
+        "usage": {
+            "inputTokens": record.input_tokens,
+            "outputTokens": record.output_tokens,
+            "cacheInputTokens": record.cache_input_tokens,
+            "reasoningTokens": record.reasoning_tokens,
+            "totalTokens": record.total_tokens,
+            "cost": record.cost,
+        },
+    });
+    InvocationWorkflowAttempt {
+        synthetic: true,
+        attempt_id: None,
+        occurred_at: record.occurred_at.clone(),
+        endpoint: record.endpoint.clone().unwrap_or_default(),
+        sticky_key: record.sticky_key.clone(),
+        upstream_account_id: record.upstream_account_id,
+        upstream_account_name: record.upstream_account_name.clone(),
+        request_model: record.request_model.clone(),
+        response_model: record
+            .response_model
+            .clone()
+            .or_else(|| record.model.clone()),
+        upstream_route_key: None,
+        proxy_binding_key_snapshot: None,
+        attempt_index: 1,
+        distinct_account_index: 1,
+        same_account_retry_index: 1,
+        requester_ip: record.requester_ip.clone(),
+        started_at: Some(record.occurred_at.clone()),
+        finished_at: record.t_total_ms.and_then(|total| {
+            parse_to_utc_datetime(&record.occurred_at).and_then(|occurred_at| {
+                chrono::Duration::from_std(Duration::from_secs_f64(total.max(0.0) / 1000.0))
+                    .ok()
+                    .map(|delta| format_utc_iso(occurred_at + delta))
+            })
+        }),
+        status: record
+            .status
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string()),
+        phase: record.live_phase.clone(),
+        http_status: None,
+        downstream_http_status: record.downstream_status_code,
+        failure_kind: record.failure_kind.clone(),
+        error_message: record.error_message.clone(),
+        downstream_error_message: record.downstream_error_message.clone(),
+        connect_latency_ms: record.t_upstream_connect_ms,
+        first_byte_latency_ms: record.t_upstream_ttfb_ms,
+        stream_latency_ms: record.t_upstream_stream_ms,
+        upstream_request_id: record.upstream_request_id.clone(),
+        request_summary: Some(request_summary),
+        response_summary: Some(response_summary),
+    }
+}
+
+fn workflow_attempt_account_label(attempt: &InvocationWorkflowAttempt) -> String {
+    attempt
+        .upstream_account_name
+        .clone()
+        .or_else(|| attempt.upstream_account_id.map(|id| format!("账号 #{id}")))
+        .unwrap_or_else(|| "未定账号".to_string())
+}
+
+fn workflow_route_subtitle(attempt: &InvocationWorkflowAttempt) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(model) = attempt
+        .request_model
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        parts.push(model.to_string());
+    }
+    if let Some(proxy) = attempt
+        .proxy_binding_key_snapshot
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        parts.push(proxy.to_string());
+    }
+    if let Some(route_key) = attempt
+        .upstream_route_key
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        parts.push(route_key.to_string());
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" · "))
+    }
+}
+
+fn build_workflow_timeline_entries(
+    record: &ApiInvocation,
+    attempts: &[InvocationWorkflowAttempt],
+    failure_entry: Option<InvocationWorkflowTimelineEntry>,
+) -> Vec<InvocationWorkflowTimelineEntry> {
+    let mut entries = Vec::new();
+    if attempts.len() == 1 && attempts[0].synthetic {
+        let attempt = attempts[0].clone();
+        entries.push(InvocationWorkflowTimelineEntry {
+            block_id: "attempt-direct".to_string(),
+            kind: "attempt".to_string(),
+            occurred_at: Some(attempt.occurred_at.clone()),
+            title: "Direct attempt".to_string(),
+            subtitle: Some(attempt.endpoint.clone()),
+            status: Some(attempt.status.clone()),
+            attempt: Some(attempt),
+            detail: None,
+            response_body: None,
+        });
+    } else {
+        let mut previous_finished_at: Option<DateTime<Utc>> = None;
+        let mut previous_attempt_id: Option<String> = None;
+        for attempt in attempts {
+            if let Some(started_at) = attempt
+                .started_at
+                .as_deref()
+                .and_then(parse_to_utc_datetime)
+                && let Some(previous_finished) = previous_finished_at
+            {
+                let gap_ms = (started_at - previous_finished).num_milliseconds();
+                if gap_ms > 0 {
+                    entries.push(InvocationWorkflowTimelineEntry {
+                        block_id: format!(
+                            "wait-{}",
+                            attempt
+                                .attempt_id
+                                .clone()
+                                .unwrap_or_else(|| attempt.attempt_index.to_string())
+                        ),
+                        kind: "routingWait".to_string(),
+                        occurred_at: Some(format_utc_iso(started_at)),
+                        title: "Retry wait".to_string(),
+                        subtitle: Some(format!("{} ms", gap_ms)),
+                        status: None,
+                        attempt: None,
+                        detail: Some(json!({
+                            "durationMs": gap_ms,
+                            "fromAttemptId": previous_attempt_id.clone(),
+                            "toAttemptId": attempt.attempt_id.clone(),
+                        })),
+                        response_body: None,
+                    });
+                }
+            }
+
+            entries.push(InvocationWorkflowTimelineEntry {
+                block_id: format!(
+                    "route-{}",
+                    attempt
+                        .attempt_id
+                        .clone()
+                        .unwrap_or_else(|| attempt.attempt_index.to_string())
+                ),
+                kind: "routingDecision".to_string(),
+                occurred_at: attempt
+                    .started_at
+                    .clone()
+                    .or_else(|| Some(attempt.occurred_at.clone())),
+                title: format!("Route {}", workflow_attempt_account_label(attempt)),
+                subtitle: workflow_route_subtitle(attempt),
+                status: None,
+                attempt: None,
+                detail: attempt.request_summary.clone(),
+                response_body: None,
+            });
+
+            entries.push(InvocationWorkflowTimelineEntry {
+                block_id: format!(
+                    "attempt-{}",
+                    attempt
+                        .attempt_id
+                        .clone()
+                        .unwrap_or_else(|| attempt.attempt_index.to_string())
+                ),
+                kind: "attempt".to_string(),
+                occurred_at: Some(attempt.occurred_at.clone()),
+                title: format!("Attempt #{}", attempt.attempt_index),
+                subtitle: Some(workflow_attempt_account_label(attempt)),
+                status: Some(attempt.status.clone()),
+                attempt: Some(attempt.clone()),
+                detail: None,
+                response_body: None,
+            });
+
+            previous_finished_at = attempt
+                .finished_at
+                .as_deref()
+                .and_then(parse_to_utc_datetime);
+            previous_attempt_id = attempt.attempt_id.clone();
+        }
+    }
+
+    if let Some(failure_entry) = failure_entry {
+        entries.push(failure_entry);
+    }
+    if entries.is_empty() && !invocation_status_is_success_like(record) {
+        entries.push(InvocationWorkflowTimelineEntry {
+            block_id: "failure-only".to_string(),
+            kind: "systemFinalFailure".to_string(),
+            occurred_at: Some(record.occurred_at.clone()),
+            title: "Final downstream response".to_string(),
+            subtitle: record.failure_kind.clone(),
+            status: record.status.clone(),
+            attempt: None,
+            detail: Some(json!({
+                "downstreamStatusCode": record.downstream_status_code,
+                "failureKind": record.failure_kind.clone(),
+                "errorMessage": record.error_message.clone(),
+                "downstreamErrorMessage": record.downstream_error_message.clone(),
+            })),
+            response_body: None,
+        });
+    }
+    entries
+}
+
+async fn load_invocation_workflow_identity(
+    pool: &Pool<Sqlite>,
+    id: i64,
+) -> Result<Option<InvocationWorkflowIdentityRow>, ApiError> {
+    sqlx::query_as::<_, InvocationWorkflowIdentityRow>(
+        r#"
+        SELECT id, invoke_id, occurred_at, timeline_json
+        FROM codex_invocations
+        WHERE id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(ApiError::from)
+}
+
+async fn query_invocation_workflow_attempt_rows(
+    pool: &Pool<Sqlite>,
+    invoke_id: &str,
+    occurred_at: &str,
+) -> Result<Vec<InvocationWorkflowAttemptRow>, ApiError> {
+    sqlx::query_as::<_, InvocationWorkflowAttemptRow>(
+        r#"
+        SELECT
+            attempts.attempt_public_id AS attempt_id,
+            attempts.invoke_id,
+            attempts.occurred_at,
+            attempts.endpoint,
+            attempts.sticky_key,
+            attempts.upstream_account_id,
+            accounts.display_name AS upstream_account_name,
+            attempts.upstream_route_key,
+            attempts.proxy_binding_key_snapshot,
+            attempts.attempt_index,
+            attempts.distinct_account_index,
+            attempts.same_account_retry_index,
+            attempts.requester_ip,
+            attempts.started_at,
+            attempts.finished_at,
+            attempts.status,
+            COALESCE(
+                attempts.phase,
+                CASE
+                    WHEN attempts.status = 'pending' THEN 'sending_request'
+                    WHEN attempts.status = 'success' THEN 'completed'
+                    ELSE 'failed'
+                END
+            ) AS phase,
+            attempts.http_status,
+            attempts.downstream_http_status,
+            attempts.failure_kind,
+            attempts.error_message,
+            attempts.downstream_error_message,
+            attempts.connect_latency_ms,
+            attempts.first_byte_latency_ms,
+            attempts.stream_latency_ms,
+            attempts.upstream_request_id,
+            attempts.upstream_request_compression_algorithm,
+            attempts.upstream_request_compression_mode,
+            attempts.compact_support_status,
+            attempts.compact_support_reason,
+            attempts.request_summary_json,
+            attempts.response_summary_json
+        FROM pool_upstream_request_attempts AS attempts
+        LEFT JOIN pool_upstream_accounts AS accounts
+            ON accounts.id = attempts.upstream_account_id
+        WHERE attempts.invoke_id = ?1
+          AND attempts.occurred_at = ?2
+        ORDER BY attempts.attempt_index ASC, attempts.id ASC
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_all(pool)
+    .await
+    .map_err(ApiError::from)
+}
+
+fn build_final_failure_timeline_entry(
+    record: &ApiInvocation,
+    body_row: Option<&InvocationResponseBodyRow>,
+    raw_path_fallback_root: Option<&Path>,
+) -> Option<InvocationWorkflowTimelineEntry> {
+    if invocation_status_is_success_like(record) {
+        return None;
+    }
+
+    let response_body = body_row.map(|row| {
+        match resolve_response_body_text_from_row(row, raw_path_fallback_root) {
+            Ok((text, _)) => InvocationWorkflowResponseBody {
+                available: true,
+                body_text: Some(text),
+                unavailable_reason: None,
+            },
+            Err(reason) => InvocationWorkflowResponseBody {
+                available: false,
+                body_text: None,
+                unavailable_reason: Some(reason),
+            },
+        }
+    });
+
+    let occurred_at = record
+        .t_total_ms
+        .and_then(|total| {
+            parse_to_utc_datetime(&record.occurred_at).and_then(|started_at| {
+                chrono::Duration::from_std(Duration::from_secs_f64(total.max(0.0) / 1000.0))
+                    .ok()
+                    .map(|delta| format_utc_iso(started_at + delta))
+            })
+        })
+        .or_else(|| Some(record.occurred_at.clone()));
+
+    Some(InvocationWorkflowTimelineEntry {
+        block_id: "system-final-failure".to_string(),
+        kind: "systemFinalFailure".to_string(),
+        occurred_at,
+        title: "Final downstream response".to_string(),
+        subtitle: record
+            .failure_kind
+            .clone()
+            .or_else(|| record.failure_class.clone()),
+        status: record.status.clone(),
+        attempt: None,
+        detail: Some(json!({
+            "invokeId": record.invoke_id.clone(),
+            "downstreamStatusCode": record.downstream_status_code,
+            "failureKind": record.failure_kind.clone(),
+            "errorMessage": record.error_message.clone(),
+            "downstreamErrorMessage": record.downstream_error_message.clone(),
+            "upstreamErrorCode": record.upstream_error_code.clone(),
+            "upstreamErrorMessage": record.upstream_error_message.clone(),
+            "upstreamRequestId": record.upstream_request_id.clone(),
+            "streamTerminalEvent": record.stream_terminal_event.clone(),
+            "responseContentEncoding": record.response_content_encoding.clone(),
+        })),
+        response_body,
+    })
+}
+
+pub(crate) async fn fetch_invocation_workflow_detail(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Result<Json<InvocationWorkflowDetailResponse>, ApiError> {
+    let identity = load_invocation_workflow_identity(&state.pool, id)
+        .await?
+        .ok_or_else(|| ApiError::bad_request(anyhow!("record not found")))?;
+    let record =
+        load_persisted_api_invocation(&state.pool, &identity.invoke_id, &identity.occurred_at)
+            .await
+            .map_err(ApiError::from)?;
+    let body_row = fetch_invocation_response_body_row_by_id(&state.pool, id).await?;
+    let payload_value = body_row
+        .as_ref()
+        .and_then(|row| parse_optional_json_value(row.payload.as_deref()));
+    let attempt_rows = query_invocation_workflow_attempt_rows(
+        &state.pool,
+        &identity.invoke_id,
+        &identity.occurred_at,
+    )
+    .await?;
+    let last_success_attempt_index = attempt_rows
+        .iter()
+        .rfind(|attempt| normalized_runtime_text(Some(attempt.status.as_str())) == "success")
+        .map(|attempt| attempt.attempt_index);
+    let attempts = if attempt_rows.is_empty() {
+        vec![build_synthetic_workflow_attempt(
+            &record,
+            payload_value.as_ref(),
+        )]
+    } else {
+        attempt_rows
+            .iter()
+            .map(|attempt| {
+                build_workflow_attempt_from_row(
+                    &record,
+                    attempt,
+                    payload_value.as_ref(),
+                    last_success_attempt_index == Some(attempt.attempt_index)
+                        && (record.total_tokens.is_some() || record.cost.is_some()),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let failure_entry = build_final_failure_timeline_entry(
+        &record,
+        body_row.as_ref(),
+        state.config.database_path.parent(),
+    );
+    let partial = normalized_runtime_text(record.route_mode.as_deref()) == "pool"
+        && record.pool_attempt_count.unwrap_or_default() > 0
+        && attempt_rows.is_empty();
+    let response = InvocationWorkflowDetailResponse {
+        hero: build_workflow_hero(&record, attempts.len()),
+        timeline: build_workflow_timeline_entries(&record, &attempts, failure_entry),
+        reconstructed: identity.timeline_json.is_none(),
+        partial,
+        partial_reason: partial.then(|| "attempt_rows_missing".to_string()),
+    };
+    Ok(Json(response))
+}
+
+#[derive(Debug, FromRow)]
 pub(crate) struct InvocationResponseBodyRow {
     pub(crate) id: i64,
+    pub(crate) invoke_id: String,
+    pub(crate) payload: Option<String>,
     pub(crate) raw_response: String,
+    pub(crate) request_raw_path: Option<String>,
+    pub(crate) request_raw_size: Option<i64>,
+    pub(crate) request_raw_truncated: Option<i64>,
+    pub(crate) request_raw_truncated_reason: Option<String>,
     pub(crate) response_raw_path: Option<String>,
     pub(crate) response_raw_size: Option<i64>,
     pub(crate) response_raw_truncated: Option<i64>,
@@ -2641,6 +3708,35 @@ pub(crate) fn raw_response_fallback_reason(row: &InvocationResponseBodyRow) -> S
             .unwrap_or_else(|| "preview_only".to_string())
     } else {
         "missing_body".to_string()
+    }
+}
+
+pub(crate) fn raw_request_fallback_reason(row: &InvocationResponseBodyRow) -> String {
+    if row.detail_level == DETAIL_LEVEL_STRUCTURED_ONLY {
+        "detail_pruned".to_string()
+    } else if row.request_raw_truncated.unwrap_or_default() != 0 {
+        row.request_raw_truncated_reason
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| "capture_unavailable".to_string())
+    } else {
+        "missing_body".to_string()
+    }
+}
+
+pub(crate) fn resolve_request_body_text_from_row(
+    row: &InvocationResponseBodyRow,
+    raw_path_fallback_root: Option<&Path>,
+) -> Result<(String, bool), String> {
+    let Some(path) = row.request_raw_path.as_deref() else {
+        return Err(raw_request_fallback_reason(row));
+    };
+
+    match read_proxy_raw_bytes(path, raw_path_fallback_root) {
+        Ok(bytes) => Ok((String::from_utf8_lossy(&bytes).to_string(), true)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Err("raw_file_missing".to_string()),
+        Err(err) => Err(format!("raw_file_unreadable:{err}")),
     }
 }
 
@@ -2701,7 +3797,13 @@ pub(crate) async fn fetch_invocation_response_body_row_by_id(
     let sql = format!(
         "SELECT \
          id, \
+         invoke_id, \
+         payload, \
          raw_response, \
+         request_raw_path, \
+         request_raw_size, \
+         request_raw_truncated, \
+         request_raw_truncated_reason, \
          response_raw_path, \
          response_raw_size, \
          response_raw_truncated, \
@@ -2722,6 +3824,156 @@ pub(crate) async fn fetch_invocation_response_body_row_by_id(
         .fetch_optional(pool)
         .await
         .map_err(ApiError::from)
+}
+
+fn build_request_body_capture_summary(
+    row: &InvocationResponseBodyRow,
+    capture_source: Option<&str>,
+) -> Value {
+    json!({
+        "source": capture_source,
+        "size": row.request_raw_size,
+        "truncated": row.request_raw_truncated.unwrap_or_default() != 0,
+        "truncatedReason": row.request_raw_truncated_reason.clone(),
+        "detailLevel": Some(row.detail_level.clone()),
+        "detailPruneReason": row.detail_prune_reason.clone(),
+    })
+}
+
+fn build_response_body_capture_summary(
+    row: &InvocationResponseBodyRow,
+    capture_source: Option<&str>,
+) -> Value {
+    json!({
+        "source": capture_source,
+        "size": row.response_raw_size,
+        "truncated": row.response_raw_truncated.unwrap_or_default() != 0,
+        "truncatedReason": row.response_raw_truncated_reason.clone(),
+        "detailLevel": Some(row.detail_level.clone()),
+        "detailPruneReason": row.detail_prune_reason.clone(),
+    })
+}
+
+fn build_request_body_routing_snapshot(
+    row: &InvocationResponseBodyRow,
+    payload: Option<&Value>,
+) -> Value {
+    json!({
+        "routeMode": payload_string(payload, &["routeMode"]),
+        "upstreamScope": payload_string(payload, &["upstreamScope"]),
+        "stickyKey": payload_string(payload, &["stickyKey"]),
+        "promptCacheKey": payload_string(payload, &["promptCacheKey"]),
+        "proxyDisplayName": payload_string(payload, &["proxyDisplayName"]),
+        "clientFingerprint": payload_string(payload, &["clientFingerprint"]),
+        "clientHeaderFingerprints": payload_clone(payload, &["clientHeaderFingerprints"]),
+        "oauthForwardedHeaderNames": payload_string_array(payload, &["oauthForwardedHeaderNames"]),
+        "oauthPromptCacheHeaderForwarded": payload_bool(payload, &["oauthPromptCacheHeaderForwarded"]),
+        "client": build_request_client_snapshot(payload),
+        "invokeId": Some(row.invoke_id.clone()),
+    })
+}
+
+fn build_response_body_header_snapshot(
+    row: &InvocationResponseBodyRow,
+    payload: Option<&Value>,
+) -> Value {
+    json!({
+        "contentEncoding": row
+            .response_content_encoding
+            .clone()
+            .or_else(|| payload_string(payload, &["responseContentEncoding"])),
+        "contentEncodingChain": payload_string(payload, &["contentEncodingChain"]),
+        "upstreamRequestId": payload_string(payload, &["upstreamRequestId"]),
+        "cvmInvokeId": Some(row.invoke_id.clone()),
+    })
+}
+
+fn build_request_body_response(
+    row: &InvocationResponseBodyRow,
+    raw_path_fallback_root: Option<&Path>,
+) -> InvocationResponseBodyResponse {
+    let payload = parse_optional_json_value(row.payload.as_deref());
+    let headers = Some(build_request_header_snapshot(payload.as_ref()));
+    let routing = Some(build_request_body_routing_snapshot(row, payload.as_ref()));
+    match resolve_request_body_text_from_row(row, raw_path_fallback_root) {
+        Ok((body_text, from_full_body)) => InvocationResponseBodyResponse {
+            available: true,
+            body_text: Some(body_text),
+            unavailable_reason: None,
+            headers,
+            routing,
+            body_size: row.request_raw_size,
+            body_truncated: Some(row.request_raw_truncated.unwrap_or_default() != 0),
+            body_truncated_reason: row.request_raw_truncated_reason.clone(),
+            detail_level: Some(row.detail_level.clone()),
+            detail_prune_reason: row.detail_prune_reason.clone(),
+            capture_source: Some(
+                if from_full_body {
+                    "raw_file"
+                } else {
+                    "preview"
+                }
+                .to_string(),
+            ),
+        },
+        Err(reason) => InvocationResponseBodyResponse {
+            available: false,
+            body_text: None,
+            unavailable_reason: Some(reason),
+            headers,
+            routing,
+            body_size: row.request_raw_size,
+            body_truncated: Some(row.request_raw_truncated.unwrap_or_default() != 0),
+            body_truncated_reason: row.request_raw_truncated_reason.clone(),
+            detail_level: Some(row.detail_level.clone()),
+            detail_prune_reason: row.detail_prune_reason.clone(),
+            capture_source: None,
+        },
+    }
+}
+
+fn build_response_body_response(
+    row: &InvocationResponseBodyRow,
+    raw_path_fallback_root: Option<&Path>,
+) -> InvocationResponseBodyResponse {
+    let payload = parse_optional_json_value(row.payload.as_deref());
+    let headers = Some(build_response_body_header_snapshot(row, payload.as_ref()));
+    let routing = Some(build_response_delivery_snapshot(payload.as_ref()));
+    match resolve_response_body_text_from_row(row, raw_path_fallback_root) {
+        Ok((body_text, from_full_body)) => InvocationResponseBodyResponse {
+            available: true,
+            body_text: Some(body_text),
+            unavailable_reason: None,
+            headers,
+            routing,
+            body_size: row.response_raw_size,
+            body_truncated: Some(row.response_raw_truncated.unwrap_or_default() != 0),
+            body_truncated_reason: row.response_raw_truncated_reason.clone(),
+            detail_level: Some(row.detail_level.clone()),
+            detail_prune_reason: row.detail_prune_reason.clone(),
+            capture_source: Some(
+                if from_full_body {
+                    "raw_file"
+                } else {
+                    "preview"
+                }
+                .to_string(),
+            ),
+        },
+        Err(reason) => InvocationResponseBodyResponse {
+            available: false,
+            body_text: None,
+            unavailable_reason: Some(reason),
+            headers,
+            routing,
+            body_size: row.response_raw_size,
+            body_truncated: Some(row.response_raw_truncated.unwrap_or_default() != 0),
+            body_truncated_reason: row.response_raw_truncated_reason.clone(),
+            detail_level: Some(row.detail_level.clone()),
+            detail_prune_reason: row.detail_prune_reason.clone(),
+            capture_source: None,
+        },
+    }
 }
 
 pub(crate) async fn fetch_invocation_record_detail(
@@ -2767,27 +4019,23 @@ pub(crate) async fn fetch_invocation_response_body(
     let row = fetch_invocation_response_body_row_by_id(&state.pool, id)
         .await?
         .ok_or_else(|| ApiError::bad_request(anyhow!("record not found")))?;
+    Ok(Json(build_response_body_response(
+        &row,
+        state.config.database_path.parent(),
+    )))
+}
 
-    if !is_abnormal_invocation_failure(row.failure_class.as_deref()) {
-        return Ok(Json(InvocationResponseBodyResponse {
-            available: false,
-            body_text: None,
-            unavailable_reason: Some("not_abnormal".to_string()),
-        }));
-    }
-
-    match resolve_response_body_text_from_row(&row, state.config.database_path.parent()) {
-        Ok((body_text, _)) => Ok(Json(InvocationResponseBodyResponse {
-            available: true,
-            body_text: Some(body_text),
-            unavailable_reason: None,
-        })),
-        Err(reason) => Ok(Json(InvocationResponseBodyResponse {
-            available: false,
-            body_text: None,
-            unavailable_reason: Some(reason),
-        })),
-    }
+pub(crate) async fn fetch_invocation_request_body(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Result<Json<InvocationResponseBodyResponse>, ApiError> {
+    let row = fetch_invocation_response_body_row_by_id(&state.pool, id)
+        .await?
+        .ok_or_else(|| ApiError::bad_request(anyhow!("record not found")))?;
+    Ok(Json(build_request_body_response(
+        &row,
+        state.config.database_path.parent(),
+    )))
 }
 
 pub(crate) async fn fetch_invocation_summary(
@@ -3762,6 +5010,10 @@ pub(crate) struct UpstreamAccountActivityAccumulator {
     first_response_byte_total_sum_ms: f64,
     total_latency_sample_count: i64,
     total_latency_sum_ms: f64,
+    latest_first_response_byte_total_at: Option<String>,
+    latest_first_response_byte_total_ms: Option<f64>,
+    latest_avg_total_at: Option<String>,
+    latest_avg_total_ms: Option<f64>,
     in_progress_wait_sample_count: i64,
     in_progress_wait_sum_ms: f64,
     last_occurred_at_epoch_ms: i64,
@@ -3771,6 +5023,31 @@ pub(crate) struct UpstreamAccountActivityAccumulator {
     recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
     usage_breakdown: UsageBreakdownAccumulator,
     model_performance: ModelPerformanceAccumulator,
+}
+
+#[derive(Debug, Clone, Default)]
+struct LatestTimedMetricValue {
+    at: Option<String>,
+    value: Option<f64>,
+}
+
+impl LatestTimedMetricValue {
+    fn update(&mut self, candidate_at: Option<String>, candidate_value: Option<f64>) {
+        let Some(candidate_at) = candidate_at else {
+            return;
+        };
+        let Some(candidate_value) = candidate_value.filter(|value| value.is_finite()) else {
+            return;
+        };
+        let replace = match self.at.as_deref() {
+            Some(current_at) => candidate_at.as_str() >= current_at,
+            None => true,
+        };
+        if replace {
+            self.at = Some(candidate_at);
+            self.value = Some(candidate_value);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -4044,6 +5321,17 @@ impl DashboardActivityCurrentMinuteAccumulator {
         (self.total_latency_sample_count > 0)
             .then_some(self.total_latency_sum_ms / self.total_latency_sample_count as f64)
     }
+
+    fn into_current_snapshot(self) -> DashboardActivityCurrentSnapshot {
+        DashboardActivityCurrentSnapshot {
+            qualified_tokens: self.qualified_tokens,
+            total_cost: self.total_cost,
+            first_response_byte_total_sample_count: self.first_response_byte_total_sample_count,
+            first_response_byte_total_sum_ms: self.first_response_byte_total_sum_ms,
+            total_latency_sample_count: self.total_latency_sample_count,
+            total_latency_sum_ms: self.total_latency_sum_ms,
+        }
+    }
 }
 
 pub(crate) fn normalize_trimmed_optional_string_local(raw: Option<String>) -> Option<String> {
@@ -4153,6 +5441,21 @@ fn merge_latest_optional_timestamp(current: &mut Option<String>, candidate: Opti
         Some(existing) => existing.max(candidate),
         None => candidate,
     });
+}
+
+fn merge_latest_timed_metric(
+    current_at: &mut Option<String>,
+    current_value: &mut Option<f64>,
+    candidate_at: Option<String>,
+    candidate_value: Option<f64>,
+) {
+    let mut latest = LatestTimedMetricValue {
+        at: current_at.take(),
+        value: current_value.take(),
+    };
+    latest.update(candidate_at, candidate_value);
+    *current_at = latest.at;
+    *current_value = latest.value;
 }
 
 pub(crate) fn invocation_upstream_account_id_with_attempt_fallback_sql(
@@ -4358,6 +5661,10 @@ struct UpstreamAccountActivityAggregateRow {
     first_response_byte_total_sum_ms: f64,
     total_latency_sample_count: i64,
     total_latency_sum_ms: f64,
+    latest_first_response_byte_total_at: Option<String>,
+    latest_first_response_byte_total_ms: Option<f64>,
+    latest_avg_total_at: Option<String>,
+    latest_avg_total_ms: Option<f64>,
 }
 
 #[derive(Debug, FromRow)]
@@ -4689,6 +5996,7 @@ async fn query_live_upstream_account_activity_aggregate_rows(
         r#"
         WITH filtered_invocations AS (
             SELECT
+                id,
                 occurred_at,
                 status,
                 total_tokens,
@@ -4732,6 +6040,46 @@ async fn query_live_upstream_account_activity_aggregate_rows(
             WHERE filtered_invocations.prompt_cache_key IS NOT NULL
               AND filtered_invocations.prompt_cache_key <> ''
             GROUP BY filtered_invocations.prompt_cache_key
+        ),
+        latest_first_response_byte_total_by_account AS (
+            SELECT
+                ranked.upstream_account_id AS upstream_account_id,
+                ranked.occurred_at AS latest_first_response_byte_total_at,
+                ranked.first_response_byte_total_ms AS latest_first_response_byte_total_ms
+            FROM (
+                SELECT
+                    filtered_invocations.upstream_account_id AS upstream_account_id,
+                    filtered_invocations.occurred_at AS occurred_at,
+                    {first_response_byte_total_sql} AS first_response_byte_total_ms,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY filtered_invocations.upstream_account_id
+                        ORDER BY filtered_invocations.occurred_at DESC, filtered_invocations.id DESC
+                    ) AS row_num
+                FROM filtered_invocations
+                WHERE {success_sql}
+                  AND filtered_invocations.t_upstream_ttfb_ms > 0
+            ) AS ranked
+            WHERE ranked.row_num = 1
+        ),
+        latest_total_latency_by_account AS (
+            SELECT
+                ranked.upstream_account_id AS upstream_account_id,
+                ranked.occurred_at AS latest_avg_total_at,
+                ranked.t_total_ms AS latest_avg_total_ms
+            FROM (
+                SELECT
+                    filtered_invocations.upstream_account_id AS upstream_account_id,
+                    filtered_invocations.occurred_at AS occurred_at,
+                    filtered_invocations.t_total_ms AS t_total_ms,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY filtered_invocations.upstream_account_id
+                        ORDER BY filtered_invocations.occurred_at DESC, filtered_invocations.id DESC
+                    ) AS row_num
+                FROM filtered_invocations
+                WHERE {success_sql}
+                  AND filtered_invocations.t_total_ms >= 0
+            ) AS ranked
+            WHERE ranked.row_num = 1
         )
         SELECT
             filtered_invocations.upstream_account_id AS upstream_account_id,
@@ -4752,10 +6100,18 @@ async fn query_live_upstream_account_activity_aggregate_rows(
             SUM(CASE WHEN {success_sql} AND t_upstream_ttfb_ms > 0 THEN 1 ELSE 0 END) AS first_response_byte_total_sample_count,
             CAST(COALESCE(SUM(CASE WHEN {success_sql} AND t_upstream_ttfb_ms > 0 THEN {first_response_byte_total_sql} ELSE 0 END), 0) AS REAL) AS first_response_byte_total_sum_ms,
             SUM(CASE WHEN {success_sql} AND t_total_ms >= 0 THEN 1 ELSE 0 END) AS total_latency_sample_count,
-            CAST(COALESCE(SUM(CASE WHEN {success_sql} AND t_total_ms >= 0 THEN t_total_ms ELSE 0 END), 0) AS REAL) AS total_latency_sum_ms
+            CAST(COALESCE(SUM(CASE WHEN {success_sql} AND t_total_ms >= 0 THEN t_total_ms ELSE 0 END), 0) AS REAL) AS total_latency_sum_ms,
+            latest_first_response_byte_total_by_account.latest_first_response_byte_total_at AS latest_first_response_byte_total_at,
+            latest_first_response_byte_total_by_account.latest_first_response_byte_total_ms AS latest_first_response_byte_total_ms,
+            latest_total_latency_by_account.latest_avg_total_at AS latest_avg_total_at,
+            latest_total_latency_by_account.latest_avg_total_ms AS latest_avg_total_ms
         FROM filtered_invocations
         LEFT JOIN conversation_created_at_by_key
           ON conversation_created_at_by_key.prompt_cache_key = filtered_invocations.prompt_cache_key
+        LEFT JOIN latest_first_response_byte_total_by_account
+          ON latest_first_response_byte_total_by_account.upstream_account_id IS filtered_invocations.upstream_account_id
+        LEFT JOIN latest_total_latency_by_account
+          ON latest_total_latency_by_account.upstream_account_id IS filtered_invocations.upstream_account_id
         "#,
     ));
     query.push(" GROUP BY filtered_invocations.upstream_account_id");
@@ -6200,10 +7556,22 @@ fn sum_dashboard_activity_current_minute_accumulators(
     total
 }
 
+fn sum_dashboard_activity_current_snapshots(
+    snapshots: impl IntoIterator<Item = DashboardActivityCurrentSnapshot>,
+) -> DashboardActivityCurrentSnapshot {
+    let mut total = DashboardActivityCurrentSnapshot::default();
+    for snapshot in snapshots {
+        total.add_assign(snapshot);
+    }
+    total
+}
+
 pub(crate) fn build_dashboard_activity_summary(
     accounts: &[DashboardActivityAccountResponse],
     include_live_counts: bool,
-    current_minute_summary: DashboardActivityCurrentMinuteAccumulator,
+    current_snapshot: DashboardActivityCurrentSnapshot,
+    latest_first_response_byte_total_in_range: Option<f64>,
+    latest_avg_total_in_range: Option<f64>,
     model_performance: ModelPerformanceResponse,
 ) -> DashboardActivitySummaryResponse {
     let ttfb_sum = accounts
@@ -6271,17 +7639,35 @@ pub(crate) fn build_dashboard_activity_summary(
         stats,
         tokens_per_minute: Some(
             sum_optional_rates(accounts, |account| account.tokens_per_minute)
-                .unwrap_or(current_minute_summary.qualified_tokens.max(0) as f64),
+                .unwrap_or(current_snapshot.qualified_tokens.max(0) as f64),
         ),
         spend_rate: Some(
             sum_optional_rates(accounts, |account| account.spend_rate)
-                .unwrap_or(current_minute_summary.total_cost.max(0.0)),
+                .unwrap_or(current_snapshot.total_cost.max(0.0)),
         ),
-        current_first_response_byte_total_avg_ms: current_minute_summary
-            .first_response_byte_total_avg_ms(),
-        current_avg_total_ms: current_minute_summary.avg_total_ms(),
+        current_first_response_byte_total_avg_ms: current_snapshot
+            .first_response_byte_total_avg_ms()
+            .or(latest_first_response_byte_total_in_range),
+        current_avg_total_ms: current_snapshot
+            .avg_total_ms()
+            .or(latest_avg_total_in_range),
         model_performance,
     }
+}
+
+fn build_dashboard_activity_latency_summary(
+    current_snapshot: DashboardActivityCurrentSnapshot,
+    latest_first_response_byte_total_in_range: Option<f64>,
+    latest_avg_total_in_range: Option<f64>,
+) -> (Option<f64>, Option<f64>) {
+    (
+        current_snapshot
+            .first_response_byte_total_avg_ms()
+            .or(latest_first_response_byte_total_in_range),
+        current_snapshot
+            .avg_total_ms()
+            .or(latest_avg_total_in_range),
+    )
 }
 
 pub(crate) async fn query_dashboard_activity_rate_usage_rows(
@@ -6453,6 +7839,7 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
 ) -> Result<DashboardActivitySnapshot, ApiError> {
+    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
     let totals =
         query_hourly_backed_summary_range(state, range.start, range.end, source_scope).await?;
     let mut stats = totals.into_response();
@@ -6469,11 +7856,52 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
     )
     .await?;
     apply_summary_live_augmentation(&mut stats, augmentation);
-    let current_minute_by_account =
-        load_dashboard_activity_current_minute_accumulators_by_account(state, source_scope, range)
+    let current_snapshot = if range_name == "yesterday" {
+        let current_minute_by_account =
+            load_dashboard_activity_current_minute_accumulators_by_account(
+                state,
+                source_scope,
+                range,
+            )
             .await?;
-    let current_minute_summary =
-        sum_dashboard_activity_current_minute_accumulators(current_minute_by_account.into_values());
+        sum_dashboard_activity_current_minute_accumulators(current_minute_by_account.into_values())
+            .into_current_snapshot()
+    } else {
+        sum_dashboard_activity_current_snapshots(
+            state
+                .dashboard_network_speed_cache
+                .snapshot_dashboard_activity_accounts(range.end)
+                .into_values(),
+        )
+    };
+    let mut latest_first_response_byte_total_in_range = LatestTimedMetricValue::default();
+    let mut latest_avg_total_in_range = LatestTimedMetricValue::default();
+    for row in
+        query_live_upstream_account_activity_aggregate_rows(&state.pool, source_scope, range, true)
+            .await?
+    {
+        latest_first_response_byte_total_in_range.update(
+            row.latest_first_response_byte_total_at,
+            row.latest_first_response_byte_total_ms,
+        );
+        latest_avg_total_in_range.update(row.latest_avg_total_at, row.latest_avg_total_ms);
+    }
+    if range.start < retention_cutoff {
+        let (archived_rows, _usage_breakdowns) =
+            query_completed_invocation_archive_activity_aggregate_rows(
+                &state.pool,
+                source_scope,
+                range,
+            )
+            .await?;
+        for row in archived_rows {
+            latest_first_response_byte_total_in_range.update(
+                row.latest_first_response_byte_total_at,
+                row.latest_first_response_byte_total_ms,
+            );
+            latest_avg_total_in_range.update(row.latest_avg_total_at, row.latest_avg_total_ms);
+        }
+    }
 
     Ok(DashboardActivitySnapshot {
         range: range_name.to_string(),
@@ -6482,11 +7910,14 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
         accounts: Vec::new(),
         summary: DashboardActivitySummaryResponse {
             stats,
-            tokens_per_minute: Some(current_minute_summary.qualified_tokens.max(0) as f64),
-            spend_rate: Some(current_minute_summary.total_cost.max(0.0)),
-            current_first_response_byte_total_avg_ms: current_minute_summary
-                .first_response_byte_total_avg_ms(),
-            current_avg_total_ms: current_minute_summary.avg_total_ms(),
+            tokens_per_minute: Some(current_snapshot.qualified_tokens.max(0) as f64),
+            spend_rate: Some(current_snapshot.total_cost.max(0.0)),
+            current_first_response_byte_total_avg_ms: current_snapshot
+                .first_response_byte_total_avg_ms()
+                .or(latest_first_response_byte_total_in_range.value),
+            current_avg_total_ms: current_snapshot
+                .avg_total_ms()
+                .or(latest_avg_total_in_range.value),
             model_performance: ModelPerformanceAccumulator::unavailable(range),
         },
     })
@@ -6521,12 +7952,21 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
     let mut account_activity = HashMap::<Option<i64>, UpstreamAccountActivityAccumulator>::new();
     let mut model_performance = ModelPerformanceAccumulator::default();
-    let current_minute_by_account =
+    let current_snapshot_by_account = if range_name == "yesterday" {
         load_dashboard_activity_current_minute_accumulators_by_account(state, source_scope, range)
-            .await?;
-    let current_minute_summary = sum_dashboard_activity_current_minute_accumulators(
-        current_minute_by_account.values().copied(),
-    );
+            .await?
+            .into_iter()
+            .map(|(upstream_account_id, accumulator)| {
+                (upstream_account_id, accumulator.into_current_snapshot())
+            })
+            .collect::<HashMap<_, _>>()
+    } else {
+        state
+            .dashboard_network_speed_cache
+            .snapshot_dashboard_activity_accounts(range.end)
+    };
+    let current_snapshot_summary =
+        sum_dashboard_activity_current_snapshots(current_snapshot_by_account.values().copied());
     let model_performance_duration_overrides = if model_performance_available {
         Some(
             query_live_model_performance_duration_overrides(&state.pool, source_scope, range, true)
@@ -6561,6 +8001,18 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
         entry.total_latency_sample_count += row.total_latency_sample_count;
         entry.total_latency_sum_ms += row.total_latency_sum_ms;
+        merge_latest_timed_metric(
+            &mut entry.latest_first_response_byte_total_at,
+            &mut entry.latest_first_response_byte_total_ms,
+            row.latest_first_response_byte_total_at,
+            row.latest_first_response_byte_total_ms,
+        );
+        merge_latest_timed_metric(
+            &mut entry.latest_avg_total_at,
+            &mut entry.latest_avg_total_ms,
+            row.latest_avg_total_at,
+            row.latest_avg_total_ms,
+        );
     }
     for row in query_live_upstream_account_usage_breakdown_rows(
         &state.pool,
@@ -6608,6 +8060,18 @@ pub(crate) async fn load_dashboard_activity_snapshot(
             entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
             entry.total_latency_sample_count += row.total_latency_sample_count;
             entry.total_latency_sum_ms += row.total_latency_sum_ms;
+            merge_latest_timed_metric(
+                &mut entry.latest_first_response_byte_total_at,
+                &mut entry.latest_first_response_byte_total_ms,
+                row.latest_first_response_byte_total_at,
+                row.latest_first_response_byte_total_ms,
+            );
+            merge_latest_timed_metric(
+                &mut entry.latest_avg_total_at,
+                &mut entry.latest_avg_total_ms,
+                row.latest_avg_total_at,
+                row.latest_avg_total_ms,
+            );
         }
         for row in archived_usage_breakdowns {
             account_activity
@@ -6892,6 +8356,19 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         account_activity.entry(*upstream_account_id).or_default();
     }
 
+    let mut latest_first_response_byte_total_in_range = LatestTimedMetricValue::default();
+    let mut latest_avg_total_in_range = LatestTimedMetricValue::default();
+    for aggregate in account_activity.values() {
+        latest_first_response_byte_total_in_range.update(
+            aggregate.latest_first_response_byte_total_at.clone(),
+            aggregate.latest_first_response_byte_total_ms,
+        );
+        latest_avg_total_in_range.update(
+            aggregate.latest_avg_total_at.clone(),
+            aggregate.latest_avg_total_ms,
+        );
+    }
+
     let account_ids = account_activity
         .keys()
         .filter_map(|id| *id)
@@ -6919,12 +8396,18 @@ pub(crate) async fn load_dashboard_activity_snapshot(
             let model_performance = aggregate
                 .model_performance
                 .into_response(range, model_performance_available);
-            let current_minute = current_minute_by_account
+            let current_snapshot = current_snapshot_by_account
                 .get(&upstream_account_id)
                 .copied()
                 .unwrap_or_default();
-            let tokens_per_minute = Some(current_minute.qualified_tokens.max(0) as f64);
-            let spend_rate = Some(current_minute.total_cost.max(0.0));
+            let (current_first_response_byte_total_avg_ms, current_avg_total_ms) =
+                build_dashboard_activity_latency_summary(
+                    current_snapshot,
+                    aggregate.latest_first_response_byte_total_ms,
+                    aggregate.latest_avg_total_ms,
+                );
+            let tokens_per_minute = Some(current_snapshot.qualified_tokens.max(0) as f64);
+            let spend_rate = Some(current_snapshot.total_cost.max(0.0));
             let (in_progress_invocation_count, in_progress_phase_counts, retry_invocation_count) =
                 if range_name == "yesterday" {
                     (None, None, None)
@@ -7020,6 +8503,8 @@ pub(crate) async fn load_dashboard_activity_snapshot(
                 avg_total_ms: (aggregate.total_latency_sample_count > 0).then_some(
                     aggregate.total_latency_sum_ms / aggregate.total_latency_sample_count as f64,
                 ),
+                current_first_response_byte_total_avg_ms,
+                current_avg_total_ms,
                 in_progress_invocation_count,
                 in_progress_phase_counts,
                 retry_invocation_count,
@@ -7065,7 +8550,9 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     let summary = build_dashboard_activity_summary(
         &accounts,
         range_name != "yesterday",
-        current_minute_summary,
+        current_snapshot_summary,
+        latest_first_response_byte_total_in_range.value,
+        latest_avg_total_in_range.value,
         model_performance.into_response(range, model_performance_available),
     );
     Ok(DashboardActivitySnapshot {
@@ -7119,6 +8606,8 @@ pub(crate) fn dashboard_account_to_upstream_account(
         first_byte_avg_ms: account.first_byte_avg_ms,
         first_response_byte_total_avg_ms: account.first_response_byte_total_avg_ms,
         avg_total_ms: account.avg_total_ms,
+        current_first_response_byte_total_avg_ms: account.current_first_response_byte_total_avg_ms,
+        current_avg_total_ms: account.current_avg_total_ms,
         in_progress_invocation_count: account.in_progress_invocation_count,
         in_progress_phase_counts: account.in_progress_phase_counts,
         retry_invocation_count: account.retry_invocation_count,
@@ -7189,10 +8678,18 @@ pub(crate) async fn fetch_dashboard_activity(
     }
     let range_start = format_utc_iso_precise(snapshot.range_start);
     let range_end = format_utc_iso_precise(snapshot.range_end);
-    let current_rate_window = dashboard_activity_last_complete_minute_window(ExactUtcRange {
-        start: snapshot.range_start,
-        end: snapshot.range_end,
-    });
+    let current_rate_window = if params.range == "yesterday" {
+        dashboard_activity_last_complete_minute_window(ExactUtcRange {
+            start: snapshot.range_start,
+            end: snapshot.range_end,
+        })
+    } else {
+        ExactUtcRange {
+            start: snapshot.range_end
+                - ChronoDuration::seconds(DASHBOARD_ACTIVITY_REALTIME_WINDOW_SECONDS),
+            end: snapshot.range_end,
+        }
+    };
     let account_count = snapshot.accounts.len();
     let accounts = params.include_accounts.then_some(snapshot.accounts);
     let response = DashboardActivityResponse {
@@ -7205,7 +8702,11 @@ pub(crate) async fn fetch_dashboard_activity(
             start: format_utc_iso_precise(current_rate_window.start),
             end: format_utc_iso_precise(current_rate_window.end),
             window_minutes: 1,
-            mode: "last_complete_1m_sma".to_string(),
+            mode: if params.range == "yesterday" {
+                "last_complete_1m_sma".to_string()
+            } else {
+                "rolling_60s_live_mean".to_string()
+            },
         },
         summary: snapshot.summary,
         accounts,

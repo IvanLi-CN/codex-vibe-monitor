@@ -46,6 +46,36 @@ const baseTranslations = {
     "app.proxySettings.defaultOff": "Default: off",
     "app.proxySettings.saving": "Saving…",
     "app.proxySettings.close": "Close",
+    "app.pwa.install.promptButton": "Install app",
+    "app.pwa.install.manualButton": "Add to Home Screen",
+    "app.pwa.install.installedButton": "Installed",
+    "app.pwa.install.switcherAria": "Open install app controls",
+    "app.pwa.install.close": "Close",
+    "app.pwa.install.closeAria": "Close install dialog",
+    "app.pwa.install.shellReady": "Offline shell ready",
+    "app.pwa.install.shellPending": "Offline shell pending",
+    "app.pwa.install.offlineChip": "Offline now",
+    "app.pwa.install.manualTitle": "Add Codex Vibe Monitor to Home Screen",
+    "app.pwa.install.manualDescription":
+      "Safari on iPhone and iPad uses the browser share sheet instead of a native install prompt.",
+    "app.pwa.install.manualStepOpenShare":
+      "Open Safari’s share sheet while this workspace is visible.",
+    "app.pwa.install.manualStepAdd": "Choose “Add to Home Screen” from the action list.",
+    "app.pwa.install.manualStepConfirm":
+      "Confirm the icon name, then launch the installed app from your Home Screen.",
+    "app.pwa.install.installedTitle": "App already installed",
+    "app.pwa.install.installedDescription":
+      "This browser is already running inside the installed Codex Vibe Monitor app shell.",
+    "app.pwa.install.installedHint":
+      "Pin the installed window for daily monitoring. The app shell stays available offline, but live proxy data resumes only after reconnect.",
+    "app.pwa.offline.title": "Offline app shell",
+    "app.pwa.offline.descriptionReady":
+      "Cached shell is still available. Live data refresh, SSE activity, and settings sync resume after the network reconnects.",
+    "app.pwa.offline.descriptionPending":
+      "This browser is offline before the app shell finished caching. Reconnect once to complete the installable shell.",
+    "app.pwa.update.available": "A new app shell is ready:",
+    "app.pwa.update.refresh": "Update app",
+    "app.pwa.update.later": "Later",
     "app.update.available": "A new version is available:",
     "app.update.current": "current",
     "app.update.refresh": "Refresh now",
@@ -59,6 +89,29 @@ const baseTranslations = {
     "app.sse.banner.autoDisabled":
       "Auto reconnect paused after extended downtime. Click to try again.",
     "app.sse.banner.reconnectButton": "Reconnect now",
+    "app.sse.banner.diagnostics":
+      "Attempt {{attempt}} · {{reason}} · topics {{topics}} · resume {{resume}} · forced snapshot {{fresh}} · last msg {{lastMessageAge}} · {{outcome}}",
+    "app.sse.banner.diagAgeNever": "never",
+    "app.sse.banner.diagAgeSeconds": "{{seconds}}s ago",
+    "app.sse.banner.diagAgeMinutesSeconds": "{{minutes}}m {{seconds}}s ago",
+    "app.sse.banner.diagUnknown": "unknown",
+    "app.sse.reason.initial": "initial",
+    "app.sse.reason.topicChange": "topic change",
+    "app.sse.reason.topicRefresh": "topic refresh",
+    "app.sse.reason.manual": "manual reconnect",
+    "app.sse.reason.eventsourceError": "event error",
+    "app.sse.reason.watchdogClosed": "connection closed",
+    "app.sse.reason.watchdogTimeout": "connection timeout",
+    "app.sse.reason.visibilityVisible": "tab visible",
+    "app.sse.outcome.idle": "idle",
+    "app.sse.outcome.open": "opened",
+    "app.sse.outcome.topicChange": "replaced for topic change",
+    "app.sse.outcome.eventsourceError": "event error",
+    "app.sse.outcome.watchdogClosed": "closed",
+    "app.sse.outcome.watchdogTimeout": "timeout",
+    "app.sse.outcome.disabled": "disabled",
+    "app.sse.outcome.unsupported": "unsupported",
+    "app.sse.outcome.cleanup": "cleaned up",
     "app.footer.githubAria": "Open GitHub repository",
     "app.footer.loadingVersion": "Loading version…",
     "app.footer.versionLabel": "{{scope}} {{version}}",
@@ -1735,6 +1788,14 @@ const baseTranslations = {
       "5-minute mean speed · current bucket updates live",
     "dashboard.activityOverview.networkRefreshing": "Refreshing",
     "dashboard.activityOverview.rangeToggleAria": "Switch activity range",
+    "dashboard.activityOverview.snapshotBannerTitle": "Offline snapshot",
+    "dashboard.activityOverview.snapshotBannerDescription":
+      "Showing the latest cached overview from {{cachedAt}}. Historical metrics stay readable offline, but live traffic and edits resume only after reconnect.",
+    "dashboard.activityOverview.snapshotReadyRanges": "{{count}} / {{total}} ranges cached",
+    "dashboard.activityOverview.snapshotCachedAtUnknown": "an earlier sync",
+    "dashboard.activityOverview.snapshotNotReadyTitle": "This range is not cached yet",
+    "dashboard.activityOverview.snapshotNotReadyDescription":
+      "Reconnect once while this range is visible so the overview can be saved for offline reading.",
     "dashboard.section.liveRefreshing": "Live refresh",
     "dashboard.section.workingConversationsTitle": "Current",
     "dashboard.section.workingConversationsSubtitle":
@@ -1761,6 +1822,9 @@ const baseTranslations = {
     "dashboard.upstreamAccounts.channelName": "Channel {{name}}",
     "dashboard.workingConversations.empty":
       "No working conversations match the last 5 minutes or active in-flight window.",
+    "dashboard.workingConversations.offlineTitle": "Working conversations are unavailable offline",
+    "dashboard.workingConversations.offlineDescription":
+      "This section depends on live SSE snapshots and is not cached for offline use. Reconnect to resume current conversation monitoring.",
     "dashboard.workingConversations.sequenceLabel": "Conversation",
     "dashboard.workingConversations.promptCacheKeyLabel": "Prompt cache key",
     "dashboard.workingConversations.currentInvocation": "Current invocation",
@@ -1802,11 +1866,11 @@ const baseTranslations = {
     "dashboard.today.todayTokens": "Today Token",
     "dashboard.today.yesterdayTokens": "Yesterday Token",
     "dashboard.today.tokensPerMinuteDescription":
-      "Tokens per minute averaged across the complete selected time range.",
+      "Tokens per minute over the latest rolling 60-second window; empty traffic windows show 0.",
     "dashboard.today.spendRateDescription":
-      "Cost per minute averaged across the complete selected time range.",
+      "Spend per minute over the latest rolling 60-second window; empty traffic windows show 0.",
     "dashboard.today.responseTimeDescription":
-      "Average system-to-first-byte time across the complete selected time range.",
+      "Time to first byte and response time prefer the latest rolling 60-second success samples, then fall back to the latest valid result in the current range.",
     "dashboard.modelPerformance.title": "Model performance",
     "dashboard.modelPerformance.description":
       "Complete-range metrics for successful billed calls, grouped by response model and reasoning effort.",
@@ -2496,6 +2560,35 @@ const baseTranslations = {
     "app.proxySettings.defaultOff": "默认：关闭",
     "app.proxySettings.saving": "保存中…",
     "app.proxySettings.close": "关闭",
+    "app.pwa.install.promptButton": "安装应用",
+    "app.pwa.install.manualButton": "添加到主屏幕",
+    "app.pwa.install.installedButton": "已安装",
+    "app.pwa.install.switcherAria": "打开安装应用入口",
+    "app.pwa.install.close": "关闭",
+    "app.pwa.install.closeAria": "关闭安装说明",
+    "app.pwa.install.shellReady": "离线壳已就绪",
+    "app.pwa.install.shellPending": "离线壳待完成",
+    "app.pwa.install.offlineChip": "当前离线",
+    "app.pwa.install.manualTitle": "将 Codex Vibe Monitor 添加到主屏幕",
+    "app.pwa.install.manualDescription":
+      "iPhone / iPad 上的 Safari 不会弹原生安装提示，需要通过浏览器分享菜单手动添加。",
+    "app.pwa.install.manualStepOpenShare":
+      "在 Safari 中保持当前工作台可见，然后打开浏览器分享菜单。",
+    "app.pwa.install.manualStepAdd": "在操作列表里选择“添加到主屏幕”。",
+    "app.pwa.install.manualStepConfirm": "确认图标名称后完成添加，再从主屏幕启动独立应用窗口。",
+    "app.pwa.install.installedTitle": "应用已安装",
+    "app.pwa.install.installedDescription":
+      "当前浏览器已经运行在已安装的 Codex Vibe Monitor 独立壳层里。",
+    "app.pwa.install.installedHint":
+      "建议把独立窗口固定到常用位置，便于日常巡检。离线时仍可打开壳层，但实时代理数据需要联网后恢复。",
+    "app.pwa.offline.title": "离线应用壳层",
+    "app.pwa.offline.descriptionReady":
+      "缓存壳层仍可继续打开。实时数据刷新、SSE 活动和设置同步会在网络恢复后继续。",
+    "app.pwa.offline.descriptionPending":
+      "当前浏览器在壳层完成缓存前就离线了，请至少在线访问一次以完成 installable shell。",
+    "app.pwa.update.available": "新的应用壳层已就绪：",
+    "app.pwa.update.refresh": "更新应用",
+    "app.pwa.update.later": "稍后",
     "app.update.available": "有新版本可用：",
     "app.update.current": "当前",
     "app.update.refresh": "立即刷新",
@@ -2508,6 +2601,29 @@ const baseTranslations = {
     "app.sse.banner.retryingNow": "正在尝试重连…",
     "app.sse.banner.autoDisabled": "长时间掉线后已暂停自动重连，请手动重试。",
     "app.sse.banner.reconnectButton": "立即重连",
+    "app.sse.banner.diagnostics":
+      "尝试 {{attempt}} · {{reason}} · topics {{topics}} · resume {{resume}} · 强制快照 {{fresh}} · 上次消息 {{lastMessageAge}} · {{outcome}}",
+    "app.sse.banner.diagAgeNever": "从未收到",
+    "app.sse.banner.diagAgeSeconds": "{{seconds}} 秒前",
+    "app.sse.banner.diagAgeMinutesSeconds": "{{minutes}} 分 {{seconds}} 秒前",
+    "app.sse.banner.diagUnknown": "未知",
+    "app.sse.reason.initial": "首次连接",
+    "app.sse.reason.topicChange": "订阅集变更",
+    "app.sse.reason.topicRefresh": "主题刷新",
+    "app.sse.reason.manual": "手动重连",
+    "app.sse.reason.eventsourceError": "事件流错误",
+    "app.sse.reason.watchdogClosed": "连接已关闭",
+    "app.sse.reason.watchdogTimeout": "连接超时",
+    "app.sse.reason.visibilityVisible": "切回前台",
+    "app.sse.outcome.idle": "空闲",
+    "app.sse.outcome.open": "已打开",
+    "app.sse.outcome.topicChange": "订阅变更后已替换",
+    "app.sse.outcome.eventsourceError": "事件流错误",
+    "app.sse.outcome.watchdogClosed": "连接已关闭",
+    "app.sse.outcome.watchdogTimeout": "连接超时",
+    "app.sse.outcome.disabled": "自动重连已禁用",
+    "app.sse.outcome.unsupported": "浏览器不支持",
+    "app.sse.outcome.cleanup": "连接已清理",
     "app.footer.githubAria": "打开 GitHub 仓库",
     "app.footer.loadingVersion": "版本加载中…",
     "app.footer.versionLabel": "{{scope}} {{version}}",
@@ -4083,6 +4199,14 @@ const baseTranslations = {
     "dashboard.activityOverview.networkLiveNote": "5 分钟均值网速，当前桶实时更新",
     "dashboard.activityOverview.networkRefreshing": "刷新中",
     "dashboard.activityOverview.rangeToggleAria": "时间范围切换",
+    "dashboard.activityOverview.snapshotBannerTitle": "离线快照",
+    "dashboard.activityOverview.snapshotBannerDescription":
+      "当前展示的是 {{cachedAt}} 保存的最近一次概览缓存。离线时仍可查看历史指标，但实时流量和编辑能力要等重新联网后才会恢复。",
+    "dashboard.activityOverview.snapshotReadyRanges": "已缓存 {{count}} / {{total}} 个范围",
+    "dashboard.activityOverview.snapshotCachedAtUnknown": "较早的一次同步",
+    "dashboard.activityOverview.snapshotNotReadyTitle": "这个范围还没有离线缓存",
+    "dashboard.activityOverview.snapshotNotReadyDescription":
+      "请在联网状态下至少打开一次当前范围，概览才会被保存下来供离线查看。",
     "dashboard.section.liveRefreshing": "实时刷新",
     "dashboard.section.workingConversationsTitle": "当前",
     "dashboard.section.workingConversationsSubtitle":
@@ -4108,6 +4232,9 @@ const baseTranslations = {
     "dashboard.upstreamAccounts.channelName": "渠道 {{name}}",
     "dashboard.workingConversations.empty":
       "最近 5 分钟内暂无终态调用，且当前也没有运行中 / 排队中的对话。",
+    "dashboard.workingConversations.offlineTitle": "离线时无法读取 working conversations",
+    "dashboard.workingConversations.offlineDescription":
+      "这个区域依赖在线 SSE 快照，不会做离线缓存；重新联网后才会恢复当前对话监控。",
     "dashboard.workingConversations.sequenceLabel": "对话序列",
     "dashboard.workingConversations.promptCacheKeyLabel": "Prompt Cache Key",
     "dashboard.workingConversations.currentInvocation": "当前调用",
@@ -4148,11 +4275,11 @@ const baseTranslations = {
     "dashboard.today.todayTokens": "今日 Token",
     "dashboard.today.yesterdayTokens": "昨日 Token",
     "dashboard.today.tokensPerMinuteDescription":
-      "每分钟 Tokens，按最近 1 个完整分钟聚合；当前未闭合分钟不计入，空桶显示 0。",
+      "每分钟 Tokens，按最近 60 秒滚动窗口计算；窗口无合格流量时显示 0。",
     "dashboard.today.spendRateDescription":
-      "每分钟消费金额，按最近 1 个完整分钟聚合；当前未闭合分钟不计入，空桶显示 0。",
+      "每分钟消费金额，按最近 60 秒滚动窗口计算；窗口无合格流量时显示 0。",
     "dashboard.today.responseTimeDescription":
-      "首字总耗时与响应时间按最近 1 个完整分钟的成功样本计算；空桶或无有效样本时显示为空。",
+      "首字总耗时与响应时间优先显示最近 60 秒滚动成功样本；窗口无新样本时保留当前范围最近一次有效结果。",
     "dashboard.modelPerformance.title": "模型性能",
     "dashboard.modelPerformance.description":
       "仅统计成功且已计费调用，按响应模型与思考程度汇总当前范围完整周期的指标。",

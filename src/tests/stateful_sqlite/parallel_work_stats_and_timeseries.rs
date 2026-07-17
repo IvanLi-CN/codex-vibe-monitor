@@ -12976,29 +12976,29 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
         activity
             .summary()
             .tokens_per_minute
-            .expect("summary current-minute tpm"),
-        1_400.0,
+            .expect("summary rolling tpm"),
+        0.0,
     );
     assert_f64_close(
         activity
             .summary()
             .spend_rate
-            .expect("summary current-minute spend rate"),
-        0.65,
+            .expect("summary rolling spend rate"),
+        0.0,
     );
     assert_f64_close(
         activity
             .summary()
             .current_first_response_byte_total_avg_ms
-            .expect("summary current-minute first-byte avg"),
-        160.0,
+            .expect("summary current first-byte value"),
+        40.0,
     );
     assert_f64_close(
         activity
             .summary()
             .current_avg_total_ms
-            .expect("summary current-minute total avg"),
-        1_400.0,
+            .expect("summary current total value"),
+        500.0,
     );
     let performance = &activity.summary().model_performance;
     assert!(performance.available);
@@ -13018,7 +13018,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             .summary()
             .tokens_per_minute
             .expect("summary token rate"),
-        1_400.0,
+        0.0,
     );
     assert_f64_close(
         performance
@@ -13088,8 +13088,8 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
         .iter()
         .find(|account| account.upstream_account_id == Some(42))
         .expect("alpha account");
-    assert_f64_close(alpha.tokens_per_minute.expect("alpha current tpm"), 1_400.0);
-    assert_f64_close(alpha.spend_rate.expect("alpha current spend rate"), 0.10);
+    assert_f64_close(alpha.tokens_per_minute.expect("alpha rolling tpm"), 0.0);
+    assert_f64_close(alpha.spend_rate.expect("alpha rolling spend rate"), 0.0);
     assert_eq!(alpha.model_performance.models.len(), 2);
     assert_eq!(
         alpha.model_performance.models[0].model,
@@ -13173,34 +13173,28 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             .stats
             .in_progress_retry_conversation_count,
     );
-    assert_eq!(
-        summary_only_activity.summary().tokens_per_minute,
-        Some(1_400.0)
-    );
-    assert_eq!(
-        summary_only_response.summary.tokens_per_minute,
-        Some(1_400.0)
-    );
+    assert_eq!(summary_only_activity.summary().tokens_per_minute, Some(0.0));
+    assert_eq!(summary_only_response.summary.tokens_per_minute, Some(0.0));
     assert_f64_close(
         summary_only_activity
             .summary()
             .spend_rate
             .expect("summary-only spend rate"),
-        0.65,
+        0.0,
     );
     assert_f64_close(
         summary_only_activity
             .summary()
             .current_first_response_byte_total_avg_ms
-            .expect("summary-only current first-byte avg"),
-        160.0,
+            .expect("summary-only current first-byte value"),
+        40.0,
     );
     assert_f64_close(
         summary_only_activity
             .summary()
             .current_avg_total_ms
-            .expect("summary-only current total avg"),
-        1_400.0,
+            .expect("summary-only current total value"),
+        500.0,
     );
 
     let Json(full_response) = fetch_dashboard_activity(
@@ -13229,26 +13223,17 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
         ),
     );
     assert_eq!(full_response.rate_window.window_minutes, 1);
-    assert_eq!(full_response.rate_window.mode, "last_complete_1m_sma");
+    assert_eq!(full_response.rate_window.mode, "rolling_60s_live_mean");
+    assert_eq!(full_response.rate_window.end, full_response.range_end);
+    let rate_window_start = DateTime::parse_from_rfc3339(&full_response.rate_window.start)
+        .expect("dashboard activity rate window start should be RFC3339")
+        .with_timezone(&Utc);
+    let rate_window_end = DateTime::parse_from_rfc3339(&full_response.rate_window.end)
+        .expect("dashboard activity rate window end should be RFC3339")
+        .with_timezone(&Utc);
     assert_eq!(
-        full_response.rate_window.start,
-        format_utc_iso_precise(
-            latest_complete_minute_start
-                .and_local_timezone(Shanghai)
-                .single()
-                .expect("valid latest complete minute start")
-                .with_timezone(&Utc),
-        ),
-    );
-    assert_eq!(
-        full_response.rate_window.end,
-        format_utc_iso_precise(
-            current_minute_start
-                .and_local_timezone(Shanghai)
-                .single()
-                .expect("valid current minute start")
-                .with_timezone(&Utc),
-        ),
+        rate_window_end - rate_window_start,
+        ChronoDuration::seconds(60),
     );
 
     let progressive_started_at = std::time::Instant::now();

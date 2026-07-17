@@ -43,8 +43,8 @@
 - 已实现：账号卡异常/注意状态 badge 集合点击进入账号详情 `healthEvents` 标签页，右侧齿轮按钮进入账号详情 `routing` 标签页；`useUpstreamAccountDetailRoute` 已支持 `healthEvents` tab。
 - 已实现：Dashboard 上游账号卡标题区不再渲染本地 `#<upstreamAccountId>` 编号；标题区保留账号名、异常/注意状态 badge、快捷策略 chip、实时指标与齿轮路由入口，避免把内部主键暴露成主要扫描元素。
 - 已实现：账号活动接口补出 `avgTotalMs`、`totalCost`、严格失败 `failureCost` 与 `failureTokens`；请求组的非成功率由前端按 `nonSuccessCount / requestCount` 计算，成本组的失败成本比率由前端按 `failureCost / totalCost` 计算，`其他` 按 `nonSuccessCount - failureCount` 下限归零。
-- 已实现：Dashboard 活动快照的 summary/account 实时 `tokensPerMinute` / `spendRate` 已统一改为后端 `last_complete_1m_sma`；后端先固定最近完整 1 分钟 bucket，再同步产出顶部 summary 与账号标题值，严格空桶时返回 `TPM=0`、`消费速率=0`。
-- 已实现：Dashboard 活动快照新增 `currentFirstResponseByteTotalAvgMs` 与 `currentAvgTotalMs`；两者与实时 `TPM / 消费速率` 共用同一个最近完整 1 分钟 bucket，延迟样本资格沿用 success-latency 规则，空桶或缺样本时显式返回 `null`。
+- 已实现：Dashboard 活动快照的 summary/account 实时 `tokensPerMinute` / `spendRate` 已统一改为后端 `rolling_60s_live_mean`；后端通过共享 runtime cache 维护最近 60 秒窗口，窗口无合格流量时显式返回 `TPM=0`、`消费速率=0`。
+- 已实现：Dashboard 活动快照的 `currentFirstResponseByteTotalAvgMs` 与 `currentAvgTotalMs` 已改为“rolling 60s 优先，否则当前 range 最近有效结果回退”语义；summary 字段保留原 wire name，账号数组新增同名当前态延迟字段，账号主卡直接消费当前态字段而不再把范围均值冒充实时值。
 - 已实现：账号活动 live rows、账号卡 `inProgressInvocationCount` 与 account-scoped summary 对 pool running 调用使用同 `invokeId` 的 pool attempt 账号作为 fallback，避免已选账号但 payload 尚未写入 `upstreamAccountId` 时形成未归属 running 行。
 - 已实现：账号卡列表按 `totalTokens` 倒序排列，并用最近调用时间与账号 ID 作稳定排序兜底。
 - 已实现：账号卡“首字用时”从阶段级 `t_upstream_ttfb_ms` 纠偏为 owner-facing 的首字总耗时口径；后端聚合现在复用 `resolve_first_response_byte_total_ms(...)`，并额外暴露显式 `firstResponseByteTotalAvgMs` 供前端优先消费，避免真实秒级总耗时被渲染成 `0ms`。

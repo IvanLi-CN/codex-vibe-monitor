@@ -31,6 +31,8 @@ export function UpdateAvailableBanner({
       style={floatingSurfaceStyle("primary", surfaceTheme)}
       className="app-shell-banner-boundary sticky top-[70px] z-40 mt-2 flex items-start gap-2 rounded-[1.15rem] border px-4 py-3 text-base-content"
       data-testid="update-available-banner"
+      data-current-version={currentVersion}
+      data-available-version={availableVersion}
       role="status"
       aria-live="polite"
     >
@@ -46,10 +48,15 @@ export function UpdateAvailableBanner({
           </span>
         </span>
         <div className="ml-auto flex gap-2 self-start sm:self-auto">
-          <Button size="sm" onClick={onReload}>
+          <Button size="sm" onClick={onReload} data-testid="update-available-apply">
             {labels.refresh}
           </Button>
-          <Button size="sm" variant="secondary" onClick={onDismiss}>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={onDismiss}
+            data-testid="update-available-dismiss"
+          >
             {labels.later}
           </Button>
         </div>

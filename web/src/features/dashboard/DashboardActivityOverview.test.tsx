@@ -68,6 +68,14 @@ vi.mock("../../i18n", () => ({
         "dashboard.activityOverview.networkDownload": "Download",
         "dashboard.activityOverview.networkLiveNote": "Live bucket",
         "dashboard.activityOverview.networkRefreshing": "Refreshing",
+        "dashboard.activityOverview.snapshotBannerTitle": "Offline snapshot",
+        "dashboard.activityOverview.snapshotBannerDescription":
+          "Showing the latest cached overview from {{cachedAt}}.",
+        "dashboard.activityOverview.snapshotReadyRanges": "{{count}} / {{total}} ranges cached",
+        "dashboard.activityOverview.snapshotCachedAtUnknown": "an earlier sync",
+        "dashboard.activityOverview.snapshotNotReadyTitle": "This range is not cached yet",
+        "dashboard.activityOverview.snapshotNotReadyDescription":
+          "Reconnect once while this range is visible so the overview can be saved for offline reading.",
         "heatmap.metricsToggleAria": "Switch metric",
         "metric.totalCount": "Calls",
         "metric.totalCost": "Cost",
@@ -167,12 +175,14 @@ vi.mock("./Last24hTenMinuteHeatmap", () => ({
   Last24hTenMinuteHeatmap: ({
     metric,
     upstreamAccountId,
+    timeseriesResponse,
   }: {
     metric?: string;
     upstreamAccountId?: number;
+    timeseriesResponse?: { points?: unknown[] } | null;
   }) => (
     <div data-testid="heatmap-24h">
-      {`metric:${metric ?? "unset"};account:${upstreamAccountId ?? "global"}`}
+      {`metric:${metric ?? "unset"};account:${upstreamAccountId ?? "global"};points:${timeseriesResponse?.points?.length ?? 0}`}
     </div>
   ),
 }));
@@ -181,12 +191,14 @@ vi.mock("./WeeklyHourlyHeatmap", () => ({
   WeeklyHourlyHeatmap: ({
     metric,
     upstreamAccountId,
+    timeseriesResponse,
   }: {
     metric?: string;
     upstreamAccountId?: number;
+    timeseriesResponse?: { points?: unknown[] } | null;
   }) => (
     <div data-testid="heatmap-7d">
-      {`metric:${metric ?? "unset"};account:${upstreamAccountId ?? "global"}`}
+      {`metric:${metric ?? "unset"};account:${upstreamAccountId ?? "global"};points:${timeseriesResponse?.points?.length ?? 0}`}
     </div>
   ),
 }));
@@ -198,15 +210,17 @@ vi.mock("./UsageCalendar", () => ({
     showMetricToggle,
     showMeta,
     upstreamAccountId,
+    timeseriesResponse,
   }: {
     metric?: string;
     showSurface?: boolean;
     showMetricToggle?: boolean;
     showMeta?: boolean;
     upstreamAccountId?: number;
+    timeseriesResponse?: { points?: unknown[] } | null;
   }) => (
     <div data-testid="usage-calendar">
-      {`metric:${metric ?? "unset"};surface:${String(showSurface)};toggle:${String(showMetricToggle)};meta:${String(showMeta)};account:${upstreamAccountId ?? "global"}`}
+      {`metric:${metric ?? "unset"};surface:${String(showSurface)};toggle:${String(showMetricToggle)};meta:${String(showMeta)};account:${upstreamAccountId ?? "global"};points:${timeseriesResponse?.points?.length ?? 0}`}
     </div>
   ),
 }));
@@ -487,6 +501,106 @@ function installSummaryMocks() {
   });
 }
 
+function buildCachedSnapshotBundle(
+  range: "today" | "1d" | "7d" | "usage",
+  overrides: Partial<{
+    dashboardActivity: Record<string, unknown>;
+    summary: Record<string, unknown>;
+    timeseries: { points?: unknown[] };
+  }> = {},
+) {
+  return {
+    range,
+    dashboardActivity:
+      range === "usage"
+        ? null
+        : ({
+            range,
+            rangeStart: "2026-07-17T00:00:00.000Z",
+            rangeEnd: "2026-07-17T12:00:00.000Z",
+            snapshotId: 1,
+            rateWindow: {
+              start: "2026-07-17T11:55:00.000Z",
+              end: "2026-07-17T12:00:00.000Z",
+              windowMinutes: 5,
+              mode: "last_complete_5m_sma",
+            },
+            summary: {
+              stats: {
+                totalCount: 42,
+                inProgressConversationCount: 6,
+                inProgressRetryConversationCount: 2,
+                inProgressAvgWaitMs: 1800,
+                nonSuccessCost: 0.13,
+                nonSuccessTokens: 320,
+              },
+              tokensPerMinute: 512,
+              spendRate: 0.31,
+            },
+            ...overrides.dashboardActivity,
+          } as const),
+    summary: overrides.summary ?? { totalCount: 420 },
+    comparisonSummary: { totalCount: 21 },
+    previous7dSummary: { totalCount: 70 },
+    comparisonTimeseries: {
+      rangeStart: "2026-07-16T00:00:00.000Z",
+      rangeEnd: "2026-07-16T12:00:00.000Z",
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: "a",
+          bucketEnd: "b",
+          totalCount: 1,
+          successCount: 1,
+          failureCount: 0,
+          totalTokens: 12,
+          totalCost: 0.01,
+        },
+      ],
+    },
+    parallelWorkStats: {
+      current: { avgCount: 4 },
+    },
+    comparisonParallelWorkStats: {
+      current: { avgCount: 2 },
+    },
+    networkTimeseries: {
+      range,
+      rangeStart: "2026-07-17T00:00:00.000Z",
+      rangeEnd: "2026-07-17T12:00:00.000Z",
+      snapshotId: 7,
+      bucketSeconds: 300,
+      points: [
+        {
+          bucketStart: "a",
+          bucketEnd: "b",
+          uploadBytesPerSecond: 12,
+          downloadBytesPerSecond: 24,
+          uploadBytes: 120,
+          downloadBytes: 240,
+          isLiveBucket: false,
+        },
+      ],
+    },
+    timeseries: {
+      rangeStart: "2026-07-17T00:00:00.000Z",
+      rangeEnd: "2026-07-17T12:00:00.000Z",
+      bucketSeconds: range === "7d" ? 3600 : range === "usage" ? 86400 : 60,
+      points: overrides.timeseries?.points ?? [
+        {
+          bucketStart: "2026-07-17T11:55:00.000Z",
+          bucketEnd: "2026-07-17T12:00:00.000Z",
+          totalCount: 3,
+          successCount: 3,
+          failureCount: 0,
+          totalTokens: 120,
+          totalCost: 0.12,
+        },
+      ],
+    },
+  };
+}
+
 function clickTab(label: string) {
   const button = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
     (candidate) => candidate.textContent === label,
@@ -531,7 +645,7 @@ describe("DashboardActivityOverview", () => {
             start: "2026-07-05T11:59:00Z",
             end: "2026-07-05T12:00:00Z",
             windowMinutes: 1,
-            mode: "last_complete_1m_sma",
+            mode: "rolling_60s_live_mean",
           },
           summary: {
             stats: {
@@ -699,11 +813,11 @@ describe("DashboardActivityOverview", () => {
       ),
     ).toBe(true);
     expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
-      "metric:totalCount;surface:false;toggle:false;meta:false;account:global",
+      "metric:totalCount;surface:false;toggle:false;meta:false;account:global;points:0",
     );
     clickTab("Tokens");
     expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
-      "metric:totalTokens;surface:false;toggle:false;meta:false;account:global",
+      "metric:totalTokens;surface:false;toggle:false;meta:false;account:global;points:0",
     );
 
     clickTab("7 Days");
@@ -714,21 +828,21 @@ describe("DashboardActivityOverview", () => {
     ).toBe(false);
     expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe("total:700");
     expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe(
-      "metric:totalCount;account:global",
+      "metric:totalCount;account:global;points:0",
     );
     clickTab("Cost");
     expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe(
-      "metric:totalCost;account:global",
+      "metric:totalCost;account:global;points:0",
     );
 
     clickTab("24 Hours");
     expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe("total:100");
     expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe(
-      "metric:totalCount;account:global",
+      "metric:totalCount;account:global;points:0",
     );
     clickTab("Tokens");
     expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe(
-      "metric:totalTokens;account:global",
+      "metric:totalTokens;account:global;points:0",
     );
 
     clickTab("Today");
@@ -737,7 +851,7 @@ describe("DashboardActivityOverview", () => {
     ).toBe("metric:totalCost");
     clickTab("History");
     expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
-      "metric:totalTokens;surface:false;toggle:false;meta:false;account:global",
+      "metric:totalTokens;surface:false;toggle:false;meta:false;account:global;points:0",
     );
     clickTab("Yesterday");
     expect(
@@ -745,11 +859,11 @@ describe("DashboardActivityOverview", () => {
     ).toBe("metric:trend");
     clickTab("7 Days");
     expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe(
-      "metric:totalCost;account:global",
+      "metric:totalCost;account:global;points:0",
     );
     clickTab("24 Hours");
     expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe(
-      "metric:totalTokens;account:global",
+      "metric:totalTokens;account:global;points:0",
     );
   });
 
@@ -899,7 +1013,7 @@ describe("DashboardActivityOverview", () => {
 
     expect(window.localStorage.getItem(storageKey)).toBe("7d");
     expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe(
-      "metric:totalCount;account:42",
+      "metric:totalCount;account:42;points:0",
     );
     expect(hookMocks.useSummary).toHaveBeenCalledWith("7d", {
       upstreamAccountId: 42,
@@ -1040,5 +1154,113 @@ describe("DashboardActivityOverview", () => {
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain(
       "parallelAvg:2;parallelError:null",
     );
+  });
+
+  it("renders the cached-offline banner and snapshot-backed today overview without live hooks", () => {
+    installSummaryMocks();
+
+    render(
+      <DashboardActivityOverview
+        snapshotStatus={{
+          mode: "cached-offline",
+          cachedAt: "2026-07-17T05:20:00.000Z",
+          readyRanges: ["today", "1d", "7d", "usage"],
+        }}
+        snapshotBundle={buildCachedSnapshotBundle("today")}
+      />,
+    );
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-overview-snapshot-banner"]'),
+    ).not.toBeNull();
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain(
+      "total:42",
+    );
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain(
+      "tpm:512;spendRate:0.31",
+    );
+    expect(hookMocks.useSummary).not.toHaveBeenCalled();
+    expect(hookMocks.useTimeseries).not.toHaveBeenCalled();
+    expect(hookMocks.useParallelWorkStats).not.toHaveBeenCalled();
+  });
+
+  it("injects cached timeseries into 24 hour, 7 day, and usage snapshot panels", () => {
+    installSummaryMocks();
+
+    render(
+      <DashboardActivityOverview
+        activeRange="1d"
+        snapshotStatus={{
+          mode: "cached-offline",
+          cachedAt: "2026-07-17T05:20:00.000Z",
+          readyRanges: ["today", "1d", "7d", "usage"],
+        }}
+        snapshotBundle={buildCachedSnapshotBundle("1d", {
+          summary: { totalCount: 144 },
+          timeseries: { points: [{ bucketStart: "a", bucketEnd: "b", totalCount: 1 }] },
+        })}
+      />,
+    );
+
+    expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe("total:42");
+    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toContain("points:1");
+
+    act(() => {
+      root?.render(
+        <DashboardActivityOverview
+          activeRange="7d"
+          snapshotStatus={{
+            mode: "cached-offline",
+            cachedAt: "2026-07-17T05:20:00.000Z",
+            readyRanges: ["today", "1d", "7d", "usage"],
+          }}
+          snapshotBundle={buildCachedSnapshotBundle("7d", {
+            timeseries: { points: [{ bucketStart: "a", bucketEnd: "b", totalCount: 1 }] },
+          })}
+        />,
+      );
+    });
+
+    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toContain("points:1");
+
+    act(() => {
+      root?.render(
+        <DashboardActivityOverview
+          activeRange="usage"
+          snapshotStatus={{
+            mode: "cached-offline",
+            cachedAt: "2026-07-17T05:20:00.000Z",
+            readyRanges: ["today", "1d", "7d", "usage"],
+          }}
+          snapshotBundle={buildCachedSnapshotBundle("usage", {
+            timeseries: { points: [{ bucketStart: "a", bucketEnd: "b", totalCount: 1 }] },
+          })}
+        />,
+      );
+    });
+
+    expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toContain(
+      "points:1",
+    );
+  });
+
+  it("surfaces a not-cached-yet state instead of live loading when the active range has no offline snapshot", () => {
+    installSummaryMocks();
+
+    render(
+      <DashboardActivityOverview
+        activeRange="usage"
+        snapshotStatus={{
+          mode: "not-cached-yet",
+          cachedAt: null,
+          readyRanges: ["today"],
+        }}
+        snapshotBundle={null}
+      />,
+    );
+
+    expect(host?.querySelector('[data-testid="dashboard-overview-snapshot-empty"]')).not.toBeNull();
+    expect(host?.querySelector('[data-testid="usage-calendar"]')).toBeNull();
+    expect(host?.querySelector('[data-testid="stats-cards"]')).toBeNull();
   });
 });

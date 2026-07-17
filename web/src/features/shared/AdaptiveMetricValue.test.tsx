@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { AdaptiveMetricValue } from "./AdaptiveMetricValue";
+import { AdaptiveDisplayValue, AdaptiveMetricValue } from "./AdaptiveMetricValue";
 
 vi.mock("./AnimatedDigits", () => ({
   AnimatedDigits: ({ value }: { value: number | string }) => (
@@ -347,21 +347,21 @@ describe("AdaptiveMetricValue", () => {
 
     expect(getVisibleMetricText()).toBe("$0.84");
 
-    metricContainerWidth = 86;
+    metricContainerWidth = 70;
     act(() => {
       window.dispatchEvent(new Event("resize"));
     });
 
     expect(getVisibleMetricText()).toBe("$0.8");
 
-    metricContainerWidth = 92;
+    metricContainerWidth = 72;
     act(() => {
       MockResizeObserver.notify(getMeasure());
     });
 
     expect(getVisibleMetricText()).toBe("$0.8");
 
-    metricContainerWidth = 94;
+    metricContainerWidth = 76;
     act(() => {
       window.dispatchEvent(new Event("resize"));
     });
@@ -408,5 +408,50 @@ describe("AdaptiveMetricValue", () => {
 
     expect(getVisibleMetricText()).toBe("$12.4");
     expect(getMetric().dataset.compact).toBe("false");
+  });
+
+  it("does not drop decimals when the self-measured container exactly fits the full candidate", () => {
+    metricContainerWidth = 39;
+    metricMeasureWidths = new Map([
+      ["0.77", 39],
+      ["0.8", 29],
+      ["1", 10],
+    ]);
+
+    render(
+      <AdaptiveDisplayValue
+        spec={{
+          fullValue: "0.77",
+          candidates: [
+            {
+              key: "full",
+              value: "0.77",
+              compact: false,
+              precisionLabel: "full",
+              priority: 0,
+            },
+            {
+              key: "standard-1",
+              value: "0.8",
+              compact: false,
+              precisionLabel: "standard-1",
+              priority: 1,
+            },
+            {
+              key: "standard-0",
+              value: "1",
+              compact: false,
+              precisionLabel: "standard-0",
+              priority: 2,
+            },
+          ],
+        }}
+        data-testid="adaptive-metric"
+      />,
+    );
+
+    expect(getVisibleMetricText()).toBe("0.77");
+    expect(getMetric().dataset.compact).toBe("false");
+    expect(getMetric().dataset.candidateKey).toBe("full");
   });
 });

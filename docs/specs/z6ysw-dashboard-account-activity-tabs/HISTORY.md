@@ -6,6 +6,7 @@
 
 - 2026-07-16：Dashboard 工作区与顶部当前态正式并入主应用统一 topic SSE 总线。此前 `dashboardActivityLive + HTTP reconcile/open-resync` 的双轨合同在这里退场，取而代之的是 `dashboard.activity.current` 的 authoritative `snapshot/replay/live`；账号视图、顶部 KPI 与恢复语义统一由 topic cursor / schemaEpoch 驱动。
 
+- 2026-07-17：把 Dashboard 当前态合同从 `last_complete_1m_sma` 切到 `rolling_60s_live_mean`。吞吐型指标 `TPM / 消费速率` 改为最近 60 秒滚动窗口且空窗归零；延迟型指标 `首字用时 / 响应时间` 改为“窗口优先，当前 range 最近有效结果回退”。同时账号卡新增账号级当前态延迟字段，主卡直读当前态，范围均值退回 tooltip/详情。
 - 2026-07-15：收敛 Dashboard 顶部实时 KPI 的 owner-facing 合同。此前 `TPM / 消费速率 / 首字用时` 混用了完整范围平均、前端 timeseries 快照和 `modelPerformance` 总计，导致同屏 summary 与账号标题存在口径漂移。本轮固定为后端统一计算的 `last_complete_1m_sma`：`TPM` 继续沿用成功且已计费的合格 token 分子，`消费速率`、`首字总耗时` 与 `响应时间` 全部取最近 1 个完整分钟 bucket，严格空桶不回填旧值；`z9h7v` 同步收窄为完整范围模型性能明细规范。
 
 - 2026-07-15：收紧 Dashboard `上游账号` 视图的 background refresh 表达。旧实现把状态渲染成带占位的头部 chip，导致 idle 时仍在“当前活动账号”左侧保留固定空白；本轮改为桌面端非 badge 的 spinner + `刷新中` 文本、移动端 spinner-only，并保留既有 `300ms` 延迟显示与 `600ms` 最短可见时长。

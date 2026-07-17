@@ -283,84 +283,512 @@ function buildRecordFromPreview(preview: PromptCacheConversationInvocationPrevie
   };
 }
 
+const UPSTREAM_ACCOUNT_ACTIVITY_WINDOW_MINUTES = 5;
+
+const BASE_UPSTREAM_ACCOUNT_RECENT_INVOCATION_SEEDS = [
+  {
+    promptCacheKey: "story-account-1",
+    invokeId: "acct-invoke-1",
+    occurredAt: "2026-04-04T10:05:00Z",
+    status: "success",
+    model: "gpt-5.5",
+    requestModel: "gpt-5.5-mini",
+    responseModel: "gpt-5.5",
+    imageIntent: "yes" as const,
+    totalTokens: 18_240,
+    cost: 0.2744,
+    inputTokens: 7_860,
+    outputTokens: 5_120,
+    cacheInputTokens: 4_380,
+    reasoningTokens: 880,
+    tUpstreamConnectMs: 182,
+    tUpstreamTtfbMs: 1_180,
+    tUpstreamStreamMs: 23_740,
+    tTotalMs: 26_410,
+    requestedServiceTier: "priority",
+    serviceTier: "priority",
+  },
+  {
+    promptCacheKey: "story-account-2",
+    invokeId: "acct-invoke-2",
+    occurredAt: "2026-04-04T10:04:18Z",
+    status: "running",
+    livePhase: "responding" as const,
+    model: "gpt-5.5",
+    requestModel: "gpt-5.5-mini",
+    responseModel: "gpt-5.5",
+    totalTokens: 11_620,
+    cost: 0.1682,
+    inputTokens: 4_940,
+    outputTokens: 3_720,
+    cacheInputTokens: 2_360,
+    reasoningTokens: 600,
+    tUpstreamConnectMs: 164,
+    tUpstreamTtfbMs: 920,
+    tUpstreamStreamMs: 11_480,
+    tTotalMs: 13_970,
+    requestedServiceTier: "priority",
+    serviceTier: "priority",
+  },
+  {
+    promptCacheKey: "story-account-3",
+    invokeId: "acct-invoke-3",
+    occurredAt: "2026-04-04T10:03:42Z",
+    status: "failed",
+    failureClass: "service_failure" as const,
+    failureKind: "upstream_http_429" as const,
+    errorMessage: "upstream returned 429 after the fallback lane exhausted its retry budget",
+    model: "gpt-5.5-mini",
+    requestModel: "gpt-5.5-mini",
+    responseModel: "gpt-5.5-mini",
+    totalTokens: 2_960,
+    cost: 0.0412,
+    inputTokens: 1_840,
+    outputTokens: 320,
+    cacheInputTokens: 640,
+    reasoningTokens: 160,
+    tUpstreamConnectMs: 148,
+    tUpstreamTtfbMs: 2_460,
+    tUpstreamStreamMs: 8_140,
+    tTotalMs: 12_340,
+    requestedServiceTier: "standard",
+    serviceTier: "standard",
+  },
+  {
+    promptCacheKey: "story-account-4",
+    invokeId: "acct-invoke-4",
+    occurredAt: "2026-04-04T10:02:55Z",
+    status: "success",
+    model: "gpt-5.5-mini",
+    requestModel: "gpt-5.5-mini",
+    responseModel: "gpt-5.5-mini",
+    totalTokens: 8_420,
+    cost: 0.1198,
+    inputTokens: 3_920,
+    outputTokens: 2_140,
+    cacheInputTokens: 1_980,
+    reasoningTokens: 380,
+    tUpstreamConnectMs: 128,
+    tUpstreamTtfbMs: 610,
+    tUpstreamStreamMs: 5_940,
+    tTotalMs: 7_280,
+    requestedServiceTier: "standard",
+    serviceTier: "standard",
+  },
+  {
+    promptCacheKey: "story-account-5",
+    invokeId: "acct-invoke-5",
+    occurredAt: "2026-04-04T10:02:07Z",
+    status: "pending",
+    livePhase: "queued" as const,
+    model: "gpt-5.5-mini",
+    requestModel: "gpt-5.5-mini",
+    responseModel: null,
+    totalTokens: 0,
+    cost: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheInputTokens: 0,
+    reasoningTokens: 0,
+    tUpstreamConnectMs: 0,
+    tUpstreamTtfbMs: null,
+    tUpstreamStreamMs: null,
+    tTotalMs: 0,
+    requestedServiceTier: "priority",
+    serviceTier: undefined,
+  },
+  {
+    promptCacheKey: "story-account-6",
+    invokeId: "acct-invoke-6",
+    occurredAt: "2026-04-04T10:01:34Z",
+    status: "success",
+    model: "gpt-5.5",
+    requestModel: "gpt-5.5",
+    responseModel: "gpt-5.5",
+    totalTokens: 14_180,
+    cost: 0.2116,
+    inputTokens: 6_420,
+    outputTokens: 4_360,
+    cacheInputTokens: 2_780,
+    reasoningTokens: 620,
+    tUpstreamConnectMs: 154,
+    tUpstreamTtfbMs: 1_020,
+    tUpstreamStreamMs: 17_680,
+    tTotalMs: 19_940,
+    requestedServiceTier: "priority",
+    serviceTier: "priority",
+  },
+  {
+    promptCacheKey: "story-account-7",
+    invokeId: "acct-invoke-7",
+    occurredAt: "2026-04-04T10:01:02Z",
+    status: "success",
+    model: "gpt-5.5-mini",
+    requestModel: "gpt-5.5-mini",
+    responseModel: "gpt-5.5-mini",
+    totalTokens: 6_780,
+    cost: 0.0914,
+    inputTokens: 3_020,
+    outputTokens: 1_940,
+    cacheInputTokens: 1_500,
+    reasoningTokens: 320,
+    tUpstreamConnectMs: 116,
+    tUpstreamTtfbMs: 540,
+    tUpstreamStreamMs: 4_120,
+    tTotalMs: 5_380,
+    requestedServiceTier: "standard",
+    serviceTier: "standard",
+  },
+  {
+    promptCacheKey: "story-account-8",
+    invokeId: "acct-invoke-8",
+    occurredAt: "2026-04-04T10:00:41Z",
+    status: "failed",
+    failureClass: "service_failure" as const,
+    failureKind: "upstream_http_5xx" as const,
+    errorMessage: "upstream returned 502 while compact lane was streaming the response body",
+    model: "gpt-5.5",
+    requestModel: "gpt-5.5-mini",
+    responseModel: "gpt-5.5",
+    totalTokens: 4_320,
+    cost: 0.0631,
+    inputTokens: 2_160,
+    outputTokens: 640,
+    cacheInputTokens: 1_200,
+    reasoningTokens: 320,
+    tUpstreamConnectMs: 132,
+    tUpstreamTtfbMs: 3_120,
+    tUpstreamStreamMs: 9_840,
+    tTotalMs: 13_460,
+    requestedServiceTier: "priority",
+    serviceTier: "priority",
+  },
+  {
+    promptCacheKey: "story-account-9",
+    invokeId: "acct-invoke-9",
+    occurredAt: "2026-04-04T10:00:19Z",
+    status: "running",
+    livePhase: "requesting" as const,
+    model: "gpt-5.5",
+    requestModel: "gpt-5.5",
+    responseModel: null,
+    totalTokens: 1_920,
+    cost: 0.0264,
+    inputTokens: 1_280,
+    outputTokens: 0,
+    cacheInputTokens: 520,
+    reasoningTokens: 120,
+    tUpstreamConnectMs: 188,
+    tUpstreamTtfbMs: null,
+    tUpstreamStreamMs: null,
+    tTotalMs: 1_940,
+    requestedServiceTier: "priority",
+    serviceTier: undefined,
+  },
+  {
+    promptCacheKey: "story-account-10",
+    invokeId: "acct-invoke-10",
+    occurredAt: "2026-04-04T09:59:51Z",
+    status: "success",
+    model: "gpt-5.5-mini",
+    requestModel: "gpt-5.5-mini",
+    responseModel: "gpt-5.5-mini",
+    totalTokens: 5_440,
+    cost: 0.0738,
+    inputTokens: 2_520,
+    outputTokens: 1_640,
+    cacheInputTokens: 1_040,
+    reasoningTokens: 240,
+    tUpstreamConnectMs: 106,
+    tUpstreamTtfbMs: 460,
+    tUpstreamStreamMs: 3_820,
+    tTotalMs: 4_860,
+    requestedServiceTier: "standard",
+    serviceTier: "standard",
+  },
+  {
+    promptCacheKey: "story-account-11",
+    invokeId: "acct-invoke-11",
+    occurredAt: "2026-04-04T09:59:24Z",
+    status: "success",
+    model: "gpt-5.5",
+    requestModel: "gpt-5.5",
+    responseModel: "gpt-5.5",
+    totalTokens: 22_860,
+    cost: 0.3362,
+    inputTokens: 10_120,
+    outputTokens: 6_840,
+    cacheInputTokens: 4_920,
+    reasoningTokens: 980,
+    tUpstreamConnectMs: 170,
+    tUpstreamTtfbMs: 1_360,
+    tUpstreamStreamMs: 29_420,
+    tTotalMs: 31_840,
+    requestedServiceTier: "priority",
+    serviceTier: "priority",
+  },
+  {
+    promptCacheKey: "story-account-12",
+    invokeId: "acct-invoke-12",
+    occurredAt: "2026-04-04T09:58:57Z",
+    status: "success",
+    model: "gpt-5.5-mini",
+    requestModel: "gpt-5.5-mini",
+    responseModel: "gpt-5.5-mini",
+    totalTokens: 7_260,
+    cost: 0.0984,
+    inputTokens: 3_140,
+    outputTokens: 2_180,
+    cacheInputTokens: 1_600,
+    reasoningTokens: 340,
+    tUpstreamConnectMs: 118,
+    tUpstreamTtfbMs: 590,
+    tUpstreamStreamMs: 4_680,
+    tTotalMs: 5_920,
+    requestedServiceTier: "standard",
+    serviceTier: "standard",
+  },
+  {
+    promptCacheKey: "story-account-13",
+    invokeId: "acct-invoke-13",
+    occurredAt: "2026-04-04T09:58:29Z",
+    status: "failed",
+    failureClass: "service_failure" as const,
+    failureKind: "upstream_http_408" as const,
+    errorMessage: "upstream compact lane timed out after the first byte during a long stream",
+    model: "gpt-5.5",
+    requestModel: "gpt-5.5-mini",
+    responseModel: "gpt-5.5",
+    totalTokens: 3_680,
+    cost: 0.0528,
+    inputTokens: 1_920,
+    outputTokens: 480,
+    cacheInputTokens: 1_040,
+    reasoningTokens: 240,
+    tUpstreamConnectMs: 140,
+    tUpstreamTtfbMs: 2_880,
+    tUpstreamStreamMs: 10_260,
+    tTotalMs: 14_180,
+    requestedServiceTier: "priority",
+    serviceTier: "priority",
+  },
+  {
+    promptCacheKey: "story-account-14",
+    invokeId: "acct-invoke-14",
+    occurredAt: "2026-04-04T09:58:03Z",
+    status: "success",
+    model: "gpt-5.5",
+    requestModel: "gpt-5.5",
+    responseModel: "gpt-5.5",
+    totalTokens: 16_320,
+    cost: 0.2418,
+    inputTokens: 7_120,
+    outputTokens: 4_980,
+    cacheInputTokens: 3_460,
+    reasoningTokens: 760,
+    tUpstreamConnectMs: 162,
+    tUpstreamTtfbMs: 1_140,
+    tUpstreamStreamMs: 18_460,
+    tTotalMs: 21_120,
+    requestedServiceTier: "priority",
+    serviceTier: "priority",
+  },
+  {
+    promptCacheKey: "story-account-15",
+    invokeId: "acct-invoke-15",
+    occurredAt: "2026-04-04T09:57:35Z",
+    status: "success",
+    model: "gpt-5.5-mini",
+    requestModel: "gpt-5.5-mini",
+    responseModel: "gpt-5.5-mini",
+    totalTokens: 9_140,
+    cost: 0.1246,
+    inputTokens: 4_120,
+    outputTokens: 2_740,
+    cacheInputTokens: 1_860,
+    reasoningTokens: 420,
+    tUpstreamConnectMs: 124,
+    tUpstreamTtfbMs: 640,
+    tUpstreamStreamMs: 6_280,
+    tTotalMs: 7_560,
+    requestedServiceTier: "standard",
+    serviceTier: "standard",
+  },
+  {
+    promptCacheKey: "story-account-16",
+    invokeId: "acct-invoke-16",
+    occurredAt: "2026-04-04T09:57:12Z",
+    status: "success",
+    model: "gpt-5.5",
+    requestModel: "gpt-5.5-mini",
+    responseModel: "gpt-5.5",
+    totalTokens: 12_880,
+    cost: 0.1848,
+    inputTokens: 5_940,
+    outputTokens: 3_740,
+    cacheInputTokens: 2_620,
+    reasoningTokens: 580,
+    tUpstreamConnectMs: 150,
+    tUpstreamTtfbMs: 920,
+    tUpstreamStreamMs: 12_780,
+    tTotalMs: 14_920,
+    requestedServiceTier: "priority",
+    serviceTier: "priority",
+  },
+] satisfies Array<
+  Partial<PromptCacheConversationInvocationPreview> & {
+    promptCacheKey: string;
+    invokeId: string;
+    status: string;
+  }
+>;
+
+const BASE_UPSTREAM_ACCOUNT_RECENT_INVOCATION_OFFSETS_MS = [
+  -18_000, -52_000, -96_000, -143_000, -188_000, -234_000, -278_000, -321_000, -366_000, -411_000,
+  -452_000, -497_000, -543_000, -587_000, -632_000, -676_000,
+];
+
+const BASE_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN = {
+  cacheWriteTokens: 73_600,
+  cacheReadTokens: 39_800,
+  outputTokens: 73_000,
+  costs: {
+    input: 1.12,
+    cacheWrite: 0.61,
+    cacheRead: 0.28,
+    output: 1.47,
+    reasoning: 0.37,
+    unknown: 0,
+  },
+  models: [
+    {
+      model: "gpt-5.5",
+      reasoningEffort: "high" as const,
+      cacheWriteTokens: 45_000,
+      cacheReadTokens: 24_200,
+      outputTokens: 44_800,
+      costs: {
+        input: 0.71,
+        cacheWrite: 0.38,
+        cacheRead: 0.19,
+        output: 0.86,
+        reasoning: 0.22,
+        unknown: 0,
+      },
+    },
+    {
+      model: "gpt-5.5-mini",
+      reasoningEffort: null,
+      cacheWriteTokens: 28_600,
+      cacheReadTokens: 15_600,
+      outputTokens: 28_200,
+      costs: {
+        input: 0.41,
+        cacheWrite: 0.23,
+        cacheRead: 0.09,
+        output: 0.61,
+        reasoning: 0.15,
+        unknown: 0,
+      },
+    },
+  ],
+};
+
+const ADAPTIVE_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN = {
+  cacheWriteTokens: 2_584_200,
+  cacheReadTokens: 1_238_540,
+  outputTokens: 2_800_975,
+  costs: {
+    input: 88.16,
+    cacheWrite: 43.28,
+    cacheRead: 19.64,
+    output: 92.41,
+    reasoning: 31.07,
+    unknown: 0,
+  },
+  models: [
+    {
+      model: "gpt-5.5",
+      reasoningEffort: "high" as const,
+      cacheWriteTokens: 1_648_100,
+      cacheReadTokens: 804_240,
+      outputTokens: 1_745_320,
+      costs: {
+        input: 56.22,
+        cacheWrite: 27.56,
+        cacheRead: 12.41,
+        output: 58.92,
+        reasoning: 19.23,
+        unknown: 0,
+      },
+    },
+    {
+      model: "gpt-5.5-mini",
+      reasoningEffort: null,
+      cacheWriteTokens: 936_100,
+      cacheReadTokens: 434_300,
+      outputTokens: 1_055_655,
+      costs: {
+        input: 31.94,
+        cacheWrite: 15.72,
+        cacheRead: 7.23,
+        output: 33.49,
+        reasoning: 11.84,
+        unknown: 0,
+      },
+    },
+  ],
+};
+
+function buildUpstreamAccountRecentInvocations(recentInvocationCount: number) {
+  return BASE_UPSTREAM_ACCOUNT_RECENT_INVOCATION_SEEDS.slice(
+    0,
+    Math.max(
+      0,
+      Math.min(recentInvocationCount, BASE_UPSTREAM_ACCOUNT_RECENT_INVOCATION_SEEDS.length),
+    ),
+  ).map((seed, index) =>
+    createPreview({
+      id: 9901 + index,
+      upstreamAccountId: 42,
+      upstreamAccountName: "Pool Alpha",
+      upstreamAccountPlanType: "enterprise",
+      proxyDisplayName: index % 2 === 0 ? "tokyo-edge-01" : "singapore-edge-02",
+      ...seed,
+      occurredAt: createRelativeStoryIso(
+        BASE_UPSTREAM_ACCOUNT_RECENT_INVOCATION_OFFSETS_MS[index] ?? -((index + 1) * 45_000),
+      ),
+    }),
+  );
+}
+
+function perMinuteRate(total: number) {
+  return Number((total / UPSTREAM_ACCOUNT_ACTIVITY_WINDOW_MINUTES).toFixed(2));
+}
+
 function createUpstreamAccountActivityStoryResponse(
   recentInvocationCount = 4,
   routingRuleOverrides: Partial<
     NonNullable<UpstreamAccountActivityResponse["accounts"][number]["effectiveRoutingRule"]>
   > = {},
 ): UpstreamAccountActivityResponse {
-  const promptCacheKeys = [
-    "tone-seed-4",
-    "tone-seed-12",
-    "tone-seed-17",
-    "tone-seed-25",
-    "pck-story-account-retry",
-    "pck-story-account-cache",
-    "pck-story-account-edition",
-    "pck-story-account-proxy",
-    "pck-story-account-burst",
-    "pck-story-account-latency",
-    "pck-story-account-stream",
-    "pck-story-account-owner",
-    "pck-story-account-route",
-    "pck-story-account-budget",
-    "pck-story-account-archive",
-    "pck-story-account-final",
-  ];
-  const statuses = [
-    "success",
-    "success",
-    "failed",
-    "success",
-    "success",
-    "success",
-    "success",
-    "failed",
-    "pending",
-    "success",
-    "success",
-    "success",
-    "failed",
-    "success",
-    "success",
-    "success",
-  ];
-  const recentInvocations = Array.from(
-    { length: Math.max(0, Math.min(recentInvocationCount, 16)) },
-    (_, index) =>
-      createPreview({
-        id: 9901 + index,
-        invokeId: `story-account-${index + 1}`,
-        promptCacheKey: promptCacheKeys[index] ?? `pck-story-account-${index + 1}`,
-        occurredAt: `2026-04-04T10:${String(Math.max(0, 5 - index)).padStart(2, "0")}:00Z`,
-        status: statuses[index] ?? "success",
-        livePhase:
-          statuses[index] === "pending"
-            ? "queued"
-            : statuses[index] === "running" && index % 2 === 0
-              ? "responding"
-              : statuses[index] === "running"
-                ? "requesting"
-                : null,
-        upstreamAccountId: 42,
-        upstreamAccountName: "Pool Alpha",
-        requestModel: index === 0 ? "gpt-5.5-mini" : undefined,
-        responseModel: index === 0 ? "gpt-5.5" : undefined,
-        model: index === 0 ? "gpt-5.5" : undefined,
-        imageIntent: index === 0 ? "yes" : undefined,
-        tTotalMs: index === 0 ? 20_000 : undefined,
-      }),
-  );
+  const recentInvocations = buildUpstreamAccountRecentInvocations(recentInvocationCount);
+  const totalTokens = 186_400;
+  const totalCost = 3.85;
+  const rangeEnd = createRelativeStoryIso(0);
+  const rangeStart = createRelativeStoryIso(-UPSTREAM_ACCOUNT_ACTIVITY_WINDOW_MINUTES * 60_000);
+  const latestConversationCreatedAt = createRelativeStoryIso(-252_000);
+  const lastInvocationAt = recentInvocations[0]?.occurredAt ?? rangeEnd;
   return {
     range: "today",
-    rangeStart: "2026-04-04T10:00:00Z",
-    rangeEnd: "2026-04-04T10:05:00Z",
+    rangeStart,
+    rangeEnd,
     accounts: [
       {
         upstreamAccountId: 42,
         displayName: "Pool Alpha",
-        latestConversationCreatedAt: "2026-04-04T10:04:00Z",
-        lastInvocationAt: "2026-04-04T10:05:00Z",
+        latestConversationCreatedAt,
+        lastInvocationAt,
         groupName: "Primary",
         planType: "enterprise",
         enabled: true,
@@ -369,78 +797,36 @@ function createUpstreamAccountActivityStoryResponse(
         workStatus: "rate_limited",
         healthStatus: "upstream_rejected",
         syncState: "idle",
-        lastError: "upstream rejected the request",
-        lastActionReasonMessage: "上游拒绝最近一次路由请求",
-        requestCount: 8,
-        successCount: 6,
-        failureCount: 2,
-        nonSuccessCount: 2,
-        totalTokens: 3200,
-        successTokens: 2800,
-        nonSuccessTokens: 400,
-        failureTokens: 350,
-        failureCost: 0.22,
-        totalCost: 0.72,
-        usageBreakdown: {
-          cacheWriteTokens: 1600,
-          cacheReadTokens: 800,
-          outputTokens: 800,
-          costs: {
-            input: 0.12,
-            cacheWrite: 0.1,
-            cacheRead: 0.04,
-            output: 0.21,
-            reasoning: 0.05,
-            unknown: 0.2,
-          },
-          models: [
-            {
-              model: "gpt-5.6",
-              reasoningEffort: "high",
-              cacheWriteTokens: 1200,
-              cacheReadTokens: 600,
-              outputTokens: 620,
-              costs: {
-                input: 0.12,
-                cacheWrite: 0.1,
-                cacheRead: 0.04,
-                output: 0.21,
-                reasoning: 0.05,
-                unknown: 0,
-              },
-            },
-            {
-              model: "gpt-5.4-mini",
-              reasoningEffort: null,
-              cacheWriteTokens: 400,
-              cacheReadTokens: 200,
-              outputTokens: 180,
-              costs: {
-                input: 0,
-                cacheWrite: 0,
-                cacheRead: 0,
-                output: 0,
-                reasoning: 0,
-                unknown: 0.2,
-              },
-            },
-          ],
-        },
-        cacheHitRate: 0.25,
-        tokensPerMinute: 640,
-        spendRate: 0.12,
-        firstByteAvgMs: 420,
-        firstResponseByteTotalAvgMs: 2_867.5,
-        avgTotalMs: 860,
-        inProgressInvocationCount: 9,
+        lastError: "fallback lane hit upstream 429 and then a compact stream retry ended with 502",
+        lastActionReasonMessage: "峰值时段触发限流与上游拒绝，系统已回落到保守路由策略",
+        requestCount: 32,
+        successCount: 24,
+        failureCount: 5,
+        nonSuccessCount: 8,
+        totalTokens,
+        successTokens: 152_080,
+        nonSuccessTokens: 34_320,
+        failureTokens: 15_840,
+        failureCost: 0.78,
+        totalCost,
+        usageBreakdown: BASE_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+        cacheHitRate: 0.34,
+        tokensPerMinute: perMinuteRate(totalTokens),
+        spendRate: perMinuteRate(totalCost),
+        firstByteAvgMs: 480,
+        firstResponseByteTotalAvgMs: 4_380,
+        avgTotalMs: 18_420,
+        currentFirstResponseByteTotalAvgMs: 4_380,
+        currentAvgTotalMs: 18_420,
+        inProgressInvocationCount: 3,
         inProgressPhaseCounts: {
-          queued: 2,
-          requesting: 3,
-          responding: 4,
+          queued: 1,
+          requesting: 1,
+          responding: 1,
         },
-        retryInvocationCount: 1,
-        uploadBytesPerSecond: 1_920,
-        downloadBytesPerSecond: 6_291_456,
+        retryInvocationCount: 2,
+        uploadBytesPerSecond: 46 * 1024,
+        downloadBytesPerSecond: 214 * 1024,
         effectiveRoutingRule: {
           allowCutOut: true,
           allowCutIn: false,
@@ -484,6 +870,42 @@ function createUpstreamAccountActivityStoryResponse(
       },
     ],
   };
+}
+
+function createUpstreamAccountAdaptiveMetricsStoryResponse() {
+  const response = createUpstreamAccountActivityStoryResponse();
+  const account = response.accounts[0];
+  if (!account) return response;
+
+  account.requestCount = 739;
+  account.successCount = 644;
+  account.failureCount = 71;
+  account.nonSuccessCount = 95;
+  account.uploadBytesPerSecond = 42 * 1024;
+  account.downloadBytesPerSecond = 168 * 1024;
+  account.totalTokens = 6_623_715;
+  account.successTokens = 6_141_241;
+  account.nonSuccessTokens = 482_474;
+  account.failureTokens = 132_474;
+  account.failureCost = 39.45;
+  account.totalCost = 274.56;
+  account.usageBreakdown = ADAPTIVE_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN;
+  account.tokensPerMinute = perMinuteRate(account.totalTokens);
+  account.spendRate = perMinuteRate(account.totalCost);
+  account.firstResponseByteTotalAvgMs = 11_090;
+  account.avgTotalMs = 26_800;
+  account.currentFirstResponseByteTotalAvgMs = 11_090;
+  account.currentAvgTotalMs = 26_800;
+  account.inProgressInvocationCount = 9;
+  account.inProgressPhaseCounts = {
+    queued: 2,
+    requesting: 3,
+    responding: 4,
+  };
+  account.retryInvocationCount = 9;
+  account.cacheHitRate = 0.41;
+
+  return response;
 }
 
 const LONG_ERROR_SUMMARY =
@@ -2489,7 +2911,7 @@ function DrawerPreviewStory({
             start: activity.rangeStart,
             end: activity.rangeEnd,
             windowMinutes: 1,
-            mode: "last_complete_1m_sma",
+            mode: "rolling_60s_live_mean",
           },
           summary: {
             stats: {
@@ -3451,16 +3873,15 @@ export const UpstreamAccountTab: Story = {
     const totalNetworkSpeed = await canvas.findByTestId(
       "dashboard-upstream-account-total-network-speed",
     );
-    await expect(totalNetworkSpeed).toHaveTextContent("1.9");
+    await expect(totalNetworkSpeed).toHaveTextContent("46");
     await expect(totalNetworkSpeed).toHaveTextContent("KiB/s");
-    await expect(totalNetworkSpeed).toHaveTextContent("6");
-    await expect(totalNetworkSpeed).toHaveTextContent("MiB/s");
+    await expect(totalNetworkSpeed).toHaveTextContent("214");
     await expect(canvas.getByText("最近 4 条调用")).toBeInTheDocument();
     await expect(canvas.getByTestId("dashboard-upstream-account-header-row")).not.toHaveTextContent(
       "#42",
     );
     await expect(canvas.getByTestId("dashboard-upstream-account-network-speed")).toHaveTextContent(
-      "1.9",
+      "46",
     );
     await expect(canvas.queryByTestId("dashboard-upstream-account-routing-settings")).toBeNull();
     await expect(
@@ -3473,10 +3894,10 @@ export const UpstreamAccountTab: Story = {
     await expect(canvas.getByText("禁入")).toBeInTheDocument();
     await expect(canvas.getByText("进行中")).toBeInTheDocument();
     const recentBreakdown = canvas.getByTestId("dashboard-upstream-account-recent-breakdown");
-    await expect(recentBreakdown).toHaveTextContent(/排队中\s*2/);
-    await expect(recentBreakdown).toHaveTextContent(/请求中\s*3/);
-    await expect(recentBreakdown).toHaveTextContent(/响应中\s*4/);
-    await expect(recentBreakdown).toHaveTextContent(/成功\s*6/);
+    await expect(recentBreakdown).toHaveTextContent(/排队中\s*1/);
+    await expect(recentBreakdown).toHaveTextContent(/请求中\s*1/);
+    await expect(recentBreakdown).toHaveTextContent(/响应中\s*1/);
+    await expect(recentBreakdown).toHaveTextContent(/成功\s*24/);
     const phaseSegments = Array.from(
       recentBreakdown.querySelectorAll('[data-testid="invocation-phase-segment"]'),
     );
@@ -3587,10 +4008,9 @@ export const ConversationTabWithUpstreamNetworkSpeed: Story = {
     const totalNetworkSpeed = await canvas.findByTestId(
       "dashboard-upstream-account-total-network-speed",
     );
-    await expect(totalNetworkSpeed).toHaveTextContent("1.9");
+    await expect(totalNetworkSpeed).toHaveTextContent("46");
     await expect(totalNetworkSpeed).toHaveTextContent("KiB/s");
-    await expect(totalNetworkSpeed).toHaveTextContent("6");
-    await expect(totalNetworkSpeed).toHaveTextContent("MiB/s");
+    await expect(totalNetworkSpeed).toHaveTextContent("214");
   },
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
@@ -4052,10 +4472,10 @@ export const UpstreamAccountMetricTooltips: Story = {
     const triggers = await canvas.findAllByTestId("dashboard-upstream-account-metric-card");
     await expect(triggers).toHaveLength(4);
 
-    const tpmInlineMetric = canvas.getByLabelText("TPM 640");
+    const tpmInlineMetric = canvas.getByLabelText("TPM 37,280");
     await userEvent.click(tpmInlineMetric);
     await waitFor(() => {
-      expect(document.body.textContent ?? "").toContain("TPM 640");
+      expect(document.body.textContent ?? "").toContain("TPM 37,280");
     });
     await userEvent.click(tpmInlineMetric);
 
@@ -4077,15 +4497,15 @@ export const UpstreamAccountMetricTooltips: Story = {
       await userEvent.unhover(trigger);
     };
 
-    await assertMetricTooltip("latency", ["首字用时", "2.87 s", "响应时间", "阶段首字节"]);
+    await assertMetricTooltip("latency", ["首字用时", "4.38 s", "响应时间", "阶段首字节"]);
     await assertMetricTooltip("requests", ["请求数", "成功率", "75%", "非成功率"]);
     await assertMetricTooltip("cost", [
       "用量明细",
-      "0.72",
+      "3.85",
       "缓存写入",
       "缓存读取",
       "总计",
-      "gpt-5.6",
+      "gpt-5.5",
     ]);
     await assertMetricTooltip("token", [
       "用量明细",
@@ -4093,7 +4513,7 @@ export const UpstreamAccountMetricTooltips: Story = {
       "缓存读取",
       "输出",
       "总计",
-      "gpt-5.6",
+      "gpt-5.5",
     ]);
 
     const finalTrigger = canvasElement.querySelector(
@@ -4107,6 +4527,119 @@ export const UpstreamAccountMetricTooltips: Story = {
       description: {
         story:
           "Stable interaction coverage for the four upstream-account metric cards. Each whole metric card opens a structured tooltip with explicit field labels, values, and related computed data while the card surface stays compact.",
+      },
+    },
+  },
+};
+
+export const UpstreamAccountAdaptiveMetricOverflow: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <ForcedWorkspaceViewStory view="upstreamAccounts">
+      <DrawerPreviewStory
+        response={createResponse([
+          createConversation("pck-story-upstream-account-adaptive-overflow", [
+            createPreview({
+              id: 9832,
+              invokeId: "story-working-adaptive-overflow",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+              upstreamAccountId: 42,
+              upstreamAccountName: "Pool Alpha",
+            }),
+          ]),
+        ])}
+        upstreamAccountActivity={createUpstreamAccountAdaptiveMetricsStoryResponse()}
+      />
+    </ForcedWorkspaceViewStory>
+  ),
+  decorators: [
+    (Story) => (
+      <div
+        data-testid="dashboard-upstream-account-adaptive-evidence-frame"
+        className="dashboard-upstream-account-adaptive-overflow-story"
+      >
+        <style>{`
+          .dashboard-upstream-account-adaptive-overflow-story {
+            display: inline-block;
+            padding: 19px 19px 12px;
+            background: rgb(214, 232, 255);
+          }
+          .dashboard-upstream-account-adaptive-overflow-story [data-testid="dashboard-working-conversations"] {
+            display: inline-block;
+            width: fit-content;
+          }
+          .dashboard-upstream-account-adaptive-overflow-story
+            [data-testid="dashboard-working-conversations"]
+            > .surface-panel-body {
+            width: fit-content;
+          }
+          .dashboard-upstream-account-adaptive-overflow-story [data-testid="dashboard-upstream-account-grid"] {
+            max-width: 22rem;
+            grid-template-columns: minmax(0, 1fr) !important;
+          }
+          .dashboard-upstream-account-adaptive-overflow-story
+            [data-testid="dashboard-working-conversations-controls"] {
+            display: none;
+          }
+          .dashboard-upstream-account-adaptive-overflow-story
+            div:has(> [data-testid="story-drawer-state"]) {
+            display: none;
+          }
+        `}</style>
+        <Story />
+      </div>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+
+    await waitFor(() => {
+      expect(canvas.getByText("当前活动账号 1 个")).toBeInTheDocument();
+
+      const tpmValue = canvas.getByTestId("dashboard-upstream-account-inline-tpm-value");
+      const spendRateValue = canvas.getByTestId(
+        "dashboard-upstream-account-inline-spend-rate-value",
+      );
+      const costValue = canvas.getByTestId("dashboard-upstream-account-cost-value");
+      const tokenValue = canvas.getByTestId("dashboard-upstream-account-token-value");
+      const accountCard = canvas.getByTestId("dashboard-upstream-account-card");
+      const recentBreakdown = canvas.getByTestId("dashboard-upstream-account-recent-breakdown");
+      const phaseSegments = canvas.getAllByTestId("invocation-phase-segment");
+
+      expect(accountCard).toHaveAttribute("data-header-layout", "stacked");
+      expect(accountCard).toHaveAttribute("data-inline-metric-layout", "three-columns");
+      expect(accountCard).toHaveAttribute("data-metric-columns", "2");
+      expect(tpmValue).toHaveAttribute("data-compact", "true");
+      expect(tpmValue.textContent ?? "").toMatch(/M|B|T/);
+      expect(tpmValue).toHaveAttribute("title", "1,324,743");
+
+      expect(spendRateValue).toHaveAttribute("data-compact", "false");
+      expect(spendRateValue).toHaveTextContent("54");
+      expect(spendRateValue).not.toHaveAttribute("title");
+
+      expect(costValue).toHaveAttribute("data-compact", "false");
+      expect(costValue).not.toHaveTextContent("274.56");
+      expect(costValue).toHaveAttribute("title", "274.56");
+
+      expect(tokenValue).toHaveAttribute("data-compact", "true");
+      expect(tokenValue.textContent ?? "").toMatch(/M|B|T/);
+      expect(tokenValue).toHaveAttribute("title", "6,623,715");
+
+      expect(recentBreakdown.textContent ?? "").not.toContain("排队中");
+      expect(recentBreakdown.textContent ?? "").not.toContain("请求中");
+      expect(recentBreakdown.textContent ?? "").not.toContain("响应中");
+      expect(recentBreakdown.textContent ?? "").not.toContain("失败");
+      expect(recentBreakdown.textContent ?? "").not.toContain("成功");
+      expect(phaseSegments[0]).toHaveAttribute("data-phase-label-visible", "false");
+    });
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Narrow owner-facing upstream-account card that forces the red-box metrics to reuse the adaptive compact-number system. Inline TPM/spend-rate and the hero cost/token values must collapse precision or magnitude while preserving the full value in tooltips and titles.",
       },
     },
   },

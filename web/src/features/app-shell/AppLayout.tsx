@@ -1,13 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Button } from "../../components/ui/button";
 import { SegmentedControl } from "../../components/ui/segmented-control";
 import { segmentedControlItemVariants } from "../../components/ui/segmented-control.variants";
 import { useAppVersion } from "../../hooks/useAppVersion";
+import usePwaRuntime from "../../hooks/usePwaRuntime";
+import useSseDiagnostics from "../../hooks/useSseDiagnostics";
 import useSseStatus from "../../hooks/useSseStatus";
 import useUpdateAvailable from "../../hooks/useUpdateAvailable";
 import { type Locale, supportedLocales, useTranslation } from "../../i18n";
-import { requestImmediateReconnect, subscribeToSseActivity } from "../../lib/sse";
+import {
+  requestImmediateReconnect,
+  type SseReconnectReason,
+  type SseTerminalOutcome,
+  subscribeToSseActivity,
+} from "../../lib/sse";
 import { frontendVersion, normalizeVersion } from "../../lib/version";
 import { useTheme } from "../../theme";
 import { AppIcon } from "../shared/AppIcon";
@@ -18,6 +25,7 @@ import {
   mobileNavigationGroups,
   resolveAppNavigation,
 } from "./navigation";
+import { PwaInstallControl } from "./PwaInstallControl";
 import { UpdateAvailableBanner } from "./UpdateAvailableBanner";
 
 const repositoryUrl = "https://github.com/IvanLi-CN/codex-vibe-monitor";
@@ -28,19 +36,83 @@ const LOCALE_FLAG: Record<Locale, string> = {
 const OFFLINE_NOTICE_THRESHOLD_MS = 2 * 60 * 1000;
 export const HEADER_BRAND_ACTIVITY_HOLD_MS = 3200;
 
-export function AppLayout() {
-  const location = useLocation();
-  const { t, locale, setLocale } = useTranslation();
-  const { themeMode, toggleTheme } = useTheme();
-  const [hasRecentActivity, setHasRecentActivity] = useState(false);
-  const activityTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const { versionInfo, isLoading: backendLoading } = useAppVersion();
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const update = useUpdateAvailable();
-  const sseStatus = useSseStatus();
+type InstallableControlMode = Extract<
+  ReturnType<typeof usePwaRuntime>["installMode"],
+  "prompt" | "manual-ios" | "installed"
+>;
 
-  const isReconnecting = sseStatus.phase === "connecting" || sseStatus.phase === "reconnecting";
-  const isSseDisabled = sseStatus.phase === "disabled";
+function formatDiagnosticsAgeLabel(
+  timestamp: number | null,
+  now: number,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  if (timestamp == null) {
+    return t("app.sse.banner.diagAgeNever");
+  }
+  const totalSeconds = Math.max(Math.floor((now - timestamp) / 1000), 0);
+  if (totalSeconds < 60) {
+    return t("app.sse.banner.diagAgeSeconds", { seconds: totalSeconds });
+  }
+  return t("app.sse.banner.diagAgeMinutesSeconds", {
+    minutes: Math.floor(totalSeconds / 60),
+    seconds: totalSeconds % 60,
+  });
+}
+
+function reasonLabelKey(reason: SseReconnectReason | null) {
+  switch (reason) {
+    case "initial":
+      return "app.sse.reason.initial";
+    case "topic-change":
+      return "app.sse.reason.topicChange";
+    case "topic-refresh":
+      return "app.sse.reason.topicRefresh";
+    case "manual":
+      return "app.sse.reason.manual";
+    case "eventsource-error":
+      return "app.sse.reason.eventsourceError";
+    case "watchdog-closed":
+      return "app.sse.reason.watchdogClosed";
+    case "watchdog-timeout":
+      return "app.sse.reason.watchdogTimeout";
+    case "visibility-visible":
+      return "app.sse.reason.visibilityVisible";
+    default:
+      return "app.sse.banner.diagUnknown";
+  }
+}
+
+function outcomeLabelKey(outcome: SseTerminalOutcome | null) {
+  switch (outcome) {
+    case "idle":
+      return "app.sse.outcome.idle";
+    case "open":
+      return "app.sse.outcome.open";
+    case "topic-change":
+      return "app.sse.outcome.topicChange";
+    case "eventsource-error":
+      return "app.sse.outcome.eventsourceError";
+    case "watchdog-closed":
+      return "app.sse.outcome.watchdogClosed";
+    case "watchdog-timeout":
+      return "app.sse.outcome.watchdogTimeout";
+    case "disabled":
+      return "app.sse.outcome.disabled";
+    case "unsupported":
+      return "app.sse.outcome.unsupported";
+    case "cleanup":
+      return "app.sse.outcome.cleanup";
+    default:
+      return "app.sse.banner.diagUnknown";
+  }
+}
+
+function SseOfflineBanner({ topClassName }: { topClassName: string }) {
+  const { t } = useTranslation();
+  const sseStatus = useSseStatus();
+  const sseDiagnostics = useSseDiagnostics();
+  const diagnosticsNow = Date.now();
+
   const isOffline = sseStatus.phase !== "connected" && sseStatus.phase !== "idle";
   const showOfflineBanner = isOffline && sseStatus.downtimeMs >= OFFLINE_NOTICE_THRESHOLD_MS;
   const downtimeSeconds = Math.max(Math.floor(sseStatus.downtimeMs / 1000), 0);
@@ -59,6 +131,86 @@ export function AppLayout() {
       ? t("app.sse.banner.retryIn", { seconds: nextRetrySeconds })
       : t("app.sse.banner.retryingNow")
     : t("app.sse.banner.autoDisabled");
+  const diagnosticsLine = t("app.sse.banner.diagnostics", {
+    attempt: sseDiagnostics.attempt ?? "-",
+    reason: t(reasonLabelKey(sseDiagnostics.reason)),
+    topics: sseDiagnostics.activeTopics.length,
+    resume: sseDiagnostics.resumeTopics.length,
+    fresh: sseDiagnostics.forcedSnapshotTopics.length,
+    lastMessageAge: formatDiagnosticsAgeLabel(sseDiagnostics.lastMessageAt, diagnosticsNow, t),
+    outcome: t(outcomeLabelKey(sseDiagnostics.lastTerminalOutcome)),
+  });
+
+  if (!showOfflineBanner) {
+    return null;
+  }
+
+  return (
+    <div className={`fixed left-1/2 z-[60] w-full max-w-3xl -translate-x-1/2 px-4 ${topClassName}`}>
+      <div
+        className="flex w-full gap-3 rounded-xl border border-warning/60 bg-warning/90 p-4 text-warning-content shadow-lg"
+        role="status"
+        aria-live="assertive"
+      >
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <AppIcon name="alert-circle" className="h-6 w-6 flex-shrink-0" aria-hidden />
+          <div className="min-w-0 flex-1 space-y-1">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-4">
+              <div className="min-w-0 flex-1 space-y-1">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="font-semibold">{t("app.sse.banner.title")}</span>
+                  <span className="rounded-full bg-warning/20 px-2 py-0.5 text-xs font-mono text-warning-content">
+                    {durationChipLabel}
+                  </span>
+                </div>
+                <p className="min-w-0 text-sm text-warning-content/90">
+                  {t("app.sse.banner.description")} · {statusLine}
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                className="hidden w-auto flex-shrink-0 px-5 sm:mt-1 sm:inline-flex"
+                onClick={requestImmediateReconnect}
+              >
+                {t("app.sse.banner.reconnectButton")}
+              </Button>
+            </div>
+            <p
+              className="text-xs font-mono text-warning-content/80"
+              data-testid="app-sse-diagnostics"
+            >
+              {diagnosticsLine}
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              className="inline-flex w-auto self-end px-5 sm:hidden"
+              onClick={requestImmediateReconnect}
+            >
+              {t("app.sse.banner.reconnectButton")}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function AppLayout() {
+  const location = useLocation();
+  const { t, locale, setLocale } = useTranslation();
+  const { themeMode, toggleTheme } = useTheme();
+  const [hasRecentActivity, setHasRecentActivity] = useState(false);
+  const activityTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { versionInfo, isLoading: backendLoading } = useAppVersion();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const update = useUpdateAvailable();
+  const pwaRuntime = usePwaRuntime();
+  const sseStatus = useSseStatus();
+
+  const isReconnecting = sseStatus.phase === "connecting" || sseStatus.phase === "reconnecting";
+  const isSseDisabled = sseStatus.phase === "disabled";
 
   useEffect(() => {
     const clearActivityWindow = () => {
@@ -127,11 +279,9 @@ export function AppLayout() {
     setLanguageMenuOpen((open) => !open);
   };
 
-  const closeLanguageMenu = () => setLanguageMenuOpen(false);
-
-  const handleManualReconnect = () => {
-    requestImmediateReconnect();
-  };
+  const closeLanguageMenu = useCallback(() => {
+    setLanguageMenuOpen(false);
+  }, []);
 
   useEffect(() => {
     if (!languageMenuOpen) return;
@@ -217,6 +367,11 @@ export function AppLayout() {
       : hasRecentActivity
         ? "active"
         : "idle";
+  const installControlMode = pwaRuntime.installSupported
+    ? (pwaRuntime.installMode as InstallableControlMode)
+    : null;
+  const showVersionUpdateBanner = pwaRuntime.update.visible || update.visible;
+  const stackedStatusBannerTopClass = showVersionUpdateBanner ? "top-[146px]" : "top-[78px]";
 
   return (
     <div className="app-shell min-h-screen flex flex-col text-base-content">
@@ -281,6 +436,34 @@ export function AppLayout() {
                 ))}
               </SegmentedControl>
             </div>
+
+            {installControlMode ? (
+              <PwaInstallControl
+                mode={installControlMode}
+                shellReady={pwaRuntime.shellReady}
+                isOffline={pwaRuntime.isOffline}
+                onPromptInstall={pwaRuntime.promptInstall}
+                labels={{
+                  promptButton: t("app.pwa.install.promptButton"),
+                  manualButton: t("app.pwa.install.manualButton"),
+                  installedButton: t("app.pwa.install.installedButton"),
+                  switcherAria: t("app.pwa.install.switcherAria"),
+                  closeButton: t("app.pwa.install.close"),
+                  closeAria: t("app.pwa.install.closeAria"),
+                  shellReady: t("app.pwa.install.shellReady"),
+                  shellPending: t("app.pwa.install.shellPending"),
+                  offlineChip: t("app.pwa.install.offlineChip"),
+                  manualTitle: t("app.pwa.install.manualTitle"),
+                  manualDescription: t("app.pwa.install.manualDescription"),
+                  manualStepOpenShare: t("app.pwa.install.manualStepOpenShare"),
+                  manualStepAdd: t("app.pwa.install.manualStepAdd"),
+                  manualStepConfirm: t("app.pwa.install.manualStepConfirm"),
+                  installedTitle: t("app.pwa.install.installedTitle"),
+                  installedDescription: t("app.pwa.install.installedDescription"),
+                  installedHint: t("app.pwa.install.installedHint"),
+                }}
+              />
+            ) : null}
 
             <button
               type="button"
@@ -436,39 +619,56 @@ export function AppLayout() {
           </aside>
         </div>
       ) : null}
-      {showOfflineBanner && (
-        <div className="fixed left-1/2 top-[78px] z-[60] w-full max-w-3xl -translate-x-1/2 px-4">
+      {pwaRuntime.isOffline ? (
+        <div
+          className={`fixed left-1/2 z-[62] w-full max-w-3xl -translate-x-1/2 px-4 ${stackedStatusBannerTopClass}`}
+        >
           <div
-            className="flex w-full flex-col gap-3 rounded-xl border border-warning/60 bg-warning/90 p-4 text-warning-content shadow-lg sm:flex-row sm:items-center"
+            className="flex w-full flex-col gap-3 rounded-xl border border-warning/45 bg-base-100/95 p-4 text-base-content shadow-lg backdrop-blur sm:flex-row sm:items-center"
             role="status"
             aria-live="assertive"
+            data-testid="pwa-offline-banner"
           >
             <div className="flex min-w-0 flex-1 items-center gap-3">
-              <AppIcon name="alert-circle" className="h-6 w-6 flex-shrink-0" aria-hidden />
+              <AppIcon
+                name="link-variant-off"
+                className="h-6 w-6 flex-shrink-0 text-warning"
+                aria-hidden
+              />
               <div className="min-w-0 space-y-1">
                 <div className="flex flex-wrap items-center gap-3">
-                  <span className="font-semibold">{t("app.sse.banner.title")}</span>
-                  <span className="rounded-full bg-warning/20 px-2 py-0.5 text-xs font-mono text-warning-content">
-                    {durationChipLabel}
+                  <span className="font-semibold">{t("app.pwa.offline.title")}</span>
+                  <span className="rounded-full bg-warning/12 px-2 py-0.5 text-xs font-medium text-warning-content">
+                    {pwaRuntime.shellReady
+                      ? t("app.pwa.install.shellReady")
+                      : t("app.pwa.install.shellPending")}
                   </span>
                 </div>
-                <p className="text-sm text-warning-content/90 truncate">
-                  {t("app.sse.banner.description")} · {statusLine}
+                <p className="text-sm text-base-content/78">
+                  {pwaRuntime.shellReady
+                    ? t("app.pwa.offline.descriptionReady")
+                    : t("app.pwa.offline.descriptionPending")}
                 </p>
               </div>
             </div>
-            <Button
-              type="button"
-              size="sm"
-              className="w-full sm:ml-auto sm:w-auto"
-              onClick={handleManualReconnect}
-            >
-              {t("app.sse.banner.reconnectButton")}
-            </Button>
           </div>
         </div>
+      ) : null}
+      <SseOfflineBanner topClassName={stackedStatusBannerTopClass} />
+      {pwaRuntime.update.visible && (
+        <UpdateAvailableBanner
+          currentVersion={pwaRuntime.update.currentVersion}
+          availableVersion={pwaRuntime.update.availableVersion ?? pwaRuntime.update.currentVersion}
+          onReload={pwaRuntime.applyUpdate}
+          onDismiss={pwaRuntime.dismissUpdate}
+          labels={{
+            available: t("app.pwa.update.available"),
+            refresh: t("app.pwa.update.refresh"),
+            later: t("app.pwa.update.later"),
+          }}
+        />
       )}
-      {update.visible && update.availableVersion && (
+      {!pwaRuntime.update.visible && update.visible && update.availableVersion && (
         <UpdateAvailableBanner
           currentVersion={versionInfo?.backend ?? t("app.update.current")}
           availableVersion={update.availableVersion}

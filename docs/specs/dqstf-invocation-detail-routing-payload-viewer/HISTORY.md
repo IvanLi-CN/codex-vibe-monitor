@@ -11,3 +11,9 @@
 - 2026-07-14: 超过 `1 MiB` 的内容默认不做结构化解析，由用户显式触发，以控制主线程风险。
 - 2026-07-14: 页面级证据继续使用 mock-only Web Demo，Storybook 只承载 viewer 的可复用状态与交互回归。
 - 2026-07-15: 为 mock-only Web Demo 增加 `demoViewport=mobile390` iframe 壳，给移动断点提供可复现、可分享且不依赖浏览器窗口 resize 的稳定证据入口。
+- 2026-07-15: 调用详情升级为统一工作流视图。顶部 hero 区固定优先展示调用 ID、短对话 ID、总用时、最终结果、尝试次数和最终账号，避免排障时先被低价值 token 字段淹没。
+- 2026-07-15: 时间线 contract 固定为“辅助块在前、尝试居中、失败裁定在后”；失败时必须追加系统裁定块来表示最终返回给调用方的响应，而不是仅依赖最后一次尝试的错误信息。
+- 2026-07-15: 数据契约采用 hybrid storage。尝试事实继续保留在 `pool_upstream_request_attempts`，辅助时间线动作允许写入 `codex_invocations.timeline_json`；历史数据缺失时通过聚合接口重建，并显式暴露 `reconstructed/partial` 状态。
+- 2026-07-15: 请求体完整原文只保证在调用级记录存在；尝试级详情默认暴露 `request_summary_json` / `response_summary_json` 结构化快照，不在 attempt 表重复存整份 raw body。
+- 2026-07-15: 视觉设计收口到 `Rich Structured Snapshot + overview-first timeline`。首屏改为单一快照面板，辅助块默认先展示人类可读概览，原始 JSON / 响应体降为次级操作，避免调用详情退化成日志堆叠器。
+- 2026-07-16: 尝试详情入口改为显式子页面目录。展开尝试后默认直接暴露 `时间详情 / 解析请求 / 请求头 / 请求体 / 解析响应 / 响应头 / 响应体` 七个子详情页，不再要求用户先经过“请求详情 / 响应详情”的二级入口。

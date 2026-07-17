@@ -16,6 +16,7 @@ interface AdaptiveDisplayValueProps {
   className?: string;
   title?: string;
   animateDigits?: boolean;
+  availableWidthPx?: number;
   "data-testid"?: string;
 }
 
@@ -28,7 +29,7 @@ interface AdaptiveMetricValueProps {
   "data-testid"?: string;
 }
 
-function useAdaptiveCandidateSelection(spec: AdaptiveDisplayValueSpec) {
+function useAdaptiveCandidateSelection(spec: AdaptiveDisplayValueSpec, availableWidthPx?: number) {
   const containerRef = useRef<HTMLSpanElement | null>(null);
   const measureRefs = useRef<Array<HTMLSpanElement | null>>([]);
   const [selectedCandidateKey, setSelectedCandidateKey] = useState<string>(
@@ -39,8 +40,13 @@ function useAdaptiveCandidateSelection(spec: AdaptiveDisplayValueSpec) {
     const container = containerRef.current;
     if (!container) return;
 
-    const availableWidth = container.clientWidth;
+    const availableWidth =
+      availableWidthPx != null && availableWidthPx > 0 ? availableWidthPx : container.clientWidth;
     if (availableWidth <= 0) return;
+
+    const usesExplicitAvailableWidth = availableWidthPx != null && availableWidthPx > 0;
+    const compactGutterPx = usesExplicitAvailableWidth ? ADAPTIVE_METRIC_COMPACT_GUTTER_PX : 0;
+    const upgradeHeadroomPx = usesExplicitAvailableWidth ? ADAPTIVE_METRIC_UPGRADE_HEADROOM_PX : 0;
 
     const measures = measureRefs.current;
     const candidateWidths = spec.candidates.map((candidate, index) => ({
@@ -55,8 +61,7 @@ function useAdaptiveCandidateSelection(spec: AdaptiveDisplayValueSpec) {
     const currentCandidateWidth = candidateWidths[currentIndex]?.requiredWidth ?? 0;
 
     const fitsWithinWidth = (requiredWidth: number, extraHeadroomPx: number) =>
-      requiredWidth > 0 &&
-      requiredWidth + ADAPTIVE_METRIC_COMPACT_GUTTER_PX + extraHeadroomPx <= availableWidth;
+      requiredWidth > 0 && requiredWidth + compactGutterPx + extraHeadroomPx <= availableWidth;
 
     let nextCandidate = spec.candidates[currentIndex] ?? spec.candidates.at(-1);
 
@@ -70,12 +75,7 @@ function useAdaptiveCandidateSelection(spec: AdaptiveDisplayValueSpec) {
       }
     } else {
       for (let index = 0; index < currentIndex; index += 1) {
-        if (
-          fitsWithinWidth(
-            candidateWidths[index]?.requiredWidth ?? 0,
-            ADAPTIVE_METRIC_UPGRADE_HEADROOM_PX,
-          )
-        ) {
+        if (fitsWithinWidth(candidateWidths[index]?.requiredWidth ?? 0, upgradeHeadroomPx)) {
           nextCandidate = candidateWidths[index]?.candidate ?? nextCandidate;
           break;
         }
@@ -85,7 +85,7 @@ function useAdaptiveCandidateSelection(spec: AdaptiveDisplayValueSpec) {
     setSelectedCandidateKey((current) =>
       current === (nextCandidate?.key ?? current) ? current : (nextCandidate?.key ?? current),
     );
-  }, [selectedCandidateKey, spec.candidates]);
+  }, [availableWidthPx, selectedCandidateKey, spec.candidates]);
 
   useLayoutEffect(() => {
     evaluateOverflow();
@@ -140,9 +140,13 @@ export function AdaptiveDisplayValue({
   className,
   title,
   animateDigits = false,
+  availableWidthPx,
   "data-testid": dataTestId,
 }: AdaptiveDisplayValueProps) {
-  const { containerRef, measureRefs, selectedCandidate } = useAdaptiveCandidateSelection(spec);
+  const { containerRef, measureRefs, selectedCandidate } = useAdaptiveCandidateSelection(
+    spec,
+    availableWidthPx,
+  );
   const shouldAnimateDigits =
     animateDigits &&
     selectedCandidate?.key === spec.candidates[0]?.key &&

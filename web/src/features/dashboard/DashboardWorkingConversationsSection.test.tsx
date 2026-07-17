@@ -305,6 +305,8 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
         firstByteAvgMs: 420,
         firstResponseByteTotalAvgMs: 2_867.5,
         avgTotalMs: 860,
+        currentFirstResponseByteTotalAvgMs: 2_867.5,
+        currentAvgTotalMs: 860,
         inProgressInvocationCount: 3,
         inProgressPhaseCounts: { queued: 1, requesting: 1, responding: 1 },
         retryInvocationCount: 1,
@@ -1595,8 +1597,250 @@ describe("DashboardWorkingConversationsSection", () => {
     const costBreakdown = host?.querySelector(
       '[data-testid="dashboard-upstream-account-cost-breakdown"]',
     );
-    expect(costBreakdown?.textContent).toContain("$0.00");
-    expect(costBreakdown?.textContent).toContain("0%");
+    expect(costBreakdown?.getAttribute("aria-label")).toContain("$0.00");
+    expect(costBreakdown?.getAttribute("aria-label")).toContain("0%");
+  });
+
+  it("compacts red-box upstream account metrics under tight widths while preserving full labels", async () => {
+    const response = createUpstreamAccountActivityResponse();
+    const account = response.accounts[0];
+    if (!account) {
+      throw new Error("missing upstream activity account");
+    }
+    account.tokensPerMinute = 1_324_743;
+    account.totalTokens = 88_067_672;
+    account.totalCost = 39.45;
+    account.spendRate = 39.45;
+    upstreamAccountActivityMock.data = response;
+
+    const measureWidths = new Map<string, number>([
+      ["1,324,743", 112],
+      ["1.3247M", 92],
+      ["1.325M", 84],
+      ["1.32M", 76],
+      ["1.3M", 48],
+      ["1M", 36],
+      ["88,067,672", 126],
+      ["88.068M", 102],
+      ["88.07M", 96],
+      ["88.1M", 56],
+      ["88M", 42],
+      ["39.45", 58],
+      ["39.5", 40],
+      ["39", 24],
+    ]);
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function () {
+      if ((this as HTMLElement).dataset.adaptiveMetricContainer === "true") {
+        return 60;
+      }
+      return 1700;
+    });
+    vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(function () {
+      if ((this as HTMLElement).dataset.adaptiveMetricMeasure === "true") {
+        const text = (this as HTMLElement).textContent ?? "";
+        return measureWidths.get(text) ?? Math.max(28, text.length * 10);
+      }
+      return 0;
+    });
+
+    renderSection(
+      createResponse([
+        createConversation("pck-upstream-account-adaptive-overflow", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-upstream-account-adaptive-overflow",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+      window.dispatchEvent(new Event("resize"));
+    });
+
+    await waitFor(() => {
+      const tpmValue = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-inline-tpm-value"]',
+      );
+      const spendRateValue = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-inline-spend-rate-value"]',
+      );
+      const tokenValue = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-token-value"]',
+      );
+      const costValue = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-cost-value"]',
+      );
+
+      expect(tpmValue?.getAttribute("data-compact")).toBe("true");
+      expect(tpmValue?.getAttribute("data-compact-precision")).toBe("K-0");
+      expect(tpmValue?.textContent).toContain("1,325K");
+      expect(tpmValue?.getAttribute("title")).toBe("1,324,743");
+
+      expect(spendRateValue?.getAttribute("data-compact")).toBe("false");
+      expect(spendRateValue?.getAttribute("data-compact-precision")).toBe("full");
+      expect(spendRateValue?.textContent).toBe("39.45");
+      expect(spendRateValue?.getAttribute("title")).toBeNull();
+
+      expect(tokenValue?.getAttribute("data-compact")).toBe("true");
+      expect(tokenValue?.getAttribute("data-compact-precision")).toBe("1");
+      expect(tokenValue?.textContent).toContain("88.1M");
+      expect(tokenValue?.getAttribute("title")).toBe("88,067,672");
+
+      expect(costValue?.getAttribute("data-compact")).toBe("false");
+      expect(costValue?.getAttribute("data-compact-precision")).toBe("full");
+      expect(costValue?.textContent).toBe("39.45");
+      expect(costValue?.getAttribute("title")).toBeNull();
+    });
+
+    const tpmTrigger = host?.querySelector('[aria-label="TPM 1,324,743"]');
+    const spendRateTrigger = host?.querySelector('[aria-label="消费速率 39.45"]');
+    const tokenCardTrigger = host?.querySelector('[aria-label="Token 88,067,672"]');
+    const costCardTrigger = host?.querySelector('[aria-label="成本 39.45"]');
+
+    expect(tpmTrigger).not.toBeNull();
+    expect(spendRateTrigger).not.toBeNull();
+    expect(tokenCardTrigger).not.toBeNull();
+    expect(costCardTrigger).not.toBeNull();
+    expect(host?.textContent).not.toContain("[object Object]");
+  });
+
+  it("switches upstream account cards to container-width layouts instead of viewport breakpoints", async () => {
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function () {
+      const testId = (this as HTMLElement).getAttribute("data-testid");
+      if (
+        testId === "dashboard-upstream-account-grid" ||
+        testId === "dashboard-upstream-account-card"
+      ) {
+        return 352;
+      }
+      return 1700;
+    });
+
+    renderSection(
+      createResponse([
+        createConversation("pck-upstream-account-container-layout", [
+          createPreview({
+            id: 2,
+            invokeId: "invoke-upstream-account-container-layout",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+      window.dispatchEvent(new Event("resize"));
+    });
+
+    await waitFor(() => {
+      const accountCard = host?.querySelector('[data-testid="dashboard-upstream-account-card"]');
+      const inProgressSlot = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-inline-in-progress-slot"]',
+      );
+      const tpmSlot = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-inline-tpm-slot"]',
+      );
+      const spendRateSlot = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-inline-spend-rate-slot"]',
+      );
+      const recentBreakdown = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-recent-breakdown"]',
+      );
+      const phaseSegments = host?.querySelectorAll('[data-testid="invocation-phase-segment"]');
+      expect(accountCard?.getAttribute("data-header-layout")).toBe("stacked");
+      expect(accountCard?.getAttribute("data-inline-metric-layout")).toBe("three-columns");
+      expect(accountCard?.getAttribute("data-metric-columns")).toBe("2");
+      expect(accountCard?.getAttribute("data-recent-breakdown-layout")).toBe("stacked");
+      expect(inProgressSlot?.classList.contains("w-full")).toBe(true);
+      expect(tpmSlot?.classList.contains("w-full")).toBe(true);
+      expect(spendRateSlot?.classList.contains("w-full")).toBe(true);
+      expect(recentBreakdown?.textContent).not.toContain("排队中");
+      expect(recentBreakdown?.textContent).not.toContain("请求中");
+      expect(recentBreakdown?.textContent).not.toContain("响应中");
+      expect(recentBreakdown?.textContent).not.toContain("失败");
+      expect(recentBreakdown?.textContent).not.toContain("成功");
+      expect(phaseSegments?.[0]?.getAttribute("data-phase-label-visible")).toBe("false");
+    });
+  });
+
+  it("keeps split-layout inline metric slots content-sized on wide upstream account cards", async () => {
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function () {
+      const testId = (this as HTMLElement).getAttribute("data-testid");
+      if (
+        testId === "dashboard-upstream-account-grid" ||
+        testId === "dashboard-upstream-account-card"
+      ) {
+        return 920;
+      }
+      return 1700;
+    });
+
+    renderSection(
+      createResponse([
+        createConversation("pck-upstream-account-split-layout", [
+          createPreview({
+            id: 3,
+            invokeId: "invoke-upstream-account-split-layout",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+      window.dispatchEvent(new Event("resize"));
+    });
+
+    await waitFor(() => {
+      const accountCard = host?.querySelector('[data-testid="dashboard-upstream-account-card"]');
+      const inProgressSlot = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-inline-in-progress-slot"]',
+      );
+      const tpmSlot = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-inline-tpm-slot"]',
+      );
+      const spendRateSlot = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-inline-spend-rate-slot"]',
+      );
+      expect(accountCard?.getAttribute("data-header-layout")).toBe("split");
+      expect(accountCard?.getAttribute("data-inline-metric-layout")).toBe("inline");
+      expect(inProgressSlot?.classList.contains("w-full")).toBe(false);
+      expect(tpmSlot?.classList.contains("w-full")).toBe(false);
+      expect(spendRateSlot?.classList.contains("w-full")).toBe(false);
+    });
   });
 
   it("passes the dynamic recent preview limit into upstream account activity", () => {
@@ -2028,7 +2272,9 @@ describe("DashboardWorkingConversationsSection", () => {
           tokensPerMinute: 640,
           spendRate: 0.12,
           firstByteAvgMs: 420,
+          currentFirstResponseByteTotalAvgMs: 420,
           avgTotalMs: 860,
+          currentAvgTotalMs: 860,
           inProgressInvocationCount: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.length,
           retryInvocationCount: 0,
           recentInvocations: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.map((promptCacheKey, index) =>

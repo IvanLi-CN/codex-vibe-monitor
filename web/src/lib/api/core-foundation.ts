@@ -587,6 +587,96 @@ export interface ApiInvocationResponseBodyResponse {
   available: boolean;
   bodyText?: string | null;
   unavailableReason?: string | null;
+  headers?: Record<string, unknown> | null;
+  routing?: Record<string, unknown> | null;
+  bodySize?: number | null;
+  bodyTruncated?: boolean | null;
+  bodyTruncatedReason?: string | null;
+  detailLevel?: string | null;
+  detailPruneReason?: string | null;
+  captureSource?: string | null;
+}
+
+export interface ApiInvocationRequestBodyResponse extends ApiInvocationResponseBodyResponse {}
+
+export interface ApiInvocationWorkflowResponseBody {
+  available: boolean;
+  bodyText?: string | null;
+  unavailableReason?: string | null;
+}
+
+export interface ApiInvocationWorkflowAttempt {
+  synthetic: boolean;
+  attemptId?: string | null;
+  occurredAt: string;
+  endpoint: string;
+  stickyKey?: string | null;
+  upstreamAccountId?: number | null;
+  upstreamAccountName?: string | null;
+  requestModel?: string | null;
+  responseModel?: string | null;
+  upstreamRouteKey?: string | null;
+  proxyBindingKeySnapshot?: string | null;
+  attemptIndex: number;
+  distinctAccountIndex: number;
+  sameAccountRetryIndex: number;
+  requesterIp?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  status: string;
+  phase?: string | null;
+  httpStatus?: number | null;
+  downstreamHttpStatus?: number | null;
+  failureKind?: string | null;
+  errorMessage?: string | null;
+  downstreamErrorMessage?: string | null;
+  connectLatencyMs?: number | null;
+  firstByteLatencyMs?: number | null;
+  streamLatencyMs?: number | null;
+  upstreamRequestId?: string | null;
+  requestSummary?: Record<string, unknown> | null;
+  responseSummary?: Record<string, unknown> | null;
+}
+
+export interface ApiInvocationWorkflowTimelineEntry {
+  blockId: string;
+  kind: string;
+  occurredAt?: string | null;
+  title: string;
+  subtitle?: string | null;
+  status?: string | null;
+  attempt?: ApiInvocationWorkflowAttempt | null;
+  detail?: Record<string, unknown> | null;
+  responseBody?: ApiInvocationWorkflowResponseBody | null;
+}
+
+export interface ApiInvocationWorkflowHero {
+  recordId: number;
+  invokeId: string;
+  promptCacheKey?: string | null;
+  routeMode?: string | null;
+  endpoint?: string | null;
+  requestModel?: string | null;
+  responseModel?: string | null;
+  finalStatus?: string | null;
+  failureClass?: string | null;
+  downstreamStatusCode?: number | null;
+  upstreamAccountId?: number | null;
+  upstreamAccountName?: string | null;
+  totalDurationMs?: number | null;
+  timelineAttemptCount: number;
+  poolAttemptCount?: number | null;
+  totalTokens?: number | null;
+  cost?: number | null;
+  occurredAt?: string | null;
+}
+
+export interface ApiInvocationWorkflowDetailResponse {
+  hero: ApiInvocationWorkflowHero;
+  timeline: ApiInvocationWorkflowTimelineEntry[];
+  reconstructed: boolean;
+  partial: boolean;
+  partialReason?: string | null;
 }
 
 export interface StatsResponse {
@@ -687,6 +777,8 @@ export interface UpstreamAccountActivityAccount {
   firstByteAvgMs?: number | null;
   firstResponseByteTotalAvgMs?: number | null;
   avgTotalMs?: number | null;
+  currentFirstResponseByteTotalAvgMs?: number | null;
+  currentAvgTotalMs?: number | null;
   inProgressInvocationCount?: number | null;
   inProgressPhaseCounts?: InvocationPhaseCounts | null;
   retryInvocationCount?: number | null;
@@ -1106,6 +1198,18 @@ export async function fetchInvocationRecordDetail(id: number) {
 export async function fetchInvocationResponseBody(id: number) {
   return fetchJson<ApiInvocationResponseBodyResponse>(
     `/api/invocations/${encodeURIComponent(String(id))}/response-body`,
+  );
+}
+
+export async function fetchInvocationRequestBody(id: number) {
+  return fetchJson<ApiInvocationRequestBodyResponse>(
+    `/api/invocations/${encodeURIComponent(String(id))}/request-body`,
+  );
+}
+
+export async function fetchInvocationWorkflowDetail(id: number) {
+  return fetchJson<ApiInvocationWorkflowDetailResponse>(
+    `/api/invocations/${encodeURIComponent(String(id))}/workflow-detail`,
   );
 }
 
@@ -2899,6 +3003,10 @@ function normalizeUpstreamAccountActivityAccount(
     firstByteAvgMs: normalizeFiniteNumber(payload.firstByteAvgMs),
     firstResponseByteTotalAvgMs: normalizeFiniteNumber(payload.firstResponseByteTotalAvgMs),
     avgTotalMs: normalizeFiniteNumber(payload.avgTotalMs),
+    currentFirstResponseByteTotalAvgMs: normalizeFiniteNumber(
+      payload.currentFirstResponseByteTotalAvgMs,
+    ),
+    currentAvgTotalMs: normalizeFiniteNumber(payload.currentAvgTotalMs),
     inProgressInvocationCount: normalizeFiniteNumber(payload.inProgressInvocationCount),
     inProgressPhaseCounts: normalizeInvocationPhaseCounts(payload.inProgressPhaseCounts),
     retryInvocationCount: normalizeFiniteNumber(payload.retryInvocationCount),

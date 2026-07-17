@@ -98,6 +98,8 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_direct(
         ("compact_support_reason", "TEXT"),
         ("group_name_snapshot", "TEXT"),
         ("proxy_binding_key_snapshot", "TEXT"),
+        ("request_summary_json", "TEXT"),
+        ("response_summary_json", "TEXT"),
     ] {
         if !archive_columns.contains(column) {
             let statement =

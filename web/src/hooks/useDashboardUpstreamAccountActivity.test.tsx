@@ -105,7 +105,7 @@ function createResponse(inProgressCount: number): DashboardActivityResponse {
       start: "2026-07-16T10:04:00Z",
       end: "2026-07-16T10:05:00Z",
       windowMinutes: 1,
-      mode: "last_complete_1m_sma",
+      mode: "rolling_60s_live_mean",
     },
     summary: {
       stats: {

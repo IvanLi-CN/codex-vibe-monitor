@@ -2703,6 +2703,9 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
         );
         return Ok(());
     }
+    state
+        .dashboard_network_speed_cache
+        .observe_dashboard_activity_runtime_snapshot(&persisted_record, Utc::now());
     if state.broadcaster.receiver_count() > 0
         && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
             records: vec![persisted_record],
@@ -2737,6 +2740,9 @@ pub(crate) fn remove_proxy_runtime_snapshot_for_terminal(
 ) -> bool {
     state
         .dashboard_network_speed_cache
+        .finalize_dashboard_activity_invocation(record, Utc::now());
+    state
+        .dashboard_network_speed_cache
         .finish_invocation(&record.invoke_id, &record.occurred_at);
     let remove_outcome = state
         .proxy_runtime_invocations
@@ -2758,6 +2764,9 @@ pub(crate) fn remove_proxy_runtime_snapshot_by_key(
     occurred_at: &str,
     reason: &'static str,
 ) -> bool {
+    state
+        .dashboard_network_speed_cache
+        .drop_dashboard_activity_invocation(invoke_id, occurred_at);
     state
         .dashboard_network_speed_cache
         .finish_invocation(invoke_id, occurred_at);
@@ -2782,9 +2791,6 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_by_key(
     occurred_at: &str,
     reason: &'static str,
 ) -> bool {
-    state
-        .dashboard_network_speed_cache
-        .finish_invocation(invoke_id, occurred_at);
     let Some(mut record) = state
         .proxy_runtime_invocations
         .remove_non_terminal(invoke_id, occurred_at)
@@ -2808,6 +2814,12 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_by_key(
     record.failure_class = Some(FAILURE_CLASS_SERVICE.to_string());
     record.is_actionable = Some(true);
     record.pool_attempt_terminal_reason = Some(PROXY_FAILURE_INVOCATION_INTERRUPTED.to_string());
+    state
+        .dashboard_network_speed_cache
+        .finalize_dashboard_activity_invocation(&record, Utc::now());
+    state
+        .dashboard_network_speed_cache
+        .finish_invocation(invoke_id, occurred_at);
 
     let remove_outcome = state
         .proxy_runtime_invocations
@@ -2845,9 +2857,6 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_with_error(
     error_message: &str,
     reason: &'static str,
 ) -> bool {
-    state
-        .dashboard_network_speed_cache
-        .finish_invocation(invoke_id, occurred_at);
     let Some(mut record) = state
         .proxy_runtime_invocations
         .remove_non_terminal(invoke_id, occurred_at)
@@ -2880,6 +2889,12 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_with_error(
     );
     record.is_actionable = Some(true);
     record.pool_attempt_terminal_reason = Some(failure_kind.to_string());
+    state
+        .dashboard_network_speed_cache
+        .finalize_dashboard_activity_invocation(&record, Utc::now());
+    state
+        .dashboard_network_speed_cache
+        .finish_invocation(invoke_id, occurred_at);
 
     let remove_outcome = state
         .proxy_runtime_invocations

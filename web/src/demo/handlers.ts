@@ -1006,6 +1006,8 @@ function demoDashboardActivityAccounts() {
         firstByteAvgMs: 198 + index * 18,
         firstResponseByteTotalAvgMs: 198 + index * 18,
         avgTotalMs: 2_536 + index * 184,
+        currentFirstResponseByteTotalAvgMs: 198 + index * 18,
+        currentAvgTotalMs: 2_536 + index * 184,
         inProgressInvocationCount:
           account.id === 101
             ? attention
@@ -1687,7 +1689,7 @@ export async function handleDemoRequest(request: Request) {
         start: "2026-07-10T11:59:00Z",
         end: demoNow(),
         windowMinutes: 1,
-        mode: "last_complete_1m_sma",
+        mode: "rolling_60s_live_mean",
       },
       summary: {
         stats: demoSummary(),
