@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.39.1",
+  "base_stable_version": "2.39.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-17T14:06:53Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.39.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "68d1a9aef4c5cf7a0148dce096b7d4aeddad3349",
+  "pr_number": 642,
+  "pr_title": "feat(pool): split upstream capabilities into three axes",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.39.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.39.1",
+  "target_sha": "b75e8a5bf91ebccfbd15c580d49324c99cc70584",
+  "type_label": "type:patch"
+}
