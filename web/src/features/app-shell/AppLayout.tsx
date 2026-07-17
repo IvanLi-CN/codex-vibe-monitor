@@ -154,21 +154,23 @@ function SseOfflineBanner({ topClassName }: { topClassName: string }) {
       >
         <div className="flex min-w-0 flex-1 items-start gap-3">
           <AppIcon name="alert-circle" className="h-6 w-6 flex-shrink-0" aria-hidden />
-          <div className="min-w-0 space-y-1">
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="font-semibold">{t("app.sse.banner.title")}</span>
-              <span className="rounded-full bg-warning/20 px-2 py-0.5 text-xs font-mono text-warning-content">
-                {durationChipLabel}
-              </span>
-            </div>
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-3">
-              <p className="min-w-0 flex-1 text-sm text-warning-content/90 sm:pt-1">
-                {t("app.sse.banner.description")} · {statusLine}
-              </p>
+          <div className="min-w-0 flex-1 space-y-1">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-4">
+              <div className="min-w-0 flex-1 space-y-1">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="font-semibold">{t("app.sse.banner.title")}</span>
+                  <span className="rounded-full bg-warning/20 px-2 py-0.5 text-xs font-mono text-warning-content">
+                    {durationChipLabel}
+                  </span>
+                </div>
+                <p className="min-w-0 text-sm text-warning-content/90">
+                  {t("app.sse.banner.description")} · {statusLine}
+                </p>
+              </div>
               <Button
                 type="button"
                 size="sm"
-                className="w-full flex-shrink-0 sm:w-auto"
+                className="w-full flex-shrink-0 sm:mt-1 sm:w-auto"
                 onClick={requestImmediateReconnect}
               >
                 {t("app.sse.banner.reconnectButton")}
