@@ -2,6 +2,7 @@ use super::*;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use std::collections::HashSet;
 pub(crate) const PROMPT_CACHE_BINDING_KIND_GROUP: &str = "group";
 pub(crate) const PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT: &str = "upstream_account";
 pub(crate) const PROMPT_CACHE_BINDING_KIND_NONE: &str = "none";
@@ -131,6 +132,51 @@ pub(crate) struct UpdatePromptCacheConversationBindingRequest {
     forward_proxy_key: PatchField<String>,
     #[serde(default, deserialize_with = "deserialize_patch_field")]
     forward_proxy_keys: PatchField<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BulkPromptCacheConversationBindingsRequest {
+    prompt_cache_keys: Vec<String>,
+    #[serde(flatten)]
+    action: BulkPromptCacheConversationBindingsAction,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase")]
+pub(crate) enum BulkPromptCacheConversationBindingsAction {
+    Bind {
+        #[serde(rename = "bindingKind")]
+        binding_kind: String,
+        #[serde(rename = "groupName")]
+        group_name: Option<String>,
+        #[serde(rename = "upstreamAccountId")]
+        upstream_account_id: Option<i64>,
+    },
+    ClearAndResetAffinity,
+    SetFastModeRewriteMode {
+        #[serde(rename = "fastModeRewriteMode")]
+        fast_mode_rewrite_mode: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BulkPromptCacheConversationBindingItemResponse {
+    pub(crate) prompt_cache_key: String,
+    pub(crate) ok: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) binding: Option<PromptCacheConversationBindingResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BulkPromptCacheConversationBindingsResponse {
+    pub(crate) action: String,
+    pub(crate) total_requested: usize,
+    pub(crate) total_succeeded: usize,
+    pub(crate) total_failed: usize,
+    pub(crate) items: Vec<BulkPromptCacheConversationBindingItemResponse>,
 }
 
 #[derive(Debug, Clone)]
@@ -1305,40 +1351,119 @@ pub(crate) fn next_optional_value<T: Clone>(
     incoming.unwrap_or_else(|| current.map(Some).unwrap_or(None))
 }
 
-pub(crate) async fn get_prompt_cache_conversation_binding(
-    State(state): State<Arc<AppState>>,
-    AxumPath(encoded_prompt_cache_key): AxumPath<String>,
-) -> Result<Json<PromptCacheConversationBindingResponse>, ApiError> {
-    let prompt_cache_key = normalize_prompt_cache_conversation_key(&encoded_prompt_cache_key)?;
+fn normalized_prompt_cache_conversation_keys(
+    raw_keys: Vec<String>,
+) -> Result<Vec<String>, ApiError> {
+    let mut seen = HashSet::new();
+    let mut normalized_keys = Vec::with_capacity(raw_keys.len());
+    for raw_key in raw_keys {
+        let normalized_key = normalize_prompt_cache_conversation_key(&raw_key)?;
+        if seen.insert(normalized_key.clone()) {
+            normalized_keys.push(normalized_key);
+        }
+    }
+    if normalized_keys.is_empty() {
+        return Err(ApiError::bad_request(anyhow!(
+            "promptCacheKeys must contain at least one key"
+        )));
+    }
+    Ok(normalized_keys)
+}
+
+async fn load_prompt_cache_conversation_binding_response_for_key(
+    state: &AppState,
+    prompt_cache_key: String,
+) -> Result<PromptCacheConversationBindingResponse, ApiError> {
     let owner =
-        load_prompt_cache_encrypted_session_owner_row_if_enabled(state.as_ref(), &prompt_cache_key)
-            .await?;
+        load_prompt_cache_encrypted_session_owner_row_if_enabled(state, &prompt_cache_key).await?;
     let response = match load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key)
         .await?
     {
-        Some(row) => {
-            binding_response_from_row(state.as_ref(), &state.config, row, owner.as_ref()).await?
-        }
+        Some(row) => binding_response_from_row(state, &state.config, row, owner.as_ref()).await?,
         None => apply_owner_to_none_response(
-            binding_response_for_none(
-                state.as_ref(),
-                &state.config,
-                prompt_cache_key,
-                owner.as_ref(),
-            )
-            .await?,
+            binding_response_for_none(state, &state.config, prompt_cache_key, owner.as_ref())
+                .await?,
             owner.as_ref(),
         ),
     };
-    Ok(Json(response))
+    Ok(response)
 }
 
-pub(crate) async fn patch_prompt_cache_conversation_binding(
-    State(state): State<Arc<AppState>>,
-    AxumPath(encoded_prompt_cache_key): AxumPath<String>,
-    Json(payload): Json<UpdatePromptCacheConversationBindingRequest>,
-) -> Result<Json<PromptCacheConversationBindingResponse>, ApiError> {
-    let prompt_cache_key = normalize_prompt_cache_conversation_key(&encoded_prompt_cache_key)?;
+async fn delete_prompt_cache_encrypted_session_owner(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: &str,
+) -> Result<()> {
+    sqlx::query("DELETE FROM prompt_cache_encrypted_session_owners WHERE prompt_cache_key = ?1")
+        .bind(prompt_cache_key)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn clear_prompt_cache_conversation_affinity(
+    state: &AppState,
+    prompt_cache_key: &str,
+) -> Result<PromptCacheConversationBindingResponse, ApiError> {
+    sqlx::query("DELETE FROM prompt_cache_conversation_bindings WHERE prompt_cache_key = ?1")
+        .bind(prompt_cache_key)
+        .execute(&state.pool)
+        .await?;
+    delete_sticky_route(&state.pool, prompt_cache_key).await?;
+    delete_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key).await?;
+    load_prompt_cache_conversation_binding_response_for_key(state, prompt_cache_key.to_string())
+        .await
+}
+
+fn existing_binding_request(
+    existing_row: Option<&PromptCacheConversationBindingRow>,
+) -> UpdatePromptCacheConversationBindingRequest {
+    match existing_row.map(|row| row.binding_kind.as_str()) {
+        Some(PROMPT_CACHE_BINDING_KIND_GROUP) => UpdatePromptCacheConversationBindingRequest {
+            binding_kind: "group".to_string(),
+            group_name: existing_row.and_then(|row| row.group_name.clone()),
+            upstream_account_id: None,
+            timeouts: None,
+            allow_switch_upstream: PatchField::Missing,
+            fast_mode_rewrite_mode: PatchField::Missing,
+            image_tool_rewrite_mode: PatchField::Missing,
+            available_models: PatchField::Missing,
+            forward_proxy_key: PatchField::Missing,
+            forward_proxy_keys: PatchField::Missing,
+        },
+        Some(PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT) => {
+            UpdatePromptCacheConversationBindingRequest {
+                binding_kind: "upstreamAccount".to_string(),
+                group_name: None,
+                upstream_account_id: existing_row.and_then(|row| row.upstream_account_id),
+                timeouts: None,
+                allow_switch_upstream: PatchField::Missing,
+                fast_mode_rewrite_mode: PatchField::Missing,
+                image_tool_rewrite_mode: PatchField::Missing,
+                available_models: PatchField::Missing,
+                forward_proxy_key: PatchField::Missing,
+                forward_proxy_keys: PatchField::Missing,
+            }
+        }
+        _ => UpdatePromptCacheConversationBindingRequest {
+            binding_kind: "none".to_string(),
+            group_name: None,
+            upstream_account_id: None,
+            timeouts: None,
+            allow_switch_upstream: PatchField::Missing,
+            fast_mode_rewrite_mode: PatchField::Missing,
+            image_tool_rewrite_mode: PatchField::Missing,
+            available_models: PatchField::Missing,
+            forward_proxy_key: PatchField::Missing,
+            forward_proxy_keys: PatchField::Missing,
+        },
+    }
+}
+
+async fn save_prompt_cache_conversation_binding_for_key(
+    state: &AppState,
+    prompt_cache_key: &str,
+    payload: UpdatePromptCacheConversationBindingRequest,
+) -> Result<PromptCacheConversationBindingResponse, ApiError> {
     let binding_kind = payload.binding_kind.trim();
     let group_name = payload
         .group_name
@@ -1390,9 +1515,9 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
         PatchField::Value(models) => PatchField::Value(serde_json::to_string(&models)?),
     };
     let forward_proxy_key =
-        normalize_forward_proxy_key_patch(state.as_ref(), payload.forward_proxy_key).await?;
+        normalize_forward_proxy_key_patch(state, payload.forward_proxy_key).await?;
     let forward_proxy_keys =
-        normalize_forward_proxy_keys_patch(state.as_ref(), payload.forward_proxy_keys).await?;
+        normalize_forward_proxy_keys_patch(state, payload.forward_proxy_keys).await?;
     let forward_proxy_keys = match forward_proxy_keys {
         PatchField::Missing => match &forward_proxy_key {
             PatchField::Missing => PatchField::Missing,
@@ -1402,7 +1527,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
         value => value,
     };
     let existing_row =
-        load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key).await?;
+        load_prompt_cache_conversation_binding_row(&state.pool, prompt_cache_key).await?;
     let next_responses_first_byte_timeout_secs = next_optional_value(
         responses_first_byte_timeout_secs,
         existing_row
@@ -1497,7 +1622,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                 sqlx::query(
                     "DELETE FROM prompt_cache_conversation_bindings WHERE prompt_cache_key = ?1",
                 )
-                .bind(&prompt_cache_key)
+                .bind(prompt_cache_key)
                 .execute(&state.pool)
                 .await?;
             } else {
@@ -1541,7 +1666,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                         updated_at = excluded.updated_at
                     "#,
                 )
-                .bind(&prompt_cache_key)
+                .bind(prompt_cache_key)
                 .bind(PROMPT_CACHE_BINDING_KIND_NONE)
                 .bind(next_responses_first_byte_timeout_secs)
                 .bind(next_compact_first_byte_timeout_secs)
@@ -1557,36 +1682,6 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                 .execute(&state.pool)
                 .await?;
             }
-            let owner = load_prompt_cache_encrypted_session_owner_row_if_enabled(
-                state.as_ref(),
-                &prompt_cache_key,
-            )
-            .await?;
-            let response =
-                match load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key)
-                    .await?
-                {
-                    Some(row) => {
-                        binding_response_from_row(
-                            state.as_ref(),
-                            &state.config,
-                            row,
-                            owner.as_ref(),
-                        )
-                        .await?
-                    }
-                    None => apply_owner_to_none_response(
-                        binding_response_for_none(
-                            state.as_ref(),
-                            &state.config,
-                            prompt_cache_key,
-                            owner.as_ref(),
-                        )
-                        .await?,
-                        owner.as_ref(),
-                    ),
-                };
-            Ok(Json(response))
         }
         "group" => {
             let group_name = group_name.ok_or_else(|| {
@@ -1633,7 +1728,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                     updated_at = excluded.updated_at
                 "#,
             )
-            .bind(&prompt_cache_key)
+            .bind(prompt_cache_key)
             .bind(PROMPT_CACHE_BINDING_KIND_GROUP)
             .bind(&group_name)
             .bind(next_responses_first_byte_timeout_secs)
@@ -1649,22 +1744,6 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
             .bind(&next_forward_proxy_keys_json)
             .execute(&state.pool)
             .await?;
-            let owner = load_prompt_cache_encrypted_session_owner_row_if_enabled(
-                state.as_ref(),
-                &prompt_cache_key,
-            )
-            .await?;
-            Ok(Json(
-                binding_response_from_row(
-                    state.as_ref(),
-                    &state.config,
-                    load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key)
-                        .await?
-                        .expect("saved prompt cache group binding should exist"),
-                    owner.as_ref(),
-                )
-                .await?,
-            ))
         }
         "upstreamAccount" => {
             let upstream_account_id = upstream_account_id.ok_or_else(|| {
@@ -1714,7 +1793,7 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                     updated_at = excluded.updated_at
                 "#,
             )
-            .bind(&prompt_cache_key)
+            .bind(prompt_cache_key)
             .bind(PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT)
             .bind(upstream_account_id)
             .bind(next_responses_first_byte_timeout_secs)
@@ -1731,32 +1810,186 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
             .execute(&state.pool)
             .await?;
             let now_iso = format_utc_iso(Utc::now());
-            upsert_sticky_route(
-                &state.pool,
-                &prompt_cache_key,
-                upstream_account_id,
-                &now_iso,
-            )
-            .await?;
-            let owner = load_prompt_cache_encrypted_session_owner_row_if_enabled(
-                state.as_ref(),
-                &prompt_cache_key,
-            )
-            .await?;
-            Ok(Json(
-                binding_response_from_row(
-                    state.as_ref(),
-                    &state.config,
-                    load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key)
-                        .await?
-                        .expect("saved prompt cache account binding should exist"),
-                    owner.as_ref(),
-                )
-                .await?,
-            ))
+            upsert_sticky_route(&state.pool, prompt_cache_key, upstream_account_id, &now_iso)
+                .await?;
         }
-        _ => Err(ApiError::bad_request(anyhow!(
-            "bindingKind must be one of: none, group, upstreamAccount"
-        ))),
+        _ => {
+            return Err(ApiError::bad_request(anyhow!(
+                "bindingKind must be one of: none, group, upstreamAccount"
+            )));
+        }
     }
+
+    load_prompt_cache_conversation_binding_response_for_key(state, prompt_cache_key.to_string())
+        .await
+}
+
+pub(crate) async fn get_prompt_cache_conversation_binding(
+    State(state): State<Arc<AppState>>,
+    AxumPath(encoded_prompt_cache_key): AxumPath<String>,
+) -> Result<Json<PromptCacheConversationBindingResponse>, ApiError> {
+    let prompt_cache_key = normalize_prompt_cache_conversation_key(&encoded_prompt_cache_key)?;
+    Ok(Json(
+        load_prompt_cache_conversation_binding_response_for_key(state.as_ref(), prompt_cache_key)
+            .await?,
+    ))
+}
+
+pub(crate) async fn patch_prompt_cache_conversation_binding(
+    State(state): State<Arc<AppState>>,
+    AxumPath(encoded_prompt_cache_key): AxumPath<String>,
+    Json(payload): Json<UpdatePromptCacheConversationBindingRequest>,
+) -> Result<Json<PromptCacheConversationBindingResponse>, ApiError> {
+    let prompt_cache_key = normalize_prompt_cache_conversation_key(&encoded_prompt_cache_key)?;
+    Ok(Json(
+        save_prompt_cache_conversation_binding_for_key(state.as_ref(), &prompt_cache_key, payload)
+            .await?,
+    ))
+}
+
+pub(crate) async fn post_bulk_prompt_cache_conversation_bindings(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<BulkPromptCacheConversationBindingsRequest>,
+) -> Result<Json<BulkPromptCacheConversationBindingsResponse>, ApiError> {
+    let prompt_cache_keys = normalized_prompt_cache_conversation_keys(payload.prompt_cache_keys)?;
+    match &payload.action {
+        BulkPromptCacheConversationBindingsAction::Bind {
+            binding_kind,
+            group_name,
+            upstream_account_id,
+        } => {
+            let trimmed_binding_kind = binding_kind.trim();
+            let trimmed_group_name = group_name
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty());
+            if trimmed_group_name.is_some() && upstream_account_id.is_some() {
+                return Err(ApiError::bad_request(anyhow!(
+                    "groupName and upstreamAccountId are mutually exclusive"
+                )));
+            }
+            match trimmed_binding_kind {
+                "group" => {
+                    let group_name = trimmed_group_name.ok_or_else(|| {
+                        ApiError::bad_request(anyhow!("groupName is required for group binding"))
+                    })?;
+                    ensure_group_binding_target(&state.pool, group_name).await?;
+                }
+                "upstreamAccount" => {
+                    let upstream_account_id = upstream_account_id.ok_or_else(|| {
+                        ApiError::bad_request(anyhow!(
+                            "upstreamAccountId is required for upstream account binding"
+                        ))
+                    })?;
+                    let _ =
+                        ensure_upstream_account_binding_target(&state.pool, upstream_account_id)
+                            .await?;
+                }
+                _ => {
+                    return Err(ApiError::bad_request(anyhow!(
+                        "bindingKind must be one of: group, upstreamAccount"
+                    )));
+                }
+            }
+        }
+        BulkPromptCacheConversationBindingsAction::SetFastModeRewriteMode {
+            fast_mode_rewrite_mode,
+        } => {
+            let normalized_mode = normalize_fast_mode_rewrite_mode(PatchField::Value(
+                fast_mode_rewrite_mode.clone(),
+            ))?;
+            if !matches!(normalized_mode, PatchField::Value(_)) {
+                return Err(ApiError::bad_request(anyhow!(
+                    "fastModeRewriteMode is required"
+                )));
+            }
+        }
+        BulkPromptCacheConversationBindingsAction::ClearAndResetAffinity => {}
+    }
+
+    let mut items = Vec::with_capacity(prompt_cache_keys.len());
+    let mut total_succeeded = 0usize;
+    for prompt_cache_key in prompt_cache_keys {
+        let result = match &payload.action {
+            BulkPromptCacheConversationBindingsAction::Bind {
+                binding_kind,
+                group_name,
+                upstream_account_id,
+            } => {
+                save_prompt_cache_conversation_binding_for_key(
+                    state.as_ref(),
+                    &prompt_cache_key,
+                    UpdatePromptCacheConversationBindingRequest {
+                        binding_kind: binding_kind.clone(),
+                        group_name: group_name.clone(),
+                        upstream_account_id: *upstream_account_id,
+                        timeouts: None,
+                        allow_switch_upstream: PatchField::Missing,
+                        fast_mode_rewrite_mode: PatchField::Missing,
+                        image_tool_rewrite_mode: PatchField::Missing,
+                        available_models: PatchField::Missing,
+                        forward_proxy_key: PatchField::Missing,
+                        forward_proxy_keys: PatchField::Missing,
+                    },
+                )
+                .await
+            }
+            BulkPromptCacheConversationBindingsAction::ClearAndResetAffinity => {
+                clear_prompt_cache_conversation_affinity(state.as_ref(), &prompt_cache_key).await
+            }
+            BulkPromptCacheConversationBindingsAction::SetFastModeRewriteMode {
+                fast_mode_rewrite_mode,
+            } => {
+                let existing_row =
+                    load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key)
+                        .await?;
+                let mut request = existing_binding_request(existing_row.as_ref());
+                request.fast_mode_rewrite_mode = PatchField::Value(fast_mode_rewrite_mode.clone());
+                save_prompt_cache_conversation_binding_for_key(
+                    state.as_ref(),
+                    &prompt_cache_key,
+                    request,
+                )
+                .await
+            }
+        };
+        match result {
+            Ok(binding) => {
+                total_succeeded += 1;
+                items.push(BulkPromptCacheConversationBindingItemResponse {
+                    prompt_cache_key,
+                    ok: true,
+                    error: None,
+                    binding: Some(binding),
+                });
+            }
+            Err(err) => {
+                items.push(BulkPromptCacheConversationBindingItemResponse {
+                    prompt_cache_key,
+                    ok: false,
+                    error: Some(match err {
+                        ApiError::BadRequest(err) | ApiError::Internal(err) => err.to_string(),
+                    }),
+                    binding: None,
+                });
+            }
+        }
+    }
+    let total_requested = items.len();
+    let total_failed = total_requested.saturating_sub(total_succeeded);
+    let action = match payload.action {
+        BulkPromptCacheConversationBindingsAction::Bind { .. } => "bind",
+        BulkPromptCacheConversationBindingsAction::ClearAndResetAffinity => "clearAndResetAffinity",
+        BulkPromptCacheConversationBindingsAction::SetFastModeRewriteMode { .. } => {
+            "setFastModeRewriteMode"
+        }
+    }
+    .to_string();
+    Ok(Json(BulkPromptCacheConversationBindingsResponse {
+        action,
+        total_requested,
+        total_succeeded,
+        total_failed,
+        items,
+    }))
 }
