@@ -33,6 +33,9 @@ export default mergeConfig(
             name: "storybook",
             browser: {
               enabled: true,
+              // Storybook test startup now scans a much larger story graph after mainline merges.
+              // Keep browser-mode coverage stable by allowing a longer initial connection window.
+              connectTimeout: 180_000,
               headless: true,
               provider: playwright({}),
               instances: [{ browser: "chromium" }],
