@@ -204,6 +204,10 @@
 - 2026-07-16：主应用 `/#/live` 纯 SSE drill 的 owner-facing 页面证据已确认。
   - Immutable snapshot: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__d7e3b892/2026/07/16/20260716T110814Z-live-sse-drill-evidence-cac8522a.png`
   - 验证重点：页面已由 topic `snapshot` 正常完成 hydration，且在 `app.version` topic 迁移后不再依赖 `/api/version` 首屏 bootstrap。
+- 2026-07-17：主应用离线黄条的 owner-facing 证据已确认。
+  - `assets/sse-offline-banner-desktop-reconnect.png`
+  - `assets/sse-offline-banner-mobile-reconnect.png`
+  - 验证重点：桌面端“立即重连”按钮保持在标题/说明块右侧；移动端按钮收口到黄条右下角；黄条同时展示可判责的 SSE diagnostics，而不是整页刷新恢复。
 
 ## References
 

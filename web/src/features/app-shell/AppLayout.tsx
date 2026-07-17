@@ -170,7 +170,7 @@ function SseOfflineBanner({ topClassName }: { topClassName: string }) {
               <Button
                 type="button"
                 size="sm"
-                className="w-full flex-shrink-0 sm:mt-1 sm:w-auto"
+                className="hidden w-auto flex-shrink-0 px-5 sm:mt-1 sm:inline-flex"
                 onClick={requestImmediateReconnect}
               >
                 {t("app.sse.banner.reconnectButton")}
@@ -182,6 +182,14 @@ function SseOfflineBanner({ topClassName }: { topClassName: string }) {
             >
               {diagnosticsLine}
             </p>
+            <Button
+              type="button"
+              size="sm"
+              className="inline-flex w-auto self-end px-5 sm:hidden"
+              onClick={requestImmediateReconnect}
+            >
+              {t("app.sse.banner.reconnectButton")}
+            </Button>
           </div>
         </div>
       </div>

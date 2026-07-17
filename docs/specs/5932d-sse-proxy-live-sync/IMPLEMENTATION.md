@@ -62,6 +62,11 @@
 - 浏览器侧 drill：`/#/live` 首屏 `apiCalls=[]`，只经 `/events` 接收 `snapshot` 完成 hydration；断线期间 `dashboard.activity.current` 新增 cursor 后，重连通过 `resume` 收到 `replay`，未触发额外 HTTP。
 - 浏览器侧 drill：在同页阻断 `/events` 后，自动重试间隔观测为约 `4.1s -> 8.0s`，未再出现高频 `attempt` 风暴；解封后同页手动重连发出新的 `attempt=26&reason=manual`，后端日志对应 `resume_count=0`，随后状态恢复为 `connected`。
 
+## Visual Evidence
+
+- `assets/sse-offline-banner-desktop-reconnect.png`
+- `assets/sse-offline-banner-mobile-reconnect.png`
+
 ## Related Changes
 
 - `src/api/slices/subscriptions.rs`
