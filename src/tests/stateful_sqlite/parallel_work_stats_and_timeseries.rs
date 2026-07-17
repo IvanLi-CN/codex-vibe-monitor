@@ -13184,12 +13184,19 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
         .summary
         .tokens_per_minute
         .expect("summary-only response tokens per minute");
-    assert!(summary_only_tokens_per_minute > 0.0);
-    assert!(summary_only_response_tokens_per_minute > 0.0);
-    assert!(
-        (summary_only_tokens_per_minute - summary_only_response_tokens_per_minute).abs()
-            / summary_only_response_tokens_per_minute.max(1.0)
-            < 0.02
+    assert_f64_close(
+        summary_only_tokens_per_minute,
+        activity
+            .summary()
+            .tokens_per_minute
+            .expect("full dashboard tokens per minute"),
+    );
+    assert_f64_close(
+        summary_only_response_tokens_per_minute,
+        activity
+            .summary()
+            .tokens_per_minute
+            .expect("full dashboard response tokens per minute"),
     );
     let summary_only_spend_rate = summary_only_activity
         .summary()
@@ -13199,12 +13206,19 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
         .summary
         .spend_rate
         .expect("summary-only response spend rate");
-    assert!(summary_only_spend_rate > 0.0);
-    assert!(summary_only_response_spend_rate > 0.0);
-    assert!(
-        (summary_only_spend_rate - summary_only_response_spend_rate).abs()
-            / summary_only_response_spend_rate.max(1.0)
-            < 0.02
+    assert_f64_close(
+        summary_only_spend_rate,
+        activity
+            .summary()
+            .spend_rate
+            .expect("full dashboard spend rate"),
+    );
+    assert_f64_close(
+        summary_only_response_spend_rate,
+        activity
+            .summary()
+            .spend_rate
+            .expect("full dashboard response spend rate"),
     );
     assert_f64_close(
         summary_only_activity
@@ -13236,6 +13250,20 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     let full_accounts = full_response
         .accounts
         .expect("full response accounts included");
+    assert_f64_close(
+        summary_only_response_tokens_per_minute,
+        full_response
+            .summary
+            .tokens_per_minute
+            .expect("full response tokens per minute"),
+    );
+    assert_f64_close(
+        summary_only_response_spend_rate,
+        full_response
+            .summary
+            .spend_rate
+            .expect("full response spend rate"),
+    );
     assert!(full_response.live_revision > 0);
     assert_eq!(
         full_response.summary.stats.in_progress_conversation_count,
@@ -13390,6 +13418,956 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
         yesterday_accounts
             .iter()
             .all(|account| account.retry_invocation_count.is_none())
+    );
+}
+
+#[tokio::test]
+async fn dashboard_activity_cached_snapshot_overlays_new_live_accounts() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+    for (account_id, display_name) in [
+        (42_i64, "Cached Existing"),
+        (99_i64, "Live Only During Cache"),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_accounts (
+                id, kind, provider, display_name, group_name, plan_type, status, enabled, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+        )
+        .bind(account_id)
+        .bind("api_key_codex")
+        .bind("codex")
+        .bind(display_name)
+        .bind("Primary")
+        .bind("enterprise")
+        .bind("active")
+        .bind(1_i64)
+        .bind(&created_at)
+        .bind(&created_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert dashboard activity cache account");
+    }
+
+    let base_local = Utc::now().with_timezone(&Shanghai).naive_local();
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(90_001_i64)
+    .bind("dashboard-cache-existing-success")
+    .bind(format_naive(
+        base_local
+            .checked_sub_signed(ChronoDuration::minutes(2))
+            .expect("valid cached existing invocation time"),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(100_i64)
+    .bind(0.01_f64)
+    .bind(json!({ "upstreamAccountId": 42_i64 }).to_string())
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert cached existing invocation");
+
+    let Json(initial_response) = fetch_dashboard_activity(
+        State(state.clone()),
+        Query(DashboardActivityQuery {
+            range: "today".to_string(),
+            recent_limit: Some(2),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: true,
+            include_recent: Some(true),
+        }),
+    )
+    .await
+    .expect("populate dashboard activity snapshot cache");
+    let initial_accounts = initial_response
+        .accounts
+        .expect("initial accounts should be included");
+    assert!(
+        initial_accounts
+            .iter()
+            .all(|account| account.account_key != "upstream:99")
+    );
+
+    let cached_existing_recent_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(90_004_i64)
+    .bind("dashboard-cache-existing-running")
+    .bind(cached_existing_recent_at.as_str())
+    .bind(SOURCE_PROXY)
+    .bind("running")
+    .bind(0_i64)
+    .bind(0.0_f64)
+    .bind(
+        json!({
+            "promptCacheKey": "pck-dashboard-cache-existing-running",
+            "upstreamAccountId": 42_i64,
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert cached existing account running invocation");
+
+    let live_only_occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(90_002_i64)
+    .bind("dashboard-cache-live-only-running")
+    .bind(live_only_occurred_at.as_str())
+    .bind(SOURCE_PROXY)
+    .bind("running")
+    .bind(0_i64)
+    .bind(0.0_f64)
+    .bind(
+        json!({
+            "promptCacheKey": "pck-dashboard-cache-live-only-running",
+            "upstreamAccountId": 99_i64,
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert live-only running invocation");
+    state
+        .dashboard_network_speed_cache
+        .finalize_dashboard_activity_invocation(
+            &crate::api::ApiInvocation {
+                id: 90_003_i64,
+                invoke_id: "dashboard-cache-live-only-current-rate".to_string(),
+                occurred_at: live_only_occurred_at.clone(),
+                source: SOURCE_PROXY.to_string(),
+                proxy_display_name: None,
+                model: Some("gpt-5".to_string()),
+                request_model: Some("gpt-5".to_string()),
+                response_model: Some("gpt-5".to_string()),
+                input_tokens: Some(100_i64),
+                output_tokens: Some(221_i64),
+                cache_input_tokens: Some(0_i64),
+                reasoning_tokens: Some(0_i64),
+                reasoning_effort: None,
+                total_tokens: Some(321_i64),
+                cost: Some(0.32_f64),
+                cost_input: None,
+                cost_cache_write: None,
+                cost_cache_read: None,
+                cost_output: None,
+                cost_reasoning: None,
+                cache_write_tokens: Some(0_i64),
+                status: Some("success".to_string()),
+                live_phase: None,
+                error_message: None,
+                downstream_status_code: None,
+                failure_kind: None,
+                stream_terminal_event: None,
+                upstream_error_code: None,
+                upstream_error_message: None,
+                downstream_error_message: None,
+                upstream_request_id: None,
+                failure_class: None,
+                is_actionable: None,
+                endpoint: Some("/v1/responses".to_string()),
+                compaction_request_kind: None,
+                compaction_response_kind: None,
+                image_intent: None,
+                requester_ip: None,
+                prompt_cache_key: Some("pck-dashboard-cache-live-only-current-rate".to_string()),
+                sticky_key: None,
+                route_mode: None,
+                upstream_account_id: Some(99_i64),
+                upstream_account_name: Some("Live Only During Cache".to_string()),
+                response_content_encoding: None,
+                transport: None,
+                pool_attempt_count: None,
+                pool_distinct_account_count: None,
+                pool_attempt_terminal_reason: None,
+                requested_service_tier: None,
+                service_tier: None,
+                billing_service_tier: None,
+                proxy_weight_delta: None,
+                cost_estimated: None,
+                price_version: None,
+                request_raw_path: None,
+                request_raw_size: None,
+                request_raw_truncated: None,
+                request_raw_truncated_reason: None,
+                response_raw_path: None,
+                response_raw_size: None,
+                response_raw_truncated: None,
+                response_raw_truncated_reason: None,
+                detail_level: DETAIL_LEVEL_FULL.to_string(),
+                detail_pruned_at: None,
+                detail_prune_reason: None,
+                t_total_ms: Some(640.0_f64),
+                t_req_read_ms: Some(0.0_f64),
+                t_req_parse_ms: Some(0.0_f64),
+                t_upstream_connect_ms: Some(0.0_f64),
+                t_upstream_ttfb_ms: Some(80.0_f64),
+                t_upstream_stream_ms: None,
+                t_resp_parse_ms: None,
+                t_persist_ms: None,
+                created_at: live_only_occurred_at.clone(),
+            },
+            Utc::now(),
+        );
+
+    let Json(cached_response) = fetch_dashboard_activity(
+        State(state.clone()),
+        Query(DashboardActivityQuery {
+            range: "today".to_string(),
+            recent_limit: Some(2),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: true,
+            include_recent: Some(true),
+        }),
+    )
+    .await
+    .expect("fetch dashboard activity snapshot from cache with live overlay");
+    let cached_accounts = cached_response
+        .accounts
+        .expect("cached accounts should be included");
+    let cached_range_end =
+        parse_to_utc_datetime(&cached_response.range_end).expect("cached range end should parse");
+    let live_only_utc =
+        parse_to_utc_datetime(&live_only_occurred_at).expect("live-only occurred_at should parse");
+    assert!(cached_range_end >= live_only_utc);
+    assert!(cached_response.snapshot_id >= live_only_utc.timestamp_millis());
+    let existing = cached_accounts
+        .iter()
+        .find(|account| account.account_key == "upstream:42")
+        .expect("cached snapshot should include existing account");
+    assert!(
+        existing
+            .recent_invocations
+            .iter()
+            .any(|row| row.invoke_id == "dashboard-cache-existing-running")
+    );
+    let live_only = cached_accounts
+        .iter()
+        .find(|account| account.account_key == "upstream:99")
+        .expect("cached snapshot should include newly live-only account");
+    assert_eq!(live_only.display_name, "Live Only During Cache");
+    assert_eq!(live_only.request_count, 1);
+    assert_eq!(live_only.in_progress_invocation_count, Some(1));
+    assert_f64_close(
+        live_only
+            .tokens_per_minute
+            .expect("live-only account tokens per minute"),
+        321.0,
+    );
+    assert_f64_close(
+        live_only.spend_rate.expect("live-only account spend rate"),
+        0.32,
+    );
+    assert_f64_close(
+        live_only
+            .current_first_response_byte_total_avg_ms
+            .expect("live-only account current first response byte"),
+        80.0,
+    );
+    assert_f64_close(
+        live_only
+            .current_avg_total_ms
+            .expect("live-only account current total latency"),
+        640.0,
+    );
+    assert!(
+        live_only
+            .recent_invocations
+            .iter()
+            .any(|row| row.invoke_id == "dashboard-cache-live-only-running")
+    );
+    assert_eq!(
+        cached_response.summary.stats.in_progress_conversation_count,
+        Some(
+            cached_accounts
+                .iter()
+                .map(|account| account.in_progress_invocation_count.unwrap_or(0))
+                .sum::<i64>(),
+        ),
+    );
+    assert_f64_close(
+        cached_response
+            .summary
+            .tokens_per_minute
+            .expect("cached summary tokens per minute"),
+        321.0,
+    );
+    assert_f64_close(
+        cached_response
+            .summary
+            .spend_rate
+            .expect("cached summary spend rate"),
+        0.32,
+    );
+}
+
+#[tokio::test]
+async fn dashboard_activity_cached_snapshot_refreshes_terminal_recent_without_live_account() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+    for (account_id, display_name) in [
+        (42_i64, "Cached Terminal Existing"),
+        (88_i64, "Cached Terminal Only"),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_accounts (
+                id, kind, provider, display_name, group_name, plan_type, status, enabled, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+        )
+        .bind(account_id)
+        .bind("api_key_codex")
+        .bind("codex")
+        .bind(display_name)
+        .bind("Primary")
+        .bind("enterprise")
+        .bind("active")
+        .bind(1_i64)
+        .bind(&created_at)
+        .bind(&created_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert cached terminal account");
+    }
+
+    let base_local = Utc::now().with_timezone(&Shanghai).naive_local();
+    let existing_persisted_at = format_naive(
+        base_local
+            .checked_sub_signed(ChronoDuration::minutes(2))
+            .expect("valid cached terminal persisted invocation time"),
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(90_101_i64)
+    .bind("dashboard-cache-terminal-existing-persisted")
+    .bind(existing_persisted_at.as_str())
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(100_i64)
+    .bind(0.01_f64)
+    .bind(json!({ "upstreamAccountId": 42_i64 }).to_string())
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert cached terminal existing invocation");
+
+    let Json(initial_response) = fetch_dashboard_activity(
+        State(state.clone()),
+        Query(DashboardActivityQuery {
+            range: "today".to_string(),
+            recent_limit: Some(2),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: true,
+            include_recent: Some(true),
+        }),
+    )
+    .await
+    .expect("populate dashboard activity terminal snapshot cache");
+    let initial_accounts = initial_response
+        .accounts
+        .expect("initial terminal cache accounts should be included");
+    assert!(
+        initial_accounts
+            .iter()
+            .any(|account| account.account_key == "upstream:42")
+    );
+    assert!(
+        initial_accounts
+            .iter()
+            .all(|account| account.account_key != "upstream:88")
+    );
+
+    let terminal_existing_at = format_naive(
+        base_local
+            .checked_sub_signed(ChronoDuration::seconds(1))
+            .expect("valid cached terminal existing time"),
+    );
+    let terminal_only_at = format_naive(base_local);
+    let terminal_invocation =
+        |id: i64,
+         invoke_id: &str,
+         occurred_at: &str,
+         upstream_account_id: i64,
+         upstream_account_name: &str| crate::api::ApiInvocation {
+            id,
+            invoke_id: invoke_id.to_string(),
+            occurred_at: occurred_at.to_string(),
+            source: SOURCE_PROXY.to_string(),
+            proxy_display_name: None,
+            model: Some("gpt-5".to_string()),
+            request_model: Some("gpt-5".to_string()),
+            response_model: Some("gpt-5".to_string()),
+            input_tokens: Some(0_i64),
+            output_tokens: Some(0_i64),
+            cache_input_tokens: Some(0_i64),
+            reasoning_tokens: Some(0_i64),
+            reasoning_effort: None,
+            total_tokens: Some(0_i64),
+            cost: Some(0.0_f64),
+            cost_input: None,
+            cost_cache_write: None,
+            cost_cache_read: None,
+            cost_output: None,
+            cost_reasoning: None,
+            cache_write_tokens: Some(0_i64),
+            status: Some("success".to_string()),
+            live_phase: None,
+            error_message: None,
+            downstream_status_code: None,
+            failure_kind: None,
+            stream_terminal_event: None,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            downstream_error_message: None,
+            upstream_request_id: None,
+            failure_class: None,
+            is_actionable: None,
+            endpoint: Some("/v1/responses".to_string()),
+            compaction_request_kind: None,
+            compaction_response_kind: None,
+            image_intent: None,
+            requester_ip: None,
+            prompt_cache_key: Some(format!("pck-{invoke_id}")),
+            sticky_key: None,
+            route_mode: None,
+            upstream_account_id: Some(upstream_account_id),
+            upstream_account_name: Some(upstream_account_name.to_string()),
+            response_content_encoding: None,
+            transport: None,
+            pool_attempt_count: None,
+            pool_distinct_account_count: None,
+            pool_attempt_terminal_reason: None,
+            requested_service_tier: None,
+            service_tier: None,
+            billing_service_tier: None,
+            proxy_weight_delta: None,
+            cost_estimated: None,
+            price_version: None,
+            request_raw_path: None,
+            request_raw_size: None,
+            request_raw_truncated: None,
+            request_raw_truncated_reason: None,
+            response_raw_path: None,
+            response_raw_size: None,
+            response_raw_truncated: None,
+            response_raw_truncated_reason: None,
+            detail_level: DETAIL_LEVEL_FULL.to_string(),
+            detail_pruned_at: None,
+            detail_prune_reason: None,
+            t_total_ms: Some(0.0_f64),
+            t_req_read_ms: Some(0.0_f64),
+            t_req_parse_ms: Some(0.0_f64),
+            t_upstream_connect_ms: Some(0.0_f64),
+            t_upstream_ttfb_ms: Some(0.0_f64),
+            t_upstream_stream_ms: None,
+            t_resp_parse_ms: None,
+            t_persist_ms: None,
+            created_at: occurred_at.to_string(),
+        };
+    state
+        .proxy_runtime_invocations
+        .upsert_terminal(terminal_invocation(
+            90_102_i64,
+            "dashboard-cache-terminal-existing-runtime",
+            terminal_existing_at.as_str(),
+            42_i64,
+            "Cached Terminal Existing",
+        ));
+    state
+        .proxy_runtime_invocations
+        .upsert_terminal(terminal_invocation(
+            90_103_i64,
+            "dashboard-cache-terminal-only-runtime",
+            terminal_only_at.as_str(),
+            88_i64,
+            "Cached Terminal Only",
+        ));
+
+    let Json(cached_response) = fetch_dashboard_activity(
+        State(state.clone()),
+        Query(DashboardActivityQuery {
+            range: "today".to_string(),
+            recent_limit: Some(2),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: true,
+            include_recent: Some(true),
+        }),
+    )
+    .await
+    .expect("fetch cached dashboard activity with terminal runtime overlay");
+    let cached_accounts = cached_response
+        .accounts
+        .expect("cached terminal accounts should be included");
+    let existing = cached_accounts
+        .iter()
+        .find(|account| account.account_key == "upstream:42")
+        .expect("cached snapshot should include existing terminal account");
+    assert!(
+        existing
+            .recent_invocations
+            .iter()
+            .any(|row| row.invoke_id == "dashboard-cache-terminal-existing-runtime")
+    );
+    let terminal_only = cached_accounts
+        .iter()
+        .find(|account| account.account_key == "upstream:88")
+        .expect("cached snapshot should include terminal-only account");
+    assert_eq!(terminal_only.display_name, "Cached Terminal Only");
+    assert_eq!(terminal_only.request_count, 0);
+    assert_eq!(terminal_only.in_progress_invocation_count, Some(0));
+    assert!(
+        terminal_only
+            .recent_invocations
+            .iter()
+            .any(|row| row.invoke_id == "dashboard-cache-terminal-only-runtime")
+    );
+}
+
+#[tokio::test]
+async fn dashboard_activity_summary_only_excludes_archived_rows_for_live_ids() {
+    let mut config = test_config();
+    config.invocation_max_days = 0;
+    let state = test_state_from_config(config, true).await;
+
+    let range_start = Utc::now() - ChronoDuration::days(1);
+    let overlap_at = format_naive(
+        (range_start + ChronoDuration::minutes(5))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(92_001_i64)
+    .bind("dashboard-summary-only-live-overlap")
+    .bind(overlap_at.as_str())
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(100_i64)
+    .bind(0.10_f64)
+    .bind(json!({ "promptCacheKey": "pck-dashboard-summary-only-live-overlap" }).to_string())
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert live summary-only overlap invocation");
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "dashboard-summary-only-overlap-live-id",
+        &[SeedInvocationArchiveBatchRow {
+            id: 92_001_i64,
+            invoke_id: "dashboard-summary-only-live-overlap",
+            occurred_at: overlap_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 100_i64,
+            cost: 0.10_f64,
+            ttfb_ms: None,
+            payload: Some(r#"{"promptCacheKey":"pck-dashboard-summary-only-live-overlap"}"#),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+
+    let Json(response) = fetch_dashboard_activity(
+        State(state.clone()),
+        Query(DashboardActivityQuery {
+            range: "1d".to_string(),
+            recent_limit: Some(2),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: false,
+            include_recent: Some(false),
+        }),
+    )
+    .await
+    .expect("fetch summary-only dashboard activity with archive/live overlap");
+    assert_eq!(response.summary.stats.total_count, 1);
+    assert_eq!(response.summary.stats.total_tokens, 100);
+    assert_f64_close(response.summary.stats.total_cost, 0.10);
+}
+
+#[tokio::test]
+async fn dashboard_activity_recent_excludes_archived_rows_for_all_live_ids() {
+    let mut config = test_config();
+    config.invocation_max_days = 0;
+    let state = test_state_from_config(config, true).await;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, group_name, plan_type, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(42_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Archive Overlap")
+    .bind("Primary")
+    .bind("enterprise")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert recent archive overlap account");
+
+    let range_start = Utc::now() - ChronoDuration::days(1);
+    let range_end = range_start + ChronoDuration::minutes(10);
+    let live_overlap_at = format_naive(
+        (range_start + ChronoDuration::minutes(1))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let live_selected_at = format_naive(
+        (range_start + ChronoDuration::minutes(2))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let archive_newer_at = format_naive(
+        (range_start + ChronoDuration::minutes(3))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    for (id, invoke_id, occurred_at, total_tokens) in [
+        (
+            91_001_i64,
+            "dashboard-recent-live-overlap",
+            live_overlap_at.as_str(),
+            10_i64,
+        ),
+        (
+            91_002_i64,
+            "dashboard-recent-live-selected",
+            live_selected_at.as_str(),
+            20_i64,
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(total_tokens)
+        .bind(0.01_f64)
+        .bind(
+            json!({
+                "promptCacheKey": format!("pck-{invoke_id}"),
+                "upstreamAccountId": 42_i64,
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert live recent archive overlap invocation");
+    }
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "dashboard-recent-overlap-live-id",
+        &[SeedInvocationArchiveBatchRow {
+            id: 91_001_i64,
+            invoke_id: "dashboard-recent-live-overlap",
+            occurred_at: archive_newer_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 10_i64,
+            cost: 0.01_f64,
+            ttfb_ms: None,
+            payload: Some(
+                r#"{"promptCacheKey":"pck-dashboard-recent-live-overlap","upstreamAccountId":42}"#,
+            ),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+
+    let Json(response) = fetch_dashboard_activity_recent(
+        State(state.clone()),
+        Query(DashboardActivityRecentQuery {
+            range_start: range_start.to_rfc3339(),
+            range_end: range_end.to_rfc3339(),
+            snapshot_id: range_end.timestamp_millis(),
+            recent_limit: Some(1),
+        }),
+    )
+    .await
+    .expect("fetch dashboard activity recent with overlapping archive row");
+    let account = response
+        .accounts
+        .iter()
+        .find(|account| account.account_key == "upstream:42")
+        .expect("recent response should include account");
+    assert_eq!(account.recent_invocations.len(), 1);
+    assert_eq!(
+        account.recent_invocations[0].invoke_id,
+        "dashboard-recent-live-selected"
+    );
+}
+
+#[tokio::test]
+async fn dashboard_activity_recent_chunks_large_preview_hydration_id_sets() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let range_start = Utc::now() - ChronoDuration::hours(1);
+    let range_end = range_start + ChronoDuration::hours(2);
+    for account_id in 1_i64..=64_i64 {
+        for invocation_index in 0_i64..16_i64 {
+            let occurred_at = format_naive(
+                (range_start + ChronoDuration::seconds(account_id * 20_i64 + invocation_index))
+                    .with_timezone(&Shanghai)
+                    .naive_local(),
+            );
+            let invoke_id = format!("dashboard-large-preview-{account_id}-{invocation_index}");
+            sqlx::query(
+                r#"
+                INSERT INTO codex_invocations (
+                    id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                "#,
+            )
+            .bind(93_000_i64 + account_id * 100_i64 + invocation_index)
+            .bind(invoke_id.as_str())
+            .bind(occurred_at.as_str())
+            .bind(SOURCE_PROXY)
+            .bind("success")
+            .bind(1_i64)
+            .bind(0.01_f64)
+            .bind(
+                json!({
+                    "promptCacheKey": format!("pck-{invoke_id}"),
+                    "upstreamAccountId": account_id,
+                })
+                .to_string(),
+            )
+            .bind("{}")
+            .execute(&state.pool)
+            .await
+            .expect("insert large preview hydration invocation");
+        }
+    }
+
+    let Json(response) = fetch_dashboard_activity_recent(
+        State(state.clone()),
+        Query(DashboardActivityRecentQuery {
+            range_start: range_start.to_rfc3339(),
+            range_end: range_end.to_rfc3339(),
+            snapshot_id: range_end.timestamp_millis(),
+            recent_limit: Some(16),
+        }),
+    )
+    .await
+    .expect("fetch dashboard activity recent with chunked preview hydration");
+    assert_eq!(response.accounts.len(), 64);
+    assert!(
+        response
+            .accounts
+            .iter()
+            .all(|account| account.recent_invocations.len() == 16)
+    );
+}
+
+#[tokio::test]
+async fn dashboard_activity_account_recent_excludes_archived_rows_for_all_live_ids() {
+    let mut config = test_config();
+    config.invocation_max_days = 0;
+    let state = test_state_from_config(config, true).await;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, group_name, plan_type, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(42_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Archive Overlap")
+    .bind("Primary")
+    .bind("enterprise")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert dashboard account recent archive overlap account");
+
+    let base_utc = Utc::now() - ChronoDuration::minutes(30);
+    let live_overlap_at = format_naive(base_utc.with_timezone(&Shanghai).naive_local());
+    let live_selected_at = format_naive(
+        (base_utc + ChronoDuration::minutes(1))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let archive_newer_at = format_naive(
+        (base_utc + ChronoDuration::minutes(2))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    for (id, invoke_id, occurred_at, total_tokens) in [
+        (
+            94_001_i64,
+            "dashboard-account-recent-live-overlap",
+            live_overlap_at.as_str(),
+            10_i64,
+        ),
+        (
+            94_002_i64,
+            "dashboard-account-recent-live-selected",
+            live_selected_at.as_str(),
+            20_i64,
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(total_tokens)
+        .bind(0.01_f64)
+        .bind(
+            json!({
+                "promptCacheKey": format!("pck-{invoke_id}"),
+                "upstreamAccountId": 42_i64,
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert dashboard account recent archive overlap live invocation");
+    }
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "dashboard-account-recent-overlap-live-id",
+        &[SeedInvocationArchiveBatchRow {
+            id: 94_001_i64,
+            invoke_id: "dashboard-account-recent-live-overlap",
+            occurred_at: archive_newer_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 10_i64,
+            cost: 0.01_f64,
+            ttfb_ms: None,
+            payload: Some(
+                r#"{"promptCacheKey":"pck-dashboard-account-recent-live-overlap","upstreamAccountId":42}"#,
+            ),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+
+    let Json(response) = fetch_dashboard_activity(
+        State(state.clone()),
+        Query(DashboardActivityQuery {
+            range: "1d".to_string(),
+            recent_limit: Some(1),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: true,
+            include_recent: Some(true),
+        }),
+    )
+    .await
+    .expect("fetch dashboard activity with account recent archive/live overlap");
+    let account = response
+        .accounts
+        .expect("dashboard activity should include accounts")
+        .into_iter()
+        .find(|account| account.account_key == "upstream:42")
+        .expect("dashboard activity should include overlap account");
+    assert_eq!(account.recent_invocations.len(), 1);
+    assert_eq!(
+        account.recent_invocations[0].invoke_id,
+        "dashboard-account-recent-live-selected"
     );
 }
 
