@@ -835,7 +835,7 @@ function SnapshotMetric({
   variant?: "default" | "secondary" | "success" | "warning" | "error";
 }) {
   return (
-    <div className="rounded-[0.95rem] border border-base-300/68 bg-base-100/80 px-3 py-3 shadow-[0_10px_20px_rgba(15,23,42,0.035)]">
+    <div className="invocation-detail-subsurface rounded-[0.95rem] px-3 py-3">
       <div className="text-[11px] font-medium text-base-content/56">{label}</div>
       <div
         className={cn(
@@ -885,7 +885,7 @@ function DetailInfoPanel({
 }) {
   if (items.length === 0) return null;
   return (
-    <section className="rounded-[0.95rem] border border-base-300/68 bg-base-100/84 px-3.5 py-3">
+    <section className="invocation-detail-subsurface rounded-[0.95rem] px-3.5 py-3">
       <div className="text-[11px] font-medium text-base-content/56">{title}</div>
       <div className="mt-3">
         <OverviewGrid items={items} />
@@ -906,7 +906,7 @@ function DetailMetaStrip({
 }) {
   if (items.length === 0) return null;
   return (
-    <section className="flex flex-wrap gap-x-4 gap-y-2 rounded-[0.95rem] border border-base-300/68 bg-base-100/84 px-3 py-2.5">
+    <section className="invocation-detail-subsurface flex flex-wrap gap-x-4 gap-y-2 rounded-[0.95rem] px-3 py-2.5">
       {items.map((item) => (
         <div
           key={`${item.label}-${item.value}`}
@@ -940,7 +940,7 @@ function DetailFrame({
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-2.5 rounded-b-[1rem] border border-t-0 border-base-300/72 bg-base-100/72 px-3.5 pb-3.5 pt-2.5">
+    <div className="invocation-detail-subsurface space-y-2.5 rounded-b-[1rem] border-t-0 px-3.5 pb-3.5 pt-2.5">
       {controls ? <div className="flex items-center justify-between gap-3">{controls}</div> : null}
       {children}
     </div>
@@ -1078,7 +1078,7 @@ function PayloadNotice({
         "rounded-xl border px-3 py-3 text-sm",
         tone === "warning" && "border-warning/30 bg-warning/8 text-base-content/74",
         tone === "error" && "border-error/24 bg-error/6 text-base-content/78",
-        tone === "default" && "border-base-300/70 bg-base-100/80 text-base-content/64",
+        tone === "default" && "invocation-detail-subsurface text-base-content/64",
       )}
     >
       {children}
@@ -1726,11 +1726,10 @@ function TimelineSummary({
 
   return (
     <div
+      data-open={isOpen ? "true" : "false"}
       className={cn(
-        "w-full rounded-[1rem] border px-4 py-3 text-left transition-[background-color,border-color,box-shadow] duration-200",
-        isOpen
-          ? "border-primary/32 bg-base-100/88 shadow-[0_12px_26px_rgba(15,23,42,0.07)]"
-          : "border-base-300/72 bg-base-100/72 hover:border-base-300 hover:bg-base-100/88",
+        "invocation-detail-block w-full rounded-[1rem] px-4 py-3 text-left transition-[background-color,border-color] duration-200",
+        !isOpen && "hover:border-[var(--invocation-detail-subsurface-border-active)]",
       )}
     >
       <div className="flex items-start justify-between gap-4">
@@ -1756,7 +1755,7 @@ function TimelineSummary({
                 {summaryFacts.map((fact) => (
                   <span
                     key={`${entry.blockId}-${fact}`}
-                    className="min-w-0 break-all rounded-full bg-base-200/82 px-2 py-0.5"
+                    className="invocation-detail-fact-chip min-w-0 break-all rounded-full px-2 py-0.5"
                   >
                     {fact}
                   </span>
@@ -1779,7 +1778,7 @@ function TimelineSummary({
         </div>
       </div>
       {metricActions.length > 0 ? (
-        <div className="mt-3 overflow-hidden rounded-[0.95rem] border border-base-300/72 bg-base-300/72">
+        <div className="invocation-detail-rail mt-3 overflow-hidden rounded-[0.95rem]">
           <div className="grid gap-px sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-7">
             {metricActions.map((action) => (
               <TimelineMetricButton
@@ -1869,6 +1868,19 @@ export function InvocationWorkflowDetailPanel({
     }
     setOpenBlockId(null);
     setAttemptSection(null);
+    setGenericSection(null);
+    setRequestBodyState(createIdlePayloadState());
+    setResponseBodyState(createIdlePayloadState());
+  }, [detail]);
+
+  useEffect(() => {
+    if (!detail || !focusedAttemptId) return;
+    const focusedEntry = detail.timeline.find(
+      (entry) => entry.attempt?.attemptId === focusedAttemptId,
+    );
+    if (!focusedEntry?.attempt) return;
+    setOpenBlockId(focusedEntry.blockId);
+    setAttemptSection("timing");
     setGenericSection(null);
     setRequestBodyState(createIdlePayloadState());
     setResponseBodyState(createIdlePayloadState());
@@ -2078,7 +2090,7 @@ export function InvocationWorkflowDetailPanel({
 
   return (
     <div className={cn("space-y-4", size === "compact" ? "text-sm" : "")}>
-      <section className="rounded-[1.2rem] border border-primary/18 bg-[linear-gradient(180deg,rgba(255,255,255,0.95),rgba(239,246,255,0.88))] px-4 py-4 shadow-[0_18px_40px_rgba(15,23,42,0.06)] sm:px-5 sm:py-5">
+      <section className="invocation-detail-hero-surface rounded-[1.2rem] px-4 py-4 sm:px-5 sm:py-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/72">
@@ -2113,7 +2125,7 @@ export function InvocationWorkflowDetailPanel({
               : "xl:grid-cols-[minmax(0,1.45fr)_minmax(22rem,0.95fr)]",
           )}
         >
-          <div className="rounded-[1rem] border border-primary/16 bg-base-100/78 p-4 shadow-[0_14px_28px_rgba(15,23,42,0.04)]">
+          <div className="invocation-detail-card-surface rounded-[1rem] p-4">
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(14rem,0.9fr)]">
               <div className="min-w-0">
                 <div className="text-[11px] font-medium text-base-content/56">
@@ -2185,7 +2197,7 @@ export function InvocationWorkflowDetailPanel({
             </div>
           </div>
 
-          <div className="rounded-[1rem] border border-base-300/72 bg-base-100/84 p-4 shadow-[0_14px_28px_rgba(15,23,42,0.04)]">
+          <div className="invocation-detail-card-surface rounded-[1rem] p-4">
             <div className="flex items-center justify-between gap-3">
               <div className="text-sm font-semibold text-base-content">
                 {isZh ? "关键指标" : "Key metrics"}
@@ -2203,7 +2215,7 @@ export function InvocationWorkflowDetailPanel({
         </div>
       </section>
 
-      <section className="rounded-[1.15rem] border border-base-300/72 bg-base-100/60 px-4 py-4 shadow-[0_14px_30px_rgba(15,23,42,0.04)] sm:px-5 sm:py-5">
+      <section className="invocation-detail-timeline-surface rounded-[1.15rem] px-4 py-4 sm:px-5 sm:py-5">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <h3 className="text-sm font-semibold text-base-content">
@@ -2228,7 +2240,7 @@ export function InvocationWorkflowDetailPanel({
                 <div key={entry.blockId} className="relative">
                   <span
                     className={cn(
-                      "absolute left-0 top-5 h-[1.05rem] w-[1.05rem] rounded-full border-2 shadow-[0_0_0_4px_rgba(248,250,252,0.9)]",
+                      "invocation-detail-marker absolute left-0 top-5 h-[1.05rem] w-[1.05rem] rounded-full border-2",
                       kindMeta.markerClass,
                     )}
                   />
