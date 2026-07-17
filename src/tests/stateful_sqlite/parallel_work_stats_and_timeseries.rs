@@ -14037,6 +14037,52 @@ async fn dashboard_activity_summary_only_excludes_archived_rows_for_live_ids() {
 }
 
 #[tokio::test]
+async fn dashboard_activity_cache_key_uses_bucketed_rolling_window() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let Json(first_response) = fetch_dashboard_activity(
+        State(state.clone()),
+        Query(DashboardActivityQuery {
+            range: "today".to_string(),
+            recent_limit: Some(2),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: true,
+            include_recent: Some(false),
+        }),
+    )
+    .await
+    .expect("fetch first rolling dashboard activity snapshot");
+
+    let first_range_end =
+        parse_to_utc_datetime(&first_response.range_end).expect("first range end should parse");
+    let next_bucket =
+        first_range_end + ChronoDuration::seconds(2) + ChronoDuration::milliseconds(50);
+    let sleep_ms = (next_bucket - Utc::now()).num_milliseconds().max(1) as u64;
+    tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+
+    let Json(second_response) = fetch_dashboard_activity(
+        State(state.clone()),
+        Query(DashboardActivityQuery {
+            range: "today".to_string(),
+            recent_limit: Some(2),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: true,
+            include_recent: Some(false),
+        }),
+    )
+    .await
+    .expect("fetch second rolling dashboard activity snapshot");
+
+    let second_range_end =
+        parse_to_utc_datetime(&second_response.range_end).expect("second range end should parse");
+    assert!(second_range_end > first_range_end);
+    assert!(second_response.snapshot_id > first_response.snapshot_id);
+}
+
+#[tokio::test]
 async fn dashboard_activity_summary_only_uses_rollups_when_materialized_archive_file_is_missing() {
     let mut config = test_config();
     config.invocation_max_days = 0;
@@ -14271,6 +14317,269 @@ async fn dashboard_activity_summary_only_uses_rollups_when_materialized_archive_
     assert_eq!(upstream_account.success_count, 1);
     assert_eq!(upstream_account.total_tokens, 250);
     assert_f64_close(upstream_account.total_cost, 0.25);
+}
+
+#[tokio::test]
+async fn dashboard_activity_rollup_fallback_preserves_account_attribution_for_partial_hour_ranges()
+{
+    let mut config = test_config();
+    config.invocation_max_days = 0;
+    let state = test_state_from_config(config, true).await;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, group_name, plan_type, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(42_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Partial Hour Recovery")
+    .bind("Primary")
+    .bind("enterprise")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert partial-hour recovery account");
+
+    let range_window =
+        resolve_range_window("1d", Shanghai).expect("1d dashboard range should resolve");
+    let full_hour_end_epoch = align_bucket_epoch(range_window.end.timestamp(), 3_600, 0);
+    let full_hour_start_epoch = full_hour_end_epoch - 3_600;
+    let full_hour_start = Utc
+        .timestamp_opt(full_hour_start_epoch, 0)
+        .single()
+        .expect("valid full-hour start");
+    let full_hour_end = Utc
+        .timestamp_opt(full_hour_end_epoch, 0)
+        .single()
+        .expect("valid full-hour end");
+    let skipped_start = full_hour_start - ChronoDuration::minutes(10);
+    let after_full_hour_secs = (range_window.end.timestamp() - full_hour_end_epoch).max(2);
+    let skipped_end = full_hour_end + ChronoDuration::seconds(after_full_hour_secs.min(600));
+    assert!(skipped_start >= range_window.start);
+    assert!(skipped_end <= range_window.end);
+
+    let before_edge_at = full_hour_start - ChronoDuration::minutes(5);
+    let after_edge_at = full_hour_end + ChronoDuration::seconds((after_full_hour_secs / 2).max(1));
+    for (id, invoke_id, occurred_at) in [
+        (
+            96_001_i64,
+            "dashboard-partial-hour-before-edge",
+            before_edge_at,
+        ),
+        (
+            96_002_i64,
+            "dashboard-partial-hour-after-edge",
+            after_edge_at,
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(format_naive(occurred_at.with_timezone(&Shanghai).naive_local()))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(20_i64)
+        .bind(0.02_f64)
+        .bind(
+            json!({
+                "promptCacheKey": format!("pck-{invoke_id}"),
+                "upstreamAccountId": 42_i64,
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert partial-hour live edge invocation");
+    }
+
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "dashboard-partial-hour-materialized-gap",
+        &[(
+            96_100_i64,
+            "dashboard-partial-hour-materialized-placeholder",
+            format_naive(
+                (full_hour_start + ChronoDuration::minutes(5))
+                    .with_timezone(&Shanghai)
+                    .naive_local(),
+            )
+            .as_str(),
+            SOURCE_PROXY,
+            "success",
+            200_i64,
+            0.20_f64,
+            Some(100.0_f64),
+        )],
+    )
+    .await;
+    sqlx::query(
+        "UPDATE archive_batches \
+            SET historical_rollups_materialized_at = datetime('now'), \
+                coverage_start_at = ?2, \
+                coverage_end_at = ?3 \
+          WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(format_naive(
+        skipped_start.with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(format_naive(
+        skipped_end.with_timezone(&Shanghai).naive_local(),
+    ))
+    .execute(&state.pool)
+    .await
+    .expect("mark partial-hour archive as materialized");
+    fs::remove_file(&archive_path).expect("remove partial-hour materialized archive raw file");
+
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(full_hour_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(2_i64)
+    .bind(2_i64)
+    .bind(0_i64)
+    .bind(400_i64)
+    .bind(0.40_f64)
+    .bind(2_i64)
+    .bind(200.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed partial-hour dashboard summary rollup row");
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_account_stats_hourly (
+            bucket_start_epoch,
+            source,
+            upstream_account_id,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            total_cost,
+            non_success_cost,
+            total_latency_sample_count,
+            total_latency_sum_ms,
+            first_response_byte_total_sample_count,
+            first_response_byte_total_sum_ms,
+            first_response_byte_total_max_ms
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+        "#,
+    )
+    .bind(full_hour_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(42_i64)
+    .bind(2_i64)
+    .bind(2_i64)
+    .bind(0_i64)
+    .bind(400_i64)
+    .bind(320_i64)
+    .bind(80_i64)
+    .bind(40_i64)
+    .bind(0.40_f64)
+    .bind(0.0_f64)
+    .bind(2_i64)
+    .bind(1_000.0_f64)
+    .bind(2_i64)
+    .bind(200.0_f64)
+    .bind(100.0_f64)
+    .execute(&state.pool)
+    .await
+    .expect("seed partial-hour dashboard account rollup row");
+
+    let Json(response) = fetch_dashboard_activity(
+        State(state.clone()),
+        Query(DashboardActivityQuery {
+            range: "1d".to_string(),
+            recent_limit: Some(2),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            include_accounts: true,
+            include_recent: Some(false),
+        }),
+    )
+    .await
+    .expect("fetch dashboard activity with partial-hour rollup fallback");
+
+    assert_eq!(response.summary.stats.total_count, 4);
+    assert_eq!(response.summary.stats.success_count, 4);
+    assert_eq!(response.summary.stats.total_tokens, 440);
+    assert_f64_close(response.summary.stats.total_cost, 0.44);
+
+    let accounts = response
+        .accounts
+        .expect("dashboard activity should include accounts");
+    let recovered_account = accounts
+        .iter()
+        .find(|account| account.upstream_account_id == Some(42))
+        .expect("partial-hour fallback should remain on the source account");
+    assert_eq!(recovered_account.request_count, 4);
+    assert_eq!(recovered_account.success_count, 4);
+    assert_eq!(recovered_account.total_tokens, 440);
+    assert_f64_close(recovered_account.total_cost, 0.44);
+    assert!(
+        accounts
+            .iter()
+            .filter(|account| account.is_unassigned)
+            .all(|account| account.request_count == 0 && account.total_tokens == 0)
+    );
+
+    let Json(activity) = fetch_upstream_account_activity(
+        State(state.clone()),
+        Query(UpstreamAccountActivityQuery {
+            range: "1d".to_string(),
+            recent_limit: Some(2),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch upstream account activity with partial-hour rollup fallback");
+    let upstream_account = activity
+        .accounts
+        .iter()
+        .find(|account| account.upstream_account_id == 42)
+        .expect("upstream activity should keep the recovered account attribution");
+    assert_eq!(upstream_account.request_count, 4);
+    assert_eq!(upstream_account.success_count, 4);
+    assert_eq!(upstream_account.total_tokens, 440);
+    assert_f64_close(upstream_account.total_cost, 0.44);
 }
 
 #[tokio::test]

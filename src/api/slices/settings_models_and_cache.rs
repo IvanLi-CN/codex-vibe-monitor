@@ -923,6 +923,8 @@ impl Drop for PromptCacheConversationFlightGuard {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct DashboardActivitySnapshotSelection {
     pub(crate) range: String,
+    pub(crate) range_start: String,
+    pub(crate) range_end: String,
     pub(crate) time_zone: String,
     pub(crate) source_scope: String,
     pub(crate) invocation_snapshot_id: i64,
