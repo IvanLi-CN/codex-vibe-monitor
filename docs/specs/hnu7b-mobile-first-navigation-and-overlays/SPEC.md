@@ -20,7 +20,7 @@
 ### Non-goals
 
 - 不改变桌面视觉语言、业务规则、后端接口或权限模型。
-- 不扩展到横屏手机、PWA/offline 或原生手势体系。
+- 不扩展到横屏手机或原生手势体系；installable PWA / offline shell contract 由 `docs/specs/m9p2w-installable-pwa-runtime/SPEC.md` 接管。
 - 不将所有 drawer 页面化，仅页面化重型详情工作区。
 
 ## 范围（Scope）

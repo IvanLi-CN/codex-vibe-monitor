@@ -2,6 +2,8 @@
 
 `web/` 承载 React + Vite 前端，以及用于页面状态与组件复核的 Storybook。
 
+当前前端同时承担 installable PWA runtime：manifest、service worker、prompt-style update、离线壳层与 Safari / iOS 手动安装指引都属于正式交付面。
+
 ## 命令
 
 ### App development
@@ -18,6 +20,21 @@ bun run dev -- --host 127.0.0.1 --port 60080
 ```bash
 bun run build
 bun run preview
+```
+
+### Installable PWA 验证
+
+- 正式浏览器合同：
+  - Desktop Chromium：原生 install prompt + 独立窗口
+  - Android Chrome：原生安装入口
+  - Safari / iOS：手动 `Add to Home Screen` 指引
+- 离线边界：首次在线访问后，应用壳层与静态资源可离线打开；实时数据、SSE 与设置同步会明确降级。
+- 更新策略：waiting service worker 只在用户确认时刷新，不做 mid-session auto takeover。
+
+PWA 专项回归：
+
+```bash
+bun run test:e2e:pwa
 ```
 
 ### Mock-only Web Demo

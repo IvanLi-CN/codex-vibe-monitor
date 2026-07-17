@@ -10,11 +10,14 @@
     "demo:dev": "VITE_APP_RUNTIME=demo vite",
     "demo:build": "VITE_APP_RUNTIME=demo VITE_BUILD_OUT_DIR=demo-dist tsc -b && VITE_APP_RUNTIME=demo VITE_BUILD_OUT_DIR=demo-dist vite build && VITE_BUILD_OUT_DIR=demo-dist bun scripts/write-version.mjs",
     "demo:preview": "VITE_APP_RUNTIME=demo VITE_BUILD_OUT_DIR=demo-dist vite preview",
+    "build:pwa-test": "vite build && bun scripts/write-version.mjs",
     "lint": "bun --cwd .. run lint:web",
     "test": "vitest run --project=unit",
     "test-storybook": "vitest run --project=storybook",
     "preview": "vite preview",
     "test:e2e": "playwright test",
+    "test:e2e:pwa": "playwright test -c playwright.pwa.config.ts",
+    "pwa:test-server": "bun run build:pwa-test && bun tests/pwa/test-server.mjs",
     "storybook": "bun run scripts/run-storybook.mjs",
     "storybook:ci": "bun run scripts/run-storybook.mjs --ci",
     "storybook:build": "storybook build",
@@ -39,7 +42,11 @@
     "react-json-view-lite": "2.5.0",
     "react-router-dom": "^7.9.5",
     "recharts": "^3.3.0",
-    "tailwind-merge": "^3.5.0"
+    "tailwind-merge": "^3.5.0",
+    "workbox-core": "^7.3.0",
+    "workbox-precaching": "^7.3.0",
+    "workbox-routing": "^7.3.0",
+    "workbox-strategies": "^7.3.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",
@@ -61,6 +68,7 @@
     "tailwindcss": "^3.4.15",
     "typescript": "~5.9.3",
     "vite": "^7.1.7",
+    "vite-plugin-pwa": "^1.1.0",
     "vitest": "4.1.0"
   },
   "msw": {
