@@ -584,6 +584,14 @@ type CapabilityOverrideField =
   | "imageEndpointCapabilityOverride"
   | "responseImageToolCapabilityOverride";
 
+const RESPONSE_FAMILY_CAPABILITY_ENDPOINTS = [
+  "/v1/responses",
+  "/v1/responses/compact",
+  "/v1/chat/completions",
+] as const;
+
+const DIRECT_IMAGE_CAPABILITY_ENDPOINTS = ["/v1/images/generations", "/v1/images/edits"] as const;
+
 function capabilityBadgeVariant(
   value: UpstreamCapabilityState["effective"] | CapabilityOverride | null,
 ) {
@@ -602,6 +610,7 @@ function capabilityStatusLabel(
 function AccountCapabilityCard({
   title,
   description,
+  endpoints,
   state,
   overrideField,
   writesEnabled,
@@ -610,6 +619,7 @@ function AccountCapabilityCard({
 }: {
   title: string;
   description: string;
+  endpoints: readonly string[];
   state: UpstreamCapabilityState;
   overrideField: CapabilityOverrideField;
   writesEnabled: boolean;
@@ -620,15 +630,32 @@ function AccountCapabilityCard({
 
   return (
     <Card className="overflow-hidden border-base-300/70 bg-[radial-gradient(circle_at_top_left,rgba(71,85,105,0.08),transparent_58%),linear-gradient(180deg,rgba(255,255,255,0.9),rgba(255,255,255,0.72))] shadow-sm">
-      <CardHeader className="space-y-2 pb-3">
+      <CardHeader className="space-y-3 pb-3">
         <div className="flex items-start justify-between gap-3">
-          <div className="space-y-1">
+          <div className="min-w-0 flex-1">
             <CardTitle className="text-base">{title}</CardTitle>
-            <CardDescription className="text-sm leading-5">{description}</CardDescription>
           </div>
-          <Badge variant={capabilityBadgeVariant(state.effective)} className="shrink-0">
+          <Badge variant={capabilityBadgeVariant(state.effective)} className="shrink-0 self-start">
             {capabilityStatusLabel(state.effective, t)}
           </Badge>
+        </div>
+        <div className="space-y-2">
+          <CardDescription className="text-sm leading-5">{description}</CardDescription>
+          <div className="space-y-1.5">
+            <p className="text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-base-content/52">
+              {t("accountPool.upstreamAccounts.capability.endpointsLabel")}
+            </p>
+            <div className="flex flex-wrap gap-2 rounded-xl border border-base-300/70 bg-base-100/78 px-3 py-2">
+              {endpoints.map((endpoint) => (
+                <code
+                  key={endpoint}
+                  className="rounded-md bg-base-200/80 px-2 py-1 font-mono text-[0.74rem] leading-5 text-base-content/82"
+                >
+                  {endpoint}
+                </code>
+              ))}
+            </div>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="grid gap-3">
@@ -2951,7 +2978,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                 </Alert>
               ) : null}
               <SegmentedControl
-                className="w-full flex-wrap justify-start self-stretch desktop:w-auto desktop:self-start"
+                className="w-fit max-w-full flex-wrap justify-start justify-self-start"
                 role="tablist"
                 aria-label={t("accountPool.upstreamAccounts.detailTitle")}
               >
@@ -3108,6 +3135,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                       description={t(
                         "accountPool.upstreamAccounts.capability.responseEndpoint.description",
                       )}
+                      endpoints={RESPONSE_FAMILY_CAPABILITY_ENDPOINTS}
                       state={
                         selectedDetail.responseEndpointCapability ?? {
                           observed: "unknown",
@@ -3129,6 +3157,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                       description={t(
                         "accountPool.upstreamAccounts.capability.imageEndpoint.description",
                       )}
+                      endpoints={DIRECT_IMAGE_CAPABILITY_ENDPOINTS}
                       state={
                         selectedDetail.imageEndpointCapability ?? {
                           observed: "unknown",
@@ -3150,6 +3179,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                       description={t(
                         "accountPool.upstreamAccounts.capability.responseImageTool.description",
                       )}
+                      endpoints={RESPONSE_FAMILY_CAPABILITY_ENDPOINTS}
                       state={
                         selectedDetail.responseImageToolCapability ?? {
                           observed: "unknown",

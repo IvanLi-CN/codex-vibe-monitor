@@ -1231,19 +1231,20 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.capability.effective": "Effective",
     "accountPool.upstreamAccounts.capability.observedAt": "Observed at",
     "accountPool.upstreamAccounts.capability.reason": "Reason",
+    "accountPool.upstreamAccounts.capability.endpointsLabel": "Endpoints",
     "accountPool.upstreamAccounts.capability.overrideLabel": "Capability override",
     "accountPool.upstreamAccounts.capability.overrideOption.auto": "Auto learning",
     "accountPool.upstreamAccounts.capability.overrideOption.supported": "Force supported",
     "accountPool.upstreamAccounts.capability.overrideOption.unsupported": "Force unsupported",
     "accountPool.upstreamAccounts.capability.responseEndpoint.title": "Response endpoint",
     "accountPool.upstreamAccounts.capability.responseEndpoint.description":
-      "Controls /v1/responses, /v1/responses/compact, and /v1/chat/completions routing eligibility.",
+      "Controls routing eligibility for these Responses-family endpoints.",
     "accountPool.upstreamAccounts.capability.imageEndpoint.title": "Image endpoint",
     "accountPool.upstreamAccounts.capability.imageEndpoint.description":
-      "Controls direct /v1/images/generations and /v1/images/edits routing eligibility.",
+      "Controls routing eligibility for these direct image endpoints.",
     "accountPool.upstreamAccounts.capability.responseImageTool.title": "Response image-tool",
     "accountPool.upstreamAccounts.capability.responseImageTool.description":
-      "Controls image tools or image models inside Responses-family requests only.",
+      "Controls image tools or image models on these Responses-family endpoints only.",
     "accountPool.upstreamAccounts.capability.rewriteNoticeTitle":
       "Rewrite policy is not capability routing",
     "accountPool.upstreamAccounts.capability.rewriteNoticeBody":
@@ -3702,19 +3703,20 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.capability.effective": "生效值",
     "accountPool.upstreamAccounts.capability.observedAt": "观测时间",
     "accountPool.upstreamAccounts.capability.reason": "原因",
+    "accountPool.upstreamAccounts.capability.endpointsLabel": "端点",
     "accountPool.upstreamAccounts.capability.overrideLabel": "能力覆盖",
     "accountPool.upstreamAccounts.capability.overrideOption.auto": "自动学习",
     "accountPool.upstreamAccounts.capability.overrideOption.supported": "强制支持",
     "accountPool.upstreamAccounts.capability.overrideOption.unsupported": "强制不支持",
     "accountPool.upstreamAccounts.capability.responseEndpoint.title": "Response 端点",
     "accountPool.upstreamAccounts.capability.responseEndpoint.description":
-      "控制 /v1/responses、/v1/responses/compact、/v1/chat/completions 的路由可选性。",
+      "控制以下 Responses-family 端点的路由可选性。",
     "accountPool.upstreamAccounts.capability.imageEndpoint.title": "Image 端点",
     "accountPool.upstreamAccounts.capability.imageEndpoint.description":
-      "控制直连 /v1/images/generations 和 /v1/images/edits 的路由可选性。",
+      "控制以下直连 image 端点的路由可选性。",
     "accountPool.upstreamAccounts.capability.responseImageTool.title": "Response 图片工具",
     "accountPool.upstreamAccounts.capability.responseImageTool.description":
-      "只控制 Responses-family 请求里的图片工具或图片模型，不影响直连 image 端点。",
+      "只控制以下 Responses-family 端点上的图片工具或图片模型，不影响直连 image 端点。",
     "accountPool.upstreamAccounts.capability.rewriteNoticeTitle":
       "rewrite 策略不等于 capability 路由",
     "accountPool.upstreamAccounts.capability.rewriteNoticeBody":
