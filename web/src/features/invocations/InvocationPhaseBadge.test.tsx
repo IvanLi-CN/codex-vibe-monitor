@@ -59,4 +59,22 @@ describe("InvocationPhaseSegments", () => {
     expect(html).not.toContain('data-phase-icon-name="loading"');
     expect(html).not.toContain('data-phase-icon-name="sync"');
   });
+
+  it("supports icon-and-value-only inline rendering", () => {
+    const html = renderMarkup(
+      <InvocationPhaseSegments
+        counts={{ queued: 2, requesting: 3, responding: 4 }}
+        appearance="inline"
+        showLabel={false}
+      />,
+    );
+
+    expect(html).toContain('data-phase-label-visible="false"');
+    expect(html).toContain('aria-label="排队中 2"');
+    expect(html).toContain('aria-label="请求中 3"');
+    expect(html).toContain('aria-label="响应中 4"');
+    expect(html).not.toContain(">排队中<");
+    expect(html).not.toContain(">请求中<");
+    expect(html).not.toContain(">响应中<");
+  });
 });
