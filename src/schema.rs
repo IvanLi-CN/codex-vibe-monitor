@@ -1133,6 +1133,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("response_raw_size", "INTEGER"),
         ("response_raw_truncated", "INTEGER NOT NULL DEFAULT 0"),
         ("response_raw_truncated_reason", "TEXT"),
+        ("timeline_json", "TEXT"),
         ("detail_level", "TEXT NOT NULL DEFAULT 'full'"),
         ("detail_pruned_at", "TEXT"),
         ("detail_prune_reason", "TEXT"),
@@ -2932,6 +2933,8 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             upstream_request_compression_mode TEXT,
             compact_support_status TEXT,
             compact_support_reason TEXT,
+            request_summary_json TEXT,
+            response_summary_json TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -3036,6 +3039,8 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("compact_support_reason", "TEXT"),
         ("group_name_snapshot", "TEXT"),
         ("proxy_binding_key_snapshot", "TEXT"),
+        ("request_summary_json", "TEXT"),
+        ("response_summary_json", "TEXT"),
     ] {
         if !existing_pool_attempt_columns.contains(column) {
             let statement =

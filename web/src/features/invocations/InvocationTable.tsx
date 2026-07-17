@@ -26,18 +26,17 @@ import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
 import { ListBodyState } from "../shared/ListBodyState";
 import { InvocationPhaseBadge } from "./InvocationPhaseBadge";
+import { InvocationWorkflowDetailPanel } from "./InvocationWorkflowDetailPanel";
 import {
   buildInvocationDetailViewModel,
   FALLBACK_CELL,
   INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
-  InvocationExpandedDetails,
   renderEndpointSummary,
   renderFastIndicator,
   renderImageIntentBadge,
   renderInvocationModelBadge,
   renderInvocationModelRoutingSummary,
   renderReasoningEffortBadge,
-  useInvocationPoolAttempts,
 } from "./invocation-details-shared";
 import { renderInvocationTransportBadge } from "./invocation-transport-badge";
 
@@ -441,11 +440,6 @@ export function InvocationTable({
   );
 
   const hasInFlightRows = useMemo(() => rows.some((row) => row.isInFlight), [rows]);
-  const expandedRecord = useMemo(
-    () => rows.find((row) => row.rowKey === expandedId)?.record ?? null,
-    [expandedId, rows],
-  );
-  const poolAttemptsState = useInvocationPoolAttempts(expandedRecord);
   const estimateRowSize = useCallback(
     (index: number) =>
       expandedId === rows[index]?.rowKey ? (isMdUp ? 320 : 430) : isMdUp ? 74 : 285,
@@ -858,18 +852,14 @@ export function InvocationTable({
                 </div>
 
                 {isExpanded && (
-                  <div className="mt-3 rounded-lg border border-base-300/70 bg-base-200/58">
-                    <InvocationExpandedDetails
+                  <div
+                    id={listDetailId}
+                    className="mt-3 rounded-lg border border-base-300/70 bg-base-200/58"
+                  >
+                    <InvocationWorkflowDetailPanel
                       record={row.record}
-                      detailId={listDetailId}
-                      detailPairs={row.detailPairs}
-                      timingPairs={row.timingPairs}
-                      errorMessage={row.errorMessage}
-                      detailNotice={row.detailNotice}
-                      size="compact"
-                      poolAttemptsState={poolAttemptsState}
                       focusedAttemptId={isHighlighted ? (scrollTarget?.attemptId ?? null) : null}
-                      t={t}
+                      size="compact"
                     />
                   </div>
                 )}
@@ -1201,20 +1191,15 @@ export function InvocationTable({
                           colSpan={isXlUp ? 9 : 8}
                           className="border-t border-base-300/65 px-2 py-2.5 xl:px-3"
                         >
-                          <InvocationExpandedDetails
-                            record={row.record}
-                            detailId={tableDetailId}
-                            detailPairs={row.detailPairs}
-                            timingPairs={row.timingPairs}
-                            errorMessage={row.errorMessage}
-                            detailNotice={row.detailNotice}
-                            size="default"
-                            poolAttemptsState={poolAttemptsState}
-                            focusedAttemptId={
-                              isHighlighted ? (scrollTarget?.attemptId ?? null) : null
-                            }
-                            t={t}
-                          />
+                          <div id={tableDetailId}>
+                            <InvocationWorkflowDetailPanel
+                              record={row.record}
+                              focusedAttemptId={
+                                isHighlighted ? (scrollTarget?.attemptId ?? null) : null
+                              }
+                              size="default"
+                            />
+                          </div>
                         </td>
                       </tr>
                     )}

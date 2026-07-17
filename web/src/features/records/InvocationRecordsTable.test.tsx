@@ -4,23 +4,17 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ApiInvocation,
-  ApiPoolUpstreamRequestAttempt,
-  ForwardProxyBindingNode,
+  ApiInvocationRequestBodyResponse,
+  ApiInvocationResponseBodyResponse,
+  ApiInvocationWorkflowDetailResponse,
 } from "../../lib/api";
 import { InvocationRecordsTable } from "./InvocationRecordsTable";
 
 const { apiMocks } = vi.hoisted(() => ({
   apiMocks: {
-    fetchInvocationPoolAttempts: vi.fn(),
-    fetchInvocationRecordDetail: vi.fn(),
+    fetchInvocationWorkflowDetail: vi.fn(),
+    fetchInvocationRequestBody: vi.fn(),
     fetchInvocationResponseBody: vi.fn(),
-    fetchForwardProxyBindingNodes:
-      vi.fn<
-        (
-          keys?: string[],
-          options?: { includeCurrent?: boolean; groupName?: string },
-        ) => Promise<ForwardProxyBindingNode[]>
-      >(),
   },
 }));
 
@@ -28,10 +22,9 @@ vi.mock("../../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
   return {
     ...actual,
-    fetchInvocationPoolAttempts: apiMocks.fetchInvocationPoolAttempts,
-    fetchInvocationRecordDetail: apiMocks.fetchInvocationRecordDetail,
+    fetchInvocationWorkflowDetail: apiMocks.fetchInvocationWorkflowDetail,
+    fetchInvocationRequestBody: apiMocks.fetchInvocationRequestBody,
     fetchInvocationResponseBody: apiMocks.fetchInvocationResponseBody,
-    fetchForwardProxyBindingNodes: apiMocks.fetchForwardProxyBindingNodes,
   };
 });
 
@@ -58,7 +51,14 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-  apiMocks.fetchForwardProxyBindingNodes.mockResolvedValue([]);
+  apiMocks.fetchInvocationWorkflowDetail.mockReset();
+  apiMocks.fetchInvocationRequestBody.mockReset();
+  apiMocks.fetchInvocationResponseBody.mockReset();
+  apiMocks.fetchInvocationWorkflowDetail.mockImplementation(async (id: number) =>
+    createWorkflowDetailFixture(createRecord({ id })),
+  );
+  apiMocks.fetchInvocationRequestBody.mockResolvedValue(createRequestBodyFixture());
+  apiMocks.fetchInvocationResponseBody.mockResolvedValue(createResponseBodyFixture());
 });
 
 afterEach(() => {
@@ -69,23 +69,12 @@ afterEach(() => {
   host = null;
   root = null;
   vi.useRealTimers();
-  apiMocks.fetchInvocationPoolAttempts.mockReset();
-  apiMocks.fetchInvocationRecordDetail.mockReset();
-  apiMocks.fetchInvocationResponseBody.mockReset();
-  apiMocks.fetchForwardProxyBindingNodes.mockReset();
-  apiMocks.fetchForwardProxyBindingNodes.mockResolvedValue([]);
 });
 
 function render(ui: React.ReactNode) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
-  act(() => {
-    root?.render(ui);
-  });
-}
-
-function rerender(ui: React.ReactNode) {
   act(() => {
     root?.render(ui);
   });
@@ -125,6 +114,159 @@ function createRecord(overrides: Partial<ApiInvocation> = {}): ApiInvocation {
     tRespParseMs: 20,
     tPersistMs: 12,
     tTotalMs: 741,
+    ...overrides,
+  };
+}
+
+function createWorkflowDetailFixture(
+  record: ApiInvocation,
+  overrides: Partial<ApiInvocationWorkflowDetailResponse> = {},
+): ApiInvocationWorkflowDetailResponse {
+  const requestModel = record.requestModel ?? record.responseModel ?? record.model ?? "gpt-5.4";
+  const responseModel = record.responseModel ?? record.requestModel ?? record.model ?? requestModel;
+  const routeMode = record.routeMode ?? "pool";
+  const attemptStatus = record.status ?? "success";
+  const base: ApiInvocationWorkflowDetailResponse = {
+    hero: {
+      recordId: record.id,
+      invokeId: record.invokeId,
+      promptCacheKey: record.promptCacheKey ?? "pck-test",
+      routeMode,
+      endpoint: record.endpoint ?? "/v1/responses",
+      requestModel,
+      responseModel,
+      finalStatus: attemptStatus,
+      failureClass: record.failureClass ?? null,
+      downstreamStatusCode: record.downstreamStatusCode ?? null,
+      upstreamAccountId: record.upstreamAccountId ?? 42,
+      upstreamAccountName: record.upstreamAccountName ?? "pool-account-42",
+      totalDurationMs: record.tTotalMs ?? 741,
+      timelineAttemptCount: 1,
+      poolAttemptCount: record.poolAttemptCount ?? 1,
+      totalTokens: record.totalTokens ?? 2720,
+      cost: record.cost ?? 0.1234,
+      occurredAt: record.occurredAt,
+    },
+    timeline: [
+      {
+        blockId: `route-${record.id ?? 1}`,
+        kind: "routingDecision",
+        occurredAt: record.occurredAt,
+        title: "Pool route selected",
+        subtitle: `${routeMode} ${record.endpoint ?? "/v1/responses"}`,
+        status: "completed",
+        detail: {
+          routeMode,
+          poolAttemptCount: record.poolAttemptCount ?? 1,
+        },
+      },
+      {
+        blockId: `attempt-${record.id ?? 1}`,
+        kind: "attempt",
+        occurredAt: record.occurredAt,
+        title: "Attempt 1",
+        status: attemptStatus,
+        attempt: {
+          synthetic: false,
+          attemptId: `attempt-${record.id ?? 1}`,
+          occurredAt: record.occurredAt,
+          endpoint: record.endpoint ?? "/v1/responses",
+          upstreamAccountId: record.upstreamAccountId ?? 42,
+          upstreamAccountName: record.upstreamAccountName ?? "pool-account-42",
+          requestModel,
+          responseModel,
+          attemptIndex: 1,
+          distinctAccountIndex: 1,
+          sameAccountRetryIndex: 1,
+          status: attemptStatus,
+          phase: attemptStatus === "failed" ? "streaming" : "completed",
+          httpStatus: 200,
+          firstByteLatencyMs: record.tUpstreamTtfbMs ?? 142,
+          streamLatencyMs: record.tTotalMs ?? 741,
+          upstreamRequestId: record.upstreamRequestId ?? "req_records_workflow",
+          requestSummary: {
+            endpoint: record.endpoint ?? "/v1/responses",
+            transport: record.transport ?? "http",
+            requestModel,
+            responseModel,
+            requestedServiceTier: record.requestedServiceTier ?? "priority",
+            reasoningEffort: record.reasoningEffort ?? "high",
+            routing: {
+              routeMode,
+              proxyDisplayName: record.proxyDisplayName ?? "jp-relay-01",
+              promptCacheKey: record.promptCacheKey ?? "pck-test",
+            },
+            headers: {
+              userAgent: "monitor-ui/1.0",
+              xForwardedFor: record.requesterIp ?? "203.0.113.10",
+            },
+            bodyCapture: {
+              availableAtInvocationLevel: true,
+              size: 3568,
+              detailLevel: "full",
+            },
+            compactionRequestKind: "remote_v2",
+          },
+          responseSummary: {
+            status: attemptStatus,
+            serviceTier: record.serviceTier ?? record.requestedServiceTier ?? "priority",
+            failureKind: record.failureKind ?? null,
+            responseContentEncoding: record.responseContentEncoding ?? "gzip",
+            compactionResponseKind: "remote_v2",
+            toolCalls: ["web_search", "search_docs"],
+            outputItems: 3,
+            headers: {
+              contentEncoding: record.responseContentEncoding ?? "gzip",
+              upstreamRequestId: record.upstreamRequestId ?? "req_records_workflow",
+            },
+            responseBodyCapture: {
+              size: 7271,
+              detailLevel: "full",
+            },
+          },
+        },
+      },
+    ],
+    reconstructed: false,
+    partial: false,
+  };
+
+  return {
+    ...base,
+    ...overrides,
+    hero: { ...base.hero, ...overrides.hero },
+    timeline: overrides.timeline ?? base.timeline,
+  };
+}
+
+function createRequestBodyFixture(
+  overrides: Partial<ApiInvocationRequestBodyResponse> = {},
+): ApiInvocationRequestBodyResponse {
+  return {
+    available: true,
+    bodyText: JSON.stringify({ model: "gpt-5.4", input: [{ role: "user", content: "hello" }] }),
+    captureSource: "raw_file",
+    bodySize: 3568,
+    bodyTruncated: false,
+    detailLevel: "full",
+    headers: { userAgent: "monitor-ui/1.0" },
+    routing: { routeMode: "pool", proxyDisplayName: "jp-relay-01" },
+    ...overrides,
+  };
+}
+
+function createResponseBodyFixture(
+  overrides: Partial<ApiInvocationResponseBodyResponse> = {},
+): ApiInvocationResponseBodyResponse {
+  return {
+    available: true,
+    bodyText: JSON.stringify({ id: "resp_records_test", status: "completed" }),
+    captureSource: "raw_file",
+    bodySize: 7271,
+    bodyTruncated: false,
+    detailLevel: "full",
+    headers: { contentEncoding: "gzip" },
+    routing: { forwardedChunkCount: 12 },
     ...overrides,
   };
 }
@@ -289,154 +431,76 @@ describe("InvocationRecordsTable", () => {
     ).not.toBeNull();
   });
 
-  it("keeps legacy detail fallback on response model only", async () => {
-    render(
-      <InvocationRecordsTable
-        focus="token"
-        isLoading={false}
-        records={[
-          createRecord({
-            requestModel: undefined,
-            responseModel: undefined,
-            model: "gpt-5-legacy",
-          }),
-        ]}
-      />,
+  it("expands into the workflow detail panel and keeps response-model fallback visible", async () => {
+    const record = createRecord({
+      requestModel: undefined,
+      responseModel: undefined,
+      model: "gpt-5-legacy",
+    });
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValueOnce(
+      createWorkflowDetailFixture(record, {
+        hero: {
+          requestModel: "gpt-5-legacy",
+          responseModel: "gpt-5-legacy",
+        },
+      }),
     );
 
-    clickFirstToggle();
-    await flushAsyncWork();
+    render(<InvocationRecordsTable focus="token" isLoading={false} records={[record]} />);
 
-    const text = host?.textContent ?? "";
-    expect(text).toContain("table.details.requestModel");
-    expect(text).toContain("table.details.responseModel");
-    expect(text).toContain("gpt-5-legacy");
+    clickFirstToggle();
+    await waitFor(() => (host?.textContent ?? "").includes("工作流时间线"));
+
+    expect(apiMocks.fetchInvocationWorkflowDetail).toHaveBeenCalledWith(1);
+    expect(host?.textContent ?? "").toContain("gpt-5-legacy");
   });
 
-  it("renders a richer expanded panel with summary strip and structured-only notice", () => {
-    render(
-      <InvocationRecordsTable
-        focus="token"
-        isLoading={false}
-        records={[
-          createRecord({
-            status: "failed",
-            failureClass: "service_failure",
-            failureKind: "upstream_stream_error",
-            isActionable: true,
-            errorMessage: "[upstream_stream_error] upstream reset",
-            detailLevel: "structured_only",
-            detailPrunedAt: "2026-03-11T08:09:10Z",
-            detailPruneReason: "success_over_30d",
-          }),
-        ]}
-      />,
+  it("renders failed workflow detail in the expanded row and exposes the full-details drawer entry", async () => {
+    const record = createRecord({
+      status: "failed",
+      failureClass: "service_failure",
+      failureKind: "upstream_stream_error",
+      errorMessage: "[upstream_stream_error] upstream reset",
+      detailLevel: "structured_only",
+      detailPrunedAt: "2026-03-11T08:09:10Z",
+      detailPruneReason: "success_over_30d",
+    });
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValueOnce(
+      createWorkflowDetailFixture(record, {
+        hero: {
+          finalStatus: "failed",
+          failureClass: "service_failure",
+        },
+      }),
     );
 
+    render(<InvocationRecordsTable focus="token" isLoading={false} records={[record]} />);
+
     clickFirstToggle();
+    await waitFor(
+      () => host?.querySelector('[data-testid="records-expanded-detail-panel"]') != null,
+    );
 
     expect(host?.querySelector('[data-testid="records-detail-summary-strip"]')).not.toBeNull();
-    expect(host?.querySelector('[data-testid="invocation-detail-notice"]')).not.toBeNull();
-
-    const text = host?.textContent ?? "";
-    expect(text).toContain("table.details.failureClass");
-    expect(text).toContain("table.details.actionable");
-    expect(text).toContain("table.details.reasoningEffort");
-    expect(text).toContain("table.details.poolAttemptCount");
-    expect(text).toContain("table.poolAttempts.notPool");
-    expect(text).toContain("success_over_30d");
+    expect(host?.textContent ?? "").toContain("table.responseBody.openFullDetails");
+    expect(host?.textContent ?? "").toContain("工作流时间线");
   });
 
-  it("shows billing service tier in the expanded detail panel", () => {
-    render(
-      <InvocationRecordsTable
-        focus="token"
-        isLoading={false}
-        records={[
-          createRecord({
-            requestedServiceTier: "priority",
-            serviceTier: "default",
-            billingServiceTier: "priority",
-          }),
-        ]}
-      />,
+  it("opens the full-details drawer and reuses the workflow detail panel", async () => {
+    const record = createRecord({
+      status: "failed",
+      failureClass: "service_failure",
+      failureKind: "downstream_closed",
+      errorMessage: "preview only",
+    });
+    apiMocks.fetchInvocationWorkflowDetail.mockImplementation(async () =>
+      createWorkflowDetailFixture(record),
     );
+
+    render(<InvocationRecordsTable focus="exception" isLoading={false} records={[record]} />);
 
     clickFirstToggle();
-
-    const text = host?.textContent ?? "";
-    expect(text).toContain("table.details.requestedServiceTier");
-    expect(text).toContain("table.details.serviceTier");
-    expect(text).toContain("table.details.billingServiceTier");
-  });
-
-  it("renders abnormal response previews for failed records", async () => {
-    apiMocks.fetchInvocationRecordDetail.mockResolvedValue({
-      id: 1,
-      abnormalResponseBody: {
-        available: true,
-        previewText: '{"error":{"message":"upstream exploded"}}',
-        hasMore: true,
-      },
-    });
-
-    render(
-      <InvocationRecordsTable
-        focus="exception"
-        isLoading={false}
-        records={[
-          createRecord({
-            status: "failed",
-            failureClass: "service_failure",
-            errorMessage: "upstream exploded",
-          }),
-        ]}
-      />,
-    );
-
-    clickFirstToggle();
-
-    await waitFor(
-      () => host?.querySelector('[data-testid="invocation-response-body-preview"]') != null,
-    );
-
-    expect(apiMocks.fetchInvocationRecordDetail).toHaveBeenCalledWith(1);
-    expect(host?.textContent ?? "").toContain('{"error":{"message":"upstream exploded"}}');
-    expect(host?.textContent ?? "").toContain("table.responseBody.previewTruncated");
-  });
-
-  it("opens the full-details drawer and loads the complete abnormal response body", async () => {
-    apiMocks.fetchInvocationRecordDetail.mockResolvedValue({
-      id: 1,
-      abnormalResponseBody: {
-        available: true,
-        previewText: '{"error":{"message":"preview only"}}',
-        hasMore: true,
-      },
-    });
-    apiMocks.fetchInvocationResponseBody.mockResolvedValue({
-      available: true,
-      bodyText: '{"error":{"message":"preview only"},"trace":"full-body"}',
-    });
-
-    render(
-      <InvocationRecordsTable
-        focus="exception"
-        isLoading={false}
-        records={[
-          createRecord({
-            status: "failed",
-            failureClass: "service_failure",
-            errorMessage: "preview only",
-          }),
-        ]}
-      />,
-    );
-
-    clickFirstToggle();
-    await waitFor(
-      () => host?.querySelector('[data-testid="invocation-response-body-preview"]') != null,
-    );
+    await waitFor(() => (host?.textContent ?? "").includes("table.responseBody.openFullDetails"));
 
     const button = Array.from(document.body.querySelectorAll("button")).find(
       (candidate): candidate is HTMLButtonElement =>
@@ -452,12 +516,13 @@ describe("InvocationRecordsTable", () => {
     await waitFor(
       () => document.body.textContent?.includes("records.table.fullDetails.title") ?? false,
     );
+    await waitFor(() => (apiMocks.fetchInvocationWorkflowDetail.mock.calls.length ?? 0) >= 2);
 
-    expect(apiMocks.fetchInvocationResponseBody).toHaveBeenCalledWith(1);
-    expect(document.body.textContent ?? "").toContain('"trace":"full-body"');
+    expect(document.body.textContent ?? "").toContain(record.invokeId);
+    expect(document.body.textContent ?? "").toContain("工作流时间线");
   });
 
-  it("does not load DB-backed abnormal details for transient live records", async () => {
+  it("does not fetch workflow detail for transient live records", async () => {
     render(
       <InvocationRecordsTable
         focus="exception"
@@ -474,441 +539,12 @@ describe("InvocationRecordsTable", () => {
     );
 
     clickFirstToggle();
+    await flushAsyncWork();
 
-    await waitFor(() => (host?.textContent ?? "").includes("preview pending placeholder flush"));
-
-    expect(apiMocks.fetchInvocationRecordDetail).not.toHaveBeenCalled();
+    expect(apiMocks.fetchInvocationWorkflowDetail).not.toHaveBeenCalled();
     expect(apiMocks.fetchInvocationResponseBody).not.toHaveBeenCalled();
+    expect(host?.textContent ?? "").toContain("调用未落盘");
     expect(host?.textContent ?? "").not.toContain("table.responseBody.openFullDetails");
-  });
-
-  it("lazy loads pool attempts for pool-routed records", async () => {
-    apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([
-      {
-        id: 9,
-        invokeId: "invoke-pool",
-        occurredAt: "2026-03-10T00:00:00Z",
-        endpoint: "/v1/responses",
-        attemptIndex: 1,
-        distinctAccountIndex: 1,
-        sameAccountRetryIndex: 1,
-        status: "success",
-        httpStatus: 200,
-        proxyBindingKeySnapshot: "__direct__",
-        createdAt: "2026-03-10T00:00:01Z",
-        upstreamAccountId: 42,
-        upstreamAccountName: "pool-account-42",
-        firstByteLatencyMs: 180,
-      },
-    ]);
-
-    render(
-      <InvocationRecordsTable
-        focus="network"
-        isLoading={false}
-        records={[
-          createRecord({
-            id: 2,
-            invokeId: "invoke-pool",
-            routeMode: "pool",
-            upstreamAccountId: 42,
-            upstreamAccountName: "pool-account-42",
-            poolAttemptCount: 1,
-            poolDistinctAccountCount: 1,
-          }),
-        ]}
-      />,
-    );
-
-    clickFirstToggle();
-
-    await waitFor(() => host?.querySelector('[data-testid="pool-attempts-list"]') != null);
-
-    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenCalledWith("invoke-pool");
-    expect(host?.querySelector('[data-testid="pool-attempts-list"]')).not.toBeNull();
-    expect(host?.textContent ?? "").toContain("pool-account-42");
-    expect(host?.textContent ?? "").toContain("table.poolAttempts.proxy");
-    expect(host?.textContent ?? "").toContain("Direct");
-  });
-
-  it("renders the pool attempt error state when lazy loading fails", async () => {
-    apiMocks.fetchInvocationPoolAttempts.mockRejectedValue(new Error("boom"));
-
-    render(
-      <InvocationRecordsTable
-        focus="exception"
-        isLoading={false}
-        records={[
-          createRecord({
-            id: 3,
-            invokeId: "invoke-pool-error",
-            routeMode: "pool",
-            upstreamAccountId: 7,
-            poolAttemptCount: 2,
-            poolDistinctAccountCount: 1,
-          }),
-        ]}
-      />,
-    );
-
-    clickFirstToggle();
-
-    await waitFor(() => host?.querySelector('[data-testid="pool-attempts-error"]') != null);
-
-    expect(host?.querySelector('[data-testid="pool-attempts-error"]')).not.toBeNull();
-    expect(host?.textContent ?? "").toContain("table.poolAttempts.loadError: boom");
-  });
-
-  it("renders upstream and downstream error channels separately", async () => {
-    apiMocks.fetchInvocationRecordDetail.mockResolvedValue({
-      id: 32,
-      abnormalResponseBody: null,
-    });
-    apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([
-      {
-        id: 19,
-        invokeId: "invoke-split-error",
-        occurredAt: "2026-03-10T00:00:00Z",
-        endpoint: "/v1/responses",
-        attemptIndex: 2,
-        distinctAccountIndex: 2,
-        sameAccountRetryIndex: 1,
-        status: "transport_failure",
-        httpStatus: null,
-        downstreamHttpStatus: 502,
-        failureKind: "failed_contact_upstream",
-        errorMessage:
-          "failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
-        downstreamErrorMessage:
-          "pool upstream responded with 502: failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
-        proxyBindingKeySnapshot: "fpb_failed_oauth_bridge",
-        createdAt: "2026-03-10T00:00:02Z",
-        upstreamAccountId: 42,
-        upstreamAccountName: "pool-account-42",
-      },
-    ]);
-    apiMocks.fetchForwardProxyBindingNodes.mockResolvedValue([
-      {
-        key: "fpb_failed_oauth_bridge",
-        source: "missing",
-        displayName: "OAuth Bridge Proxy",
-        protocolLabel: "HTTP",
-        penalized: false,
-        selectable: true,
-        last24h: [],
-      },
-    ]);
-
-    render(
-      <InvocationRecordsTable
-        focus="exception"
-        isLoading={false}
-        records={[
-          createRecord({
-            id: 32,
-            invokeId: "invoke-split-error",
-            routeMode: "pool",
-            status: "failed",
-            failureClass: "service_failure",
-            failureKind: "failed_contact_upstream",
-            errorMessage:
-              "failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
-            downstreamStatusCode: 502,
-            downstreamErrorMessage:
-              "pool upstream responded with 502: failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
-            upstreamErrorMessage:
-              "failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
-            poolAttemptCount: 2,
-            poolDistinctAccountCount: 2,
-          }),
-        ]}
-      />,
-    );
-
-    clickFirstToggle();
-
-    await waitFor(
-      () => host?.querySelector('[data-testid="invocation-downstream-error-section"]') != null,
-    );
-
-    expect(host?.querySelector('[data-testid="invocation-upstream-error-section"]')).not.toBeNull();
-    expect(
-      host?.querySelector('[data-testid="invocation-downstream-error-section"]'),
-    ).not.toBeNull();
-    expect(host?.querySelector('[data-testid="pool-attempt-upstream-error"]')).not.toBeNull();
-    expect(host?.querySelector('[data-testid="pool-attempt-downstream-error"]')).not.toBeNull();
-    expect(host?.textContent ?? "").toContain("failed to contact oauth codex upstream");
-    expect(host?.textContent ?? "").toContain("pool upstream responded with 502");
-    await waitFor(() => (host?.textContent ?? "").includes("OAuth Bridge Proxy"));
-    expect(apiMocks.fetchForwardProxyBindingNodes).toHaveBeenCalledWith(
-      ["fpb_failed_oauth_bridge"],
-      { includeCurrent: true, groupName: undefined },
-    );
-    expect(host?.textContent ?? "").toContain("OAuth Bridge Proxy");
-    expect(host?.textContent ?? "").not.toContain("fpb_failed_oauth_bridge");
-    expect(
-      host?.querySelector('[data-testid="pool-attempt-proxy-value"]')?.getAttribute("title"),
-    ).toBe("OAuth Bridge Proxy (fpb_failed_oauth_bridge)");
-  });
-
-  it("renders an unresolved pool attempt proxy as a compact single-line key", async () => {
-    apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([
-      {
-        id: 20,
-        invokeId: "invoke-unresolved-proxy",
-        occurredAt: "2026-03-10T00:00:00Z",
-        endpoint: "/v1/responses",
-        attemptIndex: 1,
-        distinctAccountIndex: 1,
-        sameAccountRetryIndex: 1,
-        status: "transport_failure",
-        proxyBindingKeySnapshot: "fpb_281c35167c1348e9d84a9f7dd26",
-        createdAt: "2026-03-10T00:00:02Z",
-        upstreamAccountId: 42,
-        upstreamAccountName: "pool-account-42",
-      },
-    ]);
-    apiMocks.fetchForwardProxyBindingNodes.mockResolvedValue([
-      {
-        key: "fpb_281c35167c1348e9d84a9f7dd26",
-        source: "missing",
-        displayName: "fpb_281c35167c1348e9d84a9f7dd26",
-        protocolLabel: "UNKNOWN",
-        penalized: false,
-        selectable: false,
-        last24h: [],
-      },
-    ]);
-
-    render(
-      <InvocationRecordsTable
-        focus="network"
-        isLoading={false}
-        records={[
-          createRecord({
-            id: 34,
-            invokeId: "invoke-unresolved-proxy",
-            routeMode: "pool",
-            upstreamAccountId: 42,
-            upstreamAccountName: "pool-account-42",
-            poolAttemptCount: 1,
-            poolDistinctAccountCount: 1,
-          }),
-        ]}
-      />,
-    );
-
-    clickFirstToggle();
-
-    await waitFor(() => host?.querySelector('[data-testid="pool-attempt-proxy-value"]') != null);
-
-    const proxyValue = host?.querySelector('[data-testid="pool-attempt-proxy-value"]');
-    expect(proxyValue?.textContent).toBe("fpb_281c...f7dd26");
-    expect(proxyValue?.getAttribute("title")).toBe("fpb_281c35167c1348e9d84a9f7dd26");
-    expect(proxyValue?.className).toContain("whitespace-nowrap");
-    expect(proxyValue?.className).toContain("truncate");
-  });
-
-  it("renders synthetic budget exhaustion as a terminal state, not a retry attempt", async () => {
-    apiMocks.fetchInvocationRecordDetail.mockResolvedValue({
-      id: 34,
-      abnormalResponseBody: null,
-    });
-    apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([
-      {
-        id: 701,
-        invokeId: "proxy-2694-1778487259104",
-        occurredAt: "2026-05-11T08:14:19Z",
-        endpoint: "/v1/responses",
-        attemptIndex: 1,
-        distinctAccountIndex: 1,
-        sameAccountRetryIndex: 1,
-        status: "transport_failure",
-        downstreamHttpStatus: 502,
-        failureKind: "failed_contact_upstream",
-        errorMessage:
-          "failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
-        downstreamErrorMessage:
-          "pool upstream responded with 502: failed to contact oauth codex upstream",
-        connectLatencyMs: 3918.4,
-        firstByteLatencyMs: null,
-        streamLatencyMs: null,
-        createdAt: "2026-05-11T08:14:23Z",
-        upstreamAccountId: 2562,
-        upstreamAccountName: "CaroleeKnorr31 Team",
-      },
-      {
-        id: 702,
-        invokeId: "proxy-2694-1778487259104",
-        occurredAt: "2026-05-11T08:14:19Z",
-        endpoint: "/v1/responses",
-        attemptIndex: 2,
-        distinctAccountIndex: 1,
-        sameAccountRetryIndex: 2,
-        status: "transport_failure",
-        downstreamHttpStatus: 502,
-        failureKind: "failed_contact_upstream",
-        errorMessage: "failed to contact oauth codex upstream",
-        connectLatencyMs: 3981.2,
-        createdAt: "2026-05-11T08:14:27Z",
-        upstreamAccountId: 2562,
-        upstreamAccountName: "CaroleeKnorr31 Team",
-      },
-      {
-        id: 703,
-        invokeId: "proxy-2694-1778487259104",
-        occurredAt: "2026-05-11T08:14:19Z",
-        endpoint: "/v1/responses",
-        attemptIndex: 3,
-        distinctAccountIndex: 1,
-        sameAccountRetryIndex: 3,
-        status: "transport_failure",
-        downstreamHttpStatus: 502,
-        failureKind: "failed_contact_upstream",
-        errorMessage: "failed to contact oauth codex upstream",
-        connectLatencyMs: 4047.9,
-        createdAt: "2026-05-11T08:14:31Z",
-        upstreamAccountId: 2562,
-        upstreamAccountName: "CaroleeKnorr31 Team",
-      },
-      {
-        id: 704,
-        invokeId: "proxy-2694-1778487259104",
-        occurredAt: "2026-05-11T08:14:19Z",
-        endpoint: "/v1/responses",
-        attemptIndex: 4,
-        distinctAccountIndex: 2,
-        sameAccountRetryIndex: 1,
-        status: "transport_failure",
-        downstreamHttpStatus: 502,
-        failureKind: "failed_contact_upstream",
-        errorMessage: "failed to contact oauth codex upstream",
-        connectLatencyMs: 4036.2,
-        createdAt: "2026-05-11T08:14:35Z",
-        upstreamAccountId: 2821,
-        upstreamAccountName: "orpvvgk884@outlook.com",
-      },
-      {
-        id: 705,
-        invokeId: "proxy-2694-1778487259104",
-        occurredAt: "2026-05-11T08:14:19Z",
-        endpoint: "/v1/responses",
-        attemptIndex: 5,
-        distinctAccountIndex: 2,
-        sameAccountRetryIndex: 2,
-        status: "transport_failure",
-        downstreamHttpStatus: 502,
-        failureKind: "failed_contact_upstream",
-        errorMessage: "failed to contact oauth codex upstream",
-        connectLatencyMs: 4071.8,
-        createdAt: "2026-05-11T08:14:39Z",
-        upstreamAccountId: 2821,
-        upstreamAccountName: "orpvvgk884@outlook.com",
-      },
-      {
-        id: 706,
-        invokeId: "proxy-2694-1778487259104",
-        occurredAt: "2026-05-11T08:14:19Z",
-        endpoint: "/v1/responses",
-        attemptIndex: 6,
-        distinctAccountIndex: 2,
-        sameAccountRetryIndex: 3,
-        status: "transport_failure",
-        downstreamHttpStatus: 502,
-        failureKind: "failed_contact_upstream",
-        errorMessage: "failed to contact oauth codex upstream",
-        connectLatencyMs: 4106.7,
-        createdAt: "2026-05-11T08:14:45Z",
-        upstreamAccountId: 2821,
-        upstreamAccountName: "orpvvgk884@outlook.com",
-      },
-      {
-        id: 707,
-        invokeId: "proxy-2694-1778487259104",
-        occurredAt: "2026-05-11T08:14:19Z",
-        endpoint: "/v1/responses",
-        attemptIndex: 7,
-        distinctAccountIndex: 3,
-        sameAccountRetryIndex: 1,
-        status: "http_failure",
-        httpStatus: 429,
-        failureKind: "upstream_http_429_quota_exhausted",
-        errorMessage: "pool upstream responded with 429: The usage limit has been reached",
-        connectLatencyMs: 4940.9,
-        firstByteLatencyMs: null,
-        streamLatencyMs: null,
-        createdAt: "2026-05-11T08:14:50Z",
-        upstreamAccountId: 2644,
-        upstreamAccountName: "solacebambi9197 Team",
-      },
-      {
-        id: 708,
-        invokeId: "proxy-2694-1778487259104",
-        occurredAt: "2026-05-11T08:14:19Z",
-        endpoint: "/v1/responses",
-        attemptIndex: 8,
-        distinctAccountIndex: 3,
-        sameAccountRetryIndex: 0,
-        status: "budget_exhausted_final",
-        httpStatus: 429,
-        failureKind: "max_distinct_accounts_exhausted",
-        errorMessage: "pool upstream responded with 429: The usage limit has been reached",
-        connectLatencyMs: null,
-        firstByteLatencyMs: null,
-        streamLatencyMs: null,
-        createdAt: "2026-05-11T08:14:50Z",
-        upstreamAccountId: 2644,
-        upstreamAccountName: "solacebambi9197 Team",
-      },
-    ]);
-
-    render(
-      <InvocationRecordsTable
-        focus="exception"
-        isLoading={false}
-        records={[
-          createRecord({
-            id: 34,
-            invokeId: "proxy-2694-1778487259104",
-            routeMode: "pool",
-            status: "failed",
-            failureClass: "service_failure",
-            failureKind: "upstream_http_429_quota_exhausted",
-            errorMessage:
-              "[upstream_http_429_quota_exhausted] pool upstream responded with 429: The usage limit has been reached",
-            poolAttemptCount: 7,
-            poolDistinctAccountCount: 3,
-            poolAttemptTerminalReason: "max_distinct_accounts_exhausted",
-            upstreamAccountId: 2644,
-            upstreamAccountName: "solacebambi9197 Team",
-          }),
-        ]}
-      />,
-    );
-
-    clickFirstToggle();
-
-    await waitFor(
-      () => host?.querySelector('[data-testid="pool-attempt-terminal-record"]') != null,
-    );
-
-    const attemptsList = host?.querySelector('[data-testid="pool-attempts-list"]');
-    expect(attemptsList?.querySelectorAll('[data-testid="pool-attempt-item"]')).toHaveLength(7);
-    expect(host?.textContent ?? "").toContain("table.poolAttempts.realAttemptCount: 7");
-    expect(host?.textContent ?? "").toContain("table.poolAttempts.terminalRecordCount: 1");
-
-    const terminalText =
-      host?.querySelector('[data-testid="pool-attempt-terminal-record"]')?.textContent ?? "";
-    expect(terminalText).toContain("table.poolAttempts.terminal.notDispatched");
-    expect(terminalText).toContain("table.poolAttempts.terminal.previousAccount");
-    expect(terminalText).toContain("solacebambi9197 Team");
-    expect(terminalText).toContain("max_distinct_accounts_exhausted");
-    expect(terminalText).not.toContain("table.poolAttempts.retry");
-    expect(terminalText).not.toContain("table.poolAttempts.connectLatency");
-    expect(terminalText).not.toContain("table.poolAttempts.firstByteLatency");
-    expect(terminalText).not.toContain("table.poolAttempts.streamLatency");
-    expect(terminalText).not.toContain("table.poolAttempts.status.httpFailure");
-    expect(terminalText).not.toContain("0/3");
   });
 
   it("uses downstream-facing diagnostics as the collapsed exception summary when upstream is empty", () => {
@@ -937,129 +573,6 @@ describe("InvocationRecordsTable", () => {
     );
   });
 
-  it("marks expanded running pool account labels as routing in progress", async () => {
-    apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([]);
-
-    render(
-      <InvocationRecordsTable
-        focus="network"
-        isLoading={false}
-        records={[
-          createRecord({
-            id: 30,
-            invokeId: "invoke-records-routing-account",
-            routeMode: "pool",
-            status: "running",
-            upstreamAccountId: 42,
-            upstreamAccountName: "pool-account-42",
-          }),
-        ]}
-      />,
-    );
-
-    clickFirstToggle();
-    await flushAsyncWork();
-
-    const accountLabel = host?.querySelector('[title="pool-account-42"]');
-    expect(accountLabel).not.toBeNull();
-    expect(accountLabel?.className).toContain("invocation-account-routing-in-progress");
-  });
-
-  it("refetches pool attempts when in-flight detail fields change without counter changes", async () => {
-    apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([]);
-
-    const initialRecord = createRecord({
-      id: 31,
-      invokeId: "invoke-pool-poll",
-      routeMode: "pool",
-      status: "running",
-      upstreamAccountId: 42,
-      upstreamAccountName: "pool-account-42",
-      poolAttemptCount: 1,
-      poolDistinctAccountCount: 1,
-      upstreamRequestId: "req-initial",
-      tUpstreamTtfbMs: 120,
-    });
-
-    render(<InvocationRecordsTable focus="network" isLoading={false} records={[initialRecord]} />);
-
-    clickFirstToggle();
-    await flushAsyncWork();
-    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenCalledTimes(1);
-
-    rerender(
-      <InvocationRecordsTable
-        focus="network"
-        isLoading={false}
-        records={[
-          createRecord({
-            ...initialRecord,
-            upstreamRequestId: "req-updated",
-            tUpstreamTtfbMs: 280,
-          }),
-        ]}
-      />,
-    );
-
-    await waitFor(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 2);
-
-    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenCalledTimes(2);
-    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(2, "invoke-pool-poll");
-  });
-
-  it("refetches pool attempts when an expanded in-flight record changes attempt counters", async () => {
-    apiMocks.fetchInvocationPoolAttempts.mockResolvedValueOnce([]).mockResolvedValueOnce([
-      {
-        id: 10,
-        invokeId: "invoke-pool-refresh",
-        occurredAt: "2026-03-10T00:00:00Z",
-        endpoint: "/v1/responses",
-        attemptIndex: 2,
-        distinctAccountIndex: 2,
-        sameAccountRetryIndex: 1,
-        status: "transport_failure",
-        createdAt: "2026-03-10T00:00:02Z",
-        upstreamAccountId: 84,
-        upstreamAccountName: "pool-account-84",
-      },
-    ]);
-
-    const initialRecord = createRecord({
-      id: 4,
-      invokeId: "invoke-pool-refresh",
-      routeMode: "pool",
-      status: "running",
-      upstreamAccountId: 42,
-      upstreamAccountName: "pool-account-42",
-      poolAttemptCount: 1,
-      poolDistinctAccountCount: 1,
-    });
-
-    render(<InvocationRecordsTable focus="network" isLoading={false} records={[initialRecord]} />);
-
-    clickFirstToggle();
-    await waitFor(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 1);
-
-    rerender(
-      <InvocationRecordsTable
-        focus="network"
-        isLoading={false}
-        records={[
-          createRecord({
-            ...initialRecord,
-            poolAttemptCount: 2,
-            poolDistinctAccountCount: 2,
-          }),
-        ]}
-      />,
-    );
-
-    await waitFor(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 2);
-
-    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(2, "invoke-pool-refresh");
-    await waitFor(() => (host?.textContent ?? "").includes("pool-account-84"));
-  });
-
   it('renders unknown actionable state as a fallback instead of "no"', () => {
     render(
       <InvocationRecordsTable
@@ -1082,67 +595,5 @@ describe("InvocationRecordsTable", () => {
     expect(text).toContain("records.table.exception.actionable");
     expect(text).not.toContain("records.table.exception.actionableNo");
     expect(text).toContain("—");
-  });
-
-  it("clears cancelled pool-attempt loading so re-expanding can fetch again", async () => {
-    let resolveFirstRequest!: (value: ApiPoolUpstreamRequestAttempt[]) => void;
-
-    apiMocks.fetchInvocationPoolAttempts
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveFirstRequest = resolve;
-          }),
-      )
-      .mockResolvedValueOnce([
-        {
-          id: 11,
-          invokeId: "invoke-pool-cancel",
-          occurredAt: "2026-03-10T00:00:00Z",
-          endpoint: "/v1/responses",
-          attemptIndex: 1,
-          distinctAccountIndex: 1,
-          sameAccountRetryIndex: 1,
-          status: "success",
-          createdAt: "2026-03-10T00:00:03Z",
-          upstreamAccountId: 52,
-          upstreamAccountName: "pool-account-52",
-        },
-      ]);
-
-    render(
-      <InvocationRecordsTable
-        focus="network"
-        isLoading={false}
-        records={[
-          createRecord({
-            id: 5,
-            invokeId: "invoke-pool-cancel",
-            routeMode: "pool",
-            upstreamAccountId: 52,
-            upstreamAccountName: "pool-account-52",
-            poolAttemptCount: 1,
-            poolDistinctAccountCount: 1,
-          }),
-        ]}
-      />,
-    );
-
-    clickFirstToggle();
-    await waitFor(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 1);
-
-    const collapseButton = host?.querySelector(
-      'button[aria-label="records.table.hideDetails"]',
-    ) as HTMLButtonElement | null;
-    expect(collapseButton).not.toBeNull();
-    act(() => {
-      collapseButton?.click();
-    });
-
-    clickFirstToggle();
-    await waitFor(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 2);
-
-    resolveFirstRequest([]);
-    await waitFor(() => (host?.textContent ?? "").includes("pool-account-52"));
   });
 });

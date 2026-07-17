@@ -1607,8 +1607,16 @@ pub(crate) fn build_invocation_routes(router: Router<Arc<AppState>>) -> Router<A
             get(fetch_invocation_record_detail),
         )
         .route(
+            "/api/invocations/:id/workflow-detail",
+            get(fetch_invocation_workflow_detail),
+        )
+        .route(
             "/api/invocations/:id/response-body",
             get(fetch_invocation_response_body),
+        )
+        .route(
+            "/api/invocations/:id/request-body",
+            get(fetch_invocation_request_body),
         )
         .route("/api/invocations/summary", get(fetch_invocation_summary))
         .route(
@@ -2165,6 +2173,7 @@ pub(crate) fn codex_invocations_create_sql(table_name: &str) -> String {
             response_raw_size INTEGER,
             response_raw_truncated INTEGER NOT NULL DEFAULT 0,
             response_raw_truncated_reason TEXT,
+            timeline_json TEXT,
             detail_level TEXT NOT NULL DEFAULT 'full',
             detail_pruned_at TEXT,
             detail_prune_reason TEXT,
@@ -2239,6 +2248,8 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema(
         ("compact_support_reason", "TEXT"),
         ("group_name_snapshot", "TEXT"),
         ("proxy_binding_key_snapshot", "TEXT"),
+        ("request_summary_json", "TEXT"),
+        ("response_summary_json", "TEXT"),
     ] {
         if !archive_columns.contains(column) {
             let statement = format!(
@@ -2285,6 +2296,8 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_in_plac
         ("compact_support_reason", "TEXT"),
         ("group_name_snapshot", "TEXT"),
         ("proxy_binding_key_snapshot", "TEXT"),
+        ("request_summary_json", "TEXT"),
+        ("response_summary_json", "TEXT"),
     ] {
         if !archive_columns.contains(column) {
             let statement =
@@ -2321,6 +2334,7 @@ pub(crate) async fn ensure_codex_invocations_archive_schema(
     for (column, ty) in [
         ("request_raw_codec", "TEXT NOT NULL DEFAULT 'identity'"),
         ("response_raw_codec", "TEXT NOT NULL DEFAULT 'identity'"),
+        ("timeline_json", "TEXT"),
         ("cost_input", "REAL"),
         ("cost_cache_write", "REAL"),
         ("cost_cache_read", "REAL"),
