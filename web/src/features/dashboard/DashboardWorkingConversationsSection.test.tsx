@@ -1555,6 +1555,15 @@ describe("DashboardWorkingConversationsSection", () => {
 
     await waitFor(() => {
       const accountCard = host?.querySelector('[data-testid="dashboard-upstream-account-card"]');
+      const inProgressSlot = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-inline-in-progress-slot"]',
+      );
+      const tpmSlot = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-inline-tpm-slot"]',
+      );
+      const spendRateSlot = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-inline-spend-rate-slot"]',
+      );
       const recentBreakdown = host?.querySelector(
         '[data-testid="dashboard-upstream-account-recent-breakdown"]',
       );
@@ -1563,12 +1572,73 @@ describe("DashboardWorkingConversationsSection", () => {
       expect(accountCard?.getAttribute("data-inline-metric-layout")).toBe("three-columns");
       expect(accountCard?.getAttribute("data-metric-columns")).toBe("2");
       expect(accountCard?.getAttribute("data-recent-breakdown-layout")).toBe("stacked");
+      expect(inProgressSlot?.classList.contains("w-full")).toBe(true);
+      expect(tpmSlot?.classList.contains("w-full")).toBe(true);
+      expect(spendRateSlot?.classList.contains("w-full")).toBe(true);
       expect(recentBreakdown?.textContent).not.toContain("排队中");
       expect(recentBreakdown?.textContent).not.toContain("请求中");
       expect(recentBreakdown?.textContent).not.toContain("响应中");
       expect(recentBreakdown?.textContent).not.toContain("失败");
       expect(recentBreakdown?.textContent).not.toContain("成功");
       expect(phaseSegments?.[0]?.getAttribute("data-phase-label-visible")).toBe("false");
+    });
+  });
+
+  it("keeps split-layout inline metric slots content-sized on wide upstream account cards", async () => {
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function () {
+      const testId = (this as HTMLElement).getAttribute("data-testid");
+      if (
+        testId === "dashboard-upstream-account-grid" ||
+        testId === "dashboard-upstream-account-card"
+      ) {
+        return 920;
+      }
+      return 1700;
+    });
+
+    renderSection(
+      createResponse([
+        createConversation("pck-upstream-account-split-layout", [
+          createPreview({
+            id: 3,
+            invokeId: "invoke-upstream-account-split-layout",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+      window.dispatchEvent(new Event("resize"));
+    });
+
+    await waitFor(() => {
+      const accountCard = host?.querySelector('[data-testid="dashboard-upstream-account-card"]');
+      const inProgressSlot = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-inline-in-progress-slot"]',
+      );
+      const tpmSlot = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-inline-tpm-slot"]',
+      );
+      const spendRateSlot = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-inline-spend-rate-slot"]',
+      );
+      expect(accountCard?.getAttribute("data-header-layout")).toBe("split");
+      expect(accountCard?.getAttribute("data-inline-metric-layout")).toBe("inline");
+      expect(inProgressSlot?.classList.contains("w-full")).toBe(false);
+      expect(tpmSlot?.classList.contains("w-full")).toBe(false);
+      expect(spendRateSlot?.classList.contains("w-full")).toBe(false);
     });
   });
 
