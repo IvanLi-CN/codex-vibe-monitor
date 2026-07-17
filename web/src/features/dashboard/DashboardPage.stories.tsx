@@ -182,6 +182,8 @@ function buildDashboardActivityResponse({
       firstByteAvgMs: 2145,
       firstResponseByteTotalAvgMs: 2145,
       avgTotalMs: 12_650,
+      currentFirstResponseByteTotalAvgMs: 2145,
+      currentAvgTotalMs: 12_650,
       inProgressInvocationCount: 8,
       retryInvocationCount: 1,
       uploadBytesPerSecond: 3_072,
@@ -235,6 +237,8 @@ function buildDashboardActivityResponse({
       firstByteAvgMs: 803,
       firstResponseByteTotalAvgMs: 803,
       avgTotalMs: 9140,
+      currentFirstResponseByteTotalAvgMs: 803,
+      currentAvgTotalMs: 9140,
       inProgressInvocationCount: 3,
       retryInvocationCount: 0,
       uploadBytesPerSecond: 1_280,
@@ -262,7 +266,7 @@ function buildDashboardActivityResponse({
       start: "2026-04-09T12:23:00.000Z",
       end: "2026-04-09T12:24:00.000Z",
       windowMinutes: 1,
-      mode: "last_complete_1m_sma",
+      mode: "rolling_60s_live_mean",
     },
     summary: {
       stats: {

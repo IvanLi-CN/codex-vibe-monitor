@@ -5010,6 +5010,10 @@ pub(crate) struct UpstreamAccountActivityAccumulator {
     first_response_byte_total_sum_ms: f64,
     total_latency_sample_count: i64,
     total_latency_sum_ms: f64,
+    latest_first_response_byte_total_at: Option<String>,
+    latest_first_response_byte_total_ms: Option<f64>,
+    latest_avg_total_at: Option<String>,
+    latest_avg_total_ms: Option<f64>,
     in_progress_wait_sample_count: i64,
     in_progress_wait_sum_ms: f64,
     last_occurred_at_epoch_ms: i64,
@@ -5019,6 +5023,31 @@ pub(crate) struct UpstreamAccountActivityAccumulator {
     recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
     usage_breakdown: UsageBreakdownAccumulator,
     model_performance: ModelPerformanceAccumulator,
+}
+
+#[derive(Debug, Clone, Default)]
+struct LatestTimedMetricValue {
+    at: Option<String>,
+    value: Option<f64>,
+}
+
+impl LatestTimedMetricValue {
+    fn update(&mut self, candidate_at: Option<String>, candidate_value: Option<f64>) {
+        let Some(candidate_at) = candidate_at else {
+            return;
+        };
+        let Some(candidate_value) = candidate_value.filter(|value| value.is_finite()) else {
+            return;
+        };
+        let replace = match self.at.as_deref() {
+            Some(current_at) => candidate_at.as_str() >= current_at,
+            None => true,
+        };
+        if replace {
+            self.at = Some(candidate_at);
+            self.value = Some(candidate_value);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -5292,6 +5321,17 @@ impl DashboardActivityCurrentMinuteAccumulator {
         (self.total_latency_sample_count > 0)
             .then_some(self.total_latency_sum_ms / self.total_latency_sample_count as f64)
     }
+
+    fn into_current_snapshot(self) -> DashboardActivityCurrentSnapshot {
+        DashboardActivityCurrentSnapshot {
+            qualified_tokens: self.qualified_tokens,
+            total_cost: self.total_cost,
+            first_response_byte_total_sample_count: self.first_response_byte_total_sample_count,
+            first_response_byte_total_sum_ms: self.first_response_byte_total_sum_ms,
+            total_latency_sample_count: self.total_latency_sample_count,
+            total_latency_sum_ms: self.total_latency_sum_ms,
+        }
+    }
 }
 
 pub(crate) fn normalize_trimmed_optional_string_local(raw: Option<String>) -> Option<String> {
@@ -5401,6 +5441,21 @@ fn merge_latest_optional_timestamp(current: &mut Option<String>, candidate: Opti
         Some(existing) => existing.max(candidate),
         None => candidate,
     });
+}
+
+fn merge_latest_timed_metric(
+    current_at: &mut Option<String>,
+    current_value: &mut Option<f64>,
+    candidate_at: Option<String>,
+    candidate_value: Option<f64>,
+) {
+    let mut latest = LatestTimedMetricValue {
+        at: current_at.take(),
+        value: current_value.take(),
+    };
+    latest.update(candidate_at, candidate_value);
+    *current_at = latest.at;
+    *current_value = latest.value;
 }
 
 pub(crate) fn invocation_upstream_account_id_with_attempt_fallback_sql(
@@ -5606,6 +5661,10 @@ struct UpstreamAccountActivityAggregateRow {
     first_response_byte_total_sum_ms: f64,
     total_latency_sample_count: i64,
     total_latency_sum_ms: f64,
+    latest_first_response_byte_total_at: Option<String>,
+    latest_first_response_byte_total_ms: Option<f64>,
+    latest_avg_total_at: Option<String>,
+    latest_avg_total_ms: Option<f64>,
 }
 
 #[derive(Debug, FromRow)]
@@ -5937,6 +5996,7 @@ async fn query_live_upstream_account_activity_aggregate_rows(
         r#"
         WITH filtered_invocations AS (
             SELECT
+                id,
                 occurred_at,
                 status,
                 total_tokens,
@@ -5980,6 +6040,46 @@ async fn query_live_upstream_account_activity_aggregate_rows(
             WHERE filtered_invocations.prompt_cache_key IS NOT NULL
               AND filtered_invocations.prompt_cache_key <> ''
             GROUP BY filtered_invocations.prompt_cache_key
+        ),
+        latest_first_response_byte_total_by_account AS (
+            SELECT
+                ranked.upstream_account_id AS upstream_account_id,
+                ranked.occurred_at AS latest_first_response_byte_total_at,
+                ranked.first_response_byte_total_ms AS latest_first_response_byte_total_ms
+            FROM (
+                SELECT
+                    filtered_invocations.upstream_account_id AS upstream_account_id,
+                    filtered_invocations.occurred_at AS occurred_at,
+                    {first_response_byte_total_sql} AS first_response_byte_total_ms,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY filtered_invocations.upstream_account_id
+                        ORDER BY filtered_invocations.occurred_at DESC, filtered_invocations.id DESC
+                    ) AS row_num
+                FROM filtered_invocations
+                WHERE {success_sql}
+                  AND filtered_invocations.t_upstream_ttfb_ms > 0
+            ) AS ranked
+            WHERE ranked.row_num = 1
+        ),
+        latest_total_latency_by_account AS (
+            SELECT
+                ranked.upstream_account_id AS upstream_account_id,
+                ranked.occurred_at AS latest_avg_total_at,
+                ranked.t_total_ms AS latest_avg_total_ms
+            FROM (
+                SELECT
+                    filtered_invocations.upstream_account_id AS upstream_account_id,
+                    filtered_invocations.occurred_at AS occurred_at,
+                    filtered_invocations.t_total_ms AS t_total_ms,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY filtered_invocations.upstream_account_id
+                        ORDER BY filtered_invocations.occurred_at DESC, filtered_invocations.id DESC
+                    ) AS row_num
+                FROM filtered_invocations
+                WHERE {success_sql}
+                  AND filtered_invocations.t_total_ms >= 0
+            ) AS ranked
+            WHERE ranked.row_num = 1
         )
         SELECT
             filtered_invocations.upstream_account_id AS upstream_account_id,
@@ -6000,10 +6100,18 @@ async fn query_live_upstream_account_activity_aggregate_rows(
             SUM(CASE WHEN {success_sql} AND t_upstream_ttfb_ms > 0 THEN 1 ELSE 0 END) AS first_response_byte_total_sample_count,
             CAST(COALESCE(SUM(CASE WHEN {success_sql} AND t_upstream_ttfb_ms > 0 THEN {first_response_byte_total_sql} ELSE 0 END), 0) AS REAL) AS first_response_byte_total_sum_ms,
             SUM(CASE WHEN {success_sql} AND t_total_ms >= 0 THEN 1 ELSE 0 END) AS total_latency_sample_count,
-            CAST(COALESCE(SUM(CASE WHEN {success_sql} AND t_total_ms >= 0 THEN t_total_ms ELSE 0 END), 0) AS REAL) AS total_latency_sum_ms
+            CAST(COALESCE(SUM(CASE WHEN {success_sql} AND t_total_ms >= 0 THEN t_total_ms ELSE 0 END), 0) AS REAL) AS total_latency_sum_ms,
+            latest_first_response_byte_total_by_account.latest_first_response_byte_total_at AS latest_first_response_byte_total_at,
+            latest_first_response_byte_total_by_account.latest_first_response_byte_total_ms AS latest_first_response_byte_total_ms,
+            latest_total_latency_by_account.latest_avg_total_at AS latest_avg_total_at,
+            latest_total_latency_by_account.latest_avg_total_ms AS latest_avg_total_ms
         FROM filtered_invocations
         LEFT JOIN conversation_created_at_by_key
           ON conversation_created_at_by_key.prompt_cache_key = filtered_invocations.prompt_cache_key
+        LEFT JOIN latest_first_response_byte_total_by_account
+          ON latest_first_response_byte_total_by_account.upstream_account_id IS filtered_invocations.upstream_account_id
+        LEFT JOIN latest_total_latency_by_account
+          ON latest_total_latency_by_account.upstream_account_id IS filtered_invocations.upstream_account_id
         "#,
     ));
     query.push(" GROUP BY filtered_invocations.upstream_account_id");
@@ -7448,10 +7556,22 @@ fn sum_dashboard_activity_current_minute_accumulators(
     total
 }
 
+fn sum_dashboard_activity_current_snapshots(
+    snapshots: impl IntoIterator<Item = DashboardActivityCurrentSnapshot>,
+) -> DashboardActivityCurrentSnapshot {
+    let mut total = DashboardActivityCurrentSnapshot::default();
+    for snapshot in snapshots {
+        total.add_assign(snapshot);
+    }
+    total
+}
+
 pub(crate) fn build_dashboard_activity_summary(
     accounts: &[DashboardActivityAccountResponse],
     include_live_counts: bool,
-    current_minute_summary: DashboardActivityCurrentMinuteAccumulator,
+    current_snapshot: DashboardActivityCurrentSnapshot,
+    latest_first_response_byte_total_in_range: Option<f64>,
+    latest_avg_total_in_range: Option<f64>,
     model_performance: ModelPerformanceResponse,
 ) -> DashboardActivitySummaryResponse {
     let ttfb_sum = accounts
@@ -7519,17 +7639,35 @@ pub(crate) fn build_dashboard_activity_summary(
         stats,
         tokens_per_minute: Some(
             sum_optional_rates(accounts, |account| account.tokens_per_minute)
-                .unwrap_or(current_minute_summary.qualified_tokens.max(0) as f64),
+                .unwrap_or(current_snapshot.qualified_tokens.max(0) as f64),
         ),
         spend_rate: Some(
             sum_optional_rates(accounts, |account| account.spend_rate)
-                .unwrap_or(current_minute_summary.total_cost.max(0.0)),
+                .unwrap_or(current_snapshot.total_cost.max(0.0)),
         ),
-        current_first_response_byte_total_avg_ms: current_minute_summary
-            .first_response_byte_total_avg_ms(),
-        current_avg_total_ms: current_minute_summary.avg_total_ms(),
+        current_first_response_byte_total_avg_ms: current_snapshot
+            .first_response_byte_total_avg_ms()
+            .or(latest_first_response_byte_total_in_range),
+        current_avg_total_ms: current_snapshot
+            .avg_total_ms()
+            .or(latest_avg_total_in_range),
         model_performance,
     }
+}
+
+fn build_dashboard_activity_latency_summary(
+    current_snapshot: DashboardActivityCurrentSnapshot,
+    latest_first_response_byte_total_in_range: Option<f64>,
+    latest_avg_total_in_range: Option<f64>,
+) -> (Option<f64>, Option<f64>) {
+    (
+        current_snapshot
+            .first_response_byte_total_avg_ms()
+            .or(latest_first_response_byte_total_in_range),
+        current_snapshot
+            .avg_total_ms()
+            .or(latest_avg_total_in_range),
+    )
 }
 
 pub(crate) async fn query_dashboard_activity_rate_usage_rows(
@@ -7701,6 +7839,7 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
 ) -> Result<DashboardActivitySnapshot, ApiError> {
+    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
     let totals =
         query_hourly_backed_summary_range(state, range.start, range.end, source_scope).await?;
     let mut stats = totals.into_response();
@@ -7717,11 +7856,52 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
     )
     .await?;
     apply_summary_live_augmentation(&mut stats, augmentation);
-    let current_minute_by_account =
-        load_dashboard_activity_current_minute_accumulators_by_account(state, source_scope, range)
+    let current_snapshot = if range_name == "yesterday" {
+        let current_minute_by_account =
+            load_dashboard_activity_current_minute_accumulators_by_account(
+                state,
+                source_scope,
+                range,
+            )
             .await?;
-    let current_minute_summary =
-        sum_dashboard_activity_current_minute_accumulators(current_minute_by_account.into_values());
+        sum_dashboard_activity_current_minute_accumulators(current_minute_by_account.into_values())
+            .into_current_snapshot()
+    } else {
+        sum_dashboard_activity_current_snapshots(
+            state
+                .dashboard_network_speed_cache
+                .snapshot_dashboard_activity_accounts(range.end)
+                .into_values(),
+        )
+    };
+    let mut latest_first_response_byte_total_in_range = LatestTimedMetricValue::default();
+    let mut latest_avg_total_in_range = LatestTimedMetricValue::default();
+    for row in
+        query_live_upstream_account_activity_aggregate_rows(&state.pool, source_scope, range, true)
+            .await?
+    {
+        latest_first_response_byte_total_in_range.update(
+            row.latest_first_response_byte_total_at,
+            row.latest_first_response_byte_total_ms,
+        );
+        latest_avg_total_in_range.update(row.latest_avg_total_at, row.latest_avg_total_ms);
+    }
+    if range.start < retention_cutoff {
+        let (archived_rows, _usage_breakdowns) =
+            query_completed_invocation_archive_activity_aggregate_rows(
+                &state.pool,
+                source_scope,
+                range,
+            )
+            .await?;
+        for row in archived_rows {
+            latest_first_response_byte_total_in_range.update(
+                row.latest_first_response_byte_total_at,
+                row.latest_first_response_byte_total_ms,
+            );
+            latest_avg_total_in_range.update(row.latest_avg_total_at, row.latest_avg_total_ms);
+        }
+    }
 
     Ok(DashboardActivitySnapshot {
         range: range_name.to_string(),
@@ -7730,11 +7910,14 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
         accounts: Vec::new(),
         summary: DashboardActivitySummaryResponse {
             stats,
-            tokens_per_minute: Some(current_minute_summary.qualified_tokens.max(0) as f64),
-            spend_rate: Some(current_minute_summary.total_cost.max(0.0)),
-            current_first_response_byte_total_avg_ms: current_minute_summary
-                .first_response_byte_total_avg_ms(),
-            current_avg_total_ms: current_minute_summary.avg_total_ms(),
+            tokens_per_minute: Some(current_snapshot.qualified_tokens.max(0) as f64),
+            spend_rate: Some(current_snapshot.total_cost.max(0.0)),
+            current_first_response_byte_total_avg_ms: current_snapshot
+                .first_response_byte_total_avg_ms()
+                .or(latest_first_response_byte_total_in_range.value),
+            current_avg_total_ms: current_snapshot
+                .avg_total_ms()
+                .or(latest_avg_total_in_range.value),
             model_performance: ModelPerformanceAccumulator::unavailable(range),
         },
     })
@@ -7769,12 +7952,21 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
     let mut account_activity = HashMap::<Option<i64>, UpstreamAccountActivityAccumulator>::new();
     let mut model_performance = ModelPerformanceAccumulator::default();
-    let current_minute_by_account =
+    let current_snapshot_by_account = if range_name == "yesterday" {
         load_dashboard_activity_current_minute_accumulators_by_account(state, source_scope, range)
-            .await?;
-    let current_minute_summary = sum_dashboard_activity_current_minute_accumulators(
-        current_minute_by_account.values().copied(),
-    );
+            .await?
+            .into_iter()
+            .map(|(upstream_account_id, accumulator)| {
+                (upstream_account_id, accumulator.into_current_snapshot())
+            })
+            .collect::<HashMap<_, _>>()
+    } else {
+        state
+            .dashboard_network_speed_cache
+            .snapshot_dashboard_activity_accounts(range.end)
+    };
+    let current_snapshot_summary =
+        sum_dashboard_activity_current_snapshots(current_snapshot_by_account.values().copied());
     let model_performance_duration_overrides = if model_performance_available {
         Some(
             query_live_model_performance_duration_overrides(&state.pool, source_scope, range, true)
@@ -7809,6 +8001,18 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
         entry.total_latency_sample_count += row.total_latency_sample_count;
         entry.total_latency_sum_ms += row.total_latency_sum_ms;
+        merge_latest_timed_metric(
+            &mut entry.latest_first_response_byte_total_at,
+            &mut entry.latest_first_response_byte_total_ms,
+            row.latest_first_response_byte_total_at,
+            row.latest_first_response_byte_total_ms,
+        );
+        merge_latest_timed_metric(
+            &mut entry.latest_avg_total_at,
+            &mut entry.latest_avg_total_ms,
+            row.latest_avg_total_at,
+            row.latest_avg_total_ms,
+        );
     }
     for row in query_live_upstream_account_usage_breakdown_rows(
         &state.pool,
@@ -7856,6 +8060,18 @@ pub(crate) async fn load_dashboard_activity_snapshot(
             entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
             entry.total_latency_sample_count += row.total_latency_sample_count;
             entry.total_latency_sum_ms += row.total_latency_sum_ms;
+            merge_latest_timed_metric(
+                &mut entry.latest_first_response_byte_total_at,
+                &mut entry.latest_first_response_byte_total_ms,
+                row.latest_first_response_byte_total_at,
+                row.latest_first_response_byte_total_ms,
+            );
+            merge_latest_timed_metric(
+                &mut entry.latest_avg_total_at,
+                &mut entry.latest_avg_total_ms,
+                row.latest_avg_total_at,
+                row.latest_avg_total_ms,
+            );
         }
         for row in archived_usage_breakdowns {
             account_activity
@@ -8140,6 +8356,19 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         account_activity.entry(*upstream_account_id).or_default();
     }
 
+    let mut latest_first_response_byte_total_in_range = LatestTimedMetricValue::default();
+    let mut latest_avg_total_in_range = LatestTimedMetricValue::default();
+    for aggregate in account_activity.values() {
+        latest_first_response_byte_total_in_range.update(
+            aggregate.latest_first_response_byte_total_at.clone(),
+            aggregate.latest_first_response_byte_total_ms,
+        );
+        latest_avg_total_in_range.update(
+            aggregate.latest_avg_total_at.clone(),
+            aggregate.latest_avg_total_ms,
+        );
+    }
+
     let account_ids = account_activity
         .keys()
         .filter_map(|id| *id)
@@ -8167,12 +8396,18 @@ pub(crate) async fn load_dashboard_activity_snapshot(
             let model_performance = aggregate
                 .model_performance
                 .into_response(range, model_performance_available);
-            let current_minute = current_minute_by_account
+            let current_snapshot = current_snapshot_by_account
                 .get(&upstream_account_id)
                 .copied()
                 .unwrap_or_default();
-            let tokens_per_minute = Some(current_minute.qualified_tokens.max(0) as f64);
-            let spend_rate = Some(current_minute.total_cost.max(0.0));
+            let (current_first_response_byte_total_avg_ms, current_avg_total_ms) =
+                build_dashboard_activity_latency_summary(
+                    current_snapshot,
+                    aggregate.latest_first_response_byte_total_ms,
+                    aggregate.latest_avg_total_ms,
+                );
+            let tokens_per_minute = Some(current_snapshot.qualified_tokens.max(0) as f64);
+            let spend_rate = Some(current_snapshot.total_cost.max(0.0));
             let (in_progress_invocation_count, in_progress_phase_counts, retry_invocation_count) =
                 if range_name == "yesterday" {
                     (None, None, None)
@@ -8268,6 +8503,8 @@ pub(crate) async fn load_dashboard_activity_snapshot(
                 avg_total_ms: (aggregate.total_latency_sample_count > 0).then_some(
                     aggregate.total_latency_sum_ms / aggregate.total_latency_sample_count as f64,
                 ),
+                current_first_response_byte_total_avg_ms,
+                current_avg_total_ms,
                 in_progress_invocation_count,
                 in_progress_phase_counts,
                 retry_invocation_count,
@@ -8313,7 +8550,9 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     let summary = build_dashboard_activity_summary(
         &accounts,
         range_name != "yesterday",
-        current_minute_summary,
+        current_snapshot_summary,
+        latest_first_response_byte_total_in_range.value,
+        latest_avg_total_in_range.value,
         model_performance.into_response(range, model_performance_available),
     );
     Ok(DashboardActivitySnapshot {
@@ -8367,6 +8606,8 @@ pub(crate) fn dashboard_account_to_upstream_account(
         first_byte_avg_ms: account.first_byte_avg_ms,
         first_response_byte_total_avg_ms: account.first_response_byte_total_avg_ms,
         avg_total_ms: account.avg_total_ms,
+        current_first_response_byte_total_avg_ms: account.current_first_response_byte_total_avg_ms,
+        current_avg_total_ms: account.current_avg_total_ms,
         in_progress_invocation_count: account.in_progress_invocation_count,
         in_progress_phase_counts: account.in_progress_phase_counts,
         retry_invocation_count: account.retry_invocation_count,
@@ -8437,10 +8678,18 @@ pub(crate) async fn fetch_dashboard_activity(
     }
     let range_start = format_utc_iso_precise(snapshot.range_start);
     let range_end = format_utc_iso_precise(snapshot.range_end);
-    let current_rate_window = dashboard_activity_last_complete_minute_window(ExactUtcRange {
-        start: snapshot.range_start,
-        end: snapshot.range_end,
-    });
+    let current_rate_window = if params.range == "yesterday" {
+        dashboard_activity_last_complete_minute_window(ExactUtcRange {
+            start: snapshot.range_start,
+            end: snapshot.range_end,
+        })
+    } else {
+        ExactUtcRange {
+            start: snapshot.range_end
+                - ChronoDuration::seconds(DASHBOARD_ACTIVITY_REALTIME_WINDOW_SECONDS),
+            end: snapshot.range_end,
+        }
+    };
     let account_count = snapshot.accounts.len();
     let accounts = params.include_accounts.then_some(snapshot.accounts);
     let response = DashboardActivityResponse {
@@ -8453,7 +8702,11 @@ pub(crate) async fn fetch_dashboard_activity(
             start: format_utc_iso_precise(current_rate_window.start),
             end: format_utc_iso_precise(current_rate_window.end),
             window_minutes: 1,
-            mode: "last_complete_1m_sma".to_string(),
+            mode: if params.range == "yesterday" {
+                "last_complete_1m_sma".to_string()
+            } else {
+                "rolling_60s_live_mean".to_string()
+            },
         },
         summary: snapshot.summary,
         accounts,

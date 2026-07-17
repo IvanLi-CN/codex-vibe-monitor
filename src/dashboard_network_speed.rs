@@ -3,6 +3,8 @@ use super::*;
 pub(crate) const DASHBOARD_NETWORK_REALTIME_WINDOW_SECONDS: i64 = 15;
 pub(crate) const DASHBOARD_NETWORK_BUCKET_SECONDS: i64 = 300;
 const DASHBOARD_NETWORK_SECOND_BUCKET_RETENTION_SECONDS: i64 = 45;
+pub(crate) const DASHBOARD_ACTIVITY_REALTIME_WINDOW_SECONDS: i64 = 60;
+const DASHBOARD_ACTIVITY_SECOND_BUCKET_RETENTION_SECONDS: i64 = 180;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct DashboardNetworkRateSnapshot {
@@ -14,6 +16,72 @@ pub(crate) struct DashboardNetworkRateSnapshot {
 pub(crate) struct DashboardNetworkByteTotals {
     pub(crate) upload_bytes: i64,
     pub(crate) download_bytes: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct DashboardActivityCurrentSnapshot {
+    pub(crate) qualified_tokens: i64,
+    pub(crate) total_cost: f64,
+    pub(crate) first_response_byte_total_sample_count: i64,
+    pub(crate) first_response_byte_total_sum_ms: f64,
+    pub(crate) total_latency_sample_count: i64,
+    pub(crate) total_latency_sum_ms: f64,
+}
+
+impl DashboardActivityCurrentSnapshot {
+    pub(crate) fn add_assign(&mut self, other: Self) {
+        self.qualified_tokens = self
+            .qualified_tokens
+            .saturating_add(other.qualified_tokens.max(0));
+        self.total_cost += other.total_cost.max(0.0);
+        self.first_response_byte_total_sample_count = self
+            .first_response_byte_total_sample_count
+            .saturating_add(other.first_response_byte_total_sample_count.max(0));
+        self.first_response_byte_total_sum_ms += other.first_response_byte_total_sum_ms.max(0.0);
+        self.total_latency_sample_count = self
+            .total_latency_sample_count
+            .saturating_add(other.total_latency_sample_count.max(0));
+        self.total_latency_sum_ms += other.total_latency_sum_ms.max(0.0);
+    }
+
+    fn subtract_assign(&mut self, other: Self) {
+        self.qualified_tokens = self
+            .qualified_tokens
+            .saturating_sub(other.qualified_tokens.max(0));
+        self.total_cost = (self.total_cost - other.total_cost.max(0.0)).max(0.0);
+        self.first_response_byte_total_sample_count = self
+            .first_response_byte_total_sample_count
+            .saturating_sub(other.first_response_byte_total_sample_count.max(0));
+        self.first_response_byte_total_sum_ms = (self.first_response_byte_total_sum_ms
+            - other.first_response_byte_total_sum_ms.max(0.0))
+        .max(0.0);
+        self.total_latency_sample_count = self
+            .total_latency_sample_count
+            .saturating_sub(other.total_latency_sample_count.max(0));
+        self.total_latency_sum_ms =
+            (self.total_latency_sum_ms - other.total_latency_sum_ms.max(0.0)).max(0.0);
+    }
+
+    fn is_zero(self) -> bool {
+        self.qualified_tokens <= 0
+            && self.total_cost <= 0.0
+            && self.first_response_byte_total_sample_count <= 0
+            && self.first_response_byte_total_sum_ms <= 0.0
+            && self.total_latency_sample_count <= 0
+            && self.total_latency_sum_ms <= 0.0
+    }
+
+    pub(crate) fn first_response_byte_total_avg_ms(self) -> Option<f64> {
+        (self.first_response_byte_total_sample_count > 0).then_some(
+            self.first_response_byte_total_sum_ms
+                / self.first_response_byte_total_sample_count as f64,
+        )
+    }
+
+    pub(crate) fn avg_total_ms(self) -> Option<f64> {
+        (self.total_latency_sample_count > 0)
+            .then_some(self.total_latency_sum_ms / self.total_latency_sample_count as f64)
+    }
 }
 
 impl DashboardNetworkByteTotals {
@@ -71,6 +139,12 @@ struct DashboardNetworkSecondBucket {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct DashboardActivitySecondBucket {
+    epoch_second: i64,
+    snapshot: DashboardActivityCurrentSnapshot,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct DashboardNetworkOpenBucketState {
     bucket_start_epoch_second: i64,
     seed_totals: DashboardNetworkByteTotals,
@@ -83,14 +157,19 @@ struct DashboardTrackedInvocationTraffic {
     upstream_account_id: Option<i64>,
     upload_bytes_recorded: i64,
     download_bytes_recorded: i64,
+    live_first_response_byte_epoch_second: Option<i64>,
+    live_first_response_byte_total_ms: Option<f64>,
 }
 
 #[derive(Debug, Default)]
 struct DashboardNetworkSpeedCacheInner {
     second_buckets: HashMap<DashboardNetworkScopeKey, VecDeque<DashboardNetworkSecondBucket>>,
+    activity_second_buckets:
+        HashMap<DashboardNetworkScopeKey, VecDeque<DashboardActivitySecondBucket>>,
     open_buckets: HashMap<DashboardNetworkScopeKey, DashboardNetworkOpenBucketState>,
     tracked_invocations: HashMap<(String, String), DashboardTrackedInvocationTraffic>,
     latest_speed_epoch_second: Option<i64>,
+    latest_activity_epoch_second: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -197,6 +276,245 @@ impl DashboardNetworkSpeedCache {
             .remove(&(invoke_id.to_string(), occurred_at.to_string()));
     }
 
+    pub(crate) fn observe_dashboard_activity_runtime_snapshot(
+        &self,
+        record: &ApiInvocation,
+        observed_at: DateTime<Utc>,
+    ) {
+        let live_first_response_byte_total_ms = crate::stats::resolve_first_response_byte_total_ms(
+            record.t_req_read_ms,
+            record.t_req_parse_ms,
+            record.t_upstream_connect_ms,
+            record.t_upstream_ttfb_ms,
+        );
+        let observed_epoch_second = observed_at.timestamp();
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("dashboard network speed cache should not be poisoned");
+        prune_activity_second_buckets_locked(&mut inner, observed_epoch_second);
+        let key = (record.invoke_id.clone(), record.occurred_at.clone());
+        let mut tracked = inner.tracked_invocations.remove(&key).unwrap_or_default();
+        let previous_upstream_account_id = tracked.upstream_account_id;
+        tracked.upstream_account_id = record.upstream_account_id.or(tracked.upstream_account_id);
+
+        if previous_upstream_account_id != tracked.upstream_account_id
+            && let (Some(epoch_second), Some(first_response_byte_total_ms)) = (
+                tracked.live_first_response_byte_epoch_second,
+                tracked.live_first_response_byte_total_ms,
+            )
+        {
+            remove_activity_sample_for_scope_locked(
+                &mut inner,
+                previous_upstream_account_id,
+                epoch_second,
+                first_response_byte_total_ms,
+            );
+            add_activity_sample_for_scope_locked(
+                &mut inner,
+                tracked.upstream_account_id,
+                epoch_second,
+                first_response_byte_total_ms,
+            );
+        }
+
+        match (
+            tracked.live_first_response_byte_epoch_second,
+            tracked.live_first_response_byte_total_ms,
+            live_first_response_byte_total_ms,
+        ) {
+            (None, _, Some(first_response_byte_total_ms)) => {
+                tracked.live_first_response_byte_epoch_second = Some(observed_epoch_second);
+                tracked.live_first_response_byte_total_ms = Some(first_response_byte_total_ms);
+                add_activity_sample_for_scope_locked(
+                    &mut inner,
+                    tracked.upstream_account_id,
+                    observed_epoch_second,
+                    first_response_byte_total_ms,
+                );
+            }
+            (Some(epoch_second), Some(previous_ms), Some(next_ms))
+                if (previous_ms - next_ms).abs() >= 0.5 =>
+            {
+                remove_activity_sample_for_scope_locked(
+                    &mut inner,
+                    tracked.upstream_account_id,
+                    epoch_second,
+                    previous_ms,
+                );
+                tracked.live_first_response_byte_total_ms = Some(next_ms);
+                add_activity_sample_for_scope_locked(
+                    &mut inner,
+                    tracked.upstream_account_id,
+                    epoch_second,
+                    next_ms,
+                );
+            }
+            _ => {}
+        }
+        inner.tracked_invocations.insert(key, tracked);
+    }
+
+    pub(crate) fn finalize_dashboard_activity_invocation(
+        &self,
+        record: &ApiInvocation,
+        observed_at: DateTime<Utc>,
+    ) {
+        let observed_epoch_second = observed_at.timestamp();
+        let success_like =
+            prompt_cache_and_timeseries_shared::prompt_invocation_status_is_success_like(
+                record.status.as_deref(),
+                record.error_message.as_deref(),
+            );
+        let classification = resolve_failure_classification(
+            record.status.as_deref(),
+            record.error_message.as_deref(),
+            record.failure_kind.as_deref(),
+            record.failure_class.as_deref(),
+            record.is_actionable.map(i64::from),
+        );
+        let is_success = success_like && classification.failure_class == FailureClass::None;
+        let terminal_first_response_byte_total_ms =
+            crate::stats::resolve_first_response_byte_total_ms(
+                record.t_req_read_ms,
+                record.t_req_parse_ms,
+                record.t_upstream_connect_ms,
+                record.t_upstream_ttfb_ms,
+            );
+        let terminal_total_ms = record
+            .t_total_ms
+            .filter(|value| value.is_finite() && *value >= 0.0);
+        let terminal_qualified_tokens = if is_success && record.cost.is_some() {
+            record.total_tokens.unwrap_or_default().max(0)
+        } else {
+            0
+        };
+        let terminal_cost = record.cost.unwrap_or_default().max(0.0);
+
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("dashboard network speed cache should not be poisoned");
+        prune_activity_second_buckets_locked(&mut inner, observed_epoch_second);
+        let tracked = inner
+            .tracked_invocations
+            .remove(&(record.invoke_id.clone(), record.occurred_at.clone()))
+            .unwrap_or_default();
+        let upstream_account_id = record.upstream_account_id.or(tracked.upstream_account_id);
+
+        if let (Some(epoch_second), Some(first_response_byte_total_ms)) = (
+            tracked.live_first_response_byte_epoch_second,
+            tracked.live_first_response_byte_total_ms,
+        ) && !is_success
+        {
+            remove_activity_sample_for_scope_locked(
+                &mut inner,
+                upstream_account_id,
+                epoch_second,
+                first_response_byte_total_ms,
+            );
+        }
+
+        if is_success {
+            if tracked.live_first_response_byte_total_ms.is_none()
+                && let Some(first_response_byte_total_ms) = terminal_first_response_byte_total_ms
+            {
+                add_activity_sample_for_scope_locked(
+                    &mut inner,
+                    upstream_account_id,
+                    observed_epoch_second,
+                    first_response_byte_total_ms,
+                );
+            }
+            let mut terminal_snapshot = DashboardActivityCurrentSnapshot {
+                qualified_tokens: terminal_qualified_tokens,
+                total_cost: terminal_cost,
+                ..DashboardActivityCurrentSnapshot::default()
+            };
+            if let Some(total_ms) = terminal_total_ms {
+                terminal_snapshot.total_latency_sample_count = 1;
+                terminal_snapshot.total_latency_sum_ms = total_ms;
+            }
+            record_activity_scope_delta_locked(
+                &mut inner,
+                upstream_account_id,
+                observed_epoch_second,
+                terminal_snapshot,
+            );
+        } else if terminal_cost > 0.0 {
+            record_activity_scope_delta_locked(
+                &mut inner,
+                upstream_account_id,
+                observed_epoch_second,
+                DashboardActivityCurrentSnapshot {
+                    total_cost: terminal_cost,
+                    ..DashboardActivityCurrentSnapshot::default()
+                },
+            );
+        }
+    }
+
+    pub(crate) fn drop_dashboard_activity_invocation(&self, invoke_id: &str, occurred_at: &str) {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("dashboard network speed cache should not be poisoned");
+        let now_epoch_second = Utc::now().timestamp();
+        prune_activity_second_buckets_locked(&mut inner, now_epoch_second);
+        let Some(tracked) = inner
+            .tracked_invocations
+            .remove(&(invoke_id.to_string(), occurred_at.to_string()))
+        else {
+            return;
+        };
+        if let (Some(epoch_second), Some(first_response_byte_total_ms)) = (
+            tracked.live_first_response_byte_epoch_second,
+            tracked.live_first_response_byte_total_ms,
+        ) {
+            remove_activity_sample_for_scope_locked(
+                &mut inner,
+                tracked.upstream_account_id,
+                epoch_second,
+                first_response_byte_total_ms,
+            );
+        }
+    }
+
+    pub(crate) fn snapshot_dashboard_activity_accounts(
+        &self,
+        now: DateTime<Utc>,
+    ) -> HashMap<Option<i64>, DashboardActivityCurrentSnapshot> {
+        let now_epoch_second = now.timestamp();
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("dashboard network speed cache should not be poisoned");
+        prune_activity_second_buckets_locked(&mut inner, now_epoch_second);
+
+        let mut snapshots = HashMap::new();
+        for (scope, buckets) in &inner.activity_second_buckets {
+            let Some(upstream_account_id) = scope.upstream_account_id() else {
+                continue;
+            };
+            let mut snapshot = DashboardActivityCurrentSnapshot::default();
+            for bucket in buckets {
+                if bucket.epoch_second
+                    < now_epoch_second.saturating_sub(
+                        DASHBOARD_ACTIVITY_REALTIME_WINDOW_SECONDS.saturating_sub(1),
+                    )
+                {
+                    continue;
+                }
+                if bucket.epoch_second > now_epoch_second {
+                    continue;
+                }
+                snapshot.add_assign(bucket.snapshot);
+            }
+            snapshots.insert(upstream_account_id, snapshot);
+        }
+        snapshots
+    }
+
     pub(crate) fn snapshot_account_rates(
         &self,
         now: DateTime<Utc>,
@@ -247,6 +565,11 @@ impl DashboardNetworkSpeedCache {
             .expect("dashboard network speed cache should not be poisoned");
         if inner.latest_speed_epoch_second.is_some_and(|latest| {
             now_epoch_second.saturating_sub(latest) < DASHBOARD_NETWORK_REALTIME_WINDOW_SECONDS
+        }) {
+            return true;
+        }
+        if inner.latest_activity_epoch_second.is_some_and(|latest| {
+            now_epoch_second.saturating_sub(latest) < DASHBOARD_ACTIVITY_REALTIME_WINDOW_SECONDS
         }) {
             return true;
         }
@@ -390,6 +713,139 @@ fn record_bucket_delta_locked(
     prune_second_buckets_locked(inner, observed_epoch_second);
 }
 
+fn add_activity_sample_for_scope_locked(
+    inner: &mut DashboardNetworkSpeedCacheInner,
+    upstream_account_id: Option<i64>,
+    observed_epoch_second: i64,
+    first_response_byte_total_ms: f64,
+) {
+    if !first_response_byte_total_ms.is_finite() || first_response_byte_total_ms < 0.0 {
+        return;
+    }
+    record_activity_scope_delta_locked(
+        inner,
+        upstream_account_id,
+        observed_epoch_second,
+        DashboardActivityCurrentSnapshot {
+            first_response_byte_total_sample_count: 1,
+            first_response_byte_total_sum_ms: first_response_byte_total_ms,
+            ..DashboardActivityCurrentSnapshot::default()
+        },
+    );
+}
+
+fn remove_activity_sample_for_scope_locked(
+    inner: &mut DashboardNetworkSpeedCacheInner,
+    upstream_account_id: Option<i64>,
+    observed_epoch_second: i64,
+    first_response_byte_total_ms: f64,
+) {
+    if !first_response_byte_total_ms.is_finite() || first_response_byte_total_ms < 0.0 {
+        return;
+    }
+    remove_activity_scope_delta_locked(
+        inner,
+        upstream_account_id,
+        observed_epoch_second,
+        DashboardActivityCurrentSnapshot {
+            first_response_byte_total_sample_count: 1,
+            first_response_byte_total_sum_ms: first_response_byte_total_ms,
+            ..DashboardActivityCurrentSnapshot::default()
+        },
+    );
+}
+
+fn record_activity_scope_delta_locked(
+    inner: &mut DashboardNetworkSpeedCacheInner,
+    upstream_account_id: Option<i64>,
+    observed_epoch_second: i64,
+    snapshot: DashboardActivityCurrentSnapshot,
+) {
+    if snapshot.is_zero() {
+        return;
+    }
+    inner.latest_activity_epoch_second = Some(
+        inner
+            .latest_activity_epoch_second
+            .map_or(observed_epoch_second, |current| {
+                current.max(observed_epoch_second)
+            }),
+    );
+    for scope in [
+        DashboardNetworkScopeKey::Global,
+        DashboardNetworkScopeKey::account_scope(upstream_account_id),
+    ] {
+        record_activity_bucket_delta_locked(inner, scope, observed_epoch_second, snapshot);
+    }
+}
+
+fn record_activity_bucket_delta_locked(
+    inner: &mut DashboardNetworkSpeedCacheInner,
+    scope: DashboardNetworkScopeKey,
+    observed_epoch_second: i64,
+    snapshot: DashboardActivityCurrentSnapshot,
+) {
+    let buckets = inner.activity_second_buckets.entry(scope).or_default();
+    if let Some(last) = buckets.back_mut()
+        && last.epoch_second == observed_epoch_second
+    {
+        last.snapshot.add_assign(snapshot);
+    } else {
+        buckets.push_back(DashboardActivitySecondBucket {
+            epoch_second: observed_epoch_second,
+            snapshot,
+        });
+    }
+    prune_activity_second_buckets_locked(inner, observed_epoch_second);
+}
+
+fn remove_activity_scope_delta_locked(
+    inner: &mut DashboardNetworkSpeedCacheInner,
+    upstream_account_id: Option<i64>,
+    observed_epoch_second: i64,
+    snapshot: DashboardActivityCurrentSnapshot,
+) {
+    if snapshot.is_zero() {
+        return;
+    }
+    for scope in [
+        DashboardNetworkScopeKey::Global,
+        DashboardNetworkScopeKey::account_scope(upstream_account_id),
+    ] {
+        remove_activity_bucket_delta_locked(inner, scope, observed_epoch_second, snapshot);
+    }
+}
+
+fn remove_activity_bucket_delta_locked(
+    inner: &mut DashboardNetworkSpeedCacheInner,
+    scope: DashboardNetworkScopeKey,
+    observed_epoch_second: i64,
+    snapshot: DashboardActivityCurrentSnapshot,
+) {
+    let Some(buckets) = inner.activity_second_buckets.get_mut(&scope) else {
+        return;
+    };
+    if let Some(bucket) = buckets
+        .iter_mut()
+        .find(|bucket| bucket.epoch_second == observed_epoch_second)
+    {
+        bucket.snapshot.subtract_assign(snapshot);
+    }
+    while buckets
+        .front()
+        .is_some_and(|bucket| bucket.snapshot.is_zero())
+    {
+        buckets.pop_front();
+    }
+    while buckets
+        .back()
+        .is_some_and(|bucket| bucket.snapshot.is_zero())
+    {
+        buckets.pop_back();
+    }
+    buckets.retain(|bucket| !bucket.snapshot.is_zero());
+}
+
 fn prune_second_buckets_locked(inner: &mut DashboardNetworkSpeedCacheInner, now_epoch_second: i64) {
     let cutoff_epoch_second =
         now_epoch_second.saturating_sub(DASHBOARD_NETWORK_SECOND_BUCKET_RETENTION_SECONDS);
@@ -401,6 +857,25 @@ fn prune_second_buckets_locked(inner: &mut DashboardNetworkSpeedCacheInner, now_
                 break;
             }
         }
+        !buckets.is_empty()
+    });
+}
+
+fn prune_activity_second_buckets_locked(
+    inner: &mut DashboardNetworkSpeedCacheInner,
+    now_epoch_second: i64,
+) {
+    let cutoff_epoch_second =
+        now_epoch_second.saturating_sub(DASHBOARD_ACTIVITY_SECOND_BUCKET_RETENTION_SECONDS);
+    inner.activity_second_buckets.retain(|_, buckets| {
+        while let Some(front) = buckets.front() {
+            if front.epoch_second < cutoff_epoch_second {
+                buckets.pop_front();
+            } else {
+                break;
+            }
+        }
+        buckets.retain(|bucket| !bucket.snapshot.is_zero());
         !buckets.is_empty()
     });
 }

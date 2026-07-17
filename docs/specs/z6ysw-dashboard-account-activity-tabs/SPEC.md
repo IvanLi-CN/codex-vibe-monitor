@@ -67,8 +67,8 @@
 - 账号卡标题行的快捷策略 chip 必须固定展示账号级快速操作入口：优先级、Fast 模式、`禁出`、`禁入`；优先级入口按 `普通 → 兜底 → 主力 → 禁新 → 普通` 轮换，并分别写账号级 `priorityTier=normal|fallback|primary|no_new`；Fast 模式按 `不改Fast → 补Fast → 强制Fast → 禁Fast → 不改Fast` 轮换，并写账号级 `fastModeRewriteMode=keep_original|fill_missing|force_add|force_remove`；`禁出 / 禁入` 分别切换账号级 `allowCutOut / allowCutIn`。Dashboard 快捷入口不得清除账号覆盖或恢复继承。
 - Dashboard 快捷策略保存必须使用乐观 UI 与 1 秒 debounce；debounce 窗口内只提交最终值，失败时回滚到最近已提交状态，并在账号卡内暴露可见错误。保存复用 `PATCH /api/pool/upstream-accounts/:id` 的 `routingRule` payload，不新增 mutation endpoint。
 - 账号卡右侧必须提供齿轮 icon button；点击后打开当前账号详情的 `routing` 标签页。
-- Dashboard 实时 KPI 与账号标题行里的 `tokensPerMinute` / `spendRate` 必须统一使用后端 `last_complete_1m_sma` 合同：以响应 `rangeEnd` 对齐最近 1 个完整分钟 bucket，严格排除当前未闭合分钟；`TPM` 分子仅累加成功、失败分类为 `none` 且 `cost` 非空的合格调用 token，`cost=0` 仍计入；`消费速率` 直接使用该分钟 cost 聚合；最近完整分钟空桶时必须返回 `TPM=0`、`消费速率=0`。`requestCount`、`totalTokens`、`totalCost`、recent 调用与排序继续使用所选 range 的总量口径。
-- Dashboard 顶部实时 `首字用时` 与 `响应时间` 必须由后端同一个最近完整 1 分钟 bucket 统一给出：`currentFirstResponseByteTotalAvgMs` 只统计成功态且 `t_upstream_ttfb_ms > 0` 的样本，并沿用首字总耗时 `RQ + PARSE + CONNECT + TTFB` 口径；`currentAvgTotalMs` 只统计成功态且 `t_total_ms >= 0` 的样本。最近完整分钟没有各自有效样本时必须返回 `null`，前端显示 `—`，不得回填更早分钟旧值。
+- Dashboard 实时 KPI 与账号标题行里的 `tokensPerMinute` / `spendRate` 必须统一使用后端 `rolling_60s_live_mean` 合同：以响应 `rangeEnd` 为窗口结束时刻，回看最近 60 秒滚动窗口；`TPM` 分子仅累加成功、失败分类为 `none` 且 `cost` 非空的合格调用 token，`cost=0` 仍计入；`消费速率` 直接使用该窗口 cost 聚合。最近 60 秒没有合格流量时必须返回 `TPM=0`、`消费速率=0`，不得沿用旧值。`requestCount`、`totalTokens`、`totalCost`、recent 调用与排序继续使用所选 range 的总量口径。
+- Dashboard 顶部实时 `首字用时` 与 `响应时间` 必须先读取同一个最近 60 秒滚动窗口：`currentFirstResponseByteTotalAvgMs` 统计 live/terminal success-latency 样本里的首字总耗时 `RQ + PARSE + CONNECT + TTFB`，`currentAvgTotalMs` 只统计终态成功且 `t_total_ms >= 0` 的样本。若最近 60 秒没有各自有效样本，则必须回退到当前所选 range 内最近一次有效结果；只有当前 range 从未出现有效样本时才返回 `null` 并显示 `—`。
 - 已选中上游账号的 pool running 调用必须在账号活动 live rows、账号卡 `inProgressInvocationCount` / `retryInvocationCount` 与 account-scoped summary 中归属到该账号；当 invocation payload 尚未写入 `upstreamAccountId` 时，可以用同 `invokeId` 的 `pool_upstream_request_attempts.upstream_account_id` 作为读侧 fallback，并且账号级 retry 计数必须基于该 fallback 后的账号重新判定。
 - 单账号卡周期统计必须改为四组：`首字用时 + 响应时间`、`请求数 + 成功 / 失败 / 其他`、`成本 + 失败 / 失败成本比率(%)`、`Token + 缓存命中率 / 失败`。前者为主参数，后者为附加参数；成本组里的失败成本比率必须按 `failureCost / totalCost` 计算，不得复用请求失败率。
 - 单账号卡四组周期统计必须以整张统计卡作为 hover / focus / click / long-press 的浮层触发区域；浮层顶部展示该卡主字段和值，下方按“当前字段 / 相关数据”分组明确列出字段名和值，不得只展示裸数值。
@@ -175,9 +175,9 @@
 - `GET /api/stats/upstream-account-activity.accounts[].effectiveRoutingRule` 与 `GET /api/stats/dashboard-activity.accounts[].effectiveRoutingRule` 复用账号池现有 `EffectiveRoutingRule` wire shape，用于 Dashboard 标题区固定快捷策略 chip 的初始状态；普通系统 tag 仍不在账号活动接口中展示。
 - `GET /api/stats/upstream-account-activity.accounts[]` 与 `GET /api/stats/dashboard-activity.accounts[]` 的状态字段复用账号池状态模型：`enabled/displayStatus/enableStatus/workStatus/healthStatus/syncState/lastError/lastActionReasonMessage`，前端只把异常/注意态渲染为状态 badge。
 - Dashboard 快捷策略写入复用 `PATCH /api/pool/upstream-accounts/:id`，payload 仅包含 `routingRule` 中被触碰过的账号级覆盖字段；该入口不支持恢复继承。
-- `GET /api/stats/dashboard-activity.summary` 复用 `StatsResponse` wire shape，并额外返回 `tokensPerMinute`、`spendRate`、`currentFirstResponseByteTotalAvgMs` 与 `currentAvgTotalMs`；`accounts[]` 复用账号活动卡片所需字段，并允许 `upstreamAccountId: null` 的 `isUnassigned` 聚合项。
+- `GET /api/stats/dashboard-activity.summary` 复用 `StatsResponse` wire shape，并额外返回 `tokensPerMinute`、`spendRate`、`currentFirstResponseByteTotalAvgMs` 与 `currentAvgTotalMs`；`accounts[]` 复用账号活动卡片所需字段，并新增账号级 `currentFirstResponseByteTotalAvgMs` / `currentAvgTotalMs` 当前态延迟字段，允许 `upstreamAccountId: null` 的 `isUnassigned` 聚合项。
 - `/events` topic `dashboard.activity.current` 返回该范围的 authoritative account-activity snapshot；恢复期先发 `snapshot` 或 `replay`，健康态再发 `live`，账号无 live 项时其实时字段归零。
-- `GET /api/stats/dashboard-activity.rateWindow` 固定描述当前速率算法来源；当前 owner-facing 合同为 `mode=last_complete_1m_sma`、`windowMinutes=1`，`start/end` 必须落在最近完整分钟边界，不代表 timeseries 图上任一 bucket 的历史事实。
+- `GET /api/stats/dashboard-activity.rateWindow` 固定描述当前速率算法来源；live ranges 的 owner-facing 合同为 `mode=rolling_60s_live_mean`、`windowMinutes=1`，`end` 必须与当前快照 `rangeEnd` 对齐，`start = end - 60s`；`yesterday` 继续保留 closed-range 非实时行为，不接入该滚动窗口合同。
 - 前端共享 `PromptCacheConversationInvocationPreview` 合同同步包含 `promptCacheKey?: string | null`；`DashboardWorkingConversationInvocationSelection.promptCacheKey` 语义不变，仍表示真实对话键。
 
 ## 验收标准（Acceptance Criteria）
@@ -218,7 +218,8 @@
 - Given 已收到较新的 `dashboard.activity.current` cursor，When 较旧 cursor 的乱序 payload 到达，Then 顶部与账号卡保持较新 topic 状态且不会回退为 0。
 - Given 同一个 mock/fixture 返回 `dashboard-activity` full snapshot，When 同屏渲染顶部 KPI 与账号卡片，Then `top.tokensPerMinute === sum(accounts.tokensPerMinute)`，允许仅因小数格式化产生显示级差异。
 - Given 同一个 mock/fixture 返回 `dashboard-activity` full snapshot，When 同屏渲染顶部 KPI 与账号卡片，Then `top.spendRate === sum(accounts.spendRate)`，允许仅因货币格式化产生显示级差异。
-- Given 最近完整分钟完全空桶，When `dashboard-activity` 返回 summary，Then `tokensPerMinute=0`、`spendRate=0`、`currentFirstResponseByteTotalAvgMs=null`、`currentAvgTotalMs=null`，且前端必须显示 `TPM 0`、`消费速率 0`、`首字用时 —`、`响应时间 —`。
+- Given 最近 60 秒完全无合格流量，When `dashboard-activity` 返回 summary，Then `tokensPerMinute=0`、`spendRate=0`，且前端必须显示 `TPM 0`、`消费速率 0`。
+- Given 最近 60 秒无有效延迟样本但当前 range 内存在历史有效延迟，When `dashboard-activity` 返回 summary/account current 字段，Then `currentFirstResponseByteTotalAvgMs` / `currentAvgTotalMs` 必须保留当前 range 最近一次有效结果，而不是返回 `null`。
 - Given 账号视图首次激活且汇总尚未返回，When UI 渲染工作区，Then 下一次绘制显示与最终 grid 尺寸一致的账号卡骨架，计数不显示 `0`，且不出现“暂无活动”。
 - Given 第一阶段汇总已返回，When recent 批量请求仍在进行，Then 汇总卡片立即可操作且每张卡的 recent 区显示局部骨架。
 - Given recent 批量请求失败，When 汇总卡片仍存在，Then 卡片保留并在 recent 区显示可重试错误；重试成功后只替换同一快照的 recent 数据。
@@ -269,7 +270,7 @@ PR: include
 - source_type: demo_runtime
   story_id_or_title: `dashboard?demoScene=attention`
   scenario: `top realtime KPI and account headers share the same last complete 1m bucket`
-  evidence_note: 验证顶部实时 `TPM / 消费速率 / 首字用时` 与账号标题行实时 `TPM / 消费速率` 已统一切到后端 `last_complete_1m_sma`。画面中顶部 `TPM 46,040`、`消费速率 19.41`、`首字用时 1.28s` 与账号标题行同屏共存，不再由 timeseries recent snapshot 或 `modelPerformance.total.*` 混算当前值；当前未闭合分钟被排除，空桶路径由后端显式返回 `0 / null`。
+  evidence_note: 验证顶部实时 `TPM / 消费速率 / 首字用时`、账号标题行实时 `TPM / 消费速率` 与账号延迟主卡都统一切到后端 `rolling_60s_live_mean`。画面中实时吞吐空窗时显式返回 `0`，而延迟窗口空窗时继续保留当前 range 最近一次有效结果，不再由完整分钟 bucket、timeseries recent snapshot 或范围均值混算当前值。
   image:
   PR: include
   ![Dashboard 最近完整 1 分钟实时 KPI 证据](./assets/dashboard-last-complete-1m-sma-demo.png)

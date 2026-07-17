@@ -531,7 +531,7 @@ describe("DashboardActivityOverview", () => {
             start: "2026-07-05T11:59:00Z",
             end: "2026-07-05T12:00:00Z",
             windowMinutes: 1,
-            mode: "last_complete_1m_sma",
+            mode: "rolling_60s_live_mean",
           },
           summary: {
             stats: {

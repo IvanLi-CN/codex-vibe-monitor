@@ -431,6 +431,8 @@ function createUpstreamAccountActivityStoryResponse(
         firstByteAvgMs: 420,
         firstResponseByteTotalAvgMs: 2_867.5,
         avgTotalMs: 860,
+        currentFirstResponseByteTotalAvgMs: 2_867.5,
+        currentAvgTotalMs: 860,
         inProgressInvocationCount: 9,
         inProgressPhaseCounts: {
           queued: 2,
@@ -2425,7 +2427,7 @@ function DrawerPreviewStory({
             start: activity.rangeStart,
             end: activity.rangeEnd,
             windowMinutes: 1,
-            mode: "last_complete_1m_sma",
+            mode: "rolling_60s_live_mean",
           },
           summary: {
             stats: {

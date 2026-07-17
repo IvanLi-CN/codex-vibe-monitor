@@ -295,6 +295,8 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
         firstByteAvgMs: 420,
         firstResponseByteTotalAvgMs: 2_867.5,
         avgTotalMs: 860,
+        currentFirstResponseByteTotalAvgMs: 2_867.5,
+        currentAvgTotalMs: 860,
         inProgressInvocationCount: 3,
         inProgressPhaseCounts: { queued: 1, requesting: 1, responding: 1 },
         retryInvocationCount: 1,
@@ -1828,7 +1830,9 @@ describe("DashboardWorkingConversationsSection", () => {
           tokensPerMinute: 640,
           spendRate: 0.12,
           firstByteAvgMs: 420,
+          currentFirstResponseByteTotalAvgMs: 420,
           avgTotalMs: 860,
+          currentAvgTotalMs: 860,
           inProgressInvocationCount: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.length,
           retryInvocationCount: 0,
           recentInvocations: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.map((promptCacheKey, index) =>

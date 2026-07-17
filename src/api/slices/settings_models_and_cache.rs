@@ -1758,6 +1758,10 @@ pub(crate) struct DashboardActivityAccountResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) avg_total_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) current_first_response_byte_total_avg_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) current_avg_total_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) in_progress_invocation_count: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) in_progress_phase_counts: Option<InvocationPhaseCountsResponse>,
@@ -1820,6 +1824,10 @@ pub(crate) struct UpstreamAccountActivityAccountResponse {
     pub(crate) first_response_byte_total_avg_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) avg_total_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) current_first_response_byte_total_avg_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) current_avg_total_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) in_progress_invocation_count: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
