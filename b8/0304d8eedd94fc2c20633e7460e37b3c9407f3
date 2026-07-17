@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.38.3",
+  "base_stable_version": "2.38.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-17T09:12:01Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.38.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "5df8db2daf6edca2ee6aafcf80c811dc40eeeb45",
+  "pr_number": 640,
+  "pr_title": "fix(web): stabilize upstream account metric precision",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.38.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.38.3",
+  "target_sha": "b80304d8eedd94fc2c20633e7460e37b3c9407f3",
+  "type_label": "type:patch"
+}
