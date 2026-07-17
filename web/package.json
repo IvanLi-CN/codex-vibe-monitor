@@ -17,7 +17,7 @@
     "preview": "vite preview",
     "test:e2e": "playwright test",
     "test:e2e:pwa": "playwright test -c playwright.pwa.config.ts",
-    "pwa:test-server": "bun run build:pwa-test && node tests/pwa/test-server.mjs",
+    "pwa:test-server": "bun run build:pwa-test && bun tests/pwa/test-server.mjs",
     "storybook": "bun run scripts/run-storybook.mjs",
     "storybook:ci": "bun run scripts/run-storybook.mjs --ci",
     "storybook:build": "storybook build",
