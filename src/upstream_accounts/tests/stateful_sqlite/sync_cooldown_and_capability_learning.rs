@@ -378,7 +378,7 @@ async fn image_intent_explicit_unsupported_failure_learns_unsupported_capability
         false,
         Some("sticky-image-unsupported"),
         StatusCode::BAD_REQUEST,
-        "pool upstream responded with 400: image_generation is not supported for this account",
+        "pool upstream responded with 400: unsupported tool: image_generation is not supported by this account",
         Some("invk_image_unsupported"),
         ImageIntent::Yes,
     )
@@ -404,7 +404,7 @@ async fn image_intent_explicit_unsupported_failure_learns_unsupported_capability
         false,
         Some("sticky-direct-image-unsupported"),
         StatusCode::BAD_REQUEST,
-        "pool upstream responded with 400: image_generation is not supported for this account",
+        "pool upstream responded with 400: No available channel for model gpt-image-1 under group default",
         Some("invk_direct_image_unsupported"),
         ImageIntent::DirectImage,
     )

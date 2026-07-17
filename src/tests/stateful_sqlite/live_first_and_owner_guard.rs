@@ -5024,13 +5024,16 @@ async fn proxy_openai_v1_header_sticky_rechecks_image_intent_before_reusing_head
     )
     .await;
     sqlx::query(
-        "UPDATE pool_upstream_accounts SET policy_image_tool_rewrite_mode = ?2 WHERE id = ?1",
+        r#"
+        UPDATE pool_upstream_accounts
+        SET policy_response_image_tool_capability_override = 'unsupported'
+        WHERE id = ?1
+        "#,
     )
     .bind(sticky_account_id)
-    .bind("force_remove")
     .execute(&state.pool)
     .await
-    .expect("mark sticky account as image-incompatible");
+    .expect("mark sticky account as response image-tool incompatible");
 
     let sticky_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(
@@ -6014,13 +6017,16 @@ async fn assert_live_first_waits_for_image_intent_before_filtered_resolution(
     )
     .await;
     sqlx::query(
-        "UPDATE pool_upstream_accounts SET policy_image_tool_rewrite_mode = ?2 WHERE id = ?1",
+        r#"
+        UPDATE pool_upstream_accounts
+        SET policy_response_image_tool_capability_override = 'unsupported'
+        WHERE id = ?1
+        "#,
     )
     .bind(primary_id)
-    .bind("force_remove")
     .execute(&state.pool)
     .await
-    .expect("mark primary account as image-incompatible");
+    .expect("mark primary account as response image-tool incompatible");
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
     let first_chunk = format!(
