@@ -54,6 +54,66 @@ body,
   --dialog-surface-bg: rgba(250, 252, 255, 0.995);
   --dialog-surface-border: rgba(148, 163, 184, 0.46);
   --dialog-surface-shadow: 0 32px 90px rgba(15, 23, 42, 0.16);
+  --invocation-detail-hero-bg: linear-gradient(
+    180deg,
+    oklch(var(--color-base-100) / 0.96),
+    color-mix(in oklab, oklch(var(--color-base-100) / 0.9) 82%, oklch(var(--color-primary) / 0.18))
+  );
+  --invocation-detail-hero-border: color-mix(
+    in oklab,
+    oklch(var(--color-primary)) 20%,
+    transparent
+  );
+  --invocation-detail-hero-shadow: 0 10px 24px
+    color-mix(in oklab, oklch(var(--color-neutral)) 8%, transparent);
+  --invocation-detail-card-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.84) 88%,
+    oklch(var(--color-primary) / 0.08)
+  );
+  --invocation-detail-card-border: color-mix(
+    in oklab,
+    oklch(var(--color-base-300)) 46%,
+    oklch(var(--color-primary) / 0.12)
+  );
+  --invocation-detail-card-shadow: none;
+  --invocation-detail-timeline-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.62) 92%,
+    oklch(var(--color-primary) / 0.08)
+  );
+  --invocation-detail-timeline-border: color-mix(
+    in oklab,
+    oklch(var(--color-base-300)) 42%,
+    transparent
+  );
+  --invocation-detail-timeline-shadow: none;
+  --invocation-detail-marker-halo: oklch(var(--color-base-100) / 0.92);
+  --invocation-detail-subsurface-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.92) 94%,
+    oklch(var(--color-primary) / 0.05)
+  );
+  --invocation-detail-subsurface-border: color-mix(
+    in oklab,
+    oklch(var(--color-base-300)) 34%,
+    transparent
+  );
+  --invocation-detail-subsurface-border-active: color-mix(
+    in oklab,
+    oklch(var(--color-primary)) 16%,
+    transparent
+  );
+  --invocation-detail-rail-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-200) / 0.78) 96%,
+    oklch(var(--color-primary) / 0.05)
+  );
+  --invocation-detail-fact-chip-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-200) / 0.88) 94%,
+    oklch(var(--color-primary) / 0.05)
+  );
   --working-conversation-card-bg: linear-gradient(
     180deg,
     rgba(255, 255, 255, 0.96),
@@ -110,6 +170,65 @@ body,
   --dialog-surface-bg: rgba(13, 21, 36, 0.985);
   --dialog-surface-border: rgba(148, 163, 184, 0.36);
   --dialog-surface-shadow: 0 36px 110px rgba(2, 6, 23, 0.62);
+  --invocation-detail-hero-bg: linear-gradient(
+    180deg,
+    color-mix(in oklab, oklch(var(--color-base-200)) 72%, oklch(var(--color-base-100))),
+    color-mix(in oklab, oklch(var(--color-base-200)) 62%, oklch(var(--color-primary) / 0.26))
+  );
+  --invocation-detail-hero-border: color-mix(
+    in oklab,
+    oklch(var(--color-primary)) 24%,
+    transparent
+  );
+  --invocation-detail-hero-shadow: 0 12px 28px color-mix(in oklab, black 24%, transparent);
+  --invocation-detail-card-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.78) 84%,
+    oklch(var(--color-primary) / 0.18)
+  );
+  --invocation-detail-card-border: color-mix(
+    in oklab,
+    oklch(var(--color-base-300)) 32%,
+    oklch(var(--color-primary) / 0.16)
+  );
+  --invocation-detail-card-shadow: none;
+  --invocation-detail-timeline-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.74) 88%,
+    oklch(var(--color-primary) / 0.12)
+  );
+  --invocation-detail-timeline-border: color-mix(
+    in oklab,
+    oklch(var(--color-base-300)) 28%,
+    transparent
+  );
+  --invocation-detail-timeline-shadow: none;
+  --invocation-detail-marker-halo: oklch(var(--color-base-200) / 0.94);
+  --invocation-detail-subsurface-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.88) 92%,
+    oklch(var(--color-primary) / 0.08)
+  );
+  --invocation-detail-subsurface-border: color-mix(
+    in oklab,
+    oklch(var(--color-base-300)) 22%,
+    transparent
+  );
+  --invocation-detail-subsurface-border-active: color-mix(
+    in oklab,
+    oklch(var(--color-primary)) 24%,
+    transparent
+  );
+  --invocation-detail-rail-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-200) / 0.72) 94%,
+    oklch(var(--color-primary) / 0.08)
+  );
+  --invocation-detail-fact-chip-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-200) / 0.84) 94%,
+    oklch(var(--color-primary) / 0.06)
+  );
   --working-conversation-card-bg: linear-gradient(
     180deg,
     rgba(12, 19, 29, 0.98),
@@ -525,6 +644,52 @@ body {
 
   .working-conversation-placeholder-line {
     background-color: var(--working-conversation-placeholder-line);
+  }
+
+  .invocation-detail-hero-surface {
+    border: 1px solid var(--invocation-detail-hero-border);
+    background: var(--invocation-detail-hero-bg);
+    box-shadow: var(--invocation-detail-hero-shadow);
+  }
+
+  .invocation-detail-card-surface {
+    border: 1px solid var(--invocation-detail-card-border);
+    background-color: var(--invocation-detail-card-bg);
+    box-shadow: var(--invocation-detail-card-shadow);
+  }
+
+  .invocation-detail-timeline-surface {
+    border: 1px solid var(--invocation-detail-timeline-border);
+    background-color: var(--invocation-detail-timeline-bg);
+    box-shadow: var(--invocation-detail-timeline-shadow);
+  }
+
+  .invocation-detail-marker {
+    box-shadow: 0 0 0 4px var(--invocation-detail-marker-halo);
+  }
+
+  .invocation-detail-subsurface {
+    border: 1px solid var(--invocation-detail-subsurface-border);
+    background-color: var(--invocation-detail-subsurface-bg);
+  }
+
+  .invocation-detail-block {
+    border: 1px solid var(--invocation-detail-subsurface-border);
+    background-color: var(--invocation-detail-subsurface-bg);
+  }
+
+  .invocation-detail-block[data-open="true"] {
+    border-color: var(--invocation-detail-subsurface-border-active);
+    background-color: var(--invocation-detail-card-bg);
+  }
+
+  .invocation-detail-rail {
+    border: 1px solid var(--invocation-detail-subsurface-border);
+    background-color: var(--invocation-detail-rail-bg);
+  }
+
+  .invocation-detail-fact-chip {
+    background-color: var(--invocation-detail-fact-chip-bg);
   }
 
   .drawer-shell {
