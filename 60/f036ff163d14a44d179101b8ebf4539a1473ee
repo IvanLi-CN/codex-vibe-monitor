@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.42.0",
+  "base_stable_version": "2.41.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-18T13:17:58Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.42.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "11868bb4b28516f8ab3f2d7f912c2c8e34e57535",
+  "pr_number": 653,
+  "pr_title": "feat(prompt-cache): add conversation operations tab",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.42.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.42.0",
+  "target_sha": "60f036ff163d14a44d179101b8ebf4539a1473ee",
+  "type_label": "type:minor"
+}
