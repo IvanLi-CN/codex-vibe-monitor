@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.42.1",
+  "base_stable_version": "2.42.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-18T17:38:00Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.42.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "1403258c41d744bf08fed5f082a6e57ae6385fc6",
+  "pr_number": 654,
+  "pr_title": "fix(web): refresh persisted dashboard invocation detail",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.42.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.42.1",
+  "target_sha": "ab467dd04b4c4b2229c63a61d3efade8a9e51900",
+  "type_label": "type:patch"
+}
