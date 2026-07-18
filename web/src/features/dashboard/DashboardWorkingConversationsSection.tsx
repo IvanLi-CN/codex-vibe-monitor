@@ -5510,7 +5510,7 @@ export function DashboardWorkingConversationsSection({
           className="overflow-hidden p-0"
           data-testid="dashboard-working-conversations-route-bind-dialog"
         >
-          <div className="border-b border-base-300/70 px-5 py-4 desktop:px-6">
+          <div className="dialog-chrome-surface border-b px-5 py-4 desktop:px-6">
             <DialogHeader>
               <DialogTitle>{routeBindDialogTitle}</DialogTitle>
               <DialogDescription>{routeBindDialogDescription}</DialogDescription>
@@ -5607,7 +5607,7 @@ export function DashboardWorkingConversationsSection({
               </Alert>
             ) : null}
           </div>
-          <DialogFooter className="border-t border-base-300/70 bg-base-100/92 px-5 py-4 backdrop-blur desktop:px-6">
+          <DialogFooter className="dialog-chrome-surface border-t px-5 py-4 desktop:px-6">
             <Button
               type="button"
               variant="destructive"
@@ -5670,16 +5670,16 @@ export function DashboardWorkingConversationsSection({
           className="overflow-hidden p-0"
           data-testid="dashboard-working-conversations-clear-affinity-dialog"
         >
-          <div className="border-b border-base-300/70 px-5 py-4 desktop:px-6">
+          <div className="dialog-chrome-surface border-b px-5 py-4 desktop:px-6">
             <DialogHeader>
               <DialogTitle>{clearAffinityDialogTitle}</DialogTitle>
               <DialogDescription>{clearAffinityDialogDescription}</DialogDescription>
             </DialogHeader>
           </div>
           <div className="space-y-4 px-5 py-5 desktop:px-6">
-            <div className="rounded-[1.1rem] border border-base-300/70 bg-base-200/40 px-4 py-4">
+            <div className="destructive-callout-surface rounded-[1.1rem] px-4 py-4">
               <div className="flex w-full items-start gap-3">
-                <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-error/28 bg-error/12 text-error">
+                <div className="destructive-callout-icon mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full">
                   <AppIcon name="alert-circle-outline" className="h-4.5 w-4.5" aria-hidden />
                 </div>
                 <div className="min-w-0 flex-1 space-y-3">
@@ -5691,14 +5691,14 @@ export function DashboardWorkingConversationsSection({
                       {clearAffinityCalloutDescription}
                     </p>
                   </div>
-                  <ul className="overflow-hidden rounded-[0.95rem] border border-base-300/64 bg-base-100/66">
+                  <ul className="destructive-callout-list overflow-hidden rounded-[0.95rem]">
                     {clearAffinityCalloutItems.map((item) => (
                       <li
                         key={item.key}
-                        className="flex items-start gap-3 border-b border-base-300/58 px-3 py-2.5 last:border-b-0"
+                        className="destructive-callout-item flex items-start gap-3 px-3 py-2.5"
                       >
                         <span
-                          className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-error/72 shadow-[0_0_0_4px_hsl(var(--er)/0.10)]"
+                          className="destructive-callout-bullet mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full"
                           aria-hidden
                         />
                         <span className="min-w-0">
@@ -5716,7 +5716,7 @@ export function DashboardWorkingConversationsSection({
               </div>
             </div>
           </div>
-          <div className="flex w-full items-center justify-between gap-3 border-t border-base-300/70 bg-base-100/92 px-5 py-4 backdrop-blur desktop:px-6">
+          <div className="dialog-chrome-surface flex w-full items-center justify-between gap-3 border-t px-5 py-4 desktop:px-6">
             <p className="min-w-0 flex-1 text-sm font-medium text-base-content/76">
               {selectionSummaryLabel}
             </p>

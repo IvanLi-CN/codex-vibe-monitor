@@ -45,14 +45,22 @@ body,
   --app-bg-orb-2: rgba(20, 184, 166, 0.2);
   --app-grid-color: rgba(100, 116, 139, 0.15);
   --app-shell-max-width: 1660px;
-  --app-surface-bg: rgba(248, 250, 252, 0.82);
-  --app-surface-border: rgba(148, 163, 184, 0.34);
+  --app-surface-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.86) 82%,
+    oklch(var(--color-base-200) / 0.72) 18%
+  );
+  --app-surface-border: color-mix(in oklab, oklch(var(--color-base-300)) 24%, transparent);
   --app-surface-shadow: 0 18px 40px rgba(15, 23, 42, 0.09);
 
   --dialog-overlay-bg: rgba(15, 23, 42, 0.16);
   --dialog-overlay-blur: 2px;
-  --dialog-surface-bg: rgba(250, 252, 255, 0.995);
-  --dialog-surface-border: rgba(148, 163, 184, 0.46);
+  --dialog-surface-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.98) 90%,
+    oklch(var(--color-base-200) / 0.84) 10%
+  );
+  --dialog-surface-border: color-mix(in oklab, oklch(var(--color-base-300)) 28%, transparent);
   --dialog-surface-shadow: 0 32px 90px rgba(15, 23, 42, 0.16);
   --invocation-detail-hero-bg: linear-gradient(
     180deg,
@@ -161,14 +169,22 @@ body,
   --app-bg-orb-2: rgba(45, 212, 191, 0.18);
   --app-grid-color: rgba(148, 163, 184, 0.18);
   --app-shell-max-width: 1660px;
-  --app-surface-bg: rgba(16, 25, 41, 0.8);
-  --app-surface-border: rgba(148, 163, 184, 0.38);
+  --app-surface-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.84) 80%,
+    oklch(var(--color-base-200) / 0.76) 20%
+  );
+  --app-surface-border: color-mix(in oklab, oklch(var(--color-base-300)) 24%, transparent);
   --app-surface-shadow: 0 20px 54px rgba(2, 6, 23, 0.55);
 
   --dialog-overlay-bg: rgba(2, 6, 23, 0.58);
   --dialog-overlay-blur: 6px;
-  --dialog-surface-bg: rgba(13, 21, 36, 0.985);
-  --dialog-surface-border: rgba(148, 163, 184, 0.36);
+  --dialog-surface-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.9) 84%,
+    oklch(var(--color-base-200) / 0.82) 16%
+  );
+  --dialog-surface-border: color-mix(in oklab, oklch(var(--color-base-300)) 26%, transparent);
   --dialog-surface-shadow: 0 36px 110px rgba(2, 6, 23, 0.62);
   --invocation-detail-hero-bg: linear-gradient(
     180deg,
@@ -238,6 +254,79 @@ body,
   --working-conversation-slot-bg: rgba(248, 250, 252, 0.06);
   --working-conversation-slot-border: rgba(255, 255, 255, 0.06);
   --working-conversation-placeholder-line: rgba(255, 255, 255, 0.1);
+}
+
+:root {
+  --surface-card-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.9) 82%,
+    oklch(var(--color-base-200) / 0.66) 18%
+  );
+  --surface-card-border: color-mix(in oklab, oklch(var(--color-base-300)) 26%, transparent);
+  --surface-card-shadow: 0 10px 24px
+    color-mix(in oklab, oklch(var(--color-neutral)) 7%, transparent);
+  --surface-subtle-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.8) 84%,
+    oklch(var(--color-base-200) / 0.58) 16%
+  );
+  --surface-subtle-border: color-mix(in oklab, oklch(var(--color-base-300)) 22%, transparent);
+  --surface-inset-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-200) / 0.54) 78%,
+    oklch(var(--color-base-100) / 0.4) 22%
+  );
+  --surface-inset-border: color-mix(in oklab, oklch(var(--color-base-300)) 18%, transparent);
+  --field-surface-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.96) 88%,
+    oklch(var(--color-base-200) / 0.7) 12%
+  );
+  --field-surface-border: color-mix(in oklab, oklch(var(--color-base-300)) 26%, transparent);
+  --menu-surface-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.98) 90%,
+    oklch(var(--color-base-200) / 0.78) 10%
+  );
+  --menu-surface-border: color-mix(in oklab, oklch(var(--color-base-300)) 28%, transparent);
+  --dialog-chrome-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.92) 84%,
+    oklch(var(--color-base-200) / 0.7) 16%
+  );
+  --dialog-chrome-border: color-mix(in oklab, oklch(var(--color-base-300)) 24%, transparent);
+  --destructive-callout-surface-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-200) / 0.76) 88%,
+    oklch(var(--color-error) / 0.1) 12%
+  );
+  --destructive-callout-surface-border: color-mix(
+    in oklab,
+    oklch(var(--color-base-300)) 40%,
+    oklch(var(--color-error) / 0.18) 60%
+  );
+  --destructive-callout-icon-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.36) 74%,
+    oklch(var(--color-error) / 0.18) 26%
+  );
+  --destructive-callout-icon-border: oklch(var(--color-error) / 0.38);
+  --destructive-callout-list-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.78) 92%,
+    oklch(var(--color-error) / 0.06) 8%
+  );
+  --destructive-callout-list-border: color-mix(
+    in oklab,
+    oklch(var(--color-base-300)) 22%,
+    oklch(var(--color-error) / 0.12) 78%
+  );
+  --destructive-callout-separator: color-mix(
+    in oklab,
+    oklch(var(--color-base-300)) 18%,
+    transparent
+  );
+  --destructive-callout-bullet-halo: oklch(var(--color-error) / 0.14);
 }
 
 body {
@@ -582,6 +671,38 @@ body {
     @apply mb-1 text-[11px] font-semibold text-base-content/60;
   }
 
+  .surface-card {
+    border: 1px solid var(--surface-card-border);
+    background: var(--surface-card-bg);
+    box-shadow: var(--surface-card-shadow);
+  }
+
+  .surface-subtle {
+    border: 1px solid var(--surface-subtle-border);
+    background: var(--surface-subtle-bg);
+  }
+
+  .surface-inset {
+    border: 1px solid var(--surface-inset-border);
+    background: var(--surface-inset-bg);
+  }
+
+  .field-surface {
+    border-color: var(--field-surface-border);
+    background: var(--field-surface-bg);
+  }
+
+  .menu-surface {
+    border-color: var(--menu-surface-border);
+    background: var(--menu-surface-bg);
+  }
+
+  .dialog-chrome-surface {
+    border-color: var(--dialog-chrome-border);
+    background: var(--dialog-chrome-bg);
+    backdrop-filter: blur(14px);
+  }
+
   .surface-panel {
     @apply rounded-xl border text-base-content;
     border-color: var(--app-surface-border);
@@ -684,6 +805,31 @@ body {
 
   .working-conversation-placeholder-line {
     background-color: var(--working-conversation-placeholder-line);
+  }
+
+  .destructive-callout-surface {
+    border: 1px solid var(--destructive-callout-surface-border);
+    background: var(--destructive-callout-surface-bg);
+  }
+
+  .destructive-callout-icon {
+    border: 1px solid var(--destructive-callout-icon-border);
+    background: var(--destructive-callout-icon-bg);
+    color: oklch(var(--color-error));
+  }
+
+  .destructive-callout-list {
+    border: 1px solid var(--destructive-callout-list-border);
+    background: var(--destructive-callout-list-bg);
+  }
+
+  .destructive-callout-item + .destructive-callout-item {
+    border-top: 1px solid var(--destructive-callout-separator);
+  }
+
+  .destructive-callout-bullet {
+    background-color: oklch(var(--color-error) / 0.82);
+    box-shadow: 0 0 0 4px var(--destructive-callout-bullet-halo);
   }
 
   .invocation-detail-hero-surface {
