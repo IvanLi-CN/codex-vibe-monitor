@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.39.5",
+  "base_stable_version": "2.39.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-18T04:47:09Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.39.5",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "b3819ae7e57088ca2ca81bc128ec690067d459d8",
+  "pr_number": 646,
+  "pr_title": "fix(web): replace header install button with auto prompt",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.39.5",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.39.5",
+  "target_sha": "39539677093b90ab1ea67b55303522d41fcf9d11",
+  "type_label": "type:patch"
+}
