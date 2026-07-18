@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.39.3",
+  "base_stable_version": "2.39.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-18T02:28:12Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.39.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "03300e5e1b622f1330683197dff82fdfc00f09ed",
+  "pr_number": 643,
+  "pr_title": "fix(web): rebalance shared surface contrast hierarchy",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.39.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.39.3",
+  "target_sha": "87061c330ff3879c389ddf8a5d0658c927c7cd93",
+  "type_label": "type:patch"
+}
