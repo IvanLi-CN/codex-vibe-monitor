@@ -149,7 +149,7 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
     onOpenConversation?: (selection: {
       conversationSequenceId: string;
       promptCacheKey: string;
-      tab?: "overview" | "calls" | "settings";
+      tab?: "overview" | "calls" | "settings" | "operations";
     }) => void;
     onOpenInvocation?: (selection: {
       slotKind: "current" | "previous";
@@ -258,7 +258,7 @@ vi.mock("../features/prompt-cache/PromptCacheConversationTable", () => ({
     open: boolean;
     conversationKey: string | null;
     conversationLabel?: string | null;
-    initialTab?: "overview" | "calls" | "settings";
+    initialTab?: "overview" | "calls" | "settings" | "operations";
     onClose: () => void;
     onOpenUpstreamAccount?: (
       accountId: number,
@@ -1236,6 +1236,35 @@ describe("DashboardPage", () => {
         value: previousMatchMedia,
       });
     }
+  });
+
+  it("opens the operations-tab conversation route from the location search params", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [createWorkingConversationCard()],
+      totalMatched: 1,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(
+      <DashboardPage />,
+      "/dashboard?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationTab=operations",
+    );
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-tab"]')?.textContent,
+    ).toBe("operations");
+    expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe(
+      "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationTab=operations",
+    );
   });
 
   it("passes refresh target updates from the working conversations section back into the hook", () => {

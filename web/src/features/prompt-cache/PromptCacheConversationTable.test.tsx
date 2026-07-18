@@ -22,6 +22,7 @@ const apiMocks = vi.hoisted(() => ({
   fetchInvocationRecordsSummary: vi.fn(),
   fetchPromptCacheConversationBinding:
     vi.fn<(promptCacheKey: string) => Promise<PromptCacheConversationBindingResponse>>(),
+  fetchPromptCacheConversationOperationEvents: vi.fn(),
   fetchUpstreamAccounts: vi.fn(),
   updatePromptCacheConversationBinding: vi.fn(),
 }));
@@ -49,6 +50,8 @@ vi.mock("../../lib/api", async () => {
     fetchInvocationRecords: apiMocks.fetchInvocationRecords,
     fetchInvocationRecordsSummary: apiMocks.fetchInvocationRecordsSummary,
     fetchPromptCacheConversationBinding: apiMocks.fetchPromptCacheConversationBinding,
+    fetchPromptCacheConversationOperationEvents:
+      apiMocks.fetchPromptCacheConversationOperationEvents,
     fetchUpstreamAccounts: apiMocks.fetchUpstreamAccounts,
     updatePromptCacheConversationBinding: apiMocks.updatePromptCacheConversationBinding,
   };
@@ -196,6 +199,7 @@ describe("PromptCacheConversationTable", () => {
     apiMocks.fetchInvocationRecords.mockReset();
     apiMocks.fetchInvocationRecordsSummary.mockReset();
     apiMocks.fetchPromptCacheConversationBinding.mockReset();
+    apiMocks.fetchPromptCacheConversationOperationEvents.mockReset();
     apiMocks.fetchUpstreamAccounts.mockReset();
     apiMocks.updatePromptCacheConversationBinding.mockReset();
     apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
@@ -224,6 +228,12 @@ describe("PromptCacheConversationTable", () => {
       pageSize: 500,
       metrics: { total: 0, oauth: 0, apiKey: 0, attention: 0 },
       routing: null,
+    });
+    apiMocks.fetchPromptCacheConversationOperationEvents.mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      pageSize: 20,
     });
     apiMocks.updatePromptCacheConversationBinding.mockResolvedValue({
       promptCacheKey: "pck-history",
@@ -1485,6 +1495,132 @@ describe("PromptCacheConversationTable", () => {
     ).not.toBeNull();
     expect(document.body.textContent).toContain("无可用模型");
     expect(document.body.textContent).toContain("对话");
+  });
+
+  it("renders conversation operation events and filters by info type in the operations tab", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    apiMocks.fetchPromptCacheConversationOperationEvents.mockImplementation(
+      async (_promptCacheKey, query) => {
+        const allItems = [
+          {
+            id: 12,
+            promptCacheKey: "pck-operations",
+            action: "manualBindingUpdated",
+            origin: "detailDrawer",
+            infoTypes: ["routing"],
+            occurredAt: "2026-03-02T12:01:00Z",
+            headline: "Manual binding updated",
+            changedFields: ["bindingKind"],
+            bindingBefore: {
+              bindingKind: "none",
+              groupName: null,
+              upstreamAccountId: null,
+              upstreamAccountName: null,
+            },
+            bindingAfter: {
+              bindingKind: "upstreamAccount",
+              groupName: null,
+              upstreamAccountId: 42,
+              upstreamAccountName: "Pool Alpha",
+            },
+            stickyBefore: null,
+            stickyAfter: {
+              upstreamAccountId: 42,
+              upstreamAccountName: "Pool Alpha",
+            },
+            invokeId: "inv-op-42",
+          },
+          {
+            id: 11,
+            promptCacheKey: "pck-operations",
+            action: "conversationPolicyUpdated",
+            origin: "dashboardBulk",
+            infoTypes: ["forwardProxy"],
+            occurredAt: "2026-03-02T12:00:00Z",
+            headline: "Conversation policy updated",
+            changedFields: ["forwardProxyKeys"],
+            bindingBefore: null,
+            bindingAfter: null,
+            stickyBefore: null,
+            stickyAfter: null,
+            invokeId: null,
+          },
+        ];
+        const filteredItems = query?.infoType
+          ? allItems.filter((item) => item.infoTypes.includes(query.infoType))
+          : allItems;
+        return {
+          items: filteredItems,
+          total: filteredItems.length,
+          page: query?.page ?? 1,
+          pageSize: query?.pageSize ?? 20,
+        };
+      },
+    );
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 1,
+      total: 0,
+      page: 1,
+      pageSize: 50,
+      records: [],
+    });
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-operations",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+    await clickDrawerTab("操作记录");
+
+    expect(apiMocks.fetchPromptCacheConversationOperationEvents).toHaveBeenCalledWith(
+      "pck-operations",
+      expect.objectContaining({
+        page: 1,
+        pageSize: 20,
+      }),
+    );
+    expect(document.body.textContent).toContain("手工绑定已更新");
+    expect(document.body.textContent).toContain("绑定目标：无手工绑定 -> 账号 Pool Alpha");
+    expect(document.body.textContent).toContain("invokeId: inv-op-42");
+    expect(document.body.textContent).toContain("正向代理相关");
+
+    const routingFilterButton = Array.from(document.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("路由相关"),
+    );
+    if (!(routingFilterButton instanceof HTMLButtonElement)) {
+      throw new Error("missing routing filter button");
+    }
+    await user.click(routingFilterButton);
+    await flushInteractive();
+
+    expect(apiMocks.fetchPromptCacheConversationOperationEvents).toHaveBeenLastCalledWith(
+      "pck-operations",
+      expect.objectContaining({
+        infoType: "routing",
+      }),
+    );
+    expect(document.body.textContent).toContain("手工绑定已更新");
+    expect(document.body.textContent).not.toContain("策略更新");
   });
 
   it("saves and clears conversation routing policy overrides from the settings tab", async () => {

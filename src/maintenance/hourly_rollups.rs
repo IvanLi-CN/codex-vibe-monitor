@@ -1723,6 +1723,10 @@ pub(crate) fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<Ap
             post(post_bulk_prompt_cache_conversation_bindings),
         )
         .route(
+            "/api/stats/prompt-cache-conversation-binding-events/*encodedPromptCacheKey",
+            get(list_prompt_cache_conversation_operation_events),
+        )
+        .route(
             "/api/stats/prompt-cache-conversation-bindings/*encodedPromptCacheKey",
             get(get_prompt_cache_conversation_binding)
                 .patch(patch_prompt_cache_conversation_binding),

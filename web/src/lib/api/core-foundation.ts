@@ -1547,6 +1547,58 @@ export interface PromptCacheConversationBindingResponse {
   updatedAt: string | null;
 }
 
+export type PromptCacheConversationOperationInfoType =
+  | "routing"
+  | "forwardProxy"
+  | "requestRewrite";
+export type PromptCacheConversationOperationOrigin =
+  | "detailDrawer"
+  | "dashboardBulk"
+  | "systemAuto";
+export type PromptCacheConversationOperationAction =
+  | "manualBindingUpdated"
+  | "bindingCleared"
+  | "affinityReset"
+  | "stickyTargetChanged"
+  | "stickyTargetCleared"
+  | "groupBindingPromoted"
+  | "conversationPolicyUpdated";
+
+export interface PromptCacheConversationOperationBindingSnapshot {
+  bindingKind: PromptCacheConversationBindingKind;
+  groupName: string | null;
+  upstreamAccountId: number | null;
+  upstreamAccountName: string | null;
+}
+
+export interface PromptCacheConversationOperationStickySnapshot {
+  upstreamAccountId: number;
+  upstreamAccountName: string | null;
+}
+
+export interface PromptCacheConversationOperationEvent {
+  id: number;
+  promptCacheKey: string;
+  action: PromptCacheConversationOperationAction;
+  origin: PromptCacheConversationOperationOrigin;
+  infoTypes: PromptCacheConversationOperationInfoType[];
+  occurredAt: string;
+  headline: string;
+  changedFields: string[];
+  bindingBefore: PromptCacheConversationOperationBindingSnapshot | null;
+  bindingAfter: PromptCacheConversationOperationBindingSnapshot | null;
+  stickyBefore: PromptCacheConversationOperationStickySnapshot | null;
+  stickyAfter: PromptCacheConversationOperationStickySnapshot | null;
+  invokeId: string | null;
+}
+
+export interface PromptCacheConversationOperationEventListResponse {
+  items: PromptCacheConversationOperationEvent[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 export type PromptCacheConversationBindingTimeoutPatch = {
   responsesFirstByteTimeoutSecs?: number | null;
   compactFirstByteTimeoutSecs?: number | null;
@@ -1628,6 +1680,12 @@ export interface BulkPromptCacheConversationBindingActionResponse {
   totalSucceeded: number;
   totalFailed: number;
   items: BulkPromptCacheConversationBindingItemResponse[];
+}
+
+export interface FetchPromptCacheConversationOperationEventsQuery {
+  page?: number;
+  pageSize?: number;
+  infoType?: PromptCacheConversationOperationInfoType;
 }
 
 export type PromptCacheConversationSelectionMode = "count" | "activityWindow";
@@ -2879,6 +2937,116 @@ function normalizeBulkPromptCacheConversationBindingActionResponse(
   };
 }
 
+function normalizePromptCacheConversationOperationBindingSnapshot(
+  raw: unknown,
+): PromptCacheConversationOperationBindingSnapshot | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const bindingKind =
+    payload.bindingKind === "group" || payload.bindingKind === "upstreamAccount"
+      ? payload.bindingKind
+      : payload.bindingKind === "none"
+        ? "none"
+        : null;
+  if (bindingKind == null) return null;
+  return {
+    bindingKind,
+    groupName:
+      typeof payload.groupName === "string" && payload.groupName.trim()
+        ? payload.groupName.trim()
+        : null,
+    upstreamAccountId: normalizeFiniteNumber(payload.upstreamAccountId) ?? null,
+    upstreamAccountName:
+      typeof payload.upstreamAccountName === "string" && payload.upstreamAccountName.trim()
+        ? payload.upstreamAccountName.trim()
+        : null,
+  };
+}
+
+function normalizePromptCacheConversationOperationStickySnapshot(
+  raw: unknown,
+): PromptCacheConversationOperationStickySnapshot | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const upstreamAccountId = normalizeFiniteNumber(payload.upstreamAccountId);
+  if (upstreamAccountId == null) return null;
+  return {
+    upstreamAccountId,
+    upstreamAccountName:
+      typeof payload.upstreamAccountName === "string" && payload.upstreamAccountName.trim()
+        ? payload.upstreamAccountName.trim()
+        : null,
+  };
+}
+
+function normalizePromptCacheConversationOperationEvent(
+  raw: unknown,
+): PromptCacheConversationOperationEvent | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const id = normalizeFiniteNumber(payload.id);
+  const promptCacheKey =
+    typeof payload.promptCacheKey === "string" ? payload.promptCacheKey.trim() : "";
+  const occurredAt = typeof payload.occurredAt === "string" ? payload.occurredAt : "";
+  const action =
+    payload.action === "manualBindingUpdated" ||
+    payload.action === "bindingCleared" ||
+    payload.action === "affinityReset" ||
+    payload.action === "stickyTargetChanged" ||
+    payload.action === "stickyTargetCleared" ||
+    payload.action === "groupBindingPromoted" ||
+    payload.action === "conversationPolicyUpdated"
+      ? payload.action
+      : null;
+  const origin =
+    payload.origin === "detailDrawer" ||
+    payload.origin === "dashboardBulk" ||
+    payload.origin === "systemAuto"
+      ? payload.origin
+      : null;
+  if (id == null || !promptCacheKey || !occurredAt || action == null || origin == null) {
+    return null;
+  }
+  return {
+    id,
+    promptCacheKey,
+    action,
+    origin,
+    infoTypes: Array.isArray(payload.infoTypes)
+      ? payload.infoTypes.filter(
+          (value): value is PromptCacheConversationOperationInfoType =>
+            value === "routing" || value === "forwardProxy" || value === "requestRewrite",
+        )
+      : [],
+    occurredAt,
+    headline: typeof payload.headline === "string" ? payload.headline : action,
+    changedFields: Array.isArray(payload.changedFields)
+      ? payload.changedFields
+          .filter((value): value is string => typeof value === "string")
+          .map((value) => value.trim())
+          .filter(Boolean)
+      : [],
+    bindingBefore: normalizePromptCacheConversationOperationBindingSnapshot(payload.bindingBefore),
+    bindingAfter: normalizePromptCacheConversationOperationBindingSnapshot(payload.bindingAfter),
+    stickyBefore: normalizePromptCacheConversationOperationStickySnapshot(payload.stickyBefore),
+    stickyAfter: normalizePromptCacheConversationOperationStickySnapshot(payload.stickyAfter),
+    invokeId:
+      typeof payload.invokeId === "string" && payload.invokeId.trim() ? payload.invokeId : null,
+  };
+}
+
+function normalizePromptCacheConversationOperationEventListResponse(
+  raw: unknown,
+): PromptCacheConversationOperationEventListResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const itemsRaw = Array.isArray(payload.items) ? payload.items : [];
+  return {
+    items: itemsRaw
+      .map(normalizePromptCacheConversationOperationEvent)
+      .filter((item): item is PromptCacheConversationOperationEvent => item != null),
+    total: normalizeFiniteNumber(payload.total) ?? 0,
+    page: normalizeFiniteNumber(payload.page) ?? 1,
+    pageSize: normalizeFiniteNumber(payload.pageSize) ?? 20,
+  };
+}
+
 export function normalizeCompactSupportState(raw: unknown): CompactSupportState {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const status =
@@ -3621,6 +3789,28 @@ export async function fetchPromptCacheConversationBinding(
     { signal },
   );
   return normalizePromptCacheConversationBindingResponse(raw, promptCacheKey);
+}
+
+export async function fetchPromptCacheConversationOperationEvents(
+  promptCacheKey: string,
+  query?: FetchPromptCacheConversationOperationEventsQuery & { signal?: AbortSignal },
+): Promise<PromptCacheConversationOperationEventListResponse> {
+  const search = new URLSearchParams();
+  if (query?.page != null) {
+    search.set("page", String(query.page));
+  }
+  if (query?.pageSize != null) {
+    search.set("pageSize", String(query.pageSize));
+  }
+  if (query?.infoType) {
+    search.set("infoType", query.infoType);
+  }
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  const raw = await fetchJson<unknown>(
+    `/api/stats/prompt-cache-conversation-binding-events/${encodeURIComponent(promptCacheKey)}${suffix}`,
+    { signal: query?.signal },
+  );
+  return normalizePromptCacheConversationOperationEventListResponse(raw);
 }
 
 export async function updatePromptCacheConversationBinding(

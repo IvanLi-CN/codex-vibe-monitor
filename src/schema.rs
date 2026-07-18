@@ -658,6 +658,28 @@ pub(crate) fn prompt_cache_conversation_bindings_create_sql(table_name: &str) ->
     )
 }
 
+pub(crate) fn prompt_cache_conversation_operation_events_create_sql(table_name: &str) -> String {
+    format!(
+        r#"
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            prompt_cache_key TEXT NOT NULL,
+            action TEXT NOT NULL,
+            origin TEXT NOT NULL,
+            info_types_json TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            headline TEXT NOT NULL,
+            changed_fields_json TEXT,
+            binding_before_json TEXT,
+            binding_after_json TEXT,
+            sticky_before_json TEXT,
+            sticky_after_json TEXT,
+            invoke_id TEXT
+        )
+        "#
+    )
+}
+
 pub(crate) async fn prompt_cache_conversation_bindings_existing_columns(
     pool: &Pool<Sqlite>,
 ) -> Result<std::collections::HashSet<String>> {
@@ -3042,6 +3064,25 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_prompt_cache_conversation_bindings_account")?;
+
+    sqlx::query(&prompt_cache_conversation_operation_events_create_sql(
+        "prompt_cache_conversation_operation_events",
+    ))
+    .execute(pool)
+    .await
+    .context("failed to ensure prompt_cache_conversation_operation_events table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_prompt_cache_conversation_operation_events_key_occurred
+        ON prompt_cache_conversation_operation_events (prompt_cache_key, occurred_at DESC, id DESC)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context(
+        "failed to ensure index idx_prompt_cache_conversation_operation_events_key_occurred",
+    )?;
 
     sqlx::query(
         r#"
