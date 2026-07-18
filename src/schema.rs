@@ -2278,6 +2278,43 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS upstream_host_network_minute (
+            bucket_start_epoch INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            upstream_base_url_host TEXT NOT NULL,
+            upload_bytes INTEGER NOT NULL DEFAULT 0,
+            download_bytes INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (bucket_start_epoch, source, upstream_base_url_host)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure upstream_host_network_minute table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_upstream_host_network_minute_host_bucket
+        ON upstream_host_network_minute (upstream_base_url_host, bucket_start_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_upstream_host_network_minute_host_bucket")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_upstream_host_network_minute_source_host_bucket
+        ON upstream_host_network_minute (source, upstream_base_url_host, bucket_start_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_upstream_host_network_minute_source_host_bucket")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS upstream_sticky_key_hourly (
             bucket_start_epoch INTEGER NOT NULL,
             upstream_account_id INTEGER NOT NULL,
@@ -2908,6 +2945,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             endpoint TEXT NOT NULL,
             route_mode TEXT NOT NULL,
             sticky_key TEXT,
+            upstream_base_url_host TEXT,
             group_name_snapshot TEXT,
             proxy_binding_key_snapshot TEXT,
             upstream_account_id INTEGER,
@@ -3038,6 +3076,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),
         ("downstream_error_message", "TEXT"),
+        ("upstream_base_url_host", "TEXT"),
         ("upstream_request_compression_algorithm", "TEXT"),
         ("upstream_request_compression_mode", "TEXT"),
         ("upstream_request_logical_body_bytes", "INTEGER"),

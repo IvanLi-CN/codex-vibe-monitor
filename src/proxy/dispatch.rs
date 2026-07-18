@@ -1073,6 +1073,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         endpoint: capture_target.endpoint().to_string(),
         sticky_key: sticky_key.clone(),
         requester_ip: requester_ip.clone(),
+        upstream_base_url_host: None,
     });
     let t_req_parse_ms = elapsed_ms(req_parse_started);
     let upstream_body_bytes = Bytes::from(upstream_body);
@@ -1484,6 +1485,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         &invoke_id,
                         &occurred_at,
                         None,
+                        state.config.openai_upstream_base_url.host_str(),
                         err.http_approx.approx_upload_bytes,
                         Utc::now(),
                     );
@@ -1495,6 +1497,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             &invoke_id,
                             &occurred_at,
                             None,
+                            state.config.openai_upstream_base_url.host_str(),
                             err.http_approx.approx_download_bytes_before_response_body,
                             Utc::now(),
                         );
@@ -1654,6 +1657,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 &invoke_id,
                 &occurred_at,
                 None,
+                state.config.openai_upstream_base_url.host_str(),
                 direct_http_approx.approx_upload_bytes,
                 Utc::now(),
             );
@@ -1665,6 +1669,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     &invoke_id,
                     &occurred_at,
                     None,
+                    state.config.openai_upstream_base_url.host_str(),
                     direct_http_approx.approx_download_bytes_before_response_body,
                     Utc::now(),
                 );
@@ -2059,6 +2064,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     pool_account_for_task
                         .as_ref()
                         .map(|account| account.account_id),
+                    payload_summary_upstream_base_url_host(pool_account_for_task.as_ref()).or_else(
+                        || {
+                            pool_account_for_task
+                                .is_none()
+                                .then(|| state_for_task.config.openai_upstream_base_url.host_str())
+                                .flatten()
+                        },
+                    ),
                     chunk.len(),
                     Utc::now(),
                 );
@@ -2315,6 +2328,18 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             pool_account_for_task
                                 .as_ref()
                                 .map(|account| account.account_id),
+                            payload_summary_upstream_base_url_host(pool_account_for_task.as_ref())
+                                .or_else(|| {
+                                    pool_account_for_task
+                                        .is_none()
+                                        .then(|| {
+                                            state_for_task
+                                                .config
+                                                .openai_upstream_base_url
+                                                .host_str()
+                                        })
+                                        .flatten()
+                                }),
                             chunk.len(),
                             Utc::now(),
                         );

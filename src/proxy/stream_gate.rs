@@ -1919,18 +1919,23 @@ impl ProxyPricingMode {
     }
 }
 
+pub(crate) fn normalize_upstream_base_url_host_value(raw: &str) -> Option<String> {
+    let host = raw.trim().trim_end_matches('/').to_ascii_lowercase();
+    if host.is_empty() || host.contains('/') {
+        None
+    } else {
+        Some(host)
+    }
+}
+
 pub(crate) fn normalize_upstream_base_url_host(raw: &str) -> Option<String> {
     Url::parse(raw)
         .ok()
-        .and_then(|url| url.host_str().map(|host| host.trim().to_ascii_lowercase()))
-        .or_else(|| {
-            let host = raw.trim().trim_end_matches('/').to_ascii_lowercase();
-            if host.is_empty() || host.contains('/') {
-                None
-            } else {
-                Some(host)
-            }
+        .and_then(|url| {
+            url.host_str()
+                .and_then(normalize_upstream_base_url_host_value)
         })
+        .or_else(|| normalize_upstream_base_url_host_value(raw))
         .filter(|host| !host.is_empty())
 }
 

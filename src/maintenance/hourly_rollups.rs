@@ -1,6 +1,40 @@
 use super::*;
 
+const LIVE_ROLLUP_LOCK_RETRY_MAX_ATTEMPTS: u32 = 3;
+const LIVE_ROLLUP_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
+
 pub(crate) async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut attempt = 1_u32;
+    loop {
+        match sync_hourly_rollups_from_live_tables_once(pool).await {
+            Ok(()) => return Ok(()),
+            Err(err)
+                if attempt < LIVE_ROLLUP_LOCK_RETRY_MAX_ATTEMPTS
+                    && crate::is_sqlite_lock_error(&err) =>
+            {
+                warn!(
+                    attempt,
+                    max_attempts = LIVE_ROLLUP_LOCK_RETRY_MAX_ATTEMPTS,
+                    retry_delay_ms = LIVE_ROLLUP_LOCK_RETRY_DELAY.as_millis() as u64,
+                    error = %err,
+                    "live hourly rollup sync hit sqlite lock; retrying"
+                );
+                attempt += 1;
+                tokio::time::sleep(LIVE_ROLLUP_LOCK_RETRY_DELAY).await;
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "live hourly rollup sync failed after {attempt}/{} attempt(s)",
+                        LIVE_ROLLUP_LOCK_RETRY_MAX_ATTEMPTS
+                    )
+                });
+            }
+        }
+    }
+}
+
+async fn sync_hourly_rollups_from_live_tables_once(pool: &Pool<Sqlite>) -> Result<()> {
     loop {
         let updated = replay_live_invocation_hourly_rollups(pool).await?;
         if updated == 0 {
@@ -9,6 +43,20 @@ pub(crate) async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) ->
     }
     loop {
         let updated = replay_live_forward_proxy_attempt_hourly_rollups(pool).await?;
+        if updated == 0 {
+            break;
+        }
+    }
+    loop {
+        let updated =
+            replay_live_upstream_host_network_minute_rollups_from_invocations(pool).await?;
+        if updated == 0 {
+            break;
+        }
+    }
+    loop {
+        let updated =
+            replay_live_upstream_host_network_minute_rollups_from_pool_attempts(pool).await?;
         if updated == 0 {
             break;
         }
@@ -2246,6 +2294,7 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema(
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),
         ("downstream_error_message", "TEXT"),
+        ("upstream_base_url_host", "TEXT"),
         ("upstream_request_compression_algorithm", "TEXT"),
         ("upstream_request_compression_mode", "TEXT"),
         ("upstream_request_logical_body_bytes", "INTEGER"),
@@ -2299,6 +2348,7 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_in_plac
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),
         ("downstream_error_message", "TEXT"),
+        ("upstream_base_url_host", "TEXT"),
         ("upstream_request_compression_algorithm", "TEXT"),
         ("upstream_request_compression_mode", "TEXT"),
         ("upstream_request_logical_body_bytes", "INTEGER"),

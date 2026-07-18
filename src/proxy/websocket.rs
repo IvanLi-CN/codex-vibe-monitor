@@ -184,6 +184,7 @@ pub(crate) async fn proxy_openai_v1_ws_common(
         endpoint: original_uri.path().to_string(),
         sticky_key: sticky_key.clone(),
         requester_ip,
+        upstream_base_url_host: None,
     };
 
     let downstream_subprotocol = requested_websocket_subprotocol(&headers);
@@ -666,10 +667,15 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
     let proxy_binding_key_snapshot =
         live_first_proxy_binding_key_snapshot(state.as_ref(), Some(&selected_proxy)).await;
     let group_name_snapshot = normalize_pool_attempt_group_name(account.group_name.clone());
+    let mut attempt_trace = trace.clone();
+    attempt_trace.upstream_base_url_host = account
+        .upstream_base_url
+        .host_str()
+        .and_then(normalize_upstream_base_url_host_value);
     let pending_attempt_record = Some(
         begin_pool_upstream_request_attempt_with_scope(
             &state.pool,
-            trace,
+            &attempt_trace,
             group_name_snapshot.as_deref(),
             proxy_binding_key_snapshot.as_deref(),
             account.account_id,
@@ -3129,6 +3135,7 @@ mod websocket_tests {
             endpoint: "/v1/realtime".to_string(),
             sticky_key: Some("sticky-only-key".to_string()),
             requester_ip: None,
+            upstream_base_url_host: None,
         };
         let usage_tracker = WsUsageTracker::new(
             api_key_account(Url::parse("https://api.example.test").expect("valid base")),

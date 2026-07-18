@@ -1584,6 +1584,7 @@ async fn websocket_prepare_preserves_encrypted_owner_lock() {
             endpoint: "/v1/realtime".to_string(),
             sticky_key: Some(prompt_cache_key.to_string()),
             requester_ip: None,
+            upstream_base_url_host: None,
         },
         None,
     )
@@ -1693,6 +1694,7 @@ async fn websocket_prepare_rate_limited_owner_returns_owner_unavailable() {
             endpoint: "/v1/realtime".to_string(),
             sticky_key: Some(prompt_cache_key.to_string()),
             requester_ip: None,
+            upstream_base_url_host: None,
         },
         None,
     )
@@ -3335,6 +3337,7 @@ async fn websocket_prepare_does_not_treat_sticky_key_as_prompt_cache_key() {
             endpoint: "/v1/realtime".to_string(),
             sticky_key: trace_sticky_key,
             requester_ip: None,
+            upstream_base_url_host: None,
         },
         None,
     )

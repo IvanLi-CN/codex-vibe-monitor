@@ -1487,10 +1487,15 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     )
                     .await;
                     pending_attempt_record = if let Some(trace) = trace_context.as_ref() {
+                        let mut attempt_trace = trace.clone();
+                        attempt_trace.upstream_base_url_host = account
+                            .upstream_base_url
+                            .host_str()
+                            .and_then(normalize_upstream_base_url_host_value);
                         Some(
                             begin_pool_upstream_request_attempt_with_scope(
                                 &state.pool,
-                                trace,
+                                &attempt_trace,
                                 group_name_snapshot.as_deref(),
                                 proxy_binding_key_snapshot.as_deref(),
                                 account.account_id,
@@ -1610,6 +1615,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     &trace.invoke_id,
                                     &trace.occurred_at,
                                     Some(account.account_id),
+                                    account.upstream_base_url.host_str(),
                                     request_header_bytes_approx
                                         .saturating_add(request_transmitted_body_bytes),
                                     Utc::now(),
@@ -1620,6 +1626,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                         &trace.invoke_id,
                                         &trace.occurred_at,
                                         Some(account.account_id),
+                                        account.upstream_base_url.host_str(),
                                         response_header_bytes_approx,
                                         Utc::now(),
                                     );
@@ -1655,6 +1662,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     &trace.invoke_id,
                                     &trace.occurred_at,
                                     Some(account.account_id),
+                                    account.upstream_base_url.host_str(),
                                     request_header_bytes_approx
                                         .saturating_add(request_transmitted_body_bytes),
                                     Utc::now(),
@@ -1862,6 +1870,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     &trace.invoke_id,
                                     &trace.occurred_at,
                                     Some(account.account_id),
+                                    account.upstream_base_url.host_str(),
                                     request_header_bytes_approx
                                         .saturating_add(request_transmitted_body_bytes),
                                     Utc::now(),
@@ -2274,10 +2283,15 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     let group_name_snapshot =
                         normalize_pool_attempt_group_name(account.group_name.clone());
                     pending_attempt_record = if let Some(trace) = trace_context.as_ref() {
+                        let mut attempt_trace = trace.clone();
+                        attempt_trace.upstream_base_url_host = account
+                            .upstream_base_url
+                            .host_str()
+                            .and_then(normalize_upstream_base_url_host_value);
                         Some(
                             begin_pool_upstream_request_attempt_with_scope(
                                 &state.pool,
-                                trace,
+                                &attempt_trace,
                                 group_name_snapshot.as_deref(),
                                 proxy_binding_key_snapshot.as_deref(),
                                 account.account_id,

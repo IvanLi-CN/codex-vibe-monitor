@@ -5,6 +5,7 @@ pub(crate) const DASHBOARD_NETWORK_BUCKET_SECONDS: i64 = 300;
 const DASHBOARD_NETWORK_SECOND_BUCKET_RETENTION_SECONDS: i64 = 45;
 pub(crate) const DASHBOARD_ACTIVITY_REALTIME_WINDOW_SECONDS: i64 = 60;
 const DASHBOARD_ACTIVITY_SECOND_BUCKET_RETENTION_SECONDS: i64 = 180;
+pub(crate) const DASHBOARD_NETWORK_UNKNOWN_UPSTREAM_HOST: &str = "__unknown__";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct DashboardNetworkRateSnapshot {
@@ -155,6 +156,7 @@ struct DashboardNetworkOpenBucketState {
 #[derive(Debug, Default)]
 struct DashboardTrackedInvocationTraffic {
     upstream_account_id: Option<i64>,
+    upstream_base_url_host: Option<String>,
     live_first_response_byte_epoch_second: Option<i64>,
     live_first_response_byte_total_ms: Option<f64>,
 }
@@ -162,9 +164,11 @@ struct DashboardTrackedInvocationTraffic {
 #[derive(Debug, Default)]
 struct DashboardNetworkSpeedCacheInner {
     second_buckets: HashMap<DashboardNetworkScopeKey, VecDeque<DashboardNetworkSecondBucket>>,
+    host_second_buckets: HashMap<String, VecDeque<DashboardNetworkSecondBucket>>,
     activity_second_buckets:
         HashMap<DashboardNetworkScopeKey, VecDeque<DashboardActivitySecondBucket>>,
     open_buckets: HashMap<DashboardNetworkScopeKey, DashboardNetworkOpenBucketState>,
+    host_open_buckets: HashMap<String, DashboardNetworkOpenBucketState>,
     tracked_invocations: HashMap<(String, String), DashboardTrackedInvocationTraffic>,
     latest_speed_epoch_second: Option<i64>,
     latest_activity_epoch_second: Option<i64>,
@@ -193,6 +197,7 @@ impl DashboardNetworkSpeedCache {
         invoke_id: &str,
         occurred_at: &str,
         upstream_account_id: Option<i64>,
+        upstream_base_url_host: Option<&str>,
         bytes: usize,
         observed_at: DateTime<Utc>,
     ) {
@@ -211,10 +216,27 @@ impl DashboardNetworkSpeedCache {
             .entry((invoke_id.to_string(), occurred_at.to_string()))
             .or_default();
         tracked.upstream_account_id = upstream_account_id.or(tracked.upstream_account_id);
+        let normalized_upstream_base_url_host =
+            normalize_dashboard_network_upstream_host(upstream_base_url_host);
+        tracked.upstream_base_url_host =
+            normalized_upstream_base_url_host.or(tracked.upstream_base_url_host.clone());
         let tracked_upstream_account_id = tracked.upstream_account_id;
+        let tracked_upstream_base_url_host = tracked
+            .upstream_base_url_host
+            .clone()
+            .unwrap_or_else(|| DASHBOARD_NETWORK_UNKNOWN_UPSTREAM_HOST.to_string());
         record_scope_delta_locked(
             &mut inner,
             tracked_upstream_account_id,
+            observed_at.timestamp(),
+            DashboardNetworkByteTotals {
+                upload_bytes: bytes,
+                download_bytes: 0,
+            },
+        );
+        record_host_delta_locked(
+            &mut inner,
+            tracked_upstream_base_url_host.as_str(),
             observed_at.timestamp(),
             DashboardNetworkByteTotals {
                 upload_bytes: bytes,
@@ -228,6 +250,7 @@ impl DashboardNetworkSpeedCache {
         invoke_id: &str,
         occurred_at: &str,
         upstream_account_id: Option<i64>,
+        upstream_base_url_host: Option<&str>,
         bytes: usize,
         observed_at: DateTime<Utc>,
     ) {
@@ -246,10 +269,27 @@ impl DashboardNetworkSpeedCache {
             .entry((invoke_id.to_string(), occurred_at.to_string()))
             .or_default();
         tracked.upstream_account_id = upstream_account_id.or(tracked.upstream_account_id);
+        let normalized_upstream_base_url_host =
+            normalize_dashboard_network_upstream_host(upstream_base_url_host);
+        tracked.upstream_base_url_host =
+            normalized_upstream_base_url_host.or(tracked.upstream_base_url_host.clone());
         let tracked_upstream_account_id = tracked.upstream_account_id;
+        let tracked_upstream_base_url_host = tracked
+            .upstream_base_url_host
+            .clone()
+            .unwrap_or_else(|| DASHBOARD_NETWORK_UNKNOWN_UPSTREAM_HOST.to_string());
         record_scope_delta_locked(
             &mut inner,
             tracked_upstream_account_id,
+            observed_at.timestamp(),
+            DashboardNetworkByteTotals {
+                upload_bytes: 0,
+                download_bytes: bytes,
+            },
+        );
+        record_host_delta_locked(
+            &mut inner,
+            tracked_upstream_base_url_host.as_str(),
             observed_at.timestamp(),
             DashboardNetworkByteTotals {
                 upload_bytes: 0,
@@ -665,6 +705,55 @@ fn record_scope_delta_locked(
     }
 }
 
+fn record_host_delta_locked(
+    inner: &mut DashboardNetworkSpeedCacheInner,
+    upstream_base_url_host: &str,
+    observed_epoch_second: i64,
+    totals: DashboardNetworkByteTotals,
+) {
+    if totals.upload_bytes <= 0 && totals.download_bytes <= 0 {
+        return;
+    }
+    let normalized_upstream_base_url_host =
+        normalize_dashboard_network_upstream_host(Some(upstream_base_url_host))
+            .unwrap_or_else(|| DASHBOARD_NETWORK_UNKNOWN_UPSTREAM_HOST.to_string());
+    let buckets = inner
+        .host_second_buckets
+        .entry(normalized_upstream_base_url_host.clone())
+        .or_default();
+    if let Some(last) = buckets.back_mut()
+        && last.epoch_second == observed_epoch_second
+    {
+        last.totals.add_assign(totals);
+    } else {
+        buckets.push_back(DashboardNetworkSecondBucket {
+            epoch_second: observed_epoch_second,
+            totals,
+        });
+    }
+
+    let bucket_start_epoch_second = current_bucket_start_epoch_second(observed_epoch_second);
+    let open_bucket = inner
+        .host_open_buckets
+        .entry(normalized_upstream_base_url_host)
+        .or_insert(DashboardNetworkOpenBucketState {
+            bucket_start_epoch_second,
+            seed_totals: DashboardNetworkByteTotals::default(),
+            delta_totals: DashboardNetworkByteTotals::default(),
+            seeded: false,
+        });
+    if open_bucket.bucket_start_epoch_second != bucket_start_epoch_second {
+        *open_bucket = DashboardNetworkOpenBucketState {
+            bucket_start_epoch_second,
+            seed_totals: DashboardNetworkByteTotals::default(),
+            delta_totals: DashboardNetworkByteTotals::default(),
+            seeded: false,
+        };
+    }
+    open_bucket.delta_totals.add_assign(totals);
+    prune_second_buckets_locked(inner, observed_epoch_second);
+}
+
 fn record_bucket_delta_locked(
     inner: &mut DashboardNetworkSpeedCacheInner,
     scope: DashboardNetworkScopeKey,
@@ -851,6 +940,16 @@ fn prune_second_buckets_locked(inner: &mut DashboardNetworkSpeedCacheInner, now_
         }
         !buckets.is_empty()
     });
+    inner.host_second_buckets.retain(|_, buckets| {
+        while let Some(front) = buckets.front() {
+            if front.epoch_second < cutoff_epoch_second {
+                buckets.pop_front();
+            } else {
+                break;
+            }
+        }
+        !buckets.is_empty()
+    });
 }
 
 fn prune_activity_second_buckets_locked(
@@ -934,6 +1033,13 @@ fn epoch_second_to_utc(epoch_second: i64) -> DateTime<Utc> {
         .expect("valid UTC second bucket")
 }
 
+fn normalize_dashboard_network_upstream_host(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -951,6 +1057,7 @@ mod tests {
             "invoke-1",
             "2026-07-15 12:00:00",
             Some(7),
+            Some("api.openai.com"),
             30,
             fixed_utc(10),
         );
@@ -958,6 +1065,7 @@ mod tests {
             "invoke-2",
             "2026-07-15 12:00:01",
             Some(7),
+            Some("api.openai.com"),
             45,
             fixed_utc(24),
         );
@@ -965,6 +1073,7 @@ mod tests {
             "invoke-3",
             "2026-07-15 12:00:02",
             Some(7),
+            Some("api.openai.com"),
             60,
             fixed_utc(24),
         );
@@ -978,9 +1087,30 @@ mod tests {
     #[test]
     fn request_recording_accumulates_attempt_bytes_and_finish_cleans_state() {
         let cache = DashboardNetworkSpeedCache::new(fixed_utc(0));
-        cache.record_request_bytes("invoke-1", "2026-07-15 12:00:00", None, 120, fixed_utc(100));
-        cache.record_request_bytes("invoke-1", "2026-07-15 12:00:00", None, 120, fixed_utc(100));
-        cache.record_request_bytes("invoke-1", "2026-07-15 12:00:00", None, 150, fixed_utc(100));
+        cache.record_request_bytes(
+            "invoke-1",
+            "2026-07-15 12:00:00",
+            None,
+            Some("api.openai.com"),
+            120,
+            fixed_utc(100),
+        );
+        cache.record_request_bytes(
+            "invoke-1",
+            "2026-07-15 12:00:00",
+            None,
+            Some("api.openai.com"),
+            120,
+            fixed_utc(100),
+        );
+        cache.record_request_bytes(
+            "invoke-1",
+            "2026-07-15 12:00:00",
+            None,
+            Some("api.openai.com"),
+            150,
+            fixed_utc(100),
+        );
         cache.finish_invocation("invoke-1", "2026-07-15 12:00:00");
 
         let rates = cache.snapshot_account_rates(fixed_utc(100));
@@ -995,6 +1125,7 @@ mod tests {
             "invoke-1",
             "2026-07-15 12:00:00",
             Some(3),
+            Some("api.openai.com"),
             120,
             fixed_utc(620),
         );
@@ -1024,6 +1155,7 @@ mod tests {
             "invoke-1",
             "2026-07-15 12:00:00",
             Some(4),
+            Some("api.openai.com"),
             64,
             fixed_utc(200),
         );

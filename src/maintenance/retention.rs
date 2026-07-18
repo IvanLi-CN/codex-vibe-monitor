@@ -228,6 +228,10 @@ pub(crate) struct HistoricalRollupBackfillSnapshot {
 
 pub(crate) const HOURLY_ROLLUP_DATASET_INVOCATIONS: &str = "codex_invocations";
 pub(crate) const HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS: &str = "forward_proxy_attempts";
+pub(crate) const HOURLY_ROLLUP_DATASET_UPSTREAM_HOST_NETWORK_DIRECT: &str =
+    "upstream_host_network_direct";
+pub(crate) const HOURLY_ROLLUP_DATASET_UPSTREAM_HOST_NETWORK_POOL_ATTEMPTS: &str =
+    "upstream_host_network_pool_attempts";
 pub(crate) const HOURLY_ROLLUP_TARGET_INVOCATIONS: &str = "invocation_rollup_hourly";
 pub(crate) const HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES: &str =
     "invocation_failure_rollup_hourly";
@@ -241,6 +245,8 @@ pub(crate) const HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY: &str =
     "upstream_account_stats_hourly";
 pub(crate) const HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE: &str =
     "upstream_account_stats_minute";
+pub(crate) const HOURLY_ROLLUP_TARGET_UPSTREAM_HOST_NETWORK_MINUTE: &str =
+    "upstream_host_network_minute";
 pub(crate) const HOURLY_ROLLUP_TARGET_STICKY_KEYS: &str = "upstream_sticky_key_hourly";
 pub(crate) const HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS: &str = "forward_proxy_attempt_hourly";
 pub(crate) const HISTORICAL_ROLLUP_ARCHIVE_DATASETS: [&str; 2] = [
@@ -444,7 +450,7 @@ pub(crate) struct DryRunBatchCount {
 pub(crate) const CODEX_INVOCATIONS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, status, error_message, failure_kind, failure_class, is_actionable, payload, raw_response, cost_estimated, price_version, request_raw_path, request_raw_codec, request_raw_size, request_raw_truncated, request_raw_truncated_reason, response_raw_path, response_raw_codec, response_raw_size, response_raw_truncated, response_raw_truncated_reason, detail_level, detail_pruned_at, detail_prune_reason, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, created_at";
 pub(crate) const FORWARD_PROXY_ATTEMPTS_ARCHIVE_COLUMNS: &str =
     "id, proxy_key, occurred_at, is_success, latency_ms, failure_kind, is_probe";
-pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_COLUMNS: &str = "id, attempt_public_id, invoke_id, occurred_at, endpoint, route_mode, sticky_key, group_name_snapshot, proxy_binding_key_snapshot, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, requester_ip, started_at, finished_at, status, phase, http_status, downstream_http_status, failure_kind, error_message, downstream_error_message, connect_latency_ms, first_byte_latency_ms, stream_latency_ms, upstream_request_id, upstream_request_compression_algorithm, upstream_request_compression_mode, upstream_request_logical_body_bytes, upstream_request_transmitted_body_bytes, upstream_request_header_bytes_approx, upstream_response_body_bytes, upstream_response_header_bytes_approx, compact_support_status, compact_support_reason, created_at";
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_COLUMNS: &str = "id, attempt_public_id, invoke_id, occurred_at, endpoint, route_mode, sticky_key, upstream_base_url_host, group_name_snapshot, proxy_binding_key_snapshot, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, requester_ip, started_at, finished_at, status, phase, http_status, downstream_http_status, failure_kind, error_message, downstream_error_message, connect_latency_ms, first_byte_latency_ms, stream_latency_ms, upstream_request_id, upstream_request_compression_algorithm, upstream_request_compression_mode, upstream_request_logical_body_bytes, upstream_request_transmitted_body_bytes, upstream_request_header_bytes_approx, upstream_response_body_bytes, upstream_response_header_bytes_approx, compact_support_status, compact_support_reason, created_at";
 pub(crate) const CODEX_QUOTA_SNAPSHOTS_ARCHIVE_COLUMNS: &str = "id, captured_at, amount_limit, used_amount, remaining_amount, period, period_reset_time, expire_time, is_active, total_cost, total_requests, total_tokens, last_request_time, billing_type, remaining_count, used_count, sub_type_name";
 
 pub(crate) const CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL: &str = r#"
@@ -521,6 +527,7 @@ CREATE TABLE IF NOT EXISTS archive_db.pool_upstream_request_attempts (
     endpoint TEXT NOT NULL,
     route_mode TEXT NOT NULL,
     sticky_key TEXT,
+    upstream_base_url_host TEXT,
     group_name_snapshot TEXT,
     proxy_binding_key_snapshot TEXT,
     upstream_account_id INTEGER,
@@ -767,7 +774,9 @@ pub(crate) async fn run_data_retention_maintenance(
     let raw_path_fallback_root = config.database_path.parent();
 
     if !dry_run {
-        sync_hourly_rollups_from_live_tables(pool).await?;
+        sync_hourly_rollups_from_live_tables(pool)
+            .await
+            .context("failed to sync hourly rollups from live tables before retention")?;
         let janitor = cleanup_stale_archive_temp_files(config, false)?;
         if janitor.stale_temp_files_removed > 0 {
             info!(
@@ -782,7 +791,9 @@ pub(crate) async fn run_data_retention_maintenance(
     }
 
     let raw_compression =
-        compress_cold_proxy_raw_payloads(pool, config, raw_path_fallback_root, dry_run).await?;
+        compress_cold_proxy_raw_payloads(pool, config, raw_path_fallback_root, dry_run)
+            .await
+            .context("failed to compress cold proxy raw payloads during retention")?;
     summary.raw_files_compression_candidates += raw_compression.files_considered;
     summary.raw_files_compressed += raw_compression.files_compressed;
     summary.raw_bytes_before += raw_compression.bytes_before;
@@ -796,8 +807,9 @@ pub(crate) async fn run_data_retention_maintenance(
         return Ok(summary);
     }
 
-    let pruned =
-        prune_old_invocation_details(pool, config, raw_path_fallback_root, dry_run).await?;
+    let pruned = prune_old_invocation_details(pool, config, raw_path_fallback_root, dry_run)
+        .await
+        .context("failed to prune old invocation details during retention")?;
     summary.invocation_details_pruned += pruned.0;
     summary.archive_batches_touched += pruned.1;
     summary.raw_files_removed += pruned.2;
@@ -806,8 +818,9 @@ pub(crate) async fn run_data_retention_maintenance(
         return Ok(summary);
     }
 
-    let invocation_archive =
-        archive_old_invocations(pool, config, raw_path_fallback_root, dry_run).await?;
+    let invocation_archive = archive_old_invocations(pool, config, raw_path_fallback_root, dry_run)
+        .await
+        .context("failed to archive old invocations during retention")?;
     summary.invocation_rows_archived += invocation_archive.0;
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;
@@ -824,7 +837,8 @@ pub(crate) async fn run_data_retention_maintenance(
         shanghai_utc_cutoff_string(config.forward_proxy_attempts_retention_days),
         dry_run,
     )
-    .await?;
+    .await
+    .context("failed to archive forward proxy attempts during retention")?;
     summary.forward_proxy_attempt_rows_archived += proxy_archive.0;
     summary.archive_batches_touched += proxy_archive.1;
 
@@ -840,7 +854,8 @@ pub(crate) async fn run_data_retention_maintenance(
         shanghai_local_cutoff_string(config.pool_upstream_request_attempts_retention_days),
         dry_run,
     )
-    .await?;
+    .await
+    .context("failed to archive pool upstream request attempts during retention")?;
     summary.pool_upstream_request_attempt_rows_archived += pool_attempt_archive.0;
     summary.archive_batches_touched += pool_attempt_archive.1;
 
@@ -848,7 +863,9 @@ pub(crate) async fn run_data_retention_maintenance(
         return Ok(summary);
     }
 
-    let quota_archive = compact_old_quota_snapshots(pool, config, dry_run).await?;
+    let quota_archive = compact_old_quota_snapshots(pool, config, dry_run)
+        .await
+        .context("failed to compact old quota snapshots during retention")?;
     summary.quota_snapshot_rows_archived += quota_archive.0;
     summary.archive_batches_touched += quota_archive.1;
 
@@ -857,13 +874,17 @@ pub(crate) async fn run_data_retention_maintenance(
     }
 
     summary.orphan_raw_files_removed +=
-        sweep_orphan_proxy_raw_files(pool, config, raw_path_fallback_root, dry_run).await?;
+        sweep_orphan_proxy_raw_files(pool, config, raw_path_fallback_root, dry_run)
+            .await
+            .context("failed to sweep orphan proxy raw files during retention")?;
 
     if should_stop_data_retention_maintenance(shutdown) {
         return Ok(summary);
     }
 
-    let archive_ttl_cleanup = cleanup_expired_archive_batches(pool, config, dry_run).await?;
+    let archive_ttl_cleanup = cleanup_expired_archive_batches(pool, config, dry_run)
+        .await
+        .context("failed to clean up expired archive batches during retention")?;
     summary.archive_batches_deleted += archive_ttl_cleanup;
 
     if should_stop_data_retention_maintenance(shutdown) {

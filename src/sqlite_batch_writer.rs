@@ -1137,6 +1137,7 @@ mod tests {
             endpoint: "/v1/responses".to_string(),
             sticky_key: Some(format!("{invoke_id}-sticky")),
             requester_ip: Some("192.168.31.6".to_string()),
+            upstream_base_url_host: None,
         }
     }
 

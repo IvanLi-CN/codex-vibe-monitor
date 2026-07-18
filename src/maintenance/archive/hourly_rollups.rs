@@ -2139,6 +2139,363 @@ pub(crate) async fn replay_live_forward_proxy_attempt_hourly_rollups_tx(
     Ok(rows.len() as u64)
 }
 
+#[derive(Debug, Clone, FromRow)]
+struct UpstreamHostNetworkMinuteSourceRow {
+    id: i64,
+    bucket_start_epoch: i64,
+    source: String,
+    upstream_base_url_host: String,
+    upload_bytes: i64,
+    download_bytes: i64,
+}
+
+fn upstream_host_network_direct_upload_bytes_sql(alias: &str) -> String {
+    format!(
+        "CASE \
+           WHEN COALESCE( \
+             CASE \
+               WHEN json_valid({alias}.payload) \
+                 AND json_type({alias}.payload, '$.upstreamApproxUploadBytes') IN ('integer', 'real') \
+               THEN CAST(json_extract({alias}.payload, '$.upstreamApproxUploadBytes') AS INTEGER) \
+             END, \
+             CASE WHEN {alias}.request_raw_size < 0 THEN 0 ELSE COALESCE({alias}.request_raw_size, 0) END, \
+             0 \
+           ) < 0 THEN 0 \
+           ELSE COALESCE( \
+             CASE \
+               WHEN json_valid({alias}.payload) \
+                 AND json_type({alias}.payload, '$.upstreamApproxUploadBytes') IN ('integer', 'real') \
+               THEN CAST(json_extract({alias}.payload, '$.upstreamApproxUploadBytes') AS INTEGER) \
+             END, \
+             CASE WHEN {alias}.request_raw_size < 0 THEN 0 ELSE COALESCE({alias}.request_raw_size, 0) END, \
+             0 \
+           ) \
+         END"
+    )
+}
+
+fn upstream_host_network_direct_download_bytes_sql(alias: &str) -> String {
+    format!(
+        "CASE \
+           WHEN COALESCE( \
+             CASE \
+               WHEN json_valid({alias}.payload) \
+                 AND json_type({alias}.payload, '$.upstreamApproxDownloadBytes') IN ('integer', 'real') \
+               THEN CAST(json_extract({alias}.payload, '$.upstreamApproxDownloadBytes') AS INTEGER) \
+             END, \
+             CASE \
+               WHEN COALESCE( \
+                 CASE \
+                   WHEN json_valid({alias}.payload) \
+                     AND json_type({alias}.payload, '$.forwardedBytes') IN ('integer', 'real') \
+                   THEN CAST(json_extract({alias}.payload, '$.forwardedBytes') AS INTEGER) \
+                 END, \
+                 {alias}.response_raw_size, \
+                 CAST(LENGTH({alias}.raw_response) AS INTEGER), \
+                 0 \
+               ) < 0 THEN 0 \
+               ELSE COALESCE( \
+                 CASE \
+                   WHEN json_valid({alias}.payload) \
+                     AND json_type({alias}.payload, '$.forwardedBytes') IN ('integer', 'real') \
+                   THEN CAST(json_extract({alias}.payload, '$.forwardedBytes') AS INTEGER) \
+                 END, \
+                 {alias}.response_raw_size, \
+                 CAST(LENGTH({alias}.raw_response) AS INTEGER), \
+                 0 \
+               ) \
+             END, \
+             0 \
+           ) < 0 THEN 0 \
+           ELSE COALESCE( \
+             CASE \
+               WHEN json_valid({alias}.payload) \
+                 AND json_type({alias}.payload, '$.upstreamApproxDownloadBytes') IN ('integer', 'real') \
+               THEN CAST(json_extract({alias}.payload, '$.upstreamApproxDownloadBytes') AS INTEGER) \
+             END, \
+             CASE \
+               WHEN COALESCE( \
+                 CASE \
+                   WHEN json_valid({alias}.payload) \
+                     AND json_type({alias}.payload, '$.forwardedBytes') IN ('integer', 'real') \
+                   THEN CAST(json_extract({alias}.payload, '$.forwardedBytes') AS INTEGER) \
+                 END, \
+                 {alias}.response_raw_size, \
+                 CAST(LENGTH({alias}.raw_response) AS INTEGER), \
+                 0 \
+               ) < 0 THEN 0 \
+               ELSE COALESCE( \
+                 CASE \
+                   WHEN json_valid({alias}.payload) \
+                     AND json_type({alias}.payload, '$.forwardedBytes') IN ('integer', 'real') \
+                   THEN CAST(json_extract({alias}.payload, '$.forwardedBytes') AS INTEGER) \
+                 END, \
+                 {alias}.response_raw_size, \
+                 CAST(LENGTH({alias}.raw_response) AS INTEGER), \
+                 0 \
+               ) \
+             END, \
+             0 \
+           ) \
+         END"
+    )
+}
+
+fn upstream_host_network_pool_attempt_upload_bytes_sql(alias: &str) -> String {
+    format!(
+        "CASE \
+           WHEN COALESCE({alias}.upstream_request_header_bytes_approx, 0) + COALESCE({alias}.upstream_request_transmitted_body_bytes, 0) < 0 THEN 0 \
+           ELSE COALESCE({alias}.upstream_request_header_bytes_approx, 0) + COALESCE({alias}.upstream_request_transmitted_body_bytes, 0) \
+         END"
+    )
+}
+
+fn upstream_host_network_pool_attempt_download_bytes_sql(alias: &str) -> String {
+    format!(
+        "CASE \
+           WHEN COALESCE({alias}.upstream_response_header_bytes_approx, 0) + COALESCE({alias}.upstream_response_body_bytes, 0) < 0 THEN 0 \
+           ELSE COALESCE({alias}.upstream_response_header_bytes_approx, 0) + COALESCE({alias}.upstream_response_body_bytes, 0) \
+         END"
+    )
+}
+
+fn upstream_host_network_payload_host_sql(alias: &str) -> String {
+    format!(
+        "COALESCE( \
+            NULLIF(LOWER(TRIM(CAST(CASE \
+                WHEN json_valid({alias}.payload) AND json_type({alias}.payload, '$.upstreamBaseUrlHost') = 'text' \
+                    THEN json_extract({alias}.payload, '$.upstreamBaseUrlHost') \
+                WHEN json_valid({alias}.payload) AND json_type({alias}.payload, '$.upstream_base_url_host') = 'text' \
+                    THEN json_extract({alias}.payload, '$.upstream_base_url_host') \
+            END AS TEXT))), ''), \
+            {unknown_host} \
+        )",
+        unknown_host =
+            sql_quote(crate::dashboard_network_speed::DASHBOARD_NETWORK_UNKNOWN_UPSTREAM_HOST),
+    )
+}
+
+fn upstream_host_network_attempt_host_sql(alias: &str) -> String {
+    format!(
+        "COALESCE(NULLIF(LOWER(TRIM({alias}.upstream_base_url_host)), ''), {unknown_host})",
+        unknown_host =
+            sql_quote(crate::dashboard_network_speed::DASHBOARD_NETWORK_UNKNOWN_UPSTREAM_HOST),
+    )
+}
+
+fn sql_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+async fn load_or_seed_hourly_rollup_live_progress_to_table_tail_tx(
+    tx: &mut SqliteConnection,
+    dataset: &str,
+    max_id_sql: &str,
+) -> Result<(i64, bool)> {
+    if crate::stats::hourly_rollup_progress_exists(&mut *tx, dataset).await? {
+        return Ok((
+            load_hourly_rollup_live_progress_tx(tx, dataset).await?,
+            false,
+        ));
+    }
+    let cursor_id = sqlx::query_scalar::<_, Option<i64>>(max_id_sql)
+        .fetch_one(&mut *tx)
+        .await?
+        .unwrap_or(0)
+        .max(0);
+    save_hourly_rollup_live_progress_tx(tx, dataset, cursor_id).await?;
+    Ok((cursor_id, true))
+}
+
+async fn upsert_upstream_host_network_minute_rows_tx(
+    tx: &mut SqliteConnection,
+    rows: &[UpstreamHostNetworkMinuteSourceRow],
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let mut aggregates = BTreeMap::<
+        (i64, String, String),
+        crate::dashboard_network_speed::DashboardNetworkByteTotals,
+    >::new();
+    for row in rows {
+        let entry = aggregates
+            .entry((
+                row.bucket_start_epoch,
+                row.source.clone(),
+                row.upstream_base_url_host.clone(),
+            ))
+            .or_default();
+        entry.upload_bytes = entry.upload_bytes.saturating_add(row.upload_bytes.max(0));
+        entry.download_bytes = entry
+            .download_bytes
+            .saturating_add(row.download_bytes.max(0));
+    }
+
+    for ((bucket_start_epoch, source, upstream_base_url_host), totals) in aggregates {
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_host_network_minute (
+                bucket_start_epoch,
+                source,
+                upstream_base_url_host,
+                upload_bytes,
+                download_bytes,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+            ON CONFLICT(bucket_start_epoch, source, upstream_base_url_host) DO UPDATE SET
+                upload_bytes = upstream_host_network_minute.upload_bytes + excluded.upload_bytes,
+                download_bytes = upstream_host_network_minute.download_bytes + excluded.download_bytes,
+                updated_at = datetime('now')
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .bind(source)
+        .bind(upstream_base_url_host)
+        .bind(totals.upload_bytes.max(0))
+        .bind(totals.download_bytes.max(0))
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn replay_live_upstream_host_network_minute_rollups_from_invocations(
+    pool: &Pool<Sqlite>,
+) -> Result<u64> {
+    let mut tx = pool.begin().await?;
+    let (cursor_id, seeded) = load_or_seed_hourly_rollup_live_progress_to_table_tail_tx(
+        tx.as_mut(),
+        HOURLY_ROLLUP_DATASET_UPSTREAM_HOST_NETWORK_DIRECT,
+        "SELECT MAX(id) FROM codex_invocations",
+    )
+    .await?;
+    if seeded {
+        tx.commit().await?;
+        return Ok(0);
+    }
+
+    let upload_bytes_sql = upstream_host_network_direct_upload_bytes_sql("inv");
+    let download_bytes_sql = upstream_host_network_direct_download_bytes_sql("inv");
+    let host_sql = upstream_host_network_payload_host_sql("inv");
+    let rows = sqlx::query_as::<_, UpstreamHostNetworkMinuteSourceRow>(
+        format!(
+            r#"
+            SELECT
+                inv.id,
+                ((unixepoch(inv.occurred_at || '+08:00') / 60) * 60) AS bucket_start_epoch,
+                inv.source,
+                {host_sql} AS upstream_base_url_host,
+                {upload_bytes_sql} AS upload_bytes,
+                {download_bytes_sql} AS download_bytes
+            FROM codex_invocations AS inv
+            WHERE inv.id > ?1
+              AND (
+                    COALESCE(
+                        CASE
+                            WHEN json_valid(inv.payload)
+                                THEN TRIM(CAST(json_extract(inv.payload, '$.routeMode') AS TEXT))
+                        END,
+                        ''
+                    ) <> ?2
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM pool_upstream_request_attempts AS attempts
+                        WHERE attempts.invoke_id = inv.invoke_id
+                          AND attempts.occurred_at = inv.occurred_at
+                    )
+              )
+            ORDER BY inv.id ASC
+            LIMIT ?3
+            "#,
+        )
+        .as_str(),
+    )
+    .bind(cursor_id)
+    .bind(INVOCATION_ROUTE_MODE_POOL)
+    .bind(BACKFILL_BATCH_SIZE)
+    .fetch_all(tx.as_mut())
+    .await?;
+    if rows.is_empty() {
+        tx.rollback().await?;
+        return Ok(0);
+    }
+
+    let last_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
+    upsert_upstream_host_network_minute_rows_tx(tx.as_mut(), &rows).await?;
+    save_hourly_rollup_live_progress_tx(
+        tx.as_mut(),
+        HOURLY_ROLLUP_DATASET_UPSTREAM_HOST_NETWORK_DIRECT,
+        last_id,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(rows.len() as u64)
+}
+
+pub(crate) async fn replay_live_upstream_host_network_minute_rollups_from_pool_attempts(
+    pool: &Pool<Sqlite>,
+) -> Result<u64> {
+    let mut tx = pool.begin().await?;
+    let (cursor_id, seeded) = load_or_seed_hourly_rollup_live_progress_to_table_tail_tx(
+        tx.as_mut(),
+        HOURLY_ROLLUP_DATASET_UPSTREAM_HOST_NETWORK_POOL_ATTEMPTS,
+        "SELECT MAX(id) FROM pool_upstream_request_attempts",
+    )
+    .await?;
+    if seeded {
+        tx.commit().await?;
+        return Ok(0);
+    }
+
+    let upload_bytes_sql = upstream_host_network_pool_attempt_upload_bytes_sql("attempts");
+    let download_bytes_sql = upstream_host_network_pool_attempt_download_bytes_sql("attempts");
+    let host_sql = upstream_host_network_attempt_host_sql("attempts");
+    let rows = sqlx::query_as::<_, UpstreamHostNetworkMinuteSourceRow>(
+        format!(
+            r#"
+            SELECT
+                attempts.id,
+                ((unixepoch(attempts.occurred_at || '+08:00') / 60) * 60) AS bucket_start_epoch,
+                inv.source,
+                {host_sql} AS upstream_base_url_host,
+                {upload_bytes_sql} AS upload_bytes,
+                {download_bytes_sql} AS download_bytes
+            FROM pool_upstream_request_attempts AS attempts
+            INNER JOIN codex_invocations AS inv
+                ON inv.invoke_id = attempts.invoke_id
+               AND inv.occurred_at = attempts.occurred_at
+            WHERE attempts.id > ?1
+            ORDER BY attempts.id ASC
+            LIMIT ?2
+            "#,
+        )
+        .as_str(),
+    )
+    .bind(cursor_id)
+    .bind(BACKFILL_BATCH_SIZE)
+    .fetch_all(tx.as_mut())
+    .await?;
+    if rows.is_empty() {
+        tx.rollback().await?;
+        return Ok(0);
+    }
+
+    let last_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
+    upsert_upstream_host_network_minute_rows_tx(tx.as_mut(), &rows).await?;
+    save_hourly_rollup_live_progress_tx(
+        tx.as_mut(),
+        HOURLY_ROLLUP_DATASET_UPSTREAM_HOST_NETWORK_POOL_ATTEMPTS,
+        last_id,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(rows.len() as u64)
+}
+
 pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
     pool: &Pool<Sqlite>,
 ) -> Result<usize> {
@@ -2489,4 +2846,302 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
             .fetch_one(pool)
             .await?;
     Ok((hourly_count.max(0) as usize, minute_count.max(0) as usize))
+}
+
+#[cfg(test)]
+mod upstream_host_network_minute_tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn test_pool() -> Pool<Sqlite> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite pool");
+        sqlx::query(
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY,
+                invoke_id TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                payload TEXT,
+                response_raw_size INTEGER,
+                raw_response TEXT NOT NULL DEFAULT '',
+                request_raw_size INTEGER,
+                source TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create codex_invocations table");
+        sqlx::query(
+            r#"
+            CREATE TABLE pool_upstream_request_attempts (
+                id INTEGER PRIMARY KEY,
+                invoke_id TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                upstream_base_url_host TEXT,
+                upstream_request_header_bytes_approx INTEGER,
+                upstream_request_transmitted_body_bytes INTEGER,
+                upstream_response_header_bytes_approx INTEGER,
+                upstream_response_body_bytes INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create pool_upstream_request_attempts table");
+        sqlx::query(
+            r#"
+            CREATE TABLE upstream_host_network_minute (
+                bucket_start_epoch INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                upstream_base_url_host TEXT NOT NULL,
+                upload_bytes INTEGER NOT NULL DEFAULT 0,
+                download_bytes INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (bucket_start_epoch, source, upstream_base_url_host)
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create upstream_host_network_minute table");
+        sqlx::query(
+            r#"
+            CREATE TABLE hourly_rollup_live_progress (
+                dataset TEXT PRIMARY KEY,
+                cursor_id INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create hourly_rollup_live_progress table");
+        pool
+    }
+
+    async fn save_progress(pool: &Pool<Sqlite>, dataset: &str, cursor_id: i64) {
+        sqlx::query(
+            r#"
+            INSERT INTO hourly_rollup_live_progress (dataset, cursor_id)
+            VALUES (?1, ?2)
+            ON CONFLICT(dataset) DO UPDATE SET cursor_id = excluded.cursor_id
+            "#,
+        )
+        .bind(dataset)
+        .bind(cursor_id)
+        .execute(pool)
+        .await
+        .expect("save live progress");
+    }
+
+    #[tokio::test]
+    async fn upstream_host_network_direct_rollup_seeds_cursor_without_backfill() {
+        let pool = test_pool().await;
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                payload,
+                response_raw_size,
+                raw_response,
+                request_raw_size,
+                source,
+                created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(7_i64)
+        .bind("invoke-seed")
+        .bind("2026-07-18 15:00:00")
+        .bind(r#"{"upstreamBaseUrlHost":"api.openai.com","upstreamApproxUploadBytes":10,"upstreamApproxDownloadBytes":20}"#)
+        .bind(0_i64)
+        .bind("")
+        .bind(0_i64)
+        .bind(SOURCE_PROXY)
+        .bind("2026-07-18T07:00:00Z")
+        .execute(&pool)
+        .await
+        .expect("insert seed invocation");
+
+        let updated = replay_live_upstream_host_network_minute_rollups_from_invocations(&pool)
+            .await
+            .expect("seed direct rollup cursor");
+        assert_eq!(updated, 0);
+
+        let row_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM upstream_host_network_minute")
+                .fetch_one(&pool)
+                .await
+                .expect("count upstream host minute rows");
+        assert_eq!(row_count, 0);
+
+        let cursor_id: i64 = sqlx::query_scalar(
+            "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+        )
+        .bind(HOURLY_ROLLUP_DATASET_UPSTREAM_HOST_NETWORK_DIRECT)
+        .fetch_one(&pool)
+        .await
+        .expect("load seeded cursor");
+        assert_eq!(cursor_id, 7);
+    }
+
+    #[tokio::test]
+    async fn upstream_host_network_direct_rollup_persists_normalized_host_bytes() {
+        let pool = test_pool().await;
+        save_progress(&pool, HOURLY_ROLLUP_DATASET_UPSTREAM_HOST_NETWORK_DIRECT, 0).await;
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                payload,
+                response_raw_size,
+                raw_response,
+                request_raw_size,
+                source,
+                created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(1_i64)
+        .bind("invoke-direct-host")
+        .bind("2026-07-18 15:01:00")
+        .bind(r#"{"upstreamBaseUrlHost":"API.OpenAI.com","upstreamApproxUploadBytes":120,"upstreamApproxDownloadBytes":240}"#)
+        .bind(0_i64)
+        .bind("")
+        .bind(0_i64)
+        .bind(SOURCE_PROXY)
+        .bind("2026-07-18T07:01:00Z")
+        .execute(&pool)
+        .await
+        .expect("insert direct invocation");
+
+        let updated = replay_live_upstream_host_network_minute_rollups_from_invocations(&pool)
+            .await
+            .expect("replay direct host minute rollups");
+        assert_eq!(updated, 1);
+
+        let row = sqlx::query_as::<_, (i64, String, String, i64, i64)>(
+            r#"
+            SELECT
+                bucket_start_epoch,
+                source,
+                upstream_base_url_host,
+                upload_bytes,
+                download_bytes
+            FROM upstream_host_network_minute
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load direct host minute row");
+        assert_eq!(row.2, "api.openai.com");
+        assert_eq!(row.3, 120);
+        assert_eq!(row.4, 240);
+    }
+
+    #[tokio::test]
+    async fn upstream_host_network_pool_rollup_splits_retry_hosts() {
+        let pool = test_pool().await;
+        save_progress(
+            &pool,
+            HOURLY_ROLLUP_DATASET_UPSTREAM_HOST_NETWORK_POOL_ATTEMPTS,
+            0,
+        )
+        .await;
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                payload,
+                response_raw_size,
+                raw_response,
+                request_raw_size,
+                source,
+                created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(1_i64)
+        .bind("invoke-pool-hosts")
+        .bind("2026-07-18 15:02:00")
+        .bind(r#"{"routeMode":"pool"}"#)
+        .bind(0_i64)
+        .bind("")
+        .bind(0_i64)
+        .bind(SOURCE_PROXY)
+        .bind("2026-07-18T07:02:00Z")
+        .execute(&pool)
+        .await
+        .expect("insert pool invocation");
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_request_attempts (
+                id,
+                invoke_id,
+                occurred_at,
+                upstream_base_url_host,
+                upstream_request_header_bytes_approx,
+                upstream_request_transmitted_body_bytes,
+                upstream_response_header_bytes_approx,
+                upstream_response_body_bytes
+            )
+            VALUES
+                (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8),
+                (?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            "#,
+        )
+        .bind(1_i64)
+        .bind("invoke-pool-hosts")
+        .bind("2026-07-18 15:02:00")
+        .bind("primary.example.com")
+        .bind(20_i64)
+        .bind(80_i64)
+        .bind(10_i64)
+        .bind(30_i64)
+        .bind(2_i64)
+        .bind("invoke-pool-hosts")
+        .bind("2026-07-18 15:02:00")
+        .bind("backup.example.com")
+        .bind(15_i64)
+        .bind(45_i64)
+        .bind(5_i64)
+        .bind(25_i64)
+        .execute(&pool)
+        .await
+        .expect("insert pool attempts");
+
+        let updated = replay_live_upstream_host_network_minute_rollups_from_pool_attempts(&pool)
+            .await
+            .expect("replay pool host minute rollups");
+        assert_eq!(updated, 2);
+
+        let rows = sqlx::query_as::<_, (String, i64, i64)>(
+            r#"
+            SELECT upstream_base_url_host, upload_bytes, download_bytes
+            FROM upstream_host_network_minute
+            ORDER BY upstream_base_url_host ASC
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("load pool host minute rows");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], ("backup.example.com".to_string(), 60, 30));
+        assert_eq!(rows[1], ("primary.example.com".to_string(), 100, 40));
+    }
 }
