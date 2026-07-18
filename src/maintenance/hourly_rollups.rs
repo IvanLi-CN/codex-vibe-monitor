@@ -13,6 +13,20 @@ pub(crate) async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) ->
             break;
         }
     }
+    loop {
+        let updated =
+            replay_live_upstream_host_network_minute_rollups_from_invocations(pool).await?;
+        if updated == 0 {
+            break;
+        }
+    }
+    loop {
+        let updated =
+            replay_live_upstream_host_network_minute_rollups_from_pool_attempts(pool).await?;
+        if updated == 0 {
+            break;
+        }
+    }
     Ok(())
 }
 
@@ -2246,6 +2260,7 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema(
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),
         ("downstream_error_message", "TEXT"),
+        ("upstream_base_url_host", "TEXT"),
         ("upstream_request_compression_algorithm", "TEXT"),
         ("upstream_request_compression_mode", "TEXT"),
         ("upstream_request_logical_body_bytes", "INTEGER"),
@@ -2299,6 +2314,7 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_in_plac
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),
         ("downstream_error_message", "TEXT"),
+        ("upstream_base_url_host", "TEXT"),
         ("upstream_request_compression_algorithm", "TEXT"),
         ("upstream_request_compression_mode", "TEXT"),
         ("upstream_request_logical_body_bytes", "INTEGER"),

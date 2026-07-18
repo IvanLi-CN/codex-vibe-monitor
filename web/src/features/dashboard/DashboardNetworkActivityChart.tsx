@@ -111,9 +111,9 @@ export function DashboardNetworkActivityChart({
   const panelStyle = useMemo(
     () => ({
       background:
-        "radial-gradient(circle at top left, oklch(var(--color-primary) / 0.12), transparent 34%), radial-gradient(circle at top right, oklch(var(--color-success) / 0.1), transparent 32%), linear-gradient(180deg, oklch(var(--color-base-100) / 0.96) 0%, color-mix(in oklab, oklch(var(--color-base-200)) 84%, oklch(var(--color-primary)) 16%) 100%)",
+        "linear-gradient(180deg, oklch(var(--color-base-100) / 0.96) 0%, oklch(var(--color-base-100) / 0.9) 100%)",
       boxShadow:
-        "inset 0 1px 0 color-mix(in oklab, oklch(var(--color-base-content)) 8%, transparent), 0 20px 40px color-mix(in oklab, oklch(var(--color-base-content)) 18%, transparent)",
+        "inset 0 1px 0 color-mix(in oklab, oklch(var(--color-base-content)) 8%, transparent), 0 18px 36px color-mix(in oklab, oklch(var(--color-base-content)) 14%, transparent)",
     }),
     [],
   );

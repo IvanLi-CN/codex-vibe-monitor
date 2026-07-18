@@ -336,6 +336,7 @@ pub(crate) fn build_via_pool_attempt_trace_context(
         endpoint: endpoint.to_string(),
         sticky_key,
         requester_ip: None,
+        upstream_base_url_host: None,
     }
 }
 
@@ -820,10 +821,15 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             let proxy_binding_key_snapshot =
                 live_first_proxy_binding_key_snapshot(state.as_ref(), Some(&selected_proxy)).await;
             pending_attempt_record = if let Some(trace_context) = trace_context {
+                let mut attempt_trace = trace_context.clone();
+                attempt_trace.upstream_base_url_host = account
+                    .upstream_base_url
+                    .host_str()
+                    .and_then(normalize_upstream_base_url_host_value);
                 Some(
                     begin_pool_upstream_request_attempt_with_scope(
                         &state.pool,
-                        trace_context,
+                        &attempt_trace,
                         group_name_snapshot.as_deref(),
                         proxy_binding_key_snapshot.as_deref(),
                         account.account_id,
@@ -1012,10 +1018,15 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             let proxy_binding_key_snapshot =
                 live_first_proxy_binding_key_snapshot(state.as_ref(), Some(&selected_proxy)).await;
             pending_attempt_record = if let Some(trace_context) = trace_context {
+                let mut attempt_trace = trace_context.clone();
+                attempt_trace.upstream_base_url_host = account
+                    .upstream_base_url
+                    .host_str()
+                    .and_then(normalize_upstream_base_url_host_value);
                 Some(
                     begin_pool_upstream_request_attempt_with_scope(
                         &state.pool,
-                        trace_context,
+                        &attempt_trace,
                         group_name_snapshot.as_deref(),
                         proxy_binding_key_snapshot.as_deref(),
                         account.account_id,
@@ -3243,6 +3254,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                     invoke_id,
                                                     &occurred_at_for_record,
                                                     Some(account.account_id),
+                                                    account.upstream_base_url.host_str(),
                                                     chunk.len(),
                                                     Utc::now(),
                                                 );
@@ -3301,6 +3313,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                             invoke_id,
                                                             &occurred_at_for_record,
                                                             Some(account.account_id),
+                                                            account.upstream_base_url.host_str(),
                                                             chunk.len(),
                                                             Utc::now(),
                                                         );
@@ -3934,6 +3947,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             invoke_id,
                             &occurred_at_for_record,
                             Some(account.account_id),
+                            account.upstream_base_url.host_str(),
                             chunk.len(),
                             Utc::now(),
                         );
@@ -3980,6 +3994,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     invoke_id,
                                     &occurred_at_for_record,
                                     Some(account.account_id),
+                                    account.upstream_base_url.host_str(),
                                     chunk.len(),
                                     Utc::now(),
                                 );

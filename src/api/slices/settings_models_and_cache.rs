@@ -1828,6 +1828,8 @@ pub(crate) struct DashboardActivityResponse {
     pub(crate) rate_window: DashboardActivityRateWindowResponse,
     pub(crate) summary: DashboardActivitySummaryResponse,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) network_live_bucket: Option<DashboardNetworkTimeseriesPointResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) accounts: Option<Vec<DashboardActivityAccountResponse>>,
 }
 

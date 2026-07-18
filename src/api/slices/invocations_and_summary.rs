@@ -10591,6 +10591,9 @@ pub(crate) async fn fetch_dashboard_activity(
     } else {
         None
     };
+    let network_live_bucket = live
+        .as_ref()
+        .and_then(|snapshot| snapshot.network_live_bucket.clone());
     let include_recent = params.include_recent.unwrap_or(true);
     let live_activity_key = dashboard_activity_live_snapshot_cache_key(live.as_ref());
     let request_range =
@@ -10657,6 +10660,7 @@ pub(crate) async fn fetch_dashboard_activity(
             },
         },
         summary: snapshot.summary,
+        network_live_bucket,
         accounts,
     };
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
@@ -11021,6 +11025,40 @@ async fn query_dashboard_network_bucket_rows(
         .await?)
 }
 
+async fn query_dashboard_network_host_minute_bucket_rows(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+) -> Result<Vec<DashboardNetworkBucketRow>, ApiError> {
+    if range.start >= range.end {
+        return Ok(Vec::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            ((bucket_start_epoch / 300) * 300) AS bucket_start_epoch_second,
+            SUM(upload_bytes) AS upload_bytes,
+            SUM(download_bytes) AS download_bytes
+        FROM upstream_host_network_minute
+        WHERE bucket_start_epoch >=
+        "#,
+    );
+    query
+        .push_bind(range.start.timestamp())
+        .push(" AND bucket_start_epoch < ")
+        .push_bind(range.end.timestamp());
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" GROUP BY bucket_start_epoch_second ORDER BY bucket_start_epoch_second ASC");
+
+    Ok(query
+        .build_query_as::<DashboardNetworkBucketRow>()
+        .fetch_all(pool)
+        .await?)
+}
+
 async fn load_dashboard_network_open_bucket_snapshot_for_scope(
     pool: &Pool<Sqlite>,
     dashboard_network_speed_cache: &DashboardNetworkSpeedCache,
@@ -11181,17 +11219,29 @@ pub(crate) async fn fetch_dashboard_network_timeseries(
     } else {
         open_bucket_start.min(range.end)
     };
-    let bucket_rows = query_dashboard_network_bucket_rows(
-        &state.pool,
-        source_scope,
-        ExactUtcRange {
-            start: range.start,
-            end: closed_range_end,
-        },
-        params.upstream_account_id.map(Some),
-        None,
-    )
-    .await?;
+    let bucket_rows = if let Some(upstream_account_id) = params.upstream_account_id {
+        query_dashboard_network_bucket_rows(
+            &state.pool,
+            source_scope,
+            ExactUtcRange {
+                start: range.start,
+                end: closed_range_end,
+            },
+            Some(Some(upstream_account_id)),
+            None,
+        )
+        .await?
+    } else {
+        query_dashboard_network_host_minute_bucket_rows(
+            &state.pool,
+            source_scope,
+            ExactUtcRange {
+                start: range.start,
+                end: closed_range_end,
+            },
+        )
+        .await?
+    };
 
     let mut aggregates = bucket_rows
         .into_iter()
@@ -11510,6 +11560,22 @@ mod dashboard_network_timeseries_tests {
         .execute(&pool)
         .await
         .expect("create pool_upstream_request_attempts table");
+        sqlx::query(
+            r#"
+            CREATE TABLE upstream_host_network_minute (
+                bucket_start_epoch INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                upstream_base_url_host TEXT NOT NULL,
+                upload_bytes INTEGER NOT NULL DEFAULT 0,
+                download_bytes INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (bucket_start_epoch, source, upstream_base_url_host)
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create upstream_host_network_minute table");
         pool
     }
 
@@ -11566,6 +11632,63 @@ mod dashboard_network_timeseries_tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].upload_bytes, 128);
         assert_eq!(rows[0].download_bytes, raw_response.len() as i64);
+    }
+
+    #[tokio::test]
+    async fn dashboard_network_host_minute_rows_roll_up_into_five_minute_buckets() {
+        let pool = network_pool().await;
+        let bucket_start_epoch = Utc
+            .with_ymd_and_hms(2026, 7, 16, 4, 35, 0)
+            .single()
+            .expect("valid bucket start")
+            .timestamp();
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_host_network_minute (
+                bucket_start_epoch,
+                source,
+                upstream_base_url_host,
+                upload_bytes,
+                download_bytes
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5), (?6, ?7, ?8, ?9, ?10)
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .bind(SOURCE_PROXY)
+        .bind("api.openai.com")
+        .bind(100_i64)
+        .bind(200_i64)
+        .bind(bucket_start_epoch + 60)
+        .bind(SOURCE_PROXY)
+        .bind("backup.openai.com")
+        .bind(40_i64)
+        .bind(80_i64)
+        .execute(&pool)
+        .await
+        .expect("insert upstream host minute rows");
+
+        let rows = query_dashboard_network_host_minute_bucket_rows(
+            &pool,
+            InvocationSourceScope::ProxyOnly,
+            ExactUtcRange {
+                start: Utc
+                    .timestamp_opt(bucket_start_epoch, 0)
+                    .single()
+                    .expect("valid start"),
+                end: Utc
+                    .timestamp_opt(bucket_start_epoch + 300, 0)
+                    .single()
+                    .expect("valid end"),
+            },
+        )
+        .await
+        .expect("query host minute network rows");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].bucket_start_epoch_second, bucket_start_epoch);
+        assert_eq!(rows[0].upload_bytes, 140);
+        assert_eq!(rows[0].download_bytes, 280);
     }
 }
 

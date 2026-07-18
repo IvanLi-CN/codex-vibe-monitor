@@ -97,6 +97,7 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_direct(
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),
         ("downstream_error_message", "TEXT"),
+        ("upstream_base_url_host", "TEXT"),
         ("upstream_request_compression_algorithm", "TEXT"),
         ("upstream_request_compression_mode", "TEXT"),
         ("upstream_request_logical_body_bytes", "INTEGER"),

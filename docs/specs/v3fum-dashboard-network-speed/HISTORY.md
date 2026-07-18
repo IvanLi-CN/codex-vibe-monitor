@@ -1,13 +1,11 @@
-# Dashboard 上游账号网速与活动总览 Network Tab 演进记录
+# Dashboard 上游真值网速与活动总览 Network Tab 演进记录
 
 ## 关键决策
 
-- 选择应用层字节而不是 network-layer 带宽作为 v1 事实源，避免把 socket/TLS/framing 统计复杂度引入主产品路径。
-- 实时展示采用 15 秒滚动均值，图表采用 5 分钟均值，两者都由同一个 runtime speed cache 支撑。
-- 当前开放 5 分钟桶以内存为主，并允许进程启动后对当桶做一次 lazy seed；这样既避免重启后当桶前半段完全丢失，也避免每秒重复扫库。
-- 网速时序接口保持 dashboard-only，不扩展通用 `/api/timeseries` 与 Stats 页面契约，避免把 Dashboard 的实时约束外溢到其它消费者。
-- 工作区标题区的“总网速”与账号卡里的“单账号网速”被视为两个独立验收面：
-  - 标题区展示所有上游账号的聚合上/下行速率，位置固定在右上 badge 区。
-  - 账号卡保留单账号速率，不用它替代标题区总量。
-- Dashboard 页面改为持续请求账号级汇总速率，但最近调用仍按账号 tab 按需加载，避免为了 header 总网速把最近调用查询常驻到对话视图。
-- 顶部网速图的 steady-state 更新从“每秒 HTTP 轮询整段时序”改为“首次 hydrate + `dashboardActivityLive` SSE 推送当前桶”，解决了 `刷新中` 闪烁，并把静默回补收敛到桶切换 / SSE 重连两个场景。
+- 选择 HTTP 近似真值而不是 network-layer 带宽作为事实源：只记最终可见 header 字段与实际 body 字节，不把 TLS / HTTP/2 framing 等低层开销混入口径。
+- 实时展示继续采用 15 秒滚动均值，图表采用 5 分钟均值，但 runtime cache 从原先的 `global + account` 扩展成 `global + host + account` 三维记账。
+- pool retry 的上传/下载必须按 attempt 累加；只按 invocation 记账会漏掉跨 host 重试流量，也无法支撑 host 维度分钟 rollup。
+- host minute rollup 选择单独建表 `upstream_host_network_minute`，并复用既有 live replay/materializer；首次只 seed cursor 到当前 live tail，不做历史回填。
+- Dashboard 无 scope 网速改成“系统对所有上游”的全局真值，闭合历史桶从 host minute rollup 汇总，live 末桶继续读 runtime global bucket。
+- 工作区标题区的总速率胶囊保留，但直接读取全局 `networkLiveBucket`；账号卡中的上传/下载速率删除，避免让 owner 把账号卡局部速率误读成系统总量。
+- 顶部网速图的 steady-state 更新继续保持“首次 hydrate + `dashboardActivityLive` SSE 推送当前桶”，只在桶切换 / SSE 重连时静默回补。
