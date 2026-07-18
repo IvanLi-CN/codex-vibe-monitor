@@ -242,6 +242,7 @@ export default function DashboardPage() {
                 range: dashboardActivity.range,
                 rangeStart: dashboardActivity.rangeStart,
                 rangeEnd: dashboardActivity.rangeEnd,
+                networkLiveBucket: dashboardActivity.networkLiveBucket,
                 accounts: dashboardActivity.accounts,
               }
             : null

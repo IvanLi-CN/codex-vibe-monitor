@@ -17,6 +17,7 @@ import DashboardPage from "./Dashboard";
 const hookMocks = vi.hoisted(() => ({
   useDashboardWorkingConversations: vi.fn(),
   useDashboardOverviewSnapshotRuntime: vi.fn(),
+  useDashboardActivitySnapshot: vi.fn(),
   useSummary: vi.fn(),
   useTimeseries: vi.fn(),
   useParallelWorkStats: vi.fn(),
@@ -31,6 +32,10 @@ vi.mock("../hooks/useDashboardWorkingConversations", () => ({
 vi.mock("../hooks/useDashboardOverviewSnapshotRuntime", () => ({
   useDashboardOverviewSnapshotRuntime: hookMocks.useDashboardOverviewSnapshotRuntime,
   default: hookMocks.useDashboardOverviewSnapshotRuntime,
+}));
+
+vi.mock("../hooks/useDashboardUpstreamAccountActivity", () => ({
+  useDashboardActivitySnapshot: hookMocks.useDashboardActivitySnapshot,
 }));
 
 vi.mock("../hooks/useStats", () => ({
@@ -132,6 +137,7 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
     onOpenUpstreamAccount,
     onOpenConversation,
     onOpenInvocation,
+    upstreamAccountActivity,
   }: {
     cards: DashboardWorkingConversationCardModel[];
     setRefreshTargetCount?: (count: number) => void;
@@ -151,11 +157,22 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
     }) => void;
+    upstreamAccountActivity?: {
+      networkLiveBucket?: {
+        uploadBytesPerSecond?: number;
+        downloadBytesPerSecond?: number;
+      } | null;
+    } | null;
   }) => (
     <div data-testid="dashboard-working-conversations-section">
       {cards.map((card) => card.conversationSequenceId).join(",")}
       <span data-testid="dashboard-working-conversations-endpoints">
         {cards.map((card) => card.currentInvocation.preview.endpoint ?? "").join(",")}
+      </span>
+      <span data-testid="dashboard-working-conversations-network-live-bucket">
+        {upstreamAccountActivity?.networkLiveBucket
+          ? `${upstreamAccountActivity.networkLiveBucket.uploadBytesPerSecond ?? 0}/${upstreamAccountActivity.networkLiveBucket.downloadBytesPerSecond ?? 0}`
+          : "missing"}
       </span>
       {cards[0] ? (
         <>
@@ -435,6 +452,110 @@ function installSnapshotRuntimeMock() {
 
 function installSummaryMocks() {
   installSnapshotRuntimeMock();
+  hookMocks.useDashboardActivitySnapshot.mockReturnValue({
+    data: {
+      range: "today",
+      rangeStart: "2026-04-08T00:00:00.000Z",
+      rangeEnd: "2026-04-08T00:03:00.000Z",
+      snapshotId: 1,
+      liveRevision: 7,
+      rateWindow: {
+        start: "2026-04-08T00:02:00.000Z",
+        end: "2026-04-08T00:03:00.000Z",
+        windowMinutes: 1,
+        mode: "rolling_60s_live_mean",
+      },
+      summary: {
+        stats: { totalCount: 12 },
+        tokensPerMinute: 24,
+        spendRate: 0.5,
+        currentFirstResponseByteTotalAvgMs: 1200,
+        currentAvgTotalMs: 2400,
+        modelPerformance: {
+          available: false,
+          total: {
+            tokensPerMinute: 0,
+            streamingResponseRate: null,
+            avgResponseMs: null,
+            avgFirstResponseByteTotalMs: null,
+            wallClockUsageDurationMs: null,
+            cumulativeUsageDurationMs: null,
+            parallelism: null,
+          },
+          models: [],
+        },
+      },
+      networkLiveBucket: {
+        bucketStart: "2026-04-08T00:00:00.000Z",
+        bucketEnd: "2026-04-08T00:05:00.000Z",
+        uploadBytesPerSecond: 2048,
+        downloadBytesPerSecond: 4096,
+        uploadBytes: 2048 * 300,
+        downloadBytes: 4096 * 300,
+        isLiveBucket: true,
+      },
+      accounts: [
+        {
+          accountKey: "upstream:77",
+          upstreamAccountId: 77,
+          displayName: "section-account@example.com",
+          isUnassigned: false,
+          requestCount: 1,
+          successCount: 1,
+          failureCount: 0,
+          nonSuccessCount: 0,
+          totalTokens: 120,
+          successTokens: 120,
+          nonSuccessTokens: 0,
+          failureTokens: 0,
+          failureCost: 0,
+          totalCost: 0.01,
+          usageBreakdown: {
+            cacheWriteTokens: 0,
+            cacheReadTokens: 0,
+            outputTokens: 0,
+            costs: null,
+            models: [],
+          },
+          modelPerformance: null,
+          cacheHitRate: null,
+          tokensPerMinute: 24,
+          spendRate: 0.5,
+          firstByteAvgMs: null,
+          firstResponseByteTotalAvgMs: null,
+          avgTotalMs: null,
+          currentFirstResponseByteTotalAvgMs: null,
+          currentAvgTotalMs: null,
+          inProgressInvocationCount: 0,
+          inProgressPhaseCounts: {
+            queued: 0,
+            requesting: 0,
+            responding: 0,
+          },
+          retryInvocationCount: 0,
+          uploadBytesPerSecond: 128,
+          downloadBytesPerSecond: 256,
+          effectiveRoutingRule: {
+            mode: "inherit_default",
+            reason: null,
+            targetGroupName: null,
+            targetAccountId: null,
+            targetAccountLabel: null,
+            sourceLabel: null,
+          },
+          recentInvocations: [],
+        },
+      ],
+    },
+    isLoading: false,
+    isRefreshing: false,
+    recentLoading: false,
+    recentError: null,
+    error: null,
+    recentInvocationLimit: 4,
+    reload: vi.fn(),
+    retryRecent: vi.fn(),
+  });
   hookMocks.useSummary.mockImplementation((window: string) => {
     if (window === "today") {
       return { summary: { totalCount: 12 }, isLoading: false, error: null };
@@ -610,6 +731,10 @@ describe("DashboardPage", () => {
     expect(
       host?.querySelector('[data-testid="dashboard-working-conversations-endpoints"]')?.textContent,
     ).toContain("/v1/responses");
+    expect(
+      host?.querySelector('[data-testid="dashboard-working-conversations-network-live-bucket"]')
+        ?.textContent,
+    ).toBe("2048/4096");
 
     const historyButton = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
       (button) => button.textContent === "历史",

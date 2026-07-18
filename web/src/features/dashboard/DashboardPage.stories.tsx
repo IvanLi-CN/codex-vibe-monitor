@@ -1,11 +1,12 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { type ReactNode, useLayoutEffect } from "react";
+import { type ReactNode, useEffect, useLayoutEffect } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import App from "../../App";
 import { I18nProvider } from "../../i18n";
 import type {
   DashboardActivityResponse,
+  DashboardNetworkTimeseriesResponse,
   ParallelWorkStatsResponse,
   PromptCacheConversation,
   PromptCacheConversationInvocationPreview,
@@ -16,6 +17,8 @@ import type {
   UpstreamAccountActivityAccount,
 } from "../../lib/api";
 import { DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY } from "../../lib/dashboardPerformanceDiagnostics";
+import { buildTopicDescriptor, type SubscriptionTopicEnvelope } from "../../lib/sse";
+import { getBrowserTimeZone } from "../../lib/timeZone";
 import DashboardPage from "../../pages/Dashboard";
 import {
   FullPageStorySurface,
@@ -60,6 +63,8 @@ const WORKING_CONVERSATION_STORY_BASE_SNAPSHOT = "2026-04-06T12:00:00.000Z";
 const WORKING_CONVERSATION_STORY_BASE_SNAPSHOT_MS = Date.parse(
   WORKING_CONVERSATION_STORY_BASE_SNAPSHOT,
 );
+const DASHBOARD_PAGE_STORY_RECENT_PREVIEW_MIN = 4;
+const DASHBOARD_PAGE_STORY_RECENT_PREVIEW_MAX = 16;
 
 function shiftWorkingConversationStoryIso(value: string, snapshotAtMs: number) {
   const occurredAtMs = Date.parse(value);
@@ -262,6 +267,15 @@ function buildDashboardActivityResponse({
     rangeStart: "2026-04-09T00:00:00.000Z",
     rangeEnd: "2026-04-09T12:24:00.000Z",
     snapshotId: 1775718240000,
+    networkLiveBucket: {
+      bucketStart: "2026-04-09T12:20:00.000Z",
+      bucketEnd: "2026-04-09T12:25:00.000Z",
+      uploadBytesPerSecond: 4_352,
+      downloadBytesPerSecond: 12_582_912,
+      uploadBytes: 4_352 * 300,
+      downloadBytes: 12_582_912 * 300,
+      isLiveBucket: true,
+    },
     rateWindow: {
       start: "2026-04-09T12:23:00.000Z",
       end: "2026-04-09T12:24:00.000Z",
@@ -489,6 +503,201 @@ function buildParallelWorkResponse(windows: {
   dayAll: ParallelWorkStatsResponse["current"];
 }): ParallelWorkStatsResponse {
   return windows;
+}
+
+function buildDashboardNetworkTimeseriesResponse(
+  range: "today" | "yesterday" | "1d",
+): DashboardNetworkTimeseriesResponse {
+  const bucketSeconds = 300;
+  const nowMs = Date.parse("2026-04-09T12:24:00+08:00");
+  const rangeStartMs =
+    range === "today"
+      ? Date.parse("2026-04-09T00:00:00+08:00")
+      : range === "yesterday"
+        ? Date.parse("2026-04-08T00:00:00+08:00")
+        : nowMs - 24 * 60 * 60 * 1000;
+  const rangeEndMs = range === "yesterday" ? Date.parse("2026-04-09T00:00:00+08:00") : nowMs;
+  const bucketCount = Math.max(1, Math.ceil((rangeEndMs - rangeStartMs) / (bucketSeconds * 1000)));
+  const points = Array.from({ length: bucketCount }, (_, index) => {
+    const bucketStartMs = rangeStartMs + index * bucketSeconds * 1000;
+    const bucketEndMs = Math.min(bucketStartMs + bucketSeconds * 1000, rangeEndMs);
+    const uploadBytesPerSecond =
+      index === bucketCount - 1 ? 4_352 : 2_048 + ((index * 211) % 2_048);
+    const downloadBytesPerSecond =
+      index === bucketCount - 1 ? 12_582_912 : 4_194_304 + ((index * 524_288) % 6_291_456);
+    return {
+      bucketStart: new Date(bucketStartMs).toISOString(),
+      bucketEnd: new Date(bucketEndMs).toISOString(),
+      uploadBytesPerSecond,
+      downloadBytesPerSecond,
+      uploadBytes: Math.round(uploadBytesPerSecond * ((bucketEndMs - bucketStartMs) / 1000)),
+      downloadBytes: Math.round(downloadBytesPerSecond * ((bucketEndMs - bucketStartMs) / 1000)),
+      isLiveBucket: range !== "yesterday" && index === bucketCount - 1,
+    };
+  });
+
+  return {
+    range,
+    rangeStart: new Date(rangeStartMs).toISOString(),
+    rangeEnd: new Date(rangeEndMs).toISOString(),
+    snapshotId: rangeEndMs,
+    bucketSeconds,
+    points,
+  };
+}
+
+function buildDashboardStoryResponses() {
+  const now = Date.parse("2026-04-09T12:24:00+08:00");
+  const rangeYesterdayStart = Date.parse("2026-04-08T00:00:00+08:00");
+  const rangeYesterdayEnd = Date.parse("2026-04-09T00:00:00+08:00");
+  const rangeTodayStart = Date.parse("2026-04-09T00:00:00+08:00");
+  const range1dStart = now - 24 * 60 * 60 * 1000;
+  const range7dStart = now - 7 * 24 * 60 * 60 * 1000;
+  const range6moStart = now - 180 * 24 * 60 * 60 * 1000;
+
+  const todaySummary = buildSummary({
+    totalCount: 12474,
+    successCount: 9949,
+    failureCount: 2525,
+    totalCost: 539.42,
+    totalTokens: 1314275579,
+    inProgressConversationCount: 11,
+  });
+  const yesterdaySummary = buildSummary({
+    totalCount: 10864,
+    successCount: 9532,
+    failureCount: 1332,
+    totalCost: 418.76,
+    totalTokens: 1092456123,
+    inProgressConversationCount: 8,
+  });
+
+  return {
+    today: todaySummary,
+    yesterday: yesterdaySummary,
+    previous7d: buildSummary({
+      totalCount: 76421,
+      successCount: 70115,
+      failureCount: 6306,
+      totalCost: 3128.74,
+      totalTokens: 8764311220,
+    }),
+    "1d": buildSummary({
+      totalCount: 13564,
+      successCount: 10948,
+      failureCount: 2616,
+      totalCost: 605.33,
+      totalTokens: 1456067763,
+    }),
+    "7d": buildSummary({
+      totalCount: 76421,
+      successCount: 70115,
+      failureCount: 6306,
+      totalCost: 3128.74,
+      totalTokens: 8764311220,
+    }),
+    timeseriesToday: buildTimeseriesResponse({
+      rangeStart: new Date(rangeTodayStart).toISOString(),
+      rangeEnd: new Date(now).toISOString(),
+      bucketSeconds: 60,
+      effectiveBucket: "1m",
+      availableBuckets: ["1m"],
+      points: buildTodayTimeseriesPoints({
+        startMs: rangeTodayStart,
+        endMs: now,
+        summary: todaySummary,
+      }),
+    }),
+    timeseriesYesterday: buildTimeseriesResponse({
+      rangeStart: new Date(rangeYesterdayStart).toISOString(),
+      rangeEnd: new Date(rangeYesterdayEnd).toISOString(),
+      bucketSeconds: 60,
+      effectiveBucket: "1m",
+      availableBuckets: ["1m"],
+      points: buildTodayTimeseriesPoints({
+        startMs: rangeYesterdayStart,
+        endMs: rangeYesterdayEnd - 60 * 1000,
+        summary: yesterdaySummary,
+      }),
+    }),
+    timeseries1d: buildTimeseriesResponse({
+      rangeStart: new Date(range1dStart).toISOString(),
+      rangeEnd: new Date(now).toISOString(),
+      bucketSeconds: 60,
+      effectiveBucket: "1m",
+      availableBuckets: ["1m"],
+      points: buildTimeseriesPoints({
+        count: 24 * 60,
+        bucketSeconds: 60,
+        startMs: range1dStart,
+      }),
+    }),
+    timeseries7d: buildTimeseriesResponse({
+      rangeStart: new Date(range7dStart).toISOString(),
+      rangeEnd: new Date(now).toISOString(),
+      bucketSeconds: 3600,
+      effectiveBucket: "1h",
+      availableBuckets: ["1h"],
+      points: buildTimeseriesPoints({
+        count: 7 * 24,
+        bucketSeconds: 3600,
+        startMs: range7dStart,
+        valueOffset: 7,
+      }),
+    }),
+    timeseries6mo: buildTimeseriesResponse({
+      rangeStart: new Date(range6moStart).toISOString(),
+      rangeEnd: new Date(now).toISOString(),
+      bucketSeconds: 86400,
+      effectiveBucket: "1d",
+      availableBuckets: ["1d"],
+      points: buildTimeseriesPoints({
+        count: 180,
+        bucketSeconds: 86400,
+        startMs: range6moStart,
+        valueOffset: 11,
+      }),
+    }),
+    networkTimeseriesToday: buildDashboardNetworkTimeseriesResponse("today"),
+    networkTimeseriesYesterday: buildDashboardNetworkTimeseriesResponse("yesterday"),
+    networkTimeseries1d: buildDashboardNetworkTimeseriesResponse("1d"),
+    parallelWorkToday: buildParallelWorkResponse({
+      current: buildParallelWorkWindow([8, 10, 9], {
+        rangeStart: "2026-04-09T00:00:00.000Z",
+        bucketSeconds: 60,
+      }),
+      minute7d: buildParallelWorkWindow([6, 7, 8, 9], {
+        rangeStart: "2026-04-03T00:00:00.000Z",
+        bucketSeconds: 60,
+      }),
+      hour30d: buildParallelWorkWindow([5, 6, 7], {
+        rangeStart: "2026-03-11T00:00:00.000Z",
+        bucketSeconds: 3600,
+      }),
+      dayAll: buildParallelWorkWindow([7], {
+        rangeStart: "2026-04-08T00:00:00.000Z",
+        bucketSeconds: 86400,
+      }),
+    }),
+    parallelWorkYesterday: buildParallelWorkResponse({
+      current: buildParallelWorkWindow([7, 8, 9], {
+        rangeStart: "2026-04-08T00:00:00.000Z",
+        bucketSeconds: 60,
+      }),
+      minute7d: buildParallelWorkWindow([5, 6, 7, 8], {
+        rangeStart: "2026-04-02T00:00:00.000Z",
+        bucketSeconds: 60,
+      }),
+      hour30d: buildParallelWorkWindow([4, 5, 6], {
+        rangeStart: "2026-03-10T00:00:00.000Z",
+        bucketSeconds: 3600,
+      }),
+      dayAll: buildParallelWorkWindow([8], {
+        rangeStart: "2026-04-07T00:00:00.000Z",
+        bucketSeconds: 86400,
+      }),
+    }),
+  };
 }
 
 function createPreview(
@@ -1158,147 +1367,7 @@ function buildWorkingConversationsResponse(empty = false): PromptCacheConversati
 }
 
 function createDashboardRequestHandler(scenario: DashboardScenario = "default") {
-  const now = Date.parse("2026-04-09T12:24:00+08:00");
-  const rangeYesterdayStart = Date.parse("2026-04-08T00:00:00+08:00");
-  const rangeYesterdayEnd = Date.parse("2026-04-09T00:00:00+08:00");
-  const rangeTodayStart = Date.parse("2026-04-09T00:00:00+08:00");
-  const range1dStart = now - 24 * 60 * 60 * 1000;
-  const range7dStart = now - 7 * 24 * 60 * 60 * 1000;
-  const range6moStart = now - 180 * 24 * 60 * 60 * 1000;
-
-  const todaySummary = buildSummary({
-    totalCount: 12474,
-    successCount: 9949,
-    failureCount: 2525,
-    totalCost: 539.42,
-    totalTokens: 1314275579,
-    inProgressConversationCount: 11,
-  });
-  const yesterdaySummary = buildSummary({
-    totalCount: 10864,
-    successCount: 9532,
-    failureCount: 1332,
-    totalCost: 418.76,
-    totalTokens: 1092456123,
-    inProgressConversationCount: 8,
-  });
-
-  const responses = {
-    today: todaySummary,
-    yesterday: yesterdaySummary,
-    "1d": buildSummary({
-      totalCount: 13564,
-      successCount: 10948,
-      failureCount: 2616,
-      totalCost: 605.33,
-      totalTokens: 1456067763,
-    }),
-    "7d": buildSummary({
-      totalCount: 76421,
-      successCount: 70115,
-      failureCount: 6306,
-      totalCost: 3128.74,
-      totalTokens: 8764311220,
-    }),
-    timeseriesToday: buildTimeseriesResponse({
-      rangeStart: new Date(rangeTodayStart).toISOString(),
-      rangeEnd: new Date(now).toISOString(),
-      bucketSeconds: 60,
-      effectiveBucket: "1m",
-      availableBuckets: ["1m"],
-      points: buildTodayTimeseriesPoints({
-        startMs: rangeTodayStart,
-        endMs: now,
-        summary: todaySummary,
-      }),
-    }),
-    timeseriesYesterday: buildTimeseriesResponse({
-      rangeStart: new Date(rangeYesterdayStart).toISOString(),
-      rangeEnd: new Date(rangeYesterdayEnd).toISOString(),
-      bucketSeconds: 60,
-      effectiveBucket: "1m",
-      availableBuckets: ["1m"],
-      points: buildTodayTimeseriesPoints({
-        startMs: rangeYesterdayStart,
-        endMs: rangeYesterdayEnd - 60 * 1000,
-        summary: yesterdaySummary,
-      }),
-    }),
-    timeseries1d: buildTimeseriesResponse({
-      rangeStart: new Date(range1dStart).toISOString(),
-      rangeEnd: new Date(now).toISOString(),
-      bucketSeconds: 60,
-      effectiveBucket: "1m",
-      availableBuckets: ["1m"],
-      points: buildTimeseriesPoints({
-        count: 24 * 60,
-        bucketSeconds: 60,
-        startMs: range1dStart,
-      }),
-    }),
-    timeseries7d: buildTimeseriesResponse({
-      rangeStart: new Date(range7dStart).toISOString(),
-      rangeEnd: new Date(now).toISOString(),
-      bucketSeconds: 3600,
-      effectiveBucket: "1h",
-      availableBuckets: ["1h"],
-      points: buildTimeseriesPoints({
-        count: 7 * 24,
-        bucketSeconds: 3600,
-        startMs: range7dStart,
-        valueOffset: 7,
-      }),
-    }),
-    timeseries6mo: buildTimeseriesResponse({
-      rangeStart: new Date(range6moStart).toISOString(),
-      rangeEnd: new Date(now).toISOString(),
-      bucketSeconds: 86400,
-      effectiveBucket: "1d",
-      availableBuckets: ["1d"],
-      points: buildTimeseriesPoints({
-        count: 180,
-        bucketSeconds: 86400,
-        startMs: range6moStart,
-        valueOffset: 11,
-      }),
-    }),
-    parallelWorkToday: buildParallelWorkResponse({
-      current: buildParallelWorkWindow([8, 10, 9], {
-        rangeStart: "2026-04-09T00:00:00.000Z",
-        bucketSeconds: 60,
-      }),
-      minute7d: buildParallelWorkWindow([6, 7, 8, 9], {
-        rangeStart: "2026-04-03T00:00:00.000Z",
-        bucketSeconds: 60,
-      }),
-      hour30d: buildParallelWorkWindow([5, 6, 7], {
-        rangeStart: "2026-03-11T00:00:00.000Z",
-        bucketSeconds: 3600,
-      }),
-      dayAll: buildParallelWorkWindow([7], {
-        rangeStart: "2026-04-08T00:00:00.000Z",
-        bucketSeconds: 86400,
-      }),
-    }),
-    parallelWorkYesterday: buildParallelWorkResponse({
-      current: buildParallelWorkWindow([7, 8, 9], {
-        rangeStart: "2026-04-08T00:00:00.000Z",
-        bucketSeconds: 60,
-      }),
-      minute7d: buildParallelWorkWindow([5, 6, 7, 8], {
-        rangeStart: "2026-04-02T00:00:00.000Z",
-        bucketSeconds: 60,
-      }),
-      hour30d: buildParallelWorkWindow([4, 5, 6], {
-        rangeStart: "2026-03-10T00:00:00.000Z",
-        bucketSeconds: 3600,
-      }),
-      dayAll: buildParallelWorkWindow([8], {
-        rangeStart: "2026-04-07T00:00:00.000Z",
-        bucketSeconds: 86400,
-      }),
-    }),
-  };
+  const responses = buildDashboardStoryResponses();
 
   return ({ url }: { url: URL }) => {
     if (url.pathname === "/api/stats/summary") {
@@ -1309,8 +1378,9 @@ function createDashboardRequestHandler(scenario: DashboardScenario = "default") 
         });
       }
       return jsonResponse(
-        responses[window as keyof Pick<typeof responses, "today" | "yesterday" | "1d" | "7d">] ??
-          responses.today,
+        responses[
+          window as keyof Pick<typeof responses, "today" | "yesterday" | "previous7d" | "1d" | "7d">
+        ] ?? responses.today,
       );
     }
 
@@ -1349,6 +1419,13 @@ function createDashboardRequestHandler(scenario: DashboardScenario = "default") 
       if (range === "6mo") return jsonResponse(responses.timeseries6mo);
     }
 
+    if (url.pathname === "/api/stats/dashboard-network-timeseries") {
+      const range = url.searchParams.get("range");
+      if (range === "today") return jsonResponse(responses.networkTimeseriesToday);
+      if (range === "yesterday") return jsonResponse(responses.networkTimeseriesYesterday);
+      if (range === "1d") return jsonResponse(responses.networkTimeseries1d);
+    }
+
     if (url.pathname === "/api/stats/parallel-work") {
       const range = url.searchParams.get("range") ?? "today";
       if (range === "yesterday") return jsonResponse(responses.parallelWorkYesterday);
@@ -1370,6 +1447,107 @@ function createDashboardRequestHandler(scenario: DashboardScenario = "default") 
   };
 }
 
+function DashboardPageSseBootstrap({ scenario }: { scenario: DashboardScenario }) {
+  useEffect(() => {
+    const controller = getStorybookPageSseController();
+    if (!controller) return;
+
+    const responses = buildDashboardStoryResponses();
+    const timeZone = getBrowserTimeZone();
+    let cursor = 1;
+
+    const emitSnapshot = <T,>(descriptor: ReturnType<typeof buildTopicDescriptor>, payload: T) => {
+      controller.emit({
+        type: "snapshot",
+        topic: descriptor,
+        topicKey: `storybook:${descriptor.topic}:${cursor}`,
+        schemaEpoch: "storybook-dashboard-page-v1",
+        cursor,
+        payload,
+      } satisfies SubscriptionTopicEnvelope<T>);
+      cursor += 1;
+    };
+
+    const timer = window.setTimeout(() => {
+      controller.emitOpen();
+
+      const activitySnapshot = buildDashboardActivityResponse({
+        range: "today",
+        summary: responses.today,
+        includeAccounts: true,
+      });
+      const recentLimit = DASHBOARD_PAGE_STORY_RECENT_PREVIEW_MIN;
+
+      emitSnapshot(
+        buildTopicDescriptor("dashboard.activity.current", {
+          range: "today",
+          timeZone,
+          recentLimit,
+          includeAccounts: true,
+          includeRecent: false,
+        }),
+        activitySnapshot,
+      );
+      emitSnapshot(
+        buildTopicDescriptor("dashboard.activity.current", {
+          range: "today",
+          timeZone,
+          recentLimit,
+          includeAccounts: true,
+          includeRecent: true,
+        }),
+        activitySnapshot,
+      );
+      emitSnapshot(
+        buildTopicDescriptor("stats.summary.current", {
+          window: "previous7d",
+          timeZone,
+        }),
+        responses.previous7d,
+      );
+      emitSnapshot(
+        buildTopicDescriptor("stats.timeseries.open-window", {
+          range: "today",
+          bucket: "1m",
+          timeZone,
+        }),
+        responses.timeseriesToday,
+      );
+      emitSnapshot(
+        buildTopicDescriptor("stats.parallel-work.current", {
+          range: "today",
+          bucket: "1m",
+          timeZone,
+        }),
+        responses.parallelWorkToday,
+      );
+      emitSnapshot(
+        buildTopicDescriptor("dashboard.network-timeseries.window", {
+          range: "today",
+          timeZone,
+        }),
+        responses.networkTimeseriesToday,
+      );
+
+      const workingConversations =
+        scenario === "readmeDense"
+          ? buildReadmeDenseWorkingConversationsResponse()
+          : buildWorkingConversationsResponse(scenario === "degraded");
+      emitSnapshot(
+        buildTopicDescriptor("dashboard.working-conversations.current", {
+          pageSize: 20,
+          recentInvocationLimit: DASHBOARD_PAGE_STORY_RECENT_PREVIEW_MAX,
+        }),
+        workingConversations,
+      );
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [scenario]);
+
+  return null;
+}
+
 const meta = {
   title: "Pages/DashboardPage",
   component: DashboardPage,
@@ -1388,6 +1566,7 @@ const meta = {
           <StorybookPageEnvironment onRequest={createDashboardRequestHandler(scenario)}>
             <MemoryRouter initialEntries={["/dashboard"]}>
               <FullPageStorySurface>
+                <DashboardPageSseBootstrap scenario={scenario} />
                 <DashboardDiagnosticsStorageReset enabled={parameters.enableDiagnostics === true}>
                   <DashboardRangeStorageReset>
                     <Story />
@@ -1451,7 +1630,6 @@ export const UnifiedActivitySnapshot: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByTestId("dashboard-activity-overview")).toBeVisible();
-    await expect(canvas.getByTestId("today-stats-value-tpm")).toBeVisible();
 
     const accountTab = canvas.getByRole("tab", { name: "上游账号" });
     await userEvent.click(accountTab);
@@ -1466,6 +1644,9 @@ export const UnifiedActivitySnapshot: Story = {
     await expect(accountHeaders[1]?.querySelector('[aria-label="进行中 3"]')).not.toBeNull();
     await expect(accountHeaders[0]?.querySelector('[aria-label="TPM 610"]')).not.toBeNull();
     await expect(accountHeaders[1]?.querySelector('[aria-label="TPM 490"]')).not.toBeNull();
+    await expect(
+      canvas.getByTestId("dashboard-upstream-account-total-network-speed"),
+    ).toHaveAttribute("title", "上行: 4.3 KiB/s · 下行: 12 MiB/s");
   },
 };
 
@@ -1532,6 +1713,15 @@ export const LiveRefreshDiagnostics: Story = {
         inProgressInvocationCount: 4,
         inProgressPhaseCounts: { queued: 0, requesting: 2, responding: 2 },
         retryInvocationCount: 1,
+        networkLiveBucket: {
+          bucketStart: "2026-04-06T12:00:00.000Z",
+          bucketEnd: "2026-04-06T12:05:00.000Z",
+          uploadBytesPerSecond: 3_072,
+          downloadBytesPerSecond: 9_437_184,
+          uploadBytes: 3_072 * 300,
+          downloadBytes: 9_437_184 * 300,
+          isLiveBucket: true,
+        },
         accounts: [
           {
             accountKey: "upstream:42",
@@ -1593,6 +1783,12 @@ export const LiveRefreshDiagnostics: Story = {
     await waitFor(() => {
       const headers = canvas.getAllByTestId("dashboard-upstream-account-header-row");
       expect(headers[1]?.querySelector('[aria-label="进行中 2"]')).not.toBeNull();
+    });
+    await waitFor(() => {
+      const totalNetworkSpeed = canvas.getByTestId(
+        "dashboard-upstream-account-total-network-speed",
+      );
+      expect(totalNetworkSpeed.getAttribute("title")).toBe("上行: 3 KiB/s · 下行: 9 MiB/s");
     });
   },
 };
