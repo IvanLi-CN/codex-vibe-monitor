@@ -2275,7 +2275,7 @@ async fn pool_route_body_sticky_wait_timeout_returns_total_timeout_error_before_
         payload["error"].as_str(),
         Some(pool_total_timeout_exhausted_message(Duration::from_millis(45)).as_str())
     );
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
 #[tokio::test]
@@ -2641,8 +2641,8 @@ async fn pool_route_existing_sticky_owner_preserves_last_failure_when_cutout_tar
         "unexpected preserved upstream failure payload: {payload}"
     );
 
-    wait_for_pool_attempt_row_count(&state.pool, 4).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 4);
+    wait_for_pool_attempt_row_count(&state.pool, 3).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 3);
 
     let attempt_rows = sqlx::query_as::<_, AttemptStatusRow>(
         r#"
@@ -2654,15 +2654,7 @@ async fn pool_route_existing_sticky_owner_preserves_last_failure_when_cutout_tar
     .fetch_all(&state.pool)
     .await
     .expect("load preserved sticky-owner attempt rows");
-    assert_eq!(attempt_rows.len(), 4);
-    assert_eq!(
-        attempt_rows[3].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL
-    );
-    assert_eq!(
-        attempt_rows[3].failure_kind.as_deref(),
-        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
-    );
+    assert_eq!(attempt_rows.len(), 3);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));

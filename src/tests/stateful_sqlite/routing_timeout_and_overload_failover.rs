@@ -97,7 +97,7 @@ async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_er
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+    wait_for_pool_attempt_row_count(&state.pool, 1).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
@@ -113,28 +113,12 @@ async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_er
     .fetch_all(&state.pool)
     .await
     .expect("load timeout broken-alt attempt rows");
-    assert_eq!(attempt_rows.len(), 2);
+    assert_eq!(attempt_rows.len(), 1);
     assert_eq!(attempt_rows[0].attempt_index, 1);
     assert_eq!(
         attempt_rows[0].status,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
     );
-    assert_eq!(
-        attempt_rows[1].attempt_index, 2,
-        "blocked-policy exits should still persist a terminal attempt row"
-    );
-    assert_eq!(
-        attempt_rows[1].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
-    );
-    assert_eq!(
-        attempt_rows[1].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_ROUTING_BLOCKED),
-    );
-    assert!(attempt_rows[1].error_message.as_deref().is_some_and(|msg| {
-        msg.contains("upstream account group \"broken-alt-group\" has no bound forward proxy nodes")
-    }));
-
     let row = sqlx::query_as::<_, PersistedPayloadRow>(
         r#"
         SELECT error_message, payload
@@ -256,7 +240,7 @@ async fn capture_target_pool_route_timeout_replay_failover_preserves_no_alternat
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+    wait_for_pool_attempt_row_count(&state.pool, 1).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
@@ -274,29 +258,13 @@ async fn capture_target_pool_route_timeout_replay_failover_preserves_no_alternat
     .fetch_all(&state.pool)
     .await
     .expect("load timeout replay no-alternate rows");
-    assert_eq!(attempt_rows.len(), 2);
+    assert_eq!(attempt_rows.len(), 1);
     assert_eq!(attempt_rows[0].attempt_index, 1);
     assert_eq!(attempt_rows[0].same_account_retry_index, 1);
     assert_eq!(
         attempt_rows[0].status,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
     );
-    assert_eq!(attempt_rows[1].attempt_index, 2);
-    assert_eq!(attempt_rows[1].distinct_account_index, 1);
-    assert_eq!(
-        attempt_rows[1].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
-    );
-    assert_eq!(
-        attempt_rows[1].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT),
-    );
-    assert_eq!(attempt_rows[1].same_account_retry_index, 0);
-    assert_eq!(
-        attempt_rows[0].upstream_route_key,
-        attempt_rows[1].upstream_route_key,
-    );
-
     let row = sqlx::query_as::<_, PersistedPayloadRow>(
         r#"
         SELECT error_message, payload
@@ -574,7 +542,7 @@ async fn capture_target_pool_route_timeout_exhausts_after_three_routes() {
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 4).await;
+    wait_for_pool_attempt_row_count(&state.pool, 3).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
@@ -591,21 +559,10 @@ async fn capture_target_pool_route_timeout_exhausts_after_three_routes() {
     .fetch_all(&state.pool)
     .await
     .expect("load timeout terminal rows");
-    assert_eq!(attempt_rows.len(), 4);
+    assert_eq!(attempt_rows.len(), 3);
     assert_eq!(attempt_rows[0].same_account_retry_index, 1);
     assert_eq!(attempt_rows[1].same_account_retry_index, 1);
     assert_eq!(attempt_rows[2].same_account_retry_index, 1);
-    assert_eq!(
-        attempt_rows[3].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
-    );
-    assert_eq!(attempt_rows[3].attempt_index, 4);
-    assert_eq!(attempt_rows[3].distinct_account_index, 3);
-    assert_eq!(
-        attempt_rows[3].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT),
-    );
-
     let attempts = attempts.lock().expect("lock unused route attempts");
     assert_eq!(attempts.get("Bearer route-four").copied(), None);
     drop(attempts);
@@ -1223,7 +1180,7 @@ async fn pool_openai_v1_responses_total_timeout_caps_same_account_retry_before_f
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+    wait_for_pool_attempt_row_count(&state.pool, 1).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
@@ -1239,24 +1196,13 @@ async fn pool_openai_v1_responses_total_timeout_caps_same_account_retry_before_f
     .fetch_all(&state.pool)
     .await
     .expect("load same-account retry timeout rows");
-    assert_eq!(attempt_rows.len(), 2);
+    assert_eq!(attempt_rows.len(), 1);
     assert_eq!(attempt_rows[0].attempt_index, 1);
     assert_eq!(attempt_rows[0].distinct_account_index, 1);
     assert_eq!(
         attempt_rows[0].status,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
     );
-    assert_eq!(attempt_rows[1].attempt_index, 2);
-    assert_eq!(attempt_rows[1].distinct_account_index, 1);
-    assert_eq!(
-        attempt_rows[1].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
-    );
-    assert_eq!(
-        attempt_rows[1].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
-    );
-
     let attempts = retry_attempts.lock().expect("lock retry route attempts");
     assert_eq!(attempts.get("Bearer route-one").copied(), Some(1));
     drop(attempts);
@@ -1364,7 +1310,7 @@ async fn pool_openai_v1_responses_compact_total_timeout_caps_same_account_retry_
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+    wait_for_pool_attempt_row_count(&state.pool, 1).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
@@ -1380,24 +1326,13 @@ async fn pool_openai_v1_responses_compact_total_timeout_caps_same_account_retry_
     .fetch_all(&state.pool)
     .await
     .expect("load compact same-account retry timeout rows");
-    assert_eq!(attempt_rows.len(), 2);
+    assert_eq!(attempt_rows.len(), 1);
     assert_eq!(attempt_rows[0].attempt_index, 1);
     assert_eq!(attempt_rows[0].distinct_account_index, 1);
     assert_eq!(
         attempt_rows[0].status,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
     );
-    assert_eq!(attempt_rows[1].attempt_index, 2);
-    assert_eq!(attempt_rows[1].distinct_account_index, 1);
-    assert_eq!(
-        attempt_rows[1].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
-    );
-    assert_eq!(
-        attempt_rows[1].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
-    );
-
     let attempts = retry_attempts
         .lock()
         .expect("lock compact retry route attempts");
@@ -2853,13 +2788,6 @@ async fn pool_route_oauth_responses_sends_uuid_account_header_and_persists_obser
 
 #[tokio::test]
 async fn failover_preserves_assigned_account_when_sticky_owner_is_preflight_blocked() {
-    #[derive(Debug, sqlx::FromRow)]
-    struct AttemptRow {
-        upstream_account_id: Option<i64>,
-        failure_kind: Option<String>,
-        error_message: Option<String>,
-    }
-
     let state =
         test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid url")).await;
     let sticky_account = insert_test_pool_api_key_account_with_options(
@@ -2965,27 +2893,15 @@ async fn failover_preserves_assigned_account_when_sticky_owner_is_preflight_bloc
         "upstream account group \"sticky-preflight-missing\" has no bound forward proxy nodes"
     ));
 
-    wait_for_pool_attempt_row_count(&state.pool, 1).await;
-    let attempt_rows = sqlx::query_as::<_, AttemptRow>(
+    wait_for_pool_attempt_row_count(&state.pool, 0).await;
+    let attempt_count: i64 = sqlx::query_scalar(
         r#"
-        SELECT upstream_account_id, failure_kind, error_message
+        SELECT COUNT(*)
         FROM pool_upstream_request_attempts
-        ORDER BY attempt_index ASC
         "#,
     )
-    .fetch_all(&state.pool)
+    .fetch_one(&state.pool)
     .await
-    .expect("load sticky preflight blocked attempts");
-    assert_eq!(attempt_rows.len(), 1);
-    assert_eq!(attempt_rows[0].upstream_account_id, Some(sticky_account));
-    assert_eq!(
-        attempt_rows[0].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED)
-    );
-    assert!(
-        attempt_rows[0]
-            .error_message
-            .as_deref()
-            .is_some_and(|message| message.contains("sticky-preflight-missing"))
-    );
+    .expect("count sticky preflight blocked attempts");
+    assert_eq!(attempt_count, 0);
 }

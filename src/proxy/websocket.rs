@@ -1514,51 +1514,9 @@ pub(crate) async fn record_ws_pre_upstream_failure(
     failure_kind: &'static str,
     message: &str,
 ) {
-    let now = shanghai_now_string();
-    if let Err(err) = insert_pool_upstream_request_attempt_with_scope(
-        &state.pool,
-        trace,
-        None,
-        None,
-        None,
-        None,
-        1,
-        0,
-        0,
-        Some(now.as_str()),
-        Some(now.as_str()),
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED),
-        None,
-        Some(StatusCode::BAD_REQUEST),
-        Some(failure_kind),
-        Some(message),
-        Some(message),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-    .await
-    {
-        warn!(
-            invoke_id = %trace.invoke_id,
-            error = %err,
-            "failed to record websocket pre-upstream failure"
-        );
-        return;
-    }
-    if let Err(err) = broadcast_pool_upstream_attempts_snapshot(state, &trace.invoke_id).await {
-        warn!(
-            invoke_id = %trace.invoke_id,
-            error = %err,
-            "failed to broadcast websocket pre-upstream failure"
-        );
-    }
+    let _ = (state, trace, failure_kind, message);
+    // Pre-upstream WebSocket failures never started a real upstream dispatch. They should surface
+    // through invocation-level adjudication only, not as synthetic attempt rows.
 }
 
 pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(

@@ -3322,13 +3322,103 @@ fn workflow_route_subtitle(attempt: &InvocationWorkflowAttempt) -> Option<String
     }
 }
 
+fn workflow_route_title(attempt: &InvocationWorkflowAttempt) -> String {
+    let account_label = workflow_attempt_account_label(attempt);
+    if account_label == "未定账号" {
+        "Route resolution".to_string()
+    } else {
+        format!("Route {account_label}")
+    }
+}
+
+fn build_routing_detail(request_summary: Option<&Value>) -> Option<Value> {
+    let request = request_summary?.clone();
+    let request_headers = request
+        .as_object()
+        .and_then(|value| value.get("headers"))
+        .cloned();
+    let request_body = request
+        .as_object()
+        .and_then(|value| value.get("bodyCapture"))
+        .cloned();
+    Some(json!({
+        "request": request,
+        "requestHeaders": request_headers,
+        "requestBody": request_body,
+    }))
+}
+
+fn build_routing_timeline_entry(
+    block_id: String,
+    attempt: &InvocationWorkflowAttempt,
+) -> InvocationWorkflowTimelineEntry {
+    InvocationWorkflowTimelineEntry {
+        block_id,
+        kind: "routingDecision".to_string(),
+        occurred_at: attempt
+            .started_at
+            .clone()
+            .or_else(|| Some(attempt.occurred_at.clone())),
+        title: workflow_route_title(attempt),
+        subtitle: workflow_route_subtitle(attempt)
+            .or_else(|| (!attempt.endpoint.trim().is_empty()).then(|| attempt.endpoint.clone())),
+        status: None,
+        attempt: None,
+        detail: build_routing_detail(attempt.request_summary.as_ref()),
+        response_body: None,
+    }
+}
+
+fn invocation_workflow_attempt_row_is_pseudo_terminal(
+    attempt: &InvocationWorkflowAttemptRow,
+) -> bool {
+    normalized_runtime_text(Some(attempt.status.as_str())) == "budget_exhausted_final"
+        && attempt.same_account_retry_index == 0
+        && normalize_optional_timestamp(attempt.started_at.as_deref())
+            == normalize_optional_timestamp(attempt.finished_at.as_deref())
+        && attempt
+            .connect_latency_ms
+            .is_none_or(|value| !value.is_finite() || value <= 0.0)
+        && attempt
+            .first_byte_latency_ms
+            .is_none_or(|value| !value.is_finite() || value <= 0.0)
+        && attempt
+            .stream_latency_ms
+            .is_none_or(|value| !value.is_finite() || value <= 0.0)
+        && attempt
+            .upstream_request_id
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+        && attempt
+            .request_summary_json
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+        && attempt
+            .response_summary_json
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+}
+
 fn build_workflow_timeline_entries(
     record: &ApiInvocation,
     attempts: &[InvocationWorkflowAttempt],
+    route_only_attempt: Option<&InvocationWorkflowAttempt>,
     failure_entry: Option<InvocationWorkflowTimelineEntry>,
 ) -> Vec<InvocationWorkflowTimelineEntry> {
     let mut entries = Vec::new();
-    if attempts.len() == 1 && attempts[0].synthetic {
+    if let Some(route_only_attempt) = route_only_attempt {
+        entries.push(build_routing_timeline_entry(
+            route_only_attempt
+                .attempt_id
+                .clone()
+                .map(|attempt_id| format!("route-{attempt_id}"))
+                .unwrap_or_else(|| "route-terminal".to_string()),
+            route_only_attempt,
+        ));
+    } else if attempts.len() == 1 && attempts[0].synthetic {
         let attempt = attempts[0].clone();
         entries.push(InvocationWorkflowTimelineEntry {
             block_id: "attempt-direct".to_string(),
@@ -3377,26 +3467,16 @@ fn build_workflow_timeline_entries(
                 }
             }
 
-            entries.push(InvocationWorkflowTimelineEntry {
-                block_id: format!(
+            entries.push(build_routing_timeline_entry(
+                format!(
                     "route-{}",
                     attempt
                         .attempt_id
                         .clone()
                         .unwrap_or_else(|| attempt.attempt_index.to_string())
                 ),
-                kind: "routingDecision".to_string(),
-                occurred_at: attempt
-                    .started_at
-                    .clone()
-                    .or_else(|| Some(attempt.occurred_at.clone())),
-                title: format!("Route {}", workflow_attempt_account_label(attempt)),
-                subtitle: workflow_route_subtitle(attempt),
-                status: None,
-                attempt: None,
-                detail: attempt.request_summary.clone(),
-                response_body: None,
-            });
+                attempt,
+            ));
 
             entries.push(InvocationWorkflowTimelineEntry {
                 block_id: format!(
@@ -3577,6 +3657,7 @@ fn build_final_failure_timeline_entry(
         detail: Some(json!({
             "invokeId": record.invoke_id.clone(),
             "downstreamStatusCode": record.downstream_status_code,
+            "failureClass": record.failure_class.clone(),
             "failureKind": record.failure_kind.clone(),
             "errorMessage": record.error_message.clone(),
             "downstreamErrorMessage": record.downstream_error_message.clone(),
@@ -3611,17 +3692,42 @@ pub(crate) async fn fetch_invocation_workflow_detail(
         &identity.occurred_at,
     )
     .await?;
-    let last_success_attempt_index = attempt_rows
+    let pseudo_attempt_rows = attempt_rows
+        .iter()
+        .filter(|attempt| invocation_workflow_attempt_row_is_pseudo_terminal(attempt))
+        .collect::<Vec<_>>();
+    let real_attempt_rows = attempt_rows
+        .iter()
+        .filter(|attempt| !invocation_workflow_attempt_row_is_pseudo_terminal(attempt))
+        .collect::<Vec<_>>();
+    let last_success_attempt_index = real_attempt_rows
         .iter()
         .rfind(|attempt| normalized_runtime_text(Some(attempt.status.as_str())) == "success")
         .map(|attempt| attempt.attempt_index);
-    let attempts = if attempt_rows.is_empty() {
-        vec![build_synthetic_workflow_attempt(
-            &record,
-            payload_value.as_ref(),
-        )]
+    let pool_route = normalized_runtime_text(record.route_mode.as_deref()) == "pool";
+    let render_route_only = pool_route
+        && !invocation_status_is_success_like(&record)
+        && real_attempt_rows.is_empty()
+        && (!pseudo_attempt_rows.is_empty() || record.pool_attempt_count.unwrap_or_default() == 0);
+    let route_only_attempt = render_route_only.then(|| {
+        pseudo_attempt_rows
+            .last()
+            .map(|attempt| {
+                build_workflow_attempt_from_row(&record, attempt, payload_value.as_ref(), false)
+            })
+            .unwrap_or_else(|| build_synthetic_workflow_attempt(&record, payload_value.as_ref()))
+    });
+    let attempts = if real_attempt_rows.is_empty() {
+        if route_only_attempt.is_some() {
+            Vec::new()
+        } else {
+            vec![build_synthetic_workflow_attempt(
+                &record,
+                payload_value.as_ref(),
+            )]
+        }
     } else {
-        attempt_rows
+        real_attempt_rows
             .iter()
             .map(|attempt| {
                 build_workflow_attempt_from_row(
@@ -3639,12 +3745,19 @@ pub(crate) async fn fetch_invocation_workflow_detail(
         body_row.as_ref(),
         state.config.database_path.parent(),
     );
-    let partial = normalized_runtime_text(record.route_mode.as_deref()) == "pool"
+    let partial = pool_route
         && record.pool_attempt_count.unwrap_or_default() > 0
-        && attempt_rows.is_empty();
+        && real_attempt_rows.is_empty()
+        && pseudo_attempt_rows.is_empty();
+    let timeline_attempt_count = attempts.len();
     let response = InvocationWorkflowDetailResponse {
-        hero: build_workflow_hero(&record, attempts.len()),
-        timeline: build_workflow_timeline_entries(&record, &attempts, failure_entry),
+        hero: build_workflow_hero(&record, timeline_attempt_count),
+        timeline: build_workflow_timeline_entries(
+            &record,
+            &attempts,
+            route_only_attempt.as_ref(),
+            failure_entry,
+        ),
         reconstructed: identity.timeline_json.is_none(),
         partial,
         partial_reason: partial.then(|| "attempt_rows_missing".to_string()),

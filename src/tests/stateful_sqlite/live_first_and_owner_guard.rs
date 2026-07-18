@@ -707,22 +707,7 @@ async fn proxy_openai_v1_responses_waits_for_body_before_encrypted_owner_guard()
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), None);
     assert_eq!(attempts.get("Bearer upstream-owner").copied(), None);
 
-    let last_attempt = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
-        r#"
-        SELECT upstream_account_id, failure_kind
-        FROM pool_upstream_request_attempts
-        ORDER BY id DESC
-        LIMIT 1
-        "#,
-    )
-    .fetch_one(&state.pool)
-    .await
-    .expect("load live-first replay owner-guard terminal attempt");
-    assert_eq!(last_attempt.0, None);
-    assert_eq!(
-        last_attempt.1.as_deref(),
-        Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
-    );
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 
     upstream_handle.abort();
 }
@@ -1310,22 +1295,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_encrypted_ow
     assert_eq!(attempts.get("Bearer upstream-owner").copied(), None);
     assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
 
-    let last_attempt = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
-        r#"
-        SELECT upstream_account_id, failure_kind
-        FROM pool_upstream_request_attempts
-        ORDER BY id DESC
-        LIMIT 1
-        "#,
-    )
-    .fetch_one(&state.pool)
-    .await
-    .expect("load encrypted owner terminal attempt");
-    assert_eq!(last_attempt.0, None);
-    assert_eq!(
-        last_attempt.1.as_deref(),
-        Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
-    );
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 
     upstream_handle.abort();
 }
@@ -1414,22 +1384,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_ret
     assert_eq!(attempts.get("Bearer upstream-owner").copied(), None);
     assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
 
-    let last_attempt = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
-        r#"
-        SELECT upstream_account_id, failure_kind
-        FROM pool_upstream_request_attempts
-        ORDER BY id DESC
-        LIMIT 1
-        "#,
-    )
-    .fetch_one(&state.pool)
-    .await
-    .expect("load encrypted owner rate-limited terminal attempt");
-    assert_eq!(last_attempt.0, None);
-    assert_eq!(
-        last_attempt.1.as_deref(),
-        Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
-    );
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 
     upstream_handle.abort();
 }
@@ -1541,22 +1496,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_same_account_binding_n
     assert_eq!(attempts.get("Bearer upstream-owner").copied(), None);
     assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
 
-    let last_attempt = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
-        r#"
-        SELECT upstream_account_id, failure_kind
-        FROM pool_upstream_request_attempts
-        ORDER BY id DESC
-        LIMIT 1
-        "#,
-    )
-    .fetch_one(&state.pool)
-    .await
-    .expect("load same-account newer binding terminal attempt");
-    assert_eq!(last_attempt.0, None);
-    assert_eq!(
-        last_attempt.1.as_deref(),
-        Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
-    );
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 
     upstream_handle.abort();
 }
@@ -1660,22 +1600,7 @@ async fn websocket_prepare_preserves_encrypted_owner_lock() {
     assert_eq!(attempts.get("Bearer upstream-owner").copied(), None);
     assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
 
-    let last_attempt = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
-        r#"
-        SELECT upstream_account_id, failure_kind
-        FROM pool_upstream_request_attempts
-        ORDER BY id DESC
-        LIMIT 1
-        "#,
-    )
-    .fetch_one(&state.pool)
-    .await
-    .expect("load websocket encrypted owner terminal attempt");
-    assert_eq!(last_attempt.0, None);
-    assert_eq!(
-        last_attempt.1.as_deref(),
-        Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
-    );
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 
     upstream_handle.abort();
 }
@@ -1784,22 +1709,18 @@ async fn websocket_prepare_rate_limited_owner_returns_owner_unavailable() {
     assert_eq!(attempts.get("Bearer upstream-owner").copied(), None);
     assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
 
-    let last_attempt = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+    let owner_unavailable_attempts: i64 = sqlx::query_scalar(
         r#"
-        SELECT upstream_account_id, failure_kind
+        SELECT COUNT(*)
         FROM pool_upstream_request_attempts
-        ORDER BY id DESC
-        LIMIT 1
+        WHERE failure_kind = ?1
         "#,
     )
+    .bind(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
     .fetch_one(&state.pool)
     .await
     .expect("load websocket encrypted owner rate-limited terminal attempt");
-    assert_eq!(last_attempt.0, None);
-    assert_eq!(
-        last_attempt.1.as_deref(),
-        Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
-    );
+    assert_eq!(owner_unavailable_attempts, 0);
 
     upstream_handle.abort();
 }
@@ -2300,7 +2221,7 @@ async fn websocket_realtime_passthrough_does_not_wait_for_response_create_first_
 }
 
 #[tokio::test]
-async fn websocket_response_first_frame_rejection_records_attempt_failure() {
+async fn websocket_response_first_frame_rejection_avoids_pseudo_attempt_persistence() {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::connect_async;
     use tungstenite::Message as TungsteniteMessage;
@@ -2374,44 +2295,7 @@ async fn websocket_response_first_frame_rejection_records_attempt_failure() {
     };
     assert!(frame.reason.contains("response.create"));
 
-    let attempt_row = sqlx::query_as::<
-        _,
-        (
-            String,
-            Option<String>,
-            Option<String>,
-            Option<i64>,
-            Option<i64>,
-        ),
-    >(
-        r#"
-        SELECT status, failure_kind, error_message, downstream_http_status, upstream_account_id
-        FROM pool_upstream_request_attempts
-        WHERE invoke_id LIKE 'pool-ws-%'
-        ORDER BY id DESC
-        LIMIT 1
-        "#,
-    )
-    .fetch_one(&state.pool)
-    .await
-    .expect("load websocket pre-upstream failure attempt");
-
-    assert_eq!(
-        attempt_row.0,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
-    );
-    assert_eq!(
-        attempt_row.1.as_deref(),
-        Some(PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT)
-    );
-    assert!(
-        attempt_row
-            .2
-            .as_deref()
-            .is_some_and(|message| message.contains("response.create"))
-    );
-    assert_eq!(attempt_row.3, Some(400));
-    assert_eq!(attempt_row.4, None);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 
     proxy_handle.abort();
 }
@@ -3639,13 +3523,6 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_body_timeout_over_rate_l
 
 #[tokio::test]
 async fn proxy_openai_v1_header_sticky_stream_waits_for_blocked_policy_header_error() {
-    #[derive(Debug, sqlx::FromRow)]
-    struct AttemptRow {
-        upstream_account_id: Option<i64>,
-        failure_kind: Option<String>,
-        error_message: Option<String>,
-    }
-
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -3756,41 +3633,11 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_blocked_policy_header_er
         message.contains("upstream account is not assigned to a group"),
         "unexpected via-pool failure: {message}"
     );
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
-    let attempt_row = sqlx::query_as::<_, AttemptRow>(
-        r#"
-        SELECT upstream_account_id, failure_kind, error_message
-        FROM pool_upstream_request_attempts
-        ORDER BY attempt_index DESC
-        LIMIT 1
-        "#,
-    )
-    .fetch_one(&state.pool)
-    .await
-    .expect("load via-pool delayed assigned-blocked attempt");
-    assert_eq!(attempt_row.upstream_account_id, Some(sticky_source_id));
-    assert_eq!(
-        attempt_row.failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED),
-    );
-    assert!(
-        attempt_row
-            .error_message
-            .as_deref()
-            .is_some_and(|value| value.contains("not assigned to a group"))
-    );
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
 #[tokio::test]
 async fn proxy_openai_v1_header_sticky_stream_same_value_short_circuits_blocked_policy_error() {
-    #[derive(Debug, sqlx::FromRow)]
-    struct AttemptRow {
-        upstream_account_id: Option<i64>,
-        failure_kind: Option<String>,
-        error_message: Option<String>,
-    }
-
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -3907,30 +3754,7 @@ async fn proxy_openai_v1_header_sticky_stream_same_value_short_circuits_blocked_
         message.contains("upstream account is not assigned to a group"),
         "unexpected via-pool failure: {message}"
     );
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
-    let attempt_row = sqlx::query_as::<_, AttemptRow>(
-        r#"
-        SELECT upstream_account_id, failure_kind, error_message
-        FROM pool_upstream_request_attempts
-        ORDER BY attempt_index DESC
-        LIMIT 1
-        "#,
-    )
-    .fetch_one(&state.pool)
-    .await
-    .expect("load via-pool assigned-blocked attempt");
-    assert_eq!(attempt_row.upstream_account_id, Some(sticky_source_id));
-    assert_eq!(
-        attempt_row.failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED),
-    );
-    assert!(
-        attempt_row
-            .error_message
-            .as_deref()
-            .is_some_and(|value| value.contains("not assigned to a group"))
-    );
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
 #[tokio::test]
