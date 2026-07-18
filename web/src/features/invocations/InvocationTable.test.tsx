@@ -574,6 +574,24 @@ describe("resolveInvocationEndpointDisplay", () => {
       badgeVariant: "info",
       labelKey: "table.endpoint.compactBadge",
     });
+    expect(resolveInvocationEndpointDisplay("/v1/images/generations")).toEqual({
+      kind: "image_gen",
+      endpointValue: "/v1/images/generations",
+      badgeVariant: "info",
+      labelKey: "table.endpoint.imageGenBadge",
+    });
+    expect(resolveInvocationEndpointDisplay("/v1/images/edits")).toEqual({
+      kind: "image_edit",
+      endpointValue: "/v1/images/edits",
+      badgeVariant: "secondary",
+      labelKey: "table.endpoint.imageEditBadge",
+    });
+    expect(resolveInvocationEndpointDisplay("/v1/images/variations")).toEqual({
+      kind: "image",
+      endpointValue: "/v1/images/variations",
+      badgeVariant: "secondary",
+      labelKey: "table.endpoint.imageBadge",
+    });
   });
 
   it("surfaces remote compaction v2 only while in flight or when response compaction fired", () => {
@@ -1648,24 +1666,74 @@ describe("InvocationTable", () => {
         totalTokens: 320,
         cost: 0.0009,
       },
+      {
+        id: 28,
+        invokeId: "invocation-image-generation-endpoint",
+        occurredAt: "2026-03-07T03:13:46Z",
+        createdAt: "2026-03-07T03:13:46Z",
+        source: "proxy",
+        proxyDisplayName: "codex-image-gen-edge",
+        endpoint: "/v1/images/generations",
+        imageIntent: "yes",
+        model: "gpt-image-1",
+        status: "success",
+        totalTokens: 512,
+        cost: 0.0026,
+      },
+      {
+        id: 29,
+        invokeId: "invocation-image-edit-endpoint",
+        occurredAt: "2026-03-07T03:13:45Z",
+        createdAt: "2026-03-07T03:13:45Z",
+        source: "proxy",
+        proxyDisplayName: "codex-image-edit-edge",
+        endpoint: "/v1/images/edits",
+        imageIntent: "direct_image",
+        model: "gpt-image-1",
+        status: "success",
+        totalTokens: 448,
+        cost: 0.0021,
+      },
+      {
+        id: 30,
+        invokeId: "invocation-image-generic-endpoint",
+        occurredAt: "2026-03-07T03:13:44Z",
+        createdAt: "2026-03-07T03:13:44Z",
+        source: "proxy",
+        proxyDisplayName: "codex-image-generic-edge",
+        endpoint: "/v1/images/variations",
+        model: "gpt-image-1",
+        status: "success",
+        totalTokens: 288,
+        cost: 0.0013,
+      },
     ]);
 
-    expect(html.match(/data-testid="invocation-endpoint-badge"/g)?.length ?? 0).toBe(6);
+    expect(html.match(/data-testid="invocation-endpoint-badge"/g)?.length ?? 0).toBe(9);
     expect(html.match(/data-testid="invocation-endpoint-path"/g)?.length ?? 0).toBe(1);
-    expect(html.match(/data-testid="invocation-image-tool-badge"/g)?.length ?? 0).toBe(2);
+    expect(html.match(/data-testid="invocation-image-tool-badge"/g)?.length ?? 0).toBe(4);
     expect(html.match(/data-endpoint-kind="responses"/g)?.length ?? 0).toBe(3);
     expect(html.match(/data-endpoint-kind="chat"/g)?.length ?? 0).toBe(1);
     expect(html.match(/data-endpoint-kind="compact"/g)?.length ?? 0).toBe(1);
     expect(html.match(/data-endpoint-kind="remote_v2"/g)?.length ?? 0).toBe(1);
+    expect(html.match(/data-endpoint-kind="image_gen"/g)?.length ?? 0).toBe(1);
+    expect(html.match(/data-endpoint-kind="image_edit"/g)?.length ?? 0).toBe(1);
+    expect(html.match(/data-endpoint-kind="image"/g)?.length ?? 0).toBe(1);
     expect(html.match(/data-endpoint-kind="raw"/g)?.length ?? 0).toBe(1);
-    expect(html.match(/data-image-intent-kind="yes"/g)?.length ?? 0).toBe(1);
-    expect(html.match(/data-image-intent-kind="direct_image"/g)?.length ?? 0).toBe(1);
+    expect(html.match(/data-image-intent-kind="yes"/g)?.length ?? 0).toBe(2);
+    expect(html.match(/data-image-intent-kind="direct_image"/g)?.length ?? 0).toBe(2);
     expect(html).toContain("Responses");
     expect(html).toContain("Chat");
+    expect(html).toContain("image/gen");
+    expect(html).toContain("image/edit");
+    expect(html).toContain("image");
     expect(html).toMatch(/图片工具|Image tool/);
     expect(html).toMatch(/远程压缩V2|Remote compaction V2/);
     expect(html).toContain("/v1/responses/compact");
     expect(html).toContain("/v1/responses/very-long-segment-");
+    expect(html).toContain('title="/v1/images/generations"');
+    expect(html).toContain('title="/v1/images/edits"');
+    expect(html).toContain('title="/v1/images/variations"');
   });
 
   it("renders stable proxy selectors for long proxy-name truncation coverage", () => {

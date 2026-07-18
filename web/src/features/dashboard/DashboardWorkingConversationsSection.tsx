@@ -62,7 +62,9 @@ import {
   hashDashboardWorkingConversationKey,
 } from "../../lib/dashboardWorkingConversations";
 import {
+  type InvocationEndpointDisplay,
   type InvocationImageIntentDisplay,
+  isImageInvocationEndpointKind,
   resolveFirstResponseByteTotalMs,
 } from "../../lib/invocation";
 import {
@@ -489,14 +491,20 @@ function CompactLatencyPills({
 }
 
 function DashboardImageToolIconBadge({
+  endpointDisplay,
   imageIntentDisplay,
   t,
   className,
 }: {
+  endpointDisplay: Pick<InvocationEndpointDisplay, "kind">;
   imageIntentDisplay: InvocationImageIntentDisplay;
   t: ReturnType<typeof useTranslation>["t"];
   className?: string;
 }) {
+  if (isImageInvocationEndpointKind(endpointDisplay.kind)) {
+    return null;
+  }
+
   if (
     !imageIntentDisplay.showsBadge ||
     imageIntentDisplay.badgeVariant == null ||
@@ -2153,7 +2161,11 @@ function AccountRecentInvocationRow({
               t,
               UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME,
             )}
-            <DashboardImageToolIconBadge imageIntentDisplay={viewModel.imageIntentDisplay} t={t} />
+            <DashboardImageToolIconBadge
+              endpointDisplay={viewModel.endpointDisplay}
+              imageIntentDisplay={viewModel.imageIntentDisplay}
+              t={t}
+            />
             {fastIndicator}
             <CompactLatencyPills
               firstResponseByteTotalValue={compactLatencyValues.firstResponseByteTotalValue}
@@ -2555,6 +2567,7 @@ function InvocationSlot({
                   "h-5 rounded-full border-transparent bg-base-100/10 px-1 py-0 text-[9px] font-semibold leading-none text-base-content/76 shadow-none",
                 )}
                 <DashboardImageToolIconBadge
+                  endpointDisplay={viewModel.endpointDisplay}
                   imageIntentDisplay={viewModel.imageIntentDisplay}
                   t={t}
                 />

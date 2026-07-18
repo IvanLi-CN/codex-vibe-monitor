@@ -950,6 +950,32 @@ const currentOnlyResponse = createResponse([
   ]),
 ]);
 
+const imageEndpointChipResponse = createResponse([
+  createConversation("pck-image-endpoint-chip", [
+    createPreview({
+      id: 31,
+      invokeId: "invoke-image-endpoint-chip",
+      occurredAt: "2026-04-04T10:05:42Z",
+      status: "completed",
+      endpoint: "/v1/images/generations",
+      imageIntent: "yes",
+      model: "gpt-image-1",
+      upstreamAccountName: "image-alpha@example.com",
+      upstreamAccountPlanType: "team",
+    }),
+    createPreview({
+      id: 30,
+      invokeId: "invoke-image-endpoint-previous",
+      occurredAt: "2026-04-04T10:03:18Z",
+      status: "completed",
+      endpoint: "/v1/images/variations",
+      model: "gpt-image-1",
+      upstreamAccountName: "image-backup@example.com",
+      upstreamAccountPlanType: "free",
+    }),
+  ]),
+]);
+
 const warningSuccessConversationResponse = createResponse([
   createConversation("pck-warning-success", [
     createPreview({
@@ -3178,6 +3204,44 @@ export const CurrentOnlyPlaceholder: Story = {
     cards: buildCards(currentOnlyResponse),
     isLoading: false,
     error: null,
+  },
+};
+
+export const ImageEndpointChips: Story = {
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Shared endpoint chip coverage for direct image endpoints inside the dashboard working-conversation slots. Image-family paths render as `image/gen` or `image`, and the dashboard-specific image icon badge stays hidden to avoid duplicate signals.",
+      },
+    },
+  },
+  args: {
+    activeRange: "today",
+    cards: buildCards(imageEndpointChipResponse),
+    isLoading: false,
+    error: null,
+  },
+  play: async ({ canvasElement }) => {
+    const currentSlot = canvasElement.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    if (!(currentSlot instanceof HTMLElement)) {
+      throw new Error("missing current slot");
+    }
+
+    const imageEndpointBadge = currentSlot.querySelector(
+      '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="image_gen"]',
+    );
+    if (!(imageEndpointBadge instanceof HTMLElement)) {
+      throw new Error("missing image endpoint badge");
+    }
+
+    await expect(imageEndpointBadge).toHaveTextContent("image/gen");
+    if (currentSlot.querySelector('[data-testid="dashboard-image-tool-icon-badge"]') != null) {
+      throw new Error("unexpected image tool icon badge");
+    }
+    await expect(currentSlot).not.toHaveTextContent("/v1/images/generations");
   },
 };
 
