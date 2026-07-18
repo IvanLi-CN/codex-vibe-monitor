@@ -169,9 +169,43 @@ function createWorkflowDetailResponse(): ApiInvocationWorkflowDetailResponse {
         subtitle: "pool /v1/responses",
         status: "pool",
         detail: {
-          routeMode: "pool",
-          poolAttemptCount: 1,
-          promptCacheKey: "019d5ea7-519d-7312-a2e8-ef07abb7c09f",
+          request: {
+            endpoint: "/v1/responses",
+            routeMode: "pool",
+            requestModel: "gpt-5.4",
+            responseModel: "gpt-5.4",
+            requestedServiceTier: "priority",
+            reasoningEffort: "high",
+            compactionRequestKind: "remote_v2",
+            promptCacheKey: "019d5ea7-519d-7312-a2e8-ef07abb7c09f",
+            requesterIp: "203.0.113.10",
+            routing: {
+              routeMode: "pool",
+              proxyDisplayName: "tokyo-edge-01",
+              upstreamRouteKey: "route-pool-alpha",
+              proxyBindingKey: "fpb_tokyo_alpha",
+            },
+            headers: {
+              userAgent: "monitor-ui/1.0",
+              xForwardedFor: "203.0.113.10",
+            },
+            bodyCapture: {
+              availableAtInvocationLevel: true,
+              size: failedWorkflowRequestBodySize,
+              truncated: false,
+              detailLevel: "full",
+            },
+          },
+          requestHeaders: {
+            userAgent: "monitor-ui/1.0",
+            xForwardedFor: "203.0.113.10",
+          },
+          requestBody: {
+            availableAtInvocationLevel: true,
+            size: failedWorkflowRequestBodySize,
+            truncated: false,
+            detailLevel: "full",
+          },
         },
       },
       {
@@ -296,6 +330,98 @@ function createWorkflowDetailResponse(): ApiInvocationWorkflowDetailResponse {
         responseBody: {
           available: true,
           bodyText: failedWorkflowFinalResponseBodyText,
+        },
+      },
+    ],
+    reconstructed: false,
+    partial: false,
+    partialReason: null,
+  };
+}
+
+function createBlockedPoolWorkflowResponse(): ApiInvocationWorkflowDetailResponse {
+  return {
+    hero: {
+      recordId: 77,
+      invokeId: "invoke-workflow-77",
+      promptCacheKey: "019d5ea7-519d-7312-a2e8-ef07abb7c09f",
+      routeMode: "pool",
+      endpoint: "/v1/responses",
+      requestModel: "gpt-5.4",
+      responseModel: "gpt-5.4",
+      finalStatus: "http_503",
+      failureClass: "service_failure",
+      downstreamStatusCode: 503,
+      totalDurationMs: 810,
+      timelineAttemptCount: 0,
+      poolAttemptCount: 0,
+      totalTokens: null,
+      cost: null,
+      occurredAt: "2026-07-18T02:03:02Z",
+    },
+    timeline: [
+      {
+        blockId: "route-terminal",
+        kind: "routingDecision",
+        occurredAt: "2026-07-18T02:03:02Z",
+        title: "Route resolution",
+        subtitle: "gpt-5.4 · /v1/responses",
+        detail: {
+          request: {
+            endpoint: "/v1/responses",
+            routeMode: "pool",
+            requestModel: "gpt-5.4",
+            responseModel: "gpt-5.4",
+            requestedServiceTier: "priority",
+            reasoningEffort: "high",
+            compactionRequestKind: "remote_v2",
+            promptCacheKey: "019d5ea7-519d-7312-a2e8-ef07abb7c09f",
+            requesterIp: "203.0.113.10",
+            routing: {
+              routeMode: "pool",
+              proxyDisplayName: "tokyo-edge-01",
+            },
+            headers: {
+              userAgent: "monitor-ui/1.0",
+              xForwardedFor: "203.0.113.10",
+            },
+            bodyCapture: {
+              availableAtInvocationLevel: true,
+              size: failedWorkflowRequestBodySize,
+              truncated: false,
+              detailLevel: "full",
+            },
+          },
+          requestHeaders: {
+            userAgent: "monitor-ui/1.0",
+            xForwardedFor: "203.0.113.10",
+          },
+          requestBody: {
+            availableAtInvocationLevel: true,
+            size: failedWorkflowRequestBodySize,
+            truncated: false,
+            detailLevel: "full",
+          },
+        },
+      },
+      {
+        blockId: "system-final-failure",
+        kind: "systemFinalFailure",
+        occurredAt: "2026-07-18T02:03:02Z",
+        title: "Final downstream response",
+        subtitle: "pool_assigned_account_blocked",
+        status: "http_503",
+        detail: {
+          downstreamStatusCode: 503,
+          failureClass: "service_failure",
+          failureKind: "pool_assigned_account_blocked",
+          errorMessage: "[pool_assigned_account_blocked] pool assigned account blocked",
+          downstreamErrorMessage: "pool assigned account blocked",
+        },
+        responseBody: {
+          available: true,
+          bodyText:
+            '{"error":"pool assigned account blocked","cvmId":"invoke-workflow-77","code":"pool_assigned_account_blocked"}',
         },
       },
     ],
@@ -453,5 +579,77 @@ describe("InvocationWorkflowDetailPanel", () => {
     await waitFor(() => (host?.textContent ?? "").includes("调用未落盘"));
 
     expect(apiMocks.fetchInvocationWorkflowDetail).not.toHaveBeenCalled();
+  });
+
+  it("renders route-only blocked workflows without a pseudo attempt and replays the final body", async () => {
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(createBlockedPoolWorkflowResponse());
+    apiMocks.fetchInvocationRequestBody.mockResolvedValue({
+      available: true,
+      bodyText: failedWorkflowRequestBodyText,
+      headers: {
+        userAgent: "monitor-ui/1.0",
+        xForwardedFor: "203.0.113.10",
+      },
+      routing: {
+        routeMode: "pool",
+        stickyKey: "sk-route-77",
+      },
+      bodySize: failedWorkflowRequestBodySize,
+      detailLevel: "full",
+      captureSource: "raw_file",
+    });
+
+    render(
+      <InvocationWorkflowDetailPanel
+        record={createRecord({
+          status: "http_503",
+          tTotalMs: 810,
+          failureKind: "pool_assigned_account_blocked",
+          errorMessage: "pool assigned account blocked",
+          downstreamStatusCode: 503,
+          downstreamErrorMessage: "pool assigned account blocked",
+          totalTokens: null,
+          cost: null,
+          upstreamAccountId: null,
+          upstreamAccountName: null,
+          poolAttemptCount: 0,
+        })}
+      />,
+    );
+
+    await waitFor(() => (host?.textContent ?? "").includes("Final downstream response"));
+
+    expect(host?.textContent ?? "").toContain("尝试次数");
+    expect(host?.textContent ?? "").toContain("0");
+    expect(host?.textContent ?? "").not.toContain("attempt-1");
+    expect(host?.textContent ?? "").not.toContain("Attempt 1");
+
+    const routeBodyButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement &&
+        candidate.textContent?.includes("请求体") &&
+        candidate.textContent?.includes(`${failedWorkflowRequestBodySize.toLocaleString("zh")} B`),
+    );
+    expect(routeBodyButton).not.toBeNull();
+    act(() => {
+      routeBodyButton?.click();
+    });
+    await waitFor(() => apiMocks.fetchInvocationRequestBody.mock.calls.length > 0);
+    expect(apiMocks.fetchInvocationRequestBody).toHaveBeenCalledWith(77);
+    expect(host?.textContent ?? "").toContain("调用级");
+
+    const finalBodyButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement &&
+        candidate.textContent?.includes("返回体") &&
+        candidate.textContent?.includes("HTTP 503"),
+    );
+    expect(finalBodyButton).not.toBeNull();
+    act(() => {
+      finalBodyButton?.click();
+    });
+    await flushAsyncWork();
+    expect(host?.textContent ?? "").toContain("pool assigned account blocked");
+    expect(host?.textContent ?? "").not.toContain("missing_body");
   });
 });

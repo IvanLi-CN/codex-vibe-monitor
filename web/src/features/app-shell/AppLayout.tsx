@@ -36,9 +36,9 @@ const LOCALE_FLAG: Record<Locale, string> = {
 const OFFLINE_NOTICE_THRESHOLD_MS = 2 * 60 * 1000;
 export const HEADER_BRAND_ACTIVITY_HOLD_MS = 3200;
 
-type InstallableControlMode = Extract<
+type InstallPromptMode = Extract<
   ReturnType<typeof usePwaRuntime>["installMode"],
-  "prompt" | "manual-ios" | "installed"
+  "prompt" | "manual-ios"
 >;
 
 function formatDiagnosticsAgeLabel(
@@ -367,14 +367,68 @@ export function AppLayout() {
       : hasRecentActivity
         ? "active"
         : "idle";
-  const installControlMode = pwaRuntime.installSupported
-    ? (pwaRuntime.installMode as InstallableControlMode)
-    : null;
+  const installDialogMode: InstallPromptMode | null =
+    pwaRuntime.installMode === "prompt" || pwaRuntime.installMode === "manual-ios"
+      ? pwaRuntime.installMode
+      : null;
+  const [dismissedInstallDialogMode, setDismissedInstallDialogMode] =
+    useState<InstallPromptMode | null>(null);
+  const installDialogOpen =
+    installDialogMode != null && dismissedInstallDialogMode !== installDialogMode;
+  const handleInstallDialogOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (nextOpen) {
+        setDismissedInstallDialogMode(null);
+        return;
+      }
+      if (installDialogMode) {
+        setDismissedInstallDialogMode(installDialogMode);
+      }
+    },
+    [installDialogMode],
+  );
+  const handleInstallPrompt = useCallback(async () => {
+    await pwaRuntime.promptInstall();
+    setDismissedInstallDialogMode("prompt");
+  }, [pwaRuntime.promptInstall]);
   const showVersionUpdateBanner = pwaRuntime.update.visible || update.visible;
   const stackedStatusBannerTopClass = showVersionUpdateBanner ? "top-[146px]" : "top-[78px]";
 
   return (
     <div className="app-shell min-h-screen flex flex-col text-base-content">
+      {installDialogMode ? (
+        <PwaInstallControl
+          open={installDialogOpen}
+          onOpenChange={handleInstallDialogOpenChange}
+          mode={installDialogMode}
+          shellReady={pwaRuntime.shellReady}
+          isOffline={pwaRuntime.isOffline}
+          onPromptInstall={handleInstallPrompt}
+          labels={{
+            promptButton: t("app.pwa.install.promptButton"),
+            laterButton: t("app.pwa.install.laterButton"),
+            manualButton: t("app.pwa.install.manualButton"),
+            installedButton: t("app.pwa.install.installedButton"),
+            switcherAria: t("app.pwa.install.switcherAria"),
+            closeButton: t("app.pwa.install.close"),
+            closeAria: t("app.pwa.install.closeAria"),
+            shellReady: t("app.pwa.install.shellReady"),
+            shellPending: t("app.pwa.install.shellPending"),
+            offlineChip: t("app.pwa.install.offlineChip"),
+            promptTitle: t("app.pwa.install.promptTitle"),
+            promptDescription: t("app.pwa.install.promptDescription"),
+            promptHint: t("app.pwa.install.promptHint"),
+            manualTitle: t("app.pwa.install.manualTitle"),
+            manualDescription: t("app.pwa.install.manualDescription"),
+            manualStepOpenShare: t("app.pwa.install.manualStepOpenShare"),
+            manualStepAdd: t("app.pwa.install.manualStepAdd"),
+            manualStepConfirm: t("app.pwa.install.manualStepConfirm"),
+            installedTitle: t("app.pwa.install.installedTitle"),
+            installedDescription: t("app.pwa.install.installedDescription"),
+            installedHint: t("app.pwa.install.installedHint"),
+          }}
+        />
+      ) : null}
       <header className="sticky top-0 z-50 border-b border-base-300/75 bg-base-100/80 backdrop-blur-md">
         <div
           className="app-shell-boundary flex items-center gap-2 px-3 py-2 sm:px-4"
@@ -436,34 +490,6 @@ export function AppLayout() {
                 ))}
               </SegmentedControl>
             </div>
-
-            {installControlMode ? (
-              <PwaInstallControl
-                mode={installControlMode}
-                shellReady={pwaRuntime.shellReady}
-                isOffline={pwaRuntime.isOffline}
-                onPromptInstall={pwaRuntime.promptInstall}
-                labels={{
-                  promptButton: t("app.pwa.install.promptButton"),
-                  manualButton: t("app.pwa.install.manualButton"),
-                  installedButton: t("app.pwa.install.installedButton"),
-                  switcherAria: t("app.pwa.install.switcherAria"),
-                  closeButton: t("app.pwa.install.close"),
-                  closeAria: t("app.pwa.install.closeAria"),
-                  shellReady: t("app.pwa.install.shellReady"),
-                  shellPending: t("app.pwa.install.shellPending"),
-                  offlineChip: t("app.pwa.install.offlineChip"),
-                  manualTitle: t("app.pwa.install.manualTitle"),
-                  manualDescription: t("app.pwa.install.manualDescription"),
-                  manualStepOpenShare: t("app.pwa.install.manualStepOpenShare"),
-                  manualStepAdd: t("app.pwa.install.manualStepAdd"),
-                  manualStepConfirm: t("app.pwa.install.manualStepConfirm"),
-                  installedTitle: t("app.pwa.install.installedTitle"),
-                  installedDescription: t("app.pwa.install.installedDescription"),
-                  installedHint: t("app.pwa.install.installedHint"),
-                }}
-              />
-            ) : null}
 
             <button
               type="button"

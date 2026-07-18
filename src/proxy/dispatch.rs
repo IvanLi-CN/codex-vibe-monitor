@@ -324,6 +324,29 @@ pub(crate) fn capture_target_for_request(
     }
 }
 
+fn build_local_capture_error_envelope(
+    invoke_id: &str,
+    status: StatusCode,
+    message: &str,
+) -> ProxyErrorResponseEnvelope {
+    build_proxy_error_response_envelope(
+        &ProxyErrorResponse {
+            status,
+            message: message.to_string(),
+            cvm_id: Some(invoke_id.to_string()),
+            retry_after_secs: retry_after_secs_for_proxy_error(status, message),
+        },
+        invoke_id,
+    )
+}
+
+fn build_local_capture_error_resp_raw(envelope: &ProxyErrorResponseEnvelope) -> RawPayloadMeta {
+    RawPayloadMeta {
+        size_bytes: envelope.body_text.len() as i64,
+        ..RawPayloadMeta::default()
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn persist_pre_attempt_proxy_capture_error(
     state: &AppState,
@@ -346,6 +369,7 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
     failure_kind: &'static str,
     error_message: &str,
 ) -> bool {
+    let response_envelope = build_local_capture_error_envelope(invoke_id, status, error_message);
     let req_raw = spawn_raw_payload_file_write(
         state,
         invoke_id,
@@ -437,8 +461,8 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
             stream_terminal_event: None,
             upstream_error_code: None,
             upstream_error_message: None,
-            downstream_status_code: None,
-            downstream_error_message: None,
+            downstream_status_code: Some(status),
+            downstream_error_message: Some(error_message),
             upstream_request_id: None,
             response_content_encoding: None,
             stream_failure_origin: None,
@@ -458,10 +482,10 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
             pool_distinct_account_count: Some(0),
             pool_attempt_terminal_reason: Some(failure_kind),
         })),
-        raw_response: "{}".to_string(),
-        response_body_preview_enabled: false,
+        raw_response: response_envelope.body_text.clone(),
+        response_body_preview_enabled: true,
         req_raw,
-        resp_raw: RawPayloadMeta::default(),
+        resp_raw: build_local_capture_error_resp_raw(&response_envelope),
         timings: StageTimings {
             t_total_ms: 0.0,
             t_req_read_ms,
@@ -580,6 +604,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     {
         Ok(bytes) => bytes,
         Err(read_err) => {
+            let response_envelope =
+                build_local_capture_error_envelope(&invoke_id, read_err.status, &read_err.message);
             let t_req_read_ms = elapsed_ms(req_read_started);
             let request_info = RequestCaptureInfo::default();
             drop(proxy_request_permit);
@@ -695,8 +721,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     stream_terminal_event: None,
                     upstream_error_code: None,
                     upstream_error_message: None,
-                    downstream_status_code: None,
-                    downstream_error_message: None,
+                    downstream_status_code: Some(read_err.status),
+                    downstream_error_message: Some(read_err.message.as_str()),
                     upstream_request_id: None,
                     response_content_encoding: None,
                     stream_failure_origin: None,
@@ -716,10 +742,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     pool_distinct_account_count: None,
                     pool_attempt_terminal_reason: None,
                 })),
-                raw_response: "{}".to_string(),
-                response_body_preview_enabled: false,
+                raw_response: response_envelope.body_text.clone(),
+                response_body_preview_enabled: true,
                 req_raw,
-                resp_raw: RawPayloadMeta::default(),
+                resp_raw: build_local_capture_error_resp_raw(&response_envelope),
                 timings: StageTimings {
                     t_total_ms: 0.0,
                     t_req_read_ms,
@@ -779,6 +805,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             drop(proxy_request_permit);
             let status = StatusCode::BAD_GATEWAY;
             let message = format!("failed to materialize captured request body: {err}");
+            let response_envelope =
+                build_local_capture_error_envelope(&invoke_id, status, &message);
             let request_info = RequestCaptureInfo::default();
             let usage = ParsedUsage::default();
             let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
@@ -861,8 +889,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     stream_terminal_event: None,
                     upstream_error_code: None,
                     upstream_error_message: None,
-                    downstream_status_code: None,
-                    downstream_error_message: None,
+                    downstream_status_code: Some(status),
+                    downstream_error_message: Some(message.as_str()),
                     upstream_request_id: None,
                     response_content_encoding: None,
                     stream_failure_origin: None,
@@ -882,10 +910,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     pool_distinct_account_count: None,
                     pool_attempt_terminal_reason: None,
                 })),
-                raw_response: "{}".to_string(),
-                response_body_preview_enabled: false,
+                raw_response: response_envelope.body_text.clone(),
+                response_body_preview_enabled: true,
                 req_raw,
-                resp_raw: RawPayloadMeta::default(),
+                resp_raw: build_local_capture_error_resp_raw(&response_envelope),
                 timings: StageTimings {
                     t_total_ms: 0.0,
                     t_req_read_ms,
@@ -1166,6 +1194,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 response.response,
             ),
             Err(err) => {
+                let response_envelope =
+                    build_local_capture_error_envelope(&invoke_id, err.status, &err.message);
                 drop(proxy_request_permit);
                 request_info.requested_service_tier = err
                     .requested_service_tier
@@ -1319,8 +1349,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         stream_terminal_event: None,
                         upstream_error_code: err.upstream_error_code.as_deref(),
                         upstream_error_message: err.upstream_error_message.as_deref(),
-                        downstream_status_code: None,
-                        downstream_error_message: None,
+                        downstream_status_code: Some(err.status),
+                        downstream_error_message: Some(err.message.as_str()),
                         upstream_request_id: err.upstream_request_id.as_deref(),
                         response_content_encoding: None,
                         stream_failure_origin: None,
@@ -1345,10 +1375,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             .pool_attempt_terminal_reason
                             .as_deref(),
                     })),
-                    raw_response: "{}".to_string(),
-                    response_body_preview_enabled: false,
+                    raw_response: response_envelope.body_text.clone(),
+                    response_body_preview_enabled: true,
                     req_raw,
-                    resp_raw: RawPayloadMeta::default(),
+                    resp_raw: build_local_capture_error_resp_raw(&response_envelope),
                     timings: StageTimings {
                         t_total_ms: 0.0,
                         t_req_read_ms,
@@ -1410,6 +1440,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 response.response,
             ),
             Err(err) => {
+                let response_envelope =
+                    build_local_capture_error_envelope(&invoke_id, err.status, &err.message);
                 drop(proxy_request_permit);
                 let req_raw = spawn_raw_payload_file_write(
                     state.as_ref(),
@@ -1565,8 +1597,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         stream_terminal_event: None,
                         upstream_error_code: None,
                         upstream_error_message: None,
-                        downstream_status_code: None,
-                        downstream_error_message: None,
+                        downstream_status_code: Some(err.status),
+                        downstream_error_message: Some(err.message.as_str()),
                         upstream_request_id: None,
                         response_content_encoding: None,
                         stream_failure_origin: None,
@@ -1588,10 +1620,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         pool_distinct_account_count: None,
                         pool_attempt_terminal_reason: None,
                     })),
-                    raw_response: "{}".to_string(),
-                    response_body_preview_enabled: false,
+                    raw_response: response_envelope.body_text.clone(),
+                    response_body_preview_enabled: true,
                     req_raw,
-                    resp_raw: RawPayloadMeta::default(),
+                    resp_raw: build_local_capture_error_resp_raw(&response_envelope),
                     timings: StageTimings {
                         t_total_ms: 0.0,
                         t_req_read_ms,
@@ -1666,6 +1698,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         Ok(location) => location,
         Err(err) => {
             let message = format!("failed to process upstream redirect: {err}");
+            let response_envelope =
+                build_local_capture_error_envelope(&invoke_id, StatusCode::BAD_GATEWAY, &message);
             let proxy_attempt_update = if let Some(selected_proxy) = selected_proxy.as_ref() {
                 record_forward_proxy_attempt(
                     state.clone(),
@@ -1791,8 +1825,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     stream_terminal_event: None,
                     upstream_error_code: None,
                     upstream_error_message: None,
-                    downstream_status_code: None,
-                    downstream_error_message: None,
+                    downstream_status_code: Some(StatusCode::BAD_GATEWAY),
+                    downstream_error_message: Some(message.as_str()),
                     upstream_request_id: None,
                     response_content_encoding: Some(
                         summarize_response_content_encoding(
@@ -1824,10 +1858,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     pool_distinct_account_count: None,
                     pool_attempt_terminal_reason: None,
                 })),
-                raw_response: "{}".to_string(),
-                response_body_preview_enabled: false,
+                raw_response: response_envelope.body_text.clone(),
+                response_body_preview_enabled: true,
                 req_raw,
-                resp_raw: RawPayloadMeta::default(),
+                resp_raw: build_local_capture_error_resp_raw(&response_envelope),
                 timings: StageTimings {
                     t_total_ms: 0.0,
                     t_req_read_ms,

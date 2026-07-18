@@ -2270,7 +2270,7 @@ async fn finalize_pool_upstream_request_attempt_fallback_preserves_scope_snapsho
 }
 
 #[tokio::test]
-async fn insert_pool_upstream_terminal_attempt_preserves_scope_snapshots() {
+async fn insert_pool_upstream_terminal_attempt_skips_pre_dispatch_pseudo_attempt_rows() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2335,30 +2335,23 @@ async fn insert_pool_upstream_terminal_attempt_preserves_scope_snapshots() {
     .await
     .expect("insert scoped terminal attempt");
 
-    let row = sqlx::query_as::<_, (Option<String>, Option<String>, String)>(
+    let row_count = sqlx::query_scalar::<_, i64>(
         r#"
-        SELECT group_name_snapshot, proxy_binding_key_snapshot, status
+        SELECT COUNT(*)
         FROM pool_upstream_request_attempts
         WHERE invoke_id = ?1 AND occurred_at = ?2
-        ORDER BY id DESC
-        LIMIT 1
         "#,
     )
     .bind("terminal-scoped-snapshots")
     .bind("2026-03-23 21:00:02")
     .fetch_one(&state.pool)
     .await
-    .expect("load scoped terminal attempt row");
-    assert_eq!(row.0.as_deref(), Some("prod"));
-    assert_eq!(row.1.as_deref(), Some(FORWARD_PROXY_DIRECT_KEY));
-    assert_eq!(
-        row.2,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL
-    );
+    .expect("count scoped terminal attempt rows");
+    assert_eq!(row_count, 0);
 }
 
 #[tokio::test]
-async fn insert_pool_upstream_terminal_attempt_preserves_oauth_transport_normalization() {
+async fn insert_pool_upstream_terminal_attempt_skips_oauth_pre_dispatch_pseudo_attempt_rows() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2402,57 +2395,19 @@ async fn insert_pool_upstream_terminal_attempt_preserves_oauth_transport_normali
     .await
     .expect("insert terminal attempt");
 
-    let row = sqlx::query_as::<
-        _,
-        (
-            String,
-            Option<i64>,
-            Option<i64>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        ),
-    >(
+    let row_count = sqlx::query_scalar::<_, i64>(
         r#"
-        SELECT
-            status,
-            http_status,
-            downstream_http_status,
-            failure_kind,
-            error_message,
-            downstream_error_message,
-            upstream_request_id
+        SELECT COUNT(*)
         FROM pool_upstream_request_attempts
         WHERE invoke_id = ?1
-        ORDER BY id DESC
-        LIMIT 1
         "#,
     )
     .bind("terminal-oauth-transport-normalization")
     .fetch_one(&state.pool)
     .await
-    .expect("load terminal oauth transport attempt");
+    .expect("count terminal oauth transport attempt rows");
 
-    assert_eq!(
-        row.0,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL
-    );
-    assert_eq!(row.1, None);
-    assert_eq!(row.2, Some(502));
-    assert_eq!(
-        row.3.as_deref(),
-        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED)
-    );
-    assert_eq!(
-        row.4.as_deref(),
-        Some("oauth codex upstream handshake timed out")
-    );
-    assert_eq!(
-        row.5.as_deref(),
-        Some("pool upstream responded with 502: oauth codex upstream handshake timed out")
-    );
-    assert_eq!(row.6.as_deref(), Some("req_oauth_terminal_1"));
+    assert_eq!(row_count, 0);
 }
 
 #[tokio::test]
@@ -2635,7 +2590,7 @@ async fn fetch_invocation_pool_attempts_returns_live_pending_attempts_without_pa
 }
 
 #[tokio::test]
-async fn insert_and_broadcast_pool_upstream_terminal_attempt_emits_final_snapshot() {
+async fn insert_and_broadcast_pool_upstream_terminal_attempt_skips_pre_dispatch_snapshots() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2681,37 +2636,20 @@ async fn insert_and_broadcast_pool_upstream_terminal_attempt_emits_final_snapsho
     .await
     .expect("insert and broadcast terminal attempt");
 
-    let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-        .await
-        .expect("timed out waiting for terminal pool-attempt snapshot")
-        .expect("broadcast channel should stay open");
-    match payload {
-        BroadcastPayload::PoolAttempts {
-            invoke_id,
-            attempts,
-        } => {
-            assert_eq!(invoke_id, "terminal-attempt-broadcast");
-            assert_eq!(attempts.len(), 1);
-            assert_eq!(
-                attempts[0].status,
-                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL
-            );
-            assert_eq!(
-                attempts[0].phase,
-                POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED
-            );
-            assert_eq!(attempts[0].attempt_index, 4);
-            assert_eq!(
-                attempts[0].failure_kind.as_deref(),
-                Some(PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED)
-            );
-            assert_eq!(
-                attempts[0].upstream_request_id.as_deref(),
-                Some("req_terminal_123")
-            );
-        }
-        other => panic!("expected terminal pool-attempt snapshot, got {other:?}"),
-    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), rx.recv())
+            .await
+            .is_err(),
+        "pre-dispatch terminal attempts should not broadcast pseudo attempt snapshots"
+    );
+    let row_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pool_upstream_request_attempts WHERE invoke_id = ?1",
+    )
+    .bind("terminal-attempt-broadcast")
+    .fetch_one(&state.pool)
+    .await
+    .expect("count terminal-attempt broadcast rows");
+    assert_eq!(row_count, 0);
 }
 
 #[tokio::test]

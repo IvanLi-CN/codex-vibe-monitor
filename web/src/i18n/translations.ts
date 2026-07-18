@@ -47,6 +47,7 @@ const baseTranslations = {
     "app.proxySettings.saving": "Saving…",
     "app.proxySettings.close": "Close",
     "app.pwa.install.promptButton": "Install app",
+    "app.pwa.install.laterButton": "Later",
     "app.pwa.install.manualButton": "Add to Home Screen",
     "app.pwa.install.installedButton": "Installed",
     "app.pwa.install.switcherAria": "Open install app controls",
@@ -55,6 +56,11 @@ const baseTranslations = {
     "app.pwa.install.shellReady": "Offline shell ready",
     "app.pwa.install.shellPending": "Offline shell pending",
     "app.pwa.install.offlineChip": "Offline now",
+    "app.pwa.install.promptTitle": "Install Codex Vibe Monitor",
+    "app.pwa.install.promptDescription":
+      "Add this workspace as a standalone app window so daily monitoring opens directly into the shell.",
+    "app.pwa.install.promptHint":
+      "After installation, the app shell can still reopen offline. Live proxy data resumes after the network reconnects.",
     "app.pwa.install.manualTitle": "Add Codex Vibe Monitor to Home Screen",
     "app.pwa.install.manualDescription":
       "Safari on iPhone and iPad uses the browser share sheet instead of a native install prompt.",
@@ -2581,6 +2587,7 @@ const baseTranslations = {
     "app.proxySettings.saving": "保存中…",
     "app.proxySettings.close": "关闭",
     "app.pwa.install.promptButton": "安装应用",
+    "app.pwa.install.laterButton": "稍后",
     "app.pwa.install.manualButton": "添加到主屏幕",
     "app.pwa.install.installedButton": "已安装",
     "app.pwa.install.switcherAria": "打开安装应用入口",
@@ -2589,6 +2596,11 @@ const baseTranslations = {
     "app.pwa.install.shellReady": "离线壳已就绪",
     "app.pwa.install.shellPending": "离线壳待完成",
     "app.pwa.install.offlineChip": "当前离线",
+    "app.pwa.install.promptTitle": "安装 Codex Vibe Monitor",
+    "app.pwa.install.promptDescription":
+      "将当前工作台安装为独立应用窗口，日常巡检可以直接进入独立壳层。",
+    "app.pwa.install.promptHint":
+      "安装后即使离线也能重新打开应用壳层；实时代理数据会在恢复联网后继续更新。",
     "app.pwa.install.manualTitle": "将 Codex Vibe Monitor 添加到主屏幕",
     "app.pwa.install.manualDescription":
       "iPhone / iPad 上的 Safari 不会弹原生安装提示，需要通过浏览器分享菜单手动添加。",

@@ -33,7 +33,7 @@ type AttemptSection =
   | "responseParsed"
   | "responseHeaders"
   | "responseBody";
-type GenericSection = "json" | "body";
+type GenericSection = "request" | "requestHeaders" | "requestBody" | "json" | "body";
 
 interface PayloadFetchState<T> {
   status: "idle" | "loading" | "loaded" | "error";
@@ -592,10 +592,15 @@ function buildTimelineFacts(
 
   if (entry.subtitle?.trim()) facts.push(entry.subtitle.trim());
 
-  const routeMode = formatRouteMode(readString(entry.detail?.routeMode), isZh);
+  const routeRequest = readRecord(entry.detail?.request);
+  const routeMode = formatRouteMode(
+    readString(routeRequest?.routeMode) ?? readString(entry.detail?.routeMode),
+    isZh,
+  );
   if (routeMode !== FALLBACK_CELL) facts.push(routeMode);
 
-  const poolAttemptCount = readNumber(entry.detail?.poolAttemptCount);
+  const poolAttemptCount =
+    readNumber(routeRequest?.poolAttemptCount) ?? readNumber(entry.detail?.poolAttemptCount);
   if (poolAttemptCount != null) {
     facts.push(isZh ? `尝试预算 ${poolAttemptCount}` : `Attempt budget ${poolAttemptCount}`);
   }
@@ -745,6 +750,53 @@ function buildGenericMetricActions(
   localeTag: string,
   isZh: boolean,
 ): Array<TimelineMetricAction<GenericSection>> {
+  const routeRequest = readRecord(entry.detail?.request);
+  const routeRequestHeaders =
+    readRecord(entry.detail?.requestHeaders) ?? readRecord(routeRequest?.headers);
+  const routeRequestBody =
+    readRecord(entry.detail?.requestBody) ?? readRecord(routeRequest?.bodyCapture);
+  if (entry.kind === "routingDecision" && routeRequest) {
+    const requestModel = formatOptionalText(readString(routeRequest.requestModel));
+    const requestTier = formatOptionalText(readString(routeRequest.requestedServiceTier));
+    const requestReasoning = formatOptionalText(readString(routeRequest.reasoningEffort));
+    const requestTransport = formatOptionalText(readString(routeRequest.transport));
+    const requestEndpoint = formatOptionalText(readString(routeRequest.endpoint));
+    const requesterIp = formatOptionalText(readString(routeRequest.requesterIp));
+    const requestUserAgent = formatOptionalText(readString(routeRequestHeaders?.userAgent));
+    const requestBodySize = formatByteSize(readNumber(routeRequestBody?.size), localeTag);
+    const requestBodyDetail = formatOptionalText(readString(routeRequestBody?.detailLevel));
+    const requestCompaction = formatCompactionSummary(
+      readString(routeRequest.compactionRequestKind),
+      isZh,
+    );
+    const routeActions: Array<TimelineMetricAction<GenericSection>> = [
+      {
+        section: "request",
+        label: isZh ? "请求" : "Request",
+        primary: requestModel,
+        secondary: compactJoin([requestTier, requestReasoning]),
+        tertiary: compactJoin([requestTransport, requestEndpoint]),
+      },
+      {
+        section: "requestHeaders",
+        label: isZh ? "请求头" : "Headers",
+        primary: requesterIp,
+        secondary: requestUserAgent,
+        tertiary: formatOptionalText(
+          readString(readRecord(routeRequest?.routing)?.proxyDisplayName),
+        ),
+      },
+      {
+        section: "requestBody",
+        label: isZh ? "请求体" : "Body",
+        primary: compactJoin([requestBodySize, requestBodyDetail]),
+        secondary: requestCompaction,
+        monospace: true,
+      },
+    ];
+    return routeActions.filter((item) => item.primary !== FALLBACK_CELL);
+  }
+
   const actions: Array<TimelineMetricAction<GenericSection>> = [];
   const routeMode = formatRouteMode(readString(entry.detail?.routeMode), isZh);
   const failureClass = formatOptionalText(readString(entry.detail?.failureClass));
@@ -1750,18 +1802,248 @@ function AttemptDetail({
 
 function GenericDetail({
   entry,
+  localeTag,
   isZh,
   activeSection,
+  requestBodyState,
 }: {
   entry: ApiInvocationWorkflowTimelineEntry;
+  localeTag: string;
   isZh: boolean;
   activeSection: GenericSection;
+  requestBodyState: PayloadFetchState<ApiInvocationRequestBodyResponse>;
 }) {
   const labels = buildPayloadViewerLabels(isZh);
   const detailContent = stringifyStructuredValue(entry.detail ?? undefined);
   const bodyText = entry.responseBody?.bodyText?.trim() ?? "";
+  const routeRequest = readRecord(entry.detail?.request);
+  const routeRequestHeaders =
+    readRecord(entry.detail?.requestHeaders) ?? readRecord(routeRequest?.headers);
+  const routeRequestRouting = readRecord(routeRequest?.routing);
+  const routeRequestClient = readRecord(routeRequest?.client);
+  const routeRequestAccount = readRecord(routeRequest?.account);
+  const routeRequestCompression = readRecord(routeRequest?.compression);
+  const routeRequestBody =
+    readRecord(entry.detail?.requestBody) ?? readRecord(routeRequest?.bodyCapture);
+  const routeRequestParsedItems = [
+    ...buildStructuredItems(routeRequest, localeTag, isZh, [
+      { key: "endpoint", label: isZh ? "端点" : "Endpoint", monospace: false },
+      { key: "requestModel", label: isZh ? "请求模型" : "Request Model", monospace: false },
+      { key: "responseModel", label: isZh ? "响应模型" : "Response Model", monospace: false },
+      {
+        key: "requestedServiceTier",
+        label: isZh ? "请求服务层级" : "Requested Tier",
+        monospace: false,
+      },
+      { key: "reasoningEffort", label: isZh ? "推理强度" : "Reasoning Effort", monospace: false },
+      {
+        key: "compactionRequestKind",
+        label: isZh ? "请求压缩模式" : "Request Compaction",
+        monospace: false,
+      },
+      { key: "imageIntent", label: isZh ? "图像工具意图" : "Image Intent", monospace: false },
+      { key: "transport", label: isZh ? "传输" : "Transport", monospace: false },
+      { key: "promptCacheKey", label: "Prompt Cache Key" },
+      { key: "stickyKey", label: "Sticky Key" },
+      { key: "requesterIp", label: isZh ? "请求 IP" : "Requester IP", monospace: false },
+    ]),
+    ...buildStructuredItems(routeRequestAccount, localeTag, isZh, [
+      { key: "id", label: isZh ? "账号 ID" : "Account ID", monospace: false },
+      { key: "name", label: isZh ? "账号" : "Account", monospace: false },
+    ]),
+    ...buildStructuredItems(routeRequestCompression, localeTag, isZh, [
+      { key: "algorithm", label: isZh ? "压缩算法" : "Compression", monospace: false },
+      { key: "mode", label: isZh ? "压缩模式" : "Compression Mode", monospace: false },
+    ]),
+  ];
+  const routeRequestRoutingItems = [
+    ...buildStructuredItems(routeRequestRouting, localeTag, isZh, [
+      { key: "routeMode", label: isZh ? "路由模式" : "Route Mode", monospace: false },
+      { key: "upstreamScope", label: isZh ? "上游范围" : "Upstream Scope", monospace: false },
+      { key: "proxyDisplayName", label: isZh ? "代理显示名" : "Proxy Display", monospace: false },
+      { key: "upstreamRouteKey", label: isZh ? "上游路由键" : "Upstream Route Key" },
+      { key: "proxyBindingKey", label: isZh ? "代理绑定" : "Proxy Binding" },
+      { key: "clientFingerprint", label: isZh ? "客户端指纹" : "Client Fingerprint" },
+      {
+        key: "oauthForwardedHeaderNames",
+        label: isZh ? "OAuth 转发头" : "OAuth Forwarded Headers",
+        monospace: false,
+      },
+      {
+        key: "oauthPromptCacheHeaderForwarded",
+        label: isZh ? "转发 Prompt Cache 头" : "Prompt Cache Header Forwarded",
+        monospace: false,
+      },
+    ]),
+    ...buildStructuredItems(routeRequestClient, localeTag, isZh, [
+      {
+        key: "requestContainsEncryptedContent",
+        label: isZh ? "请求含加密内容" : "Encrypted Request",
+        monospace: false,
+      },
+      {
+        key: "requestParseError",
+        label: isZh ? "请求解析错误" : "Request Parse Error",
+        monospace: false,
+      },
+      {
+        key: "oauthAccountHeaderAttached",
+        label: isZh ? "附带 OAuth 账号头" : "OAuth Account Header",
+        monospace: false,
+      },
+      {
+        key: "oauthAccountIdShape",
+        label: isZh ? "OAuth 账号 ID 形态" : "OAuth Account ID Shape",
+        monospace: false,
+      },
+      {
+        key: "oauthRequestBodyPrefixFingerprint",
+        label: isZh ? "请求体前缀指纹" : "Body Prefix Fingerprint",
+        monospace: false,
+      },
+      {
+        key: "oauthRequestBodyPrefixBytes",
+        label: isZh ? "前缀字节数" : "Prefix Bytes",
+        monospace: false,
+      },
+      {
+        key: "oauthRequestBodySnapshotKind",
+        label: isZh ? "请求体快照类型" : "Body Snapshot Kind",
+        monospace: false,
+      },
+      {
+        key: "oauthResponsesBodyMode",
+        label: isZh ? "OAuth 响应体模式" : "OAuth Body Mode",
+        monospace: false,
+      },
+      {
+        key: "oauthResponsesRewrite",
+        label: isZh ? "OAuth 改写" : "OAuth Rewrite",
+        monospace: false,
+      },
+    ]),
+  ];
+  const routeHeaderItems = buildStructuredItems(routeRequestHeaders, localeTag, isZh, [
+    { key: "userAgent", label: "User-Agent", monospace: false },
+    { key: "xForwardedFor", label: "X-Forwarded-For", monospace: false },
+    { key: "forwarded", label: "Forwarded", monospace: false },
+    { key: "xRealIp", label: "X-Real-IP", monospace: false },
+  ]);
+  const routeBodySummaryItems = [
+    {
+      label: isZh ? "归档" : "Archive",
+      value:
+        readBoolean(routeRequestBody?.availableAtInvocationLevel) == null
+          ? FALLBACK_CELL
+          : readBoolean(routeRequestBody?.availableAtInvocationLevel)
+            ? isZh
+              ? "调用级"
+              : "Invocation"
+            : isZh
+              ? "未存档"
+              : "Unavailable",
+      monospace: false,
+    },
+    {
+      label: isZh ? "来源" : "Source",
+      value: formatOptionalText(requestBodyState.data?.captureSource),
+      monospace: false,
+    },
+    {
+      label: isZh ? "大小" : "Size",
+      value: formatByteSize(
+        requestBodyState.data?.bodySize ?? readNumber(routeRequestBody?.size),
+        localeTag,
+      ),
+      monospace: false,
+    },
+    {
+      label: isZh ? "详情" : "Detail",
+      value: formatOptionalText(
+        requestBodyState.data?.detailLevel ?? readString(routeRequestBody?.detailLevel),
+      ),
+      monospace: false,
+    },
+    {
+      label: isZh ? "截断" : "Truncated",
+      value:
+        requestBodyState.data?.bodyTruncated == null &&
+        readBoolean(routeRequestBody?.truncated) == null
+          ? FALLBACK_CELL
+          : (requestBodyState.data?.bodyTruncated ?? readBoolean(routeRequestBody?.truncated))
+            ? isZh
+              ? "已截断"
+              : "Truncated"
+            : isZh
+              ? "未截断"
+              : "Full",
+      monospace: false,
+    },
+    {
+      label: isZh ? "截断原因" : "Truncate Reason",
+      value: formatOptionalText(
+        requestBodyState.data?.bodyTruncatedReason ?? readString(routeRequestBody?.truncatedReason),
+      ),
+      monospace: false,
+      fullWidth: true,
+    },
+    {
+      label: isZh ? "裁剪原因" : "Prune Reason",
+      value: formatOptionalText(
+        requestBodyState.data?.detailPruneReason ?? readString(routeRequestBody?.detailPruneReason),
+      ),
+      monospace: false,
+      fullWidth: true,
+    },
+  ].filter((item) => item.value !== FALLBACK_CELL);
+  const routeRequestBodyContent = requestBodyState.data?.bodyText?.trim() ?? "";
   return (
     <DetailFrame>
+      {entry.kind === "routingDecision" && activeSection === "request" ? (
+        <>
+          <DetailInfoPanel
+            title={isZh ? "解析后的请求" : "Parsed request"}
+            items={routeRequestParsedItems}
+          />
+          <DetailInfoPanel
+            title={isZh ? "路由与会话信号" : "Routing and session"}
+            items={routeRequestRoutingItems}
+          />
+          <DetailMetaStrip items={routeBodySummaryItems} />
+        </>
+      ) : null}
+
+      {entry.kind === "routingDecision" && activeSection === "requestHeaders" ? (
+        <>
+          <DetailInfoPanel title={isZh ? "请求头" : "Request headers"} items={routeHeaderItems} />
+          <DetailInfoPanel
+            title={isZh ? "路由与会话信号" : "Routing and session"}
+            items={routeRequestRoutingItems}
+          />
+        </>
+      ) : null}
+
+      {entry.kind === "routingDecision" && activeSection === "requestBody" ? (
+        <>
+          <DetailMetaStrip items={routeBodySummaryItems} />
+          {requestBodyState.status === "loading" ? (
+            <PayloadNotice>{isZh ? "加载请求体…" : "Loading request body…"}</PayloadNotice>
+          ) : requestBodyState.status === "error" ? (
+            <PayloadNotice tone="error">
+              {isZh ? "请求体加载失败：" : "Failed to load request body: "}
+              {requestBodyState.error}
+            </PayloadNotice>
+          ) : requestBodyState.data?.available && routeRequestBodyContent ? (
+            <StructuredPayloadViewer value={routeRequestBodyContent} labels={labels} />
+          ) : (
+            <PayloadNotice tone="warning">
+              {isZh ? "请求体不可用：" : "Request body unavailable: "}
+              {requestBodyState.data?.unavailableReason ?? FALLBACK_CELL}
+            </PayloadNotice>
+          )}
+        </>
+      ) : null}
+
       {activeSection === "json" ? (
         detailContent ? (
           <StructuredPayloadViewer value={detailContent} labels={labels} />
@@ -1974,7 +2256,10 @@ export function InvocationWorkflowDetailPanel({
 
   useEffect(() => {
     if (!(record.id > 0)) return;
-    if (attemptSection && isRequestSection(attemptSection) && requestBodyState.status === "idle") {
+    if (
+      ((attemptSection && isRequestSection(attemptSection)) || genericSection === "requestBody") &&
+      requestBodyState.status === "idle"
+    ) {
       let cancelled = false;
       setRequestBodyState({ status: "loading", data: null, error: null });
       void fetchInvocationRequestBody(record.id)
@@ -1996,7 +2281,7 @@ export function InvocationWorkflowDetailPanel({
         cancelled = true;
       };
     }
-  }, [attemptSection, record.id, requestBodyState.status]);
+  }, [attemptSection, genericSection, record.id, requestBodyState.status]);
 
   useEffect(() => {
     if (!(record.id > 0)) return;
@@ -2145,6 +2430,15 @@ export function InvocationWorkflowDetailPanel({
     formatOptionalText(hero.requestModel),
     formatOptionalText(hero.responseModel),
   ].filter((value) => value !== FALLBACK_CELL);
+  const modelTrailCounts = new Map<string, number>();
+  const modelTrailItems = modelTrail.map((value) => {
+    const occurrence = modelTrailCounts.get(value) ?? 0;
+    modelTrailCounts.set(value, occurrence + 1);
+    return {
+      key: `${value}-${occurrence}`,
+      value,
+    };
+  });
 
   const toggleAttemptSection = (
     entry: ApiInvocationWorkflowTimelineEntry,
@@ -2252,11 +2546,11 @@ export function InvocationWorkflowDetailPanel({
                   {isZh ? "模型与端点" : "Models and Endpoint"}
                 </div>
                 <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-base-content/84">
-                  {modelTrail.length > 0 ? (
+                  {modelTrailItems.length > 0 ? (
                     <>
-                      {modelTrail.map((modelValue, index) => (
-                        <span key={`${modelValue}-${index}`} className="min-w-0 break-all">
-                          {modelValue}
+                      {modelTrailItems.map((modelItem) => (
+                        <span key={modelItem.key} className="min-w-0 break-all">
+                          {modelItem.value}
                         </span>
                       ))}
                       <span className="text-base-content/46">·</span>
@@ -2359,7 +2653,13 @@ export function InvocationWorkflowDetailPanel({
                       />
                     ) : null}
                     {isOpen && !entry.attempt && genericSection ? (
-                      <GenericDetail entry={entry} isZh={isZh} activeSection={genericSection} />
+                      <GenericDetail
+                        entry={entry}
+                        localeTag={localeTag}
+                        isZh={isZh}
+                        activeSection={genericSection}
+                        requestBodyState={requestBodyState}
+                      />
                     ) : null}
                   </div>
                 </div>

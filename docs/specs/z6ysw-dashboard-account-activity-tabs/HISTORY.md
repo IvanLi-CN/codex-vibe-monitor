@@ -4,6 +4,7 @@
 
 ## Decision Trace
 
+- 2026-07-18：收紧上游账号卡宽屏 `split` header 的 `TPM` 横向预算。此前长 `TPM` 会按完整数字位数直接撑宽右上实时指标区；本轮固定仅 `TPM` 值本体约 `6ch` 宽度预算，超预算后继续复用既有 adaptive compact 缩写链路，`进行中调用 / 消费速率` 与窄卡 `stacked` 路径不变。
 - 2026-07-16：Dashboard 工作区与顶部当前态正式并入主应用统一 topic SSE 总线。此前 `dashboardActivityLive + HTTP reconcile/open-resync` 的双轨合同在这里退场，取而代之的是 `dashboard.activity.current` 的 authoritative `snapshot/replay/live`；账号视图、顶部 KPI 与恢复语义统一由 topic cursor / schemaEpoch 驱动。
 
 - 2026-07-17：把 Dashboard 当前态合同从 `last_complete_1m_sma` 切到 `rolling_60s_live_mean`。吞吐型指标 `TPM / 消费速率` 改为最近 60 秒滚动窗口且空窗归零；延迟型指标 `首字用时 / 响应时间` 改为“窗口优先，当前 range 最近有效结果回退”。同时账号卡新增账号级当前态延迟字段，主卡直读当前态，范围均值退回 tooltip/详情。

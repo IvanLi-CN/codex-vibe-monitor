@@ -42,7 +42,9 @@
 
 - 应用必须生成 base-aware manifest，包含稳定 identity、icons、theme color、`start_url=./#/dashboard`、`scope=./` 与高价值 shortcuts。
 - 安装入口必须走浏览器原生合同：Chromium Desktop / Android Chrome 使用 `beforeinstallprompt`；Safari / iOS 仅提供 manual Add to Home Screen guidance，不伪装 native prompt。
+- 主界面头栏不得放置常驻 install/status button；当浏览器满足安装条件时，应改为自动弹出明确的 install prompt 或 manual guidance。
 - 已安装状态必须切到 installed vocabulary，不再继续显示“可安装”语义。
+- 自动弹出的安装提示在窄屏上必须使用居中 modal，而不是贴底抽屉；背景页面可见但需被 overlay 明确压暗。
 
 ### Update behavior
 
@@ -109,7 +111,7 @@
 
 - Given 桌面 Chromium 或 Android Chrome
   When 页面满足安装条件
-  Then app shell 显示明确 install affordance，并在用户确认后切换到 installed-state vocabulary。
+  Then app shell 自动显示明确 install prompt，且头栏不存在常驻 install button，并在用户确认后切换到 installed-state vocabulary。
 
 - Given 新版本前端资源已经部署
   When 当前页面检测到 waiting service worker
@@ -156,12 +158,12 @@
 ## Visual Evidence
 
 - Evidence source: `storybook-static` + local PWA preview/test server; no login, production account, secret, or live backend payload was used.
-- Bound source revision: working tree on branch `th/pwa-installable-runtime` after the validated offline snapshot changes captured on July 17, 2026.
-- Viewport: desktop `1440x1000`.
+- Bound source revision: working tree after the validated auto-open install prompt capture recorded on July 18, 2026.
+- Viewport: desktop `1440x1000`, mobile `393x852`.
 
 ### Install / Update / Shell
 
-![App-shell install affordance](./assets/pwa-install-prompt-desktop.png)
+![Auto-open install prompt centered on mobile](./assets/pwa-install-prompt-mobile.png)
 
 ![Safari manual Add to Home Screen guidance](./assets/pwa-safari-manual-desktop.png)
 

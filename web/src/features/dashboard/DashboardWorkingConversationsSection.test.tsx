@@ -613,6 +613,18 @@ beforeAll(() => {
     writable: true,
     value: vi.fn(),
   });
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    writable: true,
+    value: vi.fn(() => ({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
   Object.defineProperty(window, "localStorage", {
     configurable: true,
     value: localStorageMock,
@@ -1713,6 +1725,128 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(tokenCardTrigger).not.toBeNull();
     expect(costCardTrigger).not.toBeNull();
     expect(host?.textContent).not.toContain("[object Object]");
+  });
+
+  it("applies the TPM width budget only to split-header TPM values", async () => {
+    const response = createUpstreamAccountActivityResponse();
+    const account = response.accounts[0];
+    if (!account) {
+      throw new Error("missing upstream activity account");
+    }
+    account.tokensPerMinute = 2_027_266;
+    account.spendRate = 0.85;
+    account.modelPerformance = {
+      available: true,
+      total: {
+        tokensPerMinute: 2_027_266,
+        streamingResponseRate: 19.8,
+        avgResponseMs: 860,
+        avgFirstResponseByteTotalMs: 2_867.5,
+        wallClockUsageDurationMs: 42_000,
+        cumulativeUsageDurationMs: 51_000,
+        parallelism: 1.2,
+      },
+      models: [
+        {
+          model: "gpt-5.6",
+          reasoningEffort: "medium",
+          tokensPerMinute: 2_027_266,
+          streamingResponseRate: 19.8,
+          avgResponseMs: 860,
+          avgFirstResponseByteTotalMs: 2_867.5,
+          wallClockUsageDurationMs: 42_000,
+          cumulativeUsageDurationMs: 51_000,
+          parallelism: 1.2,
+        },
+      ],
+    };
+    upstreamAccountActivityMock.data = response;
+
+    const measureWidths = new Map<string, number>([
+      ["2,027,266", 112],
+      ["2.03M", 42],
+      ["2.0273M", 70],
+      ["2.027M", 58],
+      ["2.0M", 34],
+      ["2M", 24],
+      ["0.85", 26],
+      ["3", 10],
+    ]);
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function () {
+      if ((this as HTMLElement).dataset.adaptiveMetricContainer === "true") {
+        if (
+          (this as HTMLElement).querySelector(
+            '[data-testid="dashboard-upstream-account-inline-tpm-value"]',
+          )
+        ) {
+          return 48;
+        }
+        return 1700;
+      }
+      return 1700;
+    });
+    vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(function () {
+      if ((this as HTMLElement).dataset.adaptiveMetricMeasure === "true") {
+        const text = (this as HTMLElement).textContent ?? "";
+        return measureWidths.get(text) ?? Math.max(28, text.length * 10);
+      }
+      return 0;
+    });
+
+    renderSection(
+      createResponse([
+        createConversation("pck-upstream-account-split-tpm-budget", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-upstream-account-split-tpm-budget",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+      window.dispatchEvent(new Event("resize"));
+    });
+
+    await waitFor(() => {
+      const accountCard = host?.querySelector('[data-testid="dashboard-upstream-account-card"]');
+      const tpmValue = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-inline-tpm-value"]',
+      );
+      const spendRateValue = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-inline-spend-rate-value"]',
+      );
+
+      expect(accountCard?.getAttribute("data-header-layout")).toBe("split");
+      expect(tpmValue?.getAttribute("data-compact")).toBe("true");
+      expect(tpmValue?.textContent).toBe("2.03M");
+      expect(tpmValue?.getAttribute("title")).toBe("2,027,266");
+
+      expect(spendRateValue?.getAttribute("data-compact")).toBe("false");
+      expect(spendRateValue?.textContent).toBe("0.85");
+      expect(spendRateValue?.getAttribute("title")).toBeNull();
+    });
+
+    const accountHeader = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-header-row"]',
+    );
+    expect(
+      accountHeader?.querySelector('[aria-label="TPM 2,027,266 Pool Alpha · 模型性能"]'),
+    ).not.toBeNull();
+    expect(
+      accountHeader?.querySelector('[aria-label="消费速率 0.85 Pool Alpha · 模型性能"]'),
+    ).not.toBeNull();
+    expect(accountHeader?.querySelector('[aria-label="进行中 3"]')).not.toBeNull();
   });
 
   it("switches upstream account cards to container-width layouts instead of viewport breakpoints", async () => {
