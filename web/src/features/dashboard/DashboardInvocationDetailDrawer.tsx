@@ -23,6 +23,8 @@ interface DashboardInvocationDetailDrawerProps {
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
 }
 
+const TRANSIENT_RECORD_LOOKUP_RETRY_MS = 1_500;
+
 type StatusMeta = {
   variant: "default" | "secondary" | "success" | "warning" | "error";
   labelKey?: string;
@@ -94,6 +96,7 @@ export function DashboardInvocationDetailDrawer({
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const titleId = useId();
   const requestSeqRef = useRef(0);
+  const [retryRevision, setRetryRevision] = useState(0);
   const [fullRecord, setFullRecord] = useState<ApiInvocation | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -114,16 +117,26 @@ export function DashboardInvocationDetailDrawer({
   useEffect(() => {
     if (!open || !effectiveInvocationId) {
       requestSeqRef.current += 1;
+      setRetryRevision(0);
       setFullRecord(null);
       setIsLoading(false);
       setLoadError(null);
       return;
     }
 
+    const selectedRecord =
+      selection?.invocation.record.invokeId === effectiveInvocationId
+        ? selection.invocation.record
+        : null;
+    const transientRecord =
+      fullRecord?.invokeId === effectiveInvocationId ? fullRecord : selectedRecord;
+    const isRetryLookup = retryRevision > 0 && transientRecord != null && !(transientRecord.id > 0);
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
-    setFullRecord(null);
-    setIsLoading(true);
+    if (!isRetryLookup) {
+      setFullRecord(null);
+      setIsLoading(true);
+    }
     setLoadError(null);
 
     void fetchInvocationRecords({
@@ -143,16 +156,52 @@ export function DashboardInvocationDetailDrawer({
         setLoadError(error instanceof Error ? error.message : String(error));
       })
       .finally(() => {
-        if (requestSeq === requestSeqRef.current) {
+        if (requestSeq === requestSeqRef.current && !isRetryLookup) {
           setIsLoading(false);
         }
       });
-  }, [effectiveInvocationId, open]);
+  }, [effectiveInvocationId, open, retryRevision]);
 
   const selectionRecord =
     selection?.invocation.record.invokeId === effectiveInvocationId
       ? selection.invocation.record
       : null;
+  const effectiveTransientRecord =
+    fullRecord?.invokeId === effectiveInvocationId ? fullRecord : selectionRecord;
+
+  useEffect(() => {
+    if (
+      selectionRecord != null &&
+      selectionRecord.id > 0 &&
+      fullRecord != null &&
+      !(fullRecord.id > 0) &&
+      selectionRecord.invokeId === effectiveInvocationId
+    ) {
+      setFullRecord(selectionRecord);
+      setIsLoading(false);
+      setLoadError(null);
+    }
+  }, [effectiveInvocationId, fullRecord?.id, selectionRecord]);
+
+  useEffect(() => {
+    if (
+      !open ||
+      effectiveInvocationId == null ||
+      effectiveTransientRecord == null ||
+      effectiveTransientRecord.invokeId !== effectiveInvocationId ||
+      effectiveTransientRecord.id > 0 ||
+      isLoading ||
+      loadError != null
+    ) {
+      return;
+    }
+
+    const retryTimer = window.setTimeout(() => {
+      setRetryRevision((current) => current + 1);
+    }, TRANSIENT_RECORD_LOOKUP_RETRY_MS);
+    return () => window.clearTimeout(retryTimer);
+  }, [effectiveInvocationId, effectiveTransientRecord, isLoading, loadError, open]);
+
   const recordForHeader = fullRecord ?? selectionRecord;
   const statusMeta = resolveStatusMeta(
     recordForHeader != null

@@ -21,3 +21,4 @@
 - 2026-07-18: 历史 pre-dispatch pseudo-attempt 采用聚合层渲染纠偏，不做数据库回写迁移；workflow detail 会把稳定特征命中的旧行折叠成 `路由决定 + 系统裁定`。
 - 2026-07-18: 路由块详情 contract 固定为 `请求 / 请求头 / 请求体` 三分区，其中 `请求体` 继续回放调用级原始 request body，而不是复制 attempt-level raw body。
 - 2026-07-18: 本地终态错误响应改为复用共享 envelope；HTTP 下游返回与 `ProxyCaptureRecord` 持久化使用同一份 status/headers/body，`systemFinalFailure.responseBody` 因而回放真实裁定 body，不再依赖 `"{}"` / `missing_body` 占位。
+- 2026-07-18: Dashboard 调用详情抽屉在首轮只命中瞬态 `id <= 0` 记录时，会继续按 `invokeId` 重查持久化行，避免异步落盘期间长期停在“调用未落盘”。
