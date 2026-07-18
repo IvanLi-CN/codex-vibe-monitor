@@ -4660,6 +4660,31 @@ export const UpstreamAccountSplitHeaderTpmWidthBudget: Story = {
       account.inProgressInvocationCount = 6;
       account.uploadBytesPerSecond = 614.5 * 1024;
       account.downloadBytesPerSecond = 20.9 * 1024;
+      account.modelPerformance = {
+        available: true,
+        total: {
+          tokensPerMinute: 2_027_266,
+          streamingResponseRate: 19.8,
+          avgResponseMs: 18_420,
+          avgFirstResponseByteTotalMs: 4_380,
+          wallClockUsageDurationMs: 42_000,
+          cumulativeUsageDurationMs: 51_000,
+          parallelism: 1.2,
+        },
+        models: [
+          {
+            model: "gpt-5.6",
+            reasoningEffort: "medium",
+            tokensPerMinute: 2_027_266,
+            streamingResponseRate: 19.8,
+            avgResponseMs: 18_420,
+            avgFirstResponseByteTotalMs: 4_380,
+            wallClockUsageDurationMs: 42_000,
+            cumulativeUsageDurationMs: 51_000,
+            parallelism: 1.2,
+          },
+        ],
+      };
     }
 
     return (
@@ -4700,8 +4725,8 @@ export const UpstreamAccountSplitHeaderTpmWidthBudget: Story = {
       expect(tpmValue).toHaveAttribute("title", "2,027,266");
       expect(spendRateValue).toHaveAttribute("data-compact", "false");
       expect(spendRateValue).toHaveTextContent("0.85");
-      expect(canvas.getByLabelText("TPM 2,027,266")).toBeInTheDocument();
-      expect(canvas.getByLabelText("消费速率 0.85")).toBeInTheDocument();
+      expect(canvas.getByLabelText("TPM 2,027,266 Pool Alpha · 模型性能")).toBeInTheDocument();
+      expect(canvas.getByLabelText("消费速率 0.85 Pool Alpha · 模型性能")).toBeInTheDocument();
       expect(canvas.getByLabelText("进行中 6")).toBeInTheDocument();
     });
   },

@@ -613,6 +613,18 @@ beforeAll(() => {
     writable: true,
     value: vi.fn(),
   });
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    writable: true,
+    value: vi.fn(() => ({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
   Object.defineProperty(window, "localStorage", {
     configurable: true,
     value: localStorageMock,
@@ -1723,6 +1735,31 @@ describe("DashboardWorkingConversationsSection", () => {
     }
     account.tokensPerMinute = 2_027_266;
     account.spendRate = 0.85;
+    account.modelPerformance = {
+      available: true,
+      total: {
+        tokensPerMinute: 2_027_266,
+        streamingResponseRate: 19.8,
+        avgResponseMs: 860,
+        avgFirstResponseByteTotalMs: 2_867.5,
+        wallClockUsageDurationMs: 42_000,
+        cumulativeUsageDurationMs: 51_000,
+        parallelism: 1.2,
+      },
+      models: [
+        {
+          model: "gpt-5.6",
+          reasoningEffort: "medium",
+          tokensPerMinute: 2_027_266,
+          streamingResponseRate: 19.8,
+          avgResponseMs: 860,
+          avgFirstResponseByteTotalMs: 2_867.5,
+          wallClockUsageDurationMs: 42_000,
+          cumulativeUsageDurationMs: 51_000,
+          parallelism: 1.2,
+        },
+      ],
+    };
     upstreamAccountActivityMock.data = response;
 
     const measureWidths = new Map<string, number>([
@@ -1803,8 +1840,12 @@ describe("DashboardWorkingConversationsSection", () => {
     const accountHeader = host?.querySelector(
       '[data-testid="dashboard-upstream-account-header-row"]',
     );
-    expect(accountHeader?.querySelector('[aria-label="TPM 2,027,266"]')).not.toBeNull();
-    expect(accountHeader?.querySelector('[aria-label="消费速率 0.85"]')).not.toBeNull();
+    expect(
+      accountHeader?.querySelector('[aria-label="TPM 2,027,266 Pool Alpha · 模型性能"]'),
+    ).not.toBeNull();
+    expect(
+      accountHeader?.querySelector('[aria-label="消费速率 0.85 Pool Alpha · 模型性能"]'),
+    ).not.toBeNull();
     expect(accountHeader?.querySelector('[aria-label="进行中 3"]')).not.toBeNull();
   });
 

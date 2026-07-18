@@ -1606,6 +1606,8 @@ function AccountInlineMetric({
       : alignment === "end"
         ? "justify-end"
         : "justify-start";
+  const triggerAriaLabel = `${label} ${value.ariaText}`;
+  const modelPerformanceAriaLabel = `${triggerAriaLabel} ${modelPerformanceTitle}`;
 
   const metric = (
     <span
@@ -1650,7 +1652,7 @@ function AccountInlineMetric({
       {modelPerformance && modelPerformanceTitle ? (
         <ModelPerformanceTrigger
           title={modelPerformanceTitle}
-          ariaLabel={`${label} ${modelPerformanceTitle}`}
+          ariaLabel={modelPerformanceAriaLabel}
           performance={modelPerformance}
           className={cn(
             "rounded-md",
@@ -1674,7 +1676,7 @@ function AccountInlineMetric({
           )}
           triggerProps={{
             tabIndex: 0,
-            "aria-label": `${label} ${value.ariaText}`,
+            "aria-label": triggerAriaLabel,
           }}
         >
           {metric}
