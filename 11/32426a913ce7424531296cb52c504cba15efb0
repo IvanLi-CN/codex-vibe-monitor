@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.40.0",
+  "base_stable_version": "2.39.6",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-18T06:32:39Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.40.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "ceb21b5f4ef5559adc521ef20cd7527a9beeb633",
+  "pr_number": 648,
+  "pr_title": "feat: expose upstream compression ratios and traffic",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.40.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.40.0",
+  "target_sha": "1132426a913ce7424531296cb52c504cba15efb0",
+  "type_label": "type:minor"
+}
