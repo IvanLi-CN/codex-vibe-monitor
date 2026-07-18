@@ -88,12 +88,27 @@ function render(ui: React.ReactNode) {
   });
 }
 
+async function flushMicrotasks(rounds = 4) {
+  await act(async () => {
+    for (let index = 0; index < rounds; index += 1) {
+      await Promise.resolve();
+    }
+  });
+}
+
 async function flushAsyncWork(rounds = 4) {
   await act(async () => {
     for (let index = 0; index < rounds; index += 1) {
       await Promise.resolve();
     }
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+  });
+}
+
+async function advanceTime(ms: number) {
+  await act(async () => {
+    vi.advanceTimersByTime(ms);
+    await Promise.resolve();
   });
 }
 
@@ -643,5 +658,49 @@ describe("DashboardInvocationDetailDrawer", () => {
 
     expect(apiMocks.fetchInvocationWorkflowDetail).not.toHaveBeenCalled();
     expect(apiMocks.fetchInvocationResponseBody).not.toHaveBeenCalled();
+  });
+
+  it("retries the lookup after opening on a transient record until the persisted row arrives", async () => {
+    vi.useFakeTimers();
+    const transientRecord = createRecord({
+      id: 0,
+      status: "failed",
+      failureClass: "service_failure",
+      errorMessage: "upstream exploded before placeholder flush",
+    });
+    const persistedRecord = createRecord({
+      id: 501,
+      status: "failed",
+      failureClass: "service_failure",
+      errorMessage: "upstream exploded after sqlite flush",
+    });
+    apiMocks.fetchInvocationRecords
+      .mockResolvedValueOnce(createRecordsResponse([transientRecord]))
+      .mockResolvedValueOnce(createRecordsResponse([persistedRecord]));
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(
+      createWorkflowDetailFixture(persistedRecord),
+    );
+
+    try {
+      render(
+        <DashboardInvocationDetailDrawer
+          open
+          selection={createSelection(transientRecord)}
+          onClose={() => undefined}
+        />,
+      );
+
+      await flushMicrotasks();
+      expect(document.body.textContent ?? "").toContain("调用未落盘");
+      await advanceTime(1_500);
+      await flushMicrotasks();
+
+      expect(document.body.textContent ?? "").toContain("工作流时间线");
+
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
+      expect(apiMocks.fetchInvocationWorkflowDetail).toHaveBeenCalledWith(501);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
