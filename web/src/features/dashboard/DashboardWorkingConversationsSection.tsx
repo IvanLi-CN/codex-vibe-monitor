@@ -1696,29 +1696,6 @@ function AccountInlineMetric({
   return wrappedMetric;
 }
 
-function sumUpstreamAccountNetworkSpeed(
-  accounts: Pick<
-    UpstreamAccountActivityAccount,
-    "uploadBytesPerSecond" | "downloadBytesPerSecond"
-  >[],
-) {
-  return accounts.reduce(
-    (totals, account) => ({
-      uploadBytesPerSecond:
-        totals.uploadBytesPerSecond +
-        (Number.isFinite(account.uploadBytesPerSecond)
-          ? Math.max(0, account.uploadBytesPerSecond)
-          : 0),
-      downloadBytesPerSecond:
-        totals.downloadBytesPerSecond +
-        (Number.isFinite(account.downloadBytesPerSecond)
-          ? Math.max(0, account.downloadBytesPerSecond)
-          : 0),
-    }),
-    { uploadBytesPerSecond: 0, downloadBytesPerSecond: 0 },
-  );
-}
-
 function NetworkSpeedInline({
   uploadBytesPerSecond,
   downloadBytesPerSecond,
@@ -3453,8 +3430,6 @@ function DashboardUpstreamAccountActivityCard({
     2,
   );
   const modelPerformanceTitle = `${account.displayName} · ${t("dashboard.modelPerformance.title")}`;
-  const networkUploadLabel = t("dashboard.activityOverview.networkUpload");
-  const networkDownloadLabel = t("dashboard.activityOverview.networkDownload");
   const headerLayout =
     cardWidth > 0 && cardWidth < ACCOUNT_CARD_STACKED_HEADER_BREAKPOINT_PX ? "stacked" : "split";
   const inlineMetricLayout = headerLayout === "stacked" ? "three-columns" : "inline";
@@ -3534,15 +3509,6 @@ function DashboardUpstreamAccountActivityCard({
           </div>
           {headerLayout === "stacked" ? (
             <div className="flex w-full min-w-0 flex-col gap-y-1.5 text-right self-start">
-              <NetworkSpeedInline
-                uploadBytesPerSecond={account.uploadBytesPerSecond}
-                downloadBytesPerSecond={account.downloadBytesPerSecond}
-                localeTag={localeTag}
-                uploadLabel={networkUploadLabel}
-                downloadLabel={networkDownloadLabel}
-                testId="dashboard-upstream-account-network-speed"
-                className="w-full justify-between"
-              />
               <div className="grid w-full min-w-0 grid-cols-3 items-center gap-x-3">
                 <div className="min-w-0">
                   <AccountInlineMetric
@@ -3585,14 +3551,6 @@ function DashboardUpstreamAccountActivityCard({
             </div>
           ) : (
             <div className="flex min-w-0 flex-wrap items-center justify-end gap-x-5 gap-y-1.5 text-right self-start">
-              <NetworkSpeedInline
-                uploadBytesPerSecond={account.uploadBytesPerSecond}
-                downloadBytesPerSecond={account.downloadBytesPerSecond}
-                localeTag={localeTag}
-                uploadLabel={networkUploadLabel}
-                downloadLabel={networkDownloadLabel}
-                testId="dashboard-upstream-account-network-speed"
-              />
               <AccountInlineMetric
                 label={t("dashboard.today.inProgressConversations")}
                 value={inProgressDisplayValue}
@@ -4151,8 +4109,17 @@ export function DashboardWorkingConversationsSection({
     [upstreamAccountActivity, upstreamAccountSort],
   );
   const totalNetworkSpeed = useMemo(
-    () => sumUpstreamAccountNetworkSpeed(upstreamAccountActivity?.accounts ?? []),
-    [upstreamAccountActivity],
+    () => ({
+      uploadBytesPerSecond: Math.max(
+        0,
+        upstreamAccountActivity?.networkLiveBucket?.uploadBytesPerSecond ?? 0,
+      ),
+      downloadBytesPerSecond: Math.max(
+        0,
+        upstreamAccountActivity?.networkLiveBucket?.downloadBytesPerSecond ?? 0,
+      ),
+    }),
+    [upstreamAccountActivity?.networkLiveBucket],
   );
   useEffect(() => {
     persistDashboardWorkspaceView(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY, preferredView);

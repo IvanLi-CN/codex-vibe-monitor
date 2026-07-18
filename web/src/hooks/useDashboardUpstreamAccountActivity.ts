@@ -101,6 +101,7 @@ export function mergeDashboardActivityLiveSnapshot(
   return {
     ...response,
     liveRevision: live.revision,
+    networkLiveBucket: live.networkLiveBucket ?? response.networkLiveBucket,
     summary: {
       ...response.summary,
       stats: {
@@ -254,6 +255,7 @@ export function useDashboardUpstreamAccountActivity(
         range: snapshot.data.range,
         rangeStart: snapshot.data.rangeStart,
         rangeEnd: snapshot.data.rangeEnd,
+        networkLiveBucket: snapshot.data.networkLiveBucket,
         accounts: snapshot.data.accounts ?? [],
       }
     : null;

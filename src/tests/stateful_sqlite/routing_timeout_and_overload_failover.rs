@@ -2872,6 +2872,7 @@ async fn failover_preserves_assigned_account_when_sticky_owner_is_preflight_bloc
             endpoint: "/v1/responses".to_string(),
             sticky_key: Some("sticky-preflight-blocked".to_string()),
             requester_ip: None,
+            upstream_base_url_host: None,
         }),
         None,
         Some("sticky-preflight-blocked"),

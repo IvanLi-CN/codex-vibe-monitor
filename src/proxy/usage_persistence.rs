@@ -263,6 +263,7 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
                 endpoint,
                 route_mode,
                 sticky_key,
+                upstream_base_url_host,
                 group_name_snapshot,
                 proxy_binding_key_snapshot,
                 upstream_account_id,
@@ -295,7 +296,7 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
                 compact_support_reason
             )
             VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37
             )
             "#,
         )
@@ -305,6 +306,7 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
         .bind(&trace.endpoint)
         .bind(INVOCATION_ROUTE_MODE_POOL)
         .bind(trace.sticky_key.as_deref())
+        .bind(trace.upstream_base_url_host.as_deref())
         .bind(group_name_snapshot)
         .bind(proxy_binding_key_snapshot)
         .bind(upstream_account_id)
@@ -497,6 +499,7 @@ pub(crate) async fn begin_pool_upstream_request_attempt_with_scope(
         endpoint: trace.endpoint.clone(),
         sticky_key: trace.sticky_key.clone(),
         requester_ip: trace.requester_ip.clone(),
+        upstream_base_url_host: trace.upstream_base_url_host.clone(),
         group_name_snapshot: group_name_snapshot.map(ToOwned::to_owned),
         proxy_binding_key_snapshot: proxy_binding_key_snapshot.map(ToOwned::to_owned),
         upstream_account_id,
@@ -1772,6 +1775,7 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
         endpoint: pending.endpoint.clone(),
         sticky_key: pending.sticky_key.clone(),
         requester_ip: pending.requester_ip.clone(),
+        upstream_base_url_host: pending.upstream_base_url_host.clone(),
     };
     if let Some(attempt_id) = pending.attempt_id {
         let result = sqlx::query(
@@ -1798,7 +1802,8 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
                 upstream_request_transmitted_body_bytes = COALESCE(?19, upstream_request_transmitted_body_bytes),
                 upstream_request_header_bytes_approx = COALESCE(?20, upstream_request_header_bytes_approx),
                 upstream_response_body_bytes = COALESCE(?21, upstream_response_body_bytes),
-                upstream_response_header_bytes_approx = COALESCE(?22, upstream_response_header_bytes_approx)
+                upstream_response_header_bytes_approx = COALESCE(?22, upstream_response_header_bytes_approx),
+                upstream_base_url_host = COALESCE(?23, upstream_base_url_host)
             WHERE id = ?1
             "#,
         )
@@ -1824,6 +1829,7 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
         .bind(upstream_request_header_bytes_approx)
         .bind(upstream_response_body_bytes)
         .bind(upstream_response_header_bytes_approx)
+        .bind(pending.upstream_base_url_host.as_deref())
         .execute(pool)
         .await?;
 

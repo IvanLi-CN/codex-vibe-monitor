@@ -798,6 +798,7 @@ export interface UpstreamAccountActivityResponse {
   range: string;
   rangeStart: string;
   rangeEnd: string;
+  networkLiveBucket?: DashboardNetworkTimeseriesPoint | null;
   accounts: UpstreamAccountActivityAccount[];
 }
 
@@ -846,6 +847,7 @@ export interface DashboardActivityResponse {
   liveRevision?: number;
   rateWindow: DashboardActivityRateWindow;
   summary: DashboardActivitySummary;
+  networkLiveBucket?: DashboardNetworkTimeseriesPoint | null;
   accounts?: UpstreamAccountActivityAccount[];
 }
 
@@ -3089,6 +3091,7 @@ function normalizeUpstreamAccountActivityResponse(raw: unknown): UpstreamAccount
     range: typeof payload.range === "string" ? payload.range : "",
     rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
     rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
+    networkLiveBucket: normalizeDashboardNetworkTimeseriesPoint(payload.networkLiveBucket),
     accounts: Array.isArray(payload.accounts)
       ? payload.accounts
           .map(normalizeUpstreamAccountActivityAccount)
@@ -3123,6 +3126,7 @@ function normalizeDashboardActivityResponse(raw: unknown): DashboardActivityResp
       currentAvgTotalMs: normalizeFiniteNumber(summaryPayload.currentAvgTotalMs),
       modelPerformance: normalizeModelPerformance(summaryPayload.modelPerformance),
     },
+    networkLiveBucket: normalizeDashboardNetworkTimeseriesPoint(payload.networkLiveBucket),
     accounts: Array.isArray(payload.accounts)
       ? payload.accounts
           .map(normalizeUpstreamAccountActivityAccount)
@@ -3153,6 +3157,24 @@ function normalizeDashboardActivityRecentResponse(raw: unknown): DashboardActivi
   };
 }
 
+function normalizeDashboardNetworkTimeseriesPoint(
+  raw: unknown,
+): DashboardNetworkTimeseriesPoint | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const point = raw as Record<string, unknown>;
+  return {
+    bucketStart: typeof point.bucketStart === "string" ? point.bucketStart : "",
+    bucketEnd: typeof point.bucketEnd === "string" ? point.bucketEnd : "",
+    uploadBytesPerSecond: normalizeFiniteNumber(point.uploadBytesPerSecond) ?? 0,
+    downloadBytesPerSecond: normalizeFiniteNumber(point.downloadBytesPerSecond) ?? 0,
+    uploadBytes: normalizeFiniteNumber(point.uploadBytes) ?? 0,
+    downloadBytes: normalizeFiniteNumber(point.downloadBytes) ?? 0,
+    isLiveBucket: point.isLiveBucket === true,
+  };
+}
+
 function normalizeDashboardNetworkTimeseriesResponse(
   raw: unknown,
 ): DashboardNetworkTimeseriesResponse {
@@ -3164,18 +3186,9 @@ function normalizeDashboardNetworkTimeseriesResponse(
     snapshotId: normalizeFiniteNumber(payload.snapshotId) ?? 0,
     bucketSeconds: normalizeFiniteNumber(payload.bucketSeconds) ?? 300,
     points: Array.isArray(payload.points)
-      ? payload.points.map((entry) => {
-          const point = (entry ?? {}) as Record<string, unknown>;
-          return {
-            bucketStart: typeof point.bucketStart === "string" ? point.bucketStart : "",
-            bucketEnd: typeof point.bucketEnd === "string" ? point.bucketEnd : "",
-            uploadBytesPerSecond: normalizeFiniteNumber(point.uploadBytesPerSecond) ?? 0,
-            downloadBytesPerSecond: normalizeFiniteNumber(point.downloadBytesPerSecond) ?? 0,
-            uploadBytes: normalizeFiniteNumber(point.uploadBytes) ?? 0,
-            downloadBytes: normalizeFiniteNumber(point.downloadBytes) ?? 0,
-            isLiveBucket: point.isLiveBucket === true,
-          };
-        })
+      ? payload.points
+          .map(normalizeDashboardNetworkTimeseriesPoint)
+          .filter((item): item is DashboardNetworkTimeseriesPoint => item != null)
       : [],
   };
 }

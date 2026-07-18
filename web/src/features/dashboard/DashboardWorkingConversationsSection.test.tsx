@@ -232,6 +232,15 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
     range: "today",
     rangeStart: "2026-04-04T10:00:00Z",
     rangeEnd: "2026-04-04T10:05:00Z",
+    networkLiveBucket: {
+      bucketStart: "2026-04-04T10:00:00Z",
+      bucketEnd: "2026-04-04T10:05:00Z",
+      uploadBytesPerSecond: 1_536,
+      downloadBytesPerSecond: 5 * 1024 * 1024,
+      uploadBytes: 1_536 * 300,
+      downloadBytes: 5 * 1024 * 1024 * 300,
+      isLiveBucket: true,
+    },
     accounts: [
       {
         upstreamAccountId: 42,
@@ -1272,16 +1281,9 @@ describe("DashboardWorkingConversationsSection", () => {
     const networkSpeed = accountHeader?.querySelector(
       '[data-testid="dashboard-upstream-account-network-speed"]',
     );
-    expect(networkSpeed).not.toBeNull();
-    expect(networkSpeed?.textContent).toContain("1.5");
-    expect(networkSpeed?.textContent).toContain("KiB/s");
-    expect(networkSpeed?.textContent).toContain("5");
-    expect(networkSpeed?.textContent).toContain("MiB/s");
+    expect(networkSpeed).toBeNull();
     const inProgressMetric = accountHeader?.querySelector('[aria-label="进行中 3"]');
     expect(inProgressMetric).toBeInstanceOf(HTMLElement);
-    expect(networkSpeed?.compareDocumentPosition(inProgressMetric as HTMLElement)).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING,
-    );
     const latencyBreakdown = host?.querySelector(
       '[data-testid="dashboard-upstream-account-latency-breakdown"]',
     );
@@ -1380,6 +1382,15 @@ describe("DashboardWorkingConversationsSection", () => {
       downloadBytesPerSecond: 1024 * 1024,
       recentInvocations: [],
     });
+    upstreamActivity.networkLiveBucket = {
+      bucketStart: "2026-04-04T10:00:00Z",
+      bucketEnd: "2026-04-04T10:05:00Z",
+      uploadBytesPerSecond: 2_048,
+      downloadBytesPerSecond: 6 * 1024 * 1024,
+      uploadBytes: 2_048 * 300,
+      downloadBytes: 6 * 1024 * 1024 * 300,
+      isLiveBucket: true,
+    };
 
     renderSection(
       createResponse([

@@ -118,6 +118,15 @@ function createResponse(inProgressCount: number): DashboardActivityResponse {
         inProgressRetryConversationCount: 1,
       },
     },
+    networkLiveBucket: {
+      bucketStart: "2026-07-16T10:00:00Z",
+      bucketEnd: "2026-07-16T10:05:00Z",
+      uploadBytesPerSecond: 64,
+      downloadBytesPerSecond: 128,
+      uploadBytes: 19_200,
+      downloadBytes: 38_400,
+      isLiveBucket: true,
+    },
     accounts: [
       {
         accountKey: "upstream:7",
@@ -216,6 +225,15 @@ describe("mergeDashboardActivityLiveSnapshot", () => {
         responding: 0,
       },
       retryInvocationCount: 2,
+      networkLiveBucket: {
+        bucketStart: "2026-07-16T10:00:00Z",
+        bucketEnd: "2026-07-16T10:05:00Z",
+        uploadBytesPerSecond: 512,
+        downloadBytesPerSecond: 1024,
+        uploadBytes: 153_600,
+        downloadBytes: 307_200,
+        isLiveBucket: true,
+      },
       accounts: [
         {
           accountKey: "upstream:7",
@@ -236,6 +254,8 @@ describe("mergeDashboardActivityLiveSnapshot", () => {
     const merged = mergeDashboardActivityLiveSnapshot(response, live);
     expect(merged.liveRevision).toBe(2);
     expect(merged.summary.stats.inProgressConversationCount).toBe(3);
+    expect(merged.networkLiveBucket?.uploadBytesPerSecond).toBe(512);
+    expect(merged.networkLiveBucket?.downloadBytesPerSecond).toBe(1024);
     expect(merged.accounts?.[0]).toEqual(
       expect.objectContaining({
         inProgressInvocationCount: 3,

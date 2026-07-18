@@ -13,6 +13,7 @@ pub(crate) struct PoolUpstreamRequestAttemptArchiveRow {
     endpoint: String,
     route_mode: String,
     sticky_key: Option<String>,
+    upstream_base_url_host: Option<String>,
     group_name_snapshot: Option<String>,
     proxy_binding_key_snapshot: Option<String>,
     upstream_account_id: Option<i64>,
@@ -97,6 +98,7 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_direct(
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),
         ("downstream_error_message", "TEXT"),
+        ("upstream_base_url_host", "TEXT"),
         ("upstream_request_compression_algorithm", "TEXT"),
         ("upstream_request_compression_mode", "TEXT"),
         ("upstream_request_logical_body_bytes", "INTEGER"),
@@ -331,6 +333,7 @@ pub(crate) async fn archive_pool_upstream_request_attempt_rows_into_month_batch(
                 .push_bind(&row.endpoint)
                 .push_bind(&row.route_mode)
                 .push_bind(&row.sticky_key)
+                .push_bind(&row.upstream_base_url_host)
                 .push_bind(&row.group_name_snapshot)
                 .push_bind(&row.proxy_binding_key_snapshot)
                 .push_bind(row.upstream_account_id)

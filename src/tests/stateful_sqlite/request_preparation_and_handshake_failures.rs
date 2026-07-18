@@ -775,6 +775,7 @@ async fn query_pool_attempt_records_from_live_includes_request_compression_obser
             endpoint: "/v1/responses".to_string(),
             sticky_key: None,
             requester_ip: None,
+            upstream_base_url_host: None,
         },
         None,
         None,
