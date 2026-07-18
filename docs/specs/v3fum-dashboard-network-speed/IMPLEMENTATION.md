@@ -34,6 +34,7 @@
   - `24 小时` 新增 `network`，选中时用网速面积图替换 heatmap。
   - `7 日 / 历史` 保持原行为不变。
 - `useDashboardUpstreamAccountActivity` 与相关 normalize 逻辑把新的 `networkLiveBucket` 完整透传给上游账号 tab。
+- `Dashboard.tsx` 页面壳层也必须把 `dashboardActivity.networkLiveBucket` 继续下传给 `DashboardWorkingConversationsSection`；否则即使 `/api/stats/dashboard-activity` 已返回非零 live bucket，工作区顶部总速率胶囊仍会退回 `0 B/s`。
 - `DashboardWorkingConversationsSection` 同时在两个位置展示网速：
   - 工作区右上 badge 区展示所有上游请求的全局总上/下行实时速率，直接读取 `networkLiveBucket`。
   - 账号卡标题区删除单账号上传/下载速率，只保留活动账号数量、TPM、消费速率、进行中等摘要。
@@ -49,4 +50,5 @@
   - global/host/account runtime bucket 记账。
   - host minute rollup 的 direct 写入、cursor seed 与 pool retry host split。
   - Dashboard 无 scope timeseries 改读 host minute 5 分钟聚合。
-- Storybook 继续使用 `DashboardNetworkActivityChart` 与 `UpstreamAccountTab` 场景验证图表背景与账号 tab 顶部总速率展示。
+- `DashboardPage.stories.tsx` 新增页面级 SSE / HTTP bootstrap，确保整页证据能同时覆盖活动总览网速图和上游账号顶部总速率胶囊，不再依赖缺失首帧 snapshot 的假空态。
+- Storybook 继续使用 `DashboardNetworkActivityChart` 与 `UpstreamAccountTab` 场景验证图表背景与账号 tab 顶部总速率展示，并补充整页 `UnifiedActivitySnapshot` 证据验证 page-shell 接线。

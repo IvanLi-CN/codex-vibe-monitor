@@ -9,3 +9,4 @@
 - Dashboard 无 scope 网速改成“系统对所有上游”的全局真值，闭合历史桶从 host minute rollup 汇总，live 末桶继续读 runtime global bucket。
 - 工作区标题区的总速率胶囊保留，但直接读取全局 `networkLiveBucket`；账号卡中的上传/下载速率删除，避免让 owner 把账号卡局部速率误读成系统总量。
 - 顶部网速图的 steady-state 更新继续保持“首次 hydrate + `dashboardActivityLive` SSE 推送当前桶”，只在桶切换 / SSE 重连时静默回补。
+- 2026-07-18 上线后发现一个 page-shell 漏接线问题：`DashboardWorkingConversationsSection` 已改读 `networkLiveBucket`，但 `Dashboard.tsx` 没把该字段继续下传，导致线上工作区总速率胶囊长期显示 `0 B/s`。修复后补充页面级回归测试与整页 Storybook bootstrap，防止“接口有值、页面为零”的回归再次漏过。

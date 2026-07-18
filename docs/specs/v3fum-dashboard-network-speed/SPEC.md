@@ -130,6 +130,12 @@
   scenario: `upstream account tab global network pill and account-card cleanup`
   evidence_note: `验证上游账号 tab 顶部仍显示总上传/总下载速率胶囊，同时账号卡头部已删除上传/下载速率展示。`
   ![Dashboard upstream account tab global network pill](./assets/dashboard-host-truth-upstream-account-tab.png)
+- SHA `worktree`
+- source_type: `storybook_iframe`
+  story_id_or_title: `pages-dashboardpage--unified-activity-snapshot`
+  scenario: `full dashboard page host-truth network graph plus upstream account live pill`
+  evidence_note: `验证整页状态下活动总览网速图与上游账号顶部总速率胶囊同时使用非零 host-truth live 数据，且账号卡头部未重新出现单账号上传/下载速率。`
+  ![Dashboard unified host-truth network evidence](./assets/dashboard-host-truth-unified-page.png)
 
 ## 参考（References）
 
