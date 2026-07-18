@@ -50,6 +50,10 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             response_endpoint_capability_observed_at TEXT,
             response_endpoint_capability_reason TEXT,
             policy_response_endpoint_capability_override TEXT,
+            chat_completions_capability TEXT NOT NULL DEFAULT 'unknown',
+            chat_completions_capability_observed_at TEXT,
+            chat_completions_capability_reason TEXT,
+            policy_chat_completions_capability_override TEXT,
             image_endpoint_capability TEXT NOT NULL DEFAULT 'unknown',
             image_endpoint_capability_observed_at TEXT,
             image_endpoint_capability_reason TEXT,
@@ -170,6 +174,37 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .await
     .context(
         "failed to ensure pool_upstream_accounts.policy_response_endpoint_capability_override",
+    )?;
+    ensure_text_column_with_default(
+        pool,
+        "pool_upstream_accounts",
+        "chat_completions_capability",
+        "'unknown'",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.chat_completions_capability")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "chat_completions_capability_observed_at",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.chat_completions_capability_observed_at")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "chat_completions_capability_reason",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.chat_completions_capability_reason")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "policy_chat_completions_capability_override",
+    )
+    .await
+    .context(
+        "failed to ensure pool_upstream_accounts.policy_chat_completions_capability_override",
     )?;
     ensure_text_column_with_default(
         pool,
@@ -1308,6 +1343,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             default_first_byte_timeout_secs INTEGER,
             upstream_handshake_timeout_secs INTEGER,
             request_read_timeout_secs INTEGER,
+            capability_axis_split_migrated INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -1394,6 +1430,14 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_integer_column(pool, "pool_routing_settings", "request_read_timeout_secs")
         .await
         .context("failed to ensure pool_routing_settings.request_read_timeout_secs")?;
+    ensure_integer_column_with_default(
+        pool,
+        "pool_routing_settings",
+        "capability_axis_split_migrated",
+        "0",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.capability_axis_split_migrated")?;
 
     sqlx::query(
         r#"
@@ -1416,6 +1460,59 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure default pool_routing_settings row")?;
+    ensure_upstream_account_capability_axis_split_migrated(pool).await?;
+
+    Ok(())
+}
+
+async fn ensure_upstream_account_capability_axis_split_migrated(pool: &Pool<Sqlite>) -> Result<()> {
+    let migrated = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT capability_axis_split_migrated
+        FROM pool_routing_settings
+        WHERE id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(POOL_SETTINGS_SINGLETON_ID)
+    .fetch_optional(pool)
+    .await
+    .context("failed to check capability axis split migration flag")?
+    .unwrap_or(0);
+    if migrated != 0 {
+        return Ok(());
+    }
+
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET response_endpoint_capability = 'unknown',
+            response_endpoint_capability_observed_at = NULL,
+            response_endpoint_capability_reason = NULL,
+            policy_response_endpoint_capability_override = NULL,
+            chat_completions_capability = 'unknown',
+            chat_completions_capability_observed_at = NULL,
+            chat_completions_capability_reason = NULL,
+            policy_chat_completions_capability_override = NULL,
+            updated_at = datetime('now')
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to reset legacy mixed response/chat capability state")?;
+
+    sqlx::query(
+        r#"
+        UPDATE pool_routing_settings
+        SET capability_axis_split_migrated = 1,
+            updated_at = datetime('now')
+        WHERE id = ?1
+        "#,
+    )
+    .bind(POOL_SETTINGS_SINGLETON_ID)
+    .execute(pool)
+    .await
+    .context("failed to mark capability axis split migration complete")?;
 
     Ok(())
 }

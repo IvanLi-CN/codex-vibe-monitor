@@ -536,6 +536,7 @@ pub(crate) async fn resolve_pool_account_for_request(
         None,
         None,
         None,
+        "",
         crate::ImageIntent::Unknown,
     )
     .await
@@ -547,6 +548,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_image_intent(
     requested_model: Option<&str>,
     excluded_ids: &[i64],
     excluded_upstream_route_keys: &HashSet<String>,
+    endpoint: &str,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolution> {
     resolve_pool_account_for_request_with_route_requirement_and_image_intent(
@@ -557,6 +559,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_image_intent(
         excluded_upstream_route_keys,
         None,
         None,
+        endpoint,
         image_intent,
     )
     .await
@@ -579,6 +582,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_binding_constraint(
         None,
         binding_constraint,
         None,
+        "",
         crate::ImageIntent::Unknown,
     )
     .await
@@ -591,6 +595,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_binding_constraint_and
     excluded_ids: &[i64],
     excluded_upstream_route_keys: &HashSet<String>,
     binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    endpoint: &str,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolution> {
     resolve_pool_account_for_request_with_route_requirement_and_image_intent(
@@ -601,6 +606,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_binding_constraint_and
         excluded_upstream_route_keys,
         None,
         binding_constraint,
+        endpoint,
         image_intent,
     )
     .await
@@ -624,6 +630,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
         required_upstream_route_key,
         binding_constraint,
         None,
+        "",
         crate::ImageIntent::Unknown,
     )
     .await
@@ -637,6 +644,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_
     excluded_upstream_route_keys: &HashSet<String>,
     required_upstream_route_key: Option<&str>,
     binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    endpoint: &str,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolution> {
     resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override(
@@ -648,6 +656,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_
         required_upstream_route_key,
         binding_constraint,
         None,
+        endpoint,
         image_intent,
     )
     .await
@@ -662,6 +671,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_
     required_upstream_route_key: Option<&str>,
     binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
     conversation_override: Option<&ConversationRoutingOverride>,
+    endpoint: &str,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolution> {
     resolve_pool_account_for_request_with_route_requirement_internal(
@@ -673,6 +683,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_
         required_upstream_route_key,
         binding_constraint,
         conversation_override,
+        endpoint,
         image_intent,
     )
     .await
@@ -687,9 +698,11 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     required_upstream_route_key: Option<&str>,
     binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
     conversation_override: Option<&ConversationRoutingOverride>,
+    endpoint: &str,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolution> {
-    let capability_requirements = RequestCapabilityRequirements::from_image_intent(image_intent);
+    let capability_requirements =
+        RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
     let now = Utc::now();
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
     let mut saw_rate_limited_candidate = false;
@@ -832,6 +845,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                         decode_capability_support(row.response_endpoint_capability.as_deref()),
                         decode_capability_override(
                             row.policy_response_endpoint_capability_override.as_deref(),
+                        ),
+                    ),
+                    effective_capability_support(
+                        decode_capability_support(row.chat_completions_capability.as_deref()),
+                        decode_capability_override(
+                            row.policy_chat_completions_capability_override.as_deref(),
                         ),
                     ),
                     effective_capability_support(
@@ -1136,6 +1155,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 decode_capability_support(row.response_endpoint_capability.as_deref()),
                 decode_capability_override(
                     row.policy_response_endpoint_capability_override.as_deref(),
+                ),
+            ),
+            effective_capability_support(
+                decode_capability_support(row.chat_completions_capability.as_deref()),
+                decode_capability_override(
+                    row.policy_chat_completions_capability_override.as_deref(),
                 ),
             ),
             effective_capability_support(

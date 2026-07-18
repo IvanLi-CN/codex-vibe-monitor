@@ -1685,6 +1685,14 @@ pub(crate) async fn update_upstream_account_inner(
             value,
         )?),
     };
+    let chat_completions_capability_override = match &payload.chat_completions_capability_override {
+        OptionalField::Missing => row.policy_chat_completions_capability_override.clone(),
+        OptionalField::Null => None,
+        OptionalField::Value(value) => Some(normalize_capability_override(
+            "chatCompletionsCapabilityOverride",
+            value,
+        )?),
+    };
     let image_endpoint_capability_override = match &payload.image_endpoint_capability_override {
         OptionalField::Missing => row.policy_image_endpoint_capability_override.clone(),
         OptionalField::Null => None,
@@ -1907,9 +1915,10 @@ pub(crate) async fn update_upstream_account_inner(
             policy_compact_stream_timeout_secs = ?39,
             bound_proxy_keys_json = ?40,
             policy_response_endpoint_capability_override = ?41,
-            policy_image_endpoint_capability_override = ?42,
-            policy_response_image_tool_capability_override = ?43,
-            updated_at = ?44
+            policy_chat_completions_capability_override = ?42,
+            policy_image_endpoint_capability_override = ?43,
+            policy_response_image_tool_capability_override = ?44,
+            updated_at = ?45
         WHERE id = ?1
         "#,
     )
@@ -2095,6 +2104,7 @@ pub(crate) async fn update_upstream_account_inner(
     })
     .bind(next_bound_proxy_keys_json)
     .bind(response_endpoint_capability_override)
+    .bind(chat_completions_capability_override)
     .bind(image_endpoint_capability_override)
     .bind(response_image_tool_capability_override)
     .bind(&now_iso)

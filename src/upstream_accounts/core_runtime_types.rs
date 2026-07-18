@@ -1256,24 +1256,38 @@ impl ImageIntent {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct RequestCapabilityRequirements {
     pub(crate) response_endpoint: bool,
+    pub(crate) chat_completions_endpoint: bool,
     pub(crate) image_endpoint: bool,
     pub(crate) response_image_tool: bool,
 }
 
 impl RequestCapabilityRequirements {
-    pub(crate) fn from_image_intent(image_intent: ImageIntent) -> Self {
-        match image_intent {
-            ImageIntent::DirectImage => Self::direct_image_endpoint(),
-            ImageIntent::Yes | ImageIntent::No | ImageIntent::Unknown => {
-                Self::response_family(image_intent)
-            }
+    pub(crate) fn from_endpoint_and_image_intent(
+        endpoint: &str,
+        image_intent: ImageIntent,
+    ) -> Self {
+        match endpoint {
+            "/v1/responses" | "/v1/responses/compact" => Self::response_family(image_intent),
+            "/v1/chat/completions" => Self::chat_completions(),
+            "/v1/images/generations" | "/v1/images/edits" => Self::direct_image_endpoint(),
+            _ => Self::default(),
         }
     }
 
     pub(crate) fn direct_image_endpoint() -> Self {
         Self {
             response_endpoint: false,
+            chat_completions_endpoint: false,
             image_endpoint: true,
+            response_image_tool: false,
+        }
+    }
+
+    pub(crate) fn chat_completions() -> Self {
+        Self {
+            response_endpoint: false,
+            chat_completions_endpoint: true,
+            image_endpoint: false,
             response_image_tool: false,
         }
     }
@@ -1281,6 +1295,7 @@ impl RequestCapabilityRequirements {
     pub(crate) fn response_family(image_intent: ImageIntent) -> Self {
         Self {
             response_endpoint: true,
+            chat_completions_endpoint: false,
             image_endpoint: false,
             response_image_tool: matches!(image_intent, ImageIntent::Yes),
         }
@@ -1660,6 +1675,7 @@ pub(crate) struct UpstreamAccountSummary {
     pub(crate) tags: Vec<AccountTagSummary>,
     pub(crate) effective_routing_rule: EffectiveRoutingRule,
     pub(crate) response_endpoint_capability: UpstreamCapabilityState,
+    pub(crate) chat_completions_capability: UpstreamCapabilityState,
     pub(crate) image_endpoint_capability: UpstreamCapabilityState,
     pub(crate) response_image_tool_capability: UpstreamCapabilityState,
 }
@@ -2587,6 +2603,8 @@ pub(crate) struct UpdateUpstreamAccountRequest {
     pub(crate) tag_ids: Option<Vec<i64>>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     pub(crate) response_endpoint_capability_override: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(crate) chat_completions_capability_override: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     pub(crate) image_endpoint_capability_override: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]

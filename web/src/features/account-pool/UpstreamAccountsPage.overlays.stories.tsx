@@ -143,7 +143,12 @@ export const DetailDrawerOverview: Story = {
       "aria-selected",
       "true",
     );
-    await expect(within(dialog).getByText(/Response 端点|response endpoint/i)).toBeInTheDocument();
+    await expect(
+      within(dialog).getByText(/Responses 端点|responses endpoint/i),
+    ).toBeInTheDocument();
+    await expect(
+      within(dialog).getByText(/Chat Completions 端点|chat completions endpoint/i),
+    ).toBeInTheDocument();
     await expect(within(dialog).getByText(/Image 端点|image endpoint/i)).toBeInTheDocument();
     await expect(
       within(dialog).getByText(/Response 图片工具|response image-tool/i),
@@ -753,7 +758,12 @@ export const MissingWindowPlaceholders: Story = {
     const dialog = await documentScope.findByRole("dialog", {
       name: /Team key - missing weekly limit/i,
     });
-    await expect(within(dialog).getByText(/Response 端点|response endpoint/i)).toBeInTheDocument();
+    await expect(
+      within(dialog).getByText(/Responses 端点|responses endpoint/i),
+    ).toBeInTheDocument();
+    await expect(
+      within(dialog).getByText(/Chat Completions 端点|chat completions endpoint/i),
+    ).toBeInTheDocument();
     await expect(within(dialog).getByText(/Image 端点|image endpoint/i)).toBeInTheDocument();
     await expect(
       within(dialog).getByText(/Response 图片工具|response image-tool/i),

@@ -319,12 +319,13 @@ async fn image_intent_route_success_learns_supported_capability() {
     let pool = test_pool().await;
     let account_id = insert_oauth_account(&pool, "Image Success Learns Supported").await;
 
-    record_pool_route_success_with_image_intent(
+    record_pool_route_success_for_endpoint_with_image_intent(
         &pool,
         account_id,
         Utc::now(),
         Some("sticky-image-supported"),
         Some("invk_image_supported"),
+        "/v1/responses",
         ImageIntent::Yes,
     )
     .await
@@ -342,15 +343,17 @@ async fn image_intent_route_success_learns_supported_capability() {
         row.response_image_tool_capability.as_deref(),
         Some("supported")
     );
+    assert_eq!(row.chat_completions_capability.as_deref(), Some("unknown"));
 
     let direct_account_id =
         insert_oauth_account(&pool, "Direct Image Success Learns Supported").await;
-    record_pool_route_success_with_image_intent(
+    record_pool_route_success_for_endpoint_with_image_intent(
         &pool,
         direct_account_id,
         Utc::now(),
         Some("sticky-direct-image-supported"),
         Some("invk_direct_image_supported"),
+        "/v1/images/generations",
         ImageIntent::DirectImage,
     )
     .await
@@ -364,6 +367,69 @@ async fn image_intent_route_success_learns_supported_capability() {
         direct_row.image_endpoint_capability.as_deref(),
         Some("supported")
     );
+    assert_eq!(
+        direct_row.response_endpoint_capability.as_deref(),
+        Some("unknown")
+    );
+}
+
+#[tokio::test]
+async fn chat_completions_route_learning_stays_on_chat_axis() {
+    let pool = test_pool().await;
+    let account_id = insert_oauth_account(&pool, "Chat Success Learns Supported").await;
+
+    record_pool_route_success_for_endpoint_with_image_intent(
+        &pool,
+        account_id,
+        Utc::now(),
+        Some("sticky-chat-supported"),
+        Some("invk_chat_supported"),
+        "/v1/chat/completions",
+        ImageIntent::No,
+    )
+    .await
+    .expect("record chat completions route success");
+
+    let row = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load row after chat success")
+        .expect("row exists after chat success");
+    assert_eq!(
+        row.chat_completions_capability.as_deref(),
+        Some("supported")
+    );
+    assert_eq!(row.response_endpoint_capability.as_deref(), Some("unknown"));
+    assert_eq!(row.image_endpoint_capability.as_deref(), Some("unknown"));
+
+    let unsupported_account_id =
+        insert_oauth_account(&pool, "Chat Failure Learns Unsupported").await;
+    record_pool_route_http_failure_for_endpoint_with_image_intent(
+        &pool,
+        unsupported_account_id,
+        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+        false,
+        Some("sticky-chat-unsupported"),
+        StatusCode::NOT_FOUND,
+        "pool upstream responded with 404: unsupported endpoint /v1/chat/completions for this account",
+        Some("invk_chat_unsupported"),
+        "/v1/chat/completions",
+        ImageIntent::No,
+    )
+    .await
+    .expect("record explicit unsupported chat completions failure");
+
+    let unsupported_row = load_upstream_account_row(&pool, unsupported_account_id)
+        .await
+        .expect("load row after unsupported chat failure")
+        .expect("row exists after unsupported chat failure");
+    assert_eq!(
+        unsupported_row.chat_completions_capability.as_deref(),
+        Some("unsupported")
+    );
+    assert_eq!(
+        unsupported_row.response_endpoint_capability.as_deref(),
+        Some("unknown")
+    );
 }
 
 #[tokio::test]
@@ -371,7 +437,7 @@ async fn image_intent_explicit_unsupported_failure_learns_unsupported_capability
     let pool = test_pool().await;
     let account_id = insert_oauth_account(&pool, "Image Failure Learns Unsupported").await;
 
-    record_pool_route_http_failure_with_image_intent(
+    record_pool_route_http_failure_for_endpoint_with_image_intent(
         &pool,
         account_id,
         UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
@@ -380,6 +446,7 @@ async fn image_intent_explicit_unsupported_failure_learns_unsupported_capability
         StatusCode::BAD_REQUEST,
         "pool upstream responded with 400: unsupported tool: image_generation is not supported by this account",
         Some("invk_image_unsupported"),
+        "/v1/responses",
         ImageIntent::Yes,
     )
     .await
@@ -397,7 +464,7 @@ async fn image_intent_explicit_unsupported_failure_learns_unsupported_capability
 
     let direct_account_id =
         insert_oauth_account(&pool, "Direct Image Failure Learns Unsupported").await;
-    record_pool_route_http_failure_with_image_intent(
+    record_pool_route_http_failure_for_endpoint_with_image_intent(
         &pool,
         direct_account_id,
         UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
@@ -406,6 +473,7 @@ async fn image_intent_explicit_unsupported_failure_learns_unsupported_capability
         StatusCode::BAD_REQUEST,
         "pool upstream responded with 400: No available channel for model gpt-image-1 under group default",
         Some("invk_direct_image_unsupported"),
+        "/v1/images/generations",
         ImageIntent::DirectImage,
     )
     .await
@@ -426,7 +494,7 @@ async fn image_intent_validation_failure_does_not_learn_unsupported_capability()
     let pool = test_pool().await;
     let account_id = insert_oauth_account(&pool, "Image Validation Failure Keeps Unknown").await;
 
-    record_pool_route_http_failure_with_image_intent(
+    record_pool_route_http_failure_for_endpoint_with_image_intent(
         &pool,
         account_id,
         UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
@@ -435,6 +503,7 @@ async fn image_intent_validation_failure_does_not_learn_unsupported_capability()
         StatusCode::BAD_REQUEST,
         "pool upstream responded with 400: invalid image size: width must be divisible by 64",
         Some("invk_image_invalid_payload"),
+        "/v1/responses",
         ImageIntent::Yes,
     )
     .await

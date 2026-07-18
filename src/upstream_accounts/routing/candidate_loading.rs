@@ -66,11 +66,14 @@ pub(crate) fn apply_conversation_routing_override(
 pub(crate) fn account_accepts_request_capabilities(
     requirements: RequestCapabilityRequirements,
     response_endpoint_capability: CapabilitySupport,
+    chat_completions_capability: CapabilitySupport,
     image_endpoint_capability: CapabilitySupport,
     response_image_tool_capability: CapabilitySupport,
 ) -> bool {
     (!requirements.response_endpoint
         || !matches!(response_endpoint_capability, CapabilitySupport::Unsupported))
+        && (!requirements.chat_completions_endpoint
+            || !matches!(chat_completions_capability, CapabilitySupport::Unsupported))
         && (!requirements.image_endpoint
             || !matches!(image_endpoint_capability, CapabilitySupport::Unsupported))
         && (!requirements.response_image_tool
@@ -362,6 +365,10 @@ pub(crate) fn build_pool_resolved_account(
         response_endpoint_capability: effective_capability_support(
             decode_capability_support(row.response_endpoint_capability.as_deref()),
             decode_capability_override(row.policy_response_endpoint_capability_override.as_deref()),
+        ),
+        chat_completions_capability: effective_capability_support(
+            decode_capability_support(row.chat_completions_capability.as_deref()),
+            decode_capability_override(row.policy_chat_completions_capability_override.as_deref()),
         ),
         image_endpoint_capability: effective_capability_support(
             decode_capability_support(row.image_endpoint_capability.as_deref()),

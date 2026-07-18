@@ -1245,9 +1245,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.capability.overrideOption.auto": "Auto learning",
     "accountPool.upstreamAccounts.capability.overrideOption.supported": "Force supported",
     "accountPool.upstreamAccounts.capability.overrideOption.unsupported": "Force unsupported",
-    "accountPool.upstreamAccounts.capability.responseEndpoint.title": "Response endpoint",
+    "accountPool.upstreamAccounts.capability.responseEndpoint.title": "Responses endpoint",
     "accountPool.upstreamAccounts.capability.responseEndpoint.description":
-      "Controls routing eligibility for these Responses-family endpoints.",
+      "Controls routing eligibility for these Responses endpoints only.",
+    "accountPool.upstreamAccounts.capability.chatCompletions.title": "Chat Completions endpoint",
+    "accountPool.upstreamAccounts.capability.chatCompletions.description":
+      "Controls routing eligibility for the Chat Completions endpoint only.",
     "accountPool.upstreamAccounts.capability.imageEndpoint.title": "Image endpoint",
     "accountPool.upstreamAccounts.capability.imageEndpoint.description":
       "Controls routing eligibility for these direct image endpoints.",
@@ -3726,9 +3729,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.capability.overrideOption.auto": "自动学习",
     "accountPool.upstreamAccounts.capability.overrideOption.supported": "强制支持",
     "accountPool.upstreamAccounts.capability.overrideOption.unsupported": "强制不支持",
-    "accountPool.upstreamAccounts.capability.responseEndpoint.title": "Response 端点",
+    "accountPool.upstreamAccounts.capability.responseEndpoint.title": "Responses 端点",
     "accountPool.upstreamAccounts.capability.responseEndpoint.description":
-      "控制以下 Responses-family 端点的路由可选性。",
+      "仅控制以下 Responses 端点的路由可选性。",
+    "accountPool.upstreamAccounts.capability.chatCompletions.title": "Chat Completions 端点",
+    "accountPool.upstreamAccounts.capability.chatCompletions.description":
+      "仅控制 Chat Completions 端点的路由可选性。",
     "accountPool.upstreamAccounts.capability.imageEndpoint.title": "Image 端点",
     "accountPool.upstreamAccounts.capability.imageEndpoint.description":
       "控制以下直连 image 端点的路由可选性。",

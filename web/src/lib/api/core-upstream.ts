@@ -279,6 +279,7 @@ export interface UpstreamAccountSummary {
   compactSupport?: CompactSupportState | null;
   duplicateInfo?: UpstreamAccountDuplicateInfo | null;
   responseEndpointCapability?: UpstreamCapabilityState | null;
+  chatCompletionsCapability?: UpstreamCapabilityState | null;
   imageEndpointCapability?: UpstreamCapabilityState | null;
   responseImageToolCapability?: UpstreamCapabilityState | null;
   tags: AccountTagSummary[];
@@ -665,6 +666,7 @@ export interface UpdateUpstreamAccountPayload {
   localLimitUnit?: string | null;
   tagIds?: number[];
   responseEndpointCapabilityOverride?: CapabilityOverride | null;
+  chatCompletionsCapabilityOverride?: CapabilityOverride | null;
   imageEndpointCapabilityOverride?: CapabilityOverride | null;
   responseImageToolCapabilityOverride?: CapabilityOverride | null;
   routingRule?: UpdateGroupAccountRoutingRulePayload;
@@ -1267,6 +1269,7 @@ function normalizeUpstreamAccountSummary(raw: unknown): UpstreamAccountSummary |
     responseEndpointCapability: normalizeUpstreamCapabilityState(
       payload.responseEndpointCapability,
     ),
+    chatCompletionsCapability: normalizeUpstreamCapabilityState(payload.chatCompletionsCapability),
     imageEndpointCapability: normalizeUpstreamCapabilityState(payload.imageEndpointCapability),
     responseImageToolCapability: normalizeUpstreamCapabilityState(
       payload.responseImageToolCapability,

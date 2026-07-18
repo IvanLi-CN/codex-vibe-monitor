@@ -19,6 +19,8 @@ pub(crate) const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
     compact_support_reason,
     response_endpoint_capability, response_endpoint_capability_observed_at,
     response_endpoint_capability_reason, policy_response_endpoint_capability_override,
+    chat_completions_capability, chat_completions_capability_observed_at,
+    chat_completions_capability_reason, policy_chat_completions_capability_override,
     image_endpoint_capability, image_endpoint_capability_observed_at,
     image_endpoint_capability_reason, policy_image_endpoint_capability_override,
     response_image_tool_capability, response_image_tool_capability_observed_at,
@@ -3469,6 +3471,12 @@ pub(crate) fn build_summary_from_row(
             row.response_endpoint_capability_observed_at.as_ref(),
             row.response_endpoint_capability_reason.as_ref(),
             row.policy_response_endpoint_capability_override.as_deref(),
+        ),
+        chat_completions_capability: build_capability_state(
+            row.chat_completions_capability.as_deref(),
+            row.chat_completions_capability_observed_at.as_ref(),
+            row.chat_completions_capability_reason.as_ref(),
+            row.policy_chat_completions_capability_override.as_deref(),
         ),
         image_endpoint_capability: build_capability_state(
             row.image_endpoint_capability.as_deref(),

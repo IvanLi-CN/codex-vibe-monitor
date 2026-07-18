@@ -4,6 +4,8 @@
 
 Account-pool routing policy moved from isolated group/tag behavior to a layered effective policy model. The resolver now computes one effective policy per account and downstream routing code reads that policy instead of separate group or tag fragments.
 
+2026-07-18: Split the old mixed `responseEndpointCapability` axis into independent Responses and Chat Completions endpoint capabilities. `/v1/chat/completions` no longer appears under the Responses or Response image-tool cards, startup schema maintenance performs a one-time reset of legacy mixed Responses observed state/overrides, and the account detail Overview now shows four capability cards: Responses, Chat Completions, Image, and Response image-tool.
+
 2026-07-14: Added `imageFirstByteTimeoutSecs` to the root/group/account/conversation timeout chain with a 300-second default. Direct image timeout is terminal and returns an additive `504 upstream_handshake_timeout` contract instead of retrying or degrading to `pool_no_available_account`.
 
 2026-07-06: Added inherited per-reason status-change toggles for upstream auth, quota, transport, overload, and 5xx failure families. Group and account policy now resolve `statusChangeReasons` with root defaults of all-enabled, route and sync state mutations consult the resolved toggle before touching account health/cooldown/latest-action fields, and suppressed reasons create neutral account events instead of mutating account state.

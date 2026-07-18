@@ -557,9 +557,11 @@ pub(crate) async fn header_sticky_account_matches_request_requirements(
     state: &AppState,
     account: &PoolResolvedAccount,
     requested_model: Option<&str>,
+    endpoint: &str,
     image_intent: crate::ImageIntent,
 ) -> Result<bool, (StatusCode, String)> {
-    let capability_requirements = RequestCapabilityRequirements::from_image_intent(image_intent);
+    let capability_requirements =
+        RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
     let effective_rule = load_effective_routing_rule_for_account(&state.pool, account.account_id)
         .await
         .map_err(|err| {
@@ -577,6 +579,7 @@ pub(crate) async fn header_sticky_account_matches_request_requirements(
     let image_matches = account_accepts_request_capabilities(
         capability_requirements,
         account.response_endpoint_capability,
+        account.chat_completions_capability,
         account.image_endpoint_capability,
         account.response_image_tool_capability,
     );
@@ -2164,6 +2167,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 None,
                                 &[],
                                 &HashSet::new(),
+                                original_uri.path(),
                                 request_image_intent,
                             )
                             .await;
@@ -2195,6 +2199,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         None,
                                         &excluded_ids,
                                         &excluded_upstream_route_keys,
+                                        original_uri.path(),
                                         request_image_intent,
                                     )
                                     .await;
@@ -2727,13 +2732,14 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         &[],
                         &HashSet::new(),
                         None,
-                        prompt_cache_binding_constraint.as_ref(),
-                        conversation_override.as_ref(),
-                        true,
-                        &mut no_available_wait_deadline,
-                        pre_attempt_total_timeout_deadline,
-                        request_image_intent,
-                    )
+	                        prompt_cache_binding_constraint.as_ref(),
+	                        conversation_override.as_ref(),
+	                        true,
+	                        &mut no_available_wait_deadline,
+	                        pre_attempt_total_timeout_deadline,
+	                        original_uri.path(),
+	                        request_image_intent,
+	                    )
                     .await;
                             let (initial_account, updated_no_available_wait_deadline) =
                                 unwrap_via_pool_initial_account(
@@ -2757,6 +2763,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     state.as_ref(),
                                     &account,
                                     requested_model.as_deref(),
+                                    original_uri.path(),
                                     request_image_intent,
                                 )
                                 .await?
@@ -2774,6 +2781,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         true,
                                         &mut no_available_wait_deadline,
                                         pre_attempt_total_timeout_deadline,
+                                        original_uri.path(),
                                         request_image_intent,
                                     )
                                     .await;
@@ -2806,6 +2814,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         true,
                                         &mut no_available_wait_deadline,
                                         pre_attempt_total_timeout_deadline,
+                                        original_uri.path(),
                                         request_image_intent,
                                     )
                                     .await;
@@ -2838,6 +2847,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     true,
                                     &mut no_available_wait_deadline,
                                     pre_attempt_total_timeout_deadline,
+                                    original_uri.path(),
                                     request_image_intent,
                                 )
                                 .await;
@@ -2942,6 +2952,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             true,
                             &mut no_available_wait_deadline,
                             pre_attempt_total_timeout_deadline,
+                            original_uri.path(),
                             request_image_intent,
                         )
                         .await
@@ -2956,6 +2967,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     true,
                                     &mut no_available_wait_deadline,
                                     pre_attempt_total_timeout_deadline,
+                                    original_uri.path(),
                                     request_image_intent,
                                 )
                                 .await
@@ -3139,12 +3151,13 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             &pool_routing_reservation_key,
                                         );
                                         if let Err(route_err) =
-                                            record_pool_route_success_with_image_intent_for_attempt(
+                                            record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
                                                 &state.pool,
                                                 account.account_id,
                                                 upstream_attempt_started_at_utc,
                                                 live_body_sticky_key.as_deref(),
                                                 upstream_invoke_id.as_deref(),
+                                                original_uri.path(),
                                                 request_image_intent,
                                                 pending_pool_attempt_record
                                                     .as_ref()
@@ -3160,7 +3173,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             &pool_routing_reservation_key,
                                         );
                                         if let Err(route_err) =
-                                        record_pool_route_http_failure_with_image_intent_for_attempt(
+                                        record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
                                             &state.pool,
                                             account.account_id,
                                             &account.kind,
@@ -3173,6 +3186,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                 .as_deref()
                                                 .unwrap_or("upstream request failed"),
                                             upstream_invoke_id.as_deref(),
+                                            original_uri.path(),
                                             request_image_intent,
                                             pending_pool_attempt_record
                                                 .as_ref()
@@ -3211,6 +3225,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     live_request_contains_encrypted_content;
                                 let upstream_content_encoding_for_task =
                                     upstream_content_encoding.clone();
+                                let request_path_for_record = original_uri.path().to_string();
                                 let proxy_request_permit_for_task = proxy_request_permit;
                                 let runtime_snapshot_cleanup_guard_for_task =
                                     runtime_snapshot_cleanup_guard.take();
@@ -3353,12 +3368,13 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             &reservation_key_for_record,
                                         );
                                         if let Err(route_err) =
-                                            record_pool_route_success_with_image_intent_for_attempt(
+                                            record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
                                                 &state_for_record.pool,
                                                 account.account_id,
                                                 upstream_attempt_started_at_utc_for_record,
                                                 sticky_key_for_record.as_deref(),
                                                 invoke_id_for_record.as_deref(),
+                                                request_path_for_record.as_str(),
                                                 request_image_intent,
                                                 pending_pool_attempt_record_for_task
                                                     .as_ref()
@@ -3425,7 +3441,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             &reservation_key_for_record,
                                         );
                                         if let Err(route_err) =
-                                        record_pool_route_http_failure_with_image_intent_for_attempt(
+                                        record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
                                             &state_for_record.pool,
                                             account.account_id,
                                             &account.kind,
@@ -3436,6 +3452,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             upstream_status,
                                             &route_http_failure_message,
                                             invoke_id_for_record.as_deref(),
+                                            request_path_for_record.as_str(),
                                             request_image_intent,
                                             pending_pool_attempt_record_for_task
                                                 .as_ref()
@@ -3569,6 +3586,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     true,
                     &mut no_available_wait_deadline,
                     pre_attempt_total_timeout_deadline,
+                    original_uri.path(),
                     request_image_intent,
                 )
                 .await;
@@ -3805,18 +3823,20 @@ pub(crate) fn proxy_openai_v1_via_pool(
             );
             if pool_route_success {
                 consume_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
-                if let Err(route_err) = record_pool_route_success_with_image_intent_for_attempt(
-                    &state.pool,
-                    account.account_id,
-                    upstream_attempt_started_at_utc,
-                    sticky_key.as_deref(),
-                    upstream_invoke_id.as_deref(),
-                    request_image_intent,
-                    pending_pool_attempt_record
-                        .as_ref()
-                        .and_then(|pending| pending.attempt_id),
-                )
-                .await
+                if let Err(route_err) =
+                    record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
+                        &state.pool,
+                        account.account_id,
+                        upstream_attempt_started_at_utc,
+                        sticky_key.as_deref(),
+                        upstream_invoke_id.as_deref(),
+                        original_uri.path(),
+                        request_image_intent,
+                        pending_pool_attempt_record
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id),
+                    )
+                    .await
                 {
                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
                 }
@@ -3861,7 +3881,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
             } else {
                 release_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
                 if let Err(route_err) =
-                    record_pool_route_http_failure_with_image_intent_for_attempt(
+                    record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
                         &state.pool,
                         account.account_id,
                         &account.kind,
@@ -3873,6 +3893,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             .as_deref()
                             .unwrap_or("upstream request failed"),
                         upstream_invoke_id.as_deref(),
+                        original_uri.path(),
                         request_image_intent,
                         pending_pool_attempt_record
                             .as_ref()
@@ -3907,6 +3928,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
         let upstream_attempt_started_at_utc_for_record = upstream_attempt_started_at_utc;
         let request_contains_encrypted_content_for_task = request_contains_encrypted_content;
         let upstream_content_encoding_for_task = upstream_content_encoding.clone();
+        let request_path_for_record = original_uri.path().to_string();
         let proxy_request_permit_for_task = proxy_request_permit;
         let runtime_snapshot_cleanup_guard_for_task = runtime_snapshot_cleanup_guard.take();
         tokio::spawn(async move {
@@ -4025,18 +4047,20 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     state_for_record.as_ref(),
                     &reservation_key_for_record,
                 );
-                if let Err(route_err) = record_pool_route_success_with_image_intent_for_attempt(
-                    &state_for_record.pool,
-                    account.account_id,
-                    upstream_attempt_started_at_utc_for_record,
-                    sticky_key_for_record.as_deref(),
-                    invoke_id_for_record.as_deref(),
-                    request_image_intent,
-                    pending_pool_attempt_record_for_task
-                        .as_ref()
-                        .and_then(|pending| pending.attempt_id),
-                )
-                .await
+                if let Err(route_err) =
+                    record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
+                        &state_for_record.pool,
+                        account.account_id,
+                        upstream_attempt_started_at_utc_for_record,
+                        sticky_key_for_record.as_deref(),
+                        invoke_id_for_record.as_deref(),
+                        request_path_for_record.as_str(),
+                        request_image_intent,
+                        pending_pool_attempt_record_for_task
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id),
+                    )
+                    .await
                 {
                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
                 }
@@ -4093,7 +4117,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     &reservation_key_for_record,
                 );
                 if let Err(route_err) =
-                    record_pool_route_http_failure_with_image_intent_for_attempt(
+                    record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
                         &state_for_record.pool,
                         account.account_id,
                         &account.kind,
@@ -4103,6 +4127,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         upstream_status,
                         &route_http_failure_message,
                         invoke_id_for_record.as_deref(),
+                        request_path_for_record.as_str(),
                         request_image_intent,
                         pending_pool_attempt_record_for_task
                             .as_ref()

@@ -1796,14 +1796,17 @@ fn capability_support_failure_signal(normalized: &str) -> bool {
 pub(crate) fn response_endpoint_capability_negative_signal(message: &str) -> bool {
     let normalized = message.to_ascii_lowercase();
     capability_support_failure_signal(&normalized)
-        && [
-            "/v1/responses",
-            "responses/compact",
-            "/v1/chat/completions",
-            "chat/completions",
-        ]
-        .iter()
-        .any(|needle| normalized.contains(needle))
+        && ["/v1/responses", "responses/compact"]
+            .iter()
+            .any(|needle| normalized.contains(needle))
+}
+
+pub(crate) fn chat_completions_capability_negative_signal(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    capability_support_failure_signal(&normalized)
+        && ["/v1/chat/completions", "chat/completions"]
+            .iter()
+            .any(|needle| normalized.contains(needle))
 }
 
 pub(crate) fn response_image_tool_capability_negative_signal(message: &str) -> bool {
@@ -1844,6 +1847,30 @@ pub(crate) fn classify_response_endpoint_capability_observation(
     ) && normalized_message
         .as_deref()
         .is_some_and(response_endpoint_capability_negative_signal)
+    {
+        CapabilitySupport::Unsupported
+    } else {
+        CapabilitySupport::Unknown
+    }
+}
+
+pub(crate) fn classify_chat_completions_capability_observation(
+    status: StatusCode,
+    message: Option<&str>,
+) -> CapabilitySupport {
+    if status.is_success() {
+        return CapabilitySupport::Supported;
+    }
+    let normalized_message = message
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if matches!(
+        status,
+        StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+    ) && normalized_message
+        .as_deref()
+        .is_some_and(chat_completions_capability_negative_signal)
     {
         CapabilitySupport::Unsupported
     } else {
