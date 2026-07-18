@@ -5,6 +5,7 @@
 - Canonical spec: `docs/specs/m9p2w-installable-pwa-runtime/SPEC.md`
 - Implementation summary:
   - installable-runtime PWA 仍由 `vite-plugin-pwa` `injectManifest`、manifest、service worker、install control、Safari manual guidance、prompt-style update 与 offline shell banner 组成。
+  - install control 不再在头栏暴露常驻 button；当浏览器满足安装条件时，app shell 会自动弹出 install prompt / manual guidance，并保持窄屏居中 modal 语义。
   - Dashboard 概览离线数据改为应用层 IndexedDB snapshot store：五个固定 range 各保存最近一份成功快照，不把 `/api/*` 缓存职责塞进 service worker。
   - `DashboardActivityOverview` 已接入 `live` / `cached-offline` / `not-cached-yet` 三态；`working conversations` 明确保留在线依赖，并在离线重开时显示不可用语义。
 
@@ -12,7 +13,7 @@
 
 - Status: 已实现
 - Created: 2026-07-17
-- Last: 2026-07-17
+- Last: 2026-07-18
 
 ## 实现范围
 
@@ -60,12 +61,20 @@
   - 保持在线依赖，但在离线重开且无 SSE snapshot 时明确显示 unavailable 语义。
 - `web/tests/pwa/installable-runtime.spec.ts`
   - 覆盖 install prompt、waiting update、offline shell，以及五个 range 的 overview snapshot 离线切换与重连恢复。
+- `web/src/components/ui/dialog.tsx`
+  - 为共享 dialog 补充 `mobileLayout="centered"`，让需要真实 modal 语义的 UI 不再被默认底部抽屉样式带偏。
+- `web/src/features/app-shell/PwaInstallControl.tsx`
+  - 改为纯 dialog surface：移除 trigger button，由 app shell 在 `prompt` / `manual-ios` 模式下自动拉起安装提示。
+- `web/src/features/app-shell/AppLayout.tsx`
+  - 头栏不再渲染 install/status button，改为按当前 PWA 安装状态自动展示一次性 prompt / guidance。
+- `web/src/features/app-shell/PwaInstallControl.test.tsx`
+  - 锁定自动安装提示的“无 trigger + 居中 modal + confirm action”契约，不允许回退成头栏按钮。
 
 ## Visual Evidence
 
 - Canonical owner-facing captures live in `docs/specs/m9p2w-installable-pwa-runtime/SPEC.md#visual-evidence`.
 - Captured artifacts:
-  - `./assets/pwa-install-prompt-desktop.png`
+  - `./assets/pwa-install-prompt-mobile.png`
   - `./assets/pwa-safari-manual-desktop.png`
   - `./assets/pwa-update-banner-desktop.png`
   - `./assets/pwa-offline-banner-desktop.png`

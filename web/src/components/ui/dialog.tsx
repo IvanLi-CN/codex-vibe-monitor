@@ -21,6 +21,8 @@ function DialogPortal({
 
 const DialogClose = DialogPrimitive.Close;
 
+type DialogMobileLayout = "sheet" | "centered";
+
 const DialogOverlay = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Overlay>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Overlay>
@@ -42,11 +44,16 @@ const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
     container?: HTMLElement | null;
+    mobileLayout?: DialogMobileLayout;
   }
->(({ className, children, container, ...props }, ref) => {
+>(({ className, children, container, mobileLayout = "sheet", ...props }, ref) => {
   const resolvedContainer = useResolvedOverlayContainer(container);
   const { hostElement, ref: hostRef } = useOverlayHostElement<HTMLDivElement>(undefined);
   const hostValue = hostElement ?? (container === undefined ? resolvedContainer : container);
+  const mobileLayoutClassName =
+    mobileLayout === "centered"
+      ? "left-1/2 right-auto bottom-auto top-1/2 max-h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-[34rem] -translate-x-1/2 -translate-y-1/2 rounded-[1.75rem] border px-0 pb-0 pt-0"
+      : "inset-x-0 bottom-0 top-auto max-h-[min(100dvh-0.5rem,100dvh)] w-full max-w-full translate-x-0 translate-y-0 rounded-t-[1.75rem] rounded-b-none border border-x-0 border-b-0 px-0 pb-[env(safe-area-inset-bottom)] pt-0";
   const contentRef = React.useCallback(
     (node: React.ElementRef<typeof DialogPrimitive.Content> | null) => {
       if (typeof ref === "function") {
@@ -65,9 +72,10 @@ const DialogContent = React.forwardRef<
         <OverlayHostProvider value={hostValue}>
           <DialogPrimitive.Content
             ref={contentRef}
+            data-mobile-layout={mobileLayout}
             className={cn(
-              "dialog-surface pointer-events-auto fixed inset-x-0 bottom-0 top-auto max-h-[min(100dvh-0.5rem,100dvh)] w-full max-w-full translate-x-0 translate-y-0",
-              "rounded-t-[1.75rem] rounded-b-none border border-x-0 border-b-0 px-0 pb-[env(safe-area-inset-bottom)] pt-0 outline-none",
+              "dialog-surface pointer-events-auto fixed outline-none",
+              mobileLayoutClassName,
               "data-[state=open]:animate-in data-[state=closed]:animate-out",
               "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
               "data-[state=closed]:slide-out-to-bottom-6 data-[state=open]:slide-in-from-bottom-6",

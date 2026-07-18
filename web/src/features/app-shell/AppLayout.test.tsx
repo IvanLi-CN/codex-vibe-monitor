@@ -135,6 +135,8 @@ vi.mock("../../i18n", () => ({
           return "切换语言";
         case "app.pwa.install.promptButton":
           return "安装应用";
+        case "app.pwa.install.laterButton":
+          return "稍后";
         case "app.pwa.install.manualButton":
           return "添加到主屏幕";
         case "app.pwa.install.installedButton":
@@ -151,6 +153,12 @@ vi.mock("../../i18n", () => ({
           return "离线壳待完成";
         case "app.pwa.install.offlineChip":
           return "当前离线";
+        case "app.pwa.install.promptTitle":
+          return "安装 Codex Vibe Monitor";
+        case "app.pwa.install.promptDescription":
+          return "安装为独立应用窗口";
+        case "app.pwa.install.promptHint":
+          return "离线时仍可打开壳层";
         case "app.pwa.install.manualTitle":
           return "添加到主屏幕";
         case "app.pwa.install.manualDescription":
@@ -330,6 +338,7 @@ function render(initialEntry = "/dashboard") {
 
 describe("AppLayout", () => {
   it("uses the compact hamburger menu only through the mobile breakpoint", async () => {
+    const promptInstall = vi.fn();
     hookMocks.useUpdateAvailable.mockReturnValue({
       currentVersion: null,
       availableVersion: null,
@@ -359,7 +368,7 @@ describe("AppLayout", () => {
         availableVersion: null,
         visible: false,
       },
-      promptInstall: vi.fn(),
+      promptInstall,
       applyUpdate: vi.fn(),
       dismissUpdate: vi.fn(),
     });
@@ -375,13 +384,11 @@ describe("AppLayout", () => {
     const mobileMenuButton = host?.querySelector(
       'button[aria-label="app.nav.openMenu"]',
     ) as HTMLButtonElement | null;
-    const installButton = host?.querySelector(
-      '[data-testid="pwa-install-control"]',
-    ) as HTMLButtonElement | null;
     const dashboardLink = host?.querySelector('a[href="/dashboard"]');
     const systemLink = host?.querySelector('a[href="/system"]');
     const logoMark = host?.querySelector('[data-testid="app-header-logo-mark"]');
     const logoImage = host?.querySelector('img[src="/brand-mark.svg"][alt="product icon"]');
+    const installDialog = document.body.querySelector('[data-testid="pwa-install-dialog"]');
 
     expect(navGroup).not.toBeNull();
     expect(desktopNavigation?.className).toContain("hidden");
@@ -394,7 +401,10 @@ describe("AppLayout", () => {
     expect(logoMark?.className).toContain("h-10");
     expect(logoMark?.className).toContain("w-10");
     expect(logoImage).not.toBeNull();
-    expect(installButton?.getAttribute("data-install-mode")).toBe("prompt");
+    expect(host?.querySelector('[data-testid="pwa-install-control"]')).toBeNull();
+    expect(installDialog?.getAttribute("data-install-mode")).toBe("prompt");
+    expect(installDialog?.textContent).toContain("安装 Codex Vibe Monitor");
+    expect(installDialog?.textContent).toContain("稍后");
 
     expect(mobileMenuButton).not.toBeNull();
     expect(mobileMenuButton?.className).toContain("desktop:!hidden");
@@ -404,6 +414,15 @@ describe("AppLayout", () => {
     expect(host?.querySelector("#app-mobile-navigation")).not.toBeNull();
     expect(host?.querySelector('a[href="/account-pool/groups"]')).not.toBeNull();
     expect(host?.querySelector('a[href="/system/tasks"]')).not.toBeNull();
+
+    const installConfirmButton = document.body.querySelector(
+      '[data-testid="pwa-install-confirm"]',
+    ) as HTMLButtonElement | null;
+    await act(async () => {
+      installConfirmButton?.click();
+      await Promise.resolve();
+    });
+    expect(promptInstall).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the header logo mark active across bursty updates until the recent-activity window expires", async () => {
