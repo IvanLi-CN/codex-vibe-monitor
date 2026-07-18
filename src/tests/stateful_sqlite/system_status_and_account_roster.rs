@@ -872,6 +872,9 @@ pub(crate) async fn test_state_from_config_with_pool_no_available_wait(
         pricing_settings_update_lock: Arc::new(Mutex::new(())),
         pricing_catalog: Arc::new(RwLock::new(pricing_catalog)),
         prompt_cache_conversation_cache,
+        dashboard_activity_snapshot_cache: Arc::new(Mutex::new(
+            DashboardActivitySnapshotCacheState::default(),
+        )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
@@ -930,6 +933,7 @@ pub(crate) fn clone_state_with_upstream_accounts(
         pricing_settings_update_lock: state.pricing_settings_update_lock.clone(),
         pricing_catalog: state.pricing_catalog.clone(),
         prompt_cache_conversation_cache: state.prompt_cache_conversation_cache.clone(),
+        dashboard_activity_snapshot_cache: state.dashboard_activity_snapshot_cache.clone(),
         maintenance_stats_cache: state.maintenance_stats_cache.clone(),
         system_status_cache: state.system_status_cache.clone(),
         pool_routing_reservations: state.pool_routing_reservations.clone(),
@@ -982,6 +986,7 @@ pub(crate) fn clone_state_with_pool_group_429_retry_delay_override(
         pricing_settings_update_lock: state.pricing_settings_update_lock.clone(),
         pricing_catalog: state.pricing_catalog.clone(),
         prompt_cache_conversation_cache: state.prompt_cache_conversation_cache.clone(),
+        dashboard_activity_snapshot_cache: state.dashboard_activity_snapshot_cache.clone(),
         maintenance_stats_cache: state.maintenance_stats_cache.clone(),
         system_status_cache: state.system_status_cache.clone(),
         pool_routing_reservations: state.pool_routing_reservations.clone(),
@@ -1050,6 +1055,9 @@ pub(crate) async fn test_state_from_existing_pool(
         pricing_catalog: Arc::new(RwLock::new(pricing_catalog)),
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
+        )),
+        dashboard_activity_snapshot_cache: Arc::new(Mutex::new(
+            DashboardActivitySnapshotCacheState::default(),
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),

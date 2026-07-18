@@ -4155,6 +4155,9 @@ pub(crate) async fn test_app_state_with_config_and_parallelism(
             in_flight: HashMap::new(),
             generation: 0,
         })),
+        dashboard_activity_snapshot_cache: Arc::new(Mutex::new(
+            DashboardActivitySnapshotCacheState::default(),
+        )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),

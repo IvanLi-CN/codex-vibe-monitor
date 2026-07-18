@@ -5175,6 +5175,21 @@ impl UsageBreakdownAccumulator {
         }
     }
 
+    fn add_coarse_rollup_totals(
+        &mut self,
+        cache_write_tokens: i64,
+        cache_read_tokens: i64,
+        output_tokens: i64,
+        total_cost: f64,
+    ) {
+        self.cache_write_tokens += cache_write_tokens.max(0);
+        self.cache_read_tokens += cache_read_tokens.max(0);
+        self.output_tokens += output_tokens.max(0);
+        if total_cost > 0.0 {
+            self.add_cost_row(Some(total_cost), [None, None, None, None, None]);
+        }
+    }
+
     fn merge_response(&mut self, response: &UsageBreakdownResponse) {
         self.cache_write_tokens += response.cache_write_tokens;
         self.cache_read_tokens += response.cache_read_tokens;
@@ -5667,6 +5682,48 @@ struct UpstreamAccountActivityAggregateRow {
     latest_avg_total_ms: Option<f64>,
 }
 
+fn merge_upstream_account_activity_aggregate_row(
+    entry: &mut UpstreamAccountActivityAccumulator,
+    row: &UpstreamAccountActivityAggregateRow,
+) {
+    merge_latest_optional_timestamp(
+        &mut entry.latest_conversation_created_at,
+        row.latest_conversation_created_at.clone(),
+    );
+    merge_latest_optional_timestamp(
+        &mut entry.last_invocation_at,
+        row.last_invocation_at.clone(),
+    );
+    entry.request_count += row.request_count;
+    entry.success_count += row.success_count;
+    entry.failure_count += row.failure_count;
+    entry.non_success_count += row.non_success_count;
+    entry.total_tokens += row.total_tokens;
+    entry.success_tokens += row.success_tokens;
+    entry.non_success_tokens += row.non_success_tokens;
+    entry.failure_tokens += row.failure_tokens;
+    entry.failure_cost += row.failure_cost;
+    entry.non_success_cost += row.non_success_cost;
+    entry.cache_input_tokens += row.cache_input_tokens;
+    entry.total_cost += row.total_cost;
+    entry.first_response_byte_total_sample_count += row.first_response_byte_total_sample_count;
+    entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
+    entry.total_latency_sample_count += row.total_latency_sample_count;
+    entry.total_latency_sum_ms += row.total_latency_sum_ms;
+    merge_latest_timed_metric(
+        &mut entry.latest_first_response_byte_total_at,
+        &mut entry.latest_first_response_byte_total_ms,
+        row.latest_first_response_byte_total_at.clone(),
+        row.latest_first_response_byte_total_ms,
+    );
+    merge_latest_timed_metric(
+        &mut entry.latest_avg_total_at,
+        &mut entry.latest_avg_total_ms,
+        row.latest_avg_total_at.clone(),
+        row.latest_avg_total_ms,
+    );
+}
+
 #[derive(Debug, FromRow)]
 struct UpstreamAccountPromptCacheCreatedAtRow {
     upstream_account_id: Option<i64>,
@@ -5959,11 +6016,87 @@ struct RuntimeRecentAccountFallbackRow {
     upstream_account_plan_type: Option<String>,
 }
 
+const DASHBOARD_ACTIVITY_EXCLUDED_IDS_INLINE_LIMIT: usize = 500;
+const DASHBOARD_ACTIVITY_EXCLUDED_IDS_TABLE: &str = "dashboard_activity_excluded_invocation_ids";
+const DASHBOARD_ACTIVITY_PREVIEW_ID_HYDRATION_CHUNK_SIZE: usize = 400;
+
+#[derive(Clone, Copy)]
+enum DashboardActivityExcludedInvocationIdsFilter<'a> {
+    None,
+    Inline(&'a HashSet<i64>),
+    Table,
+}
+
+async fn prepare_dashboard_activity_excluded_invocation_ids_filter<'a>(
+    pool: &Pool<Sqlite>,
+    exclude_invocation_ids: Option<&'a HashSet<i64>>,
+) -> Result<DashboardActivityExcludedInvocationIdsFilter<'a>, ApiError> {
+    let Some(exclude_invocation_ids) =
+        exclude_invocation_ids.filter(|exclude_invocation_ids| !exclude_invocation_ids.is_empty())
+    else {
+        return Ok(DashboardActivityExcludedInvocationIdsFilter::None);
+    };
+    if exclude_invocation_ids.len() <= DASHBOARD_ACTIVITY_EXCLUDED_IDS_INLINE_LIMIT {
+        return Ok(DashboardActivityExcludedInvocationIdsFilter::Inline(
+            exclude_invocation_ids,
+        ));
+    }
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS dashboard_activity_excluded_invocation_ids (\
+             id INTEGER PRIMARY KEY\
+         )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("DELETE FROM dashboard_activity_excluded_invocation_ids")
+        .execute(pool)
+        .await?;
+
+    let ids = exclude_invocation_ids.iter().copied().collect::<Vec<_>>();
+    for chunk in ids.chunks(DASHBOARD_ACTIVITY_EXCLUDED_IDS_INLINE_LIMIT) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "INSERT OR IGNORE INTO dashboard_activity_excluded_invocation_ids (id) ",
+        );
+        query.push_values(chunk.iter().copied(), |mut row, id| {
+            row.push_bind(id);
+        });
+        query.build().execute(pool).await?;
+    }
+
+    Ok(DashboardActivityExcludedInvocationIdsFilter::Table)
+}
+
+fn push_excluded_invocation_ids_filter(
+    query: &mut QueryBuilder<Sqlite>,
+    exclude_invocation_ids: DashboardActivityExcludedInvocationIdsFilter<'_>,
+) {
+    match exclude_invocation_ids {
+        DashboardActivityExcludedInvocationIdsFilter::None => {}
+        DashboardActivityExcludedInvocationIdsFilter::Inline(exclude_invocation_ids) => {
+            query.push(" AND id NOT IN (");
+            {
+                let mut separated = query.separated(", ");
+                for id in exclude_invocation_ids {
+                    separated.push_bind(*id);
+                }
+            }
+            query.push(")");
+        }
+        DashboardActivityExcludedInvocationIdsFilter::Table => {
+            query.push(" AND id NOT IN (SELECT id FROM ");
+            query.push(DASHBOARD_ACTIVITY_EXCLUDED_IDS_TABLE);
+            query.push(")");
+        }
+    }
+}
+
 async fn query_live_upstream_account_activity_aggregate_rows(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
     use_attempt_fallback: bool,
+    exclude_invocation_ids: DashboardActivityExcludedInvocationIdsFilter<'_>,
 ) -> Result<Vec<UpstreamAccountActivityAggregateRow>, ApiError> {
     let started_at = Instant::now();
     let upstream_account_id_sql = if use_attempt_fallback {
@@ -6025,6 +6158,7 @@ async fn query_live_upstream_account_activity_aggregate_rows(
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
+    push_excluded_invocation_ids_filter(&mut query, exclude_invocation_ids);
     query.push(" AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')");
     query.push(format!(
         r#"
@@ -6141,6 +6275,7 @@ async fn query_live_upstream_account_prompt_cache_created_at_rows(
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
     use_attempt_fallback: bool,
+    exclude_invocation_ids: DashboardActivityExcludedInvocationIdsFilter<'_>,
 ) -> Result<Vec<UpstreamAccountPromptCacheCreatedAtRow>, ApiError> {
     let upstream_account_id_sql = if use_attempt_fallback {
         invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations")
@@ -6168,6 +6303,7 @@ async fn query_live_upstream_account_prompt_cache_created_at_rows(
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
+    push_excluded_invocation_ids_filter(&mut query, exclude_invocation_ids);
     query.push(" GROUP BY upstream_account_id, prompt_cache_key");
     query
         .build_query_as::<UpstreamAccountPromptCacheCreatedAtRow>()
@@ -6182,6 +6318,7 @@ async fn query_live_upstream_account_usage_breakdown_rows(
     range: ExactUtcRange,
     has_cost_breakdown_columns: bool,
     use_attempt_fallback: bool,
+    exclude_invocation_ids: DashboardActivityExcludedInvocationIdsFilter<'_>,
 ) -> Result<Vec<UpstreamAccountUsageBreakdownAggregateRow>, ApiError> {
     let started_at = Instant::now();
     let upstream_account_id_sql = if use_attempt_fallback {
@@ -6266,6 +6403,7 @@ async fn query_live_upstream_account_usage_breakdown_rows(
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
+    push_excluded_invocation_ids_filter(&mut query, exclude_invocation_ids);
     query.push(" AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')");
     query.push(" GROUP BY upstream_account_id, model, reasoning_effort");
     let rows = query
@@ -6361,17 +6499,31 @@ async fn query_live_model_performance_duration_overrides(
     Ok(union_state.into_overrides())
 }
 
+#[derive(Debug, Default)]
+struct QueryCompletedInvocationArchiveActivityAggregateRows {
+    aggregates: Vec<UpstreamAccountActivityAggregateRow>,
+    usage_breakdowns: Vec<UpstreamAccountUsageBreakdownAggregateRow>,
+    skipped_materialized_ranges: Vec<ExactUtcRange>,
+}
+
+fn dashboard_activity_archive_row_overlap_range(
+    archive_row: &crate::stats::ArchiveBatchPathRow,
+    requested_range: ExactUtcRange,
+) -> Option<ExactUtcRange> {
+    let coverage_start =
+        parse_to_utc_datetime(archive_row.coverage_start_at()?).unwrap_or(requested_range.start);
+    let coverage_end =
+        parse_to_utc_datetime(archive_row.coverage_end_at()?).unwrap_or(requested_range.end);
+    let start = coverage_start.max(requested_range.start);
+    let end = coverage_end.min(requested_range.end);
+    (start < end).then_some(ExactUtcRange { start, end })
+}
+
 async fn query_completed_invocation_archive_activity_aggregate_rows(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
-) -> Result<
-    (
-        Vec<UpstreamAccountActivityAggregateRow>,
-        Vec<UpstreamAccountUsageBreakdownAggregateRow>,
-    ),
-    ApiError,
-> {
+) -> Result<QueryCompletedInvocationArchiveActivityAggregateRows, ApiError> {
     let archive_rows = crate::stats::load_completed_invocation_archive_paths_in_range(
         pool,
         Some((range.start, range.end)),
@@ -6379,6 +6531,7 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
     .await?;
     let mut aggregates = Vec::new();
     let mut usage_breakdowns = Vec::new();
+    let mut skipped_materialized_ranges = Vec::new();
     let mut earliest_created_at_by_prompt_cache_key = HashMap::<String, String>::new();
     let mut prompt_cache_keys_by_account = HashMap::<Option<i64>, HashSet<String>>::new();
     for archive_row in archive_rows {
@@ -6388,17 +6541,37 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
         )
         .await?
         else {
+            if archive_row.has_materialized_historical_rollups()
+                && let Some(skipped_range) =
+                    dashboard_activity_archive_row_overlap_range(&archive_row, range)
+            {
+                skipped_materialized_ranges.push(skipped_range);
+            }
             continue;
         };
         let has_cost_breakdown_columns =
             crate::stats::sqlite_table_has_column(&archive_pool, "codex_invocations", "cost_input")
                 .await?;
+        let overlapping_live_ids = query_archive_upstream_account_activity_overlapping_live_ids(
+            pool,
+            &archive_pool,
+            source_scope,
+            range,
+        )
+        .await?;
+        let exclude_invocation_ids_filter =
+            prepare_dashboard_activity_excluded_invocation_ids_filter(
+                &archive_pool,
+                Some(&overlapping_live_ids),
+            )
+            .await?;
         aggregates.extend(
             query_live_upstream_account_activity_aggregate_rows(
                 &archive_pool,
                 source_scope,
                 range,
                 false,
+                exclude_invocation_ids_filter,
             )
             .await?,
         );
@@ -6407,6 +6580,7 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
             source_scope,
             range,
             false,
+            exclude_invocation_ids_filter,
         )
         .await?
         {
@@ -6435,6 +6609,7 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
                 range,
                 has_cost_breakdown_columns,
                 false,
+                exclude_invocation_ids_filter,
             )
             .await?,
         );
@@ -6463,7 +6638,11 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
             aggregate.latest_conversation_created_at = Some(latest_created_at.clone());
         }
     }
-    Ok((aggregates, usage_breakdowns))
+    Ok(QueryCompletedInvocationArchiveActivityAggregateRows {
+        aggregates,
+        usage_breakdowns,
+        skipped_materialized_ranges,
+    })
 }
 
 #[derive(Debug, FromRow)]
@@ -6623,22 +6802,17 @@ pub(crate) async fn query_live_upstream_account_activity_preview_rows(
     .await
 }
 
-async fn query_live_upstream_account_activity_preview_rows_with_limit(
-    pool: &Pool<Sqlite>,
+fn build_upstream_account_activity_preview_select(
+    query: &mut QueryBuilder<Sqlite>,
     source_scope: InvocationSourceScope,
-    range: ExactUtcRange,
-    upstream_account_id: Option<Option<i64>>,
-    limit: Option<usize>,
-    in_progress_only: bool,
-) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, ApiError> {
-    let started_at = Instant::now();
+) {
     let resolved_upstream_account_id_sql =
         invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
     let conversation_created_at_sql = format!(
         "COALESCE({}, occurred_at)",
         prompt_cache_conversation_created_at_sql(INVOCATION_PROMPT_CACHE_KEY_SQL, source_scope)
     );
-    let mut query = QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, ");
+    query.push("SELECT id, invoke_id, ");
     query
         .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
         .push(" AS prompt_cache_key, occurred_at, ")
@@ -6700,11 +6874,24 @@ async fn query_live_upstream_account_activity_preview_rows_with_limit(
         .push(INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL)
         .push(" AS downstream_error_message, ")
         .push(INVOCATION_ENDPOINT_SQL)
-        .push(
-            " AS endpoint \
-             FROM codex_invocations \
-             WHERE occurred_at >= ",
-        )
+        .push(" AS endpoint FROM codex_invocations");
+}
+
+async fn query_live_upstream_account_activity_preview_rows_with_limit(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    upstream_account_id: Option<Option<i64>>,
+    limit: Option<usize>,
+    in_progress_only: bool,
+) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, ApiError> {
+    let started_at = Instant::now();
+    let resolved_upstream_account_id_sql =
+        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let mut query = QueryBuilder::<Sqlite>::new("");
+    build_upstream_account_activity_preview_select(&mut query, source_scope);
+    query
+        .push(" WHERE occurred_at >= ")
         .push_bind(db_occurred_at_lower_bound(range.start))
         .push(" AND occurred_at < ")
         .push_bind(db_occurred_at_upper_bound(range.end));
@@ -6755,6 +6942,193 @@ async fn query_live_upstream_account_activity_preview_rows_with_limit(
         );
     }
     Ok(rows)
+}
+
+async fn query_live_upstream_account_activity_preview_candidate_ids_per_account(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    limit_per_account: usize,
+) -> Result<Vec<i64>, ApiError> {
+    let resolved_upstream_account_id_sql =
+        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "WITH ranked AS (\
+           SELECT id \
+             FROM (\
+               SELECT id, ROW_NUMBER() OVER (PARTITION BY ",
+    );
+    query
+        .push(resolved_upstream_account_id_sql.as_str())
+        .push(
+            " ORDER BY occurred_at DESC, id DESC) AS account_rank \
+               FROM codex_invocations \
+               WHERE occurred_at >= ",
+        )
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(range.end));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query
+        .push(") WHERE account_rank <= ")
+        .push_bind(limit_per_account as i64)
+        .push(") SELECT id FROM ranked");
+    Ok(query.build_query_scalar::<i64>().fetch_all(pool).await?)
+}
+
+async fn query_live_upstream_account_activity_preview_rows_by_ids(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    ids: &[i64],
+    operation: &'static str,
+) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, ApiError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let started_at = Instant::now();
+    let mut rows = Vec::with_capacity(ids.len());
+    for chunk in ids.chunks(DASHBOARD_ACTIVITY_PREVIEW_ID_HYDRATION_CHUNK_SIZE) {
+        let mut query = QueryBuilder::<Sqlite>::new("");
+        build_upstream_account_activity_preview_select(&mut query, source_scope);
+        query.push(" WHERE id IN (");
+        {
+            let mut separated = query.separated(", ");
+            for id in chunk {
+                separated.push_bind(*id);
+            }
+            separated.push_unseparated(")");
+        }
+        query.push(" ORDER BY occurred_at DESC, id DESC");
+
+        rows.extend(
+            query
+                .build_query_as::<UpstreamAccountInvocationPreviewRow>()
+                .fetch_all(pool)
+                .await?,
+        );
+    }
+    rows.sort_by(|left, right| {
+        right
+            .occurred_at
+            .cmp(&left.occurred_at)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    if elapsed_ms >= 1_000 {
+        tracing::warn!(
+            endpoint = "/api/stats/upstream-account-activity",
+            operation,
+            ?source_scope,
+            selected_preview_row_count = ids.len(),
+            row_count = rows.len(),
+            elapsed_ms,
+            "slow upstream-account activity preview hydration"
+        );
+    }
+    Ok(rows)
+}
+
+async fn query_live_upstream_account_activity_preview_rows_per_account_limit(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    limit_per_account: usize,
+) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, ApiError> {
+    let ids = query_live_upstream_account_activity_preview_candidate_ids_per_account(
+        pool,
+        source_scope,
+        range,
+        limit_per_account,
+    )
+    .await?;
+    query_live_upstream_account_activity_preview_rows_by_ids(
+        pool,
+        source_scope,
+        &ids,
+        "live_preview_rows_per_account_limit",
+    )
+    .await
+}
+
+async fn query_live_upstream_account_activity_existing_invocation_ids(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    ids: &[i64],
+) -> Result<HashSet<i64>, ApiError> {
+    if ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let mut existing_ids = HashSet::new();
+    for chunk in ids.chunks(DASHBOARD_ACTIVITY_PREVIEW_ID_HYDRATION_CHUNK_SIZE) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT id FROM codex_invocations \
+             WHERE id IN (",
+        );
+        {
+            let mut separated = query.separated(", ");
+            for id in chunk {
+                separated.push_bind(*id);
+            }
+            separated.push_unseparated(")");
+        }
+        if source_scope == InvocationSourceScope::ProxyOnly {
+            query.push(" AND source = ").push_bind(SOURCE_PROXY);
+        }
+        existing_ids.extend(query.build_query_scalar::<i64>().fetch_all(pool).await?);
+    }
+    Ok(existing_ids)
+}
+
+async fn query_archive_upstream_account_activity_overlapping_live_ids(
+    live_pool: &Pool<Sqlite>,
+    archive_pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+) -> Result<HashSet<i64>, ApiError> {
+    let mut overlapping_ids = HashSet::new();
+    let mut cursor_id = i64::MIN;
+    loop {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT id FROM codex_invocations \
+             WHERE id > ",
+        );
+        query
+            .push_bind(cursor_id)
+            .push(" AND occurred_at >= ")
+            .push_bind(db_occurred_at_lower_bound(range.start))
+            .push(" AND occurred_at < ")
+            .push_bind(db_occurred_at_upper_bound(range.end));
+        if source_scope == InvocationSourceScope::ProxyOnly {
+            query.push(" AND source = ").push_bind(SOURCE_PROXY);
+        }
+        query
+            .push(" ORDER BY id LIMIT ")
+            .push_bind(DASHBOARD_ACTIVITY_PREVIEW_ID_HYDRATION_CHUNK_SIZE as i64);
+        let ids = query
+            .build_query_scalar::<i64>()
+            .fetch_all(archive_pool)
+            .await?;
+        let Some(last_id) = ids.last().copied() else {
+            break;
+        };
+        cursor_id = last_id;
+        overlapping_ids.extend(
+            query_live_upstream_account_activity_existing_invocation_ids(
+                live_pool,
+                source_scope,
+                &ids,
+            )
+            .await?,
+        );
+        if ids.len() < DASHBOARD_ACTIVITY_PREVIEW_ID_HYDRATION_CHUNK_SIZE {
+            break;
+        }
+    }
+    Ok(overlapping_ids)
 }
 
 async fn query_runtime_recent_account_fallback_rows(
@@ -6950,6 +7324,40 @@ async fn overlay_runtime_terminal_upstream_account_activity_preview_rows(
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
 ) -> Result<(), ApiError> {
+    let terminal_rows =
+        load_dashboard_activity_runtime_terminal_preview_rows(state, source_scope, range).await?;
+    if terminal_rows.is_empty() {
+        return Ok(());
+    }
+
+    let mut rows_by_key = rows
+        .drain(..)
+        .map(|row| ((row.invoke_id.clone(), row.occurred_at.clone()), row))
+        .collect::<HashMap<_, _>>();
+    for mut row in terminal_rows {
+        let key = (row.invoke_id.clone(), row.occurred_at.clone());
+        if let Some(existing) = rows_by_key.get(&key) {
+            if row.upstream_account_id.is_none() {
+                row.upstream_account_id = existing.upstream_account_id;
+            }
+            if row.upstream_account_name.is_none() {
+                row.upstream_account_name = existing.upstream_account_name.clone();
+            }
+            if row.upstream_account_plan_type.is_none() {
+                row.upstream_account_plan_type = existing.upstream_account_plan_type.clone();
+            }
+        }
+        rows_by_key.insert(key, row);
+    }
+    rows.extend(rows_by_key.into_values());
+    Ok(())
+}
+
+async fn load_dashboard_activity_runtime_terminal_preview_rows(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, ApiError> {
     let mut terminal_rows = Vec::new();
     for record in state.proxy_runtime_invocations.snapshot() {
         if matches!(
@@ -6971,7 +7379,7 @@ async fn overlay_runtime_terminal_upstream_account_activity_preview_rows(
         }
     }
     if terminal_rows.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let fallback_keys = terminal_rows
@@ -6986,23 +7394,8 @@ async fn overlay_runtime_terminal_upstream_account_activity_preview_rows(
             .map(|row| ((row.invoke_id.clone(), row.occurred_at.clone()), row))
             .collect::<HashMap<_, _>>();
 
-    let mut rows_by_key = rows
-        .drain(..)
-        .map(|row| ((row.invoke_id.clone(), row.occurred_at.clone()), row))
-        .collect::<HashMap<_, _>>();
-    for mut row in terminal_rows {
+    for row in &mut terminal_rows {
         let key = (row.invoke_id.clone(), row.occurred_at.clone());
-        if let Some(existing) = rows_by_key.get(&key) {
-            if row.upstream_account_id.is_none() {
-                row.upstream_account_id = existing.upstream_account_id;
-            }
-            if row.upstream_account_name.is_none() {
-                row.upstream_account_name = existing.upstream_account_name.clone();
-            }
-            if row.upstream_account_plan_type.is_none() {
-                row.upstream_account_plan_type = existing.upstream_account_plan_type.clone();
-            }
-        }
         if let Some(fallback) = fallback_rows.get(&key) {
             if row.upstream_account_id.is_none() {
                 row.upstream_account_id = fallback.upstream_account_id;
@@ -7014,10 +7407,9 @@ async fn overlay_runtime_terminal_upstream_account_activity_preview_rows(
                 row.upstream_account_plan_type = fallback.upstream_account_plan_type.clone();
             }
         }
-        rows_by_key.insert(key, row);
     }
-    rows.extend(rows_by_key.into_values());
-    Ok(())
+
+    Ok(terminal_rows)
 }
 
 pub(crate) async fn load_usage_breakdown_for_range(
@@ -7379,14 +7771,17 @@ fn dashboard_live_snapshot_in_progress_counts(
 }
 
 pub(crate) const DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES: i64 = 5;
+const DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS: u64 = 2;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct DashboardActivitySnapshot {
     range: String,
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
     accounts: Vec<DashboardActivityAccountResponse>,
     summary: DashboardActivitySummaryResponse,
+    materialized_archive_fallback_totals: StatsTotals,
+    materialized_archive_details_limited: bool,
 }
 
 #[cfg(test)]
@@ -7405,6 +7800,1116 @@ impl DashboardActivitySnapshot {
     pub(crate) fn summary(&self) -> &DashboardActivitySummaryResponse {
         &self.summary
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DashboardActivitySnapshotCacheOutcome {
+    cache_hit_or_miss: &'static str,
+    coalesced_waiter_count: usize,
+    db_build_elapsed_ms: u64,
+}
+
+fn dashboard_activity_build_scope(include_accounts: bool, _include_recent: bool) -> &'static str {
+    if !include_accounts {
+        "summary_only"
+    } else {
+        "full"
+    }
+}
+
+fn dashboard_activity_stats_totals_from_aggregate_rows(
+    rows: &[UpstreamAccountActivityAggregateRow],
+) -> StatsTotals {
+    let mut totals = StatsTotals::default();
+    for row in rows {
+        totals.total_count += row.request_count;
+        totals.success_count += row.success_count;
+        totals.failure_count += row.failure_count;
+        totals.total_cost += row.total_cost;
+        totals.total_tokens += row.total_tokens;
+        totals.non_success_cost += row.non_success_cost;
+    }
+    totals
+}
+
+fn dashboard_activity_stats_totals_subtract(left: StatsTotals, right: StatsTotals) -> StatsTotals {
+    StatsTotals {
+        total_count: left.total_count.saturating_sub(right.total_count).max(0),
+        success_count: left
+            .success_count
+            .saturating_sub(right.success_count)
+            .max(0),
+        failure_count: left
+            .failure_count
+            .saturating_sub(right.failure_count)
+            .max(0),
+        total_cost: (left.total_cost - right.total_cost).max(0.0),
+        total_tokens: left.total_tokens.saturating_sub(right.total_tokens).max(0),
+        non_success_cost: (left.non_success_cost - right.non_success_cost).max(0.0),
+    }
+}
+
+fn dashboard_activity_stats_totals_has_values(totals: StatsTotals) -> bool {
+    totals.total_count > 0
+        || totals.success_count > 0
+        || totals.failure_count > 0
+        || totals.total_cost > 0.0
+        || totals.total_tokens > 0
+        || totals.non_success_cost > 0.0
+}
+
+async fn dashboard_activity_materialized_archive_fallback_totals(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    skipped_materialized_ranges: Vec<ExactUtcRange>,
+) -> Result<StatsTotals, ApiError> {
+    let mut fallback_totals = StatsTotals::default();
+    for skipped_range in skipped_materialized_ranges {
+        let rollup_totals = query_hourly_backed_summary_range(
+            state,
+            skipped_range.start,
+            skipped_range.end,
+            source_scope,
+        )
+        .await?;
+        let live_totals = dashboard_activity_stats_totals_from_aggregate_rows(
+            &query_live_upstream_account_activity_aggregate_rows(
+                &state.pool,
+                source_scope,
+                skipped_range,
+                true,
+                DashboardActivityExcludedInvocationIdsFilter::None,
+            )
+            .await?,
+        );
+        fallback_totals = fallback_totals.add(dashboard_activity_stats_totals_subtract(
+            rollup_totals,
+            live_totals,
+        ));
+    }
+    Ok(fallback_totals)
+}
+
+fn dashboard_activity_historical_live_gap_ranges(
+    range: ExactUtcRange,
+    retention_cutoff: DateTime<Utc>,
+) -> Result<Vec<ExactUtcRange>, ApiError> {
+    if range.start >= retention_cutoff {
+        return Ok(Vec::new());
+    }
+
+    let full_hour_start_epoch = ceil_hour_epoch(range.start.timestamp());
+    let full_hour_end_epoch = crate::stats::align_bucket_epoch(range.end.timestamp(), 3_600, 0);
+    let full_hour_start = Utc
+        .timestamp_opt(full_hour_start_epoch, 0)
+        .single()
+        .ok_or_else(|| ApiError::from(anyhow!("invalid dashboard activity gap start epoch")))?;
+    let full_hour_end = Utc
+        .timestamp_opt(full_hour_end_epoch, 0)
+        .single()
+        .ok_or_else(|| ApiError::from(anyhow!("invalid dashboard activity gap end epoch")))?;
+
+    let mut gap_ranges = Vec::new();
+    if let Some(gap) = exact_utc_range(
+        range.start,
+        range.end.min(full_hour_start).min(retention_cutoff),
+    )? {
+        gap_ranges.push(gap);
+    }
+    if let Some(gap) = exact_utc_range(
+        range.start.max(full_hour_end),
+        range.end.min(retention_cutoff),
+    )? {
+        gap_ranges.push(gap);
+    }
+    Ok(gap_ranges)
+}
+
+async fn dashboard_activity_historical_live_gap_totals(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    retention_cutoff: DateTime<Utc>,
+) -> Result<StatsTotals, ApiError> {
+    let mut totals = StatsTotals::default();
+    for gap_range in dashboard_activity_historical_live_gap_ranges(range, retention_cutoff)? {
+        totals = totals.add(dashboard_activity_stats_totals_from_aggregate_rows(
+            &query_live_upstream_account_activity_aggregate_rows(
+                &state.pool,
+                source_scope,
+                gap_range,
+                true,
+                DashboardActivityExcludedInvocationIdsFilter::None,
+            )
+            .await?,
+        ));
+    }
+    Ok(totals)
+}
+
+fn dashboard_activity_apply_materialized_archive_fallback_to_stats(
+    stats: &mut StatsResponse,
+    fallback_totals: StatsTotals,
+) {
+    if !dashboard_activity_stats_totals_has_values(fallback_totals) {
+        return;
+    }
+
+    stats.total_count += fallback_totals.total_count;
+    stats.success_count += fallback_totals.success_count;
+    stats.failure_count += fallback_totals.failure_count;
+    stats.total_cost += fallback_totals.total_cost;
+    stats.total_tokens += fallback_totals.total_tokens;
+    stats.non_success_cost =
+        Some(stats.non_success_cost.unwrap_or_default() + fallback_totals.non_success_cost);
+    // Materialized invocation rollups do not retain model/cost-breakdown or non-success-token
+    // detail, so omit those partial fields when they would no longer align with top-level totals.
+    stats.usage_breakdown = None;
+    stats.non_success_tokens = None;
+}
+
+fn dashboard_activity_clear_materialized_archive_detail_fields(stats: &mut StatsResponse) {
+    stats.usage_breakdown = None;
+    stats.non_success_tokens = None;
+}
+
+#[derive(Debug, FromRow)]
+struct DashboardActivityAccountStatsRollupAggregateRow {
+    upstream_account_id: i64,
+    request_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_input_tokens: i64,
+    total_cost: f64,
+    non_success_cost: f64,
+    first_response_byte_total_sample_count: i64,
+    first_response_byte_total_sum_ms: f64,
+    total_latency_sample_count: i64,
+    total_latency_sum_ms: f64,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct DashboardActivityUsageFallbackTotals {
+    cache_write_tokens: i64,
+    cache_read_tokens: i64,
+    output_tokens: i64,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct DashboardActivityAccountFallbackTotals {
+    request_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    non_success_count: i64,
+    total_tokens: i64,
+    success_tokens: i64,
+    non_success_tokens: i64,
+    failure_tokens: i64,
+    failure_cost: f64,
+    non_success_cost: f64,
+    cache_input_tokens: i64,
+    total_cost: f64,
+    cache_write_tokens: i64,
+    cache_read_tokens: i64,
+    output_tokens: i64,
+    first_response_byte_total_sample_count: i64,
+    first_response_byte_total_sum_ms: f64,
+    total_latency_sample_count: i64,
+    total_latency_sum_ms: f64,
+}
+
+impl DashboardActivityAccountFallbackTotals {
+    fn from_stats_totals(totals: StatsTotals) -> Self {
+        let non_success_count = totals
+            .total_count
+            .saturating_sub(totals.success_count)
+            .max(0);
+        Self {
+            request_count: totals.total_count,
+            success_count: totals.success_count,
+            failure_count: totals.failure_count,
+            non_success_count: non_success_count.max(totals.failure_count),
+            total_tokens: totals.total_tokens,
+            success_tokens: if non_success_count == 0 {
+                totals.total_tokens
+            } else {
+                0
+            },
+            non_success_tokens: if totals.success_count == 0 {
+                totals.total_tokens
+            } else {
+                0
+            },
+            failure_tokens: if totals.success_count == 0 && totals.failure_count > 0 {
+                totals.total_tokens
+            } else {
+                0
+            },
+            failure_cost: if totals.success_count == 0 && totals.failure_count > 0 {
+                totals.non_success_cost
+            } else {
+                0.0
+            },
+            non_success_cost: totals.non_success_cost,
+            total_cost: totals.total_cost,
+            ..Self::default()
+        }
+    }
+
+    fn from_rollup_minus_live(
+        row: &DashboardActivityAccountStatsRollupAggregateRow,
+        live: Option<&UpstreamAccountActivityAggregateRow>,
+        live_usage: DashboardActivityUsageFallbackTotals,
+    ) -> Self {
+        let live_request_count = live.map_or(0, |row| row.request_count);
+        let live_success_count = live.map_or(0, |row| row.success_count);
+        let live_failure_count = live.map_or(0, |row| row.failure_count);
+        let live_total_tokens = live.map_or(0, |row| row.total_tokens);
+        let live_cache_input_tokens = live.map_or(0, |row| row.cache_input_tokens);
+        let live_total_cost = live.map_or(0.0, |row| row.total_cost);
+        let live_non_success_cost = live.map_or(0.0, |row| row.non_success_cost);
+        let live_first_response_count =
+            live.map_or(0, |row| row.first_response_byte_total_sample_count);
+        let live_first_response_sum = live.map_or(0.0, |row| row.first_response_byte_total_sum_ms);
+        let live_total_latency_count = live.map_or(0, |row| row.total_latency_sample_count);
+        let live_total_latency_sum = live.map_or(0.0, |row| row.total_latency_sum_ms);
+
+        let request_count = row.request_count.saturating_sub(live_request_count).max(0);
+        let success_count = row.success_count.saturating_sub(live_success_count).max(0);
+        let failure_count = row.failure_count.saturating_sub(live_failure_count).max(0);
+        let non_success_count = request_count
+            .saturating_sub(success_count)
+            .max(failure_count);
+        let total_tokens = row.total_tokens.saturating_sub(live_total_tokens).max(0);
+        let non_success_cost = (row.non_success_cost - live_non_success_cost).max(0.0);
+        let total_cost = (row.total_cost - live_total_cost).max(0.0);
+        let cache_input_tokens = row
+            .cache_input_tokens
+            .saturating_sub(live_cache_input_tokens)
+            .max(0);
+        let rollup_cache_write_tokens = row
+            .input_tokens
+            .max(0)
+            .saturating_sub(row.cache_input_tokens.max(0))
+            .max(0);
+        let cache_write_tokens = rollup_cache_write_tokens
+            .saturating_sub(live_usage.cache_write_tokens)
+            .max(0);
+        let cache_read_tokens = row
+            .cache_input_tokens
+            .max(0)
+            .saturating_sub(live_usage.cache_read_tokens)
+            .max(0);
+        let output_tokens = row
+            .output_tokens
+            .max(0)
+            .saturating_sub(live_usage.output_tokens)
+            .max(0);
+
+        Self {
+            request_count,
+            success_count,
+            failure_count,
+            non_success_count,
+            total_tokens,
+            success_tokens: if non_success_count == 0 {
+                total_tokens
+            } else {
+                0
+            },
+            non_success_tokens: if success_count == 0 { total_tokens } else { 0 },
+            failure_tokens: if success_count == 0 && failure_count > 0 {
+                total_tokens
+            } else {
+                0
+            },
+            failure_cost: if success_count == 0 && failure_count > 0 {
+                non_success_cost
+            } else {
+                0.0
+            },
+            non_success_cost,
+            cache_input_tokens,
+            total_cost,
+            cache_write_tokens,
+            cache_read_tokens,
+            output_tokens,
+            first_response_byte_total_sample_count: row
+                .first_response_byte_total_sample_count
+                .saturating_sub(live_first_response_count)
+                .max(0),
+            first_response_byte_total_sum_ms: (row.first_response_byte_total_sum_ms
+                - live_first_response_sum)
+                .max(0.0),
+            total_latency_sample_count: row
+                .total_latency_sample_count
+                .saturating_sub(live_total_latency_count)
+                .max(0),
+            total_latency_sum_ms: (row.total_latency_sum_ms - live_total_latency_sum).max(0.0),
+        }
+    }
+
+    fn add_assign(&mut self, other: Self) {
+        self.request_count += other.request_count;
+        self.success_count += other.success_count;
+        self.failure_count += other.failure_count;
+        self.non_success_count += other.non_success_count;
+        self.total_tokens += other.total_tokens;
+        self.success_tokens += other.success_tokens;
+        self.non_success_tokens += other.non_success_tokens;
+        self.failure_tokens += other.failure_tokens;
+        self.failure_cost += other.failure_cost;
+        self.non_success_cost += other.non_success_cost;
+        self.cache_input_tokens += other.cache_input_tokens;
+        self.total_cost += other.total_cost;
+        self.cache_write_tokens += other.cache_write_tokens;
+        self.cache_read_tokens += other.cache_read_tokens;
+        self.output_tokens += other.output_tokens;
+        self.first_response_byte_total_sample_count += other.first_response_byte_total_sample_count;
+        self.first_response_byte_total_sum_ms += other.first_response_byte_total_sum_ms;
+        self.total_latency_sample_count += other.total_latency_sample_count;
+        self.total_latency_sum_ms += other.total_latency_sum_ms;
+    }
+
+    fn stats_totals(self) -> StatsTotals {
+        StatsTotals {
+            total_count: self.request_count,
+            success_count: self.success_count,
+            failure_count: self.failure_count,
+            total_cost: self.total_cost,
+            total_tokens: self.total_tokens,
+            non_success_cost: self.non_success_cost,
+        }
+    }
+}
+
+async fn query_dashboard_activity_account_stats_rollup_aggregate_rows(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+) -> Result<Vec<DashboardActivityAccountStatsRollupAggregateRow>, ApiError> {
+    let range_start_epoch = ceil_hour_epoch(range.start.timestamp());
+    let range_end_epoch = crate::stats::align_bucket_epoch(range.end.timestamp(), 3_600, 0);
+    if range_start_epoch >= range_end_epoch {
+        return Ok(Vec::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            upstream_account_id,
+            COALESCE(SUM(total_count), 0) AS request_count,
+            COALESCE(SUM(success_count), 0) AS success_count,
+            COALESCE(SUM(failure_count), 0) AS failure_count,
+            COALESCE(SUM(total_tokens), 0) AS total_tokens,
+            COALESCE(SUM(input_tokens), 0) AS input_tokens,
+            COALESCE(SUM(output_tokens), 0) AS output_tokens,
+            COALESCE(SUM(cache_input_tokens), 0) AS cache_input_tokens,
+            CAST(COALESCE(SUM(total_cost), 0.0) AS REAL) AS total_cost,
+            CAST(COALESCE(SUM(non_success_cost), 0.0) AS REAL) AS non_success_cost,
+            COALESCE(SUM(first_response_byte_total_sample_count), 0) AS first_response_byte_total_sample_count,
+            CAST(COALESCE(SUM(first_response_byte_total_sum_ms), 0.0) AS REAL) AS first_response_byte_total_sum_ms,
+            COALESCE(SUM(total_latency_sample_count), 0) AS total_latency_sample_count,
+            CAST(COALESCE(SUM(total_latency_sum_ms), 0.0) AS REAL) AS total_latency_sum_ms
+        FROM upstream_account_stats_hourly
+        WHERE bucket_start_epoch >=
+        "#,
+    );
+    query
+        .push_bind(range_start_epoch)
+        .push(" AND bucket_start_epoch < ")
+        .push_bind(range_end_epoch);
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" GROUP BY upstream_account_id");
+    Ok(query
+        .build_query_as::<DashboardActivityAccountStatsRollupAggregateRow>()
+        .fetch_all(pool)
+        .await?)
+}
+
+async fn dashboard_activity_materialized_archive_account_fallback_totals(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    skipped_materialized_ranges: &[ExactUtcRange],
+) -> Result<HashMap<Option<i64>, DashboardActivityAccountFallbackTotals>, ApiError> {
+    let mut fallback_by_account =
+        HashMap::<Option<i64>, DashboardActivityAccountFallbackTotals>::new();
+    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
+    for skipped_range in skipped_materialized_ranges {
+        let range_plan = build_hourly_rollup_exact_range_plan(
+            skipped_range.start,
+            skipped_range.end,
+            retention_cutoff,
+        )?;
+        if let Some(full_hour_range) =
+            dashboard_activity_full_hour_exact_range(range_plan.full_hour_range)?
+        {
+            let rollup_rows = query_dashboard_activity_account_stats_rollup_aggregate_rows(
+                &state.pool,
+                source_scope,
+                full_hour_range,
+            )
+            .await?;
+            let live_full_hour_rows = query_live_upstream_account_activity_aggregate_rows(
+                &state.pool,
+                source_scope,
+                full_hour_range,
+                true,
+                DashboardActivityExcludedInvocationIdsFilter::None,
+            )
+            .await?;
+            let live_full_hour_by_account = live_full_hour_rows
+                .into_iter()
+                .map(|row| (row.upstream_account_id, row))
+                .collect::<HashMap<_, _>>();
+            let mut live_full_hour_usage_by_account =
+                HashMap::<Option<i64>, DashboardActivityUsageFallbackTotals>::new();
+            for row in query_live_upstream_account_usage_breakdown_rows(
+                &state.pool,
+                source_scope,
+                full_hour_range,
+                true,
+                true,
+                DashboardActivityExcludedInvocationIdsFilter::None,
+            )
+            .await?
+            {
+                let entry = live_full_hour_usage_by_account
+                    .entry(row.upstream_account_id)
+                    .or_default();
+                entry.cache_write_tokens += row.cache_write_tokens;
+                entry.cache_read_tokens += row.cache_read_tokens;
+                entry.output_tokens += row.output_tokens;
+            }
+
+            for row in rollup_rows {
+                let account_id = Some(row.upstream_account_id);
+                let totals = DashboardActivityAccountFallbackTotals::from_rollup_minus_live(
+                    &row,
+                    live_full_hour_by_account.get(&account_id),
+                    live_full_hour_usage_by_account
+                        .get(&account_id)
+                        .copied()
+                        .unwrap_or_default(),
+                );
+                if !dashboard_activity_stats_totals_has_values(totals.stats_totals()) {
+                    continue;
+                }
+                fallback_by_account
+                    .entry(account_id)
+                    .or_default()
+                    .add_assign(totals);
+            }
+        }
+    }
+    Ok(fallback_by_account)
+}
+
+fn dashboard_activity_merge_account_fallback_totals(
+    entry: &mut UpstreamAccountActivityAccumulator,
+    totals: DashboardActivityAccountFallbackTotals,
+) {
+    entry.request_count += totals.request_count;
+    entry.success_count += totals.success_count;
+    entry.failure_count += totals.failure_count;
+    entry.non_success_count += totals.non_success_count;
+    entry.total_tokens += totals.total_tokens;
+    entry.success_tokens += totals.success_tokens;
+    entry.non_success_tokens += totals.non_success_tokens;
+    entry.failure_tokens += totals.failure_tokens;
+    entry.failure_cost += totals.failure_cost;
+    entry.non_success_cost += totals.non_success_cost;
+    entry.cache_input_tokens += totals.cache_input_tokens;
+    entry.total_cost += totals.total_cost;
+    entry.first_response_byte_total_sample_count += totals.first_response_byte_total_sample_count;
+    entry.first_response_byte_total_sum_ms += totals.first_response_byte_total_sum_ms;
+    entry.total_latency_sample_count += totals.total_latency_sample_count;
+    entry.total_latency_sum_ms += totals.total_latency_sum_ms;
+    entry.usage_breakdown.add_coarse_rollup_totals(
+        totals.cache_write_tokens,
+        totals.cache_read_tokens,
+        totals.output_tokens,
+        totals.total_cost,
+    );
+}
+
+fn dashboard_activity_source_scope_cache_key(source_scope: InvocationSourceScope) -> &'static str {
+    match source_scope {
+        InvocationSourceScope::ProxyOnly => "proxy_only",
+        InvocationSourceScope::All => "all",
+    }
+}
+
+fn dashboard_activity_live_snapshot_cache_key(
+    live: Option<&DashboardActivityLiveSnapshot>,
+) -> String {
+    let Some(live) = live else {
+        return "idle".to_string();
+    };
+    if live.in_progress_invocation_count <= 0 {
+        return "idle".to_string();
+    }
+
+    let mut parts = Vec::with_capacity(live.accounts.len() + 1);
+    parts.push(format!(
+        "total:{}:{}:{}:{}:{}",
+        live.in_progress_invocation_count,
+        live.retry_invocation_count,
+        live.in_progress_phase_counts.queued,
+        live.in_progress_phase_counts.requesting,
+        live.in_progress_phase_counts.responding
+    ));
+    for account in &live.accounts {
+        if account.in_progress_invocation_count <= 0 && account.retry_invocation_count <= 0 {
+            continue;
+        }
+        parts.push(format!(
+            "{}:{}:{}:{}:{}:{}",
+            account.account_key,
+            account.in_progress_invocation_count,
+            account.retry_invocation_count,
+            account.in_progress_phase_counts.queued,
+            account.in_progress_phase_counts.requesting,
+            account.in_progress_phase_counts.responding
+        ));
+    }
+    parts.join("|")
+}
+
+fn build_dashboard_activity_snapshot_selection(
+    range: &str,
+    exact_range: ExactUtcRange,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+    invocation_snapshot_id: i64,
+    live_activity_key: &str,
+    recent_limit: usize,
+    include_accounts: bool,
+    include_recent: bool,
+) -> DashboardActivitySnapshotSelection {
+    DashboardActivitySnapshotSelection {
+        range: range.to_string(),
+        range_start: format_utc_iso_precise(exact_range.start),
+        range_end: format_utc_iso_precise(exact_range.end),
+        time_zone: reporting_tz.to_string(),
+        source_scope: dashboard_activity_source_scope_cache_key(source_scope).to_string(),
+        invocation_snapshot_id,
+        live_activity_key: live_activity_key.to_string(),
+        recent_limit,
+        include_accounts,
+        include_recent,
+    }
+}
+
+fn resolve_dashboard_activity_exact_range(
+    range_name: &str,
+    reporting_tz: Tz,
+) -> Result<ExactUtcRange, ApiError> {
+    let range_window = resolve_range_window(range_name, reporting_tz).map_err(ApiError::from)?;
+    Ok(ExactUtcRange {
+        start: range_window.start,
+        end: range_window.end,
+    })
+}
+
+fn resolve_dashboard_activity_cached_range(
+    range_name: &str,
+    reporting_tz: Tz,
+) -> Result<ExactUtcRange, ApiError> {
+    let mut range = resolve_dashboard_activity_exact_range(range_name, reporting_tz)?;
+    if range_name != "yesterday" {
+        range.end = dashboard_activity_cache_bucket_end(range.end)?;
+        if let Ok(duration) = parse_duration_spec(range_name) {
+            range.start = range.end - duration;
+        }
+        if range.end < range.start {
+            range.end = range.start;
+        }
+    }
+    Ok(range)
+}
+
+fn dashboard_activity_full_hour_exact_range(
+    full_hour_range: Option<(i64, i64)>,
+) -> Result<Option<ExactUtcRange>, ApiError> {
+    let Some((start_epoch, end_epoch)) = full_hour_range else {
+        return Ok(None);
+    };
+    Ok(Some(ExactUtcRange {
+        start: Utc.timestamp_opt(start_epoch, 0).single().ok_or_else(|| {
+            ApiError::from(anyhow!("invalid dashboard activity full-hour start epoch"))
+        })?,
+        end: Utc.timestamp_opt(end_epoch, 0).single().ok_or_else(|| {
+            ApiError::from(anyhow!("invalid dashboard activity full-hour end epoch"))
+        })?,
+    }))
+}
+
+fn dashboard_activity_cache_bucket_end(end: DateTime<Utc>) -> Result<DateTime<Utc>, ApiError> {
+    let bucket_seconds = DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS as i64;
+    let bucket_epoch = end.timestamp().div_euclid(bucket_seconds) * bucket_seconds;
+    Utc.timestamp_opt(bucket_epoch, 0)
+        .single()
+        .ok_or_else(|| ApiError::from(anyhow!("invalid dashboard activity cache bucket epoch")))
+}
+
+fn sort_dashboard_activity_accounts(accounts: &mut [DashboardActivityAccountResponse]) {
+    accounts.sort_by(|left, right| {
+        right
+            .total_tokens
+            .cmp(&left.total_tokens)
+            .then_with(|| {
+                right
+                    .recent_invocations
+                    .first()
+                    .map(|row| row.occurred_at.as_str())
+                    .cmp(
+                        &left
+                            .recent_invocations
+                            .first()
+                            .map(|row| row.occurred_at.as_str()),
+                    )
+            })
+            .then_with(|| {
+                right
+                    .upstream_account_id
+                    .unwrap_or(i64::MIN)
+                    .cmp(&left.upstream_account_id.unwrap_or(i64::MIN))
+            })
+    });
+}
+
+fn dashboard_activity_account_from_live(
+    live_account: &DashboardActivityLiveAccount,
+    meta: Option<&UpstreamAccountActivityMetaRow>,
+    range: ExactUtcRange,
+    current_snapshot: DashboardActivityCurrentSnapshot,
+    model_performance_available: bool,
+    effective_routing_rule: Option<crate::upstream_accounts::EffectiveRoutingRule>,
+    recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
+) -> DashboardActivityAccountResponse {
+    let status_fields =
+        meta.map(|row| build_upstream_account_activity_status_fields(row, Utc::now()));
+    let display_name_hint = recent_invocations.iter().find_map(|invocation| {
+        invocation
+            .upstream_account_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    });
+    let plan_type_hint = recent_invocations.iter().find_map(|invocation| {
+        invocation
+            .upstream_account_plan_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    });
+    let display_name = live_account
+        .upstream_account_id
+        .map(|id| {
+            resolve_upstream_account_activity_display_name(id, meta, display_name_hint.as_deref())
+        })
+        .unwrap_or_else(|| "未分配上游账号".to_string());
+
+    DashboardActivityAccountResponse {
+        account_key: live_account.account_key.clone(),
+        upstream_account_id: live_account.upstream_account_id,
+        display_name,
+        is_unassigned: live_account.upstream_account_id.is_none(),
+        latest_conversation_created_at: None,
+        last_invocation_at: None,
+        group_name: normalize_trimmed_optional_string_local(
+            meta.and_then(|row| row.group_name.clone()),
+        ),
+        plan_type: normalize_trimmed_optional_string_local(
+            meta.and_then(|row| row.plan_type.clone())
+                .or(plan_type_hint),
+        ),
+        enabled: status_fields.as_ref().map(|fields| fields.enabled),
+        display_status: status_fields
+            .as_ref()
+            .map(|fields| fields.display_status.clone()),
+        enable_status: status_fields
+            .as_ref()
+            .map(|fields| fields.enable_status.clone()),
+        work_status: status_fields
+            .as_ref()
+            .map(|fields| fields.work_status.clone()),
+        health_status: status_fields
+            .as_ref()
+            .map(|fields| fields.health_status.clone()),
+        sync_state: status_fields
+            .as_ref()
+            .map(|fields| fields.sync_state.clone()),
+        last_error: status_fields
+            .as_ref()
+            .and_then(|fields| fields.last_error.clone()),
+        last_action_reason_message: status_fields
+            .as_ref()
+            .and_then(|fields| fields.last_action_reason_message.clone()),
+        request_count: live_account.in_progress_invocation_count.max(0),
+        success_count: 0,
+        failure_count: 0,
+        non_success_count: 0,
+        total_tokens: 0,
+        success_tokens: 0,
+        non_success_tokens: 0,
+        failure_tokens: 0,
+        failure_cost: 0.0,
+        non_success_cost: 0.0,
+        total_cost: 0.0,
+        usage_breakdown: UsageBreakdownAccumulator::default().into_response(),
+        model_performance: ModelPerformanceAccumulator::default()
+            .into_response(range, model_performance_available),
+        cache_hit_rate: None,
+        tokens_per_minute: Some(current_snapshot.qualified_tokens.max(0) as f64),
+        spend_rate: Some(current_snapshot.total_cost.max(0.0)),
+        first_byte_avg_ms: None,
+        first_response_byte_total_avg_ms: None,
+        avg_total_ms: None,
+        current_first_response_byte_total_avg_ms: current_snapshot
+            .first_response_byte_total_avg_ms(),
+        current_avg_total_ms: current_snapshot.avg_total_ms(),
+        in_progress_invocation_count: Some(live_account.in_progress_invocation_count),
+        in_progress_phase_counts: Some(live_account.in_progress_phase_counts),
+        retry_invocation_count: Some(live_account.retry_invocation_count),
+        upload_bytes_per_second: live_account.upload_bytes_per_second,
+        download_bytes_per_second: live_account.download_bytes_per_second,
+        in_progress_wait_sum_ms: 0.0,
+        in_progress_wait_sample_count: 0,
+        effective_routing_rule,
+        recent_invocations,
+    }
+}
+
+fn merge_dashboard_activity_recent_invocations(
+    mut recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
+    existing_recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
+    recent_limit: usize,
+) -> Vec<PromptCacheConversationInvocationPreviewResponse> {
+    recent_invocations.extend(existing_recent_invocations);
+    let mut seen_keys = HashSet::with_capacity(recent_invocations.len());
+    recent_invocations.retain(|invocation| {
+        seen_keys.insert((invocation.invoke_id.clone(), invocation.occurred_at.clone()))
+    });
+    recent_invocations.sort_by(|left, right| {
+        right
+            .occurred_at
+            .cmp(&left.occurred_at)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    recent_invocations.truncate(recent_limit);
+    recent_invocations
+}
+
+async fn load_dashboard_activity_live_recent_invocations_by_account(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    recent_limit: usize,
+) -> Result<HashMap<Option<i64>, Vec<PromptCacheConversationInvocationPreviewResponse>>, ApiError> {
+    let mut rows = query_live_upstream_account_activity_preview_rows_per_account_limit(
+        &state.pool,
+        source_scope,
+        range,
+        recent_limit,
+    )
+    .await?;
+    overlay_runtime_upstream_account_activity_preview_rows(state, &mut rows, source_scope, range);
+    overlay_runtime_terminal_upstream_account_activity_preview_rows(
+        state,
+        &mut rows,
+        source_scope,
+        range,
+    )
+    .await?;
+
+    let mut recent_invocations_by_account =
+        HashMap::<Option<i64>, Vec<PromptCacheConversationInvocationPreviewResponse>>::new();
+    for row in rows {
+        recent_invocations_by_account
+            .entry(row.upstream_account_id)
+            .or_default()
+            .push(upstream_account_invocation_preview_from_row(row));
+    }
+    for recent_invocations in recent_invocations_by_account.values_mut() {
+        *recent_invocations = merge_dashboard_activity_recent_invocations(
+            std::mem::take(recent_invocations),
+            Vec::new(),
+            recent_limit,
+        );
+    }
+
+    Ok(recent_invocations_by_account)
+}
+
+async fn overlay_dashboard_activity_live_accounts(
+    state: &AppState,
+    snapshot: &mut DashboardActivitySnapshot,
+    live: DashboardActivityLiveSnapshot,
+    request_range: ExactUtcRange,
+    include_accounts: bool,
+    include_recent: bool,
+    recent_limit: usize,
+) -> Result<(), ApiError> {
+    snapshot.summary.stats.in_progress_conversation_count = Some(live.in_progress_invocation_count);
+    snapshot.summary.stats.in_progress_retry_conversation_count = Some(live.retry_invocation_count);
+    snapshot.summary.stats.in_progress_phase_counts = Some(live.in_progress_phase_counts);
+
+    let current_snapshot_by_account = state
+        .dashboard_network_speed_cache
+        .snapshot_dashboard_activity_accounts(Utc::now());
+    let current_snapshot_summary =
+        sum_dashboard_activity_current_snapshots(current_snapshot_by_account.values().copied());
+    snapshot.summary.tokens_per_minute =
+        Some(current_snapshot_summary.qualified_tokens.max(0) as f64);
+    snapshot.summary.spend_rate = Some(current_snapshot_summary.total_cost.max(0.0));
+    snapshot.summary.current_first_response_byte_total_avg_ms = current_snapshot_summary
+        .first_response_byte_total_avg_ms()
+        .or(snapshot.summary.current_first_response_byte_total_avg_ms);
+    snapshot.summary.current_avg_total_ms = current_snapshot_summary
+        .avg_total_ms()
+        .or(snapshot.summary.current_avg_total_ms);
+
+    if !include_accounts {
+        return Ok(());
+    }
+
+    let recent_source_scope = if include_recent {
+        Some(resolve_default_source_scope(&state.pool).await?)
+    } else {
+        None
+    };
+    let mut refreshed_recent_invocations_by_account =
+        if let Some(source_scope) = recent_source_scope {
+            Some(
+                load_dashboard_activity_live_recent_invocations_by_account(
+                    state,
+                    source_scope,
+                    request_range,
+                    recent_limit,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+    let live_accounts = live
+        .accounts
+        .into_iter()
+        .map(|account| (account.account_key.clone(), account))
+        .collect::<HashMap<_, _>>();
+    for account in &mut snapshot.accounts {
+        let live_account = live_accounts.get(&account.account_key);
+        account.in_progress_invocation_count =
+            Some(live_account.map_or(0, |row| row.in_progress_invocation_count));
+        account.in_progress_phase_counts = Some(
+            live_account
+                .map(|row| row.in_progress_phase_counts)
+                .unwrap_or_default(),
+        );
+        account.retry_invocation_count =
+            Some(live_account.map_or(0, |row| row.retry_invocation_count));
+        if let Some(live_account) = live_account {
+            account.request_count = account
+                .request_count
+                .max(live_account.in_progress_invocation_count.max(0));
+        }
+        account.upload_bytes_per_second =
+            live_account.map_or(0.0, |row| row.upload_bytes_per_second);
+        account.download_bytes_per_second =
+            live_account.map_or(0.0, |row| row.download_bytes_per_second);
+        let current_snapshot = current_snapshot_by_account
+            .get(&account.upstream_account_id)
+            .copied()
+            .unwrap_or_default();
+        account.tokens_per_minute = Some(current_snapshot.qualified_tokens.max(0) as f64);
+        account.spend_rate = Some(current_snapshot.total_cost.max(0.0));
+        account.current_first_response_byte_total_avg_ms = current_snapshot
+            .first_response_byte_total_avg_ms()
+            .or(account.current_first_response_byte_total_avg_ms);
+        account.current_avg_total_ms = current_snapshot
+            .avg_total_ms()
+            .or(account.current_avg_total_ms);
+        if let Some(refreshed_recent_invocations_by_account) =
+            refreshed_recent_invocations_by_account.as_mut()
+            && let Some(recent_invocations) =
+                refreshed_recent_invocations_by_account.remove(&account.upstream_account_id)
+        {
+            let existing_recent_invocations = std::mem::take(&mut account.recent_invocations);
+            account.recent_invocations = merge_dashboard_activity_recent_invocations(
+                recent_invocations,
+                existing_recent_invocations,
+                recent_limit,
+            );
+        }
+    }
+
+    let existing_account_keys = snapshot
+        .accounts
+        .iter()
+        .map(|account| account.account_key.clone())
+        .collect::<HashSet<_>>();
+    let missing_live_accounts = live_accounts
+        .values()
+        .filter(|account| !existing_account_keys.contains(&account.account_key))
+        .collect::<Vec<_>>();
+
+    if !missing_live_accounts.is_empty() {
+        let missing_account_ids = missing_live_accounts
+            .iter()
+            .filter_map(|account| account.upstream_account_id)
+            .collect::<Vec<_>>();
+        let account_meta =
+            query_upstream_account_activity_meta(&state.pool, &missing_account_ids).await?;
+        let effective_routing_rules =
+            crate::upstream_accounts::load_effective_routing_rules_for_accounts(
+                &state.pool,
+                &missing_account_ids,
+            )
+            .await?;
+        for live_account in missing_live_accounts {
+            let meta = live_account
+                .upstream_account_id
+                .and_then(|id| account_meta.get(&id));
+            let effective_routing_rule = live_account.upstream_account_id.map(|id| {
+                effective_routing_rules
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(crate::upstream_accounts::default_effective_routing_rule)
+            });
+            let current_snapshot = current_snapshot_by_account
+                .get(&live_account.upstream_account_id)
+                .copied()
+                .unwrap_or_default();
+            let recent_invocations = if let Some(refreshed_recent_invocations_by_account) =
+                refreshed_recent_invocations_by_account.as_mut()
+            {
+                refreshed_recent_invocations_by_account
+                    .remove(&live_account.upstream_account_id)
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            snapshot.accounts.push(dashboard_activity_account_from_live(
+                live_account,
+                meta,
+                request_range,
+                current_snapshot,
+                snapshot.summary.model_performance.available,
+                effective_routing_rule,
+                recent_invocations,
+            ));
+        }
+        sort_dashboard_activity_accounts(&mut snapshot.accounts);
+    }
+
+    if let Some(refreshed_recent_invocations_by_account) = refreshed_recent_invocations_by_account {
+        let existing_account_ids = snapshot
+            .accounts
+            .iter()
+            .map(|account| account.upstream_account_id)
+            .collect::<HashSet<_>>();
+        let missing_terminal_account_ids = refreshed_recent_invocations_by_account
+            .keys()
+            .copied()
+            .filter(|account_id| !existing_account_ids.contains(account_id))
+            .collect::<Vec<_>>();
+
+        if !missing_terminal_account_ids.is_empty() {
+            let missing_terminal_account_meta_ids = missing_terminal_account_ids
+                .iter()
+                .filter_map(|account_id| *account_id)
+                .collect::<Vec<_>>();
+            let account_meta = if missing_terminal_account_meta_ids.is_empty() {
+                HashMap::new()
+            } else {
+                query_upstream_account_activity_meta(
+                    &state.pool,
+                    &missing_terminal_account_meta_ids,
+                )
+                .await?
+            };
+            let effective_routing_rules = if missing_terminal_account_meta_ids.is_empty() {
+                HashMap::new()
+            } else {
+                crate::upstream_accounts::load_effective_routing_rules_for_accounts(
+                    &state.pool,
+                    &missing_terminal_account_meta_ids,
+                )
+                .await?
+            };
+            let mut refreshed_recent_invocations_by_account =
+                refreshed_recent_invocations_by_account;
+            for upstream_account_id in missing_terminal_account_ids {
+                let recent_invocations = refreshed_recent_invocations_by_account
+                    .remove(&upstream_account_id)
+                    .unwrap_or_default();
+                if recent_invocations.is_empty() {
+                    continue;
+                }
+
+                let live_account = DashboardActivityLiveAccount {
+                    account_key: upstream_account_id
+                        .map(|id| format!("upstream:{id}"))
+                        .unwrap_or_else(|| "unassigned".to_string()),
+                    upstream_account_id,
+                    in_progress_invocation_count: 0,
+                    in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
+                    retry_invocation_count: 0,
+                    upload_bytes_per_second: 0.0,
+                    download_bytes_per_second: 0.0,
+                    network_live_bucket: None,
+                };
+                let meta = upstream_account_id.and_then(|id| account_meta.get(&id));
+                let effective_routing_rule = upstream_account_id.map(|id| {
+                    effective_routing_rules
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_else(crate::upstream_accounts::default_effective_routing_rule)
+                });
+                let current_snapshot = current_snapshot_by_account
+                    .get(&upstream_account_id)
+                    .copied()
+                    .unwrap_or_default();
+                snapshot.accounts.push(dashboard_activity_account_from_live(
+                    &live_account,
+                    meta,
+                    request_range,
+                    current_snapshot,
+                    snapshot.summary.model_performance.available,
+                    effective_routing_rule,
+                    recent_invocations,
+                ));
+            }
+            sort_dashboard_activity_accounts(&mut snapshot.accounts);
+        }
+    }
+
+    snapshot.summary = build_dashboard_activity_summary(
+        &snapshot.accounts,
+        true,
+        current_snapshot_summary,
+        snapshot.summary.current_first_response_byte_total_avg_ms,
+        snapshot.summary.current_avg_total_ms,
+        snapshot.summary.model_performance.clone(),
+    );
+    dashboard_activity_apply_materialized_archive_fallback_to_stats(
+        &mut snapshot.summary.stats,
+        snapshot.materialized_archive_fallback_totals,
+    );
+    if snapshot.materialized_archive_details_limited {
+        dashboard_activity_clear_materialized_archive_detail_fields(&mut snapshot.summary.stats);
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, FromRow)]
@@ -7670,6 +9175,41 @@ fn build_dashboard_activity_latency_summary(
     )
 }
 
+async fn load_dashboard_activity_current_latency_fallback(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+) -> Result<(Option<f64>, Option<f64>), ApiError> {
+    let metric_range = ExactUtcRange {
+        start: range
+            .start
+            .max(range.end - ChronoDuration::minutes(DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES)),
+        end: range.end,
+    };
+    let mut latest_first_response_byte_total = LatestTimedMetricValue::default();
+    let mut latest_avg_total = LatestTimedMetricValue::default();
+    for row in query_live_upstream_account_activity_aggregate_rows(
+        &state.pool,
+        source_scope,
+        metric_range,
+        true,
+        DashboardActivityExcludedInvocationIdsFilter::None,
+    )
+    .await?
+    {
+        latest_first_response_byte_total.update(
+            row.latest_first_response_byte_total_at,
+            row.latest_first_response_byte_total_ms,
+        );
+        latest_avg_total.update(row.latest_avg_total_at, row.latest_avg_total_ms);
+    }
+
+    Ok((
+        latest_first_response_byte_total.value,
+        latest_avg_total.value,
+    ))
+}
+
 pub(crate) async fn query_dashboard_activity_rate_usage_rows(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
@@ -7840,8 +9380,13 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
     range: ExactUtcRange,
 ) -> Result<DashboardActivitySnapshot, ApiError> {
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
-    let totals =
+    let model_performance_available = range.start >= retention_cutoff;
+    let mut totals =
         query_hourly_backed_summary_range(state, range.start, range.end, source_scope).await?;
+    totals = totals.add(
+        dashboard_activity_historical_live_gap_totals(state, source_scope, range, retention_cutoff)
+            .await?,
+    );
     let mut stats = totals.into_response();
     stats.non_success_cost = Some(totals.non_success_cost);
     let augmentation = load_summary_live_augmentation(
@@ -7851,7 +9396,9 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
         Some((range.start, range.end)),
         SummaryLiveAugmentationPolicy {
             include_in_progress: range_name != "yesterday",
-            include_non_success_tokens: true,
+            // Hourly summary rollups do not retain non-success token totals; a raw full-range
+            // scan here would defeat the summary-only fast path.
+            include_non_success_tokens: false,
         },
     )
     .await?;
@@ -7874,34 +9421,21 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
                 .into_values(),
         )
     };
-    let mut latest_first_response_byte_total_in_range = LatestTimedMetricValue::default();
-    let mut latest_avg_total_in_range = LatestTimedMetricValue::default();
-    for row in
-        query_live_upstream_account_activity_aggregate_rows(&state.pool, source_scope, range, true)
-            .await?
-    {
-        latest_first_response_byte_total_in_range.update(
-            row.latest_first_response_byte_total_at,
-            row.latest_first_response_byte_total_ms,
+    let snapshot_first_response_byte_total_avg_ms =
+        current_snapshot.first_response_byte_total_avg_ms();
+    let snapshot_avg_total_ms = current_snapshot.avg_total_ms();
+    let (latest_first_response_byte_total_avg_ms, latest_avg_total_ms) =
+        if snapshot_first_response_byte_total_avg_ms.is_none() || snapshot_avg_total_ms.is_none() {
+            load_dashboard_activity_current_latency_fallback(state, source_scope, range).await?
+        } else {
+            (None, None)
+        };
+    let (current_first_response_byte_total_avg_ms, current_avg_total_ms) =
+        build_dashboard_activity_latency_summary(
+            current_snapshot,
+            latest_first_response_byte_total_avg_ms,
+            latest_avg_total_ms,
         );
-        latest_avg_total_in_range.update(row.latest_avg_total_at, row.latest_avg_total_ms);
-    }
-    if range.start < retention_cutoff {
-        let (archived_rows, _usage_breakdowns) =
-            query_completed_invocation_archive_activity_aggregate_rows(
-                &state.pool,
-                source_scope,
-                range,
-            )
-            .await?;
-        for row in archived_rows {
-            latest_first_response_byte_total_in_range.update(
-                row.latest_first_response_byte_total_at,
-                row.latest_first_response_byte_total_ms,
-            );
-            latest_avg_total_in_range.update(row.latest_avg_total_at, row.latest_avg_total_ms);
-        }
-    }
 
     Ok(DashboardActivitySnapshot {
         range: range_name.to_string(),
@@ -7912,14 +9446,13 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
             stats,
             tokens_per_minute: Some(current_snapshot.qualified_tokens.max(0) as f64),
             spend_rate: Some(current_snapshot.total_cost.max(0.0)),
-            current_first_response_byte_total_avg_ms: current_snapshot
-                .first_response_byte_total_avg_ms()
-                .or(latest_first_response_byte_total_in_range.value),
-            current_avg_total_ms: current_snapshot
-                .avg_total_ms()
-                .or(latest_avg_total_in_range.value),
-            model_performance: ModelPerformanceAccumulator::unavailable(range),
+            current_first_response_byte_total_avg_ms,
+            current_avg_total_ms,
+            model_performance: ModelPerformanceAccumulator::default()
+                .into_response(range, model_performance_available),
         },
+        materialized_archive_fallback_totals: StatsTotals::default(),
+        materialized_archive_details_limited: false,
     })
 }
 
@@ -7932,15 +9465,32 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     include_recent: bool,
     in_progress_counts_override: Option<HashMap<Option<i64>, UpstreamAccountInProgressSummary>>,
 ) -> Result<DashboardActivitySnapshot, ApiError> {
-    let range_window = resolve_range_window(range_name, reporting_tz).map_err(ApiError::from)?;
+    let range = resolve_dashboard_activity_exact_range(range_name, reporting_tz)?;
+    load_dashboard_activity_snapshot_for_range(
+        state,
+        range_name,
+        reporting_tz,
+        range,
+        recent_limit,
+        include_accounts,
+        include_recent,
+        in_progress_counts_override,
+    )
+    .await
+}
+
+async fn load_dashboard_activity_snapshot_for_range(
+    state: &AppState,
+    range_name: &str,
+    _reporting_tz: Tz,
+    range: ExactUtcRange,
+    recent_limit: usize,
+    include_accounts: bool,
+    include_recent: bool,
+    in_progress_counts_override: Option<HashMap<Option<i64>, UpstreamAccountInProgressSummary>>,
+) -> Result<DashboardActivitySnapshot, ApiError> {
     let source_scope = resolve_default_source_scope(&state.pool).await?;
-    let range = ExactUtcRange {
-        start: range_window.start,
-        end: range_window.end,
-    };
-    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
-    let model_performance_available = range.start >= retention_cutoff;
-    if !include_accounts && range.start < retention_cutoff {
+    if !include_accounts {
         return load_dashboard_activity_summary_only_snapshot(
             state,
             range_name,
@@ -7950,8 +9500,12 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         .await;
     }
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
+    let model_performance_available = range.start >= retention_cutoff;
+    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
     let mut account_activity = HashMap::<Option<i64>, UpstreamAccountActivityAccumulator>::new();
     let mut model_performance = ModelPerformanceAccumulator::default();
+    let materialized_archive_fallback_totals = StatsTotals::default();
+    let mut materialized_archive_details_limited = false;
     let current_snapshot_by_account = if range_name == "yesterday" {
         load_dashboard_activity_current_minute_accumulators_by_account(state, source_scope, range)
             .await?
@@ -7975,9 +9529,14 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     } else {
         None
     };
-    for row in
-        query_live_upstream_account_activity_aggregate_rows(&state.pool, source_scope, range, true)
-            .await?
+    for row in query_live_upstream_account_activity_aggregate_rows(
+        &state.pool,
+        source_scope,
+        range,
+        true,
+        DashboardActivityExcludedInvocationIdsFilter::None,
+    )
+    .await?
     {
         let entry = account_activity.entry(row.upstream_account_id).or_default();
         merge_latest_optional_timestamp(
@@ -8020,6 +9579,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         range,
         true,
         true,
+        DashboardActivityExcludedInvocationIdsFilter::None,
     )
     .await?
     {
@@ -8029,13 +9589,17 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         model_performance.add_aggregate_row(&row);
     }
     if range.start < retention_cutoff {
-        let (archived_aggregates, archived_usage_breakdowns) =
-            query_completed_invocation_archive_activity_aggregate_rows(
-                &state.pool,
-                source_scope,
-                range,
-            )
-            .await?;
+        let archive_rows = query_completed_invocation_archive_activity_aggregate_rows(
+            &state.pool,
+            source_scope,
+            range,
+        )
+        .await?;
+        let QueryCompletedInvocationArchiveActivityAggregateRows {
+            aggregates: archived_aggregates,
+            usage_breakdowns: archived_usage_breakdowns,
+            skipped_materialized_ranges,
+        } = archive_rows;
         for row in archived_aggregates {
             let entry = account_activity.entry(row.upstream_account_id).or_default();
             merge_latest_optional_timestamp(
@@ -8079,6 +9643,44 @@ pub(crate) async fn load_dashboard_activity_snapshot(
                 .or_default()
                 .usage_breakdown
                 .add_aggregate_row(&row);
+        }
+        let global_fallback_totals = dashboard_activity_materialized_archive_fallback_totals(
+            state,
+            source_scope,
+            skipped_materialized_ranges.clone(),
+        )
+        .await?;
+        if dashboard_activity_stats_totals_has_values(global_fallback_totals) {
+            materialized_archive_details_limited = true;
+            let mut account_fallback_totals =
+                dashboard_activity_materialized_archive_account_fallback_totals(
+                    state,
+                    source_scope,
+                    &skipped_materialized_ranges,
+                )
+                .await?;
+            let account_fallback_sum = account_fallback_totals
+                .values()
+                .fold(StatsTotals::default(), |total, account_totals| {
+                    total.add(account_totals.stats_totals())
+                });
+            let residual_fallback_totals = dashboard_activity_stats_totals_subtract(
+                global_fallback_totals,
+                account_fallback_sum,
+            );
+            if dashboard_activity_stats_totals_has_values(residual_fallback_totals) {
+                account_fallback_totals.entry(None).or_default().add_assign(
+                    DashboardActivityAccountFallbackTotals::from_stats_totals(
+                        residual_fallback_totals,
+                    ),
+                );
+            }
+            for (upstream_account_id, totals) in account_fallback_totals {
+                dashboard_activity_merge_account_fallback_totals(
+                    account_activity.entry(upstream_account_id).or_default(),
+                    totals,
+                );
+            }
         }
     }
     if let Some(model_performance_duration_overrides) = model_performance_duration_overrides {
@@ -8268,6 +9870,14 @@ pub(crate) async fn load_dashboard_activity_snapshot(
             Some(&live_ids),
         )
         .await?;
+        let archived_row_ids = archived_rows.iter().map(|row| row.id).collect::<Vec<_>>();
+        let persisted_live_ids = query_live_upstream_account_activity_existing_invocation_ids(
+            &state.pool,
+            source_scope,
+            &archived_row_ids,
+        )
+        .await?;
+        archived_rows.retain(|row| !persisted_live_ids.contains(&row.id));
         archived_rows.sort_by(|left, right| {
             right
                 .occurred_at
@@ -8299,13 +9909,11 @@ pub(crate) async fn load_dashboard_activity_snapshot(
     }
 
     if include_accounts && include_recent {
-        let rows = query_live_upstream_account_activity_preview_rows_with_limit(
+        let rows = query_live_upstream_account_activity_preview_rows_per_account_limit(
             &state.pool,
             source_scope,
             range,
-            None,
-            None,
-            false,
+            recent_limit,
         )
         .await?;
         let mut recent_rows_by_account =
@@ -8547,7 +10155,7 @@ pub(crate) async fn load_dashboard_activity_snapshot(
             })
     });
 
-    let summary = build_dashboard_activity_summary(
+    let mut summary = build_dashboard_activity_summary(
         &accounts,
         range_name != "yesterday",
         current_snapshot_summary,
@@ -8555,13 +10163,180 @@ pub(crate) async fn load_dashboard_activity_snapshot(
         latest_avg_total_in_range.value,
         model_performance.into_response(range, model_performance_available),
     );
+    dashboard_activity_apply_materialized_archive_fallback_to_stats(
+        &mut summary.stats,
+        materialized_archive_fallback_totals,
+    );
+    if materialized_archive_details_limited {
+        dashboard_activity_clear_materialized_archive_detail_fields(&mut summary.stats);
+    }
     Ok(DashboardActivitySnapshot {
         range: range_name.to_string(),
         range_start: range.start,
         range_end: range.end,
         accounts,
         summary,
+        materialized_archive_fallback_totals,
+        materialized_archive_details_limited,
     })
+}
+
+async fn load_dashboard_activity_snapshot_cached(
+    state: &AppState,
+    range_name: &str,
+    reporting_tz: Tz,
+    live_activity_key: &str,
+    recent_limit: usize,
+    include_accounts: bool,
+    include_recent: bool,
+    in_progress_counts_override: Option<HashMap<Option<i64>, UpstreamAccountInProgressSummary>>,
+) -> Result<
+    (
+        DashboardActivitySnapshot,
+        DashboardActivitySnapshotCacheOutcome,
+    ),
+    ApiError,
+> {
+    if range_name == "yesterday" {
+        let started_at = Instant::now();
+        let range = resolve_dashboard_activity_exact_range(range_name, reporting_tz)?;
+        let snapshot = load_dashboard_activity_snapshot_for_range(
+            state,
+            range_name,
+            reporting_tz,
+            range,
+            recent_limit,
+            include_accounts,
+            include_recent,
+            in_progress_counts_override.clone(),
+        )
+        .await?;
+        return Ok((
+            snapshot,
+            DashboardActivitySnapshotCacheOutcome {
+                cache_hit_or_miss: "uncached",
+                coalesced_waiter_count: 0,
+                db_build_elapsed_ms: started_at.elapsed().as_millis() as u64,
+            },
+        ));
+    }
+
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let invocation_snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
+    let range = resolve_dashboard_activity_cached_range(range_name, reporting_tz)?;
+    let selection = build_dashboard_activity_snapshot_selection(
+        range_name,
+        range,
+        reporting_tz,
+        source_scope,
+        invocation_snapshot_id,
+        live_activity_key,
+        recent_limit,
+        include_accounts,
+        include_recent,
+    );
+    let mut waited_on_in_flight = false;
+    let mut max_waiter_count = 0_usize;
+
+    loop {
+        let mut wait_on: Option<tokio::sync::watch::Receiver<bool>> = None;
+        let mut flight_guard: Option<DashboardActivitySnapshotFlightGuard> = None;
+        {
+            let mut cache = state.dashboard_activity_snapshot_cache.lock().await;
+            cache.entries.retain(|_, entry| {
+                entry.cached_at.elapsed()
+                    <= Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS)
+            });
+            if let Some(entry) = cache.entries.get(&selection)
+                && entry.cached_at.elapsed()
+                    <= Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS)
+            {
+                return Ok((
+                    entry.response.clone(),
+                    DashboardActivitySnapshotCacheOutcome {
+                        cache_hit_or_miss: if waited_on_in_flight {
+                            "wait_on_in_flight"
+                        } else {
+                            "cache_hit"
+                        },
+                        coalesced_waiter_count: max_waiter_count,
+                        db_build_elapsed_ms: 0,
+                    },
+                ));
+            }
+
+            if let Some(in_flight) = cache.in_flight.get_mut(&selection) {
+                in_flight.waiter_count += 1;
+                max_waiter_count = max_waiter_count.max(in_flight.waiter_count);
+                wait_on = Some(in_flight.signal.subscribe());
+            } else {
+                let (signal, _receiver) = tokio::sync::watch::channel(false);
+                cache.in_flight.insert(
+                    selection.clone(),
+                    DashboardActivitySnapshotInFlight {
+                        signal,
+                        waiter_count: 0,
+                    },
+                );
+                flight_guard = Some(DashboardActivitySnapshotFlightGuard::new(
+                    state.dashboard_activity_snapshot_cache.clone(),
+                    selection.clone(),
+                ));
+            }
+        }
+
+        if let Some(mut receiver) = wait_on {
+            waited_on_in_flight = true;
+            if !*receiver.borrow() {
+                let _ = receiver.changed().await;
+            }
+            continue;
+        }
+
+        let build_started_at = Instant::now();
+        let result = load_dashboard_activity_snapshot_for_range(
+            state,
+            range_name,
+            reporting_tz,
+            range,
+            recent_limit,
+            include_accounts,
+            include_recent,
+            in_progress_counts_override.clone(),
+        )
+        .await;
+        let db_build_elapsed_ms = build_started_at.elapsed().as_millis() as u64;
+
+        let mut cache = state.dashboard_activity_snapshot_cache.lock().await;
+        let in_flight = cache.in_flight.remove(&selection);
+        if let Some(guard) = flight_guard.as_mut() {
+            guard.disarm();
+        }
+        let coalesced_waiter_count = in_flight.as_ref().map_or(0, |flight| flight.waiter_count);
+        if let Some(in_flight) = in_flight {
+            if let Ok(snapshot) = &result {
+                cache.entries.insert(
+                    selection.clone(),
+                    DashboardActivitySnapshotCacheEntry {
+                        cached_at: Instant::now(),
+                        response: snapshot.clone(),
+                    },
+                );
+            }
+            let _ = in_flight.signal.send(true);
+        }
+
+        return result.map(|snapshot| {
+            (
+                snapshot,
+                DashboardActivitySnapshotCacheOutcome {
+                    cache_hit_or_miss: "cache_miss_build",
+                    coalesced_waiter_count,
+                    db_build_elapsed_ms,
+                },
+            )
+        });
+    }
 }
 
 pub(crate) fn dashboard_account_to_upstream_account(
@@ -8636,46 +10411,39 @@ pub(crate) async fn fetch_dashboard_activity(
     } else {
         None
     };
-    let mut snapshot = load_dashboard_activity_snapshot(
+    let include_recent = params.include_recent.unwrap_or(true);
+    let live_activity_key = dashboard_activity_live_snapshot_cache_key(live.as_ref());
+    let request_range =
+        resolve_dashboard_activity_exact_range(params.range.as_str(), reporting_tz)?;
+    let (mut snapshot, cache_outcome) = load_dashboard_activity_snapshot_cached(
         state.as_ref(),
         params.range.as_str(),
         reporting_tz,
+        live_activity_key.as_str(),
         recent_limit,
         params.include_accounts,
-        params.include_recent.unwrap_or(true),
+        include_recent,
         live.as_ref()
             .map(dashboard_live_snapshot_in_progress_counts),
     )
     .await?;
+    snapshot.range_start = request_range.start;
+    snapshot.range_end = request_range.end;
     let live_revision = live.as_ref().map_or(0, |snapshot| snapshot.revision);
+    let live_overlay_started_at = Instant::now();
     if let Some(live) = live {
-        snapshot.summary.stats.in_progress_conversation_count =
-            Some(live.in_progress_invocation_count);
-        snapshot.summary.stats.in_progress_retry_conversation_count =
-            Some(live.retry_invocation_count);
-        snapshot.summary.stats.in_progress_phase_counts = Some(live.in_progress_phase_counts);
-        let live_accounts = live
-            .accounts
-            .into_iter()
-            .map(|account| (account.account_key.clone(), account))
-            .collect::<HashMap<_, _>>();
-        for account in &mut snapshot.accounts {
-            let live_account = live_accounts.get(&account.account_key);
-            account.in_progress_invocation_count =
-                Some(live_account.map_or(0, |row| row.in_progress_invocation_count));
-            account.in_progress_phase_counts = Some(
-                live_account
-                    .map(|row| row.in_progress_phase_counts)
-                    .unwrap_or_default(),
-            );
-            account.retry_invocation_count =
-                Some(live_account.map_or(0, |row| row.retry_invocation_count));
-            account.upload_bytes_per_second =
-                live_account.map_or(0.0, |row| row.upload_bytes_per_second);
-            account.download_bytes_per_second =
-                live_account.map_or(0.0, |row| row.download_bytes_per_second);
-        }
+        overlay_dashboard_activity_live_accounts(
+            state.as_ref(),
+            &mut snapshot,
+            live,
+            request_range,
+            params.include_accounts,
+            include_recent,
+            recent_limit,
+        )
+        .await?;
     }
+    let live_overlay_elapsed_ms = live_overlay_started_at.elapsed().as_millis() as u64;
     let range_start = format_utc_iso_precise(snapshot.range_start);
     let range_end = format_utc_iso_precise(snapshot.range_end);
     let current_rate_window = if params.range == "yesterday" {
@@ -8717,10 +10485,15 @@ pub(crate) async fn fetch_dashboard_activity(
             endpoint = "/api/stats/dashboard-activity",
             range = %params.range,
             include_accounts = params.include_accounts,
-            include_recent = params.include_recent.unwrap_or(true),
+            include_recent,
             recent_limit,
             live_revision,
             account_count,
+            build_scope = dashboard_activity_build_scope(params.include_accounts, include_recent),
+            cache_hit_or_miss = cache_outcome.cache_hit_or_miss,
+            coalesced_waiter_count = cache_outcome.coalesced_waiter_count,
+            db_build_elapsed_ms = cache_outcome.db_build_elapsed_ms,
+            live_overlay_elapsed_ms,
             model_performance_available = response.summary.model_performance.available,
             elapsed_ms,
             "dashboard activity snapshot exceeded slow-path threshold"
@@ -8730,10 +10503,15 @@ pub(crate) async fn fetch_dashboard_activity(
             endpoint = "/api/stats/dashboard-activity",
             range = %params.range,
             include_accounts = params.include_accounts,
-            include_recent = params.include_recent.unwrap_or(true),
+            include_recent,
             recent_limit,
             live_revision,
             account_count,
+            build_scope = dashboard_activity_build_scope(params.include_accounts, include_recent),
+            cache_hit_or_miss = cache_outcome.cache_hit_or_miss,
+            coalesced_waiter_count = cache_outcome.coalesced_waiter_count,
+            db_build_elapsed_ms = cache_outcome.db_build_elapsed_ms,
+            live_overlay_elapsed_ms,
             model_performance_available = response.summary.model_performance.available,
             elapsed_ms,
             "dashboard activity snapshot completed"
@@ -8769,13 +10547,11 @@ pub(crate) async fn fetch_dashboard_activity_recent(
         end: range_end,
     };
     let source_scope = resolve_default_source_scope(&state.pool).await?;
-    let mut rows = query_live_upstream_account_activity_preview_rows_with_limit(
+    let mut rows = query_live_upstream_account_activity_preview_rows_per_account_limit(
         &state.pool,
         source_scope,
         range,
-        None,
-        None,
-        false,
+        recent_limit,
     )
     .await?;
     overlay_runtime_upstream_account_activity_preview_rows(
@@ -8791,17 +10567,24 @@ pub(crate) async fn fetch_dashboard_activity_recent(
         range,
     )
     .await?;
-    let live_ids = rows.iter().map(|row| row.id).collect::<HashSet<_>>();
     if range.start < shanghai_retention_cutoff(state.config.invocation_max_days) {
-        rows.extend(
-            crate::stats::query_completed_invocation_archive_preview_rows(
-                &state.pool,
-                source_scope,
-                range,
-                Some(&live_ids),
-            )
-            .await?,
-        );
+        let live_ids = rows.iter().map(|row| row.id).collect::<HashSet<_>>();
+        let mut archived_rows = crate::stats::query_completed_invocation_archive_preview_rows(
+            &state.pool,
+            source_scope,
+            range,
+            Some(&live_ids),
+        )
+        .await?;
+        let archived_row_ids = archived_rows.iter().map(|row| row.id).collect::<Vec<_>>();
+        let persisted_live_ids = query_live_upstream_account_activity_existing_invocation_ids(
+            &state.pool,
+            source_scope,
+            &archived_row_ids,
+        )
+        .await?;
+        archived_rows.retain(|row| !persisted_live_ids.contains(&row.id));
+        rows.extend(archived_rows);
     }
     rows.sort_by(|left, right| {
         right

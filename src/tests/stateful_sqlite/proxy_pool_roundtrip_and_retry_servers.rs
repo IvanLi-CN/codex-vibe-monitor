@@ -128,6 +128,9 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        dashboard_activity_snapshot_cache: Arc::new(Mutex::new(
+            DashboardActivitySnapshotCacheState::default(),
+        )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),

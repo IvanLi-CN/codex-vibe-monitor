@@ -1861,6 +1861,9 @@ pub(crate) async fn file_backed_test_state_with_busy_timeout(
         pricing_settings_update_lock: Arc::new(Mutex::new(())),
         pricing_catalog: Arc::new(RwLock::new(pricing_catalog)),
         prompt_cache_conversation_cache,
+        dashboard_activity_snapshot_cache: Arc::new(Mutex::new(
+            DashboardActivitySnapshotCacheState::default(),
+        )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
@@ -2516,6 +2519,9 @@ async fn quota_latest_returns_degraded_when_empty() {
         pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
+        )),
+        dashboard_activity_snapshot_cache: Arc::new(Mutex::new(
+            DashboardActivitySnapshotCacheState::default(),
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),

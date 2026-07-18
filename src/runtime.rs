@@ -166,6 +166,9 @@ pub(crate) async fn run() -> Result<()> {
         pricing_settings_update_lock: Arc::new(Mutex::new(())),
         pricing_catalog,
         prompt_cache_conversation_cache,
+        dashboard_activity_snapshot_cache: Arc::new(Mutex::new(
+            DashboardActivitySnapshotCacheState::default(),
+        )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
