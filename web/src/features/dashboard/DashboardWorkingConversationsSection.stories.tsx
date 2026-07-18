@@ -4563,7 +4563,11 @@ export const UpstreamAccountAdaptiveMetricOverflow: Story = {
           .dashboard-upstream-account-adaptive-overflow-story {
             display: inline-block;
             padding: 19px 19px 12px;
-            background: rgb(214, 232, 255);
+            background: color-mix(
+              in oklab,
+              oklch(var(--color-base-100)) 74%,
+              oklch(var(--color-info)) 26%
+            );
           }
           .dashboard-upstream-account-adaptive-overflow-story [data-testid="dashboard-working-conversations"] {
             display: inline-block;
@@ -4640,6 +4644,73 @@ export const UpstreamAccountAdaptiveMetricOverflow: Story = {
       description: {
         story:
           "Narrow owner-facing upstream-account card that forces the red-box metrics to reuse the adaptive compact-number system. Inline TPM/spend-rate and the hero cost/token values must collapse precision or magnitude while preserving the full value in tooltips and titles.",
+      },
+    },
+  },
+};
+
+export const UpstreamAccountSplitHeaderTpmWidthBudget: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => {
+    const upstreamAccountActivity = createUpstreamAccountActivityStoryResponse();
+    const account = upstreamAccountActivity.accounts[0];
+    if (account) {
+      account.tokensPerMinute = 2_027_266;
+      account.spendRate = 0.85;
+      account.inProgressInvocationCount = 6;
+      account.uploadBytesPerSecond = 614.5 * 1024;
+      account.downloadBytesPerSecond = 20.9 * 1024;
+    }
+
+    return (
+      <ForcedWorkspaceViewStory view="upstreamAccounts">
+        <DrawerPreviewStory
+          response={createResponse([
+            createConversation("pck-story-upstream-account-split-tpm-budget", [
+              createPreview({
+                id: 9833,
+                invokeId: "story-working-split-tpm-budget",
+                occurredAt: "2026-04-04T10:05:00Z",
+                status: "running",
+                upstreamAccountId: 42,
+                upstreamAccountName: "Pool Alpha",
+              }),
+            ]),
+          ])}
+          upstreamAccountActivity={upstreamAccountActivity}
+        />
+      </ForcedWorkspaceViewStory>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const accountTab = await canvas.findByRole("tab", { name: "上游账号" });
+    await userEvent.click(accountTab);
+
+    await waitFor(() => {
+      const accountCard = canvas.getByTestId("dashboard-upstream-account-card");
+      const tpmValue = canvas.getByTestId("dashboard-upstream-account-inline-tpm-value");
+      const spendRateValue = canvas.getByTestId(
+        "dashboard-upstream-account-inline-spend-rate-value",
+      );
+
+      expect(accountCard).toHaveAttribute("data-header-layout", "split");
+      expect(tpmValue).toHaveAttribute("data-compact", "true");
+      expect(tpmValue.textContent ?? "").toMatch(/M|B|T/);
+      expect(tpmValue).toHaveAttribute("title", "2,027,266");
+      expect(spendRateValue).toHaveAttribute("data-compact", "false");
+      expect(spendRateValue).toHaveTextContent("0.85");
+      expect(canvas.getByLabelText("TPM 2,027,266")).toBeInTheDocument();
+      expect(canvas.getByLabelText("消费速率 0.85")).toBeInTheDocument();
+      expect(canvas.getByLabelText("进行中 6")).toBeInTheDocument();
+    });
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Wide upstream-account header that keeps the split layout while forcing long TPM values through the dedicated ~6ch budget. Only TPM compacts; in-progress and spend-rate stay on their current display path while full TPM semantics remain available via title and aria-label.",
       },
     },
   },

@@ -17,6 +17,7 @@ interface AdaptiveDisplayValueProps {
   title?: string;
   animateDigits?: boolean;
   availableWidthPx?: number;
+  maxWidthCh?: number;
   "data-testid"?: string;
 }
 
@@ -141,12 +142,14 @@ export function AdaptiveDisplayValue({
   title,
   animateDigits = false,
   availableWidthPx,
+  maxWidthCh,
   "data-testid": dataTestId,
 }: AdaptiveDisplayValueProps) {
   const { containerRef, measureRefs, selectedCandidate } = useAdaptiveCandidateSelection(
     spec,
     availableWidthPx,
   );
+  const maxWidthStyle = maxWidthCh != null ? { maxWidth: `${maxWidthCh}ch` } : undefined;
   const shouldAnimateDigits =
     animateDigits &&
     selectedCandidate?.key === spec.candidates[0]?.key &&
@@ -158,6 +161,7 @@ export function AdaptiveDisplayValue({
     <span
       ref={containerRef}
       data-adaptive-metric-container="true"
+      style={maxWidthStyle}
       className={`relative block min-w-0 max-w-full overflow-hidden whitespace-nowrap tabular-nums ${className ?? ""}`}
     >
       {spec.candidates.map((candidate, index) => (

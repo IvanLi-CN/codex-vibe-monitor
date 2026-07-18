@@ -952,6 +952,7 @@ const ACCOUNT_METRIC_DOT_TONE_CLASSNAMES: Record<AccountMetricTone, string> = {
 };
 
 const ACCOUNT_INLINE_METRIC_ICON_AND_GAP_PX = 26;
+const ACCOUNT_INLINE_TPM_SPLIT_VALUE_WIDTH_BUDGET_CH = 6;
 
 type AccountQuickPolicyDraft = {
   priorityTier: TagPriorityTier;
@@ -1526,6 +1527,7 @@ function AccountInlineMetric({
   className,
   alignment = "start",
   fillAvailableWidth = false,
+  valueWidthBudgetCh,
   modelPerformance,
   modelPerformanceTitle,
 }: {
@@ -1537,6 +1539,7 @@ function AccountInlineMetric({
   className?: string;
   alignment?: "start" | "center" | "end";
   fillAvailableWidth?: boolean;
+  valueWidthBudgetCh?: number;
   modelPerformance?: ModelPerformance | null;
   modelPerformanceTitle?: string;
 }) {
@@ -1630,6 +1633,7 @@ function AccountInlineMetric({
           spec={value.spec}
           className="block min-w-0 max-w-full"
           availableWidthPx={availableWidthPx}
+          maxWidthCh={fillAvailableWidth ? undefined : valueWidthBudgetCh}
           data-testid={valueTestId}
           animateDigits
         />
@@ -3587,6 +3591,7 @@ function DashboardUpstreamAccountActivityCard({
                 tone="primary"
                 iconName="speedometer"
                 metricKey="tpm"
+                valueWidthBudgetCh={ACCOUNT_INLINE_TPM_SPLIT_VALUE_WIDTH_BUDGET_CH}
                 modelPerformance={account.modelPerformance}
                 modelPerformanceTitle={modelPerformanceTitle}
               />
