@@ -302,7 +302,7 @@ describe("InvocationRecordsTable", () => {
   it("renders the WS transport badge for websocket records", () => {
     render(
       <InvocationRecordsTable
-        focus="token"
+        focus="network"
         isLoading={false}
         records={[
           createRecord({
@@ -329,7 +329,7 @@ describe("InvocationRecordsTable", () => {
   it("does not render the WS transport badge for http or legacy records", () => {
     render(
       <InvocationRecordsTable
-        focus="token"
+        focus="network"
         isLoading={false}
         records={[
           createRecord({
@@ -347,6 +347,54 @@ describe("InvocationRecordsTable", () => {
     );
 
     expect(host?.querySelectorAll('[data-testid="invocation-transport-badge"]')).toHaveLength(0);
+  });
+
+  it("renders image endpoints as shared chips while keeping non-image unknown endpoints on the raw fallback", () => {
+    render(
+      <InvocationRecordsTable
+        focus="network"
+        isLoading={false}
+        records={[
+          createRecord({
+            id: 10,
+            invokeId: "invoke-image-gen",
+            endpoint: "/v1/images/generations",
+            imageIntent: "yes",
+            model: "gpt-image-1",
+          }),
+          createRecord({
+            id: 11,
+            invokeId: "invoke-image-edit",
+            endpoint: "/v1/images/edits",
+            imageIntent: "direct_image",
+            model: "gpt-image-1",
+          }),
+          createRecord({
+            id: 12,
+            invokeId: "invoke-image-generic",
+            endpoint: "/v1/images/variations",
+            model: "gpt-image-1",
+          }),
+          createRecord({
+            id: 13,
+            invokeId: "invoke-raw-experimental",
+            endpoint: "/v1/responses/experimental",
+          }),
+        ]}
+      />,
+    );
+
+    expect(host?.querySelector('[data-endpoint-kind="image_gen"]')).not.toBeNull();
+    expect(host?.querySelector('[data-endpoint-kind="image_edit"]')).not.toBeNull();
+    expect(host?.querySelector('[data-endpoint-kind="image"]')).not.toBeNull();
+    expect(host?.querySelector('[data-endpoint-kind="raw"]')).not.toBeNull();
+    expect(host?.textContent ?? "").toContain("table.endpoint.imageGenBadge");
+    expect(host?.textContent ?? "").toContain("table.endpoint.imageEditBadge");
+    expect(host?.textContent ?? "").toContain("table.endpoint.imageBadge");
+    expect(host?.textContent ?? "").toContain("/v1/responses/experimental");
+    expect(host?.textContent ?? "").not.toContain("/v1/images/generations");
+    expect(host?.textContent ?? "").not.toContain("/v1/images/edits");
+    expect(host?.textContent ?? "").not.toContain("/v1/images/variations");
   });
 
   it("treats completed rows as success in the shared records table", () => {
