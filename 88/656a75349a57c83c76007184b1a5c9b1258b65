@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.41.0",
+  "base_stable_version": "2.40.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-18T08:49:52Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.41.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8493d53a39ddd80ddd4e2f1f2afb94ab4d07a4af",
+  "pr_number": 650,
+  "pr_title": "feat(dashboard): track upstream host bandwidth truth",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.41.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.41.0",
+  "target_sha": "88656a75349a57c83c76007184b1a5c9b1258b65",
+  "type_label": "type:minor"
+}
