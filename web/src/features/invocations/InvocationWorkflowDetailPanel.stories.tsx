@@ -177,9 +177,43 @@ const failedWorkflowResponse: ApiInvocationWorkflowDetailResponse = {
       subtitle: "pool /v1/responses",
       status: "pool",
       detail: {
-        routeMode: "pool",
-        poolAttemptCount: 1,
-        promptCacheKey: "019d5ea7-519d-7312-a2e8-ef07abb7c09f",
+        request: {
+          endpoint: "/v1/responses",
+          routeMode: "pool",
+          requestModel: "gpt-5.4",
+          responseModel: "gpt-5.4",
+          requestedServiceTier: "priority",
+          reasoningEffort: "high",
+          compactionRequestKind: "remote_v2",
+          promptCacheKey: "019d5ea7-519d-7312-a2e8-ef07abb7c09f",
+          requesterIp: "203.0.113.10",
+          routing: {
+            routeMode: "pool",
+            upstreamRouteKey: "route-pool-alpha",
+            proxyBindingKey: "fpb_tokyo_alpha",
+            proxyDisplayName: "tokyo-edge-01",
+          },
+          headers: {
+            userAgent: "monitor-ui/1.0",
+            xForwardedFor: "203.0.113.10",
+          },
+          bodyCapture: {
+            availableAtInvocationLevel: true,
+            size: failedWorkflowRequestBodySize,
+            truncated: false,
+            detailLevel: "full",
+          },
+        },
+        requestHeaders: {
+          userAgent: "monitor-ui/1.0",
+          xForwardedFor: "203.0.113.10",
+        },
+        requestBody: {
+          availableAtInvocationLevel: true,
+          size: failedWorkflowRequestBodySize,
+          truncated: false,
+          detailLevel: "full",
+        },
       },
     },
     {
@@ -307,6 +341,113 @@ const failedWorkflowResponse: ApiInvocationWorkflowDetailResponse = {
   partialReason: null,
 };
 
+const blockedWorkflowRecord: ApiInvocation = {
+  ...failedWorkflowRecord,
+  occurredAt: "2026-07-18T02:03:02Z",
+  status: "http_503",
+  upstreamAccountId: null,
+  upstreamAccountName: undefined,
+  totalTokens: undefined,
+  cost: undefined,
+  tTotalMs: 810,
+  errorMessage: "pool assigned account blocked",
+  failureKind: "pool_assigned_account_blocked",
+  downstreamStatusCode: 503,
+  downstreamErrorMessage: "pool assigned account blocked",
+};
+
+const blockedWorkflowResponse: ApiInvocationWorkflowDetailResponse = {
+  hero: {
+    recordId: 77,
+    invokeId: "invoke-workflow-77",
+    promptCacheKey: "019d5ea7-519d-7312-a2e8-ef07abb7c09f",
+    routeMode: "pool",
+    endpoint: "/v1/responses",
+    requestModel: "gpt-5.4",
+    responseModel: "gpt-5.4",
+    finalStatus: "http_503",
+    failureClass: "service_failure",
+    downstreamStatusCode: 503,
+    upstreamAccountId: null,
+    upstreamAccountName: null,
+    totalDurationMs: 810,
+    timelineAttemptCount: 0,
+    poolAttemptCount: 0,
+    totalTokens: null,
+    cost: null,
+    occurredAt: "2026-07-18T02:03:02Z",
+  },
+  timeline: [
+    {
+      blockId: "route-terminal",
+      kind: "routingDecision",
+      occurredAt: "2026-07-18T02:03:02Z",
+      title: "Route resolution",
+      subtitle: "gpt-5.4 · /v1/responses",
+      detail: {
+        request: {
+          endpoint: "/v1/responses",
+          routeMode: "pool",
+          requestModel: "gpt-5.4",
+          responseModel: "gpt-5.4",
+          requestedServiceTier: "priority",
+          reasoningEffort: "high",
+          compactionRequestKind: "remote_v2",
+          promptCacheKey: "019d5ea7-519d-7312-a2e8-ef07abb7c09f",
+          requesterIp: "203.0.113.10",
+          routing: {
+            routeMode: "pool",
+            proxyDisplayName: "tokyo-edge-01",
+          },
+          headers: {
+            userAgent: "monitor-ui/1.0",
+            xForwardedFor: "203.0.113.10",
+          },
+          bodyCapture: {
+            availableAtInvocationLevel: true,
+            size: failedWorkflowRequestBodySize,
+            truncated: false,
+            detailLevel: "full",
+          },
+        },
+        requestHeaders: {
+          userAgent: "monitor-ui/1.0",
+          xForwardedFor: "203.0.113.10",
+        },
+        requestBody: {
+          availableAtInvocationLevel: true,
+          size: failedWorkflowRequestBodySize,
+          truncated: false,
+          detailLevel: "full",
+        },
+      },
+    },
+    {
+      blockId: "system-final-failure",
+      kind: "systemFinalFailure",
+      occurredAt: "2026-07-18T02:03:02Z",
+      title: "Final downstream response",
+      subtitle: "pool_assigned_account_blocked",
+      status: "http_503",
+      detail: {
+        downstreamStatusCode: 503,
+        failureClass: "service_failure",
+        failureKind: "pool_assigned_account_blocked",
+        errorMessage: "[pool_assigned_account_blocked] pool assigned account blocked",
+        downstreamErrorMessage: "pool assigned account blocked",
+      },
+      responseBody: {
+        available: true,
+        bodyText:
+          '{"error":"pool assigned account blocked","cvmId":"invoke-workflow-77","code":"pool_assigned_account_blocked"}',
+      },
+    },
+  ],
+  reconstructed: false,
+  partial: false,
+  partialReason: null,
+};
+
 const meta = {
   title: "Invocations/InvocationWorkflowDetailPanel",
   component: InvocationWorkflowDetailPanel,
@@ -337,6 +478,21 @@ export const FailedPoolWorkflow: Story = {
     (Story) => (
       <>
         <WorkflowFetchMock recordId={77} response={failedWorkflowResponse} />
+        <Story />
+      </>
+    ),
+  ],
+};
+
+export const BlockedPoolWorkflow: Story = {
+  args: {
+    record: blockedWorkflowRecord,
+    size: "default",
+  },
+  decorators: [
+    (Story) => (
+      <>
+        <WorkflowFetchMock recordId={77} response={blockedWorkflowResponse} />
         <Story />
       </>
     ),

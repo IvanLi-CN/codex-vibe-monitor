@@ -3123,23 +3123,12 @@ async fn capture_target_pool_route_timeout_surfaces_blocked_policy_terminal() {
     .fetch_all(&state.pool)
     .await
     .expect("load timeout blocked-policy rows");
-    assert_eq!(attempt_rows.len(), 2);
+    assert_eq!(attempt_rows.len(), 1);
     assert_eq!(attempt_rows[0].attempt_index, 1);
     assert_eq!(attempt_rows[0].same_account_retry_index, 1);
     assert_eq!(
         attempt_rows[0].status,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-    );
-    assert_eq!(attempt_rows[1].attempt_index, 2);
-    assert_eq!(attempt_rows[1].distinct_account_index, 1);
-    assert_eq!(attempt_rows[1].same_account_retry_index, 0);
-    assert_eq!(
-        attempt_rows[1].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
-    );
-    assert_eq!(
-        attempt_rows[1].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_ROUTING_BLOCKED),
     );
 
     let row = sqlx::query_as::<_, PersistedPayloadRow>(

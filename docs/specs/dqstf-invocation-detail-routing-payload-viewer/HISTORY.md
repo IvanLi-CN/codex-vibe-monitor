@@ -17,3 +17,7 @@
 - 2026-07-15: 请求体完整原文只保证在调用级记录存在；尝试级详情默认暴露 `request_summary_json` / `response_summary_json` 结构化快照，不在 attempt 表重复存整份 raw body。
 - 2026-07-15: 视觉设计收口到 `Rich Structured Snapshot + overview-first timeline`。首屏改为单一快照面板，辅助块默认先展示人类可读概览，原始 JSON / 响应体降为次级操作，避免调用详情退化成日志堆叠器。
 - 2026-07-16: 尝试详情入口改为显式子页面目录。展开尝试后默认直接暴露 `时间详情 / 解析请求 / 请求头 / 请求体 / 解析响应 / 响应头 / 响应体` 七个子详情页，不再要求用户先经过“请求详情 / 响应详情”的二级入口。
+- 2026-07-18: `attempt` 语义收紧为“真实开始向上游 dispatch”。pre-dispatch pool 终态、本地 owner-guard terminal 与 websocket pre-upstream terminal 不再前向写入 `pool_upstream_request_attempts`。
+- 2026-07-18: 历史 pre-dispatch pseudo-attempt 采用聚合层渲染纠偏，不做数据库回写迁移；workflow detail 会把稳定特征命中的旧行折叠成 `路由决定 + 系统裁定`。
+- 2026-07-18: 路由块详情 contract 固定为 `请求 / 请求头 / 请求体` 三分区，其中 `请求体` 继续回放调用级原始 request body，而不是复制 attempt-level raw body。
+- 2026-07-18: 本地终态错误响应改为复用共享 envelope；HTTP 下游返回与 `ProxyCaptureRecord` 持久化使用同一份 status/headers/body，`systemFinalFailure.responseBody` 因而回放真实裁定 body，不再依赖 `"{}"` / `missing_body` 占位。

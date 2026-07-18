@@ -1807,60 +1807,18 @@ pub(crate) async fn insert_pool_upstream_terminal_attempt(
     distinct_account_index: i64,
     failure_kind: &'static str,
 ) -> Result<()> {
-    let finished_at = shanghai_now_string();
-    let group_name_snapshot = final_error
-        .account
-        .as_ref()
-        .and_then(|account| account.group_name.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    let upstream_route_key = final_error
-        .account
-        .as_ref()
-        .map(|account| account.upstream_route_key());
-    let (http_status, downstream_http_status) = if final_error.downstream_error_message.is_some() {
-        (None, Some(final_error.status))
-    } else {
-        (Some(final_error.status), None)
-    };
-    let canonical_error_message = final_error
-        .canonical_error_message
-        .as_deref()
-        .unwrap_or(final_error.message.as_str());
-    insert_pool_upstream_request_attempt_with_scope(
+    let _ = (
         pool,
         trace,
-        group_name_snapshot.as_deref(),
-        final_error.proxy_binding_key_snapshot.as_deref(),
-        final_error
-            .account
-            .as_ref()
-            .map(|account| account.account_id),
-        upstream_route_key.as_deref(),
+        final_error,
         attempt_index,
         distinct_account_index,
-        0,
-        Some(finished_at.as_str()),
-        Some(finished_at.as_str()),
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
-        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED),
-        http_status,
-        downstream_http_status,
-        Some(failure_kind),
-        Some(canonical_error_message),
-        final_error.downstream_error_message.as_deref(),
-        None,
-        None,
-        None,
-        final_error.upstream_request_id.as_deref(),
-        None,
-        None,
-        None,
-        None,
-    )
-    .await
-    .map(|_| ())
+        failure_kind,
+    );
+    // Terminal pool adjudications do not represent a real upstream dispatch and must not create
+    // pseudo-attempt rows going forward. Historical rows remain readable via workflow
+    // reconstruction, but new data should rely on invocation-level route + final failure.
+    Ok(())
 }
 
 pub(crate) async fn insert_and_broadcast_pool_upstream_terminal_attempt(
@@ -1871,16 +1829,14 @@ pub(crate) async fn insert_and_broadcast_pool_upstream_terminal_attempt(
     distinct_account_index: i64,
     failure_kind: &'static str,
 ) -> Result<()> {
-    insert_pool_upstream_terminal_attempt(
-        &state.pool,
+    let _ = (
+        state,
         trace,
         final_error,
         attempt_index,
         distinct_account_index,
         failure_kind,
-    )
-    .await?;
-    broadcast_pool_upstream_attempts_snapshot(state, &trace.invoke_id).await?;
+    );
     Ok(())
 }
 

@@ -1784,22 +1784,18 @@ async fn websocket_prepare_rate_limited_owner_returns_owner_unavailable() {
     assert_eq!(attempts.get("Bearer upstream-owner").copied(), None);
     assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
 
-    let last_attempt = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+    let owner_unavailable_attempts: i64 = sqlx::query_scalar(
         r#"
-        SELECT upstream_account_id, failure_kind
+        SELECT COUNT(*)
         FROM pool_upstream_request_attempts
-        ORDER BY id DESC
-        LIMIT 1
+        WHERE failure_kind = ?1
         "#,
     )
+    .bind(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
     .fetch_one(&state.pool)
     .await
     .expect("load websocket encrypted owner rate-limited terminal attempt");
-    assert_eq!(last_attempt.0, None);
-    assert_eq!(
-        last_attempt.1.as_deref(),
-        Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
-    );
+    assert_eq!(owner_unavailable_attempts, 0);
 
     upstream_handle.abort();
 }

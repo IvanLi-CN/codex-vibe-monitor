@@ -305,7 +305,7 @@ pub(crate) async fn proxy_openai_v1_common(
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ProxyErrorResponse {
     pub(crate) status: StatusCode,
     pub(crate) message: String,
@@ -313,51 +313,69 @@ pub(crate) struct ProxyErrorResponse {
     pub(crate) retry_after_secs: Option<u64>,
 }
 
-pub(crate) const PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE: &str =
-    "pool route key missing or invalid";
-pub(crate) fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &str) -> Response {
+#[derive(Debug, Clone)]
+pub(crate) struct ProxyErrorResponseEnvelope {
+    pub(crate) status: StatusCode,
+    pub(crate) body_text: String,
+    pub(crate) retry_after: Option<String>,
+    pub(crate) cvm_invoke_id: Option<String>,
+}
+
+impl ProxyErrorResponseEnvelope {
+    pub(crate) fn into_response(self) -> Response {
+        let mut response = Response::new(axum::body::Body::from(self.body_text));
+        *response.status_mut() = self.status;
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        if let Some(cvm_invoke_id) = self.cvm_invoke_id
+            && let Ok(header_value) = HeaderValue::from_str(&cvm_invoke_id)
+        {
+            response
+                .headers_mut()
+                .insert(HeaderName::from_static(CVM_INVOKE_ID_HEADER), header_value);
+        }
+        if let Some(retry_after) = self.retry_after
+            && let Ok(header_value) = HeaderValue::from_str(&retry_after)
+        {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, header_value);
+        }
+        response
+    }
+}
+
+pub(crate) fn build_proxy_error_response_envelope(
+    err: &ProxyErrorResponse,
+    invoke_id: &str,
+) -> ProxyErrorResponseEnvelope {
     let code = (err.status == StatusCode::GATEWAY_TIMEOUT
         && err
             .message
             .contains(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT))
     .then_some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT);
-    match err.cvm_id {
-        Some(cvm_id) => {
-            let mut payload = json!({ "error": err.message, "cvmId": cvm_id });
-            if let Some(code) = code {
-                payload["code"] = json!(code);
-            }
-            let mut response = (err.status, Json(payload)).into_response();
-            if let Ok(header_value) = HeaderValue::from_str(invoke_id) {
-                response
-                    .headers_mut()
-                    .insert(HeaderName::from_static(CVM_INVOKE_ID_HEADER), header_value);
-            }
-            if let Some(retry_after_secs) = err.retry_after_secs
-                && let Ok(header_value) = HeaderValue::from_str(&retry_after_secs.to_string())
-            {
-                response
-                    .headers_mut()
-                    .insert(header::RETRY_AFTER, header_value);
-            }
-            response
-        }
-        None => {
-            let mut payload = json!({ "error": err.message });
-            if let Some(code) = code {
-                payload["code"] = json!(code);
-            }
-            let mut response = (err.status, Json(payload)).into_response();
-            if let Some(retry_after_secs) = err.retry_after_secs
-                && let Ok(header_value) = HeaderValue::from_str(&retry_after_secs.to_string())
-            {
-                response
-                    .headers_mut()
-                    .insert(header::RETRY_AFTER, header_value);
-            }
-            response
-        }
+    let mut payload = json!({ "error": err.message });
+    if let Some(cvm_id) = err.cvm_id.as_ref() {
+        payload["cvmId"] = json!(cvm_id);
     }
+    if let Some(code) = code {
+        payload["code"] = json!(code);
+    }
+    ProxyErrorResponseEnvelope {
+        status: err.status,
+        body_text: serde_json::to_string(&payload)
+            .expect("proxy error response payload should serialize"),
+        retry_after: err.retry_after_secs.map(|value| value.to_string()),
+        cvm_invoke_id: err.cvm_id.as_ref().map(|_| invoke_id.to_string()),
+    }
+}
+
+pub(crate) const PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE: &str =
+    "pool route key missing or invalid";
+pub(crate) fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &str) -> Response {
+    build_proxy_error_response_envelope(&err, invoke_id).into_response()
 }
 
 #[derive(Debug)]

@@ -2853,13 +2853,6 @@ async fn pool_route_oauth_responses_sends_uuid_account_header_and_persists_obser
 
 #[tokio::test]
 async fn failover_preserves_assigned_account_when_sticky_owner_is_preflight_blocked() {
-    #[derive(Debug, sqlx::FromRow)]
-    struct AttemptRow {
-        upstream_account_id: Option<i64>,
-        failure_kind: Option<String>,
-        error_message: Option<String>,
-    }
-
     let state =
         test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid url")).await;
     let sticky_account = insert_test_pool_api_key_account_with_options(
@@ -2965,27 +2958,15 @@ async fn failover_preserves_assigned_account_when_sticky_owner_is_preflight_bloc
         "upstream account group \"sticky-preflight-missing\" has no bound forward proxy nodes"
     ));
 
-    wait_for_pool_attempt_row_count(&state.pool, 1).await;
-    let attempt_rows = sqlx::query_as::<_, AttemptRow>(
+    wait_for_pool_attempt_row_count(&state.pool, 0).await;
+    let attempt_count: i64 = sqlx::query_scalar(
         r#"
-        SELECT upstream_account_id, failure_kind, error_message
+        SELECT COUNT(*)
         FROM pool_upstream_request_attempts
-        ORDER BY attempt_index ASC
         "#,
     )
-    .fetch_all(&state.pool)
+    .fetch_one(&state.pool)
     .await
-    .expect("load sticky preflight blocked attempts");
-    assert_eq!(attempt_rows.len(), 1);
-    assert_eq!(attempt_rows[0].upstream_account_id, Some(sticky_account));
-    assert_eq!(
-        attempt_rows[0].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED)
-    );
-    assert!(
-        attempt_rows[0]
-            .error_message
-            .as_deref()
-            .is_some_and(|message| message.contains("sticky-preflight-missing"))
-    );
+    .expect("count sticky preflight blocked attempts");
+    assert_eq!(attempt_count, 0);
 }
