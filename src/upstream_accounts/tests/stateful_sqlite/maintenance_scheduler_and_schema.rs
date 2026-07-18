@@ -341,34 +341,64 @@ fn test_effective_routing_rule(concurrency_limit: i64) -> EffectiveRoutingRule {
 #[test]
 fn request_capabilities_route_by_three_independent_axes() {
     assert!(account_accepts_request_capabilities(
-        RequestCapabilityRequirements::from_image_intent(ImageIntent::Yes),
+        RequestCapabilityRequirements::from_endpoint_and_image_intent(
+            "/v1/responses",
+            ImageIntent::Yes
+        ),
         CapabilitySupport::Unknown,
         CapabilitySupport::Unsupported,
         CapabilitySupport::Supported,
+        CapabilitySupport::Supported,
     ));
     assert!(!account_accepts_request_capabilities(
-        RequestCapabilityRequirements::from_image_intent(ImageIntent::Yes),
+        RequestCapabilityRequirements::from_endpoint_and_image_intent(
+            "/v1/responses",
+            ImageIntent::Yes
+        ),
+        CapabilitySupport::Supported,
         CapabilitySupport::Supported,
         CapabilitySupport::Supported,
         CapabilitySupport::Unsupported,
     ));
     assert!(account_accepts_request_capabilities(
-        RequestCapabilityRequirements::from_image_intent(ImageIntent::DirectImage),
+        RequestCapabilityRequirements::from_endpoint_and_image_intent(
+            "/v1/images/generations",
+            ImageIntent::DirectImage,
+        ),
         CapabilitySupport::Unsupported,
+        CapabilitySupport::Supported,
         CapabilitySupport::Supported,
         CapabilitySupport::Unsupported,
     ));
     assert!(!account_accepts_request_capabilities(
-        RequestCapabilityRequirements::from_image_intent(ImageIntent::DirectImage),
+        RequestCapabilityRequirements::from_endpoint_and_image_intent(
+            "/v1/images/generations",
+            ImageIntent::DirectImage,
+        ),
         CapabilitySupport::Supported,
+        CapabilitySupport::Unsupported,
         CapabilitySupport::Unsupported,
         CapabilitySupport::Supported,
     ));
     assert!(account_accepts_request_capabilities(
-        RequestCapabilityRequirements::from_image_intent(ImageIntent::Unknown),
+        RequestCapabilityRequirements::from_endpoint_and_image_intent(
+            "/v1/chat/completions",
+            ImageIntent::Unknown,
+        ),
+        CapabilitySupport::Unsupported,
         CapabilitySupport::Supported,
         CapabilitySupport::Unsupported,
         CapabilitySupport::Unsupported,
+    ));
+    assert!(!account_accepts_request_capabilities(
+        RequestCapabilityRequirements::from_endpoint_and_image_intent(
+            "/v1/chat/completions",
+            ImageIntent::Unknown,
+        ),
+        CapabilitySupport::Supported,
+        CapabilitySupport::Unsupported,
+        CapabilitySupport::Unsupported,
+        CapabilitySupport::Supported,
     ));
 }
 
@@ -2407,6 +2437,115 @@ async fn ensure_upstream_accounts_schema_upgrades_legacy_pool_routing_settings_b
     );
     assert_eq!(resolved.default_send_timeout, defaults.default_send_timeout);
     assert_eq!(resolved.request_read_timeout, defaults.request_read_timeout);
+}
+
+#[tokio::test]
+async fn ensure_upstream_accounts_schema_resets_mixed_response_capability_once() {
+    let pool = SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("connect sqlite");
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("ensure schema");
+
+    let account_id = insert_oauth_account(&pool, "Legacy Mixed Capability").await;
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET response_endpoint_capability = 'supported',
+            response_endpoint_capability_observed_at = '2026-07-17T08:00:00Z',
+            response_endpoint_capability_reason = 'legacy mixed response capability',
+            policy_response_endpoint_capability_override = 'unsupported'
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .execute(&pool)
+    .await
+    .expect("seed legacy mixed response capability");
+    sqlx::query(
+        r#"
+        UPDATE pool_routing_settings
+        SET capability_axis_split_migrated = 0
+        WHERE id = ?1
+        "#,
+    )
+    .bind(POOL_SETTINGS_SINGLETON_ID)
+    .execute(&pool)
+    .await
+    .expect("reset capability-axis migration flag");
+
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("run capability-axis cutover");
+
+    let row = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load row after capability-axis cutover")
+        .expect("row exists after capability-axis cutover");
+    assert_eq!(row.response_endpoint_capability.as_deref(), Some("unknown"));
+    assert_eq!(row.chat_completions_capability.as_deref(), Some("unknown"));
+    assert_eq!(row.response_endpoint_capability_observed_at, None);
+    assert_eq!(row.chat_completions_capability_observed_at, None);
+    assert_eq!(row.response_endpoint_capability_reason, None);
+    assert_eq!(row.chat_completions_capability_reason, None);
+    assert_eq!(row.policy_response_endpoint_capability_override, None);
+    assert_eq!(row.policy_chat_completions_capability_override, None);
+
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET response_endpoint_capability = 'supported',
+            response_endpoint_capability_reason = 'responses endpoint request succeeded',
+            policy_response_endpoint_capability_override = 'supported',
+            chat_completions_capability = 'supported',
+            chat_completions_capability_reason = 'chat completions endpoint request succeeded',
+            policy_chat_completions_capability_override = 'unsupported'
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .execute(&pool)
+    .await
+    .expect("seed post-cutover capability state");
+
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("rerun schema maintenance after cutover");
+
+    let row = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load row after second schema run")
+        .expect("row exists after second schema run");
+    assert_eq!(
+        row.response_endpoint_capability.as_deref(),
+        Some("supported")
+    );
+    assert_eq!(
+        row.chat_completions_capability.as_deref(),
+        Some("supported")
+    );
+    assert_eq!(
+        row.policy_response_endpoint_capability_override.as_deref(),
+        Some("supported")
+    );
+    assert_eq!(
+        row.policy_chat_completions_capability_override.as_deref(),
+        Some("unsupported")
+    );
+
+    let migrated: i64 = sqlx::query_scalar(
+        r#"
+        SELECT capability_axis_split_migrated
+        FROM pool_routing_settings
+        WHERE id = ?1
+        "#,
+    )
+    .bind(POOL_SETTINGS_SINGLETON_ID)
+    .fetch_one(&pool)
+    .await
+    .expect("load capability-axis migration flag");
+    assert_eq!(migrated, 1);
 }
 
 #[tokio::test]

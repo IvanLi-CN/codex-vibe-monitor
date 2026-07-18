@@ -486,6 +486,13 @@ function createAccounts(scene: DemoScene = "operational") {
           observedAt: recentAt(30),
           reason: "response endpoint request succeeded",
         },
+        chatCompletionsCapability: {
+          observed: "supported",
+          override: null,
+          effective: "supported",
+          observedAt: recentAt(29),
+          reason: "chat completions endpoint request succeeded",
+        },
         imageEndpointCapability: {
           observed: tagName === "image" ? "supported" : "unknown",
           override: null,

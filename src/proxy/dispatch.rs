@@ -1993,6 +1993,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let upstream_attempt_started_at_for_task = upstream_attempt_started_at;
     let upstream_attempt_started_at_utc_for_task = upstream_attempt_started_at_utc;
     let first_byte_timeout_for_task = first_byte_timeout;
+    let request_endpoint_for_task = original_uri.path().to_string();
     let stream_timeout_for_task = stream_timeout;
     let response_is_event_stream_for_task = response_is_event_stream;
     let proxy_request_permit_for_task = proxy_request_permit;
@@ -2650,12 +2651,13 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         state_for_task.as_ref(),
                         &reservation_key_for_task,
                     );
-                    record_pool_route_success_with_image_intent_for_attempt(
+                    record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
                         &state_for_task.pool,
                         account.account_id,
                         upstream_attempt_started_at_utc_for_task.unwrap_or_else(Utc::now),
                         sticky_key_for_task.as_deref(),
                         None,
+                        request_endpoint_for_task.as_str(),
                         request_image_intent,
                         pending_pool_attempt_record_for_task
                             .as_ref()
@@ -2705,7 +2707,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         )
                         .await
                     } else {
-                        record_pool_route_http_failure_with_image_intent_for_attempt(
+                        record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
                             &state_for_task.pool,
                             account.account_id,
                             &account.kind,
@@ -2714,6 +2716,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             upstream_status,
                             &route_message,
                             None,
+                            request_endpoint_for_task.as_str(),
                             request_image_intent,
                             pending_pool_attempt_record_for_task
                                 .as_ref()

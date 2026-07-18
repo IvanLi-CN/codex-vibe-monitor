@@ -486,6 +486,7 @@ async fn pool_route_large_oauth_responses_file_backed_body_rewrites_and_replaces
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         response_endpoint_capability: CapabilitySupport::Unknown,
+        chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
     };
@@ -962,6 +963,7 @@ async fn pool_route_oauth_responses_file_backed_body_above_rewrite_limit_stays_p
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         response_endpoint_capability: CapabilitySupport::Unknown,
+        chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
     };
@@ -1099,6 +1101,7 @@ async fn pool_route_oauth_responses_compressed_file_backed_body_stays_passthroug
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         response_endpoint_capability: CapabilitySupport::Unknown,
+        chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
     };
@@ -1413,6 +1416,7 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         response_endpoint_capability: CapabilitySupport::Unknown,
+        chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
     };

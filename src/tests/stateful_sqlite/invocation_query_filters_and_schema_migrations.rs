@@ -3828,6 +3828,7 @@ async fn prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slot
             None,
             None,
             conversation_override.as_ref(),
+            "/v1/chat/completions",
             ImageIntent::Unknown,
         )
         .await

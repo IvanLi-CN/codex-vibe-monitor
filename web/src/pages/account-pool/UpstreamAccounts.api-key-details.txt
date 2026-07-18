@@ -48,6 +48,13 @@ describe("UpstreamAccountsPage api key details", () => {
           observedAt: "2026-07-17T08:00:00Z",
           reason: "response endpoint succeeded",
         },
+        chatCompletionsCapability: {
+          observed: "unsupported",
+          override: null,
+          effective: "unsupported",
+          observedAt: "2026-07-17T08:03:00Z",
+          reason: "chat completions endpoint unsupported",
+        },
         imageEndpointCapability: {
           observed: "supported",
           override: null,
@@ -101,7 +108,8 @@ describe("UpstreamAccountsPage api key details", () => {
     clickFirstRosterRow();
 
     const overviewText = document.body.textContent ?? "";
-    expect(overviewText).toMatch(/Response endpoint/i);
+    expect(overviewText).toMatch(/Responses endpoint/i);
+    expect(overviewText).toMatch(/Chat Completions endpoint/i);
     expect(overviewText).toMatch(/Image endpoint/i);
     expect(overviewText).toMatch(/Response image-tool/i);
     expect(overviewText).not.toMatch(/Image tool capability/i);

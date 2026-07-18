@@ -95,6 +95,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait(
         wait_for_no_available,
         wait_deadline,
         total_timeout_deadline,
+        "",
         crate::ImageIntent::Unknown,
     )
     .await
@@ -110,6 +111,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_image_intent(
     wait_for_no_available: bool,
     wait_deadline: &mut Option<Instant>,
     total_timeout_deadline: Option<Instant>,
+    endpoint: &str,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolutionWithWait> {
     resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent(
@@ -123,6 +125,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_image_intent(
         wait_for_no_available,
         wait_deadline,
         total_timeout_deadline,
+        endpoint,
         image_intent,
     )
     .await
@@ -152,6 +155,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
         wait_for_no_available,
         wait_deadline,
         total_timeout_deadline,
+        "",
         crate::ImageIntent::Unknown,
     )
     .await
@@ -168,6 +172,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
     wait_for_no_available: bool,
     wait_deadline: &mut Option<Instant>,
     total_timeout_deadline: Option<Instant>,
+    endpoint: &str,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolutionWithWait> {
     resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
@@ -182,6 +187,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
         wait_for_no_available,
         wait_deadline,
         total_timeout_deadline,
+        endpoint,
         image_intent,
     )
     .await
@@ -199,6 +205,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
     wait_for_no_available: bool,
     wait_deadline: &mut Option<Instant>,
     total_timeout_deadline: Option<Instant>,
+    endpoint: &str,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolutionWithWait> {
     resolve_pool_account_for_request_with_wait_and_binding_constraint_internal(
@@ -213,6 +220,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
         wait_for_no_available,
         wait_deadline,
         total_timeout_deadline,
+        endpoint,
         image_intent,
     )
     .await
@@ -230,6 +238,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
     wait_for_no_available: bool,
     wait_deadline: &mut Option<Instant>,
     total_timeout_deadline: Option<Instant>,
+    endpoint: &str,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolutionWithWait> {
     let poll_interval = state.pool_no_available_wait.normalized_poll_interval();
@@ -249,6 +258,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
                 required_upstream_route_key,
                 binding_constraint,
                 conversation_override,
+                endpoint,
                 image_intent,
             )
             .await?;
@@ -608,6 +618,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 wait_for_no_available,
                 &mut no_available_wait_deadline,
                 total_timeout_deadline,
+                original_uri.path(),
                 image_intent,
             )
             .await
@@ -2569,9 +2580,11 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             "failed to record compact support observation"
                         );
                     }
-                    let capability_requirements = RequestCapabilityRequirements::from_image_intent(
-                        attempted_requested_image_intent,
-                    );
+                    let capability_requirements =
+                        RequestCapabilityRequirements::from_endpoint_and_image_intent(
+                            original_uri.path(),
+                            attempted_requested_image_intent,
+                        );
                     if capability_requirements.response_endpoint
                         && classify_response_endpoint_capability_observation(
                             status,
@@ -2590,6 +2603,26 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             account_id = account.account_id,
                             error = %observation_err,
                             "failed to record response endpoint capability observation"
+                        );
+                    }
+                    if capability_requirements.chat_completions_endpoint
+                        && classify_chat_completions_capability_observation(
+                            status,
+                            Some(route_error_message.as_str()),
+                        ) == CapabilitySupport::Unsupported
+                        && let Err(observation_err) = record_capability_observation(
+                            &state.pool,
+                            account.account_id,
+                            UpstreamCapabilityAxis::ChatCompletionsEndpoint,
+                            CapabilitySupport::Unsupported,
+                            Some(route_error_message.as_str()),
+                        )
+                        .await
+                    {
+                        warn!(
+                            account_id = account.account_id,
+                            error = %observation_err,
+                            "failed to record chat completions capability observation"
                         );
                     }
                     if capability_requirements.image_endpoint
@@ -2820,7 +2853,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     )
                     .await
                 } else {
-                    record_pool_route_http_failure_with_image_intent_for_attempt(
+                    record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
                         &state.pool,
                         account.account_id,
                         &account.kind,
@@ -2829,6 +2862,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         status,
                         &route_error_message,
                         trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                        original_uri.path(),
                         attempted_requested_image_intent,
                         pending_attempt_record
                             .as_ref()

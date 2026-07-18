@@ -3,6 +3,7 @@ use super::*;
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum UpstreamCapabilityAxis {
     ResponseEndpoint,
+    ChatCompletionsEndpoint,
     ImageEndpoint,
     ResponseImageTool,
 }
@@ -11,6 +12,7 @@ impl UpstreamCapabilityAxis {
     fn observed_column(self) -> &'static str {
         match self {
             Self::ResponseEndpoint => "response_endpoint_capability",
+            Self::ChatCompletionsEndpoint => "chat_completions_capability",
             Self::ImageEndpoint => "image_endpoint_capability",
             Self::ResponseImageTool => "response_image_tool_capability",
         }
@@ -19,6 +21,7 @@ impl UpstreamCapabilityAxis {
     fn observed_at_column(self) -> &'static str {
         match self {
             Self::ResponseEndpoint => "response_endpoint_capability_observed_at",
+            Self::ChatCompletionsEndpoint => "chat_completions_capability_observed_at",
             Self::ImageEndpoint => "image_endpoint_capability_observed_at",
             Self::ResponseImageTool => "response_image_tool_capability_observed_at",
         }
@@ -27,6 +30,7 @@ impl UpstreamCapabilityAxis {
     fn reason_column(self) -> &'static str {
         match self {
             Self::ResponseEndpoint => "response_endpoint_capability_reason",
+            Self::ChatCompletionsEndpoint => "chat_completions_capability_reason",
             Self::ImageEndpoint => "image_endpoint_capability_reason",
             Self::ResponseImageTool => "response_image_tool_capability_reason",
         }
@@ -35,6 +39,7 @@ impl UpstreamCapabilityAxis {
     fn success_reason(self) -> &'static str {
         match self {
             Self::ResponseEndpoint => "response endpoint request succeeded",
+            Self::ChatCompletionsEndpoint => "chat completions endpoint request succeeded",
             Self::ImageEndpoint => "image endpoint request succeeded",
             Self::ResponseImageTool => "response image tool request succeeded",
         }
@@ -141,12 +146,57 @@ pub(crate) async fn record_pool_route_success_with_image_intent(
     .await
 }
 
+pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    request_started_at_utc: DateTime<Utc>,
+    sticky_key: Option<&str>,
+    invoke_id: Option<&str>,
+    endpoint: &str,
+    image_intent: ImageIntent,
+) -> Result<()> {
+    record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
+        pool,
+        account_id,
+        request_started_at_utc,
+        sticky_key,
+        invoke_id,
+        endpoint,
+        image_intent,
+        None,
+    )
+    .await
+}
+
 pub(crate) async fn record_pool_route_success_with_image_intent_for_attempt(
     pool: &Pool<Sqlite>,
     account_id: i64,
     request_started_at_utc: DateTime<Utc>,
     sticky_key: Option<&str>,
     invoke_id: Option<&str>,
+    image_intent: ImageIntent,
+    attempt_id: Option<i64>,
+) -> Result<()> {
+    record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
+        pool,
+        account_id,
+        request_started_at_utc,
+        sticky_key,
+        invoke_id,
+        "",
+        image_intent,
+        attempt_id,
+    )
+    .await
+}
+
+pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    request_started_at_utc: DateTime<Utc>,
+    sticky_key: Option<&str>,
+    invoke_id: Option<&str>,
+    endpoint: &str,
     image_intent: ImageIntent,
     attempt_id: Option<i64>,
 ) -> Result<()> {
@@ -159,7 +209,8 @@ pub(crate) async fn record_pool_route_success_with_image_intent_for_attempt(
         attempt_id,
     )
     .await?;
-    let requirements = RequestCapabilityRequirements::from_image_intent(image_intent);
+    let requirements =
+        RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
     if requirements.response_endpoint {
         record_capability_observation(
             pool,
@@ -167,6 +218,16 @@ pub(crate) async fn record_pool_route_success_with_image_intent_for_attempt(
             UpstreamCapabilityAxis::ResponseEndpoint,
             CapabilitySupport::Supported,
             Some(UpstreamCapabilityAxis::ResponseEndpoint.success_reason()),
+        )
+        .await?;
+    }
+    if requirements.chat_completions_endpoint {
+        record_capability_observation(
+            pool,
+            account_id,
+            UpstreamCapabilityAxis::ChatCompletionsEndpoint,
+            CapabilitySupport::Supported,
+            Some(UpstreamCapabilityAxis::ChatCompletionsEndpoint.success_reason()),
         )
         .await?;
     }
@@ -271,6 +332,35 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
         status,
         error_message,
         invoke_id,
+        "",
+        image_intent,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_intent(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    account_kind: &str,
+    single_account_rotation_enabled: bool,
+    sticky_key: Option<&str>,
+    status: StatusCode,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    endpoint: &str,
+    image_intent: ImageIntent,
+) -> Result<()> {
+    record_pool_route_http_failure_with_image_intent_inner(
+        pool,
+        account_id,
+        account_kind,
+        single_account_rotation_enabled,
+        sticky_key,
+        status,
+        error_message,
+        invoke_id,
+        endpoint,
         image_intent,
         None,
     )
@@ -286,10 +376,12 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     status: StatusCode,
     error_message: &str,
     invoke_id: Option<&str>,
+    endpoint: &str,
     image_intent: ImageIntent,
     attempt_id: Option<i64>,
 ) -> Result<()> {
-    let requirements = RequestCapabilityRequirements::from_image_intent(image_intent);
+    let requirements =
+        RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
     if requirements.response_endpoint
         && classify_response_endpoint_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
@@ -298,6 +390,19 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
             pool,
             account_id,
             UpstreamCapabilityAxis::ResponseEndpoint,
+            CapabilitySupport::Unsupported,
+            Some(error_message),
+        )
+        .await?;
+    }
+    if requirements.chat_completions_endpoint
+        && classify_chat_completions_capability_observation(status, Some(error_message))
+            == CapabilitySupport::Unsupported
+    {
+        record_capability_observation(
+            pool,
+            account_id,
+            UpstreamCapabilityAxis::ChatCompletionsEndpoint,
             CapabilitySupport::Unsupported,
             Some(error_message),
         )
@@ -598,6 +703,35 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent_for_attempt
     image_intent: ImageIntent,
     attempt_id: Option<i64>,
 ) -> Result<()> {
+    record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
+        pool,
+        account_id,
+        account_kind,
+        single_account_rotation_enabled,
+        sticky_key,
+        status,
+        error_message,
+        invoke_id,
+        "",
+        image_intent,
+        attempt_id,
+    )
+    .await
+}
+
+pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    account_kind: &str,
+    single_account_rotation_enabled: bool,
+    sticky_key: Option<&str>,
+    status: StatusCode,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    endpoint: &str,
+    image_intent: ImageIntent,
+    attempt_id: Option<i64>,
+) -> Result<()> {
     record_pool_route_http_failure_with_image_intent_inner(
         pool,
         account_id,
@@ -607,6 +741,7 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent_for_attempt
         status,
         error_message,
         invoke_id,
+        endpoint,
         image_intent,
         attempt_id,
     )

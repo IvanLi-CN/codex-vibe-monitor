@@ -75,7 +75,10 @@ Root defaults preserve existing behavior:
 Accounts also track read-only system signals alongside editable policy:
 
 - `systemDeniedModels`
-- observed image capability
+- observed Responses endpoint capability
+- observed Chat Completions endpoint capability
+- observed direct image endpoint capability
+- observed Responses image-tool capability
 - transport capability badges such as `unsupported_transport:websocket`
 
 ## Resolution
@@ -153,6 +156,26 @@ System tags are not an editable routing authoring surface. Their current contrac
 
 ## Image Tool Routing
 
+Endpoint capability routing is split into four independent account-level axes:
+
+- `responseEndpointCapability` covers only `/v1/responses` and `/v1/responses/compact`
+- `chatCompletionsCapability` covers only `/v1/chat/completions`
+- `imageEndpointCapability` covers only `/v1/images/generations` and `/v1/images/edits`
+- `responseImageToolCapability` applies only to `/v1/responses` and `/v1/responses/compact` when image intent is confirmed
+
+Capability learning and gating follow the real request endpoint:
+
+- successful or explicit unsupported `/v1/responses` and `/v1/responses/compact` requests update only the Responses axis plus the Responses image-tool axis when image intent is `yes`
+- successful or explicit unsupported `/v1/chat/completions` requests update only the Chat Completions axis
+- successful or explicit unsupported direct-image requests update only the direct image axis
+- Chat Completions does not have a separate image-tool axis
+
+Startup schema maintenance performs one capability-axis cutover:
+
+- legacy mixed `responseEndpointCapability` observed values and overrides are reset once to `unknown`/`null`
+- new `chatCompletionsCapability` state starts as `unknown` with no override
+- the cutover is one-time only and must not erase states learned under the split-axis contract on later startups
+
 The image-tool layer remains separate from the system-tag signal model:
 
 - `imageToolRewriteMode` exists on group and account routing rules only
@@ -210,7 +233,10 @@ Pool routing settings expose:
 Account summaries and detail responses expose:
 
 - read-only `tags` for system badge display
-- read-only `imageToolCapability`
+- read-only `responseEndpointCapability`
+- read-only `chatCompletionsCapability`
+- read-only `imageEndpointCapability`
+- read-only `responseImageToolCapability`
 - account-level `boundProxyKeys`
 - effective-rule field sources including `systemDeniedModels`
 - effective `requestCompressionAlgorithm`
@@ -233,6 +259,13 @@ Missing `routingRule` preserves account-level overrides. Inside a present `routi
 - `true|false`: store that reason override
 
 The same tri-state semantics apply to group policy updates for nullable policy fields. Boolean `false` is a stored override value and must not be treated as absent.
+
+Capability override writes follow the same preserve / clear / set shape:
+
+- `responseEndpointCapabilityOverride` applies only to the Responses axis
+- `chatCompletionsCapabilityOverride` applies only to the Chat Completions axis
+- `imageEndpointCapabilityOverride` applies only to the direct image axis
+- `responseImageToolCapabilityOverride` applies only to the Responses image-tool axis
 
 `requestCompressionAlgorithm` uses the same preserve / clear / set contract for group/account writes:
 
@@ -323,6 +356,7 @@ Visual evidence is captured from stable Storybook scenarios for:
 - system settings page showing the global request compression defaults and request-path timeouts with `zstd` + `best` persisted after save
 - group routing policy dialog showing the API-key-only request compression override row with mixed-group helper copy and `follow`
 - effective routing rule card showing the resolved request compression row and account-owned source badge
+- upstream account detail Overview showing four independent capability cards where Responses only contains `/v1/responses` + `/v1/responses/compact`, Chat Completions is isolated to `/v1/chat/completions`, and Response image-tool excludes the chat endpoint
 
 PR: include
 ![Account pool layout without tags nav](./assets/account-pool-layout-no-tags-nav.png)
@@ -386,3 +420,6 @@ PR: include
 
 PR: include
 ![Effective routing rule request compression row](./visual-evidence/2026-07-15-effective-rule-request-compression.png)
+
+PR: include
+![Upstream account detail capability overview split](./assets/upstream-account-detail-capability-overview-split.png)

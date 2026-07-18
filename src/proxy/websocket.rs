@@ -352,6 +352,7 @@ pub(crate) async fn prepare_upstream_websocket(
             false,
             &mut no_available_wait_deadline,
             None,
+            original_uri.path(),
             crate::ImageIntent::Unknown,
         )
         .await
@@ -2683,6 +2684,7 @@ mod websocket_tests {
             image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
             request_compression_algorithm: RequestCompressionAlgorithm::Identity,
             response_endpoint_capability: CapabilitySupport::Unknown,
+            chat_completions_capability: CapabilitySupport::Unknown,
             image_endpoint_capability: CapabilitySupport::Unknown,
             response_image_tool_capability: CapabilitySupport::Unknown,
             upstream_base_url,
@@ -2709,6 +2711,7 @@ mod websocket_tests {
             image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
             request_compression_algorithm: RequestCompressionAlgorithm::Identity,
             response_endpoint_capability: CapabilitySupport::Unknown,
+            chat_completions_capability: CapabilitySupport::Unknown,
             image_endpoint_capability: CapabilitySupport::Unknown,
             response_image_tool_capability: CapabilitySupport::Unknown,
             upstream_base_url,

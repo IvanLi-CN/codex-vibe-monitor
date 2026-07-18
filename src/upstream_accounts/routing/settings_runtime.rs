@@ -968,6 +968,7 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) image_tool_rewrite_mode: ImageToolRewriteMode,
     pub(crate) request_compression_algorithm: RequestCompressionAlgorithm,
     pub(crate) response_endpoint_capability: CapabilitySupport,
+    pub(crate) chat_completions_capability: CapabilitySupport,
     pub(crate) image_endpoint_capability: CapabilitySupport,
     pub(crate) response_image_tool_capability: CapabilitySupport,
     pub(crate) upstream_base_url: Url,

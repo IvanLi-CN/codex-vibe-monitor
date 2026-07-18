@@ -2311,6 +2311,7 @@ async fn insert_pool_upstream_terminal_attempt_skips_pre_dispatch_pseudo_attempt
                 image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
                 request_compression_algorithm: RequestCompressionAlgorithm::Identity,
                 response_endpoint_capability: CapabilitySupport::Unknown,
+                chat_completions_capability: CapabilitySupport::Unknown,
                 image_endpoint_capability: CapabilitySupport::Unknown,
                 response_image_tool_capability: CapabilitySupport::Unknown,
                 upstream_base_url: Url::parse("https://api.openai.com/")
@@ -4845,6 +4846,7 @@ async fn send_pool_request_with_failover_defers_armed_guard_when_pending_attempt
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         response_endpoint_capability: CapabilitySupport::Unknown,
+        chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
     };
@@ -4967,6 +4969,7 @@ async fn send_pool_request_with_failover_disarms_guard_after_streaming_phase_is_
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         response_endpoint_capability: CapabilitySupport::Unknown,
+        chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
     };
@@ -5104,6 +5107,7 @@ async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_stre
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         response_endpoint_capability: CapabilitySupport::Unknown,
+        chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
     };

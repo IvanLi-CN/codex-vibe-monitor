@@ -55,6 +55,14 @@ pub(crate) struct UpstreamAccountRow {
     #[sqlx(default)]
     pub(crate) policy_response_endpoint_capability_override: Option<String>,
     #[sqlx(default)]
+    pub(crate) chat_completions_capability: Option<String>,
+    #[sqlx(default)]
+    pub(crate) chat_completions_capability_observed_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) chat_completions_capability_reason: Option<String>,
+    #[sqlx(default)]
+    pub(crate) policy_chat_completions_capability_override: Option<String>,
+    #[sqlx(default)]
     pub(crate) image_endpoint_capability: Option<String>,
     #[sqlx(default)]
     pub(crate) image_endpoint_capability_observed_at: Option<String>,

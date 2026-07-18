@@ -63,6 +63,20 @@ Status-change side effects are now gated by the resolved per-reason policy.
 - when a reason is disabled, runtime preserves invocation / attempt evidence but writes a neutral suppression event instead of changing account status, cooldown, route-failure bookkeeping, counters, or latest-action state
 - suppressed sync failures still advance the non-health sync timestamp so maintenance cadence does not collapse into immediate retries
 
+Endpoint capability routing is now endpoint-aware instead of response-family wide.
+
+- `pool_upstream_accounts` persists `chat_completions_capability`, its observed timestamp/reason, and `policy_chat_completions_capability_override`
+- runtime requirement inference now keys off `endpoint + image_intent`, so Responses, Chat Completions, direct image, and Responses image-tool learning are independent
+- `/v1/chat/completions` no longer participates in `response_endpoint_capability` or `response_image_tool_capability`
+- startup schema maintenance performs a one-time cutover that clears legacy mixed Responses observed state and overrides, seeds the new Chat axis as `unknown`, and records completion in `pool_routing_settings.capability_axis_split_migrated`
+
+The account detail Overview now renders four independent capability cards.
+
+- Responses card: `/v1/responses`, `/v1/responses/compact`
+- Chat Completions card: `/v1/chat/completions`
+- Image card: `/v1/images/generations`, `/v1/images/edits`
+- Response image-tool card: Responses-family image-tool eligibility only
+
 ## API and Resolution
 
 Account and group routing policy writes distinguish missing, `null`, and value for nullable policy fields.

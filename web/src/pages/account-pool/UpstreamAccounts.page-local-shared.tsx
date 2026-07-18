@@ -581,14 +581,12 @@ function CompactDetailField({
 
 type CapabilityOverrideField =
   | "responseEndpointCapabilityOverride"
+  | "chatCompletionsCapabilityOverride"
   | "imageEndpointCapabilityOverride"
   | "responseImageToolCapabilityOverride";
 
-const RESPONSE_FAMILY_CAPABILITY_ENDPOINTS = [
-  "/v1/responses",
-  "/v1/responses/compact",
-  "/v1/chat/completions",
-] as const;
+const RESPONSES_CAPABILITY_ENDPOINTS = ["/v1/responses", "/v1/responses/compact"] as const;
+const CHAT_COMPLETIONS_CAPABILITY_ENDPOINTS = ["/v1/chat/completions"] as const;
 
 const DIRECT_IMAGE_CAPABILITY_ENDPOINTS = ["/v1/images/generations", "/v1/images/edits"] as const;
 
@@ -629,8 +627,8 @@ function AccountCapabilityCard({
   const { t } = useTranslation();
 
   return (
-    <Card className="overflow-hidden">
-      <CardHeader className="space-y-3 pb-3">
+    <Card className="flex h-full flex-col overflow-hidden">
+      <CardHeader className="gap-4 pb-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <CardTitle className="text-base">{title}</CardTitle>
@@ -640,12 +638,14 @@ function AccountCapabilityCard({
           </Badge>
         </div>
         <div className="space-y-2">
-          <CardDescription className="text-sm leading-5">{description}</CardDescription>
+          <div className="flex min-h-[3.75rem] items-start">
+            <CardDescription className="text-sm leading-5">{description}</CardDescription>
+          </div>
           <div className="space-y-1.5">
             <p className="text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-base-content/52">
               {t("accountPool.upstreamAccounts.capability.endpointsLabel")}
             </p>
-            <div className="surface-subtle flex flex-wrap gap-2 rounded-xl px-3 py-2">
+            <div className="surface-subtle flex min-h-[5rem] flex-wrap content-start gap-2 rounded-xl px-3 py-2">
               {endpoints.map((endpoint) => (
                 <code
                   key={endpoint}
@@ -658,7 +658,7 @@ function AccountCapabilityCard({
           </div>
         </div>
       </CardHeader>
-      <CardContent className="grid gap-3">
+      <CardContent className="flex flex-1 flex-col gap-4">
         <div className="grid gap-2 text-sm text-base-content/75">
           <div className="surface-subtle flex items-center justify-between gap-3 rounded-lg px-3 py-2">
             <span className="text-xs font-semibold uppercase tracking-[0.08em] text-base-content/55">
@@ -719,7 +719,7 @@ function AccountCapabilityCard({
             )
           }
         />
-        <div className="grid gap-1 text-xs leading-5 text-base-content/60">
+        <div className="mt-auto grid min-h-[3.25rem] gap-1 text-xs leading-5 text-base-content/60">
           <div>
             <span className="font-semibold text-base-content/70">
               {t("accountPool.upstreamAccounts.capability.observedAt")}
@@ -3129,13 +3129,13 @@ function SharedUpstreamAccountDetailDrawerInner({
                       />
                     </div>
                   </div>
-                  <div className="grid gap-4 lg:grid-cols-3">
+                  <div className="grid gap-4 lg:grid-cols-4">
                     <AccountCapabilityCard
                       title={t("accountPool.upstreamAccounts.capability.responseEndpoint.title")}
                       description={t(
                         "accountPool.upstreamAccounts.capability.responseEndpoint.description",
                       )}
-                      endpoints={RESPONSE_FAMILY_CAPABILITY_ENDPOINTS}
+                      endpoints={RESPONSES_CAPABILITY_ENDPOINTS}
                       state={
                         selectedDetail.responseEndpointCapability ?? {
                           observed: "unknown",
@@ -3146,6 +3146,28 @@ function SharedUpstreamAccountDetailDrawerInner({
                         }
                       }
                       overrideField="responseEndpointCapabilityOverride"
+                      writesEnabled={writesEnabled}
+                      busy={hasBusyAccountAction(busyAction, selectedDetail.id)}
+                      onOverrideChange={(field, value) =>
+                        void handleSaveCapabilityOverride(selectedDetail, field, value)
+                      }
+                    />
+                    <AccountCapabilityCard
+                      title={t("accountPool.upstreamAccounts.capability.chatCompletions.title")}
+                      description={t(
+                        "accountPool.upstreamAccounts.capability.chatCompletions.description",
+                      )}
+                      endpoints={CHAT_COMPLETIONS_CAPABILITY_ENDPOINTS}
+                      state={
+                        selectedDetail.chatCompletionsCapability ?? {
+                          observed: "unknown",
+                          override: null,
+                          effective: "unknown",
+                          observedAt: null,
+                          reason: null,
+                        }
+                      }
+                      overrideField="chatCompletionsCapabilityOverride"
                       writesEnabled={writesEnabled}
                       busy={hasBusyAccountAction(busyAction, selectedDetail.id)}
                       onOverrideChange={(field, value) =>
@@ -3179,7 +3201,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                       description={t(
                         "accountPool.upstreamAccounts.capability.responseImageTool.description",
                       )}
-                      endpoints={RESPONSE_FAMILY_CAPABILITY_ENDPOINTS}
+                      endpoints={RESPONSES_CAPABILITY_ENDPOINTS}
                       state={
                         selectedDetail.responseImageToolCapability ?? {
                           observed: "unknown",

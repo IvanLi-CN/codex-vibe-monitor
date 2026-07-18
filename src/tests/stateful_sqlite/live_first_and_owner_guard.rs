@@ -1763,6 +1763,7 @@ async fn websocket_payload_owner_guard_blocks_mismatched_payload_owner() {
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         response_endpoint_capability: CapabilitySupport::Unknown,
+        chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
         upstream_base_url: Url::parse("https://api.example.test").expect("valid base url"),
@@ -1888,6 +1889,7 @@ async fn websocket_payload_owner_guard_disabled_does_not_block_mismatched_payloa
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         response_endpoint_capability: CapabilitySupport::Unknown,
+        chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
         upstream_base_url: Url::parse("https://api.example.test").expect("valid base url"),
@@ -5303,6 +5305,112 @@ async fn proxy_openai_v1_responses_image_requests_ignore_image_endpoint_capabili
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_chat_and_responses_use_independent_endpoint_capability_gates() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    )
+    .await;
+
+    let responses_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Responses Only",
+        "upstream-responses-only",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let chat_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Chat Only",
+        "upstream-chat-only",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET response_endpoint_capability = 'supported',
+            chat_completions_capability = 'unsupported'
+        WHERE id = ?1
+        "#,
+    )
+    .bind(responses_account_id)
+    .execute(&state.pool)
+    .await
+    .expect("seed responses-only capability split");
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET response_endpoint_capability = 'unsupported',
+            chat_completions_capability = 'supported'
+        WHERE id = ?1
+        "#,
+    )
+    .bind(chat_account_id)
+    .execute(&state.pool)
+    .await
+    .expect("seed chat-only capability split");
+
+    let mut chat_wait_deadline = None;
+    let chat_resolution = resolve_pool_account_for_request_with_wait_and_image_intent(
+        state.as_ref(),
+        None,
+        Some("gpt-5.4"),
+        &[],
+        &HashSet::new(),
+        None,
+        false,
+        &mut chat_wait_deadline,
+        None,
+        "/v1/chat/completions",
+        ImageIntent::Unknown,
+    )
+    .await
+    .expect("resolve chat completions account");
+    let PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(chat_account)) =
+        chat_resolution
+    else {
+        panic!("chat completions request should resolve to a supported account");
+    };
+    assert_eq!(chat_account.account_id, chat_account_id);
+
+    let mut responses_wait_deadline = None;
+    let responses_resolution = resolve_pool_account_for_request_with_wait_and_image_intent(
+        state.as_ref(),
+        None,
+        Some("gpt-5.4"),
+        &[],
+        &HashSet::new(),
+        None,
+        false,
+        &mut responses_wait_deadline,
+        None,
+        "/v1/responses",
+        ImageIntent::Unknown,
+    )
+    .await
+    .expect("resolve responses account");
+    let PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(
+        responses_account,
+    )) = responses_resolution
+    else {
+        panic!("responses request should resolve to a supported account");
+    };
+    assert_eq!(responses_account.account_id, responses_account_id);
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    assert!(runtime_timeouts.request_read_timeout > Duration::from_secs(0));
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_responses_live_first_waits_for_image_intent_before_filtered_resolution() {
     assert_live_first_waits_for_image_intent_before_filtered_resolution("/v1/responses", 6341)
         .await;
@@ -6665,6 +6773,7 @@ fn test_live_first_pool_account(
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         request_compression_algorithm,
         response_endpoint_capability: CapabilitySupport::Unknown,
+        chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
         upstream_base_url: Url::parse("https://api.openai.com/").expect("valid upstream base url"),
