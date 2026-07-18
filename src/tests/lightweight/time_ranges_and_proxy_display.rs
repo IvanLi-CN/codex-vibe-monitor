@@ -16,6 +16,7 @@ use std::{
     env,
     ffi::OsString,
     fs,
+    future::Future,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -29,6 +30,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) static APP_CONFIG_ENV_LOCK: once_cell::sync::Lazy<AsyncMutex<()>> =
     once_cell::sync::Lazy::new(|| AsyncMutex::new(()));
+const LARGE_STACK_ASYNC_TEST_BYTES: usize = 32 * 1024 * 1024;
 
 pub(crate) struct CurrentDirGuard {
     original: PathBuf,
@@ -79,6 +81,26 @@ impl Drop for EnvVarGuard {
             }
         }
     }
+}
+
+fn run_async_test_with_large_stack<F, Fut>(name: &'static str, test_fn: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + 'static,
+{
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(LARGE_STACK_ASYNC_TEST_BYTES)
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build current-thread runtime");
+            runtime.block_on(test_fn());
+        })
+        .expect("spawn large-stack async test thread")
+        .join()
+        .expect("join large-stack async test thread");
 }
 
 #[tokio::test]
@@ -322,123 +344,128 @@ async fn proxy_openai_v1_models_rejects_non_pool_bearer_key() {
     );
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_via_pool_keeps_in_flight_tracking_until_downstream_stream_finishes() {
-    let app = Router::new().route(
-        "/v1/responses",
-        post(|| async move {
-            let stream = futures_util::stream::once(async {
-                Ok::<Bytes, Infallible>(Bytes::from_static(br#"{"phase":"streaming""#))
-            })
-            .chain(futures_util::stream::once(async move {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                Ok::<Bytes, Infallible>(Bytes::from_static(br#","done":true}"#))
-            }));
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(http_header::CONTENT_TYPE, "application/json")
-                .body(Body::from_stream(stream))
-                .expect("build streaming response")
-        }),
-    );
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind streaming upstream");
-    let addr = listener.local_addr().expect("streaming upstream addr");
-    let upstream_handle = tokio::spawn(async move {
-        axum::serve(listener, app)
+#[test]
+fn proxy_openai_v1_via_pool_keeps_in_flight_tracking_until_downstream_stream_finishes() {
+    run_async_test_with_large_stack(
+        "proxy_openai_v1_via_pool_keeps_in_flight_tracking_until_downstream_stream_finishes",
+        || async {
+            let app = Router::new().route(
+                "/v1/responses",
+                post(|| async move {
+                    let stream = futures_util::stream::once(async {
+                        Ok::<Bytes, Infallible>(Bytes::from_static(br#"{"phase":"streaming""#))
+                    })
+                    .chain(futures_util::stream::once(async move {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        Ok::<Bytes, Infallible>(Bytes::from_static(br#","done":true}"#))
+                    }));
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(http_header::CONTENT_TYPE, "application/json")
+                        .body(Body::from_stream(stream))
+                        .expect("build streaming response")
+                }),
+            );
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind streaming upstream");
+            let addr = listener.local_addr().expect("streaming upstream addr");
+            let upstream_handle = tokio::spawn(async move {
+                axum::serve(listener, app)
+                    .await
+                    .expect("streaming upstream should run");
+            });
+
+            let mut config = test_config();
+            config.openai_upstream_base_url =
+                Url::parse(&format!("http://{addr}")).expect("valid streaming upstream base url");
+            let state = test_state_from_config(config, true).await;
+            seed_pool_routing_api_key(&state, "pool-stream-slot-key").await;
+            insert_test_pool_api_key_account(&state, "Streaming Slot", "route-stream-slot").await;
+
+            let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+                .await
+                .expect("resolve pool runtime timeouts");
+            let response = proxy_openai_v1_via_pool(
+                state.clone(),
+                1003,
+                &"/v1/responses".parse().expect("valid uri"),
+                Method::POST,
+                HeaderMap::from_iter([
+                    (
+                        http_header::AUTHORIZATION,
+                        HeaderValue::from_static("Bearer pool-stream-slot-key"),
+                    ),
+                    (
+                        http_header::CONTENT_TYPE,
+                        HeaderValue::from_static("application/json"),
+                    ),
+                ]),
+                Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hi"}"#)),
+                runtime_timeouts,
+                None,
+            )
             .await
-            .expect("streaming upstream should run");
-    });
+            .expect("streaming via-pool request should succeed");
 
-    let mut config = test_config();
-    config.openai_upstream_base_url =
-        Url::parse(&format!("http://{addr}")).expect("valid streaming upstream base url");
-    let state = test_state_from_config(config, true).await;
-    seed_pool_routing_api_key(&state, "pool-stream-slot-key").await;
-    insert_test_pool_api_key_account(&state, "Streaming Slot", "route-stream-slot").await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(
+                state
+                    .proxy_runtime_invocations
+                    .snapshot()
+                    .iter()
+                    .any(|record| record.invoke_id == "pool-via-1003"),
+                "via-pool runtime snapshot should remain visible while the response is streaming"
+            );
+            assert_eq!(
+                state
+                    .proxy_request_in_flight
+                    .load(std::sync::atomic::Ordering::Acquire),
+                1,
+                "proxy request should remain in-flight until downstream streaming finishes"
+            );
 
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
-        .await
-        .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        1003,
-        &"/v1/responses".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-stream-slot-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hi"}"#)),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect("streaming via-pool request should succeed");
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("read streaming via-pool response");
+            assert_eq!(
+                body,
+                Bytes::from_static(br#"{"phase":"streaming","done":true}"#)
+            );
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    let synthetic_runtime_removed = state
+                        .proxy_runtime_invocations
+                        .snapshot()
+                        .iter()
+                        .all(|record| record.invoke_id != "pool-via-1003");
+                    if synthetic_runtime_removed {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("completed via-pool runtime snapshot should become terminal");
+            assert_eq!(
+                state
+                    .proxy_request_in_flight
+                    .load(std::sync::atomic::Ordering::Acquire),
+                0,
+                "in-flight tracking should release after downstream streaming completes"
+            );
+            assert!(
+                state
+                    .proxy_runtime_invocations
+                    .snapshot()
+                    .iter()
+                    .all(|record| record.invoke_id != "pool-via-1003"),
+                "completed via-pool requests must remove synthetic runtime snapshots"
+            );
 
-    assert_eq!(response.status(), StatusCode::OK);
-    assert!(
-        state
-            .proxy_runtime_invocations
-            .snapshot()
-            .iter()
-            .any(|record| record.invoke_id == "pool-via-1003"),
-        "via-pool runtime snapshot should remain visible while the response is streaming"
+            upstream_handle.abort();
+        },
     );
-    assert_eq!(
-        state
-            .proxy_request_in_flight
-            .load(std::sync::atomic::Ordering::Acquire),
-        1,
-        "proxy request should remain in-flight until downstream streaming finishes"
-    );
-
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read streaming via-pool response");
-    assert_eq!(
-        body,
-        Bytes::from_static(br#"{"phase":"streaming","done":true}"#)
-    );
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            let synthetic_runtime_removed = state
-                .proxy_runtime_invocations
-                .snapshot()
-                .iter()
-                .all(|record| record.invoke_id != "pool-via-1003");
-            if synthetic_runtime_removed {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("completed via-pool runtime snapshot should become terminal");
-    assert_eq!(
-        state
-            .proxy_request_in_flight
-            .load(std::sync::atomic::Ordering::Acquire),
-        0,
-        "in-flight tracking should release after downstream streaming completes"
-    );
-    assert!(
-        state
-            .proxy_runtime_invocations
-            .snapshot()
-            .iter()
-            .all(|record| record.invoke_id != "pool-via-1003"),
-        "completed via-pool requests must remove synthetic runtime snapshots"
-    );
-
-    upstream_handle.abort();
 }
 
 #[test]

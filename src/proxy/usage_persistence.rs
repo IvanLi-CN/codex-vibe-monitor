@@ -242,10 +242,15 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
     first_byte_latency_ms: Option<f64>,
     stream_latency_ms: Option<f64>,
     upstream_request_id: Option<&str>,
-    compact_support_status: Option<&str>,
-    compact_support_reason: Option<&str>,
     upstream_request_compression_algorithm: Option<&str>,
     upstream_request_compression_mode: Option<&str>,
+    upstream_request_logical_body_bytes: Option<i64>,
+    upstream_request_transmitted_body_bytes: Option<i64>,
+    upstream_request_header_bytes_approx: Option<i64>,
+    upstream_response_body_bytes: Option<i64>,
+    upstream_response_header_bytes_approx: Option<i64>,
+    compact_support_status: Option<&str>,
+    compact_support_reason: Option<&str>,
 ) -> Result<i64> {
     for _ in 0..POOL_UPSTREAM_REQUEST_ATTEMPT_PUBLIC_ID_RETRY_LIMIT {
         let attempt_public_id = generate_pool_upstream_request_attempt_public_id();
@@ -281,11 +286,16 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
                 upstream_request_id,
                 upstream_request_compression_algorithm,
                 upstream_request_compression_mode,
+                upstream_request_logical_body_bytes,
+                upstream_request_transmitted_body_bytes,
+                upstream_request_header_bytes_approx,
+                upstream_response_body_bytes,
+                upstream_response_header_bytes_approx,
                 compact_support_status,
                 compact_support_reason
             )
             VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36
             )
             "#,
         )
@@ -318,6 +328,11 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
         .bind(upstream_request_id)
         .bind(upstream_request_compression_algorithm)
         .bind(upstream_request_compression_mode)
+        .bind(upstream_request_logical_body_bytes)
+        .bind(upstream_request_transmitted_body_bytes)
+        .bind(upstream_request_header_bytes_approx)
+        .bind(upstream_response_body_bytes)
+        .bind(upstream_response_header_bytes_approx)
         .bind(compact_support_status)
         .bind(compact_support_reason)
         .execute(pool)
@@ -379,10 +394,15 @@ pub(crate) async fn insert_pool_upstream_request_attempt(
         first_byte_latency_ms,
         stream_latency_ms,
         upstream_request_id,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
         compact_support_status,
         compact_support_reason,
-        None,
-        None,
     )
     .await
 }
@@ -451,6 +471,11 @@ pub(crate) async fn begin_pool_upstream_request_attempt_with_scope(
         None,
         None,
         None,
+        None,
+        None,
+        None,
+        None,
+        None,
     )
     .await
     {
@@ -486,7 +511,32 @@ pub(crate) async fn begin_pool_upstream_request_attempt_with_scope(
         compact_support_reason: None,
         upstream_request_compression_algorithm: None,
         upstream_request_compression_mode: None,
+        upstream_request_logical_body_bytes: None,
+        upstream_request_transmitted_body_bytes: None,
+        upstream_request_header_bytes_approx: None,
+        upstream_response_body_bytes: None,
+        upstream_response_header_bytes_approx: None,
     }
+}
+
+pub(crate) fn update_pending_pool_upstream_request_attempt_http_bytes(
+    pending: &mut PendingPoolAttemptRecord,
+    logical_body_bytes: Option<usize>,
+    transmitted_body_bytes: Option<usize>,
+    request_header_bytes_approx: Option<usize>,
+    response_body_bytes: Option<usize>,
+    response_header_bytes_approx: Option<usize>,
+) {
+    pending.upstream_request_logical_body_bytes =
+        logical_body_bytes.and_then(|value| i64::try_from(value).ok());
+    pending.upstream_request_transmitted_body_bytes =
+        transmitted_body_bytes.and_then(|value| i64::try_from(value).ok());
+    pending.upstream_request_header_bytes_approx =
+        request_header_bytes_approx.and_then(|value| i64::try_from(value).ok());
+    pending.upstream_response_body_bytes =
+        response_body_bytes.and_then(|value| i64::try_from(value).ok());
+    pending.upstream_response_header_bytes_approx =
+        response_header_bytes_approx.and_then(|value| i64::try_from(value).ok());
 }
 
 pub(crate) async fn annotate_pool_upstream_request_attempt_request_compression(
@@ -1711,6 +1761,11 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
     let upstream_request_compression_algorithm =
         pending.upstream_request_compression_algorithm.as_deref();
     let upstream_request_compression_mode = pending.upstream_request_compression_mode.as_deref();
+    let upstream_request_logical_body_bytes = pending.upstream_request_logical_body_bytes;
+    let upstream_request_transmitted_body_bytes = pending.upstream_request_transmitted_body_bytes;
+    let upstream_request_header_bytes_approx = pending.upstream_request_header_bytes_approx;
+    let upstream_response_body_bytes = pending.upstream_response_body_bytes;
+    let upstream_response_header_bytes_approx = pending.upstream_response_header_bytes_approx;
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: pending.invoke_id.clone(),
         occurred_at: pending.occurred_at.clone(),
@@ -1738,7 +1793,12 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
                 compact_support_status = ?14,
                 compact_support_reason = ?15,
                 upstream_request_compression_algorithm = COALESCE(?16, upstream_request_compression_algorithm),
-                upstream_request_compression_mode = COALESCE(?17, upstream_request_compression_mode)
+                upstream_request_compression_mode = COALESCE(?17, upstream_request_compression_mode),
+                upstream_request_logical_body_bytes = COALESCE(?18, upstream_request_logical_body_bytes),
+                upstream_request_transmitted_body_bytes = COALESCE(?19, upstream_request_transmitted_body_bytes),
+                upstream_request_header_bytes_approx = COALESCE(?20, upstream_request_header_bytes_approx),
+                upstream_response_body_bytes = COALESCE(?21, upstream_response_body_bytes),
+                upstream_response_header_bytes_approx = COALESCE(?22, upstream_response_header_bytes_approx)
             WHERE id = ?1
             "#,
         )
@@ -1759,6 +1819,11 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
         .bind(compact_support_reason)
         .bind(upstream_request_compression_algorithm)
         .bind(upstream_request_compression_mode)
+        .bind(upstream_request_logical_body_bytes)
+        .bind(upstream_request_transmitted_body_bytes)
+        .bind(upstream_request_header_bytes_approx)
+        .bind(upstream_response_body_bytes)
+        .bind(upstream_response_header_bytes_approx)
         .execute(pool)
         .await?;
 
@@ -1790,10 +1855,15 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
         first_byte_latency_ms,
         stream_latency_ms,
         upstream_request_id,
-        compact_support_status,
-        compact_support_reason,
         upstream_request_compression_algorithm,
         upstream_request_compression_mode,
+        upstream_request_logical_body_bytes,
+        upstream_request_transmitted_body_bytes,
+        upstream_request_header_bytes_approx,
+        upstream_response_body_bytes,
+        upstream_response_header_bytes_approx,
+        compact_support_status,
+        compact_support_reason,
     )
     .await
     .map(|_| ())
@@ -2019,6 +2089,11 @@ pub(crate) struct ProxyPayloadSummary<'a> {
     pub(crate) response_model: Option<&'a str>,
     pub(crate) usage_missing_reason: Option<&'a str>,
     pub(crate) request_parse_error: Option<&'a str>,
+    pub(crate) request_compression_algorithm: Option<&'a str>,
+    pub(crate) request_compression_mode: Option<&'a str>,
+    pub(crate) request_compression_logical_body_bytes: Option<usize>,
+    pub(crate) request_compression_transmitted_body_bytes: Option<usize>,
+    pub(crate) request_compression_transmission_complete: Option<bool>,
     pub(crate) failure_kind: Option<&'a str>,
     pub(crate) requester_ip: Option<&'a str>,
     pub(crate) request_user_agent: Option<&'a str>,
@@ -2065,6 +2140,8 @@ pub(crate) struct ProxyPayloadSummary<'a> {
     pub(crate) downstream_close_phase: Option<&'a str>,
     pub(crate) downstream_write_error_kind: Option<&'a str>,
     pub(crate) last_upstream_chunk_gap_ms: Option<u64>,
+    pub(crate) upstream_approx_upload_bytes: Option<usize>,
+    pub(crate) upstream_approx_download_bytes: Option<usize>,
     pub(crate) proxy_display_name: Option<&'a str>,
     pub(crate) proxy_weight_delta: Option<f64>,
     pub(crate) pool_attempt_count: Option<usize>,
@@ -2089,6 +2166,11 @@ pub(crate) fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> S
         response_model,
         usage_missing_reason,
         request_parse_error,
+        request_compression_algorithm,
+        request_compression_mode,
+        request_compression_logical_body_bytes,
+        request_compression_transmitted_body_bytes,
+        request_compression_transmission_complete,
         failure_kind,
         requester_ip,
         request_user_agent,
@@ -2135,6 +2217,8 @@ pub(crate) fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> S
         downstream_close_phase,
         downstream_write_error_kind,
         last_upstream_chunk_gap_ms,
+        upstream_approx_upload_bytes,
+        upstream_approx_download_bytes,
         proxy_display_name,
         proxy_weight_delta,
         pool_attempt_count,
@@ -2157,6 +2241,11 @@ pub(crate) fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> S
         "responseModel": response_model,
         "usageMissingReason": usage_missing_reason,
         "requestParseError": request_parse_error,
+        "requestCompressionAlgorithm": request_compression_algorithm,
+        "requestCompressionMode": request_compression_mode,
+        "requestCompressionLogicalBodyBytes": request_compression_logical_body_bytes,
+        "requestCompressionTransmittedBodyBytes": request_compression_transmitted_body_bytes,
+        "requestCompressionTransmissionComplete": request_compression_transmission_complete,
         "failureKind": failure_kind,
         "requesterIp": requester_ip,
         "requestUserAgent": request_user_agent,
@@ -2203,6 +2292,8 @@ pub(crate) fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> S
         "downstreamClosePhase": downstream_close_phase,
         "downstreamWriteErrorKind": downstream_write_error_kind,
         "lastUpstreamChunkGapMs": last_upstream_chunk_gap_ms,
+        "upstreamApproxUploadBytes": upstream_approx_upload_bytes,
+        "upstreamApproxDownloadBytes": upstream_approx_download_bytes,
         "proxyDisplayName": proxy_display_name,
         "proxyWeightDelta": proxy_weight_delta,
         "poolAttemptCount": pool_attempt_count,
@@ -3331,6 +3422,11 @@ pub(crate) fn build_running_proxy_capture_record(
             response_model: None,
             usage_missing_reason: None,
             request_parse_error: request_info.parse_error.as_deref(),
+            request_compression_algorithm: None,
+            request_compression_mode: None,
+            request_compression_logical_body_bytes: None,
+            request_compression_transmitted_body_bytes: None,
+            request_compression_transmission_complete: None,
             failure_kind: None,
             requester_ip,
             request_user_agent: None,
@@ -3387,6 +3483,8 @@ pub(crate) fn build_running_proxy_capture_record(
             downstream_close_phase: None,
             downstream_write_error_kind: None,
             last_upstream_chunk_gap_ms: None,
+            upstream_approx_upload_bytes: None,
+            upstream_approx_download_bytes: None,
             proxy_display_name,
             proxy_weight_delta: None,
             pool_attempt_count,

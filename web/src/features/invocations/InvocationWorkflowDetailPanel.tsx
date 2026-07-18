@@ -446,6 +446,52 @@ function formatByteSize(value: number | null | undefined, locale: string) {
   return `${value.toLocaleString(locale)} B`;
 }
 
+function formatCompactByteSize(value: number | null | undefined, locale: string) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return FALLBACK_CELL;
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let scaled = value;
+  let unitIndex = 0;
+  while (scaled >= 1024 && unitIndex < units.length - 1) {
+    scaled /= 1024;
+    unitIndex += 1;
+  }
+  const maximumFractionDigits = unitIndex === 0 ? 0 : scaled >= 10 ? 1 : 1;
+  return `${scaled.toLocaleString(locale, {
+    minimumFractionDigits: unitIndex === 0 ? 0 : 1,
+    maximumFractionDigits,
+  })} ${units[unitIndex]}`;
+}
+
+function formatSignedPercent(value: number | null | undefined, locale: string) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
+  const rounded = Math.round(value);
+  if (rounded > 0) return `+${rounded.toLocaleString(locale)}%`;
+  return `${rounded.toLocaleString(locale)}%`;
+}
+
+function formatRequestCompressionSummary(
+  compression: Record<string, unknown> | null | undefined,
+  locale: string,
+) {
+  const logicalBodyBytes = readNumber(compression?.logicalBodyBytes);
+  const transmittedBodyBytes = readNumber(compression?.transmittedBodyBytes);
+  const ratioPct = readNumber(compression?.ratioPct);
+  if (
+    logicalBodyBytes == null ||
+    transmittedBodyBytes == null ||
+    ratioPct == null ||
+    !Number.isFinite(logicalBodyBytes) ||
+    !Number.isFinite(transmittedBodyBytes) ||
+    !Number.isFinite(ratioPct)
+  ) {
+    return FALLBACK_CELL;
+  }
+  return `${formatSignedPercent(ratioPct, locale)} (${formatCompactByteSize(
+    logicalBodyBytes,
+    locale,
+  )} -> ${formatCompactByteSize(transmittedBodyBytes, locale)})`;
+}
+
 function compactJoin(parts: Array<string | null | undefined>) {
   const normalized = parts
     .map((part) => (typeof part === "string" ? part.trim() : ""))
@@ -605,6 +651,7 @@ function buildAttemptMetricActions(
   const requestUserAgent = formatOptionalText(readString(requestHeaders?.userAgent));
   const requestBodySize = formatByteSize(readNumber(requestBodyCapture?.size), localeTag);
   const requestBodyDetail = formatOptionalText(readString(requestBodyCapture?.detailLevel));
+  const requestCompressionSummary = formatRequestCompressionSummary(requestCompression, localeTag);
   const responseFailureKind = formatOptionalText(
     readString(responseSummary?.failureKind) ?? attempt.failureKind ?? null,
   );
@@ -665,7 +712,8 @@ function buildAttemptMetricActions(
       label: isZh ? "请求体" : "Body",
       tag: requestHttpCompressionTag,
       primary: compactJoin([requestBodySize, requestBodyDetail]),
-      secondary: requestCompaction,
+      secondary:
+        requestCompressionSummary !== FALLBACK_CELL ? requestCompressionSummary : requestCompaction,
       monospace: true,
     },
     {
@@ -906,11 +954,13 @@ function SnapshotMetric({
 
 function OverviewGrid({
   items,
+  className,
 }: {
   items: Array<{ label: string; value: string; monospace?: boolean }>;
+  className?: string;
 }) {
   return (
-    <dl className="grid gap-x-5 gap-y-4 md:grid-cols-2 xl:grid-cols-3">
+    <dl className={cn("grid gap-x-5 gap-y-4 md:grid-cols-2 xl:grid-cols-3", className)}>
       {items.map((item) => (
         <div key={`${item.label}-${item.value}`} className="min-w-0">
           <dt className="text-[11px] font-medium text-base-content/58">{item.label}</dt>
@@ -931,16 +981,18 @@ function OverviewGrid({
 function DetailInfoPanel({
   title,
   items,
+  overviewClassName,
 }: {
   title: string;
   items: Array<{ label: string; value: string; monospace?: boolean }>;
+  overviewClassName?: string;
 }) {
   if (items.length === 0) return null;
   return (
     <section className="invocation-detail-subsurface rounded-[0.95rem] px-3.5 py-3">
       <div className="text-[11px] font-medium text-base-content/56">{title}</div>
       <div className="mt-3">
-        <OverviewGrid items={items} />
+        <OverviewGrid className={overviewClassName} items={items} />
       </div>
     </section>
   );
@@ -1168,6 +1220,7 @@ function AttemptDetail({
     : null;
   const requestHeaderSource =
     readRecord(requestSummary?.headers) ?? readRecord(requestBodyState.data?.headers);
+  const requestCompression = readRecord(requestSummary?.compression);
   const requestRoutingSource =
     readRecord(requestSummary?.routing) ?? readRecord(requestBodyState.data?.routing);
   const requestClientSource =
@@ -1318,6 +1371,7 @@ function AttemptDetail({
     { key: "forwarded", label: "Forwarded", monospace: false },
     { key: "xRealIp", label: "X-Real-IP", monospace: false },
   ]);
+  const requestCompressionSummary = formatRequestCompressionSummary(requestCompression, localeTag);
 
   const requestRoutingItems = [
     ...buildStructuredItems(requestRoutingSource, localeTag, isZh, [
@@ -1444,6 +1498,33 @@ function AttemptDetail({
       value: formatOptionalText(requestBodyState.data?.detailPruneReason),
       monospace: false,
       fullWidth: true,
+    },
+  ].filter((item) => item.value !== FALLBACK_CELL);
+  const requestCompressionItems = [
+    {
+      label: isZh ? "压缩比" : "Compression ratio",
+      value: requestCompressionSummary,
+      monospace: false,
+    },
+    {
+      label: isZh ? "算法" : "Algorithm",
+      value: formatOptionalText(readString(requestCompression?.algorithm)),
+      monospace: false,
+    },
+    {
+      label: isZh ? "发送模式" : "Mode",
+      value: formatOptionalText(readString(requestCompression?.mode)),
+      monospace: false,
+    },
+    {
+      label: isZh ? "近似上传" : "Approx upload",
+      value: formatCompactByteSize(readNumber(requestCompression?.approxUploadBytes), localeTag),
+      monospace: false,
+    },
+    {
+      label: isZh ? "近似下载" : "Approx download",
+      value: formatCompactByteSize(readNumber(requestCompression?.approxDownloadBytes), localeTag),
+      monospace: false,
     },
   ].filter((item) => item.value !== FALLBACK_CELL);
 
@@ -1638,6 +1719,11 @@ function AttemptDetail({
       ) : null}
       {activeSection === "requestBody" ? (
         <>
+          <DetailInfoPanel
+            title={isZh ? "HTTP 请求压缩" : "HTTP request compression"}
+            items={requestCompressionItems}
+            overviewClassName="lg:grid-cols-5 xl:grid-cols-5"
+          />
           <DetailMetaStrip items={requestCaptureSummaryItems} />
           {requestBodyState.status === "loading" ? (
             <PayloadNotice>{isZh ? "加载请求体…" : "Loading request body…"}</PayloadNotice>

@@ -35,6 +35,42 @@ function formatLatency(value: number | null | undefined) {
   return value >= 1000 ? `${(value / 1000).toFixed(2)} s` : `${Math.round(value)} ms`;
 }
 
+function formatCompactByteSize(value: number | null | undefined, locale: string) {
+  if (value == null || !Number.isFinite(value) || value < 0) return "-";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let scaled = value;
+  let unitIndex = 0;
+  while (scaled >= 1024 && unitIndex < units.length - 1) {
+    scaled /= 1024;
+    unitIndex += 1;
+  }
+  return `${scaled.toLocaleString(locale, {
+    minimumFractionDigits: unitIndex === 0 ? 0 : 1,
+    maximumFractionDigits: unitIndex === 0 ? 0 : 1,
+  })} ${units[unitIndex]}`;
+}
+
+function formatSignedPercent(value: number | null | undefined, locale: string) {
+  if (value == null || !Number.isFinite(value)) return "-";
+  const rounded = Math.round(value);
+  if (rounded > 0) return `+${rounded.toLocaleString(locale)}%`;
+  return `${rounded.toLocaleString(locale)}%`;
+}
+
+function compressionRatioSummary(attempt: ApiPoolUpstreamRequestAttempt, locale: string) {
+  if (
+    attempt.logicalBodyBytes == null ||
+    attempt.transmittedBodyBytes == null ||
+    attempt.ratioPct == null
+  ) {
+    return "-";
+  }
+  return `${formatSignedPercent(attempt.ratioPct, locale)} (${formatCompactByteSize(
+    attempt.logicalBodyBytes,
+    locale,
+  )} -> ${formatCompactByteSize(attempt.transmittedBodyBytes, locale)})`;
+}
+
 function statusLabel(status: string, t: Translator) {
   const known = new Set(["success", "pending", "http_failure", "transport_failure", "failed"]);
   return known.has(status) ? t(`accountPool.upstreamAttempts.status.${status}`) : status;
@@ -219,12 +255,14 @@ function AttemptEvidenceDisclosure({
   proxy,
   includeTimings,
   isFocused,
+  localeTag,
   t,
 }: {
   attempt: ApiPoolUpstreamRequestAttempt;
   proxy: ReturnType<typeof formatProxyBinding>;
   includeTimings: boolean;
   isFocused: boolean;
+  localeTag: string;
   t: Translator;
 }) {
   const [copied, setCopied] = useState(false);
@@ -232,7 +270,7 @@ function AttemptEvidenceDisclosure({
   const errorMessage = attempt.errorMessage?.trim() || "";
   const downstreamDiffers =
     attempt.downstreamHttpStatus != null && attempt.downstreamHttpStatus !== attempt.httpStatus;
-  const metadataItemClass = "flex items-baseline gap-1.5";
+  const metadataItemClass = "min-w-0 space-y-1";
   const copyError = async () => {
     if (!errorMessage || !navigator.clipboard?.writeText) return;
     try {
@@ -262,7 +300,7 @@ function AttemptEvidenceDisclosure({
         {t("accountPool.upstreamAttempts.details")}
       </summary>
       <div className="space-y-2 border-t border-base-300/70 bg-base-200/35 px-3 py-2.5 text-base-content/75">
-        <dl className="flex flex-wrap items-baseline gap-x-5 gap-y-1">
+        <dl className="grid gap-x-5 gap-y-2 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5">
           <div className={metadataItemClass}>
             <dt className="text-base-content/55">
               {t("accountPool.upstreamAttempts.proxyBinding")}
@@ -312,6 +350,24 @@ function AttemptEvidenceDisclosure({
               {t("accountPool.upstreamAttempts.upstreamRequestCompressionMode")}
             </dt>
             <dd>{compressionModeValueLabel(attempt.upstreamRequestCompressionMode, t)}</dd>
+          </div>
+          <div className={metadataItemClass}>
+            <dt className="text-base-content/55">
+              {t("accountPool.upstreamAttempts.compressionRatio")}
+            </dt>
+            <dd>{compressionRatioSummary(attempt, localeTag)}</dd>
+          </div>
+          <div className={metadataItemClass}>
+            <dt className="text-base-content/55">
+              {t("accountPool.upstreamAttempts.approxUpload")}
+            </dt>
+            <dd>{formatCompactByteSize(attempt.approxUploadBytes, localeTag)}</dd>
+          </div>
+          <div className={metadataItemClass}>
+            <dt className="text-base-content/55">
+              {t("accountPool.upstreamAttempts.approxDownload")}
+            </dt>
+            <dd>{formatCompactByteSize(attempt.approxDownloadBytes, localeTag)}</dd>
           </div>
           {includeTimings ? (
             <div className={metadataItemClass}>
@@ -377,7 +433,12 @@ function hasAttemptEvidence(attempt: ApiPoolUpstreamRequestAttempt, includeTimin
     includeTimings ||
       attempt.failureKind ||
       attempt.errorMessage?.trim() ||
-      (attempt.downstreamHttpStatus != null && attempt.downstreamHttpStatus !== attempt.httpStatus),
+      (attempt.downstreamHttpStatus != null &&
+        attempt.downstreamHttpStatus !== attempt.httpStatus) ||
+      attempt.logicalBodyBytes != null ||
+      attempt.transmittedBodyBytes != null ||
+      attempt.approxUploadBytes != null ||
+      attempt.approxDownloadBytes != null,
   );
 }
 
@@ -628,6 +689,7 @@ export function UpstreamAccountAttemptTimeline({
                           attempt={attempt}
                           includeTimings={false}
                           isFocused={attempt.attemptId === focusedAttemptId}
+                          localeTag={localeTag}
                           proxy={proxy}
                           t={t}
                         />
@@ -698,6 +760,7 @@ export function UpstreamAccountAttemptTimeline({
                           attempt={attempt}
                           includeTimings
                           isFocused={attempt.attemptId === focusedAttemptId}
+                          localeTag={localeTag}
                           proxy={proxy}
                           t={t}
                         />

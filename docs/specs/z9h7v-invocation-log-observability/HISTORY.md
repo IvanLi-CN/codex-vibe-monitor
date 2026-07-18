@@ -51,3 +51,4 @@
 - 2026-07-15: 将 Dashboard 模型性能时长合同从含混的单字段 `usageDurationMs` 改为显式的 `wallClockUsageDurationMs`、`cumulativeUsageDurationMs` 与 `parallelism`，并统一覆盖全局、账号、模型与账号+模型四级聚合。
 - 2026-07-15: Attempt owner-facing 合同改为持久化 8 位短 `attemptId`；账号详情、健康与事件、Records 新跳转统一改用 `attemptId`，并新增启动期 live/archive backfill 补齐历史 `attempt_public_id`。
 - 2026-07-16: 修复 terminal failure payload summary 在 pool route / pre-upstream 失败分支丢失 `requestModel` 的合同漂移，确保 `/api/invocations`、SSE records 与账号尝试列表在失败记录上继续拿到真实请求模型。
+- 2026-07-18: 新增 direct/pool 上游请求压缩字节事实与 HTTP 近似真值聚合字段，统一在调用详情和账号尝试诊断中展示 `压缩比 + 前/后字节`、`近似上传` 与 `近似下载`，并补充对应 Storybook 视觉证据。

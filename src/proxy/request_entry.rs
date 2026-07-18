@@ -515,6 +515,7 @@ pub(crate) struct ForwardProxyUpstreamResponse {
     pub(crate) attempt_started_at: Instant,
     pub(crate) attempt_recorded: bool,
     pub(crate) attempt_update: Option<ForwardProxyAttemptUpdate>,
+    pub(crate) http_approx: ForwardProxyHttpApproxObservation,
 }
 
 #[derive(Debug)]
@@ -525,6 +526,16 @@ pub(crate) struct ForwardProxyUpstreamError {
     pub(crate) failure_kind: &'static str,
     pub(crate) attempt_failure_kind: &'static str,
     pub(crate) connect_latency_ms: f64,
+    pub(crate) http_approx: ForwardProxyHttpApproxObservation,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ForwardProxyHttpApproxObservation {
+    pub(crate) approx_upload_bytes: usize,
+    pub(crate) approx_download_bytes_before_response_body: usize,
+    pub(crate) final_response_header_bytes_approx: usize,
+    pub(crate) request_compression: Option<RequestCompressionObservation>,
+    pub(crate) request_transmission_complete: bool,
 }
 
 pub(crate) enum ProxyUpstreamResponseBody {
@@ -1013,6 +1024,11 @@ pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) compact_support_reason: Option<String>,
     pub(crate) upstream_request_compression_algorithm: Option<String>,
     pub(crate) upstream_request_compression_mode: Option<String>,
+    pub(crate) upstream_request_logical_body_bytes: Option<i64>,
+    pub(crate) upstream_request_transmitted_body_bytes: Option<i64>,
+    pub(crate) upstream_request_header_bytes_approx: Option<i64>,
+    pub(crate) upstream_response_body_bytes: Option<i64>,
+    pub(crate) upstream_response_header_bytes_approx: Option<i64>,
 }
 
 #[derive(Debug, Default)]
@@ -2265,6 +2281,169 @@ pub(crate) struct PreparedPoolUpstreamRequestBody {
     pub(crate) content_length: Option<usize>,
     pub(crate) content_encoding: RequestBodyContentEncoding,
     pub(crate) compression_mode: PoolRequestBodyCompressionMode,
+    pub(crate) byte_observation: PreparedPoolUpstreamRequestBodyObservation,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ObservedByteCounter {
+    inner: Arc<AtomicU64>,
+}
+
+impl ObservedByteCounter {
+    pub(crate) fn add(&self, bytes: usize) {
+        let Ok(bytes) = u64::try_from(bytes) else {
+            return;
+        };
+        self.inner.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    pub(crate) fn load(&self) -> usize {
+        usize::try_from(self.inner.load(Ordering::Relaxed)).unwrap_or(usize::MAX)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ObservedBodyBytes {
+    Fixed(usize),
+    Counter(ObservedByteCounter),
+}
+
+impl ObservedBodyBytes {
+    pub(crate) fn load(&self) -> usize {
+        match self {
+            Self::Fixed(bytes) => *bytes,
+            Self::Counter(counter) => counter.load(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedPoolUpstreamRequestBodyObservation {
+    pub(crate) logical_body_bytes: ObservedBodyBytes,
+    pub(crate) transmitted_body_bytes: ObservedByteCounter,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RequestCompressionObservation {
+    pub(crate) algorithm: String,
+    pub(crate) mode: String,
+    pub(crate) logical_body_bytes: usize,
+    pub(crate) transmitted_body_bytes: usize,
+}
+
+#[derive(Debug)]
+struct CountingAsyncRead<R> {
+    inner: R,
+    counter: ObservedByteCounter,
+}
+
+impl<R> CountingAsyncRead<R> {
+    fn new(inner: R, counter: ObservedByteCounter) -> Self {
+        Self { inner, counter }
+    }
+}
+
+impl<R> AsyncRead for CountingAsyncRead<R>
+where
+    R: AsyncRead + Unpin,
+{
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        let filled_before = buf.filled().len();
+        let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let std::task::Poll::Ready(Ok(())) = &result {
+            let filled_after = buf.filled().len();
+            if filled_after > filled_before {
+                self.counter.add(filled_after - filled_before);
+            }
+        }
+        result
+    }
+}
+
+pub(crate) fn http_visible_header_bytes_approx(headers: &HeaderMap) -> usize {
+    headers
+        .iter()
+        .map(|(name, value)| name.as_str().len() + 2 + value.as_bytes().len() + 2)
+        .sum()
+}
+
+pub(crate) fn counted_reqwest_body_from_bytes(
+    bytes: Bytes,
+    counter: ObservedByteCounter,
+) -> reqwest::Body {
+    if bytes.is_empty() {
+        return reqwest::Body::from(Bytes::new());
+    }
+    let stream = stream::once(async move {
+        counter.add(bytes.len());
+        Ok::<Bytes, io::Error>(bytes)
+    });
+    reqwest::Body::wrap_stream(stream)
+}
+
+fn counted_reqwest_body_from_reader<R>(reader: R, counter: ObservedByteCounter) -> reqwest::Body
+where
+    R: AsyncRead + Send + 'static,
+{
+    let stream = ReaderStream::new(reader).map(move |chunk| {
+        if let Ok(bytes) = &chunk {
+            counter.add(bytes.len());
+        }
+        chunk
+    });
+    reqwest::Body::wrap_stream(stream)
+}
+
+fn counted_reqwest_body_from_snapshot(
+    snapshot: &PoolReplayBodySnapshot,
+    counter: ObservedByteCounter,
+) -> reqwest::Body {
+    match snapshot {
+        PoolReplayBodySnapshot::Empty => reqwest::Body::from(Bytes::new()),
+        PoolReplayBodySnapshot::Memory(bytes) => {
+            counted_reqwest_body_from_bytes(bytes.clone(), counter)
+        }
+        PoolReplayBodySnapshot::File { temp_file, size } => {
+            let temp_file = temp_file.clone();
+            let expected_size = *size;
+            let stream = stream::unfold(
+                Some((temp_file, expected_size, None::<tokio::fs::File>, counter)),
+                |state| async move {
+                    let (temp_file, remaining, file, counter) = state?;
+                    if remaining == 0 {
+                        return None;
+                    }
+                    let mut file = match file {
+                        Some(file) => file,
+                        None => match tokio::fs::File::open(&temp_file.path).await {
+                            Ok(file) => file,
+                            Err(err) => {
+                                return Some((Err(io::Error::other(err.to_string())), None));
+                            }
+                        },
+                    };
+                    let mut buf = vec![0_u8; remaining.min(64 * 1024)];
+                    match file.read(&mut buf).await {
+                        Ok(0) => None,
+                        Ok(read_len) => {
+                            buf.truncate(read_len);
+                            counter.add(read_len);
+                            Some((
+                                Ok(Bytes::from(buf)),
+                                Some((temp_file, remaining - read_len, Some(file), counter)),
+                            ))
+                        }
+                        Err(err) => Some((Err(io::Error::other(err.to_string())), None)),
+                    }
+                },
+            );
+            reqwest::Body::wrap_stream(stream)
+        }
+    }
 }
 
 type BoxedPoolRequestReader = Pin<Box<dyn AsyncRead + Send>>;
@@ -2279,8 +2458,8 @@ fn request_compression_preset_to_async_level(
     }
 }
 
-async fn resolve_request_body_content_encoding(
-    snapshot: &PoolReplayBodySnapshot,
+fn resolve_request_body_content_encoding_from_prefix(
+    prefix: Option<&[u8]>,
     content_encoding: Option<&str>,
 ) -> Result<RequestBodyContentEncoding, PoolRequestBodyPreparationError> {
     let encodings = parse_content_encodings(content_encoding);
@@ -2296,20 +2475,95 @@ async fn resolve_request_body_content_encoding(
 
     match encodings[0].as_str() {
         "gzip" | "x-gzip" => Ok(RequestBodyContentEncoding::Gzip),
-        "deflate" => {
-            let prefix = snapshot.to_prefix_bytes(2).await.map_err(|err| {
-                PoolRequestBodyPreparationError::bad_gateway(format!(
-                    "failed to inspect deflate request body header: {err}"
-                ))
-            })?;
-            Ok(RequestBodyContentEncoding::Deflate {
-                zlib_wrapper: deflate_stream_uses_zlib_wrapper(prefix.as_ref()),
-            })
-        }
+        "deflate" => Ok(RequestBodyContentEncoding::Deflate {
+            zlib_wrapper: deflate_stream_uses_zlib_wrapper(prefix.unwrap_or_default()),
+        }),
         "zstd" => Ok(RequestBodyContentEncoding::Zstd),
         other => Err(PoolRequestBodyPreparationError::bad_request(format!(
             "unsupported request Content-Encoding: {other}"
         ))),
+    }
+}
+
+async fn resolve_request_body_content_encoding(
+    snapshot: &PoolReplayBodySnapshot,
+    content_encoding: Option<&str>,
+) -> Result<RequestBodyContentEncoding, PoolRequestBodyPreparationError> {
+    let prefix = if parse_content_encodings(content_encoding)
+        .iter()
+        .any(|encoding| encoding == "deflate")
+    {
+        Some(snapshot.to_prefix_bytes(2).await.map_err(|err| {
+            PoolRequestBodyPreparationError::bad_gateway(format!(
+                "failed to inspect deflate request body header: {err}"
+            ))
+        })?)
+    } else {
+        None
+    };
+    resolve_request_body_content_encoding_from_prefix(
+        prefix.as_ref().map(Bytes::as_ref),
+        content_encoding,
+    )
+}
+
+pub(crate) fn observe_request_compression_from_bytes(
+    bytes: &[u8],
+    content_encoding: Option<&str>,
+) -> Option<RequestCompressionObservation> {
+    let needs_prefix = parse_content_encodings(content_encoding)
+        .iter()
+        .any(|encoding| encoding == "deflate");
+    let prefix = needs_prefix.then(|| &bytes[..bytes.len().min(2)]);
+    let encoding =
+        resolve_request_body_content_encoding_from_prefix(prefix, content_encoding).ok()?;
+    let logical_body_bytes = decode_request_payload_bytes(bytes, encoding).ok()?.len();
+    Some(RequestCompressionObservation {
+        algorithm: encoding.algorithm().as_str().to_string(),
+        mode: if matches!(encoding, RequestBodyContentEncoding::Identity) {
+            PoolRequestBodyCompressionMode::Identity
+                .as_str()
+                .to_string()
+        } else {
+            PoolRequestBodyCompressionMode::Passthrough
+                .as_str()
+                .to_string()
+        },
+        logical_body_bytes,
+        transmitted_body_bytes: bytes.len(),
+    })
+}
+
+async fn count_decoded_request_snapshot_bytes(
+    snapshot: &PoolReplayBodySnapshot,
+    encoding: RequestBodyContentEncoding,
+) -> Result<usize, PoolRequestBodyPreparationError> {
+    if matches!(encoding, RequestBodyContentEncoding::Identity) {
+        return Ok(pool_request_snapshot_body_bytes(snapshot));
+    }
+    match snapshot {
+        PoolReplayBodySnapshot::Empty => Ok(0),
+        PoolReplayBodySnapshot::Memory(bytes) => {
+            Ok(decode_request_payload_bytes(bytes, encoding)?.len())
+        }
+        PoolReplayBodySnapshot::File { .. } => {
+            let raw_reader = open_pool_request_snapshot_reader(snapshot).await?;
+            let mut decoded_reader = decode_pool_request_reader(raw_reader, encoding).await?;
+            let mut total = 0usize;
+            let mut buf = [0_u8; 64 * 1024];
+            loop {
+                let read_len = decoded_reader.read(&mut buf).await.map_err(|err| {
+                    PoolRequestBodyPreparationError::bad_gateway(format!(
+                        "failed to count decoded request body bytes: {err}"
+                    ))
+                })?;
+                if read_len == 0 {
+                    break;
+                }
+                total = total.saturating_add(read_len);
+            }
+            Ok(total)
+        }
     }
 }
 
@@ -2444,11 +2698,16 @@ pub(crate) async fn build_pool_upstream_request_body(
     downstream_content_encoding: Option<&str>,
 ) -> Result<PreparedPoolUpstreamRequestBody, PoolRequestBodyPreparationError> {
     if matches!(prepared.snapshot, PoolReplayBodySnapshot::Empty) {
+        let transmitted_body_bytes = ObservedByteCounter::default();
         return Ok(PreparedPoolUpstreamRequestBody {
             body: reqwest::Body::from(Bytes::new()),
             content_length: Some(0),
             content_encoding: RequestBodyContentEncoding::Identity,
             compression_mode: PoolRequestBodyCompressionMode::Identity,
+            byte_observation: PreparedPoolUpstreamRequestBodyObservation {
+                logical_body_bytes: ObservedBodyBytes::Fixed(0),
+                transmitted_body_bytes,
+            },
         });
     }
 
@@ -2468,11 +2727,21 @@ pub(crate) async fn build_pool_upstream_request_body(
     if prepared.snapshot_is_decoded
         && matches!(target_encoding, RequestBodyContentEncoding::Identity)
     {
+        let transmitted_body_bytes = ObservedByteCounter::default();
         return Ok(PreparedPoolUpstreamRequestBody {
-            body: prepared.snapshot.to_reqwest_body(),
+            body: counted_reqwest_body_from_snapshot(
+                &prepared.snapshot,
+                transmitted_body_bytes.clone(),
+            ),
             content_length: Some(pool_request_snapshot_body_bytes(&prepared.snapshot)),
             content_encoding: RequestBodyContentEncoding::Identity,
             compression_mode: PoolRequestBodyCompressionMode::Identity,
+            byte_observation: PreparedPoolUpstreamRequestBodyObservation {
+                logical_body_bytes: ObservedBodyBytes::Fixed(pool_request_snapshot_body_bytes(
+                    &prepared.snapshot,
+                )),
+                transmitted_body_bytes,
+            },
         });
     }
 
@@ -2482,11 +2751,27 @@ pub(crate) async fn build_pool_upstream_request_body(
         } else {
             PoolRequestBodyCompressionMode::Passthrough
         };
+        let transmitted_body_bytes = ObservedByteCounter::default();
+        let logical_body_bytes = if matches!(target_encoding, RequestBodyContentEncoding::Identity)
+        {
+            ObservedBodyBytes::Fixed(pool_request_snapshot_body_bytes(&prepared.snapshot))
+        } else {
+            ObservedBodyBytes::Fixed(
+                count_decoded_request_snapshot_bytes(&prepared.snapshot, target_encoding).await?,
+            )
+        };
         return Ok(PreparedPoolUpstreamRequestBody {
-            body: prepared.snapshot.to_reqwest_body(),
+            body: counted_reqwest_body_from_snapshot(
+                &prepared.snapshot,
+                transmitted_body_bytes.clone(),
+            ),
             content_length: Some(pool_request_snapshot_body_bytes(&prepared.snapshot)),
             content_encoding: target_encoding,
             compression_mode,
+            byte_observation: PreparedPoolUpstreamRequestBodyObservation {
+                logical_body_bytes,
+                transmitted_body_bytes,
+            },
         });
     }
 
@@ -2498,21 +2783,46 @@ pub(crate) async fn build_pool_upstream_request_body(
     };
 
     if matches!(target_encoding, RequestBodyContentEncoding::Identity) {
+        let transmitted_body_bytes = ObservedByteCounter::default();
         return Ok(PreparedPoolUpstreamRequestBody {
-            body: reqwest::Body::wrap_stream(ReaderStream::new(decoded_reader)),
+            body: counted_reqwest_body_from_reader(decoded_reader, transmitted_body_bytes.clone()),
             content_length: None,
             content_encoding: RequestBodyContentEncoding::Identity,
             compression_mode: PoolRequestBodyCompressionMode::Identity,
+            byte_observation: PreparedPoolUpstreamRequestBodyObservation {
+                logical_body_bytes: if prepared.snapshot_is_decoded {
+                    ObservedBodyBytes::Fixed(pool_request_snapshot_body_bytes(&prepared.snapshot))
+                } else {
+                    ObservedBodyBytes::Counter(transmitted_body_bytes.clone())
+                },
+                transmitted_body_bytes,
+            },
         });
     }
 
     let level = request_compression_preset_to_async_level(request_compression_level_preset);
+    let logical_body_bytes = if prepared.snapshot_is_decoded {
+        ObservedBodyBytes::Fixed(pool_request_snapshot_body_bytes(&prepared.snapshot))
+    } else {
+        ObservedBodyBytes::Counter(ObservedByteCounter::default())
+    };
+    let decoded_reader = match &logical_body_bytes {
+        ObservedBodyBytes::Fixed(_) => decoded_reader,
+        ObservedBodyBytes::Counter(counter) => {
+            Box::pin(CountingAsyncRead::new(decoded_reader, counter.clone()))
+        }
+    };
     let encoded_reader = encode_pool_request_reader(decoded_reader, target_encoding, level);
+    let transmitted_body_bytes = ObservedByteCounter::default();
     Ok(PreparedPoolUpstreamRequestBody {
-        body: reqwest::Body::wrap_stream(ReaderStream::new(encoded_reader)),
+        body: counted_reqwest_body_from_reader(encoded_reader, transmitted_body_bytes.clone()),
         content_length: None,
         content_encoding: target_encoding,
         compression_mode: PoolRequestBodyCompressionMode::Recompressed,
+        byte_observation: PreparedPoolUpstreamRequestBodyObservation {
+            logical_body_bytes,
+            transmitted_body_bytes,
+        },
     })
 }
 

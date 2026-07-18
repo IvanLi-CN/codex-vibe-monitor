@@ -4180,7 +4180,35 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
     capture_target: Option<ProxyCaptureTarget>,
     upstream_429_max_retries: u8,
 ) -> Result<ForwardProxyUpstreamResponse, ForwardProxyUpstreamError> {
+    async fn drain_reqwest_response_body_bytes(response: reqwest::Response) -> usize {
+        let mut total = 0usize;
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(bytes) => {
+                    total = total.saturating_add(bytes.len());
+                }
+                Err(err) => {
+                    warn!(error = %err, "failed to drain retry response body for byte accounting");
+                    break;
+                }
+            }
+        }
+        total
+    }
+
     let request_connection_scoped = connection_scoped_header_names(headers);
+    let request_body_len = body.as_ref().map(Bytes::len);
+    let request_compression = body.as_ref().and_then(|body_bytes| {
+        observe_request_compression_from_bytes(
+            body_bytes.as_ref(),
+            headers
+                .get(header::CONTENT_ENCODING)
+                .and_then(|value| value.to_str().ok()),
+        )
+    });
+    let mut approx_upload_bytes = 0usize;
+    let mut approx_download_bytes_before_response_body = 0usize;
 
     for attempt in 0..=upstream_429_max_retries {
         let selected_proxy = match select_forward_proxy_for_request(state.as_ref()).await {
@@ -4195,6 +4223,7 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
                     failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                     attempt_failure_kind: FORWARD_PROXY_FAILURE_SEND_ERROR,
                     connect_latency_ms: 0.0,
+                    http_approx: ForwardProxyHttpApproxObservation::default(),
                 });
             }
         };
@@ -4211,24 +4240,40 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
                     failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                     attempt_failure_kind: FORWARD_PROXY_FAILURE_SEND_ERROR,
                     connect_latency_ms: 0.0,
+                    http_approx: ForwardProxyHttpApproxObservation::default(),
                 });
             }
         };
 
         let mut request = client.request(method.clone(), target_url.clone());
+        let mut outbound_headers = HeaderMap::new();
         for (name, value) in headers {
             if should_forward_proxy_header(name, &request_connection_scoped) {
                 request = request.header(name, value);
+                outbound_headers.append(name.clone(), value.clone());
             }
         }
+        let body_counter = ObservedByteCounter::default();
         if let Some(body_bytes) = body.clone() {
-            request = request.body(body_bytes);
+            if !outbound_headers.contains_key(header::CONTENT_LENGTH)
+                && let Ok(content_length) = HeaderValue::from_str(&body_bytes.len().to_string())
+            {
+                outbound_headers.insert(header::CONTENT_LENGTH, content_length.clone());
+                request = request.header(header::CONTENT_LENGTH, content_length);
+            }
+            request = request.body(counted_reqwest_body_from_bytes(
+                body_bytes,
+                body_counter.clone(),
+            ));
         }
+        let request_header_bytes_approx = http_visible_header_bytes_approx(&outbound_headers);
 
         let connect_started = Instant::now();
         let response = match timeout(handshake_timeout, request.send()).await {
             Ok(Ok(response)) => response,
             Ok(Err(err)) => {
+                let attempt_upload_bytes =
+                    request_header_bytes_approx.saturating_add(body_counter.load());
                 return Err(ForwardProxyUpstreamError {
                     selected_proxy,
                     status: StatusCode::BAD_GATEWAY,
@@ -4236,9 +4281,26 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
                     failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                     attempt_failure_kind: FORWARD_PROXY_FAILURE_SEND_ERROR,
                     connect_latency_ms: elapsed_ms(connect_started),
+                    http_approx: ForwardProxyHttpApproxObservation {
+                        approx_upload_bytes: approx_upload_bytes
+                            .saturating_add(attempt_upload_bytes),
+                        approx_download_bytes_before_response_body,
+                        final_response_header_bytes_approx: 0,
+                        request_compression: request_compression.as_ref().map(|observation| {
+                            RequestCompressionObservation {
+                                algorithm: observation.algorithm.clone(),
+                                mode: observation.mode.clone(),
+                                logical_body_bytes: observation.logical_body_bytes,
+                                transmitted_body_bytes: body_counter.load(),
+                            }
+                        }),
+                        request_transmission_complete: false,
+                    },
                 });
             }
             Err(_) => {
+                let attempt_upload_bytes =
+                    request_header_bytes_approx.saturating_add(body_counter.load());
                 return Err(ForwardProxyUpstreamError {
                     selected_proxy,
                     status: StatusCode::BAD_GATEWAY,
@@ -4246,11 +4308,42 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
                     failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
                     attempt_failure_kind: FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT,
                     connect_latency_ms: elapsed_ms(connect_started),
+                    http_approx: ForwardProxyHttpApproxObservation {
+                        approx_upload_bytes: approx_upload_bytes
+                            .saturating_add(attempt_upload_bytes),
+                        approx_download_bytes_before_response_body,
+                        final_response_header_bytes_approx: 0,
+                        request_compression: request_compression.as_ref().map(|observation| {
+                            RequestCompressionObservation {
+                                algorithm: observation.algorithm.clone(),
+                                mode: observation.mode.clone(),
+                                logical_body_bytes: observation.logical_body_bytes,
+                                transmitted_body_bytes: body_counter.load(),
+                            }
+                        }),
+                        request_transmission_complete: false,
+                    },
                 });
             }
         };
 
         let connect_latency_ms = elapsed_ms(connect_started);
+        let attempt_upload_bytes = request_header_bytes_approx.saturating_add(body_counter.load());
+        approx_upload_bytes = approx_upload_bytes.saturating_add(attempt_upload_bytes);
+        let response_header_bytes_approx = http_visible_header_bytes_approx(response.headers());
+        approx_download_bytes_before_response_body =
+            approx_download_bytes_before_response_body.saturating_add(response_header_bytes_approx);
+        let request_transmission_complete =
+            request_body_len.is_none_or(|len| body_counter.load() == len);
+        let final_request_compression =
+            request_compression
+                .as_ref()
+                .map(|observation| RequestCompressionObservation {
+                    algorithm: observation.algorithm.clone(),
+                    mode: observation.mode.clone(),
+                    logical_body_bytes: observation.logical_body_bytes,
+                    transmitted_body_bytes: body_counter.load(),
+                });
         if response.status() != StatusCode::TOO_MANY_REQUESTS {
             return Ok(ForwardProxyUpstreamResponse {
                 selected_proxy,
@@ -4259,6 +4352,13 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
                 attempt_started_at: connect_started,
                 attempt_recorded: false,
                 attempt_update: None,
+                http_approx: ForwardProxyHttpApproxObservation {
+                    approx_upload_bytes,
+                    approx_download_bytes_before_response_body,
+                    final_response_header_bytes_approx: response_header_bytes_approx,
+                    request_compression: final_request_compression,
+                    request_transmission_complete,
+                },
             });
         }
 
@@ -4288,6 +4388,8 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
                 retry_after_ms = retry_delay.as_millis(),
                 "upstream responded 429; retrying forward proxy request"
             );
+            approx_download_bytes_before_response_body = approx_download_bytes_before_response_body
+                .saturating_add(drain_reqwest_response_body_bytes(response).await);
             sleep(retry_delay).await;
             continue;
         }
@@ -4301,6 +4403,13 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
             attempt_started_at: connect_started,
             attempt_recorded: false,
             attempt_update: None,
+            http_approx: ForwardProxyHttpApproxObservation {
+                approx_upload_bytes,
+                approx_download_bytes_before_response_body,
+                final_response_header_bytes_approx: response_header_bytes_approx,
+                request_compression: final_request_compression,
+                request_transmission_complete,
+            },
         });
     }
 

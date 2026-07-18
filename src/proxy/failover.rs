@@ -1437,22 +1437,13 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         pool_request_snapshot_kind(&prepared_request_body.snapshot);
                     let prepared_body_bytes =
                         pool_request_snapshot_body_bytes(&prepared_request_body.snapshot);
-                    if let Some(trace) = trace_context.as_ref() {
-                        state.dashboard_network_speed_cache.record_request_bytes(
-                            &trace.invoke_id,
-                            &trace.occurred_at,
-                            Some(account.account_id),
-                            prepared_body_bytes,
-                            Utc::now(),
-                        );
-                        schedule_dashboard_activity_live_snapshot(state.as_ref());
-                    }
                     let outbound_content_length = outbound_request_body.content_length;
                     let preserve_content_length = outbound_content_length.is_some()
                         && forwarded_content_length
                             .as_deref()
                             .and_then(|value| value.parse::<usize>().ok())
                             == outbound_content_length;
+                    let mut outbound_headers = HeaderMap::new();
                     for (name, value) in headers {
                         if *name == header::AUTHORIZATION || *name == header::CONTENT_ENCODING {
                             continue;
@@ -1462,17 +1453,30 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         }
                         if should_forward_proxy_header(name, &request_connection_scoped) {
                             request = request.header(name, value);
+                            outbound_headers.append(name.clone(), value.clone());
                         }
                     }
                     request = request.header(header::AUTHORIZATION, authorization.clone());
+                    if let Ok(value) = HeaderValue::from_str(authorization) {
+                        outbound_headers.insert(header::AUTHORIZATION, value);
+                    }
                     if let Some(content_length) = outbound_content_length {
                         request = request.header(header::CONTENT_LENGTH, content_length);
+                        if let Ok(value) = HeaderValue::from_str(&content_length.to_string()) {
+                            outbound_headers.insert(header::CONTENT_LENGTH, value);
+                        }
                     }
                     if let Some(content_encoding) =
                         outbound_request_body.content_encoding.header_value()
                     {
                         request = request.header(header::CONTENT_ENCODING, content_encoding);
+                        outbound_headers.insert(
+                            header::CONTENT_ENCODING,
+                            HeaderValue::from_static(content_encoding),
+                        );
                     }
+                    let request_header_bytes_approx =
+                        http_visible_header_bytes_approx(&outbound_headers);
                     request = request.body(outbound_request_body.body);
                     record_account_selected(state.as_ref(), account.account_id).await;
                     let group_name_snapshot =
@@ -1580,12 +1584,83 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         "pool upstream attempt started"
                     );
                     match timeout(attempt_send_timeout, request.send()).await {
-                        Ok(Ok(response)) => (
-                            ProxyUpstreamResponseBody::Reqwest(response),
-                            None,
-                            Some((forward_proxy_scope, selected_proxy)),
-                        ),
+                        Ok(Ok(response)) => {
+                            let request_logical_body_bytes = outbound_request_body
+                                .byte_observation
+                                .logical_body_bytes
+                                .load();
+                            let request_transmitted_body_bytes = outbound_request_body
+                                .byte_observation
+                                .transmitted_body_bytes
+                                .load();
+                            let response_header_bytes_approx =
+                                http_visible_header_bytes_approx(response.headers());
+                            if let Some(pending_attempt_record) = pending_attempt_record.as_mut() {
+                                update_pending_pool_upstream_request_attempt_http_bytes(
+                                    pending_attempt_record,
+                                    Some(request_logical_body_bytes),
+                                    Some(request_transmitted_body_bytes),
+                                    Some(request_header_bytes_approx),
+                                    None,
+                                    Some(response_header_bytes_approx),
+                                );
+                            }
+                            if let Some(trace) = trace_context.as_ref() {
+                                state.dashboard_network_speed_cache.record_request_bytes(
+                                    &trace.invoke_id,
+                                    &trace.occurred_at,
+                                    Some(account.account_id),
+                                    request_header_bytes_approx
+                                        .saturating_add(request_transmitted_body_bytes),
+                                    Utc::now(),
+                                );
+                                state
+                                    .dashboard_network_speed_cache
+                                    .record_response_chunk_bytes(
+                                        &trace.invoke_id,
+                                        &trace.occurred_at,
+                                        Some(account.account_id),
+                                        response_header_bytes_approx,
+                                        Utc::now(),
+                                    );
+                                schedule_dashboard_activity_live_snapshot(state.as_ref());
+                            }
+                            (
+                                ProxyUpstreamResponseBody::Reqwest(response),
+                                None,
+                                Some((forward_proxy_scope, selected_proxy)),
+                            )
+                        }
                         Ok(Err(err)) => {
+                            let request_logical_body_bytes = outbound_request_body
+                                .byte_observation
+                                .logical_body_bytes
+                                .load();
+                            let request_transmitted_body_bytes = outbound_request_body
+                                .byte_observation
+                                .transmitted_body_bytes
+                                .load();
+                            if let Some(pending_attempt_record) = pending_attempt_record.as_mut() {
+                                update_pending_pool_upstream_request_attempt_http_bytes(
+                                    pending_attempt_record,
+                                    Some(request_logical_body_bytes),
+                                    Some(request_transmitted_body_bytes),
+                                    Some(request_header_bytes_approx),
+                                    None,
+                                    None,
+                                );
+                            }
+                            if let Some(trace) = trace_context.as_ref() {
+                                state.dashboard_network_speed_cache.record_request_bytes(
+                                    &trace.invoke_id,
+                                    &trace.occurred_at,
+                                    Some(account.account_id),
+                                    request_header_bytes_approx
+                                        .saturating_add(request_transmitted_body_bytes),
+                                    Utc::now(),
+                                );
+                                schedule_dashboard_activity_live_snapshot(state.as_ref());
+                            }
                             record_pool_account_forward_proxy_result(
                                 state.as_ref(),
                                 &forward_proxy_scope,
@@ -1764,6 +1839,35 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             continue 'account_loop;
                         }
                         Err(_) => {
+                            let request_logical_body_bytes = outbound_request_body
+                                .byte_observation
+                                .logical_body_bytes
+                                .load();
+                            let request_transmitted_body_bytes = outbound_request_body
+                                .byte_observation
+                                .transmitted_body_bytes
+                                .load();
+                            if let Some(pending_attempt_record) = pending_attempt_record.as_mut() {
+                                update_pending_pool_upstream_request_attempt_http_bytes(
+                                    pending_attempt_record,
+                                    Some(request_logical_body_bytes),
+                                    Some(request_transmitted_body_bytes),
+                                    Some(request_header_bytes_approx),
+                                    None,
+                                    None,
+                                );
+                            }
+                            if let Some(trace) = trace_context.as_ref() {
+                                state.dashboard_network_speed_cache.record_request_bytes(
+                                    &trace.invoke_id,
+                                    &trace.occurred_at,
+                                    Some(account.account_id),
+                                    request_header_bytes_approx
+                                        .saturating_add(request_transmitted_body_bytes),
+                                    Utc::now(),
+                                );
+                                schedule_dashboard_activity_live_snapshot(state.as_ref());
+                            }
                             record_pool_account_forward_proxy_result(
                                 state.as_ref(),
                                 &forward_proxy_scope,

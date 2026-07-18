@@ -40,6 +40,14 @@ done
 
 start_epoch="$(date +%s)"
 
+# The pool routing/live-first test profiles now exercise async paths that exceed the
+# default Rust thread stack on CI workers. Raise the per-thread minimum for the
+# backend test binary unless the caller already set a stronger value.
+if [[ -z "${RUST_MIN_STACK:-}" ]]; then
+  export RUST_MIN_STACK=$((8 * 1024 * 1024))
+fi
+echo "backend_test_rust_min_stack_bytes=$RUST_MIN_STACK"
+
 if ! command -v cargo-nextest >/dev/null 2>&1; then
   echo "::error::cargo-nextest is not installed. Install it before running backend tests."
   exit 1

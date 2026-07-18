@@ -36,6 +36,11 @@ pub(crate) struct PoolUpstreamRequestAttemptArchiveRow {
     upstream_request_id: Option<String>,
     upstream_request_compression_algorithm: Option<String>,
     upstream_request_compression_mode: Option<String>,
+    upstream_request_logical_body_bytes: Option<i64>,
+    upstream_request_transmitted_body_bytes: Option<i64>,
+    upstream_request_header_bytes_approx: Option<i64>,
+    upstream_response_body_bytes: Option<i64>,
+    upstream_response_header_bytes_approx: Option<i64>,
     compact_support_status: Option<String>,
     compact_support_reason: Option<String>,
     created_at: String,
@@ -94,6 +99,11 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_direct(
         ("downstream_error_message", "TEXT"),
         ("upstream_request_compression_algorithm", "TEXT"),
         ("upstream_request_compression_mode", "TEXT"),
+        ("upstream_request_logical_body_bytes", "INTEGER"),
+        ("upstream_request_transmitted_body_bytes", "INTEGER"),
+        ("upstream_request_header_bytes_approx", "INTEGER"),
+        ("upstream_response_body_bytes", "INTEGER"),
+        ("upstream_response_header_bytes_approx", "INTEGER"),
         ("compact_support_status", "TEXT"),
         ("compact_support_reason", "TEXT"),
         ("group_name_snapshot", "TEXT"),
@@ -344,6 +354,11 @@ pub(crate) async fn archive_pool_upstream_request_attempt_rows_into_month_batch(
                 .push_bind(&row.upstream_request_id)
                 .push_bind(&row.upstream_request_compression_algorithm)
                 .push_bind(&row.upstream_request_compression_mode)
+                .push_bind(row.upstream_request_logical_body_bytes)
+                .push_bind(row.upstream_request_transmitted_body_bytes)
+                .push_bind(row.upstream_request_header_bytes_approx)
+                .push_bind(row.upstream_response_body_bytes)
+                .push_bind(row.upstream_response_header_bytes_approx)
                 .push_bind(&row.compact_support_status)
                 .push_bind(&row.compact_support_reason)
                 .push_bind(&row.created_at);
