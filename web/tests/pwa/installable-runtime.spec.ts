@@ -16,7 +16,6 @@ async function maybeCaptureScreenshot(page: Page, filename: string) {
   await mkdir(captureDir, { recursive: true });
   await page.screenshot({
     path: path.join(captureDir, filename),
-    fullPage: true,
   });
 }
 
@@ -503,7 +502,9 @@ test.beforeEach(async ({ context, page, request }) => {
   await expect(page.getByTestId("app-main")).toBeVisible();
 });
 
-test("handles Chromium install prompts through the shared app-shell control", async ({ page }) => {
+test("shows an install prompt dialog without a header button and routes confirm through native prompt", async ({
+  page,
+}) => {
   await page.evaluate(() => {
     const installEvent = new Event("beforeinstallprompt") as Event & {
       prompt: () => Promise<void>;
@@ -519,16 +520,56 @@ test("handles Chromium install prompts through the shared app-shell control", as
     window.dispatchEvent(installEvent);
   });
 
-  const installControl = page.getByTestId("pwa-install-control");
-  await expect(installControl).toBeVisible();
-  await expect(installControl).toHaveAttribute("data-install-mode", "prompt");
+  await expect(page.getByTestId("pwa-install-control")).toHaveCount(0);
 
-  await installControl.click();
+  const installDialog = page.getByTestId("pwa-install-dialog");
+  await expect(installDialog).toBeVisible();
+  await expect(installDialog).toHaveAttribute("data-install-mode", "prompt");
 
-  await expect(installControl).toHaveAttribute("data-install-mode", "installed");
+  await page.getByTestId("pwa-install-confirm").click();
+
+  await expect(installDialog).toHaveCount(0);
   await expect
     .poll(() => page.evaluate(() => (window as Window & { __pwaPrompted?: boolean }).__pwaPrompted))
     .toBe(true);
+});
+
+test("centers the install prompt dialog on narrow screens", async ({ page }) => {
+  await page.setViewportSize({ width: 393, height: 852 });
+  await page.goto("/#/dashboard");
+  await expect(page.getByTestId("app-main")).toBeVisible();
+
+  await page.evaluate(() => {
+    const installEvent = new Event("beforeinstallprompt") as Event & {
+      prompt: () => Promise<void>;
+      userChoice: Promise<{ outcome: "accepted"; platform: "web" }>;
+    };
+    installEvent.preventDefault = () => undefined;
+    installEvent.prompt = async () => {
+      window.dispatchEvent(new Event("appinstalled"));
+    };
+    installEvent.userChoice = Promise.resolve({ outcome: "accepted", platform: "web" });
+    window.dispatchEvent(installEvent);
+  });
+
+  await expect(page.getByTestId("pwa-install-control")).toHaveCount(0);
+
+  const dialog = page.getByTestId("pwa-install-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByText(/Install Codex Vibe Monitor|安装 Codex Vibe Monitor/),
+  ).toBeVisible();
+
+  const box = await dialog.boundingBox();
+  expect(box).not.toBeNull();
+  if (!box) {
+    return;
+  }
+
+  expect(Math.abs(box.x + box.width / 2 - 393 / 2)).toBeLessThan(4);
+  expect(Math.abs(box.y + box.height / 2 - 852 / 2)).toBeLessThan(10);
+
+  await maybeCaptureScreenshot(page, "pwa-install-prompt-mobile.png");
 });
 
 test("shows a prompt-style update banner when a newer service worker is waiting", async ({
