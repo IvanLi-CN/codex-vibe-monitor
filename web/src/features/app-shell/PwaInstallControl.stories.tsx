@@ -1,9 +1,11 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useLayoutEffect } from "react";
+import { expect, within } from "storybook/test";
 import { PwaInstallControl } from "./PwaInstallControl";
 
 const labels = {
   promptButton: "Install app",
+  laterButton: "Later",
   manualButton: "Add to Home Screen",
   installedButton: "Installed",
   switcherAria: "Open install app controls",
@@ -12,6 +14,11 @@ const labels = {
   shellReady: "Offline shell ready",
   shellPending: "Offline shell pending",
   offlineChip: "Offline now",
+  promptTitle: "Install Codex Vibe Monitor",
+  promptDescription:
+    "Add this workspace as a standalone app window so daily monitoring opens directly into the shell.",
+  promptHint:
+    "After installation, the app shell can still reopen offline. Live proxy data resumes after the network reconnects.",
   manualTitle: "Add Codex Vibe Monitor to Home Screen",
   manualDescription:
     "Safari on iPhone and iPad uses the browser share sheet instead of a native install prompt.",
@@ -25,7 +32,7 @@ const labels = {
     "Pin the installed window for daily monitoring. The app shell stays available offline, but live proxy data resumes only after reconnect.",
 };
 
-function ThemeRoot({
+function ShellBackdrop({
   children,
   theme,
 }: {
@@ -47,66 +54,85 @@ function ThemeRoot({
   return (
     <div
       data-theme={theme}
-      className="min-h-[16rem] rounded-3xl border border-base-300/70 bg-base-100/85 p-6 shadow-[0_18px_40px_rgba(15,23,42,0.09)]"
+      className="flex min-h-screen items-start justify-center bg-[radial-gradient(circle_at_top,rgba(56,189,248,0.16),transparent_28%),linear-gradient(180deg,rgba(248,250,252,1),rgba(237,242,247,1))] px-4 py-6"
     >
-      <div className="flex items-center justify-between gap-4">
-        <div className="space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary/72">
-            Install surface
-          </p>
-          <h2 className="section-title text-xl">Header install affordance</h2>
-          <p className="max-w-[52ch] text-sm text-base-content/72">
-            Prompt, Safari manual guidance, and installed-state vocabulary all share the same shell
-            component.
-          </p>
+      <div className="w-[min(100%,24rem)] overflow-hidden rounded-[2rem] border border-base-300/70 bg-base-100/96 shadow-[0_24px_64px_rgba(15,23,42,0.16)]">
+        <div className="border-b border-base-300/70 bg-sky-500/90 px-4 py-3 text-sm font-semibold text-white">
+          Codex Vibe Monitor
         </div>
-        {children}
+        <div className="space-y-3 px-3 py-4">
+          <div className="rounded-[1.35rem] border border-base-300/70 bg-base-100/92 px-4 py-5 shadow-sm">
+            <div className="h-3 w-28 rounded-full bg-base-300/75" />
+            <div className="mt-3 h-3 w-full rounded-full bg-base-200/85" />
+            <div className="mt-2 h-3 w-4/5 rounded-full bg-base-200/85" />
+          </div>
+          <div className="rounded-[1.35rem] border border-base-300/70 bg-base-100/92 px-4 py-5 shadow-sm">
+            <div className="h-3 w-24 rounded-full bg-base-300/75" />
+            <div className="mt-3 h-3 w-full rounded-full bg-base-200/85" />
+            <div className="mt-2 h-3 w-3/5 rounded-full bg-base-200/85" />
+          </div>
+        </div>
       </div>
+      {children}
     </div>
   );
 }
 
 const meta = {
-  title: "Shell/PWA Install Control",
+  title: "Shell/PWA Install Dialog",
   component: PwaInstallControl,
   tags: ["autodocs"],
   args: {
     labels,
     shellReady: true,
     isOffline: false,
+    open: true,
+    onOpenChange: () => undefined,
     onPromptInstall: () => undefined,
   },
-  render: (args) => (
-    <ThemeRoot theme="vibe-light">
-      <PwaInstallControl {...args} />
-    </ThemeRoot>
-  ),
+  parameters: {
+    layout: "fullscreen",
+  },
 } satisfies Meta<typeof PwaInstallControl>;
 
 export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Promptable: Story = {
+export const PromptDialogMobile: Story = {
   args: {
     mode: "prompt",
   },
-};
-
-export const SafariManual: Story = {
-  args: {
-    mode: "manual-ios",
+  render: (args) => (
+    <ShellBackdrop theme="vibe-light">
+      <PwaInstallControl {...args} />
+    </ShellBackdrop>
+  ),
+  play: async () => {
+    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+    await expect(within(document.body).getByText("Install Codex Vibe Monitor")).toBeInTheDocument();
   },
 };
 
-export const InstalledOffline: Story = {
+export const SafariManualMobile: Story = {
+  args: {
+    mode: "manual-ios",
+  },
+  render: (args) => (
+    <ShellBackdrop theme="vibe-light">
+      <PwaInstallControl {...args} />
+    </ShellBackdrop>
+  ),
+};
+
+export const InstalledSummaryDark: Story = {
   args: {
     mode: "installed",
     isOffline: true,
   },
   render: (args) => (
-    <ThemeRoot theme="vibe-dark">
+    <ShellBackdrop theme="vibe-dark">
       <PwaInstallControl {...args} />
-    </ThemeRoot>
+    </ShellBackdrop>
   ),
 };
