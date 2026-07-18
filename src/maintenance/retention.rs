@@ -774,7 +774,9 @@ pub(crate) async fn run_data_retention_maintenance(
     let raw_path_fallback_root = config.database_path.parent();
 
     if !dry_run {
-        sync_hourly_rollups_from_live_tables(pool).await?;
+        sync_hourly_rollups_from_live_tables(pool)
+            .await
+            .context("failed to sync hourly rollups from live tables before retention")?;
         let janitor = cleanup_stale_archive_temp_files(config, false)?;
         if janitor.stale_temp_files_removed > 0 {
             info!(
@@ -789,7 +791,9 @@ pub(crate) async fn run_data_retention_maintenance(
     }
 
     let raw_compression =
-        compress_cold_proxy_raw_payloads(pool, config, raw_path_fallback_root, dry_run).await?;
+        compress_cold_proxy_raw_payloads(pool, config, raw_path_fallback_root, dry_run)
+            .await
+            .context("failed to compress cold proxy raw payloads during retention")?;
     summary.raw_files_compression_candidates += raw_compression.files_considered;
     summary.raw_files_compressed += raw_compression.files_compressed;
     summary.raw_bytes_before += raw_compression.bytes_before;
@@ -803,8 +807,9 @@ pub(crate) async fn run_data_retention_maintenance(
         return Ok(summary);
     }
 
-    let pruned =
-        prune_old_invocation_details(pool, config, raw_path_fallback_root, dry_run).await?;
+    let pruned = prune_old_invocation_details(pool, config, raw_path_fallback_root, dry_run)
+        .await
+        .context("failed to prune old invocation details during retention")?;
     summary.invocation_details_pruned += pruned.0;
     summary.archive_batches_touched += pruned.1;
     summary.raw_files_removed += pruned.2;
@@ -813,8 +818,9 @@ pub(crate) async fn run_data_retention_maintenance(
         return Ok(summary);
     }
 
-    let invocation_archive =
-        archive_old_invocations(pool, config, raw_path_fallback_root, dry_run).await?;
+    let invocation_archive = archive_old_invocations(pool, config, raw_path_fallback_root, dry_run)
+        .await
+        .context("failed to archive old invocations during retention")?;
     summary.invocation_rows_archived += invocation_archive.0;
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;
@@ -831,7 +837,8 @@ pub(crate) async fn run_data_retention_maintenance(
         shanghai_utc_cutoff_string(config.forward_proxy_attempts_retention_days),
         dry_run,
     )
-    .await?;
+    .await
+    .context("failed to archive forward proxy attempts during retention")?;
     summary.forward_proxy_attempt_rows_archived += proxy_archive.0;
     summary.archive_batches_touched += proxy_archive.1;
 
@@ -847,7 +854,8 @@ pub(crate) async fn run_data_retention_maintenance(
         shanghai_local_cutoff_string(config.pool_upstream_request_attempts_retention_days),
         dry_run,
     )
-    .await?;
+    .await
+    .context("failed to archive pool upstream request attempts during retention")?;
     summary.pool_upstream_request_attempt_rows_archived += pool_attempt_archive.0;
     summary.archive_batches_touched += pool_attempt_archive.1;
 
@@ -855,7 +863,9 @@ pub(crate) async fn run_data_retention_maintenance(
         return Ok(summary);
     }
 
-    let quota_archive = compact_old_quota_snapshots(pool, config, dry_run).await?;
+    let quota_archive = compact_old_quota_snapshots(pool, config, dry_run)
+        .await
+        .context("failed to compact old quota snapshots during retention")?;
     summary.quota_snapshot_rows_archived += quota_archive.0;
     summary.archive_batches_touched += quota_archive.1;
 
@@ -864,13 +874,17 @@ pub(crate) async fn run_data_retention_maintenance(
     }
 
     summary.orphan_raw_files_removed +=
-        sweep_orphan_proxy_raw_files(pool, config, raw_path_fallback_root, dry_run).await?;
+        sweep_orphan_proxy_raw_files(pool, config, raw_path_fallback_root, dry_run)
+            .await
+            .context("failed to sweep orphan proxy raw files during retention")?;
 
     if should_stop_data_retention_maintenance(shutdown) {
         return Ok(summary);
     }
 
-    let archive_ttl_cleanup = cleanup_expired_archive_batches(pool, config, dry_run).await?;
+    let archive_ttl_cleanup = cleanup_expired_archive_batches(pool, config, dry_run)
+        .await
+        .context("failed to clean up expired archive batches during retention")?;
     summary.archive_batches_deleted += archive_ttl_cleanup;
 
     if should_stop_data_retention_maintenance(shutdown) {
