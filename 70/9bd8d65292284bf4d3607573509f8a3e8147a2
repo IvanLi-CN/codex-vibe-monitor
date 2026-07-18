@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.39.2",
+  "base_stable_version": "2.39.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-18T01:56:42Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.39.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "f0e63d8d69e4bff8c3fe2fc4d1c0c8a433147d9f",
+  "pr_number": 644,
+  "pr_title": "fix(stats): reduce dashboard read amplification",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.39.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.39.2",
+  "target_sha": "709bd8d65292284bf4d3607573509f8a3e8147a2",
+  "type_label": "type:patch"
+}
