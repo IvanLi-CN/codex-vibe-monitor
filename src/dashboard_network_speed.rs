@@ -155,8 +155,6 @@ struct DashboardNetworkOpenBucketState {
 #[derive(Debug, Default)]
 struct DashboardTrackedInvocationTraffic {
     upstream_account_id: Option<i64>,
-    upload_bytes_recorded: i64,
-    download_bytes_recorded: i64,
     live_first_response_byte_epoch_second: Option<i64>,
     live_first_response_byte_total_ms: Option<f64>,
 }
@@ -213,18 +211,13 @@ impl DashboardNetworkSpeedCache {
             .entry((invoke_id.to_string(), occurred_at.to_string()))
             .or_default();
         tracked.upstream_account_id = upstream_account_id.or(tracked.upstream_account_id);
-        let delta = bytes.saturating_sub(tracked.upload_bytes_recorded).max(0);
-        if delta <= 0 {
-            return;
-        }
-        tracked.upload_bytes_recorded = bytes;
         let tracked_upstream_account_id = tracked.upstream_account_id;
         record_scope_delta_locked(
             &mut inner,
             tracked_upstream_account_id,
             observed_at.timestamp(),
             DashboardNetworkByteTotals {
-                upload_bytes: delta,
+                upload_bytes: bytes,
                 download_bytes: 0,
             },
         );
@@ -253,7 +246,6 @@ impl DashboardNetworkSpeedCache {
             .entry((invoke_id.to_string(), occurred_at.to_string()))
             .or_default();
         tracked.upstream_account_id = upstream_account_id.or(tracked.upstream_account_id);
-        tracked.download_bytes_recorded = tracked.download_bytes_recorded.saturating_add(bytes);
         let tracked_upstream_account_id = tracked.upstream_account_id;
         record_scope_delta_locked(
             &mut inner,
@@ -984,7 +976,7 @@ mod tests {
     }
 
     #[test]
-    fn request_recording_is_idempotent_and_finish_cleans_state() {
+    fn request_recording_accumulates_attempt_bytes_and_finish_cleans_state() {
         let cache = DashboardNetworkSpeedCache::new(fixed_utc(0));
         cache.record_request_bytes("invoke-1", "2026-07-15 12:00:00", None, 120, fixed_utc(100));
         cache.record_request_bytes("invoke-1", "2026-07-15 12:00:00", None, 120, fixed_utc(100));
@@ -993,7 +985,7 @@ mod tests {
 
         let rates = cache.snapshot_account_rates(fixed_utc(100));
         let account = rates.get(&None).copied().unwrap_or_default();
-        assert!((account.upload_bytes_per_second - 10.0).abs() < f64::EPSILON);
+        assert!((account.upload_bytes_per_second - 26.0).abs() < f64::EPSILON);
     }
 
     #[test]

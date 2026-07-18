@@ -4,6 +4,65 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use tokio::sync::watch;
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RequestCompressionDerivedFields {
+    pub(crate) logical_body_bytes: Option<i64>,
+    pub(crate) transmitted_body_bytes: Option<i64>,
+    pub(crate) saved_bytes: Option<i64>,
+    pub(crate) ratio_pct: Option<f64>,
+    pub(crate) approx_upload_bytes: Option<i64>,
+    pub(crate) approx_download_bytes: Option<i64>,
+}
+
+pub(crate) fn derive_request_compression_fields(
+    logical_body_bytes: Option<i64>,
+    transmitted_body_bytes: Option<i64>,
+    request_header_bytes_approx: Option<i64>,
+    response_body_bytes: Option<i64>,
+    response_header_bytes_approx: Option<i64>,
+    transmission_complete: bool,
+) -> RequestCompressionDerivedFields {
+    let logical_body_bytes = logical_body_bytes.filter(|value| *value >= 0);
+    let transmitted_body_bytes = transmitted_body_bytes.filter(|value| *value >= 0);
+    let request_header_bytes_approx = request_header_bytes_approx.filter(|value| *value >= 0);
+    let response_body_bytes = response_body_bytes.filter(|value| *value >= 0);
+    let response_header_bytes_approx = response_header_bytes_approx.filter(|value| *value >= 0);
+    let approx_upload_bytes = match (request_header_bytes_approx, transmitted_body_bytes) {
+        (Some(headers), Some(body)) => Some(headers.saturating_add(body)),
+        (Some(headers), None) => Some(headers),
+        (None, Some(body)) => Some(body),
+        (None, None) => None,
+    };
+    let approx_download_bytes = match (response_header_bytes_approx, response_body_bytes) {
+        (Some(headers), Some(body)) => Some(headers.saturating_add(body)),
+        (Some(headers), None) => Some(headers),
+        (None, Some(body)) => Some(body),
+        (None, None) => None,
+    };
+    let (saved_bytes, ratio_pct) = if transmission_complete
+        && let (Some(logical), Some(transmitted)) = (logical_body_bytes, transmitted_body_bytes)
+    {
+        let saved_bytes = logical.saturating_sub(transmitted);
+        let ratio_pct = if logical == 0 {
+            Some(if transmitted == 0 { 0.0 } else { 100.0 })
+        } else {
+            Some(((transmitted - logical) as f64 / logical as f64) * 100.0)
+        };
+        (Some(saved_bytes), ratio_pct)
+    } else {
+        (None, None)
+    };
+
+    RequestCompressionDerivedFields {
+        logical_body_bytes,
+        transmitted_body_bytes,
+        saved_bytes,
+        ratio_pct,
+        approx_upload_bytes,
+        approx_download_bytes,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ApiPoolUpstreamRequestAttempt {
@@ -67,6 +126,33 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     pub(crate) upstream_request_compression_algorithm: Option<String>,
     #[sqlx(default)]
     pub(crate) upstream_request_compression_mode: Option<String>,
+    #[sqlx(default)]
+    #[serde(skip_serializing)]
+    pub(crate) upstream_request_logical_body_bytes: Option<i64>,
+    #[sqlx(default)]
+    #[serde(skip_serializing)]
+    pub(crate) upstream_request_transmitted_body_bytes: Option<i64>,
+    #[sqlx(default)]
+    #[serde(skip_serializing)]
+    pub(crate) upstream_request_header_bytes_approx: Option<i64>,
+    #[sqlx(default)]
+    #[serde(skip_serializing)]
+    pub(crate) upstream_response_body_bytes: Option<i64>,
+    #[sqlx(default)]
+    #[serde(skip_serializing)]
+    pub(crate) upstream_response_header_bytes_approx: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) logical_body_bytes: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) transmitted_body_bytes: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) saved_bytes: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) ratio_pct: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) approx_upload_bytes: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) approx_download_bytes: Option<i64>,
     #[sqlx(default)]
     pub(crate) compact_support_status: Option<String>,
     #[sqlx(default)]

@@ -112,6 +112,12 @@ describe("UpstreamAccountAttemptTimeline", () => {
           downstreamRequestContentEncoding: "gzip",
           upstreamRequestCompressionAlgorithm: "zstd",
           upstreamRequestCompressionMode: "recompressed",
+          logicalBodyBytes: 1000,
+          transmittedBodyBytes: 580,
+          savedBytes: 420,
+          ratioPct: -42,
+          approxUploadBytes: 644,
+          approxDownloadBytes: 812,
           upstreamRequestId: "req_upstream_123",
           upstreamRouteKey: "route-tokyo-primary",
           createdAt: "2026-07-11T12:00:00.000Z",
@@ -159,6 +165,9 @@ describe("UpstreamAccountAttemptTimeline", () => {
     expect(disclosure?.textContent).toMatch(/压缩发送模式|compression send mode/i);
     expect(disclosure?.textContent).toMatch(/gzip/i);
     expect(disclosure?.textContent).toMatch(/zstd/i);
+    expect(disclosure?.textContent).toContain("-42% (1,000 B -> 580 B)");
+    expect(disclosure?.textContent).toContain("644 B");
+    expect(disclosure?.textContent).toContain("812 B");
     expect(disclosure?.textContent).toMatch(/upstream returned an oversized diagnostic payload/i);
   });
 

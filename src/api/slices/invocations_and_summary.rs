@@ -2645,6 +2645,11 @@ struct InvocationWorkflowAttemptRow {
     upstream_request_id: Option<String>,
     upstream_request_compression_algorithm: Option<String>,
     upstream_request_compression_mode: Option<String>,
+    upstream_request_logical_body_bytes: Option<i64>,
+    upstream_request_transmitted_body_bytes: Option<i64>,
+    upstream_request_header_bytes_approx: Option<i64>,
+    upstream_response_body_bytes: Option<i64>,
+    upstream_response_header_bytes_approx: Option<i64>,
     compact_support_status: Option<String>,
     compact_support_reason: Option<String>,
     request_summary_json: Option<String>,
@@ -2846,6 +2851,10 @@ fn payload_u64(payload: Option<&Value>, keys: &[&str]) -> Option<u64> {
     payload_value(payload, keys).and_then(Value::as_u64)
 }
 
+fn payload_f64(payload: Option<&Value>, keys: &[&str]) -> Option<f64> {
+    payload_value(payload, keys).and_then(Value::as_f64)
+}
+
 fn payload_string_array(payload: Option<&Value>, keys: &[&str]) -> Option<Vec<String>> {
     payload_value(payload, keys)
         .and_then(Value::as_array)
@@ -2863,6 +2872,41 @@ fn payload_string_array(payload: Option<&Value>, keys: &[&str]) -> Option<Vec<St
 
 fn payload_clone(payload: Option<&Value>, keys: &[&str]) -> Option<Value> {
     payload_value(payload, keys).cloned()
+}
+
+fn request_compression_value(
+    algorithm: Option<String>,
+    mode: Option<String>,
+    derived: RequestCompressionDerivedFields,
+) -> Value {
+    json!({
+        "algorithm": algorithm,
+        "mode": mode,
+        "logicalBodyBytes": derived.logical_body_bytes,
+        "transmittedBodyBytes": derived.transmitted_body_bytes,
+        "savedBytes": derived.saved_bytes,
+        "ratioPct": derived.ratio_pct,
+        "approxUploadBytes": derived.approx_upload_bytes,
+        "approxDownloadBytes": derived.approx_download_bytes,
+    })
+}
+
+fn derive_request_compression_from_payload(
+    payload: Option<&Value>,
+) -> RequestCompressionDerivedFields {
+    let mut derived = derive_request_compression_fields(
+        payload_i64(payload, &["requestCompressionLogicalBodyBytes"]),
+        payload_i64(payload, &["requestCompressionTransmittedBodyBytes"]),
+        None,
+        None,
+        None,
+        payload_bool(payload, &["requestCompressionTransmissionComplete"]).unwrap_or(false),
+    );
+    derived.approx_upload_bytes =
+        payload_i64(payload, &["upstreamApproxUploadBytes"]).filter(|value| *value >= 0);
+    derived.approx_download_bytes =
+        payload_i64(payload, &["upstreamApproxDownloadBytes"]).filter(|value| *value >= 0);
+    derived
 }
 
 fn build_request_header_snapshot(payload: Option<&Value>) -> Value {
@@ -2988,6 +3032,21 @@ fn build_attempt_request_summary(
     attempt: &InvocationWorkflowAttemptRow,
     payload: Option<&Value>,
 ) -> Value {
+    let compression = request_compression_value(
+        attempt.upstream_request_compression_algorithm.clone(),
+        attempt.upstream_request_compression_mode.clone(),
+        derive_request_compression_fields(
+            attempt.upstream_request_logical_body_bytes,
+            attempt.upstream_request_transmitted_body_bytes,
+            attempt.upstream_request_header_bytes_approx,
+            attempt.upstream_response_body_bytes,
+            attempt.upstream_response_header_bytes_approx,
+            attempt.http_status.is_some()
+                || attempt
+                    .status
+                    .eq_ignore_ascii_case(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS),
+        ),
+    );
     json!({
         "endpoint": attempt.endpoint.clone(),
         "routeMode": record.route_mode.clone(),
@@ -3016,10 +3075,7 @@ fn build_attempt_request_summary(
         },
         "headers": build_request_header_snapshot(payload),
         "client": build_request_client_snapshot(payload),
-        "compression": {
-            "algorithm": attempt.upstream_request_compression_algorithm.clone(),
-            "mode": attempt.upstream_request_compression_mode.clone(),
-        },
+        "compression": compression,
         "bodyCapture": {
             "availableAtInvocationLevel": record.request_raw_path.is_some(),
             "size": record.request_raw_size,
@@ -3160,6 +3216,11 @@ fn build_synthetic_workflow_attempt(
     record: &ApiInvocation,
     payload: Option<&Value>,
 ) -> InvocationWorkflowAttempt {
+    let request_compression = request_compression_value(
+        payload_string(payload, &["requestCompressionAlgorithm"]),
+        payload_string(payload, &["requestCompressionMode"]),
+        derive_request_compression_from_payload(payload),
+    );
     let request_summary = json!({
         "endpoint": record.endpoint.clone(),
         "routeMode": record.route_mode.clone(),
@@ -3186,6 +3247,7 @@ fn build_synthetic_workflow_attempt(
         },
         "headers": build_request_header_snapshot(payload),
         "client": build_request_client_snapshot(payload),
+        "compression": request_compression,
         "bodyCapture": {
             "availableAtInvocationLevel": record.request_raw_path.is_some(),
             "size": record.request_raw_size,
@@ -3509,6 +3571,11 @@ async fn query_invocation_workflow_attempt_rows(
             attempts.upstream_request_id,
             attempts.upstream_request_compression_algorithm,
             attempts.upstream_request_compression_mode,
+            attempts.upstream_request_logical_body_bytes,
+            attempts.upstream_request_transmitted_body_bytes,
+            attempts.upstream_request_header_bytes_approx,
+            attempts.upstream_response_body_bytes,
+            attempts.upstream_response_header_bytes_approx,
             attempts.compact_support_status,
             attempts.compact_support_reason,
             attempts.request_summary_json,
@@ -10670,6 +10737,84 @@ fn dashboard_network_download_bytes_sql(alias: &str) -> String {
     )
 }
 
+fn dashboard_network_direct_upload_bytes_sql(alias: &str) -> String {
+    format!(
+        "CASE \
+           WHEN COALESCE( \
+             CASE \
+               WHEN json_valid({alias}.payload) \
+                 AND json_type({alias}.payload, '$.upstreamApproxUploadBytes') IN ('integer', 'real') \
+               THEN CAST(json_extract({alias}.payload, '$.upstreamApproxUploadBytes') AS INTEGER) \
+             END, \
+             CASE WHEN {alias}.request_raw_size < 0 THEN 0 ELSE COALESCE({alias}.request_raw_size, 0) END, \
+             0 \
+           ) < 0 THEN 0 \
+           ELSE COALESCE( \
+             CASE \
+               WHEN json_valid({alias}.payload) \
+                 AND json_type({alias}.payload, '$.upstreamApproxUploadBytes') IN ('integer', 'real') \
+               THEN CAST(json_extract({alias}.payload, '$.upstreamApproxUploadBytes') AS INTEGER) \
+             END, \
+             CASE WHEN {alias}.request_raw_size < 0 THEN 0 ELSE COALESCE({alias}.request_raw_size, 0) END, \
+             0 \
+           ) \
+         END"
+    )
+}
+
+fn dashboard_network_direct_download_bytes_sql(alias: &str) -> String {
+    format!(
+        "CASE \
+           WHEN COALESCE( \
+             CASE \
+               WHEN json_valid({alias}.payload) \
+                 AND json_type({alias}.payload, '$.upstreamApproxDownloadBytes') IN ('integer', 'real') \
+               THEN CAST(json_extract({alias}.payload, '$.upstreamApproxDownloadBytes') AS INTEGER) \
+             END, \
+             {}, \
+             0 \
+           ) < 0 THEN 0 \
+           ELSE COALESCE( \
+             CASE \
+               WHEN json_valid({alias}.payload) \
+                 AND json_type({alias}.payload, '$.upstreamApproxDownloadBytes') IN ('integer', 'real') \
+               THEN CAST(json_extract({alias}.payload, '$.upstreamApproxDownloadBytes') AS INTEGER) \
+             END, \
+             {}, \
+             0 \
+           ) \
+         END",
+        dashboard_network_download_bytes_sql(alias),
+        dashboard_network_download_bytes_sql(alias),
+    )
+}
+
+fn dashboard_network_pool_attempt_upload_bytes_sql(alias: &str) -> String {
+    format!(
+        "CASE \
+           WHEN COALESCE({alias}.upstream_request_header_bytes_approx, 0) + COALESCE({alias}.upstream_request_transmitted_body_bytes, 0) < 0 THEN 0 \
+           ELSE COALESCE({alias}.upstream_request_header_bytes_approx, 0) + COALESCE({alias}.upstream_request_transmitted_body_bytes, 0) \
+         END"
+    )
+}
+
+fn dashboard_network_pool_attempt_download_bytes_sql(alias: &str) -> String {
+    format!(
+        "CASE \
+           WHEN COALESCE({alias}.upstream_response_header_bytes_approx, 0) + COALESCE({alias}.upstream_response_body_bytes, 0) < 0 THEN 0 \
+           ELSE COALESCE({alias}.upstream_response_header_bytes_approx, 0) + COALESCE({alias}.upstream_response_body_bytes, 0) \
+         END"
+    )
+}
+
+fn invocation_payload_upstream_account_id_sql(alias: &str) -> String {
+    format!(
+        "CASE WHEN json_valid({alias}.payload) \
+           THEN CAST(json_extract({alias}.payload, '$.upstreamAccountId') AS INTEGER) \
+         END"
+    )
+}
+
 async fn query_dashboard_network_bucket_rows(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
@@ -10681,48 +10826,81 @@ async fn query_dashboard_network_bucket_rows(
         return Ok(Vec::new());
     }
 
-    let upload_bytes_sql = "CASE WHEN codex_invocations.request_raw_size < 0 THEN 0 ELSE COALESCE(codex_invocations.request_raw_size, 0) END";
-    let download_bytes_sql = dashboard_network_download_bytes_sql("codex_invocations");
-    let bucket_sql =
-        "((unixepoch(codex_invocations.occurred_at || '+08:00') / 300) * 300)".to_string();
-    let resolved_upstream_account_id_sql =
-        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
-    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
+    let direct_upload_bytes_sql = dashboard_network_direct_upload_bytes_sql("inv");
+    let direct_download_bytes_sql = dashboard_network_direct_download_bytes_sql("inv");
+    let direct_bucket_sql = "((unixepoch(inv.occurred_at || '+08:00') / 300) * 300)";
+    let direct_upstream_account_id_sql = invocation_payload_upstream_account_id_sql("inv");
+    let pool_upload_bytes_sql = dashboard_network_pool_attempt_upload_bytes_sql("attempts");
+    let pool_download_bytes_sql = dashboard_network_pool_attempt_download_bytes_sql("attempts");
+    let pool_bucket_sql = "((unixepoch(attempts.occurred_at || '+08:00') / 300) * 300)";
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT bucket_start_epoch_second, SUM(upload_bytes) AS upload_bytes, SUM(download_bytes) AS download_bytes FROM (",
+    );
     query
-        .push(bucket_sql.as_str())
-        .push(" AS bucket_start_epoch_second, SUM(")
-        .push(upload_bytes_sql)
-        .push(") AS upload_bytes, SUM(")
-        .push(download_bytes_sql.as_str())
-        .push(") AS download_bytes FROM codex_invocations WHERE occurred_at >= ")
+        .push("SELECT ")
+        .push(direct_bucket_sql)
+        .push(" AS bucket_start_epoch_second, ")
+        .push(direct_upload_bytes_sql.as_str())
+        .push(" AS upload_bytes, ")
+        .push(direct_download_bytes_sql.as_str())
+        .push(" AS download_bytes FROM codex_invocations AS inv WHERE inv.occurred_at >= ")
         .push_bind(db_occurred_at_lower_bound(range.start))
-        .push(" AND occurred_at < ")
-        .push_bind(db_occurred_at_upper_bound(range.end));
+        .push(" AND inv.occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(range.end))
+        .push(" AND (COALESCE(CASE WHEN json_valid(inv.payload) THEN TRIM(CAST(json_extract(inv.payload, '$.routeMode') AS TEXT)) END, '') <> ")
+        .push_bind(INVOCATION_ROUTE_MODE_POOL)
+        .push(" OR NOT EXISTS (SELECT 1 FROM pool_upstream_request_attempts AS attempts WHERE attempts.invoke_id = inv.invoke_id AND attempts.occurred_at = inv.occurred_at))");
     if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+        query.push(" AND inv.source = ").push_bind(SOURCE_PROXY);
     }
     if let Some(upstream_account_id) = upstream_account_id {
         query.push(" AND ");
         if let Some(upstream_account_id) = upstream_account_id {
             query
-                .push(resolved_upstream_account_id_sql.as_str())
+                .push(direct_upstream_account_id_sql.as_str())
                 .push(" = ")
                 .push_bind(upstream_account_id);
         } else {
             query
-                .push(resolved_upstream_account_id_sql.as_str())
+                .push(direct_upstream_account_id_sql.as_str())
                 .push(" IS NULL");
         }
     }
     if let Some(created_before) = created_before {
         query
-            .push(" AND created_at < ")
+            .push(" AND inv.created_at < ")
             .push_bind(created_before.to_string());
     }
     query
-        .push(" GROUP BY ")
-        .push(bucket_sql.as_str())
-        .push(" ORDER BY bucket_start_epoch_second ASC");
+        .push(" UNION ALL SELECT ")
+        .push(pool_bucket_sql)
+        .push(" AS bucket_start_epoch_second, ")
+        .push(pool_upload_bytes_sql.as_str())
+        .push(" AS upload_bytes, ")
+        .push(pool_download_bytes_sql.as_str())
+        .push(" AS download_bytes FROM pool_upstream_request_attempts AS attempts INNER JOIN codex_invocations AS inv ON inv.invoke_id = attempts.invoke_id AND inv.occurred_at = attempts.occurred_at WHERE attempts.occurred_at >= ")
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND attempts.occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(range.end));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND inv.source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query.push(" AND ");
+        if let Some(upstream_account_id) = upstream_account_id {
+            query
+                .push("attempts.upstream_account_id = ")
+                .push_bind(upstream_account_id);
+        } else {
+            query.push("attempts.upstream_account_id IS NULL");
+        }
+    }
+    if let Some(created_before) = created_before {
+        query
+            .push(" AND inv.created_at < ")
+            .push_bind(created_before.to_string());
+    }
+    query.push(") AS network_rows GROUP BY bucket_start_epoch_second ORDER BY bucket_start_epoch_second ASC");
 
     Ok(query
         .build_query_as::<DashboardNetworkBucketRow>()
@@ -11188,6 +11366,7 @@ mod dashboard_network_timeseries_tests {
         sqlx::query(
             r#"
             CREATE TABLE codex_invocations (
+                invoke_id TEXT NOT NULL DEFAULT '',
                 occurred_at TEXT NOT NULL,
                 payload TEXT,
                 response_raw_size INTEGER,
@@ -11201,6 +11380,23 @@ mod dashboard_network_timeseries_tests {
         .execute(&pool)
         .await
         .expect("create codex_invocations table");
+        sqlx::query(
+            r#"
+            CREATE TABLE pool_upstream_request_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoke_id TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                upstream_account_id INTEGER,
+                upstream_request_header_bytes_approx INTEGER,
+                upstream_request_transmitted_body_bytes INTEGER,
+                upstream_response_header_bytes_approx INTEGER,
+                upstream_response_body_bytes INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create pool_upstream_request_attempts table");
         pool
     }
 
@@ -11215,6 +11411,7 @@ mod dashboard_network_timeseries_tests {
         sqlx::query(
             r#"
             INSERT INTO codex_invocations (
+                invoke_id,
                 occurred_at,
                 payload,
                 response_raw_size,
@@ -11223,9 +11420,10 @@ mod dashboard_network_timeseries_tests {
                 source,
                 created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
             "#,
         )
+        .bind("direct-network-row")
         .bind(format_naive(
             occurred_at.with_timezone(&Shanghai).naive_local(),
         ))

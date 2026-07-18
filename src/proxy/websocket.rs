@@ -1542,6 +1542,11 @@ pub(crate) async fn record_ws_pre_upstream_failure(
         None,
         None,
         None,
+        None,
+        None,
+        None,
+        None,
+        None,
     )
     .await
     {
@@ -2025,6 +2030,11 @@ pub(crate) async fn persist_ws_usage_event(
         response_model: model,
         usage_missing_reason: None,
         request_parse_error: None,
+        request_compression_algorithm: None,
+        request_compression_mode: None,
+        request_compression_logical_body_bytes: None,
+        request_compression_transmitted_body_bytes: None,
+        request_compression_transmission_complete: None,
         failure_kind: None,
         requester_ip: trace.requester_ip.as_deref(),
         request_user_agent: None,
@@ -2074,6 +2084,8 @@ pub(crate) async fn persist_ws_usage_event(
         downstream_close_phase: None,
         downstream_write_error_kind: None,
         last_upstream_chunk_gap_ms: None,
+        upstream_approx_upload_bytes: None,
+        upstream_approx_download_bytes: None,
         proxy_display_name: None,
         proxy_weight_delta: None,
         pool_attempt_count: None,

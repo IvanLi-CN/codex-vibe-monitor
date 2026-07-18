@@ -796,10 +796,15 @@ async fn query_pool_attempt_records_from_live_includes_request_compression_obser
         Some(24.0),
         Some(36.0),
         Some("req_compression_obs"),
-        None,
-        None,
         Some("gzip"),
         Some("recompressed"),
+        Some(128),
+        Some(64),
+        Some(24),
+        Some(512),
+        Some(48),
+        None,
+        None,
     )
     .await
     .expect("insert pool attempt row");
@@ -820,6 +825,12 @@ async fn query_pool_attempt_records_from_live_includes_request_compression_obser
         rows[0].upstream_request_compression_mode.as_deref(),
         Some("recompressed")
     );
+    assert_eq!(rows[0].logical_body_bytes, Some(128));
+    assert_eq!(rows[0].transmitted_body_bytes, Some(64));
+    assert_eq!(rows[0].saved_bytes, Some(64));
+    assert_eq!(rows[0].ratio_pct, Some(-50.0));
+    assert_eq!(rows[0].approx_upload_bytes, Some(88));
+    assert_eq!(rows[0].approx_download_bytes, Some(560));
 }
 
 #[test]

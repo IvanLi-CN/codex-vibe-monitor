@@ -396,6 +396,11 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
             response_model: None,
             usage_missing_reason: None,
             request_parse_error: request_info.parse_error.as_deref(),
+            request_compression_algorithm: None,
+            request_compression_mode: None,
+            request_compression_logical_body_bytes: None,
+            request_compression_transmitted_body_bytes: None,
+            request_compression_transmission_complete: None,
             failure_kind: Some(failure_kind),
             requester_ip,
             request_user_agent: request_chain_metadata.user_agent.as_deref(),
@@ -445,6 +450,8 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
             downstream_close_phase: None,
             downstream_write_error_kind: None,
             last_upstream_chunk_gap_ms: None,
+            upstream_approx_upload_bytes: None,
+            upstream_approx_download_bytes: None,
             proxy_display_name: None,
             proxy_weight_delta: None,
             pool_attempt_count: Some(0),
@@ -637,6 +644,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     response_model: None,
                     usage_missing_reason: None,
                     request_parse_error: request_info.parse_error.as_deref(),
+                    request_compression_algorithm: None,
+                    request_compression_mode: None,
+                    request_compression_logical_body_bytes: None,
+                    request_compression_transmitted_body_bytes: None,
+                    request_compression_transmission_complete: None,
                     failure_kind: Some(read_err.failure_kind),
                     requester_ip: requester_ip.as_deref(),
                     request_user_agent: request_chain_metadata.user_agent.as_deref(),
@@ -696,6 +708,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     downstream_close_phase: None,
                     downstream_write_error_kind: None,
                     last_upstream_chunk_gap_ms: None,
+                    upstream_approx_upload_bytes: None,
+                    upstream_approx_download_bytes: None,
                     proxy_display_name: None,
                     proxy_weight_delta: None,
                     pool_attempt_count: None,
@@ -804,6 +818,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     response_model: None,
                     usage_missing_reason: None,
                     request_parse_error: Some("request_body_snapshot_materialize_failed"),
+                    request_compression_algorithm: None,
+                    request_compression_mode: None,
+                    request_compression_logical_body_bytes: None,
+                    request_compression_transmitted_body_bytes: None,
+                    request_compression_transmission_complete: None,
                     failure_kind: Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
                     requester_ip: requester_ip.as_deref(),
                     request_user_agent: request_chain_metadata.user_agent.as_deref(),
@@ -855,6 +874,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     downstream_close_phase: None,
                     downstream_write_error_kind: None,
                     last_upstream_chunk_gap_ms: None,
+                    upstream_approx_upload_bytes: None,
+                    upstream_approx_download_bytes: None,
                     proxy_display_name: None,
                     proxy_weight_delta: None,
                     pool_attempt_count: None,
@@ -1099,6 +1120,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         pending_pool_attempt_summary,
         upstream_attempt_started_at,
         upstream_attempt_started_at_utc,
+        direct_http_approx,
         final_request_body_for_capture,
         final_requested_service_tier,
         upstream_response,
@@ -1138,6 +1160,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 response.attempt_summary,
                 None,
                 Some(response.attempt_started_at_utc),
+                ForwardProxyHttpApproxObservation::default(),
                 response.request_body_for_capture,
                 response.requested_service_tier,
                 response.response,
@@ -1212,6 +1235,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         response_model: None,
                         usage_missing_reason: None,
                         request_parse_error: request_info.parse_error.as_deref(),
+                        request_compression_algorithm: None,
+                        request_compression_mode: None,
+                        request_compression_logical_body_bytes: None,
+                        request_compression_transmitted_body_bytes: None,
+                        request_compression_transmission_complete: None,
                         failure_kind: Some(err.failure_kind),
                         requester_ip: requester_ip.as_deref(),
                         request_user_agent: request_chain_metadata.user_agent.as_deref(),
@@ -1304,6 +1332,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         downstream_close_phase: None,
                         downstream_write_error_kind: None,
                         last_upstream_chunk_gap_ms: None,
+                        upstream_approx_upload_bytes: None,
+                        upstream_approx_download_bytes: None,
                         proxy_display_name: pool_proxy_display_name.as_deref(),
                         proxy_weight_delta: None,
                         pool_attempt_count: Some(err.attempt_summary.pool_attempt_count),
@@ -1374,6 +1404,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 PoolAttemptSummary::default(),
                 Some(response.attempt_started_at),
                 None,
+                response.http_approx,
                 Some(base_request_bytes_for_capture.clone()),
                 request_info.requested_service_tier.clone(),
                 response.response,
@@ -1416,6 +1447,31 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     )
                     .await;
                 let error_message = format!("[{}] {}", err.failure_kind, err.message);
+                if err.http_approx.approx_upload_bytes > 0 {
+                    state.dashboard_network_speed_cache.record_request_bytes(
+                        &invoke_id,
+                        &occurred_at,
+                        None,
+                        err.http_approx.approx_upload_bytes,
+                        Utc::now(),
+                    );
+                }
+                if err.http_approx.approx_download_bytes_before_response_body > 0 {
+                    state
+                        .dashboard_network_speed_cache
+                        .record_response_chunk_bytes(
+                            &invoke_id,
+                            &occurred_at,
+                            None,
+                            err.http_approx.approx_download_bytes_before_response_body,
+                            Utc::now(),
+                        );
+                }
+                if err.http_approx.approx_upload_bytes > 0
+                    || err.http_approx.approx_download_bytes_before_response_body > 0
+                {
+                    schedule_dashboard_activity_live_snapshot(state.as_ref());
+                }
                 let record = ProxyCaptureRecord {
                     invoke_id,
                     occurred_at,
@@ -1448,6 +1504,29 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         response_model: None,
                         usage_missing_reason: None,
                         request_parse_error: request_info.parse_error.as_deref(),
+                        request_compression_algorithm: err
+                            .http_approx
+                            .request_compression
+                            .as_ref()
+                            .map(|value| value.algorithm.as_str()),
+                        request_compression_mode: err
+                            .http_approx
+                            .request_compression
+                            .as_ref()
+                            .map(|value| value.mode.as_str()),
+                        request_compression_logical_body_bytes: err
+                            .http_approx
+                            .request_compression
+                            .as_ref()
+                            .map(|value| value.logical_body_bytes),
+                        request_compression_transmitted_body_bytes: err
+                            .http_approx
+                            .request_compression
+                            .as_ref()
+                            .map(|value| value.transmitted_body_bytes),
+                        request_compression_transmission_complete: Some(
+                            err.http_approx.request_transmission_complete,
+                        ),
                         failure_kind: Some(err.failure_kind),
                         requester_ip: requester_ip.as_deref(),
                         request_user_agent: request_chain_metadata.user_agent.as_deref(),
@@ -1499,6 +1578,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         downstream_close_phase: None,
                         downstream_write_error_kind: None,
                         last_upstream_chunk_gap_ms: None,
+                        upstream_approx_upload_bytes: Some(err.http_approx.approx_upload_bytes),
+                        upstream_approx_download_bytes: Some(
+                            err.http_approx.approx_download_bytes_before_response_body,
+                        ),
                         proxy_display_name: Some(err.selected_proxy.display_name.as_str()),
                         proxy_weight_delta: proxy_attempt_update.delta(),
                         pool_attempt_count: None,
@@ -1533,16 +1616,33 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     request_info.requested_service_tier = final_requested_service_tier
         .clone()
         .or(request_info.requested_service_tier);
-    state.dashboard_network_speed_cache.record_request_bytes(
-        &invoke_id,
-        &occurred_at,
-        pool_account.as_ref().map(|account| account.account_id),
-        final_request_body_for_capture
-            .as_ref()
-            .map_or(base_request_bytes_for_capture.len(), Bytes::len),
-        Utc::now(),
-    );
-    schedule_dashboard_activity_live_snapshot(state.as_ref());
+    if !pool_route_active {
+        if direct_http_approx.approx_upload_bytes > 0 {
+            state.dashboard_network_speed_cache.record_request_bytes(
+                &invoke_id,
+                &occurred_at,
+                None,
+                direct_http_approx.approx_upload_bytes,
+                Utc::now(),
+            );
+        }
+        if direct_http_approx.approx_download_bytes_before_response_body > 0 {
+            state
+                .dashboard_network_speed_cache
+                .record_response_chunk_bytes(
+                    &invoke_id,
+                    &occurred_at,
+                    None,
+                    direct_http_approx.approx_download_bytes_before_response_body,
+                    Utc::now(),
+                );
+        }
+        if direct_http_approx.approx_upload_bytes > 0
+            || direct_http_approx.approx_download_bytes_before_response_body > 0
+        {
+            schedule_dashboard_activity_live_snapshot(state.as_ref());
+        }
+    }
     let mut req_raw_pending = Some(spawn_raw_payload_file_write(
         state.as_ref(),
         &invoke_id,
@@ -1630,6 +1730,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     response_model: None,
                     usage_missing_reason: None,
                     request_parse_error: request_info.parse_error.as_deref(),
+                    request_compression_algorithm: None,
+                    request_compression_mode: None,
+                    request_compression_logical_body_bytes: None,
+                    request_compression_transmitted_body_bytes: None,
+                    request_compression_transmission_complete: None,
                     failure_kind: None,
                     requester_ip: requester_ip.as_deref(),
                     request_user_agent: request_chain_metadata.user_agent.as_deref(),
@@ -1707,6 +1812,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     downstream_close_phase: None,
                     downstream_write_error_kind: None,
                     last_upstream_chunk_gap_ms: None,
+                    upstream_approx_upload_bytes: None,
+                    upstream_approx_download_bytes: None,
                     proxy_display_name: proxy_display_name.as_deref(),
                     proxy_weight_delta: if selected_proxy.is_some() {
                         proxy_attempt_update.delta()
@@ -1835,7 +1942,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let downstream_request_observer_for_task = downstream_request_observer.clone();
     let attempt_already_recorded_for_task = attempt_already_recorded;
     let final_attempt_update_for_task = final_attempt_update;
-    let pending_pool_attempt_record_for_task = pending_pool_attempt_record.clone();
+    let direct_http_approx_for_task = direct_http_approx.clone();
+    let mut pending_pool_attempt_record_for_task = pending_pool_attempt_record.clone();
     let mut deferred_pool_early_phase_cleanup_guard_for_task =
         deferred_pool_early_phase_cleanup_guard;
     let live_pool_attempt_activity_lease_for_task = live_pool_attempt_activity_lease;
@@ -2562,7 +2670,23 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             ForwardProxyAttemptUpdate::default()
         };
         let mut final_attempt_persisted = false;
-        if let Some(pending_attempt_record) = pending_pool_attempt_record_for_task.as_ref() {
+        if let Some(pending_attempt_record) = pending_pool_attempt_record_for_task.as_mut() {
+            update_pending_pool_upstream_request_attempt_http_bytes(
+                pending_attempt_record,
+                pending_attempt_record
+                    .upstream_request_logical_body_bytes
+                    .and_then(|value| usize::try_from(value).ok()),
+                pending_attempt_record
+                    .upstream_request_transmitted_body_bytes
+                    .and_then(|value| usize::try_from(value).ok()),
+                pending_attempt_record
+                    .upstream_request_header_bytes_approx
+                    .and_then(|value| usize::try_from(value).ok()),
+                Some(forwarded_bytes),
+                pending_attempt_record
+                    .upstream_response_header_bytes_approx
+                    .and_then(|value| usize::try_from(value).ok()),
+            );
             let finished_at = shanghai_now_string();
             let attempt_status = pool_capture_attempt_status(
                 upstream_status,
@@ -2711,6 +2835,41 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             response_model: response_info.model.as_deref(),
             usage_missing_reason: response_info.usage_missing_reason.as_deref(),
             request_parse_error: request_info_for_task.parse_error.as_deref(),
+            request_compression_algorithm: if pool_account_for_task.is_none() {
+                direct_http_approx_for_task
+                    .request_compression
+                    .as_ref()
+                    .map(|value| value.algorithm.as_str())
+            } else {
+                None
+            },
+            request_compression_mode: if pool_account_for_task.is_none() {
+                direct_http_approx_for_task
+                    .request_compression
+                    .as_ref()
+                    .map(|value| value.mode.as_str())
+            } else {
+                None
+            },
+            request_compression_logical_body_bytes: if pool_account_for_task.is_none() {
+                direct_http_approx_for_task
+                    .request_compression
+                    .as_ref()
+                    .map(|value| value.logical_body_bytes)
+            } else {
+                None
+            },
+            request_compression_transmitted_body_bytes: if pool_account_for_task.is_none() {
+                direct_http_approx_for_task
+                    .request_compression
+                    .as_ref()
+                    .map(|value| value.transmitted_body_bytes)
+            } else {
+                None
+            },
+            request_compression_transmission_complete: pool_account_for_task
+                .is_none()
+                .then_some(direct_http_approx_for_task.request_transmission_complete),
             failure_kind,
             requester_ip: requester_ip_for_task.as_deref(),
             request_user_agent: request_chain_metadata_for_payload
@@ -2810,6 +2969,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             downstream_close_phase,
             downstream_write_error_kind,
             last_upstream_chunk_gap_ms,
+            upstream_approx_upload_bytes: pool_account_for_task
+                .is_none()
+                .then_some(direct_http_approx_for_task.approx_upload_bytes),
+            upstream_approx_download_bytes: pool_account_for_task.is_none().then_some(
+                direct_http_approx_for_task
+                    .approx_download_bytes_before_response_body
+                    .saturating_add(forwarded_bytes),
+            ),
             proxy_display_name: selected_proxy_display_name.as_deref(),
             proxy_weight_delta: if selected_proxy_for_task.is_some() {
                 proxy_attempt_update.delta()

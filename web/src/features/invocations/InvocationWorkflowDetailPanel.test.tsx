@@ -234,7 +234,13 @@ function createWorkflowDetailResponse(): ApiInvocationWorkflowDetailResponse {
             },
             compression: {
               algorithm: "gzip",
-              mode: "streaming",
+              mode: "recompressed",
+              logicalBodyBytes: 1000,
+              transmittedBodyBytes: 580,
+              savedBytes: 420,
+              ratioPct: -42,
+              approxUploadBytes: 644,
+              approxDownloadBytes: 812,
             },
             bodyCapture: {
               availableAtInvocationLevel: true,
@@ -359,6 +365,7 @@ describe("InvocationWorkflowDetailPanel", () => {
     expect(host?.textContent ?? "").toContain("+1");
     expect(host?.textContent ?? "").toContain("上游 HTTP 200");
     expect(host?.textContent ?? "").toContain("attempt-1");
+    expect(host?.textContent ?? "").toContain("-42% (1,000 B -> 580 B)");
     expect(host?.textContent ?? "").not.toContain("Attempt 1");
     expect(host?.textContent ?? "").not.toContain("12 块转发");
     expect(host?.textContent ?? "").not.toContain("240 Token");
@@ -376,7 +383,8 @@ describe("InvocationWorkflowDetailPanel", () => {
         candidate.textContent?.includes(requestBodySizeLabel),
     );
     expect(requestBodyButton).not.toBeNull();
-    expect(requestBodyButton?.textContent ?? "").toContain("远程压缩V2");
+    expect(requestBodyButton?.textContent ?? "").toContain("-42% (1,000 B -> 580 B)");
+    expect(requestBodyButton?.textContent ?? "").not.toContain("远程压缩V2");
     expect(requestBodyButton?.textContent ?? "").not.toContain("调用级存档");
     expect(requestBodyButton?.textContent ?? "").not.toContain("未截断");
     act(() => {
@@ -388,7 +396,15 @@ describe("InvocationWorkflowDetailPanel", () => {
     expect(apiMocks.fetchInvocationRequestBody).toHaveBeenCalledWith(77);
     expect(host?.textContent ?? "").toContain("归档");
     expect(host?.textContent ?? "").toContain("调用级");
+    expect(host?.textContent ?? "").toContain("近似上传");
+    expect(host?.textContent ?? "").toContain("644 B");
+    expect(host?.textContent ?? "").toContain("近似下载");
+    expect(host?.textContent ?? "").toContain("812 B");
     expect(host?.textContent ?? "").not.toContain("原始请求体：调用级存档。");
+    const compressionPanel = Array.from(host?.querySelectorAll("section") ?? []).find((candidate) =>
+      candidate.textContent?.includes("HTTP 请求压缩"),
+    );
+    expect(compressionPanel?.querySelector("dl")?.className).toContain("lg:grid-cols-5");
 
     act(() => {
       requestBodyButton?.click();

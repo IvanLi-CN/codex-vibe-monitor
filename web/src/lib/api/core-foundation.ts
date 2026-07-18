@@ -437,6 +437,12 @@ export interface ApiPoolUpstreamRequestAttempt {
   downstreamRequestContentEncoding?: string | null;
   upstreamRequestCompressionAlgorithm?: string | null;
   upstreamRequestCompressionMode?: string | null;
+  logicalBodyBytes?: number | null;
+  transmittedBodyBytes?: number | null;
+  savedBytes?: number | null;
+  ratioPct?: number | null;
+  approxUploadBytes?: number | null;
+  approxDownloadBytes?: number | null;
   createdAt: string;
 }
 

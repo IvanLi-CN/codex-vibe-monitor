@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ReactNode, useEffect } from "react";
 import { I18nProvider } from "../../i18n";
 import type { ApiInvocation, ApiInvocationWorkflowDetailResponse } from "../../lib/api";
+import { FullPageStorySurface } from "../../storybook/storybookPageHelpers";
 import { InvocationWorkflowDetailPanel } from "./InvocationWorkflowDetailPanel";
 import {
   failedWorkflowFinalResponseBodyText,
@@ -14,9 +15,36 @@ import {
 
 function StorySurface({ children }: { children: ReactNode }) {
   return (
-    <div className="bg-transparent px-4 py-4 text-base-content sm:px-6">
-      <div className="mx-auto max-w-6xl">{children}</div>
+    <div className="bg-[#f6f1e7] px-6 py-6 text-base-content sm:px-8">
+      <div className="mx-auto max-w-6xl rounded-[28px] border border-base-300/70 bg-base-200 px-6 py-6 shadow-sm">
+        {children}
+      </div>
     </div>
+  );
+}
+
+function WorkflowPageSurface({ children }: { children: ReactNode }) {
+  return (
+    <FullPageStorySurface>
+      <div className="mx-auto max-w-7xl space-y-5">
+        <header className="rounded-[28px] border border-base-300/70 bg-base-100/85 px-6 py-6 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-base-content/55">
+            Invocation Review
+          </p>
+          <h1 className="mt-3 text-3xl font-semibold text-base-content">
+            Upstream request compression evidence
+          </h1>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-base-content/70">
+            Page-level fallback surface for reviewing compression ratio and approximate upstream
+            upload or download bytes in the invocation workflow detail.
+          </p>
+        </header>
+
+        <section className="rounded-[32px] border border-base-300/70 bg-base-100/82 px-6 py-6 shadow-sm">
+          {children}
+        </section>
+      </div>
+    </FullPageStorySurface>
   );
 }
 
@@ -242,7 +270,13 @@ const failedWorkflowResponse: ApiInvocationWorkflowDetailResponse = {
           },
           compression: {
             algorithm: "gzip",
-            mode: "streaming",
+            mode: "recompressed",
+            logicalBodyBytes: 1000,
+            transmittedBodyBytes: 580,
+            savedBytes: 420,
+            ratioPct: -42,
+            approxUploadBytes: 644,
+            approxDownloadBytes: 812,
           },
           bodyCapture: {
             availableAtInvocationLevel: true,
@@ -311,11 +345,15 @@ const meta = {
   title: "Invocations/InvocationWorkflowDetailPanel",
   component: InvocationWorkflowDetailPanel,
   decorators: [
-    (Story) => (
+    (Story, context) => (
       <I18nProvider>
-        <StorySurface>
+        {context.parameters.pageSurface ? (
           <Story />
-        </StorySurface>
+        ) : (
+          <StorySurface>
+            <Story />
+          </StorySurface>
+        )}
       </I18nProvider>
     ),
   ],
@@ -341,6 +379,23 @@ export const FailedPoolWorkflow: Story = {
       </>
     ),
   ],
+};
+
+export const FailedPoolWorkflowPage: Story = {
+  ...FailedPoolWorkflow,
+  parameters: {
+    layout: "fullscreen",
+    viewport: { defaultViewport: "desktop1660" },
+    pageSurface: true,
+  },
+  render: (args) => (
+    <WorkflowPageSurface>
+      <InvocationWorkflowDetailPanel
+        record={args.record ?? failedWorkflowRecord}
+        size={args.size ?? "default"}
+      />
+    </WorkflowPageSurface>
+  ),
 };
 
 export const TransientPending: Story = {
