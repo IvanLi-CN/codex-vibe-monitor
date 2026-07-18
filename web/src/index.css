@@ -1098,6 +1098,56 @@ body {
     );
   }
 
+  .invocation-endpoint-badge[data-endpoint-kind="image_gen"] {
+    background-color: color-mix(
+      in oklab,
+      oklch(var(--color-base-100)) 88%,
+      oklch(var(--color-success)) 12%
+    );
+    border-color: color-mix(
+      in oklab,
+      oklch(var(--color-base-300)) 62%,
+      oklch(var(--color-success)) 38%
+    );
+    color: color-mix(
+      in oklab,
+      oklch(var(--color-base-content)) 44%,
+      oklch(var(--color-success)) 56%
+    );
+  }
+
+  .invocation-endpoint-badge[data-endpoint-kind="image_edit"] {
+    background-color: color-mix(
+      in oklab,
+      oklch(var(--color-base-100)) 88%,
+      oklch(var(--color-accent)) 12%
+    );
+    border-color: color-mix(
+      in oklab,
+      oklch(var(--color-base-300)) 62%,
+      oklch(var(--color-accent)) 38%
+    );
+    color: color-mix(
+      in oklab,
+      oklch(var(--color-base-content)) 44%,
+      oklch(var(--color-accent-content)) 56%
+    );
+  }
+
+  .invocation-endpoint-badge[data-endpoint-kind="image"] {
+    background-color: color-mix(
+      in oklab,
+      oklch(var(--color-base-100)) 89%,
+      oklch(var(--color-info)) 11%
+    );
+    border-color: color-mix(
+      in oklab,
+      oklch(var(--color-base-300)) 64%,
+      oklch(var(--color-info)) 36%
+    );
+    color: color-mix(in oklab, oklch(var(--color-base-content)) 46%, oklch(var(--color-info)) 54%);
+  }
+
   .dashboard-upstream-account-identity-chip--tone-sky {
     border-color: color-mix(in oklab, oklch(var(--color-base-300)) 18%, #0ea5e9 82%);
     background-color: color-mix(in oklab, oklch(var(--color-base-100)) 48%, #e0f2fe 52%);
@@ -1185,6 +1235,56 @@ body {
       oklch(var(--color-base-content)) 42%,
       oklch(var(--color-secondary)) 58%
     );
+  }
+
+  [data-theme="vibe-dark"] .invocation-endpoint-badge[data-endpoint-kind="image_gen"] {
+    background-color: color-mix(
+      in oklab,
+      oklch(var(--color-base-200)) 82%,
+      oklch(var(--color-success)) 18%
+    );
+    border-color: color-mix(
+      in oklab,
+      oklch(var(--color-base-300)) 54%,
+      oklch(var(--color-success)) 46%
+    );
+    color: color-mix(
+      in oklab,
+      oklch(var(--color-base-content)) 40%,
+      oklch(var(--color-success)) 60%
+    );
+  }
+
+  [data-theme="vibe-dark"] .invocation-endpoint-badge[data-endpoint-kind="image_edit"] {
+    background-color: color-mix(
+      in oklab,
+      oklch(var(--color-base-200)) 82%,
+      oklch(var(--color-accent)) 18%
+    );
+    border-color: color-mix(
+      in oklab,
+      oklch(var(--color-base-300)) 52%,
+      oklch(var(--color-accent)) 48%
+    );
+    color: color-mix(
+      in oklab,
+      oklch(var(--color-base-content)) 40%,
+      oklch(var(--color-accent-content)) 60%
+    );
+  }
+
+  [data-theme="vibe-dark"] .invocation-endpoint-badge[data-endpoint-kind="image"] {
+    background-color: color-mix(
+      in oklab,
+      oklch(var(--color-base-200)) 82%,
+      oklch(var(--color-info)) 18%
+    );
+    border-color: color-mix(
+      in oklab,
+      oklch(var(--color-base-300)) 52%,
+      oklch(var(--color-info)) 48%
+    );
+    color: color-mix(in oklab, oklch(var(--color-base-content)) 42%, oklch(var(--color-info)) 58%);
   }
 
   [data-theme="vibe-dark"] .invocation-endpoint-badge[data-endpoint-kind="compact"] {

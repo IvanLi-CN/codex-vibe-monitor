@@ -7,11 +7,22 @@ const ROUTE_MODE_POOL = "pool";
 const RESPONSES_ENDPOINT = "/v1/responses";
 const CHAT_COMPLETIONS_ENDPOINT = "/v1/chat/completions";
 const COMPACT_ENDPOINT = "/v1/responses/compact";
+const IMAGE_ENDPOINT_PREFIX = "/v1/images/";
+const IMAGE_GENERATIONS_ENDPOINT = "/v1/images/generations";
+const IMAGE_EDITS_ENDPOINT = "/v1/images/edits";
 const RUNNING_STATUSES = new Set(["running", "pending"]);
 
 export type ProxyWeightDeltaDirection = "up" | "down" | "flat" | "missing";
 export type FastIndicatorState = "effective" | "requested_only" | "none";
-export type InvocationEndpointKind = "responses" | "chat" | "compact" | "remote_v2" | "raw";
+export type InvocationEndpointKind =
+  | "responses"
+  | "chat"
+  | "compact"
+  | "remote_v2"
+  | "image_gen"
+  | "image_edit"
+  | "image"
+  | "raw";
 export type InvocationCompactionKind = "compact" | "remote_v2";
 export type InvocationImageIntent = "yes" | "direct_image" | "no" | "unknown";
 export type InvocationImageBadgeVariant = "success" | "info";
@@ -22,7 +33,10 @@ type InvocationEndpointBadgeLabelKey =
   | "table.endpoint.responsesBadge"
   | "table.endpoint.chatBadge"
   | "table.endpoint.compactBadge"
-  | "table.endpoint.remoteV2Badge";
+  | "table.endpoint.remoteV2Badge"
+  | "table.endpoint.imageGenBadge"
+  | "table.endpoint.imageEditBadge"
+  | "table.endpoint.imageBadge";
 
 export interface ProxyWeightDeltaView {
   direction: ProxyWeightDeltaDirection;
@@ -49,6 +63,10 @@ export interface InvocationModelDisplay {
   requestValue: string | null;
   responseValue: string | null;
   hasMismatch: boolean;
+}
+
+export function isImageInvocationEndpointKind(kind: InvocationEndpointKind) {
+  return kind === "image_gen" || kind === "image_edit" || kind === "image";
 }
 
 function normalizeImageIntent(value: string | null | undefined): InvocationImageIntent | null {
@@ -265,6 +283,33 @@ export function resolveInvocationEndpointDisplay(
     typeof record === "string" || record == null
       ? null
       : normalizeCompactionKind(record.compactionResponseKind);
+
+  if (endpointValue === IMAGE_GENERATIONS_ENDPOINT) {
+    return {
+      kind: "image_gen",
+      endpointValue,
+      badgeVariant: "info",
+      labelKey: "table.endpoint.imageGenBadge",
+    };
+  }
+
+  if (endpointValue === IMAGE_EDITS_ENDPOINT) {
+    return {
+      kind: "image_edit",
+      endpointValue,
+      badgeVariant: "secondary",
+      labelKey: "table.endpoint.imageEditBadge",
+    };
+  }
+
+  if (endpointValue.startsWith(IMAGE_ENDPOINT_PREFIX)) {
+    return {
+      kind: "image",
+      endpointValue,
+      badgeVariant: "secondary",
+      labelKey: "table.endpoint.imageBadge",
+    };
+  }
 
   switch (endpointValue) {
     case RESPONSES_ENDPOINT:
