@@ -321,6 +321,34 @@
   evidence_note: verifies the invocation detail hides `source` and the pool-attempt card renders a resolved proxy display name from `proxyBindingKeySnapshot`.
   image:
   ![Pool attempt proxy binding detail](./assets/pool-attempt-proxy-binding-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Invocations/InvocationWorkflowDetailPanel/FailedPoolWorkflowPage
+  state: invocation request-compression panel with five-column desktop layout
+  evidence_note: verifies the invocation detail exposes request compression ratio, algorithm, mode, and the approximate upstream upload/download bytes in a stable single-row desktop grid.
+  requested_viewport: 1660x1400
+  viewport_strategy: storybook-viewport
+  PR: include
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only invocation data
+  submission_gate: approved
+  image:
+  ![Invocation request compression panel](./assets/invocation-request-compression-panel-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Account Pool/Components/Upstream Account Attempt Timeline/FocusedFailureAttemptPage
+  state: attempt diagnostics with compression ratio and approximate transfer bytes
+  evidence_note: verifies the upstream attempt diagnostics disclose compression ratio, approximate upload/download bytes, and related HTTP evidence without horizontal overflow at desktop width.
+  requested_viewport: 1660x1400
+  viewport_strategy: storybook-viewport
+  PR: include
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only account and request data
+  submission_gate: approved
+  image:
+  ![Upstream account attempt compression evidence](./assets/upstream-account-attempt-compression-evidence-storybook.png)
 - source_type: storybook_canvas
   story_id_or_title: Records/InvocationRecordsTable/BudgetExhaustedTerminalRecord
   state: expanded pool attempt detail with synthetic terminal record

@@ -169,6 +169,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
     expect(disclosure?.textContent).toContain("644 B");
     expect(disclosure?.textContent).toContain("812 B");
     expect(disclosure?.textContent).toMatch(/upstream returned an oversized diagnostic payload/i);
+    expect(disclosure?.querySelector("dl")?.className).toContain("2xl:grid-cols-5");
   });
 
   it("shows the pending attempt phase without adding another permanent column", async () => {

@@ -270,7 +270,7 @@ function AttemptEvidenceDisclosure({
   const errorMessage = attempt.errorMessage?.trim() || "";
   const downstreamDiffers =
     attempt.downstreamHttpStatus != null && attempt.downstreamHttpStatus !== attempt.httpStatus;
-  const metadataItemClass = "flex items-baseline gap-1.5";
+  const metadataItemClass = "min-w-0 space-y-1";
   const copyError = async () => {
     if (!errorMessage || !navigator.clipboard?.writeText) return;
     try {
@@ -300,7 +300,7 @@ function AttemptEvidenceDisclosure({
         {t("accountPool.upstreamAttempts.details")}
       </summary>
       <div className="space-y-2 border-t border-base-300/70 bg-base-200/35 px-3 py-2.5 text-base-content/75">
-        <dl className="flex flex-wrap items-baseline gap-x-5 gap-y-1">
+        <dl className="grid gap-x-5 gap-y-2 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5">
           <div className={metadataItemClass}>
             <dt className="text-base-content/55">
               {t("accountPool.upstreamAttempts.proxyBinding")}
