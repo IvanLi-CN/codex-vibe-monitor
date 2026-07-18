@@ -72,6 +72,38 @@ const WARNING_SUCCESS_RECORDS: ApiInvocation[] = [
   },
 ];
 
+const ENDPOINT_CHIP_RECORDS: ApiInvocation[] = [
+  {
+    ...STORYBOOK_INVOCATION_RECORDS[0]!,
+    id: 6501,
+    invokeId: "inv_story_records_image_gen",
+    endpoint: "/v1/images/generations",
+    imageIntent: "yes",
+    model: "gpt-image-1",
+  },
+  {
+    ...STORYBOOK_INVOCATION_RECORDS[0]!,
+    id: 6502,
+    invokeId: "inv_story_records_image_edit",
+    endpoint: "/v1/images/edits",
+    imageIntent: "direct_image",
+    model: "gpt-image-1",
+  },
+  {
+    ...STORYBOOK_INVOCATION_RECORDS[0]!,
+    id: 6503,
+    invokeId: "inv_story_records_image_generic",
+    endpoint: "/v1/images/variations",
+    model: "gpt-image-1",
+  },
+  {
+    ...STORYBOOK_INVOCATION_RECORDS[0]!,
+    id: 6504,
+    invokeId: "inv_story_records_raw_endpoint",
+    endpoint: "/v1/responses/experimental",
+  },
+];
+
 type StorybookPoolAttemptsRegistry = {
   originalFetch: typeof window.fetch;
   providers: Map<
@@ -422,6 +454,23 @@ export const WarningSuccessStatus: Story = {
     await expect(canvas.getByText(/警告成功|Warning success/i)).toBeInTheDocument();
     await expect(canvas.getByText("Pool Alpha 42")).toBeInTheDocument();
     await expect(canvas.getByText(/167,710/)).toBeInTheDocument();
+  },
+};
+
+export const EndpointChipStates: Story = {
+  args: {
+    focus: "network",
+    records: ENDPOINT_CHIP_RECORDS,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Records-table view of the shared endpoint chip contract. Image-family endpoints render as `image/gen`, `image/edit`, or `image`, while an unknown non-image endpoint keeps the raw path fallback.",
+      },
+    },
   },
 };
 

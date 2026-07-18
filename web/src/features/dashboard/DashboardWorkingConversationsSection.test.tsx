@@ -2760,6 +2760,42 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(badges?.[0]?.className).toContain("border");
   });
 
+  it("renders image endpoint chips and hides the image icon badge on direct image endpoints", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-image-endpoint", [
+          createPreview({
+            id: 14,
+            invokeId: "invoke-image-endpoint",
+            occurredAt: "2026-04-04T10:05:45Z",
+            status: "running",
+            endpoint: "/v1/images/generations",
+            imageIntent: "yes",
+            model: "gpt-image-1",
+          }),
+        ]),
+      ]),
+    );
+
+    const currentSlot = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    if (!(currentSlot instanceof HTMLElement)) {
+      throw new Error("missing current slot");
+    }
+
+    const imageEndpointBadge = currentSlot.querySelector(
+      '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="image_gen"]',
+    );
+    if (!(imageEndpointBadge instanceof HTMLElement)) {
+      throw new Error("missing image endpoint badge");
+    }
+
+    expect(imageEndpointBadge.textContent).toBe("image/gen");
+    expect(currentSlot.querySelector('[data-testid="dashboard-image-tool-icon-badge"]')).toBeNull();
+    expect(currentSlot.textContent).not.toContain("/v1/images/generations");
+  });
+
   it("keeps image and remote_v2 badges visible together for mixed-signal previews", () => {
     renderSection(
       createResponse([
