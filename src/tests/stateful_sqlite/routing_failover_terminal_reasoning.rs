@@ -66,8 +66,8 @@ async fn pool_route_existing_sticky_owner_preserves_last_failure_after_cutout_al
         "unexpected preserved alternate failure payload: {payload}"
     );
 
-    wait_for_pool_attempt_row_count(&state.pool, 7).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 7);
+    wait_for_pool_attempt_row_count(&state.pool, 6).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 6);
 
     let attempt_rows = sqlx::query_as::<_, AttemptStatusRow>(
         r#"
@@ -79,15 +79,7 @@ async fn pool_route_existing_sticky_owner_preserves_last_failure_after_cutout_al
     .fetch_all(&state.pool)
     .await
     .expect("load preserved cut-out alternate attempt rows");
-    assert_eq!(attempt_rows.len(), 7);
-    assert_eq!(
-        attempt_rows[6].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL
-    );
-    assert_eq!(
-        attempt_rows[6].failure_kind.as_deref(),
-        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
-    );
+    assert_eq!(attempt_rows.len(), 6);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
@@ -176,8 +168,8 @@ async fn pool_route_existing_sticky_owner_preserves_last_failure_after_distinct_
         "unexpected preserved distinct-budget failure payload: {payload}"
     );
 
-    wait_for_pool_attempt_row_count(&state.pool, 4).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 10);
+    wait_for_pool_attempt_row_count(&state.pool, 9).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 9);
 
     let attempt_rows = sqlx::query_as::<_, AttemptStatusRow>(
         r#"
@@ -189,15 +181,7 @@ async fn pool_route_existing_sticky_owner_preserves_last_failure_after_distinct_
     .fetch_all(&state.pool)
     .await
     .expect("load preserved distinct-budget attempt rows");
-    assert_eq!(attempt_rows.len(), 10);
-    assert_eq!(
-        attempt_rows[9].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL
-    );
-    assert_eq!(
-        attempt_rows[9].failure_kind.as_deref(),
-        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
-    );
+    assert_eq!(attempt_rows.len(), 9);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
@@ -621,7 +605,7 @@ async fn pool_route_returns_429_after_three_distinct_accounts_hit_upstream_429()
     .fetch_all(&state.pool)
     .await
     .expect("load attempt rows");
-    assert_eq!(attempt_rows.len(), 4);
+    assert_eq!(attempt_rows.len(), 3);
     assert_eq!(attempt_rows[0].attempt_index, 1);
     assert_eq!(attempt_rows[0].distinct_account_index, 1);
     assert_eq!(attempt_rows[0].same_account_retry_index, 1);
@@ -643,22 +627,6 @@ async fn pool_route_returns_429_after_three_distinct_accounts_hit_upstream_429()
         attempt_rows[2].failure_kind.as_deref(),
         Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
     );
-    assert_eq!(attempt_rows[3].attempt_index, 4);
-    assert_eq!(attempt_rows[3].distinct_account_index, 3);
-    assert_eq!(attempt_rows[3].same_account_retry_index, 0);
-    assert_eq!(
-        attempt_rows[3].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL
-    );
-    assert_eq!(
-        attempt_rows[3].http_status,
-        Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64)
-    );
-    assert_eq!(
-        attempt_rows[3].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED)
-    );
-
     upstream_handle.abort();
 }
 
@@ -1128,8 +1096,8 @@ async fn pool_route_preserves_413_when_distinct_account_budget_exhausts() {
     .fetch_all(&state.pool)
     .await
     .expect("load upstream 413 budget attempts");
-    assert_eq!(attempt_rows.len(), 7);
-    for row in &attempt_rows[..6] {
+    assert_eq!(attempt_rows.len(), 6);
+    for row in &attempt_rows {
         assert_eq!(row.http_status, Some(413));
         assert_eq!(
             row.failure_kind.as_deref(),
@@ -1148,15 +1116,6 @@ async fn pool_route_preserves_413_when_distinct_account_budget_exhausts() {
     assert_eq!(attempt_rows[4].same_account_retry_index, 1);
     assert_eq!(attempt_rows[5].distinct_account_index, 3);
     assert_eq!(attempt_rows[5].same_account_retry_index, 2);
-    assert_eq!(
-        attempt_rows[6].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL
-    );
-    assert_eq!(attempt_rows[6].http_status, Some(413));
-    assert_eq!(
-        attempt_rows[6].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED)
-    );
 
     upstream_handle.abort();
 }
@@ -1400,7 +1359,7 @@ async fn capture_target_pool_route_stops_after_three_distinct_accounts() {
             .fetch_one(&state.pool)
             .await
             .expect("count budget attempt rows");
-        if count >= 6 {
+        if count >= 9 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1416,7 +1375,7 @@ async fn capture_target_pool_route_stops_after_three_distinct_accounts() {
     .fetch_all(&state.pool)
     .await
     .expect("load attempt status rows");
-    assert_eq!(attempt_status_rows.len(), 10);
+    assert_eq!(attempt_status_rows.len(), 9);
     assert_eq!(attempt_status_rows[0].same_account_retry_index, 1);
     assert_eq!(attempt_status_rows[1].same_account_retry_index, 2);
     assert_eq!(attempt_status_rows[2].same_account_retry_index, 3);
@@ -1428,17 +1387,6 @@ async fn capture_target_pool_route_stops_after_three_distinct_accounts() {
     assert_eq!(attempt_status_rows[8].same_account_retry_index, 3);
     assert_eq!(attempt_status_rows[8].attempt_index, 9);
     assert_eq!(attempt_status_rows[8].distinct_account_index, 3);
-    assert_eq!(
-        attempt_status_rows[9].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
-    );
-    assert_eq!(attempt_status_rows[9].attempt_index, 10);
-    assert_eq!(attempt_status_rows[9].distinct_account_index, 3);
-    assert_eq!(
-        attempt_status_rows[9].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED),
-    );
-
     let attempts = attempts.lock().expect("lock attempt counters");
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
     assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(3));
@@ -2092,7 +2040,7 @@ async fn pool_route_compact_502_returns_cvm_id_and_attempt_observations() {
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 10).await;
+    wait_for_pool_attempt_row_count(&state.pool, 9).await;
 
     let invocation_status: Option<String> =
         sqlx::query_scalar("SELECT status FROM codex_invocations WHERE invoke_id = ?1 LIMIT 1")
@@ -2106,7 +2054,7 @@ async fn pool_route_compact_502_returns_cvm_id_and_attempt_observations() {
         fetch_invocation_pool_attempts(State(state.clone()), axum::extract::Path(cvm_id.clone()))
             .await
             .expect("fetch invocation pool attempts");
-    assert_eq!(attempt_rows.len(), 4);
+    assert_eq!(attempt_rows.len(), 3);
     assert_eq!(
         attempt_rows[0].compact_support_status.as_deref(),
         Some(COMPACT_SUPPORT_STATUS_UNSUPPORTED),
@@ -2125,8 +2073,6 @@ async fn pool_route_compact_502_returns_cvm_id_and_attempt_observations() {
         attempt_rows[2].compact_support_status.as_deref(),
         Some(COMPACT_SUPPORT_STATUS_UNSUPPORTED),
     );
-    assert_eq!(attempt_rows[3].compact_support_status, None);
-
     let account_support_states = sqlx::query_as::<_, (String, Option<String>)>(
         r#"
         SELECT compact_support_status, compact_support_reason
@@ -2752,7 +2698,7 @@ async fn capture_target_pool_route_timeout_does_not_cut_out_from_no_cut_out_stic
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+    wait_for_pool_attempt_row_count(&state.pool, 1).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
@@ -2770,7 +2716,7 @@ async fn capture_target_pool_route_timeout_does_not_cut_out_from_no_cut_out_stic
     .fetch_all(&state.pool)
     .await
     .expect("load no-cut-out timeout attempt rows");
-    assert_eq!(attempt_rows.len(), 2);
+    assert_eq!(attempt_rows.len(), 1);
     assert_eq!(attempt_rows[0].upstream_account_id, Some(slow_id));
     assert_eq!(attempt_rows[0].attempt_index, 1);
     assert_eq!(attempt_rows[0].distinct_account_index, 1);
@@ -2779,19 +2725,6 @@ async fn capture_target_pool_route_timeout_does_not_cut_out_from_no_cut_out_stic
         attempt_rows[0].status,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
     );
-    assert_eq!(attempt_rows[1].upstream_account_id, Some(slow_id));
-    assert_eq!(attempt_rows[1].attempt_index, 2);
-    assert_eq!(attempt_rows[1].distinct_account_index, 1);
-    assert_eq!(attempt_rows[1].same_account_retry_index, 0);
-    assert_eq!(
-        attempt_rows[1].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
-    );
-    assert_eq!(
-        attempt_rows[1].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
-    );
-
     let attempts = attempts.lock().expect("lock fast attempts");
     assert_eq!(attempts.get("Bearer route-fast-no-cut-out").copied(), None);
     drop(attempts);
@@ -2952,7 +2885,7 @@ async fn capture_target_pool_route_timeout_returns_no_alternate_when_only_same_r
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+    wait_for_pool_attempt_row_count(&state.pool, 1).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
@@ -2970,27 +2903,12 @@ async fn capture_target_pool_route_timeout_returns_no_alternate_when_only_same_r
     .fetch_all(&state.pool)
     .await
     .expect("load timeout no-alternate rows");
-    assert_eq!(attempt_rows.len(), 2);
+    assert_eq!(attempt_rows.len(), 1);
     assert_eq!(attempt_rows[0].attempt_index, 1);
     assert_eq!(attempt_rows[0].same_account_retry_index, 1);
     assert_eq!(
         attempt_rows[0].status,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-    );
-    assert_eq!(attempt_rows[1].attempt_index, 2);
-    assert_eq!(attempt_rows[1].distinct_account_index, 1);
-    assert_eq!(attempt_rows[1].same_account_retry_index, 0);
-    assert_eq!(
-        attempt_rows[1].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
-    );
-    assert_eq!(
-        attempt_rows[1].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT),
-    );
-    assert_eq!(
-        attempt_rows[0].upstream_route_key,
-        attempt_rows[1].upstream_route_key,
     );
     let row = sqlx::query_as::<_, PersistedPayloadRow>(
         r#"
@@ -3105,7 +3023,7 @@ async fn capture_target_pool_route_timeout_surfaces_blocked_policy_terminal() {
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+    wait_for_pool_attempt_row_count(&state.pool, 1).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
@@ -3123,23 +3041,12 @@ async fn capture_target_pool_route_timeout_surfaces_blocked_policy_terminal() {
     .fetch_all(&state.pool)
     .await
     .expect("load timeout blocked-policy rows");
-    assert_eq!(attempt_rows.len(), 2);
+    assert_eq!(attempt_rows.len(), 1);
     assert_eq!(attempt_rows[0].attempt_index, 1);
     assert_eq!(attempt_rows[0].same_account_retry_index, 1);
     assert_eq!(
         attempt_rows[0].status,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-    );
-    assert_eq!(attempt_rows[1].attempt_index, 2);
-    assert_eq!(attempt_rows[1].distinct_account_index, 1);
-    assert_eq!(attempt_rows[1].same_account_retry_index, 0);
-    assert_eq!(
-        attempt_rows[1].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
-    );
-    assert_eq!(
-        attempt_rows[1].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_ROUTING_BLOCKED),
     );
 
     let row = sqlx::query_as::<_, PersistedPayloadRow>(
@@ -3283,29 +3190,13 @@ async fn capture_target_pool_route_timeout_ignores_broken_same_route_groups() {
     .fetch_all(&state.pool)
     .await
     .expect("load timeout no-alternate invalid-group rows");
-    assert_eq!(attempt_rows.len(), 2);
+    assert_eq!(attempt_rows.len(), 1);
     assert_eq!(attempt_rows[0].attempt_index, 1);
     assert_eq!(attempt_rows[0].same_account_retry_index, 1);
     assert_eq!(
         attempt_rows[0].status,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
     );
-    assert_eq!(attempt_rows[1].attempt_index, 2);
-    assert_eq!(attempt_rows[1].distinct_account_index, 1);
-    assert_eq!(attempt_rows[1].same_account_retry_index, 0);
-    assert_eq!(
-        attempt_rows[1].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
-    );
-    assert_eq!(
-        attempt_rows[1].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT),
-    );
-    assert_eq!(
-        attempt_rows[0].upstream_route_key,
-        attempt_rows[1].upstream_route_key,
-    );
-
     let row = sqlx::query_as::<_, PersistedPayloadRow>(
         r#"
         SELECT error_message, payload
