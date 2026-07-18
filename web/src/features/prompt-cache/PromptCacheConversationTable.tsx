@@ -20,6 +20,7 @@ import {
   YAxis,
 } from "recharts";
 import { Alert } from "../../components/ui/alert";
+import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
   Dialog,
@@ -48,6 +49,8 @@ import type {
   PromptCacheConversation,
   PromptCacheConversationBindingKind,
   PromptCacheConversationBindingResponse,
+  PromptCacheConversationOperationEvent,
+  PromptCacheConversationOperationInfoType,
   PromptCacheConversationRewriteMode,
   PromptCacheConversationsResponse,
   PromptCacheConversationUpstreamAccount,
@@ -58,6 +61,7 @@ import {
   fetchInvocationRecords,
   fetchInvocationRecordsSummary,
   fetchPromptCacheConversationBinding,
+  fetchPromptCacheConversationOperationEvents,
   fetchUpstreamAccounts,
   updatePromptCacheConversationBinding,
 } from "../../lib/api";
@@ -101,6 +105,7 @@ type ConversationHistoryRecordMatcher = NonNullable<
 const PROMPT_CACHE_NOW_TICK_MS = 30_000;
 const PROMPT_CACHE_CHART_MAX_WINDOW_MS = 24 * 3_600_000;
 const PROMPT_CACHE_HISTORY_PAGE_SIZE = 50;
+const PROMPT_CACHE_OPERATION_EVENT_PAGE_SIZE = 20;
 const PROMPT_CACHE_ACTIVITY_PAGE_SIZE = 200;
 const PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS = 1_000;
 const CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS = 30;
@@ -115,7 +120,8 @@ type ConversationActivityRange = "today" | "yesterday" | "1d" | "7d" | "history"
 type ConversationActivityMetric = "totalCount" | "totalCost" | "totalTokens";
 type ConversationActivityDragAxis = "pending" | "horizontal" | "vertical" | "free";
 type ConversationBindingDraftKind = PromptCacheConversationBindingKind;
-export type PromptCacheConversationDrawerTab = "overview" | "calls" | "settings";
+export type PromptCacheConversationDrawerTab = "overview" | "calls" | "settings" | "operations";
+type PromptCacheConversationOperationFilter = "all" | PromptCacheConversationOperationInfoType;
 type OptionalBooleanDraft = "inherit" | "true" | "false";
 type RewriteModeDraft = PromptCacheConversationRewriteMode;
 type ConversationInlinePolicyField =
@@ -137,6 +143,22 @@ const CONVERSATION_ACTIVITY_METRICS: Array<{
   { key: "totalCount", labelKey: "metric.totalCount" },
   { key: "totalCost", labelKey: "metric.totalCost" },
   { key: "totalTokens", labelKey: "metric.totalTokens" },
+];
+
+const PROMPT_CACHE_OPERATION_FILTER_OPTIONS: Array<{
+  value: PromptCacheConversationOperationFilter;
+  labelKey: string;
+}> = [
+  { value: "all", labelKey: "live.conversations.drawer.operations.filters.all" },
+  { value: "routing", labelKey: "live.conversations.drawer.operations.filters.routing" },
+  {
+    value: "forwardProxy",
+    labelKey: "live.conversations.drawer.operations.filters.forwardProxy",
+  },
+  {
+    value: "requestRewrite",
+    labelKey: "live.conversations.drawer.operations.filters.requestRewrite",
+  },
 ];
 
 function parseEpoch(raw?: string | null) {
@@ -350,6 +372,117 @@ function encryptedOwnerLabel(binding: PromptCacheConversationBindingResponse | n
   if (!accountLabel) return null;
   const groupLabel = binding.encryptedOwnerGroupName?.trim();
   return groupLabel ? `${accountLabel} · ${groupLabel}` : accountLabel;
+}
+
+function formatConversationOperationOccurredAt(raw: string) {
+  const value = new Date(raw);
+  if (Number.isNaN(value.getTime())) {
+    return raw || FALLBACK_CELL;
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(value);
+}
+
+function conversationOperationInfoTypeBadgeVariant(
+  infoType: PromptCacheConversationOperationInfoType,
+): "default" | "info" | "accent" {
+  switch (infoType) {
+    case "routing":
+      return "default";
+    case "forwardProxy":
+      return "info";
+    case "requestRewrite":
+      return "accent";
+  }
+}
+
+function conversationOperationOriginBadgeVariant(origin: string): "secondary" | "warning" | "info" {
+  switch (origin) {
+    case "dashboardBulk":
+      return "warning";
+    case "systemAuto":
+      return "info";
+    default:
+      return "secondary";
+  }
+}
+
+function conversationOperationActionLabel(
+  action: PromptCacheConversationOperationEvent["action"],
+  headline: string,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  const key = `live.conversations.drawer.operations.actions.${action}`;
+  const translated = t(key);
+  return translated === key ? headline : translated;
+}
+
+function conversationOperationInfoTypeLabel(
+  infoType: PromptCacheConversationOperationInfoType,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  return t(`live.conversations.drawer.operations.filters.${infoType}`);
+}
+
+function conversationOperationOriginLabel(
+  origin: string,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  const key = `live.conversations.drawer.operations.origins.${origin}`;
+  const translated = t(key);
+  return translated === key ? origin : translated;
+}
+
+function conversationOperationBindingSnapshotLabel(
+  snapshot:
+    | PromptCacheConversationOperationEvent["bindingBefore"]
+    | PromptCacheConversationOperationEvent["bindingAfter"],
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  if (!snapshot || snapshot.bindingKind === "none") {
+    return t("live.conversations.drawer.operations.binding.none");
+  }
+  if (snapshot.bindingKind === "group" && snapshot.groupName) {
+    return t("live.conversations.drawer.operations.binding.group", {
+      group: snapshot.groupName,
+    });
+  }
+  const accountLabel =
+    snapshot.upstreamAccountName?.trim() ||
+    (snapshot.upstreamAccountId != null ? `#${snapshot.upstreamAccountId}` : null);
+  if (!accountLabel) {
+    return t("live.conversations.drawer.operations.binding.none");
+  }
+  return t("live.conversations.drawer.operations.binding.account", {
+    account: accountLabel,
+  });
+}
+
+function conversationOperationStickySnapshotLabel(
+  snapshot:
+    | PromptCacheConversationOperationEvent["stickyBefore"]
+    | PromptCacheConversationOperationEvent["stickyAfter"],
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  if (!snapshot) {
+    return t("live.conversations.drawer.operations.sticky.none");
+  }
+  return snapshot.upstreamAccountName?.trim() || `#${snapshot.upstreamAccountId}`;
+}
+
+function conversationOperationChangedFieldLabel(
+  field: string,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  const key = `live.conversations.drawer.operations.fields.${field}`;
+  const translated = t(key);
+  return translated === key ? field : translated;
 }
 
 function nextBindingWouldOverrideEncryptedOwner(
@@ -1930,10 +2063,15 @@ export function PromptCacheConversationHistoryDrawer({
   const pendingLoadRef = useRef<{ silent?: boolean; append?: boolean } | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeLoadControllerRef = useRef<AbortController | null>(null);
+  const operationsLoadControllerRef = useRef<AbortController | null>(null);
+  const operationsRequestSeqRef = useRef(0);
   const historySnapshotIdRef = useRef<number | undefined>(undefined);
   const historyNextPageRef = useRef(1);
   const historyHasMoreRef = useRef(false);
   const recordsRef = useRef<ApiInvocation[]>([]);
+  const operationEventsRef = useRef<PromptCacheConversationOperationEvent[]>([]);
+  const operationsPageRef = useRef(1);
+  const operationsTotalRef = useRef(0);
   const [drawerBodyElement, setDrawerBodyElement] = useState<HTMLDivElement | null>(null);
   const [records, setRecords] = useState<ApiInvocation[]>([]);
   const [liveRecords, setLiveRecords] = useState<ApiInvocation[]>([]);
@@ -1965,6 +2103,16 @@ export function PromptCacheConversationHistoryDrawer({
   >({});
   const [bindingOwnerConfirmOpen, setBindingOwnerConfirmOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<PromptCacheConversationDrawerTab>(initialTab);
+  const [operationEvents, setOperationEvents] = useState<PromptCacheConversationOperationEvent[]>(
+    [],
+  );
+  const [operationsTotal, setOperationsTotal] = useState(0);
+  const [operationsPage, setOperationsPage] = useState(1);
+  const [operationsLoading, setOperationsLoading] = useState(false);
+  const [operationsLoadingMore, setOperationsLoadingMore] = useState(false);
+  const [operationsError, setOperationsError] = useState<string | null>(null);
+  const [operationsFilter, setOperationsFilter] =
+    useState<PromptCacheConversationOperationFilter>("all");
 
   useEffect(() => {
     if (!open) {
@@ -1998,6 +2146,18 @@ export function PromptCacheConversationHistoryDrawer({
   useEffect(() => {
     recordsRef.current = records;
   }, [records]);
+
+  useEffect(() => {
+    operationEventsRef.current = operationEvents;
+  }, [operationEvents]);
+
+  useEffect(() => {
+    operationsPageRef.current = operationsPage;
+  }, [operationsPage]);
+
+  useEffect(() => {
+    operationsTotalRef.current = operationsTotal;
+  }, [operationsTotal]);
 
   const runLoad = useCallback(
     async ({ silent = false, append = false }: { silent?: boolean; append?: boolean } = {}) => {
@@ -2120,6 +2280,60 @@ export function PromptCacheConversationHistoryDrawer({
     [runLoad],
   );
 
+  const loadOperationEvents = useCallback(
+    async ({ append = false }: { append?: boolean } = {}) => {
+      if (!open || !conversationKey || activeTab !== "operations") return;
+      if (append && operationEventsRef.current.length >= operationsTotalRef.current) return;
+
+      operationsRequestSeqRef.current += 1;
+      const requestSeq = operationsRequestSeqRef.current;
+      operationsLoadControllerRef.current?.abort();
+      const controller = new AbortController();
+      operationsLoadControllerRef.current = controller;
+      if (append) {
+        setOperationsLoadingMore(true);
+      } else {
+        setOperationsLoading(true);
+      }
+      setOperationsError(null);
+      try {
+        const response = await fetchPromptCacheConversationOperationEvents(conversationKey, {
+          page: append ? operationsPageRef.current + 1 : 1,
+          pageSize: PROMPT_CACHE_OPERATION_EVENT_PAGE_SIZE,
+          infoType: operationsFilter === "all" ? undefined : operationsFilter,
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted || requestSeq !== operationsRequestSeqRef.current) return;
+        const nextItems = append
+          ? Array.from(
+              new Map(
+                [...operationEventsRef.current, ...response.items].map((item) => [item.id, item]),
+              ).values(),
+            )
+          : response.items;
+        operationEventsRef.current = nextItems;
+        setOperationEvents(nextItems);
+        setOperationsTotal(response.total);
+        setOperationsPage(response.page);
+      } catch (err) {
+        if (
+          controller.signal.aborted ||
+          (err instanceof DOMException && err.name === "AbortError") ||
+          (err instanceof Error && err.name === "AbortError")
+        ) {
+          return;
+        }
+        setOperationsError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (requestSeq === operationsRequestSeqRef.current) {
+          setOperationsLoading(false);
+          setOperationsLoadingMore(false);
+        }
+      }
+    },
+    [activeTab, conversationKey, open, operationsFilter],
+  );
+
   useEffect(() => {
     requestSeqRef.current += 1;
     hasHydratedRef.current = false;
@@ -2173,6 +2387,17 @@ export function PromptCacheConversationHistoryDrawer({
       setForwardProxyKeysDraft([]);
       setInlinePolicyBusyField(null);
       setInlinePolicyErrors({});
+      operationsLoadControllerRef.current?.abort();
+      operationEventsRef.current = [];
+      operationsPageRef.current = 1;
+      operationsTotalRef.current = 0;
+      setOperationEvents([]);
+      setOperationsTotal(0);
+      setOperationsPage(1);
+      setOperationsLoading(false);
+      setOperationsLoadingMore(false);
+      setOperationsError(null);
+      setOperationsFilter("all");
       return;
     }
 
@@ -2235,11 +2460,26 @@ export function PromptCacheConversationHistoryDrawer({
   useEffect(
     () => () => {
       activeLoadControllerRef.current?.abort();
+      operationsLoadControllerRef.current?.abort();
       clearPendingRefreshTimer();
       pendingLoadRef.current = null;
     },
     [clearPendingRefreshTimer],
   );
+
+  useEffect(() => {
+    if (!open || !conversationKey || activeTab !== "operations") {
+      return;
+    }
+    operationEventsRef.current = [];
+    operationsPageRef.current = 1;
+    operationsTotalRef.current = 0;
+    setOperationEvents([]);
+    setOperationsTotal(0);
+    setOperationsPage(1);
+    setOperationsError(null);
+    void loadOperationEvents();
+  }, [activeTab, conversationKey, loadOperationEvents, open, operationsFilter]);
 
   useEffect(() => {
     if (!open || activeTab !== "calls" || !drawerBodyElement) return;
@@ -2876,6 +3116,126 @@ export function PromptCacheConversationHistoryDrawer({
       ) : null}
     </div>
   );
+  const hasMoreOperationEvents = operationEvents.length < operationsTotal;
+  const operationsPanel = (
+    <div className="space-y-4 text-sm">
+      <section className="rounded-xl border border-base-content/10 bg-base-200/50 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <p className="font-semibold text-base-content">
+              {t("live.conversations.drawer.operations.title")}
+            </p>
+            <p className="text-xs text-base-content/68">
+              {t("live.conversations.drawer.operations.description")}
+            </p>
+          </div>
+          {operationsLoading && operationEvents.length === 0 ? (
+            <Spinner size="sm" aria-label={t("live.conversations.drawer.operations.loading")} />
+          ) : null}
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {PROMPT_CACHE_OPERATION_FILTER_OPTIONS.map((option) => (
+            <Button
+              key={option.value}
+              type="button"
+              size="sm"
+              variant={operationsFilter === option.value ? "default" : "secondary"}
+              onClick={() => setOperationsFilter(option.value)}
+            >
+              {t(option.labelKey)}
+            </Button>
+          ))}
+        </div>
+      </section>
+      {operationsError ? (
+        <Alert variant="error">
+          <span>{operationsError}</span>
+        </Alert>
+      ) : null}
+      {operationEvents.length === 0 && !operationsLoading ? (
+        <div className="rounded-xl border border-dashed border-base-300/75 bg-base-100/55 px-4 py-5 text-sm text-base-content/65">
+          {t("live.conversations.drawer.operations.empty")}
+        </div>
+      ) : null}
+      {operationEvents.map((event) => (
+        <article
+          key={event.id}
+          className="space-y-3 rounded-xl border border-base-content/10 bg-base-100/80 p-4"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0 flex-1 space-y-2">
+              <div className="flex flex-wrap gap-2">
+                {event.infoTypes.map((infoType) => (
+                  <Badge
+                    key={`${event.id}-${infoType}`}
+                    variant={conversationOperationInfoTypeBadgeVariant(infoType)}
+                  >
+                    {conversationOperationInfoTypeLabel(infoType, t)}
+                  </Badge>
+                ))}
+                <Badge variant={conversationOperationOriginBadgeVariant(event.origin)}>
+                  {conversationOperationOriginLabel(event.origin, t)}
+                </Badge>
+              </div>
+              <p className="break-words text-sm font-semibold text-base-content">
+                {conversationOperationActionLabel(event.action, event.headline, t)}
+              </p>
+            </div>
+            <span className="text-xs text-base-content/58">
+              {formatConversationOperationOccurredAt(event.occurredAt)}
+            </span>
+          </div>
+          {event.changedFields.length > 0 ? (
+            <p className="text-xs text-base-content/70">
+              {t("live.conversations.drawer.operations.changedFields", {
+                fields: event.changedFields
+                  .map((field) => conversationOperationChangedFieldLabel(field, t))
+                  .join(" / "),
+              })}
+            </p>
+          ) : null}
+          {event.bindingBefore || event.bindingAfter ? (
+            <p className="text-xs text-base-content/72">
+              {t("live.conversations.drawer.operations.bindingTransition", {
+                from: conversationOperationBindingSnapshotLabel(event.bindingBefore, t),
+                to: conversationOperationBindingSnapshotLabel(event.bindingAfter, t),
+              })}
+            </p>
+          ) : null}
+          {event.stickyBefore || event.stickyAfter ? (
+            <p className="text-xs text-base-content/72">
+              {t("live.conversations.drawer.operations.stickyTransition", {
+                from: conversationOperationStickySnapshotLabel(event.stickyBefore, t),
+                to: conversationOperationStickySnapshotLabel(event.stickyAfter, t),
+              })}
+            </p>
+          ) : null}
+          {event.invokeId ? (
+            <p className="break-all font-mono text-[11px] text-base-content/58">
+              {t("live.conversations.drawer.operations.invokeId", {
+                invokeId: event.invokeId,
+              })}
+            </p>
+          ) : null}
+        </article>
+      ))}
+      {hasMoreOperationEvents ? (
+        <div className="flex items-center justify-center">
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={operationsLoadingMore}
+            onClick={() => void loadOperationEvents({ append: true })}
+          >
+            {operationsLoadingMore
+              ? t("live.conversations.drawer.operations.loadingMore")
+              : t("live.conversations.drawer.operations.loadMore")}
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
   const saveBinding = useCallback(
     async (options?: { skipOwnerWarning?: boolean }) => {
       if (!conversationKey || bindingSubmitDisabled) return;
@@ -3019,6 +3379,16 @@ export function PromptCacheConversationHistoryDrawer({
               >
                 {t("live.conversations.drawer.tabs.settings")}
               </SegmentedControlItem>
+              <SegmentedControlItem
+                active={activeTab === "operations"}
+                role="tab"
+                aria-selected={activeTab === "operations"}
+                aria-controls={`${titleId}-panel-operations`}
+                id={`${titleId}-tab-operations`}
+                onClick={() => handleSelectTab("operations")}
+              >
+                {t("live.conversations.drawer.tabs.operations")}
+              </SegmentedControlItem>
             </SegmentedControl>
           </div>
         }
@@ -3069,6 +3439,15 @@ export function PromptCacheConversationHistoryDrawer({
             aria-labelledby={`${titleId}-tab-settings`}
           >
             {bindingPanel}
+          </div>
+        ) : null}
+        {activeTab === "operations" ? (
+          <div
+            id={`${titleId}-panel-operations`}
+            role="tabpanel"
+            aria-labelledby={`${titleId}-tab-operations`}
+          >
+            {operationsPanel}
           </div>
         ) : null}
       </AccountDetailDrawerShell>

@@ -6,6 +6,15 @@ use std::collections::HashSet;
 pub(crate) const PROMPT_CACHE_BINDING_KIND_GROUP: &str = "group";
 pub(crate) const PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT: &str = "upstream_account";
 pub(crate) const PROMPT_CACHE_BINDING_KIND_NONE: &str = "none";
+pub(crate) const PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING: &str = "routing";
+pub(crate) const PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_FORWARD_PROXY: &str = "forwardProxy";
+pub(crate) const PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_REQUEST_REWRITE: &str =
+    "requestRewrite";
+pub(crate) const PROMPT_CACHE_CONVERSATION_OPERATION_ORIGIN_DETAIL_DRAWER: &str = "detailDrawer";
+pub(crate) const PROMPT_CACHE_CONVERSATION_OPERATION_ORIGIN_DASHBOARD_BULK: &str = "dashboardBulk";
+pub(crate) const PROMPT_CACHE_CONVERSATION_OPERATION_ORIGIN_SYSTEM_AUTO: &str = "systemAuto";
+const PROMPT_CACHE_CONVERSATION_OPERATION_EVENTS_DEFAULT_PAGE_SIZE: usize = 20;
+const PROMPT_CACHE_CONVERSATION_OPERATION_EVENTS_MAX_PAGE_SIZE: usize = 100;
 
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct PromptCacheConversationBindingRow {
@@ -78,6 +87,90 @@ pub(crate) struct PromptCacheConversationBindingResponse {
     pub(crate) forward_proxy_keys: Vec<String>,
     pub(crate) policy_field_sources: PromptCacheConversationPolicyFieldSources,
     pub(crate) updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub(crate) struct PromptCacheConversationOperationEventRow {
+    pub(crate) id: i64,
+    pub(crate) prompt_cache_key: String,
+    pub(crate) action: String,
+    pub(crate) origin: String,
+    pub(crate) info_types_json: String,
+    pub(crate) occurred_at: String,
+    pub(crate) headline: String,
+    pub(crate) changed_fields_json: Option<String>,
+    pub(crate) binding_before_json: Option<String>,
+    pub(crate) binding_after_json: Option<String>,
+    pub(crate) sticky_before_json: Option<String>,
+    pub(crate) sticky_after_json: Option<String>,
+    pub(crate) invoke_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptCacheConversationOperationBindingSnapshot {
+    pub(crate) binding_kind: String,
+    pub(crate) group_name: Option<String>,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) upstream_account_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptCacheConversationOperationStickySnapshot {
+    pub(crate) upstream_account_id: i64,
+    pub(crate) upstream_account_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptCacheConversationOperationEventResponse {
+    pub(crate) id: i64,
+    pub(crate) prompt_cache_key: String,
+    pub(crate) action: String,
+    pub(crate) origin: String,
+    pub(crate) info_types: Vec<String>,
+    pub(crate) occurred_at: String,
+    pub(crate) headline: String,
+    pub(crate) changed_fields: Vec<String>,
+    pub(crate) binding_before: Option<PromptCacheConversationOperationBindingSnapshot>,
+    pub(crate) binding_after: Option<PromptCacheConversationOperationBindingSnapshot>,
+    pub(crate) sticky_before: Option<PromptCacheConversationOperationStickySnapshot>,
+    pub(crate) sticky_after: Option<PromptCacheConversationOperationStickySnapshot>,
+    pub(crate) invoke_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptCacheConversationOperationEventListResponse {
+    pub(crate) items: Vec<PromptCacheConversationOperationEventResponse>,
+    pub(crate) total: i64,
+    pub(crate) page: usize,
+    pub(crate) page_size: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ListPromptCacheConversationOperationEventsQuery {
+    pub(crate) page: Option<usize>,
+    pub(crate) page_size: Option<usize>,
+    pub(crate) info_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AppendPromptCacheConversationOperationEventInput {
+    prompt_cache_key: String,
+    action: String,
+    origin: String,
+    info_types: Vec<String>,
+    occurred_at: String,
+    headline: String,
+    changed_fields: Vec<String>,
+    binding_before: Option<PromptCacheConversationOperationBindingSnapshot>,
+    binding_after: Option<PromptCacheConversationOperationBindingSnapshot>,
+    sticky_before: Option<PromptCacheConversationOperationStickySnapshot>,
+    sticky_after: Option<PromptCacheConversationOperationStickySnapshot>,
+    invoke_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -517,6 +610,357 @@ pub(crate) async fn load_sticky_account_id(
     .fetch_optional(pool)
     .await
     .map_err(Into::into)
+}
+
+pub(crate) async fn load_prompt_cache_conversation_sticky_snapshot(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: &str,
+) -> Result<Option<PromptCacheConversationOperationStickySnapshot>> {
+    #[derive(Debug, FromRow)]
+    struct StickySnapshotRow {
+        account_id: i64,
+        account_name: Option<String>,
+    }
+
+    let row = sqlx::query_as::<_, StickySnapshotRow>(
+        r#"
+        SELECT
+            sticky.account_id,
+            account.display_name AS account_name
+        FROM pool_sticky_routes AS sticky
+        LEFT JOIN pool_upstream_accounts AS account
+          ON account.id = sticky.account_id
+        WHERE sticky.sticky_key = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .fetch_optional(pool)
+    .await?;
+    Ok(
+        row.map(|value| PromptCacheConversationOperationStickySnapshot {
+            upstream_account_id: value.account_id,
+            upstream_account_name: value.account_name,
+        }),
+    )
+}
+
+fn prompt_cache_conversation_operation_binding_snapshot_from_row(
+    row: Option<&PromptCacheConversationBindingRow>,
+) -> PromptCacheConversationOperationBindingSnapshot {
+    match row {
+        Some(value) if value.binding_kind == PROMPT_CACHE_BINDING_KIND_GROUP => {
+            PromptCacheConversationOperationBindingSnapshot {
+                binding_kind: "group".to_string(),
+                group_name: value.group_name.clone(),
+                upstream_account_id: None,
+                upstream_account_name: None,
+            }
+        }
+        Some(value) if value.binding_kind == PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT => {
+            PromptCacheConversationOperationBindingSnapshot {
+                binding_kind: "upstreamAccount".to_string(),
+                group_name: None,
+                upstream_account_id: value.upstream_account_id,
+                upstream_account_name: value.upstream_account_name.clone(),
+            }
+        }
+        _ => PromptCacheConversationOperationBindingSnapshot {
+            binding_kind: "none".to_string(),
+            group_name: None,
+            upstream_account_id: None,
+            upstream_account_name: None,
+        },
+    }
+}
+
+fn prompt_cache_conversation_bound_proxy_keys_from_row(
+    row: Option<&PromptCacheConversationBindingRow>,
+) -> Vec<String> {
+    row.map(|value| {
+        let keys = parse_forward_proxy_keys_json(value.forward_proxy_keys_json.as_deref());
+        if keys.is_empty() {
+            value
+                .forward_proxy_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(|item| vec![item.to_string()])
+                .unwrap_or_default()
+        } else {
+            keys
+        }
+    })
+    .unwrap_or_default()
+}
+
+fn prompt_cache_conversation_policy_changed_fields(
+    before: Option<&PromptCacheConversationBindingRow>,
+    after: Option<&PromptCacheConversationBindingRow>,
+) -> Vec<String> {
+    let mut changed_fields = Vec::new();
+    let push_if_changed = |changed_fields: &mut Vec<String>, field: &str, changed: bool| -> () {
+        if changed {
+            changed_fields.push(field.to_string());
+        }
+    };
+
+    push_if_changed(
+        &mut changed_fields,
+        "responsesFirstByteTimeoutSecs",
+        before.and_then(|row| row.responses_first_byte_timeout_secs)
+            != after.and_then(|row| row.responses_first_byte_timeout_secs),
+    );
+    push_if_changed(
+        &mut changed_fields,
+        "compactFirstByteTimeoutSecs",
+        before.and_then(|row| row.compact_first_byte_timeout_secs)
+            != after.and_then(|row| row.compact_first_byte_timeout_secs),
+    );
+    push_if_changed(
+        &mut changed_fields,
+        "imageFirstByteTimeoutSecs",
+        before.and_then(|row| row.image_first_byte_timeout_secs)
+            != after.and_then(|row| row.image_first_byte_timeout_secs),
+    );
+    push_if_changed(
+        &mut changed_fields,
+        "responsesStreamTimeoutSecs",
+        before.and_then(|row| row.responses_stream_timeout_secs)
+            != after.and_then(|row| row.responses_stream_timeout_secs),
+    );
+    push_if_changed(
+        &mut changed_fields,
+        "compactStreamTimeoutSecs",
+        before.and_then(|row| row.compact_stream_timeout_secs)
+            != after.and_then(|row| row.compact_stream_timeout_secs),
+    );
+    push_if_changed(
+        &mut changed_fields,
+        "allowSwitchUpstream",
+        before.and_then(|row| row.allow_switch_upstream)
+            != after.and_then(|row| row.allow_switch_upstream),
+    );
+    push_if_changed(
+        &mut changed_fields,
+        "fastModeRewriteMode",
+        before.and_then(|row| row.fast_mode_rewrite_mode.as_deref())
+            != after.and_then(|row| row.fast_mode_rewrite_mode.as_deref()),
+    );
+    push_if_changed(
+        &mut changed_fields,
+        "imageToolRewriteMode",
+        before.and_then(|row| row.image_tool_rewrite_mode.as_deref())
+            != after.and_then(|row| row.image_tool_rewrite_mode.as_deref()),
+    );
+    push_if_changed(
+        &mut changed_fields,
+        "availableModels",
+        before
+            .and_then(|row| row.available_models_json.as_deref())
+            .and_then(parse_available_models_json)
+            != after
+                .and_then(|row| row.available_models_json.as_deref())
+                .and_then(parse_available_models_json),
+    );
+
+    let before_proxy_keys = prompt_cache_conversation_bound_proxy_keys_from_row(before);
+    let after_proxy_keys = prompt_cache_conversation_bound_proxy_keys_from_row(after);
+    push_if_changed(
+        &mut changed_fields,
+        "forwardProxyKeys",
+        before_proxy_keys != after_proxy_keys,
+    );
+    if before.and_then(|row| row.forward_proxy_key.as_deref())
+        != after.and_then(|row| row.forward_proxy_key.as_deref())
+        && !changed_fields
+            .iter()
+            .any(|field| field == "forwardProxyKey")
+    {
+        changed_fields.push("forwardProxyKey".to_string());
+    }
+
+    changed_fields
+}
+
+fn prompt_cache_conversation_policy_info_types(changed_fields: &[String]) -> Vec<String> {
+    let mut info_types = Vec::new();
+    let has_routing = changed_fields.iter().any(|field| {
+        matches!(
+            field.as_str(),
+            "allowSwitchUpstream"
+                | "responsesFirstByteTimeoutSecs"
+                | "compactFirstByteTimeoutSecs"
+                | "imageFirstByteTimeoutSecs"
+                | "responsesStreamTimeoutSecs"
+                | "compactStreamTimeoutSecs"
+        )
+    });
+    if has_routing {
+        info_types.push(PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING.to_string());
+    }
+    let has_forward_proxy = changed_fields
+        .iter()
+        .any(|field| matches!(field.as_str(), "forwardProxyKey" | "forwardProxyKeys"));
+    if has_forward_proxy {
+        info_types.push(PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_FORWARD_PROXY.to_string());
+    }
+    let has_request_rewrite = changed_fields.iter().any(|field| {
+        matches!(
+            field.as_str(),
+            "fastModeRewriteMode" | "imageToolRewriteMode" | "availableModels"
+        )
+    });
+    if has_request_rewrite {
+        info_types.push(PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_REQUEST_REWRITE.to_string());
+    }
+    info_types
+}
+
+fn prompt_cache_conversation_operation_headline(action: &str) -> String {
+    match action {
+        "manualBindingUpdated" => "Manual binding updated",
+        "bindingCleared" => "Manual binding cleared",
+        "affinityReset" => "Conversation affinity reset",
+        "stickyTargetChanged" => "Sticky target changed",
+        "stickyTargetCleared" => "Sticky target cleared",
+        "groupBindingPromoted" => "Group binding promoted",
+        "conversationPolicyUpdated" => "Conversation policy updated",
+        _ => "Conversation operation updated",
+    }
+    .to_string()
+}
+
+fn parse_prompt_cache_conversation_operation_string_array_json(value: Option<&str>) -> Vec<String> {
+    value
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
+        .map(|values| {
+            values
+                .into_iter()
+                .map(|entry| entry.trim().to_string())
+                .filter(|entry| !entry.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn normalize_prompt_cache_conversation_operation_info_type(
+    raw: Option<&str>,
+) -> Result<Option<String>, ApiError> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    match raw {
+        PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING
+        | PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_FORWARD_PROXY
+        | PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_REQUEST_REWRITE => {
+            Ok(Some(raw.to_string()))
+        }
+        _ => Err(ApiError::bad_request(anyhow!(
+            "infoType must be one of: routing, forwardProxy, requestRewrite"
+        ))),
+    }
+}
+
+async fn append_prompt_cache_conversation_operation_event(
+    pool: &Pool<Sqlite>,
+    input: AppendPromptCacheConversationOperationEventInput,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_operation_events (
+            prompt_cache_key,
+            action,
+            origin,
+            info_types_json,
+            occurred_at,
+            headline,
+            changed_fields_json,
+            binding_before_json,
+            binding_after_json,
+            sticky_before_json,
+            sticky_after_json,
+            invoke_id
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        "#,
+    )
+    .bind(input.prompt_cache_key)
+    .bind(input.action)
+    .bind(input.origin)
+    .bind(serde_json::to_string(&input.info_types)?)
+    .bind(input.occurred_at)
+    .bind(input.headline)
+    .bind(
+        (!input.changed_fields.is_empty())
+            .then(|| serde_json::to_string(&input.changed_fields))
+            .transpose()?,
+    )
+    .bind(
+        input
+            .binding_before
+            .map(|value| serde_json::to_string(&value))
+            .transpose()?,
+    )
+    .bind(
+        input
+            .binding_after
+            .map(|value| serde_json::to_string(&value))
+            .transpose()?,
+    )
+    .bind(
+        input
+            .sticky_before
+            .map(|value| serde_json::to_string(&value))
+            .transpose()?,
+    )
+    .bind(
+        input
+            .sticky_after
+            .map(|value| serde_json::to_string(&value))
+            .transpose()?,
+    )
+    .bind(input.invoke_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+fn prompt_cache_conversation_operation_event_response_from_row(
+    row: PromptCacheConversationOperationEventRow,
+) -> PromptCacheConversationOperationEventResponse {
+    let deserialize_binding =
+        |raw: Option<String>| -> Option<PromptCacheConversationOperationBindingSnapshot> {
+            raw.and_then(|value| {
+                serde_json::from_str::<PromptCacheConversationOperationBindingSnapshot>(&value).ok()
+            })
+        };
+    let deserialize_sticky =
+        |raw: Option<String>| -> Option<PromptCacheConversationOperationStickySnapshot> {
+            raw.and_then(|value| {
+                serde_json::from_str::<PromptCacheConversationOperationStickySnapshot>(&value).ok()
+            })
+        };
+
+    PromptCacheConversationOperationEventResponse {
+        id: row.id,
+        prompt_cache_key: row.prompt_cache_key,
+        action: row.action,
+        origin: row.origin,
+        info_types: parse_prompt_cache_conversation_operation_string_array_json(Some(
+            row.info_types_json.as_str(),
+        )),
+        occurred_at: row.occurred_at,
+        headline: row.headline,
+        changed_fields: parse_prompt_cache_conversation_operation_string_array_json(
+            row.changed_fields_json.as_deref(),
+        ),
+        binding_before: deserialize_binding(row.binding_before_json),
+        binding_after: deserialize_binding(row.binding_after_json),
+        sticky_before: deserialize_sticky(row.sticky_before_json),
+        sticky_after: deserialize_sticky(row.sticky_after_json),
+        invoke_id: row.invoke_id,
+    }
 }
 
 pub(crate) async fn resolve_effective_forward_proxy_key_for_account(
@@ -1130,7 +1574,9 @@ pub(crate) async fn promote_prompt_cache_group_binding_to_upstream_account(
         return Ok(());
     }
 
-    sqlx::query(
+    let sticky_before =
+        load_prompt_cache_conversation_sticky_snapshot(pool, prompt_cache_key).await?;
+    let update_result = sqlx::query(
         r#"
         UPDATE prompt_cache_conversation_bindings
         SET binding_kind = ?2,
@@ -1149,9 +1595,64 @@ pub(crate) async fn promote_prompt_cache_group_binding_to_upstream_account(
     .bind(bound_group_name)
     .execute(pool)
     .await?;
+    if update_result.rows_affected() == 0 {
+        return Ok(());
+    }
 
     let now_iso = format_utc_iso(Utc::now());
     upsert_sticky_route(pool, prompt_cache_key, upstream_account_id, &now_iso).await?;
+    let promoted_binding =
+        load_prompt_cache_conversation_binding_row(pool, prompt_cache_key).await?;
+    let sticky_after =
+        load_prompt_cache_conversation_sticky_snapshot(pool, prompt_cache_key).await?;
+    append_prompt_cache_conversation_operation_event(
+        pool,
+        AppendPromptCacheConversationOperationEventInput {
+            prompt_cache_key: prompt_cache_key.to_string(),
+            action: "groupBindingPromoted".to_string(),
+            origin: PROMPT_CACHE_CONVERSATION_OPERATION_ORIGIN_SYSTEM_AUTO.to_string(),
+            info_types: vec![PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING.to_string()],
+            occurred_at: now_iso.clone(),
+            headline: prompt_cache_conversation_operation_headline("groupBindingPromoted"),
+            changed_fields: vec!["bindingKind".to_string()],
+            binding_before: Some(
+                prompt_cache_conversation_operation_binding_snapshot_from_row(Some(
+                    &current_binding,
+                )),
+            ),
+            binding_after: Some(
+                prompt_cache_conversation_operation_binding_snapshot_from_row(
+                    promoted_binding.as_ref(),
+                ),
+            ),
+            sticky_before: sticky_before.clone(),
+            sticky_after: sticky_after.clone(),
+            invoke_id: None,
+        },
+    )
+    .await?;
+    if sticky_before != sticky_after
+        && let Some(sticky_after) = sticky_after
+    {
+        append_prompt_cache_conversation_operation_event(
+            pool,
+            AppendPromptCacheConversationOperationEventInput {
+                prompt_cache_key: prompt_cache_key.to_string(),
+                action: "stickyTargetChanged".to_string(),
+                origin: PROMPT_CACHE_CONVERSATION_OPERATION_ORIGIN_SYSTEM_AUTO.to_string(),
+                info_types: vec![PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING.to_string()],
+                occurred_at: now_iso,
+                headline: prompt_cache_conversation_operation_headline("stickyTargetChanged"),
+                changed_fields: vec!["stickyTarget".to_string()],
+                binding_before: None,
+                binding_after: None,
+                sticky_before,
+                sticky_after: Some(sticky_after),
+                invoke_id: None,
+            },
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -1403,13 +1904,63 @@ async fn delete_prompt_cache_encrypted_session_owner(
 async fn clear_prompt_cache_conversation_affinity(
     state: &AppState,
     prompt_cache_key: &str,
+    origin: &str,
 ) -> Result<PromptCacheConversationBindingResponse, ApiError> {
+    let existing_row =
+        load_prompt_cache_conversation_binding_row(&state.pool, prompt_cache_key).await?;
+    let sticky_before =
+        load_prompt_cache_conversation_sticky_snapshot(&state.pool, prompt_cache_key).await?;
     sqlx::query("DELETE FROM prompt_cache_conversation_bindings WHERE prompt_cache_key = ?1")
         .bind(prompt_cache_key)
         .execute(&state.pool)
         .await?;
     delete_sticky_route(&state.pool, prompt_cache_key).await?;
     delete_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key).await?;
+    let now_iso = format_utc_iso(Utc::now());
+    append_prompt_cache_conversation_operation_event(
+        &state.pool,
+        AppendPromptCacheConversationOperationEventInput {
+            prompt_cache_key: prompt_cache_key.to_string(),
+            action: "affinityReset".to_string(),
+            origin: origin.to_string(),
+            info_types: vec![PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING.to_string()],
+            occurred_at: now_iso.clone(),
+            headline: prompt_cache_conversation_operation_headline("affinityReset"),
+            changed_fields: vec!["bindingKind".to_string()],
+            binding_before: Some(
+                prompt_cache_conversation_operation_binding_snapshot_from_row(
+                    existing_row.as_ref(),
+                ),
+            ),
+            binding_after: Some(
+                prompt_cache_conversation_operation_binding_snapshot_from_row(None),
+            ),
+            sticky_before: sticky_before.clone(),
+            sticky_after: None,
+            invoke_id: None,
+        },
+    )
+    .await?;
+    if sticky_before.is_some() {
+        append_prompt_cache_conversation_operation_event(
+            &state.pool,
+            AppendPromptCacheConversationOperationEventInput {
+                prompt_cache_key: prompt_cache_key.to_string(),
+                action: "stickyTargetCleared".to_string(),
+                origin: origin.to_string(),
+                info_types: vec![PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING.to_string()],
+                occurred_at: now_iso,
+                headline: prompt_cache_conversation_operation_headline("stickyTargetCleared"),
+                changed_fields: vec!["stickyTarget".to_string()],
+                binding_before: None,
+                binding_after: None,
+                sticky_before,
+                sticky_after: None,
+                invoke_id: None,
+            },
+        )
+        .await?;
+    }
     load_prompt_cache_conversation_binding_response_for_key(state, prompt_cache_key.to_string())
         .await
 }
@@ -1463,6 +2014,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
     state: &AppState,
     prompt_cache_key: &str,
     payload: UpdatePromptCacheConversationBindingRequest,
+    origin: &str,
 ) -> Result<PromptCacheConversationBindingResponse, ApiError> {
     let binding_kind = payload.binding_kind.trim();
     let group_name = payload
@@ -1528,6 +2080,8 @@ async fn save_prompt_cache_conversation_binding_for_key(
     };
     let existing_row =
         load_prompt_cache_conversation_binding_row(&state.pool, prompt_cache_key).await?;
+    let sticky_before =
+        load_prompt_cache_conversation_sticky_snapshot(&state.pool, prompt_cache_key).await?;
     let next_responses_first_byte_timeout_secs = next_optional_value(
         responses_first_byte_timeout_secs,
         existing_row
@@ -1820,6 +2374,89 @@ async fn save_prompt_cache_conversation_binding_for_key(
         }
     }
 
+    let next_row =
+        load_prompt_cache_conversation_binding_row(&state.pool, prompt_cache_key).await?;
+    let sticky_after =
+        load_prompt_cache_conversation_sticky_snapshot(&state.pool, prompt_cache_key).await?;
+    let occurred_at = format_utc_iso(Utc::now());
+    let binding_before =
+        prompt_cache_conversation_operation_binding_snapshot_from_row(existing_row.as_ref());
+    let binding_after =
+        prompt_cache_conversation_operation_binding_snapshot_from_row(next_row.as_ref());
+    if binding_before != binding_after {
+        let action = if binding_after.binding_kind == "none" {
+            "bindingCleared"
+        } else {
+            "manualBindingUpdated"
+        };
+        append_prompt_cache_conversation_operation_event(
+            &state.pool,
+            AppendPromptCacheConversationOperationEventInput {
+                prompt_cache_key: prompt_cache_key.to_string(),
+                action: action.to_string(),
+                origin: origin.to_string(),
+                info_types: vec![PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING.to_string()],
+                occurred_at: occurred_at.clone(),
+                headline: prompt_cache_conversation_operation_headline(action),
+                changed_fields: vec!["bindingKind".to_string()],
+                binding_before: Some(binding_before.clone()),
+                binding_after: Some(binding_after.clone()),
+                sticky_before: sticky_before.clone(),
+                sticky_after: sticky_after.clone(),
+                invoke_id: None,
+            },
+        )
+        .await?;
+    }
+
+    let policy_changed_fields =
+        prompt_cache_conversation_policy_changed_fields(existing_row.as_ref(), next_row.as_ref());
+    if !policy_changed_fields.is_empty() {
+        append_prompt_cache_conversation_operation_event(
+            &state.pool,
+            AppendPromptCacheConversationOperationEventInput {
+                prompt_cache_key: prompt_cache_key.to_string(),
+                action: "conversationPolicyUpdated".to_string(),
+                origin: origin.to_string(),
+                info_types: prompt_cache_conversation_policy_info_types(&policy_changed_fields),
+                occurred_at: occurred_at.clone(),
+                headline: prompt_cache_conversation_operation_headline("conversationPolicyUpdated"),
+                changed_fields: policy_changed_fields,
+                binding_before: Some(binding_before.clone()),
+                binding_after: Some(binding_after.clone()),
+                sticky_before: sticky_before.clone(),
+                sticky_after: sticky_after.clone(),
+                invoke_id: None,
+            },
+        )
+        .await?;
+    }
+
+    if sticky_before != sticky_after {
+        let (action, sticky_after_event) = match sticky_after.clone() {
+            Some(snapshot) => ("stickyTargetChanged", Some(snapshot)),
+            None => ("stickyTargetCleared", None),
+        };
+        append_prompt_cache_conversation_operation_event(
+            &state.pool,
+            AppendPromptCacheConversationOperationEventInput {
+                prompt_cache_key: prompt_cache_key.to_string(),
+                action: action.to_string(),
+                origin: origin.to_string(),
+                info_types: vec![PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING.to_string()],
+                occurred_at,
+                headline: prompt_cache_conversation_operation_headline(action),
+                changed_fields: vec!["stickyTarget".to_string()],
+                binding_before: None,
+                binding_after: None,
+                sticky_before,
+                sticky_after: sticky_after_event,
+                invoke_id: None,
+            },
+        )
+        .await?;
+    }
+
     load_prompt_cache_conversation_binding_response_for_key(state, prompt_cache_key.to_string())
         .await
 }
@@ -1842,9 +2479,136 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
 ) -> Result<Json<PromptCacheConversationBindingResponse>, ApiError> {
     let prompt_cache_key = normalize_prompt_cache_conversation_key(&encoded_prompt_cache_key)?;
     Ok(Json(
-        save_prompt_cache_conversation_binding_for_key(state.as_ref(), &prompt_cache_key, payload)
-            .await?,
+        save_prompt_cache_conversation_binding_for_key(
+            state.as_ref(),
+            &prompt_cache_key,
+            payload,
+            PROMPT_CACHE_CONVERSATION_OPERATION_ORIGIN_DETAIL_DRAWER,
+        )
+        .await?,
     ))
+}
+
+pub(crate) async fn list_prompt_cache_conversation_operation_events(
+    State(state): State<Arc<AppState>>,
+    AxumPath(encoded_prompt_cache_key): AxumPath<String>,
+    axum::extract::Query(query): axum::extract::Query<
+        ListPromptCacheConversationOperationEventsQuery,
+    >,
+) -> Result<Json<PromptCacheConversationOperationEventListResponse>, ApiError> {
+    let prompt_cache_key = normalize_prompt_cache_conversation_key(&encoded_prompt_cache_key)?;
+    let page = query.page.unwrap_or(1).max(1);
+    let page_size = query
+        .page_size
+        .unwrap_or(PROMPT_CACHE_CONVERSATION_OPERATION_EVENTS_DEFAULT_PAGE_SIZE)
+        .clamp(1, PROMPT_CACHE_CONVERSATION_OPERATION_EVENTS_MAX_PAGE_SIZE);
+    let info_type =
+        normalize_prompt_cache_conversation_operation_info_type(query.info_type.as_deref())?;
+    let offset = (page - 1) * page_size;
+
+    let total = if let Some(info_type) = info_type.as_deref() {
+        sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM prompt_cache_conversation_operation_events
+            WHERE prompt_cache_key = ?1
+              AND EXISTS (
+                SELECT 1
+                FROM json_each(prompt_cache_conversation_operation_events.info_types_json)
+                WHERE json_each.value = ?2
+              )
+            "#,
+        )
+        .bind(&prompt_cache_key)
+        .bind(info_type)
+        .fetch_one(&state.pool)
+        .await?
+    } else {
+        sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM prompt_cache_conversation_operation_events
+            WHERE prompt_cache_key = ?1
+            "#,
+        )
+        .bind(&prompt_cache_key)
+        .fetch_one(&state.pool)
+        .await?
+    };
+
+    let rows = if let Some(info_type) = info_type.as_deref() {
+        sqlx::query_as::<_, PromptCacheConversationOperationEventRow>(
+            r#"
+            SELECT
+                id,
+                prompt_cache_key,
+                action,
+                origin,
+                info_types_json,
+                occurred_at,
+                headline,
+                changed_fields_json,
+                binding_before_json,
+                binding_after_json,
+                sticky_before_json,
+                sticky_after_json,
+                invoke_id
+            FROM prompt_cache_conversation_operation_events
+            WHERE prompt_cache_key = ?1
+              AND EXISTS (
+                SELECT 1
+                FROM json_each(prompt_cache_conversation_operation_events.info_types_json)
+                WHERE json_each.value = ?2
+              )
+            ORDER BY occurred_at DESC, id DESC
+            LIMIT ?3 OFFSET ?4
+            "#,
+        )
+        .bind(&prompt_cache_key)
+        .bind(info_type)
+        .bind(page_size as i64)
+        .bind(offset as i64)
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, PromptCacheConversationOperationEventRow>(
+            r#"
+            SELECT
+                id,
+                prompt_cache_key,
+                action,
+                origin,
+                info_types_json,
+                occurred_at,
+                headline,
+                changed_fields_json,
+                binding_before_json,
+                binding_after_json,
+                sticky_before_json,
+                sticky_after_json,
+                invoke_id
+            FROM prompt_cache_conversation_operation_events
+            WHERE prompt_cache_key = ?1
+            ORDER BY occurred_at DESC, id DESC
+            LIMIT ?2 OFFSET ?3
+            "#,
+        )
+        .bind(&prompt_cache_key)
+        .bind(page_size as i64)
+        .bind(offset as i64)
+        .fetch_all(&state.pool)
+        .await?
+    };
+
+    Ok(Json(PromptCacheConversationOperationEventListResponse {
+        items: rows
+            .into_iter()
+            .map(prompt_cache_conversation_operation_event_response_from_row)
+            .collect(),
+        total,
+        page,
+        page_size,
+    }))
 }
 
 pub(crate) async fn post_bulk_prompt_cache_conversation_bindings(
@@ -1931,11 +2695,17 @@ pub(crate) async fn post_bulk_prompt_cache_conversation_bindings(
                         forward_proxy_key: PatchField::Missing,
                         forward_proxy_keys: PatchField::Missing,
                     },
+                    PROMPT_CACHE_CONVERSATION_OPERATION_ORIGIN_DASHBOARD_BULK,
                 )
                 .await
             }
             BulkPromptCacheConversationBindingsAction::ClearAndResetAffinity => {
-                clear_prompt_cache_conversation_affinity(state.as_ref(), &prompt_cache_key).await
+                clear_prompt_cache_conversation_affinity(
+                    state.as_ref(),
+                    &prompt_cache_key,
+                    PROMPT_CACHE_CONVERSATION_OPERATION_ORIGIN_DASHBOARD_BULK,
+                )
+                .await
             }
             BulkPromptCacheConversationBindingsAction::SetFastModeRewriteMode {
                 fast_mode_rewrite_mode,
@@ -1949,6 +2719,7 @@ pub(crate) async fn post_bulk_prompt_cache_conversation_bindings(
                     state.as_ref(),
                     &prompt_cache_key,
                     request,
+                    PROMPT_CACHE_CONVERSATION_OPERATION_ORIGIN_DASHBOARD_BULK,
                 )
                 .await
             }

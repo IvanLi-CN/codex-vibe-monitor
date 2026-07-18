@@ -498,6 +498,29 @@ async fn ensure_schema_migrates_pre_timeout_prompt_cache_binding_table() {
 }
 
 #[tokio::test]
+async fn ensure_schema_creates_prompt_cache_conversation_operation_events_table() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+
+    ensure_schema(&pool)
+        .await
+        .expect("schema should create prompt cache operation events table");
+
+    let columns = sqlx::query("PRAGMA table_info('prompt_cache_conversation_operation_events')")
+        .fetch_all(&pool)
+        .await
+        .expect("inspect prompt cache operation events columns")
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<Vec<_>>();
+    assert!(columns.iter().any(|column| column == "prompt_cache_key"));
+    assert!(columns.iter().any(|column| column == "info_types_json"));
+    assert!(columns.iter().any(|column| column == "binding_before_json"));
+    assert!(columns.iter().any(|column| column == "sticky_after_json"));
+}
+
+#[tokio::test]
 async fn list_invocations_projects_payload_context_fields() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -4354,6 +4377,24 @@ async fn prompt_cache_group_binding_promotes_to_account_after_encrypted_owner_lo
         }
         other => panic!("expected promoted account binding constraint, got {other:?}"),
     }
+
+    let Json(event_response) = list_prompt_cache_conversation_operation_events(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        axum::extract::Query(ListPromptCacheConversationOperationEventsQuery {
+            page: Some(1),
+            page_size: Some(20),
+            info_type: None,
+        }),
+    )
+    .await
+    .expect("list promotion operation events");
+    assert!(
+        event_response
+            .items
+            .iter()
+            .any(|event| event.action == "groupBindingPromoted" && event.origin == "systemAuto")
+    );
 }
 
 #[tokio::test]
@@ -4427,6 +4468,32 @@ async fn bulk_prompt_cache_conversation_bindings_bind_to_upstream_account_across
                 .await
                 .expect("bulk bind should align sticky route");
         assert_eq!(sticky_account_id, account_id);
+
+        let Json(event_response) = list_prompt_cache_conversation_operation_events(
+            State(state.clone()),
+            AxumPath(prompt_cache_key.to_string()),
+            axum::extract::Query(ListPromptCacheConversationOperationEventsQuery {
+                page: Some(1),
+                page_size: Some(20),
+                info_type: None,
+            }),
+        )
+        .await
+        .expect("list bulk bind operation events");
+        assert!(
+            event_response
+                .items
+                .iter()
+                .any(|event| event.action == "manualBindingUpdated"
+                    && event.origin == "dashboardBulk")
+        );
+        assert!(
+            event_response
+                .items
+                .iter()
+                .any(|event| event.action == "stickyTargetChanged"
+                    && event.origin == "dashboardBulk")
+        );
     }
 }
 
@@ -4537,6 +4604,30 @@ async fn bulk_prompt_cache_conversation_bindings_clear_and_reset_affinity_remove
     .expect("resolve routing constraint after bulk clear");
     assert!(effective_constraint.0.is_none());
     assert!(!effective_constraint.1);
+
+    let Json(event_response) = list_prompt_cache_conversation_operation_events(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        axum::extract::Query(ListPromptCacheConversationOperationEventsQuery {
+            page: Some(1),
+            page_size: Some(20),
+            info_type: None,
+        }),
+    )
+    .await
+    .expect("list bulk clear operation events");
+    assert!(
+        event_response
+            .items
+            .iter()
+            .any(|event| event.action == "affinityReset" && event.origin == "dashboardBulk")
+    );
+    assert!(
+        event_response
+            .items
+            .iter()
+            .any(|event| event.action == "stickyTargetCleared" && event.origin == "dashboardBulk")
+    );
 }
 
 #[tokio::test]
@@ -4646,6 +4737,162 @@ async fn bulk_prompt_cache_conversation_bindings_set_fast_mode_rewrite_mode_pres
     assert_eq!(
         account_row.fast_mode_rewrite_mode.as_deref(),
         Some("fill_missing")
+    );
+
+    let Json(none_events) = list_prompt_cache_conversation_operation_events(
+        State(state.clone()),
+        AxumPath(prompt_cache_key_none.to_string()),
+        axum::extract::Query(ListPromptCacheConversationOperationEventsQuery {
+            page: Some(1),
+            page_size: Some(20),
+            info_type: Some("requestRewrite".to_string()),
+        }),
+    )
+    .await
+    .expect("list none-key bulk fast mode events");
+    assert!(none_events.items.iter().any(
+        |event| event.action == "conversationPolicyUpdated" && event.origin == "dashboardBulk"
+    ));
+
+    let Json(account_events) = list_prompt_cache_conversation_operation_events(
+        State(state.clone()),
+        AxumPath(prompt_cache_key_account.to_string()),
+        axum::extract::Query(ListPromptCacheConversationOperationEventsQuery {
+            page: Some(1),
+            page_size: Some(20),
+            info_type: Some("requestRewrite".to_string()),
+        }),
+    )
+    .await
+    .expect("list account-key bulk fast mode events");
+    assert!(account_events.items.iter().any(
+        |event| event.action == "conversationPolicyUpdated" && event.origin == "dashboardBulk"
+    ));
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_operation_events_list_filters_by_info_type() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Operation Events",
+        "sk-prompt-cache-operation-events",
+        Some("prompt-cache-ops-group"),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "prompt-cache-operation-events-key";
+
+    let binding_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "upstreamAccount",
+            "upstreamAccountId": account_id,
+        }))
+        .expect("deserialize binding payload");
+    let _ = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(binding_payload),
+    )
+    .await
+    .expect("save manual binding for operation events");
+
+    let policy_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "upstreamAccount",
+            "upstreamAccountId": account_id,
+            "allowSwitchUpstream": false,
+            "fastModeRewriteMode": "fill_missing",
+            "forwardProxyKeys": ["__direct__"],
+        }))
+        .expect("deserialize policy payload");
+    let _ = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(policy_payload),
+    )
+    .await
+    .expect("save prompt cache policy update");
+
+    let Json(all_events) = list_prompt_cache_conversation_operation_events(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        axum::extract::Query(ListPromptCacheConversationOperationEventsQuery {
+            page: Some(1),
+            page_size: Some(20),
+            info_type: None,
+        }),
+    )
+    .await
+    .expect("list all prompt cache operation events");
+    assert!(all_events.total >= 3);
+    assert!(
+        all_events
+            .items
+            .iter()
+            .any(|event| event.action == "manualBindingUpdated")
+    );
+    let policy_event = all_events
+        .items
+        .iter()
+        .find(|event| event.action == "conversationPolicyUpdated")
+        .expect("policy event should be recorded");
+    assert_eq!(policy_event.origin, "detailDrawer");
+    assert!(
+        policy_event
+            .info_types
+            .iter()
+            .any(|value| value == "routing")
+    );
+    assert!(
+        policy_event
+            .info_types
+            .iter()
+            .any(|value| value == "forwardProxy")
+    );
+    assert!(
+        policy_event
+            .info_types
+            .iter()
+            .any(|value| value == "requestRewrite")
+    );
+
+    let Json(request_rewrite_events) = list_prompt_cache_conversation_operation_events(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        axum::extract::Query(ListPromptCacheConversationOperationEventsQuery {
+            page: Some(1),
+            page_size: Some(20),
+            info_type: Some("requestRewrite".to_string()),
+        }),
+    )
+    .await
+    .expect("filter prompt cache operation events by request rewrite");
+    assert_eq!(request_rewrite_events.total, 1);
+    assert_eq!(
+        request_rewrite_events.items[0].action,
+        "conversationPolicyUpdated"
+    );
+
+    let Json(forward_proxy_events) = list_prompt_cache_conversation_operation_events(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        axum::extract::Query(ListPromptCacheConversationOperationEventsQuery {
+            page: Some(1),
+            page_size: Some(20),
+            info_type: Some("forwardProxy".to_string()),
+        }),
+    )
+    .await
+    .expect("filter prompt cache operation events by forward proxy");
+    assert_eq!(forward_proxy_events.total, 1);
+    assert_eq!(
+        forward_proxy_events.items[0].action,
+        "conversationPolicyUpdated"
     );
 }
 

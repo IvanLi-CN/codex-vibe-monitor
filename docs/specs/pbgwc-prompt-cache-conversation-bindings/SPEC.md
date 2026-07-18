@@ -13,6 +13,7 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - Add per-conversation runtime policy overrides for upstream switching, FAST mode rewrite, image tool rewrite, available models, and a hard list of forward-proxy binding nodes.
 - Expose the binding on the Prompt Cache conversation detail drawer.
 - Add a Dashboard-scoped bulk workflow for route binding, affinity reset, and FAST mode rewrites across multiple Prompt Cache conversations.
+- Add a categorized operations record surface on the Prompt Cache conversation detail drawer so manual and automatic routing changes stay traceable per conversation.
 - Add conversation-card selection affordances on the Dashboard grid, including temporary modifier-key selection without entering persistent selection mode.
 - Apply the binding when the proxy can observe the same `promptCacheKey` before account-pool selection.
 - Keep group binding and upstream account binding mutually exclusive at both API and UI layers.
@@ -26,6 +27,7 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - Do not make tags participate in timeout inheritance or timeout source display.
 - Do not add arbitrary proxy URL input; conversation proxy override selects existing forward-proxy binding nodes, including direct.
 - Do not copy account-level `allowCutIn` semantics into the conversation layer.
+- Do not add a separate global operations page, actor-identity audit trail, or historical backfill for pre-existing bindings/sticky state.
 
 ## Requirements
 
@@ -56,6 +58,15 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - After a concrete FAST mode or image tool choice saves, its field editor remains expanded so the operator retains the editing context.
 - Conversation available-model override must contain at least one model. An empty list is rejected; clearing the override uses `null`.
 - Conversation proxy override stores one or more existing selectable forward-proxy binding keys. The list may include `__direct__`; it may not contain custom proxy URLs.
+- Prompt Cache conversation detail adds a sibling `操作记录` tab alongside `概览 / 调用 / 设置`.
+- The operations tab keeps one event stream and one lightweight filter row; it does not split into nested subtabs.
+- The filter options are `全部`, `路由相关`, `正向代理相关`, and `请求改写相关`.
+- Conversation operation records are append-only per `promptCacheKey`.
+- Each operation record includes `action`, `origin`, `infoTypes[]`, `occurredAt`, `headline`, `changedFields[]`, and optional `bindingBefore/After`, `stickyBefore/After`, and `invokeId`.
+- `origin` is normalized to `detailDrawer`, `dashboardBulk`, or `systemAuto`.
+- `infoTypes[]` may contain multiple entries so one policy PATCH can simultaneously describe routing, proxy, and request-rewrite changes.
+- Binding/sticky events remain split: if one action changes both the manual binding target and sticky target, the timeline records separate events.
+- Sticky keepalive renewals to the same target, no-diff PATCH requests, and pure reads do not emit operation records.
 - Runtime routing treats an observed binding as a hard constraint; if the bound target is unavailable, routing must fail through the existing no-selectable-account error path rather than falling back to the global pool.
 - Runtime routing treats an observed conversation proxy override as a hard bound forward-proxy scope. The current node remains sticky for the prompt cache key, and runtime switches within the explicit list only after the existing consecutive network-failure threshold. If every node in that list is unavailable, routing fails through the existing proxy/account readiness path rather than silently choosing another proxy or falling back to the account/group scope.
 - Binding lookup does not change the existing live-first request-body streaming strategy; large or chunked requests whose body key is not visible before account selection keep the normal account-pool routing behavior.
@@ -90,6 +101,22 @@ Rows with `binding_kind='group'` must have `group_name` and no `upstream_account
 
 The row is deleted only when there is no binding target, all four timeout override columns are `NULL`, and all runtime policy override columns are `NULL`.
 
+`prompt_cache_conversation_operation_events` stores append-only per-conversation operation records.
+
+- `id INTEGER PRIMARY KEY AUTOINCREMENT`
+- `prompt_cache_key TEXT NOT NULL`
+- `action TEXT NOT NULL`
+- `origin TEXT NOT NULL`
+- `info_types_json TEXT NOT NULL`
+- `occurred_at TEXT NOT NULL`
+- `headline TEXT NOT NULL`
+- `changed_fields_json TEXT NULL`
+- `binding_before_json TEXT NULL`
+- `binding_after_json TEXT NULL`
+- `sticky_before_json TEXT NULL`
+- `sticky_after_json TEXT NULL`
+- `invoke_id TEXT NULL`
+
 ### HTTP API
 
 - `GET /api/stats/prompt-cache-conversation-bindings/{encodedPromptCacheKey}`
@@ -109,6 +136,11 @@ The row is deleted only when there is no binding target, all four timeout overri
     - `{ "action": "setFastModeRewriteMode", "fastModeRewriteMode": "fill_missing" }`
   - `bind` rejects `bindingKind: "none"` and rejects invalid or missing targets before any per-key writes begin.
   - Returns `{ action, totalRequested, totalSucceeded, totalFailed, items }`, and each `items[]` entry includes `promptCacheKey`, `ok`, `error`, and the post-write binding snapshot when that key succeeds.
+- `GET /api/stats/prompt-cache-conversation-binding-events/{encodedPromptCacheKey}?page=1&pageSize=20&infoType=routing|forwardProxy|requestRewrite`
+  - Returns `{ items, total, page, pageSize }`.
+  - Each `items[]` entry includes `{ id, promptCacheKey, action, origin, infoTypes, occurredAt, headline, changedFields, bindingBefore, bindingAfter, stickyBefore, stickyAfter, invokeId }`.
+  - Results are ordered by `occurredAt DESC, id DESC`.
+  - `infoType` filters by any matching entry inside `infoTypes[]`.
 
 Timeout patch semantics are field-local:
 
@@ -149,6 +181,14 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Bulk bind reuses the single-key save path per selected `promptCacheKey`; successful upstream-account bulk binds also align each selected key's sticky route to the chosen account.
 - Bulk clear-and-reset affinity removes the manual binding row, sticky route, and encrypted owner lock for each selected key, so later routing starts from an unconstrained conversation state.
 - Bulk FAST mode writes only the conversation-level FAST rewrite field for each selected key and leaves the current manual binding target, or `bindingKind='none'`, intact.
+- Single-conversation detail PATCH writes `origin='detailDrawer'`.
+- Dashboard bulk bind, clear/reset affinity, and FAST mode writes `origin='dashboardBulk'`.
+- Automatic group-to-account promotion after routing success writes `origin='systemAuto'`.
+- `manualBindingUpdated`, `bindingCleared`, `affinityReset`, `stickyTargetChanged`, `stickyTargetCleared`, and `groupBindingPromoted` always carry `infoTypes=['routing']`.
+- `conversationPolicyUpdated` derives `infoTypes[]` from the actual changed fields:
+  - `allowSwitchUpstream` plus all timeout fields map to `routing`
+  - `forwardProxyKey` / `forwardProxyKeys` map to `forwardProxy`
+  - `fastModeRewriteMode`, `imageToolRewriteMode`, and `availableModels` map to `requestRewrite`
 - `binding_kind='none'` timeout-only rows do not count as manual binding overrides for sticky cut-out or encrypted-session owner guard logic.
 - Group binding remains a hard target filter; it does not bypass target cut-in policy or target account eligibility.
 - `binding_kind='group'` is a group-scoped operator constraint, not a hard binding to one concrete account. If the current sticky account accumulates the configured transport/decode-shaped stream-failure threshold, routing may reselect another eligible account inside the same group.
@@ -179,6 +219,16 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given the conversation detail drawer is open, the operator can see the current binding, change it, and clear it.
 - Given the conversation detail drawer is open, the operator can override or clear one timeout field without rewriting untouched timeout fields.
 - Given the conversation detail drawer is open on the Settings tab, the operator can see effective values plus source badges for 切出, FAST mode, image tool, available models, and one proxy node, then override or clear each field independently.
+- Given `?promptCacheConversationTab=operations`, both the overlay drawer and compact detail page open directly to the operations tab without breaking the existing `overview / calls / settings` deep links.
+- Given the operations tab is open, the default filter shows all operation records; selecting one category shows only events whose `infoTypes[]` contain that category.
+- Given a manual bind changes from `none/group/account` to another target, a `manualBindingUpdated` event is recorded; if sticky target also changes, a separate `stickyTargetChanged` event is recorded.
+- Given bulk `clearAndResetAffinity` succeeds, an `affinityReset` event is recorded with `origin='dashboardBulk'`; if the conversation had a sticky target, a separate `stickyTargetCleared` event is recorded.
+- Given only `forwardProxyKey(s)` change, one `conversationPolicyUpdated` event is recorded with `infoTypes=['forwardProxy']`.
+- Given only FAST mode, image tool, or available models change, one `conversationPolicyUpdated` event is recorded with `infoTypes=['requestRewrite']`.
+- Given one PATCH changes both proxy and rewrite fields, the same `conversationPolicyUpdated` event records multiple info-type badges.
+- Given only `allowSwitchUpstream` or timeout fields change, one `conversationPolicyUpdated` event is recorded with `infoTypes=['routing']`.
+- Given automatic group promotion succeeds, one `groupBindingPromoted` event is recorded with `origin='systemAuto'`; if sticky target also changes, a separate `stickyTargetChanged` event is recorded.
+- Given sticky keepalive refreshes the same target or a PATCH produces no actual state difference, the operations stream does not add noise events.
 - Given a conversation has thousands of retained records, opening the detail drawer loads only the first 50 records, keeps the binding controls interactive, and loads the next 50 records only after drawer scrolling reaches the load threshold.
 - Given the Dashboard conversations grid is not in persistent selection mode, when the operator `Cmd`/`Ctrl`-clicks a card, then only that card toggles selection and the header toggle remains in its default non-selection state.
 - Given Dashboard selection mode is on, when the operator clicks a card body or presses `Enter`/`Space` on it, then the card toggles selection instead of opening the conversation or invocation drawers.
@@ -253,3 +303,16 @@ The Storybook `DrawerBindingAndTimeouts` scenario now also renders the widened c
 ![Conversation settings multi proxy](./assets/conversation-settings-multi-proxy-story.png)
 
 The Storybook `DrawerBindingAndTimeouts` scenario also shows a multi-node conversation proxy list so the drawer contract remains reviewable alongside the Dashboard bulk-entry points.
+
+![Conversation operations tab with categorized filters](./assets/operations-tab-storybook.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: element
+- requested_viewport: desktop1280
+- viewport_strategy: storybook-viewport
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: `Monitoring/PromptCacheConversationTable/DrawerOperations`
+- state: operations tab open with the default `全部` filter and two categorized events visible
+- evidence_note: verifies the sibling `操作记录` tab, the lightweight `全部 / 路由相关 / 正向代理相关 / 请求改写相关` filter row, and mixed event badges showing `detailDrawer` plus `dashboardBulk` origins on the same drawer shell.

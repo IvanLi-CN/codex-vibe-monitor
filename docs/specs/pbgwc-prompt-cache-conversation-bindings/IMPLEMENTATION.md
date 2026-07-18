@@ -22,10 +22,12 @@
 - [x] Upstream account binding writes the corresponding sticky route immediately.
 - [x] Prompt Cache conversation detail drawer controls.
 - [x] Prompt Cache conversation detail drawer title and Settings tab policy controls with effective-value rows, source badges, and field-level edit/clear behavior.
+- [x] Prompt Cache conversation detail drawer sibling `操作记录` tab with categorized badges, lightweight filters, and paged per-conversation event loading.
 - [x] Prompt Cache conversation detail drawer reuses the account-detail wide shell width class and the shared effective-routing form skeleton, while hiding account-only routing rows on the conversation surface.
 - [x] FAST mode and image tool editors expose only concrete rewrite choices and remain expanded after a successful choice save.
 - [x] Prompt Cache conversation timeout editor with source badges, collapsed inherited rows, and field-level expand/clear behavior aligned with the effective routing rule card.
 - [x] Prompt Cache conversation history drawer loads retained invocation records in 50-row scroll pages instead of hydrating all pages on open.
+- [x] Append-only Prompt Cache conversation operation-event storage, list API, and event emission across detail drawer writes, Dashboard bulk actions, and system auto group promotions.
 - [x] `InvocationTable` virtualizes desktop table rows and mobile cards, mounting only the active breakpoint layout.
 - [x] Unit, integration, Storybook, and visual evidence coverage.
 
@@ -35,6 +37,13 @@
 - The bottom bulk action bar is viewport-anchored, theme-aligned, and clears only successful items after each action so failed items remain selected for retry.
 - The bulk route-bind dialog now uses compact dropdowns on a single row (`绑定到 / kind / target`) instead of the previous segmented switch, while destructive clear/reset remains a separate footer action.
 - `POST /api/stats/prompt-cache-conversation-bindings/bulk-actions` validates the shared action payload first, then executes each selected `promptCacheKey` through the same save/clear helpers as the single-conversation surface and returns a per-item binding snapshot for UI recovery.
+
+## Conversation Operations Update
+
+- `prompt_cache_conversation_operation_events` stores append-only detail events per `promptCacheKey`, including action, origin, categorized `infoTypes[]`, optional binding/sticky snapshots, and optional `invokeId`.
+- `GET /api/stats/prompt-cache-conversation-binding-events/{encodedPromptCacheKey}` returns paged newest-first records and supports one lightweight `infoType` filter (`routing`, `forwardProxy`, `requestRewrite`).
+- Detail-drawer PATCH writes emit `detailDrawer` records, Dashboard bulk workflows emit `dashboardBulk` records, and automatic group-to-account promotions emit `systemAuto` records.
+- Binding changes and sticky-target changes remain separate records; policy-field PATCHes stay collapsed into one `conversationPolicyUpdated` summary event whose categories derive from the actual changed fields.
 
 ## Multi-Proxy Binding Update
 
@@ -78,8 +87,12 @@
 - `cd web && bunx vitest run src/lib/api.test.ts src/features/prompt-cache/PromptCacheConversationTable.test.tsx`
 - `cd web && bun run test -- --run PromptCacheConversationTable.test.tsx api.test.ts`
 - `cd web && bun run test -- DashboardWorkingConversationsSection.test.tsx`
+- `cargo test ensure_schema_creates_prompt_cache_conversation_operation_events_table -- --nocapture`
+- `cargo test prompt_cache_conversation_operation_events_list_filters_by_info_type -- --nocapture`
+- `cargo test bulk_prompt_cache_conversation_bindings_set_fast_mode_rewrite_mode_preserves_binding_kind -- --nocapture`
 - `cd web && npm test -- --run PromptCacheConversationTable.test.tsx`
 - `cd web && bun run build`
+- `cd web && bun run build-storybook`
 - `cd web && npm run build`
 - `cd web && bun run test-storybook -- --run PromptCacheConversationTable.stories.tsx DashboardWorkingConversationsSection.stories.tsx`
 - `cd web && bunx vitest run src/features/invocations/InvocationTable.test.tsx src/features/prompt-cache/PromptCacheConversationTable.test.tsx`
@@ -90,6 +103,8 @@
 - Storybook `DrawerBindingAndTimeouts` mock evidence: one drawer shows the “对话详情” title, conversation-level policy override rows with source badges, binding controls, and the timeout subpanel in the Settings tab.
 - Storybook `DrawerBindingAndTimeouts` mock evidence now also shows a multi-node conversation proxy list and the visual evidence at `./assets/conversation-settings-multi-proxy-story.png`.
 - Storybook `DrawerBindingAndTimeouts` mock evidence now also captures the widened detail drawer and account-style conversation routing form at `./assets/conversation-settings-wide-drawer-story.png`, including hidden account-only rows, expanded conversation-owned policy/timeouts, and the separate route-binding block.
+- Storybook `DrawerOperations` mock evidence shows the categorized operations tab with routing / forward-proxy / request-rewrite badges plus lightweight filter buttons on the same drawer shell.
+- Storybook `build-storybook` now succeeds after the Storybook-local Vite plugin merge deduplicates repeated React plugins, so the `DrawerOperations` evidence path remains usable for future UI reviews.
 
 ## 101 Read-only Follow-up
 

@@ -7,6 +7,7 @@ import type {
   ApiInvocation,
   PromptCacheConversationBindingResponse,
   PromptCacheConversationInvocationPreview,
+  PromptCacheConversationOperationEvent,
   PromptCacheConversationsResponse,
   UpstreamAccountDetail,
   UpstreamAccountSummary,
@@ -383,6 +384,57 @@ const bindingByPromptCacheKey = new Map<string, PromptCacheConversationBindingRe
     }),
   ],
 ] as const);
+
+const operationEventsByPromptCacheKey = new Map<string, PromptCacheConversationOperationEvent[]>([
+  [
+    CONVERSATION_SHORT_KEY,
+    [
+      {
+        id: 301,
+        promptCacheKey: CONVERSATION_SHORT_KEY,
+        action: "manualBindingUpdated",
+        origin: "detailDrawer",
+        infoTypes: ["routing"],
+        occurredAt: "2026-05-13T23:45:00.000Z",
+        headline: "Manual binding updated",
+        changedFields: ["bindingKind"],
+        bindingBefore: {
+          bindingKind: "none",
+          groupName: null,
+          upstreamAccountId: null,
+          upstreamAccountName: null,
+        },
+        bindingAfter: {
+          bindingKind: "upstreamAccount",
+          groupName: null,
+          upstreamAccountId: 21,
+          upstreamAccountName: "growth.6vv4@relay.example",
+        },
+        stickyBefore: null,
+        stickyAfter: {
+          upstreamAccountId: 21,
+          upstreamAccountName: "growth.6vv4@relay.example",
+        },
+        invokeId: "inv-story-301",
+      },
+      {
+        id: 300,
+        promptCacheKey: CONVERSATION_SHORT_KEY,
+        action: "conversationPolicyUpdated",
+        origin: "dashboardBulk",
+        infoTypes: ["forwardProxy", "requestRewrite"],
+        occurredAt: "2026-05-13T23:43:00.000Z",
+        headline: "Conversation policy updated",
+        changedFields: ["forwardProxyKeys", "fastModeRewriteMode"],
+        bindingBefore: null,
+        bindingAfter: null,
+        stickyBefore: null,
+        stickyAfter: null,
+        invokeId: null,
+      },
+    ],
+  ],
+]);
 
 function buildInvocationRecord(
   overrides: Partial<ApiInvocation> & {
@@ -909,6 +961,26 @@ function StorybookPromptCacheAccountMock({ children }: { children: ReactNode }) 
       const inputUrl =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       const parsedUrl = new URL(inputUrl, window.location.origin);
+      const operationMatch = parsedUrl.pathname.match(
+        /^\/api\/stats\/prompt-cache-conversation-binding-events\/(.+)$/,
+      );
+      if (operationMatch && method === "GET") {
+        const promptCacheKey = decodeURIComponent(operationMatch[1] ?? "");
+        const infoType = parsedUrl.searchParams.get("infoType");
+        const page = Number(parsedUrl.searchParams.get("page") ?? "1");
+        const pageSize = Number(parsedUrl.searchParams.get("pageSize") ?? "20");
+        const allItems = operationEventsByPromptCacheKey.get(promptCacheKey) ?? [];
+        const filteredItems = infoType
+          ? allItems.filter((item) => item.infoTypes.includes(infoType as never))
+          : allItems;
+        const start = Math.max(0, (page - 1) * pageSize);
+        return jsonResponse({
+          items: filteredItems.slice(start, start + pageSize),
+          total: filteredItems.length,
+          page,
+          pageSize,
+        });
+      }
       const bindingMatch = parsedUrl.pathname.match(
         /^\/api\/stats\/prompt-cache-conversation-bindings\/(.+)$/,
       );
@@ -2156,6 +2228,54 @@ export const DrawerBindingAndTimeouts: Story = {
         name: /清除对话覆盖: 图片工具|Clear conversation override: Image tool/i,
       }),
     ).toBeInTheDocument();
+  },
+};
+
+export const DrawerOperations: Story = {
+  tags: ["test"],
+  args: {
+    stats: shortSameDayStats,
+    isLoading: false,
+    error: null,
+  },
+  globals: {
+    themeMode: "light",
+    viewport: { value: "desktop1280", isRotated: false },
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Prompt Cache drawer showing the new operations tab with lightweight routing/proxy/rewrite filters and categorized event badges.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body);
+    const historyButton = documentScope.getAllByRole("button", {
+      name: /打开全部调用记录|open full call history/i,
+    })[0];
+
+    await userEvent.click(historyButton);
+    await userEvent.click(await documentScope.findByRole("tab", { name: /操作记录|Operations/i }));
+    await expect(
+      await documentScope.findByText(
+        /查看当前对话的路由、正向代理与请求改写变更记录。|Review routing, forward-proxy, and request-rewrite changes for this conversation\./i,
+      ),
+    ).toBeInTheDocument();
+    await expect(documentScope.getAllByText(/路由相关|Routing/i).length).toBeGreaterThan(0);
+    await expect(documentScope.getAllByText(/正向代理相关|Forward proxy/i).length).toBeGreaterThan(
+      0,
+    );
+    await expect(
+      documentScope.getByText(
+        /绑定目标：无手工绑定 -> 账号|Binding: No manual binding -> Account/i,
+      ),
+    ).toBeInTheDocument();
+    await userEvent.click(documentScope.getByRole("button", { name: /路由相关|Routing/i }));
+    await waitFor(() => {
+      expect(documentScope.queryByText(/策略更新|Policy updated/i)).not.toBeInTheDocument();
+    });
   },
 };
 

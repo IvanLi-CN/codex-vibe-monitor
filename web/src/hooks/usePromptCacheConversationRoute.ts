@@ -6,11 +6,12 @@ const PROMPT_CACHE_CONVERSATION_TAB_PARAM = "promptCacheConversationTab";
 const UPSTREAM_ACCOUNT_ID_PARAM = "upstreamAccountId";
 const UPSTREAM_ACCOUNT_TAB_PARAM = "upstreamAccountTab";
 
-export type PromptCacheConversationRouteTab = "overview" | "calls" | "settings";
+export type PromptCacheConversationRouteTab = "overview" | "calls" | "settings" | "operations";
 
 function parsePromptCacheConversationTab(raw: string | null): PromptCacheConversationRouteTab {
   if (raw === "calls") return "calls";
   if (raw === "settings") return "settings";
+  if (raw === "operations") return "operations";
   return "overview";
 }
 
