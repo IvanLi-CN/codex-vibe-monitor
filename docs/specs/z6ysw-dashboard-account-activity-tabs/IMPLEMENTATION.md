@@ -67,6 +67,8 @@
 - 已实现：账号活动快照的终态 live 数据改为账号级窄聚合与按模型用量分组，避免为整个 range 传输完整 invocation preview 行；运行态 runtime overlay、归档折叠、四个时间范围和公开响应字段保持原有语义。
 - 已实现：账号卡 recent 调用改为每个候选账号按时间倒序的受限读取，数量仍严格受请求 `recentLimit` 限制。
 - 已实现：账号卡 recent 调用在 SQLite batch flush 前也会读取同一 runtime store；同键 runtime 行覆盖非终态 DB shell，短暂 terminal overlay 立即可见，落库后不会形成重复行。
+- 已实现：non-`yesterday` 的 `dashboard-activity` 基础快照缓存已收敛为“请求参数 + 2 秒 bucket”选择键，不再把 live runtime 状态或最新持久化行 ID 放进 cache key；fresh live overlay 与 `live_revision` 继续在响应阶段叠加，保证 owner-facing 实时语义不变。
+- 已实现：`/api/stats/upstream-account-activity` 改走独立账户活动 builder，不再借道 dashboard full snapshot 的 summary/model-performance 组装；后端新增 `route / builder / preview_read_mode / candidate_preview_id_count / hydrated_preview_row_count / cache_bypass_reason` 结构化 telemetry，用于复盘读侧放大与 DB 压力重合。
 
 ## Remaining Gaps
 

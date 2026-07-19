@@ -4,6 +4,7 @@
 
 ## Decision Trace
 
+- 2026-07-19：101 线上 12 小时复盘确认 `dashboard-activity full` 慢点仍主要来自读侧合并不足，而不是内存瓶颈。已冻结两条后续约束：一，non-`yesterday` 基础快照缓存只允许按稳定请求参数 + 短 TTL 合并，不能再把 live runtime 状态或最新持久化行 ID 放进选择键；二，`/api/stats/upstream-account-activity` 不得继续借道 dashboard full snapshot，必须走独立账户活动 builder，并补足 route/builder/preview hydration telemetry 便于下一轮定位残余慢点。
 - 2026-07-18：收紧上游账号卡宽屏 `split` header 的 `TPM` 横向预算。此前长 `TPM` 会按完整数字位数直接撑宽右上实时指标区；本轮固定仅 `TPM` 值本体约 `6ch` 宽度预算，超预算后继续复用既有 adaptive compact 缩写链路，`进行中调用 / 消费速率` 与窄卡 `stacked` 路径不变。
 - 2026-07-16：Dashboard 工作区与顶部当前态正式并入主应用统一 topic SSE 总线。此前 `dashboardActivityLive + HTTP reconcile/open-resync` 的双轨合同在这里退场，取而代之的是 `dashboard.activity.current` 的 authoritative `snapshot/replay/live`；账号视图、顶部 KPI 与恢复语义统一由 topic cursor / schemaEpoch 驱动。
 
