@@ -10,3 +10,6 @@
 - 工作区标题区的总速率胶囊保留，但直接读取全局 `networkLiveBucket`；账号卡中的上传/下载速率删除，避免让 owner 把账号卡局部速率误读成系统总量。
 - 顶部网速图的 steady-state 更新继续保持“首次 hydrate + `dashboardActivityLive` SSE 推送当前桶”，只在桶切换 / SSE 重连时静默回补。
 - 2026-07-18 上线后发现一个 page-shell 漏接线问题：`DashboardWorkingConversationsSection` 已改读 `networkLiveBucket`，但 `Dashboard.tsx` 没把该字段继续下传，导致线上工作区总速率胶囊长期显示 `0 B/s`。修复后补充页面级回归测试与整页 Storybook bootstrap，防止“接口有值、页面为零”的回归再次漏过。
+- 2026-07-19 在 Docker 部署诊断中确认：HTTP 近似真值仍会让 OAuth HTTP 与 WebSocket 的 live 网速出现漏记或 `0 B/s` 假零值，因此事实源切换为连接级真实 socket 字节。
+- 真实网速实现保留 host + account 归因，但 Dashboard 展示仍只暴露全局总量与账号 scoped 视图；不新增 host UI。
+- 为避免 timeout / cancel 导致已发生的真实流量被吞掉，HTTP counted transport 与 WebSocket flush task 都补了 drop-time final flush。

@@ -5,21 +5,23 @@
 - 新增 `src/dashboard_network_speed.rs`，集中维护：
   - global、host、account 三维最近 15 秒秒桶滚动窗口。
   - 当前开放 5 分钟桶的上传/下载累计。
-  - invocation 级 request/response 字节追踪、终态清理与 Dashboard live stream 心跳预算。
+  - invocation 级连接字节追踪、终态清理与 Dashboard live stream 心跳预算。
 - 代理热路径在以下时机写入缓存：
-  - 请求体大小确定后记录上传字节，并同时写入 global、host、account 三个维度。
-  - 每次转发响应 chunk 时记录下载字节，并同时写入 global、host、account 三个维度。
-  - invocation 终态清理时回收 runtime 跟踪状态，避免重复计数。
+  - 上游 HTTP / WebSocket socket 实际写入时记录上传字节，并同时写入 global、host、account 三个维度。
+  - 上游 HTTP / WebSocket socket 实际读取时记录下载字节，并同时写入 global、host、account 三个维度。
+  - transport future 终态或 drop 时做最终 flush，避免 timeout / early close 吃掉最后一段真实字节。
 - pool attempt 持久化新增 `upstream_base_url_host`；direct 路径继续从 invocation payload 中读取 `upstreamBaseUrlHost`。
-- 新增 `upstream_host_network_minute`，按 `(bucket_start_epoch, source, upstream_base_url_host)` 持久化 host 维度分钟累计。
-- host minute materializer 复用现有 live replay 框架，但首次只把 cursor seed 到当前 live table 尾部，不做历史回填。
+- 新增 `upstream_socket_network_minute`，按 `(bucket_start_epoch, source, upstream_base_url_host, upstream_account_id)` 持久化真实 socket 分钟累计。
+- socket minute materializer 复用现有 live replay 框架，但首次只把 cursor seed 到当前 live table 尾部，不做历史回填。
 - `AppState` 新增 `process_started_at_utc` 与 `dashboard_network_speed_cache`，runtime 初始化时统一挂载。
 - `GET /api/stats/dashboard-activity` / `dashboardActivityLive` 在兼容保留账号级速率字段的同时，新增全局 `networkLiveBucket`。
 - 新增 `GET /api/stats/dashboard-network-timeseries`：
   - 只接受 `today | yesterday | 1d`。
   - 固定返回 5 分钟桶。
-  - 无 scope 时闭合桶从 `upstream_host_network_minute` 聚合，当前开放桶读全局 live bucket。
-  - `upstreamAccountId` 存在时保留既有账号 scoped 查询路径。
+  - 无 scope 时闭合桶从 `upstream_socket_network_minute` 聚合，当前开放桶读全局 live bucket。
+  - `upstreamAccountId` 存在时同样改读 `upstream_socket_network_minute` 的账号 scoped 聚合。
+- `src/oauth_bridge.rs` 新增 counted OAuth transport path，避免 OAuth HTTP 请求继续走 reqwest body 近似值。
+- `src/proxy/upstream_transport.rs` 提供 counted HTTP transport，`src/proxy/websocket.rs` 复用同一套 meter / reporter，统一 direct、pool、OAuth 与 WebSocket 的真实网速事实源。
 
 ## 前端
 
@@ -48,7 +50,8 @@
   - 对话工作区右上总网速与账号卡速率删除断言。
 - 后端定向单测覆盖：
   - global/host/account runtime bucket 记账。
-  - host minute rollup 的 direct 写入、cursor seed 与 pool retry host split。
-  - Dashboard 无 scope timeseries 改读 host minute 5 分钟聚合。
+  - socket minute rollup 的 direct 写入、cursor seed 与 pool retry host split。
+  - Dashboard 无 scope timeseries 改读 socket minute 5 分钟聚合。
+  - counted HTTP、OAuth timeout / retry、WebSocket usage 持久化的真实字节计数。
 - `DashboardPage.stories.tsx` 新增页面级 SSE / HTTP bootstrap，确保整页证据能同时覆盖活动总览网速图和上游账号顶部总速率胶囊，不再依赖缺失首帧 snapshot 的假空态。
 - Storybook 继续使用 `DashboardNetworkActivityChart` 与 `UpstreamAccountTab` 场景验证图表背景与账号 tab 顶部总速率展示，并补充整页 `UnifiedActivitySnapshot` 证据验证 page-shell 接线。

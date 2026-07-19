@@ -28,6 +28,7 @@ mod request_entry;
 )]
 mod route_selection;
 mod stream_gate;
+mod upstream_transport;
 #[expect(
     clippy::too_many_arguments,
     reason = "Usage persistence adapters preserve established database call contracts."
@@ -46,5 +47,6 @@ pub(crate) use raw_capture::*;
 pub(crate) use request_entry::*;
 pub(crate) use route_selection::*;
 pub(crate) use stream_gate::*;
+pub(crate) use upstream_transport::*;
 pub(crate) use usage_persistence::*;
 pub(crate) use websocket::*;

@@ -1355,9 +1355,14 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
             let attempted_requested_image_intent = prepared_request_body.requested_image_intent;
             let attempted_request_body_for_capture =
                 prepared_request_body.request_body_for_capture.clone();
-            let (response, oauth_responses_debug, forward_proxy_selection) = match &account.auth {
+            let (
+                response,
+                oauth_responses_debug,
+                forward_proxy_selection,
+                transport_bytes_live_counted,
+            ) = match &account.auth {
                 PoolResolvedAuth::ApiKey { authorization } => {
-                    let (forward_proxy_scope, selected_proxy, client) =
+                    let (forward_proxy_scope, selected_proxy, _client) =
                         match select_pool_account_forward_proxy_client(state.as_ref(), &account)
                             .await
                         {
@@ -1434,12 +1439,6 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             request_body_for_capture: attempted_request_body_for_capture.clone(),
                         }
                     })?;
-                    let mut request = client.request(
-                        method.clone(),
-                        api_key_target_url
-                            .clone()
-                            .expect("api key pool route should always have an upstream url"),
-                    );
                     let forwarded_content_length = headers
                         .get(header::CONTENT_LENGTH)
                         .and_then(|value| value.to_str().ok())
@@ -1463,24 +1462,20 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             continue;
                         }
                         if should_forward_proxy_header(name, &request_connection_scoped) {
-                            request = request.header(name, value);
                             outbound_headers.append(name.clone(), value.clone());
                         }
                     }
-                    request = request.header(header::AUTHORIZATION, authorization.clone());
                     if let Ok(value) = HeaderValue::from_str(authorization) {
                         outbound_headers.insert(header::AUTHORIZATION, value);
                     }
-                    if let Some(content_length) = outbound_content_length {
-                        request = request.header(header::CONTENT_LENGTH, content_length);
-                        if let Ok(value) = HeaderValue::from_str(&content_length.to_string()) {
-                            outbound_headers.insert(header::CONTENT_LENGTH, value);
-                        }
+                    if let Some(content_length) = outbound_content_length
+                        && let Ok(value) = HeaderValue::from_str(&content_length.to_string())
+                    {
+                        outbound_headers.insert(header::CONTENT_LENGTH, value);
                     }
                     if let Some(content_encoding) =
                         outbound_request_body.content_encoding.header_value()
                     {
-                        request = request.header(header::CONTENT_ENCODING, content_encoding);
                         outbound_headers.insert(
                             header::CONTENT_ENCODING,
                             HeaderValue::from_static(content_encoding),
@@ -1488,7 +1483,6 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     }
                     let request_header_bytes_approx =
                         http_visible_header_bytes_approx(&outbound_headers);
-                    request = request.body(outbound_request_body.body);
                     record_account_selected(state.as_ref(), account.account_id).await;
                     let group_name_snapshot =
                         normalize_pool_attempt_group_name(account.group_name.clone());
@@ -1599,7 +1593,30 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         outbound_content_length,
                         "pool upstream attempt started"
                     );
-                    match timeout(attempt_send_timeout, request.send()).await {
+                    let live_reporter = trace_context.as_ref().map(|trace| {
+                        UpstreamTrafficReporter::new(
+                            state.clone(),
+                            trace.invoke_id.as_str(),
+                            trace.occurred_at.as_str(),
+                            Some(account.account_id),
+                            account.upstream_base_url.host_str(),
+                        )
+                    });
+                    match timeout(
+                        attempt_send_timeout,
+                        send_counted_upstream_http_request(
+                            method.clone(),
+                            api_key_target_url
+                                .as_ref()
+                                .expect("api key pool route should always have an upstream url"),
+                            &outbound_headers,
+                            outbound_request_body.body,
+                            selected_proxy.endpoint_url.as_ref(),
+                            live_reporter,
+                        ),
+                    )
+                    .await
+                    {
                         Ok(Ok(response)) => {
                             let request_logical_body_bytes = outbound_request_body
                                 .byte_observation
@@ -1610,7 +1627,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 .transmitted_body_bytes
                                 .load();
                             let response_header_bytes_approx =
-                                http_visible_header_bytes_approx(response.headers());
+                                http_visible_header_bytes_approx(response.response.headers());
                             if let Some(pending_attempt_record) = pending_attempt_record.as_mut() {
                                 update_pending_pool_upstream_request_attempt_http_bytes(
                                     pending_attempt_record,
@@ -1621,32 +1638,11 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     Some(response_header_bytes_approx),
                                 );
                             }
-                            if let Some(trace) = trace_context.as_ref() {
-                                state.dashboard_network_speed_cache.record_request_bytes(
-                                    &trace.invoke_id,
-                                    &trace.occurred_at,
-                                    Some(account.account_id),
-                                    account.upstream_base_url.host_str(),
-                                    request_header_bytes_approx
-                                        .saturating_add(request_transmitted_body_bytes),
-                                    Utc::now(),
-                                );
-                                state
-                                    .dashboard_network_speed_cache
-                                    .record_response_chunk_bytes(
-                                        &trace.invoke_id,
-                                        &trace.occurred_at,
-                                        Some(account.account_id),
-                                        account.upstream_base_url.host_str(),
-                                        response_header_bytes_approx,
-                                        Utc::now(),
-                                    );
-                                schedule_dashboard_activity_live_snapshot(state.as_ref());
-                            }
                             (
-                                ProxyUpstreamResponseBody::Reqwest(response),
+                                ProxyUpstreamResponseBody::Axum(response.response),
                                 None,
                                 Some((forward_proxy_scope, selected_proxy)),
+                                true,
                             )
                         }
                         Ok(Err(err)) => {
@@ -1667,18 +1663,6 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     None,
                                     None,
                                 );
-                            }
-                            if let Some(trace) = trace_context.as_ref() {
-                                state.dashboard_network_speed_cache.record_request_bytes(
-                                    &trace.invoke_id,
-                                    &trace.occurred_at,
-                                    Some(account.account_id),
-                                    account.upstream_base_url.host_str(),
-                                    request_header_bytes_approx
-                                        .saturating_add(request_transmitted_body_bytes),
-                                    Utc::now(),
-                                );
-                                schedule_dashboard_activity_live_snapshot(state.as_ref());
                             }
                             record_pool_account_forward_proxy_result(
                                 state.as_ref(),
@@ -1704,7 +1688,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 outbound_content_length,
                                 forwarded_content_length = forwarded_content_length.as_deref(),
                                 preserved_content_length = preserve_content_length,
-                                error = %err,
+                                error = %err.message,
                                 "pool upstream request send failed before response"
                             );
                             let direct_image_handshake_timeout =
@@ -1875,18 +1859,6 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     None,
                                     None,
                                 );
-                            }
-                            if let Some(trace) = trace_context.as_ref() {
-                                state.dashboard_network_speed_cache.record_request_bytes(
-                                    &trace.invoke_id,
-                                    &trace.occurred_at,
-                                    Some(account.account_id),
-                                    account.upstream_base_url.host_str(),
-                                    request_header_bytes_approx
-                                        .saturating_add(request_transmitted_body_bytes),
-                                    Utc::now(),
-                                );
-                                schedule_dashboard_activity_live_snapshot(state.as_ref());
                             }
                             record_pool_account_forward_proxy_result(
                                 state.as_ref(),
@@ -2116,7 +2088,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     access_token,
                     chatgpt_account_id,
                 } => {
-                    let (forward_proxy_scope, selected_proxy, client) =
+                    let (forward_proxy_scope, selected_proxy, _client) =
                         match select_pool_account_forward_proxy_client(state.as_ref(), &account)
                             .await
                         {
@@ -2171,7 +2143,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         | PoolReplayBodySnapshot::Memory(_))
                             if original_uri.path() == "/v1/responses" =>
                         {
-                            oauth_bridge::OauthUpstreamRequestBody::Bytes(
+                            oauth_bridge::CountedOauthUpstreamRequestBody::Bytes(
                                 snapshot.to_bytes().await.map_err(|err| PoolUpstreamError {
                                     account: Some(account.clone()),
                                     status: StatusCode::BAD_GATEWAY,
@@ -2208,7 +2180,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                         encodings.iter().all(|encoding| encoding == "identity")
                                     }) =>
                         {
-                            oauth_bridge::OauthUpstreamRequestBody::Bytes(
+                            oauth_bridge::CountedOauthUpstreamRequestBody::Bytes(
                                 snapshot.to_bytes().await.map_err(|err| PoolUpstreamError {
                                     account: Some(account.clone()),
                                     status: StatusCode::BAD_GATEWAY,
@@ -2234,7 +2206,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 })?,
                             )
                         }
-                        snapshot => oauth_bridge::OauthUpstreamRequestBody::Stream {
+                        snapshot => oauth_bridge::CountedOauthUpstreamRequestBody::Stream {
                             debug_body_prefix: Some(
                                 snapshot
                                     .to_prefix_bytes(
@@ -2284,7 +2256,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             } else {
                                 None
                             },
-                            body: snapshot.to_reqwest_body(),
+                            body: snapshot.to_http_body(),
                         },
                     };
                     attempt_count += 1;
@@ -2362,8 +2334,16 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         );
                     }
                     {
-                        let oauth_response = oauth_bridge::send_oauth_upstream_request(
-                            &client,
+                        let live_reporter = trace_context.as_ref().map(|trace| {
+                            UpstreamTrafficReporter::new(
+                                state.clone(),
+                                trace.invoke_id.as_str(),
+                                trace.occurred_at.as_str(),
+                                Some(account.account_id),
+                                account.upstream_base_url.host_str(),
+                            )
+                        });
+                        let oauth_response = oauth_bridge::send_counted_oauth_upstream_request(
                             method.clone(),
                             original_uri,
                             headers,
@@ -2375,12 +2355,15 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             chatgpt_account_id.as_deref(),
                             Some(&state.oauth_installation_seed),
                             state.upstream_accounts.crypto_key.as_ref(),
+                            selected_proxy.endpoint_url.as_ref(),
+                            live_reporter,
                         )
                         .await;
                         (
                             ProxyUpstreamResponseBody::Axum(oauth_response.response),
                             oauth_response.request_debug,
                             Some((forward_proxy_scope, selected_proxy)),
+                            true,
                         )
                     }
                 }
@@ -2681,6 +2664,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     return Ok(PoolUpstreamResponse {
                         account: account.clone(),
                         response: ProxyUpstreamResponseBody::Axum(response),
+                        transport_bytes_live_counted,
                         stream_timeout,
                         oauth_responses_debug,
                         connect_latency_ms,
@@ -3489,6 +3473,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
             return Ok(PoolUpstreamResponse {
                 account: account.clone(),
                 response,
+                transport_bytes_live_counted,
                 stream_timeout,
                 oauth_responses_debug,
                 connect_latency_ms,

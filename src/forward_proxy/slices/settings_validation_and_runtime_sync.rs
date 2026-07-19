@@ -538,6 +538,7 @@ pub(crate) async fn fetch_upstream_models_payload(
         target_url,
         headers,
         None,
+        None,
         handshake_timeout,
         None,
         upstream_429_max_retries,

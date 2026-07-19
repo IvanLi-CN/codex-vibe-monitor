@@ -924,6 +924,15 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                         )
                         .await;
                     }
+                    if let Err(err) = flush_dashboard_network_socket_minute_rollups(
+                        &state.pool,
+                        state.dashboard_network_speed_cache.as_ref(),
+                        Utc::now(),
+                    )
+                    .await
+                    {
+                        warn!(error = %err, "failed to flush dashboard socket minute rollups");
+                    }
                 }
             }
         }

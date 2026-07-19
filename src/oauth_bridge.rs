@@ -165,6 +165,17 @@ pub(crate) enum OauthUpstreamRequestBody {
     },
 }
 
+pub(crate) enum CountedOauthUpstreamRequestBody {
+    Empty,
+    Bytes(Bytes),
+    Stream {
+        body: Body,
+        debug_body_prefix: Option<Bytes>,
+        request_is_stream: Option<bool>,
+        snapshot_kind: Option<&'static str>,
+    },
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OauthResponsesRewriteSummary {
@@ -322,6 +333,659 @@ pub(crate) async fn send_oauth_upstream_request(
             ),
             request_debug: None,
         },
+    }
+}
+
+pub(crate) async fn send_counted_oauth_upstream_request(
+    method: Method,
+    original_uri: &Uri,
+    headers: &HeaderMap,
+    body: CountedOauthUpstreamRequestBody,
+    handshake_timeout: Duration,
+    response_timeout: Duration,
+    account_id: Option<i64>,
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+    installation_seed: Option<&[u8; 32]>,
+    crypto_key: Option<&[u8; 32]>,
+    forward_proxy_url: Option<&Url>,
+    reporter: Option<crate::proxy::UpstreamTrafficReporter>,
+) -> OauthUpstreamResponse {
+    match original_uri.path() {
+        "/v1/models" => {
+            counted_oauth_models(
+                handshake_timeout,
+                response_timeout,
+                access_token,
+                chatgpt_account_id,
+                forward_proxy_url,
+                reporter,
+            )
+            .await
+        }
+        "/v1/responses" => {
+            counted_oauth_responses(
+                headers,
+                handshake_timeout,
+                response_timeout,
+                account_id,
+                access_token,
+                chatgpt_account_id,
+                body,
+                installation_seed,
+                crypto_key,
+                forward_proxy_url,
+                reporter,
+            )
+            .await
+        }
+        path if is_supported_oauth_passthrough_route(path) => {
+            counted_oauth_passthrough(
+                method,
+                original_uri,
+                headers,
+                body,
+                handshake_timeout,
+                account_id,
+                access_token,
+                chatgpt_account_id,
+                crypto_key,
+                forward_proxy_url,
+                reporter,
+            )
+            .await
+        }
+        _ => OauthUpstreamResponse {
+            response: error_response(
+                StatusCode::NOT_FOUND,
+                &format!(
+                    "oauth upstream route is not supported: {}",
+                    original_uri.path()
+                ),
+                "oauth_unsupported_route",
+            ),
+            request_debug: None,
+        },
+    }
+}
+
+async fn counted_oauth_models(
+    handshake_timeout: Duration,
+    response_timeout: Duration,
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+    forward_proxy_url: Option<&Url>,
+    reporter: Option<crate::proxy::UpstreamTrafficReporter>,
+) -> OauthUpstreamResponse {
+    let mut upstream_url = match oauth_codex_upstream_base_url() {
+        Ok(url) => url,
+        Err(err) => {
+            return OauthUpstreamResponse {
+                response: error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("invalid oauth codex models url: {err}"),
+                    "server_error",
+                ),
+                request_debug: None,
+            };
+        }
+    };
+    upstream_url.set_path(&format!(
+        "{}/models",
+        upstream_url.path().trim_end_matches('/')
+    ));
+    upstream_url.set_query(Some(&format!(
+        "client_version={OAUTH_CODEX_MODELS_CLIENT_VERSION}"
+    )));
+
+    let mut outbound_headers = HeaderMap::new();
+    insert_oauth_auth_headers(
+        &mut outbound_headers,
+        access_token,
+        chatgpt_account_id,
+        true,
+    );
+    let upstream = match send_counted_oauth_http_request(
+        Method::GET,
+        &upstream_url,
+        &outbound_headers,
+        Body::empty(),
+        handshake_timeout,
+        forward_proxy_url,
+        reporter,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(response) => return response,
+    };
+    let status = upstream.status();
+    let request_started = Instant::now();
+    let bytes = match read_counted_oauth_upstream_bytes_with_timeout(
+        upstream,
+        response_timeout,
+        request_started,
+        "reading oauth codex models response",
+    )
+    .await
+    {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            let mut response = error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!("failed to read oauth codex models response: {err}"),
+                "oauth_upstream_read_failed",
+            );
+            tag_oauth_transport_failure(&mut response, crate::PROXY_FAILURE_UPSTREAM_STREAM_ERROR);
+            return OauthUpstreamResponse {
+                response,
+                request_debug: None,
+            };
+        }
+    };
+    if !status.is_success() {
+        return OauthUpstreamResponse {
+            response: json_or_plain_error_response(
+                status,
+                &bytes,
+                "oauth_upstream_rejected_request",
+            ),
+            request_debug: None,
+        };
+    }
+    match transform_models_payload(&bytes) {
+        Ok(value) => OauthUpstreamResponse {
+            response: (status, Json(value)).into_response(),
+            request_debug: None,
+        },
+        Err(err) => OauthUpstreamResponse {
+            response: error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!("oauth codex returned malformed models payload: {err}"),
+                "oauth_upstream_invalid_models",
+            ),
+            request_debug: None,
+        },
+    }
+}
+
+async fn counted_oauth_responses(
+    headers: &HeaderMap,
+    handshake_timeout: Duration,
+    response_timeout: Duration,
+    account_id: Option<i64>,
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+    body: CountedOauthUpstreamRequestBody,
+    installation_seed: Option<&[u8; 32]>,
+    crypto_key: Option<&[u8; 32]>,
+    forward_proxy_url: Option<&Url>,
+    reporter: Option<crate::proxy::UpstreamTrafficReporter>,
+) -> OauthUpstreamResponse {
+    let upstream_url = match build_oauth_upstream_url("/responses", None) {
+        Ok(url) => url,
+        Err(err) => {
+            return OauthUpstreamResponse {
+                response: error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("invalid oauth codex responses url: {err}"),
+                    "server_error",
+                ),
+                request_debug: None,
+            };
+        }
+    };
+    let (mut outbound_headers, forwarded_headers) =
+        collect_forwardable_headers(headers, OAUTH_RESPONSES_EXCLUDED_HEADER_NAMES, crypto_key);
+    let (request_body, request_debug, wants_stream) = match body {
+        CountedOauthUpstreamRequestBody::Empty => {
+            let prepared = match prepare_responses_request_body(&[], account_id, installation_seed)
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    return OauthUpstreamResponse {
+                        response: error_response(
+                            StatusCode::BAD_REQUEST,
+                            &err.to_string(),
+                            "invalid_request_error",
+                        ),
+                        request_debug: None,
+                    };
+                }
+            };
+            let request_debug = build_oauth_request_debug(
+                "/v1/responses",
+                &forwarded_headers,
+                Some(prepared.body.as_slice()),
+                prepared.rewrite.clone(),
+                Some("empty"),
+                Some("small_body_rewrite"),
+                crypto_key,
+            );
+            (
+                Body::from(prepared.body),
+                request_debug,
+                prepared.wants_stream,
+            )
+        }
+        CountedOauthUpstreamRequestBody::Bytes(bytes) => {
+            let prepared =
+                match prepare_responses_request_body(&bytes, account_id, installation_seed) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return OauthUpstreamResponse {
+                            response: error_response(
+                                StatusCode::BAD_REQUEST,
+                                &err.to_string(),
+                                "invalid_request_error",
+                            ),
+                            request_debug: None,
+                        };
+                    }
+                };
+            let request_debug = build_oauth_request_debug(
+                "/v1/responses",
+                &forwarded_headers,
+                Some(prepared.body.as_slice()),
+                prepared.rewrite.clone(),
+                Some("memory"),
+                Some("small_body_rewrite"),
+                crypto_key,
+            );
+            (
+                Body::from(prepared.body),
+                request_debug,
+                prepared.wants_stream,
+            )
+        }
+        CountedOauthUpstreamRequestBody::Stream {
+            body,
+            debug_body_prefix,
+            request_is_stream,
+            snapshot_kind,
+        } => {
+            let request_debug = build_oauth_request_debug_with_prefix(
+                "/v1/responses",
+                &forwarded_headers,
+                debug_body_prefix.as_deref(),
+                OauthResponsesRewriteSummary::default(),
+                snapshot_kind.or(Some("stream")),
+                Some("large_body_passthrough"),
+                crypto_key,
+            );
+            (body, request_debug, request_is_stream.unwrap_or(false))
+        }
+    };
+    outbound_headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    insert_oauth_auth_headers(
+        &mut outbound_headers,
+        access_token,
+        chatgpt_account_id,
+        true,
+    );
+    info!(
+        account_id,
+        path = "/v1/responses",
+        forwarded_header_count = request_debug.forwarded_header_names.len(),
+        forwarded_header_names = ?request_debug.forwarded_header_names,
+        request_body_prefix_bytes = request_debug.request_body_prefix_bytes,
+        request_body_prefix_fingerprint = request_debug.request_body_prefix_fingerprint,
+        request_body_snapshot_kind = request_debug.request_body_snapshot_kind,
+        responses_body_mode = request_debug.responses_body_mode,
+        "forwarding counted oauth responses request"
+    );
+    let upstream = match send_counted_oauth_http_request(
+        Method::POST,
+        &upstream_url,
+        &outbound_headers,
+        request_body,
+        handshake_timeout,
+        forward_proxy_url,
+        reporter,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(mut response) => {
+            response.request_debug = Some(request_debug);
+            return response;
+        }
+    };
+    if !upstream.status().is_success() {
+        let status = upstream.status();
+        let request_started = Instant::now();
+        let bytes = match read_counted_oauth_upstream_bytes_with_timeout(
+            upstream,
+            response_timeout,
+            request_started,
+            "reading oauth codex error response",
+        )
+        .await
+        {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                let mut response = error_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("failed to read oauth codex error response: {err}"),
+                    "oauth_upstream_read_failed",
+                );
+                tag_oauth_transport_failure(
+                    &mut response,
+                    crate::PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                );
+                return OauthUpstreamResponse {
+                    response,
+                    request_debug: Some(request_debug),
+                };
+            }
+        };
+        return OauthUpstreamResponse {
+            response: json_or_plain_error_response(
+                status,
+                &bytes,
+                "oauth_upstream_rejected_request",
+            ),
+            request_debug: Some(request_debug),
+        };
+    }
+    if wants_stream {
+        return OauthUpstreamResponse {
+            response: normalize_counted_stream_response(upstream),
+            request_debug: Some(request_debug),
+        };
+    }
+    let upstream_headers = upstream.headers().clone();
+    let request_started = Instant::now();
+    let bytes = match read_counted_oauth_upstream_bytes_with_timeout(
+        upstream,
+        response_timeout,
+        request_started,
+        "reading oauth codex responses stream",
+    )
+    .await
+    {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return OauthUpstreamResponse {
+                response: error_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("failed to read oauth codex responses stream: {err}"),
+                    "oauth_upstream_read_failed",
+                ),
+                request_debug: Some(request_debug),
+            };
+        }
+    };
+    if response_headers_indicate_event_stream(&upstream_headers)
+        || crate::response_payload_looks_like_sse(bytes.as_ref())
+    {
+        match extract_completed_response_from_sse(&bytes) {
+            Ok(response_value) => OauthUpstreamResponse {
+                response: (StatusCode::OK, Json(response_value)).into_response(),
+                request_debug: Some(request_debug),
+            },
+            Err(err) => OauthUpstreamResponse {
+                response: error_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("failed to decode oauth codex response stream: {err}"),
+                    "oauth_upstream_invalid_response",
+                ),
+                request_debug: Some(request_debug),
+            },
+        }
+    } else {
+        OauthUpstreamResponse {
+            response: bytes_response_from_headers(StatusCode::OK, &upstream_headers, bytes),
+            request_debug: Some(request_debug),
+        }
+    }
+}
+
+async fn counted_oauth_passthrough(
+    method: Method,
+    original_uri: &Uri,
+    headers: &HeaderMap,
+    body: CountedOauthUpstreamRequestBody,
+    handshake_timeout: Duration,
+    _account_id: Option<i64>,
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+    crypto_key: Option<&[u8; 32]>,
+    forward_proxy_url: Option<&Url>,
+    reporter: Option<crate::proxy::UpstreamTrafficReporter>,
+) -> OauthUpstreamResponse {
+    let suffix = original_uri
+        .path()
+        .strip_prefix("/v1")
+        .unwrap_or(original_uri.path());
+    let upstream_url = match build_oauth_upstream_url(suffix, original_uri.query()) {
+        Ok(url) => url,
+        Err(err) => {
+            return OauthUpstreamResponse {
+                response: error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("invalid oauth codex upstream url: {err}"),
+                    "server_error",
+                ),
+                request_debug: None,
+            };
+        }
+    };
+    let (mut outbound_headers, forwarded_headers) =
+        collect_forwardable_headers(headers, &[], crypto_key);
+    let (request_body, debug_body_prefix) = match body {
+        CountedOauthUpstreamRequestBody::Empty => (Body::empty(), Some(Bytes::new())),
+        CountedOauthUpstreamRequestBody::Bytes(bytes) => {
+            let debug_body_prefix =
+                oauth_request_body_prefix_bytes(Some(bytes.as_ref())).map(Bytes::from);
+            (Body::from(bytes), debug_body_prefix)
+        }
+        CountedOauthUpstreamRequestBody::Stream {
+            body,
+            debug_body_prefix,
+            ..
+        } => (body, debug_body_prefix),
+    };
+    let request_debug = build_oauth_request_debug(
+        original_uri.path(),
+        &forwarded_headers,
+        debug_body_prefix.as_deref(),
+        OauthResponsesRewriteSummary::default(),
+        None,
+        None,
+        crypto_key,
+    );
+    insert_oauth_auth_headers(
+        &mut outbound_headers,
+        access_token,
+        chatgpt_account_id,
+        true,
+    );
+    let upstream = match send_counted_oauth_http_request(
+        method,
+        &upstream_url,
+        &outbound_headers,
+        request_body,
+        handshake_timeout,
+        forward_proxy_url,
+        reporter,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(mut response) => {
+            response.request_debug = Some(request_debug);
+            return response;
+        }
+    };
+    OauthUpstreamResponse {
+        response: normalize_counted_stream_response(upstream),
+        request_debug: Some(request_debug),
+    }
+}
+
+async fn send_counted_oauth_http_request(
+    method: Method,
+    target_url: &Url,
+    headers: &HeaderMap,
+    body: Body,
+    handshake_timeout: Duration,
+    forward_proxy_url: Option<&Url>,
+    reporter: Option<crate::proxy::UpstreamTrafficReporter>,
+) -> Result<Response, OauthUpstreamResponse> {
+    match timeout(
+        handshake_timeout,
+        crate::proxy::send_counted_upstream_http_request(
+            method,
+            target_url,
+            headers,
+            body,
+            forward_proxy_url,
+            reporter,
+        ),
+    )
+    .await
+    {
+        Ok(Ok(response)) => Ok(response.response),
+        Ok(Err(err)) => {
+            let failure_kind = if err.is_timeout() {
+                crate::PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
+            } else {
+                crate::PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
+            };
+            let mut response = error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!("failed to contact oauth codex upstream: {err}"),
+                if err.is_timeout() {
+                    "oauth_upstream_handshake_timeout"
+                } else {
+                    "oauth_upstream_unavailable"
+                },
+            );
+            tag_oauth_transport_failure(&mut response, failure_kind);
+            Err(OauthUpstreamResponse {
+                response,
+                request_debug: None,
+            })
+        }
+        Err(_) => {
+            let mut response = error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!(
+                    "oauth codex upstream handshake timed out after {}ms",
+                    handshake_timeout.as_millis()
+                ),
+                "oauth_upstream_handshake_timeout",
+            );
+            tag_oauth_transport_failure(
+                &mut response,
+                crate::PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+            );
+            Err(OauthUpstreamResponse {
+                response,
+                request_debug: None,
+            })
+        }
+    }
+}
+
+fn insert_oauth_auth_headers(
+    headers: &mut HeaderMap,
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+    include_beta_header: bool,
+) {
+    if let Ok(value) = HeaderValue::from_str(&format!("Bearer {access_token}")) {
+        headers.insert(header::AUTHORIZATION, value);
+    }
+    if include_beta_header {
+        headers.insert(
+            HeaderName::from_static("openai-beta"),
+            HeaderValue::from_static("responses=experimental"),
+        );
+    }
+    if let Some(account_id) = chatgpt_account_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        && let Ok(value) = HeaderValue::from_str(account_id)
+    {
+        headers.insert(HeaderName::from_static("chatgpt-account-id"), value);
+    }
+}
+
+fn collect_forwardable_headers(
+    headers: &HeaderMap,
+    excluded_names: &[&str],
+    crypto_key: Option<&[u8; 32]>,
+) -> (HeaderMap, OauthForwardedHeaderSummary) {
+    let connection_scoped = crate::connection_scoped_header_names(headers);
+    let mut forwarded = HeaderMap::new();
+    let mut forwarded_names = BTreeSet::new();
+    let mut fingerprints = crypto_key.map(|_| BTreeMap::new());
+    for (name, value) in headers {
+        if *name == header::AUTHORIZATION
+            || excluded_names
+                .iter()
+                .any(|candidate| name.as_str().eq_ignore_ascii_case(candidate))
+            || !crate::should_forward_proxy_header(name, &connection_scoped)
+            || is_internal_proxy_metadata_header(name)
+        {
+            continue;
+        }
+        forwarded.append(name.clone(), value.clone());
+        let lower_name = name.as_str().to_ascii_lowercase();
+        if let (Some(crypto_key), Some(header_fingerprints)) = (crypto_key, fingerprints.as_mut())
+            && is_fingerprinted_oauth_header_name(lower_name.as_str())
+            && !value.as_bytes().is_empty()
+        {
+            header_fingerprints.insert(
+                lower_name.clone(),
+                oauth_fingerprint_header_value(crypto_key, lower_name.as_str(), value.as_bytes()),
+            );
+        }
+        forwarded_names.insert(lower_name);
+    }
+    let names = forwarded_names.into_iter().collect::<Vec<_>>();
+    let prompt_cache_header_forwarded = names
+        .iter()
+        .any(|name| is_prompt_cache_header_name(name.as_str()));
+    (
+        forwarded,
+        OauthForwardedHeaderSummary {
+            names,
+            prompt_cache_header_forwarded,
+            fingerprints,
+        },
+    )
+}
+
+fn normalize_counted_stream_response(mut response: Response) -> Response {
+    response.headers_mut().remove(header::CONTENT_LENGTH);
+    response.headers_mut().remove(header::CONNECTION);
+    response
+}
+
+async fn read_counted_oauth_upstream_bytes_with_timeout(
+    upstream: Response,
+    total_timeout: Duration,
+    started: Instant,
+    phase: &str,
+) -> Result<Bytes, String> {
+    let Some(timeout_budget) = crate::remaining_timeout_budget(total_timeout, started.elapsed())
+    else {
+        return Err(oauth_upstream_timeout_message(total_timeout, phase));
+    };
+    match timeout(
+        timeout_budget,
+        axum::body::to_bytes(upstream.into_body(), usize::MAX),
+    )
+    .await
+    {
+        Ok(result) => result.map_err(|err| err.to_string()),
+        Err(_) => Err(oauth_upstream_timeout_message(total_timeout, phase)),
     }
 }
 
@@ -1927,15 +2591,14 @@ mod tests {
         )
         .await;
 
-        let oauth_response = send_oauth_upstream_request(
-            &Client::new(),
+        let oauth_response = send_counted_oauth_upstream_request(
             Method::POST,
             &"/v1/responses".parse().expect("valid uri"),
             &HeaderMap::from_iter([(
                 header::CONTENT_TYPE,
                 HeaderValue::from_static("application/json"),
             )]),
-            OauthUpstreamRequestBody::Bytes(Bytes::from_static(
+            CountedOauthUpstreamRequestBody::Bytes(Bytes::from_static(
                 br#"{"model":"gpt-5.4","stream":false,"input":"hello"}"#,
             )),
             Duration::from_secs(5),
@@ -1944,6 +2607,8 @@ mod tests {
             "oauth-json",
             Some("org_test"),
             Some(&[0x33_u8; 32]),
+            None,
+            None,
             None,
         )
         .await;

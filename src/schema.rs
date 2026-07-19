@@ -2337,6 +2337,59 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS upstream_socket_network_minute (
+            bucket_start_epoch INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            upstream_base_url_host TEXT NOT NULL,
+            upstream_account_id INTEGER,
+            upload_bytes INTEGER NOT NULL DEFAULT 0,
+            download_bytes INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (
+                bucket_start_epoch,
+                source,
+                upstream_base_url_host,
+                upstream_account_id
+            )
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure upstream_socket_network_minute table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_upstream_socket_network_minute_account_bucket
+        ON upstream_socket_network_minute (upstream_account_id, bucket_start_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_upstream_socket_network_minute_account_bucket")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_upstream_socket_network_minute_source_bucket
+        ON upstream_socket_network_minute (source, bucket_start_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_upstream_socket_network_minute_source_bucket")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_upstream_socket_network_minute_host_bucket
+        ON upstream_socket_network_minute (upstream_base_url_host, bucket_start_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_upstream_socket_network_minute_host_bucket")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS upstream_sticky_key_hourly (
             bucket_start_epoch INTEGER NOT NULL,
             upstream_account_id INTEGER NOT NULL,

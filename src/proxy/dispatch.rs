@@ -1153,6 +1153,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         final_request_body_for_capture,
         final_requested_service_tier,
         upstream_response,
+        transport_bytes_live_counted,
     ) = if pool_route_active {
         match send_pool_request_with_failover_and_binding_constraint(
             state.clone(),
@@ -1193,6 +1194,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 response.request_body_for_capture,
                 response.requested_service_tier,
                 response.response,
+                response.transport_bytes_live_counted,
             ),
             Err(err) => {
                 let response_envelope =
@@ -1413,6 +1415,13 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             target_url,
             &upstream_headers,
             Some(upstream_body_bytes.clone()),
+            Some(UpstreamTrafficReporter::new(
+                state.clone(),
+                invoke_id.as_str(),
+                occurred_at.as_str(),
+                None,
+                state.config.openai_upstream_base_url.host_str(),
+            )),
             handshake_timeout,
             Some(capture_target),
             proxy_settings.upstream_429_max_retries,
@@ -1439,6 +1448,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 Some(base_request_bytes_for_capture.clone()),
                 request_info.requested_service_tier.clone(),
                 response.response,
+                true,
             ),
             Err(err) => {
                 let response_envelope =
@@ -1480,33 +1490,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     )
                     .await;
                 let error_message = format!("[{}] {}", err.failure_kind, err.message);
-                if err.http_approx.approx_upload_bytes > 0 {
-                    state.dashboard_network_speed_cache.record_request_bytes(
-                        &invoke_id,
-                        &occurred_at,
-                        None,
-                        state.config.openai_upstream_base_url.host_str(),
-                        err.http_approx.approx_upload_bytes,
-                        Utc::now(),
-                    );
-                }
-                if err.http_approx.approx_download_bytes_before_response_body > 0 {
-                    state
-                        .dashboard_network_speed_cache
-                        .record_response_chunk_bytes(
-                            &invoke_id,
-                            &occurred_at,
-                            None,
-                            state.config.openai_upstream_base_url.host_str(),
-                            err.http_approx.approx_download_bytes_before_response_body,
-                            Utc::now(),
-                        );
-                }
-                if err.http_approx.approx_upload_bytes > 0
-                    || err.http_approx.approx_download_bytes_before_response_body > 0
-                {
-                    schedule_dashboard_activity_live_snapshot(state.as_ref());
-                }
                 let record = ProxyCaptureRecord {
                     invoke_id,
                     occurred_at,
@@ -1651,35 +1634,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     request_info.requested_service_tier = final_requested_service_tier
         .clone()
         .or(request_info.requested_service_tier);
-    if !pool_route_active {
-        if direct_http_approx.approx_upload_bytes > 0 {
-            state.dashboard_network_speed_cache.record_request_bytes(
-                &invoke_id,
-                &occurred_at,
-                None,
-                state.config.openai_upstream_base_url.host_str(),
-                direct_http_approx.approx_upload_bytes,
-                Utc::now(),
-            );
-        }
-        if direct_http_approx.approx_download_bytes_before_response_body > 0 {
-            state
-                .dashboard_network_speed_cache
-                .record_response_chunk_bytes(
-                    &invoke_id,
-                    &occurred_at,
-                    None,
-                    state.config.openai_upstream_base_url.host_str(),
-                    direct_http_approx.approx_download_bytes_before_response_body,
-                    Utc::now(),
-                );
-        }
-        if direct_http_approx.approx_upload_bytes > 0
-            || direct_http_approx.approx_download_bytes_before_response_body > 0
-        {
-            schedule_dashboard_activity_live_snapshot(state.as_ref());
-        }
-    }
     let mut req_raw_pending = Some(spawn_raw_payload_file_write(
         state.as_ref(),
         &invoke_id,
@@ -1982,6 +1936,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let attempt_already_recorded_for_task = attempt_already_recorded;
     let final_attempt_update_for_task = final_attempt_update;
     let direct_http_approx_for_task = direct_http_approx.clone();
+    let transport_bytes_live_counted_for_task = transport_bytes_live_counted;
     let mut pending_pool_attempt_record_for_task = pending_pool_attempt_record.clone();
     let mut deferred_pool_early_phase_cleanup_guard_for_task =
         deferred_pool_early_phase_cleanup_guard;
@@ -2057,26 +2012,29 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             }
             forwarded_chunks = forwarded_chunks.saturating_add(1);
             forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
-            state_for_task
-                .dashboard_network_speed_cache
-                .record_response_chunk_bytes(
-                    &invoke_id_for_task,
-                    &occurred_at_for_task,
-                    pool_account_for_task
-                        .as_ref()
-                        .map(|account| account.account_id),
-                    payload_summary_upstream_base_url_host(pool_account_for_task.as_ref()).or_else(
-                        || {
-                            pool_account_for_task
-                                .is_none()
-                                .then(|| state_for_task.config.openai_upstream_base_url.host_str())
-                                .flatten()
-                        },
-                    ),
-                    chunk.len(),
-                    Utc::now(),
-                );
-            schedule_dashboard_activity_live_snapshot(state_for_task.as_ref());
+            if !transport_bytes_live_counted_for_task {
+                state_for_task
+                    .dashboard_network_speed_cache
+                    .record_response_chunk_bytes(
+                        &invoke_id_for_task,
+                        &occurred_at_for_task,
+                        pool_account_for_task
+                            .as_ref()
+                            .map(|account| account.account_id),
+                        payload_summary_upstream_base_url_host(pool_account_for_task.as_ref())
+                            .or_else(|| {
+                                pool_account_for_task
+                                    .is_none()
+                                    .then(|| {
+                                        state_for_task.config.openai_upstream_base_url.host_str()
+                                    })
+                                    .flatten()
+                            }),
+                        chunk.len(),
+                        Utc::now(),
+                    );
+                schedule_dashboard_activity_live_snapshot(state_for_task.as_ref());
+            }
             stream_started_at = Some(Instant::now());
             last_upstream_chunk_received_at = Some(chunk_received_at);
             if !downstream_closed {
@@ -2321,15 +2279,18 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     }
                     forwarded_chunks = forwarded_chunks.saturating_add(1);
                     forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
-                    state_for_task
-                        .dashboard_network_speed_cache
-                        .record_response_chunk_bytes(
-                            &invoke_id_for_task,
-                            &occurred_at_for_task,
-                            pool_account_for_task
-                                .as_ref()
-                                .map(|account| account.account_id),
-                            payload_summary_upstream_base_url_host(pool_account_for_task.as_ref())
+                    if !transport_bytes_live_counted_for_task {
+                        state_for_task
+                            .dashboard_network_speed_cache
+                            .record_response_chunk_bytes(
+                                &invoke_id_for_task,
+                                &occurred_at_for_task,
+                                pool_account_for_task
+                                    .as_ref()
+                                    .map(|account| account.account_id),
+                                payload_summary_upstream_base_url_host(
+                                    pool_account_for_task.as_ref(),
+                                )
                                 .or_else(|| {
                                     pool_account_for_task
                                         .is_none()
@@ -2341,10 +2302,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                                         })
                                         .flatten()
                                 }),
-                            chunk.len(),
-                            Utc::now(),
-                        );
-                    schedule_dashboard_activity_live_snapshot(state_for_task.as_ref());
+                                chunk.len(),
+                                Utc::now(),
+                            );
+                        schedule_dashboard_activity_live_snapshot(state_for_task.as_ref());
+                    }
                     last_upstream_chunk_received_at = Some(chunk_received_at);
                     if !downstream_closed {
                         if tx.send(Ok(chunk)).await.is_err() {
