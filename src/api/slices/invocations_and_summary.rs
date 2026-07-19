@@ -7825,6 +7825,7 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
 ) -> Result<DashboardActivityLiveSnapshot, ApiError> {
     let now = Utc::now();
     let source_scope = resolve_default_source_scope(pool).await?;
+    flush_dashboard_network_socket_minute_rollups(pool, dashboard_network_speed_cache, now).await?;
     let counts = query_upstream_account_in_progress_counts_from_runtime(
         pool,
         proxy_runtime_invocations,
@@ -10937,87 +10938,40 @@ async fn query_dashboard_network_bucket_rows(
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
     upstream_account_id: Option<Option<i64>>,
-    created_before: Option<&str>,
+    _created_before: Option<&str>,
 ) -> Result<Vec<DashboardNetworkBucketRow>, ApiError> {
     if range.start >= range.end {
         return Ok(Vec::new());
     }
 
-    let direct_upload_bytes_sql = dashboard_network_direct_upload_bytes_sql("inv");
-    let direct_download_bytes_sql = dashboard_network_direct_download_bytes_sql("inv");
-    let direct_bucket_sql = "((unixepoch(inv.occurred_at || '+08:00') / 300) * 300)";
-    let direct_upstream_account_id_sql = invocation_payload_upstream_account_id_sql("inv");
-    let pool_upload_bytes_sql = dashboard_network_pool_attempt_upload_bytes_sql("attempts");
-    let pool_download_bytes_sql = dashboard_network_pool_attempt_download_bytes_sql("attempts");
-    let pool_bucket_sql = "((unixepoch(attempts.occurred_at || '+08:00') / 300) * 300)";
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT bucket_start_epoch_second, SUM(upload_bytes) AS upload_bytes, SUM(download_bytes) AS download_bytes FROM (",
+        r#"
+        SELECT
+            ((bucket_start_epoch / 300) * 300) AS bucket_start_epoch_second,
+            SUM(upload_bytes) AS upload_bytes,
+            SUM(download_bytes) AS download_bytes
+        FROM upstream_socket_network_minute
+        WHERE bucket_start_epoch >=
+        "#,
     );
     query
-        .push("SELECT ")
-        .push(direct_bucket_sql)
-        .push(" AS bucket_start_epoch_second, ")
-        .push(direct_upload_bytes_sql.as_str())
-        .push(" AS upload_bytes, ")
-        .push(direct_download_bytes_sql.as_str())
-        .push(" AS download_bytes FROM codex_invocations AS inv WHERE inv.occurred_at >= ")
-        .push_bind(db_occurred_at_lower_bound(range.start))
-        .push(" AND inv.occurred_at < ")
-        .push_bind(db_occurred_at_upper_bound(range.end))
-        .push(" AND (COALESCE(CASE WHEN json_valid(inv.payload) THEN TRIM(CAST(json_extract(inv.payload, '$.routeMode') AS TEXT)) END, '') <> ")
-        .push_bind(INVOCATION_ROUTE_MODE_POOL)
-        .push(" OR NOT EXISTS (SELECT 1 FROM pool_upstream_request_attempts AS attempts WHERE attempts.invoke_id = inv.invoke_id AND attempts.occurred_at = inv.occurred_at))");
+        .push_bind(range.start.timestamp())
+        .push(" AND bucket_start_epoch < ")
+        .push_bind(range.end.timestamp());
     if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND inv.source = ").push_bind(SOURCE_PROXY);
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
     if let Some(upstream_account_id) = upstream_account_id {
         query.push(" AND ");
         if let Some(upstream_account_id) = upstream_account_id {
             query
-                .push(direct_upstream_account_id_sql.as_str())
-                .push(" = ")
+                .push("upstream_account_id = ")
                 .push_bind(upstream_account_id);
         } else {
-            query
-                .push(direct_upstream_account_id_sql.as_str())
-                .push(" IS NULL");
+            query.push("upstream_account_id IS NULL");
         }
     }
-    if let Some(created_before) = created_before {
-        query
-            .push(" AND inv.created_at < ")
-            .push_bind(created_before.to_string());
-    }
-    query
-        .push(" UNION ALL SELECT ")
-        .push(pool_bucket_sql)
-        .push(" AS bucket_start_epoch_second, ")
-        .push(pool_upload_bytes_sql.as_str())
-        .push(" AS upload_bytes, ")
-        .push(pool_download_bytes_sql.as_str())
-        .push(" AS download_bytes FROM pool_upstream_request_attempts AS attempts INNER JOIN codex_invocations AS inv ON inv.invoke_id = attempts.invoke_id AND inv.occurred_at = attempts.occurred_at WHERE attempts.occurred_at >= ")
-        .push_bind(db_occurred_at_lower_bound(range.start))
-        .push(" AND attempts.occurred_at < ")
-        .push_bind(db_occurred_at_upper_bound(range.end));
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND inv.source = ").push_bind(SOURCE_PROXY);
-    }
-    if let Some(upstream_account_id) = upstream_account_id {
-        query.push(" AND ");
-        if let Some(upstream_account_id) = upstream_account_id {
-            query
-                .push("attempts.upstream_account_id = ")
-                .push_bind(upstream_account_id);
-        } else {
-            query.push("attempts.upstream_account_id IS NULL");
-        }
-    }
-    if let Some(created_before) = created_before {
-        query
-            .push(" AND inv.created_at < ")
-            .push_bind(created_before.to_string());
-    }
-    query.push(") AS network_rows GROUP BY bucket_start_epoch_second ORDER BY bucket_start_epoch_second ASC");
+    query.push(" GROUP BY bucket_start_epoch_second ORDER BY bucket_start_epoch_second ASC");
 
     Ok(query
         .build_query_as::<DashboardNetworkBucketRow>()
@@ -11030,33 +10984,7 @@ async fn query_dashboard_network_host_minute_bucket_rows(
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
 ) -> Result<Vec<DashboardNetworkBucketRow>, ApiError> {
-    if range.start >= range.end {
-        return Ok(Vec::new());
-    }
-
-    let mut query = QueryBuilder::<Sqlite>::new(
-        r#"
-        SELECT
-            ((bucket_start_epoch / 300) * 300) AS bucket_start_epoch_second,
-            SUM(upload_bytes) AS upload_bytes,
-            SUM(download_bytes) AS download_bytes
-        FROM upstream_host_network_minute
-        WHERE bucket_start_epoch >=
-        "#,
-    );
-    query
-        .push_bind(range.start.timestamp())
-        .push(" AND bucket_start_epoch < ")
-        .push_bind(range.end.timestamp());
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
-    }
-    query.push(" GROUP BY bucket_start_epoch_second ORDER BY bucket_start_epoch_second ASC");
-
-    Ok(query
-        .build_query_as::<DashboardNetworkBucketRow>()
-        .fetch_all(pool)
-        .await?)
+    query_dashboard_network_bucket_rows(pool, source_scope, range, None, None).await
 }
 
 async fn load_dashboard_network_open_bucket_snapshot_for_scope(
@@ -11068,8 +10996,6 @@ async fn load_dashboard_network_open_bucket_snapshot_for_scope(
 ) -> Result<DashboardNetworkOpenBucketSnapshot, ApiError> {
     let read = dashboard_network_speed_cache.open_bucket_read_state(scope, range_end);
     if read.needs_seed {
-        let process_started_at =
-            format_utc_iso_millis(dashboard_network_speed_cache.process_started_at_utc());
         let seed_rows = query_dashboard_network_bucket_rows(
             pool,
             source_scope,
@@ -11078,7 +11004,7 @@ async fn load_dashboard_network_open_bucket_snapshot_for_scope(
                 end: range_end.min(read.bucket_end),
             },
             scope.upstream_account_id(),
-            Some(process_started_at.as_str()),
+            None,
         )
         .await?;
         let seed_totals =
@@ -11205,6 +11131,12 @@ pub(crate) async fn fetch_dashboard_network_timeseries(
         end: range_window.end,
     };
     let source_scope = resolve_default_source_scope(&state.pool).await?;
+    flush_dashboard_network_socket_minute_rollups(
+        &state.pool,
+        state.dashboard_network_speed_cache.as_ref(),
+        range.end,
+    )
+    .await?;
     let open_bucket_start_epoch_second = range.end.timestamp()
         - range
             .end
@@ -11576,62 +11508,84 @@ mod dashboard_network_timeseries_tests {
         .execute(&pool)
         .await
         .expect("create upstream_host_network_minute table");
+        sqlx::query(
+            r#"
+            CREATE TABLE upstream_socket_network_minute (
+                bucket_start_epoch INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                upstream_base_url_host TEXT NOT NULL,
+                upstream_account_id INTEGER,
+                upload_bytes INTEGER NOT NULL DEFAULT 0,
+                download_bytes INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (
+                    bucket_start_epoch,
+                    source,
+                    upstream_base_url_host,
+                    upstream_account_id
+                )
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create upstream_socket_network_minute table");
         pool
     }
 
     #[tokio::test]
-    async fn dashboard_network_bucket_rows_fall_back_to_inline_raw_response_length() {
+    async fn dashboard_network_bucket_rows_read_real_socket_minute_rows() {
         let pool = network_pool().await;
-        let occurred_at = Utc
-            .with_ymd_and_hms(2026, 7, 16, 4, 35, 0)
-            .single()
-            .expect("valid occurred_at utc");
-        let raw_response = "{\"download\":true}";
         sqlx::query(
             r#"
-            INSERT INTO codex_invocations (
-                invoke_id,
-                occurred_at,
-                payload,
-                response_raw_size,
-                raw_response,
-                request_raw_size,
+            INSERT INTO upstream_socket_network_minute (
+                bucket_start_epoch,
                 source,
-                created_at
+                upstream_base_url_host,
+                upstream_account_id,
+                upload_bytes,
+                download_bytes
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
             "#,
         )
-        .bind("direct-network-row")
-        .bind(format_naive(
-            occurred_at.with_timezone(&Shanghai).naive_local(),
-        ))
-        .bind("{}")
-        .bind(None::<i64>)
-        .bind(raw_response)
-        .bind(128_i64)
+        .bind(
+            Utc.with_ymd_and_hms(2026, 7, 16, 4, 35, 0)
+                .single()
+                .expect("valid bucket start")
+                .timestamp(),
+        )
         .bind(SOURCE_PROXY)
-        .bind(format_utc_iso(occurred_at))
+        .bind("api.openai.com")
+        .bind(42_i64)
+        .bind(128_i64)
+        .bind(256_i64)
         .execute(&pool)
         .await
-        .expect("insert dashboard network invocation");
+        .expect("insert dashboard socket minute row");
 
         let rows = query_dashboard_network_bucket_rows(
             &pool,
             InvocationSourceScope::ProxyOnly,
             ExactUtcRange {
-                start: occurred_at - ChronoDuration::minutes(1),
-                end: occurred_at + ChronoDuration::minutes(5),
+                start: Utc
+                    .with_ymd_and_hms(2026, 7, 16, 4, 34, 0)
+                    .single()
+                    .expect("valid range start"),
+                end: Utc
+                    .with_ymd_and_hms(2026, 7, 16, 4, 40, 0)
+                    .single()
+                    .expect("valid range end"),
             },
-            None,
+            Some(Some(42)),
             None,
         )
         .await
-        .expect("query dashboard network rows");
+        .expect("query dashboard socket minute rows");
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].upload_bytes, 128);
-        assert_eq!(rows[0].download_bytes, raw_response.len() as i64);
+        assert_eq!(rows[0].download_bytes, 256);
     }
 
     #[tokio::test]
@@ -11644,29 +11598,32 @@ mod dashboard_network_timeseries_tests {
             .timestamp();
         sqlx::query(
             r#"
-            INSERT INTO upstream_host_network_minute (
+            INSERT INTO upstream_socket_network_minute (
                 bucket_start_epoch,
                 source,
                 upstream_base_url_host,
+                upstream_account_id,
                 upload_bytes,
                 download_bytes
             )
-            VALUES (?1, ?2, ?3, ?4, ?5), (?6, ?7, ?8, ?9, ?10)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6), (?7, ?8, ?9, ?10, ?11, ?12)
             "#,
         )
         .bind(bucket_start_epoch)
         .bind(SOURCE_PROXY)
         .bind("api.openai.com")
+        .bind(Some(42_i64))
         .bind(100_i64)
         .bind(200_i64)
         .bind(bucket_start_epoch + 60)
         .bind(SOURCE_PROXY)
         .bind("backup.openai.com")
+        .bind(Some(77_i64))
         .bind(40_i64)
         .bind(80_i64)
         .execute(&pool)
         .await
-        .expect("insert upstream host minute rows");
+        .expect("insert upstream socket minute rows");
 
         let rows = query_dashboard_network_host_minute_bucket_rows(
             &pool,
@@ -11683,7 +11640,7 @@ mod dashboard_network_timeseries_tests {
             },
         )
         .await
-        .expect("query host minute network rows");
+        .expect("query socket minute network rows");
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].bucket_start_epoch_second, bucket_start_epoch);

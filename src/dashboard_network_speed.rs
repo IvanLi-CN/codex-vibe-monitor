@@ -153,6 +153,24 @@ struct DashboardNetworkOpenBucketState {
     seeded: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct DashboardNetworkMinuteBucketKey {
+    bucket_start_epoch_second: i64,
+    source: String,
+    upstream_base_url_host: String,
+    upstream_account_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, FromRow)]
+pub(crate) struct DashboardNetworkMinuteRollupRow {
+    pub(crate) bucket_start_epoch: i64,
+    pub(crate) source: String,
+    pub(crate) upstream_base_url_host: String,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) upload_bytes: i64,
+    pub(crate) download_bytes: i64,
+}
+
 #[derive(Debug, Default)]
 struct DashboardTrackedInvocationTraffic {
     upstream_account_id: Option<i64>,
@@ -169,6 +187,7 @@ struct DashboardNetworkSpeedCacheInner {
         HashMap<DashboardNetworkScopeKey, VecDeque<DashboardActivitySecondBucket>>,
     open_buckets: HashMap<DashboardNetworkScopeKey, DashboardNetworkOpenBucketState>,
     host_open_buckets: HashMap<String, DashboardNetworkOpenBucketState>,
+    minute_buckets: HashMap<DashboardNetworkMinuteBucketKey, DashboardNetworkByteTotals>,
     tracked_invocations: HashMap<(String, String), DashboardTrackedInvocationTraffic>,
     latest_speed_epoch_second: Option<i64>,
     latest_activity_epoch_second: Option<i64>,
@@ -243,6 +262,17 @@ impl DashboardNetworkSpeedCache {
                 download_bytes: 0,
             },
         );
+        record_minute_delta_locked(
+            &mut inner,
+            SOURCE_PROXY,
+            tracked_upstream_account_id,
+            tracked_upstream_base_url_host.as_str(),
+            observed_at.timestamp(),
+            DashboardNetworkByteTotals {
+                upload_bytes: bytes,
+                download_bytes: 0,
+            },
+        );
     }
 
     pub(crate) fn record_response_chunk_bytes(
@@ -289,6 +319,17 @@ impl DashboardNetworkSpeedCache {
         );
         record_host_delta_locked(
             &mut inner,
+            tracked_upstream_base_url_host.as_str(),
+            observed_at.timestamp(),
+            DashboardNetworkByteTotals {
+                upload_bytes: 0,
+                download_bytes: bytes,
+            },
+        );
+        record_minute_delta_locked(
+            &mut inner,
+            SOURCE_PROXY,
+            tracked_upstream_account_id,
             tracked_upstream_base_url_host.as_str(),
             observed_at.timestamp(),
             DashboardNetworkByteTotals {
@@ -685,6 +726,74 @@ impl DashboardNetworkSpeedCache {
         ensure_open_bucket_locked(&mut inner, scope, bucket_start_epoch_second);
         snapshot_open_bucket_locked(&inner, scope, now_epoch_second)
     }
+
+    pub(crate) fn drain_completed_socket_minute_rows(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Vec<DashboardNetworkMinuteRollupRow> {
+        let current_minute_start_epoch_second = current_minute_start_epoch_second(now.timestamp());
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("dashboard network speed cache should not be poisoned");
+        let mut drained = Vec::new();
+        inner.minute_buckets.retain(|key, totals| {
+            if key.bucket_start_epoch_second < current_minute_start_epoch_second {
+                drained.push(DashboardNetworkMinuteRollupRow {
+                    bucket_start_epoch: key.bucket_start_epoch_second,
+                    source: key.source.clone(),
+                    upstream_base_url_host: key.upstream_base_url_host.clone(),
+                    upstream_account_id: key.upstream_account_id,
+                    upload_bytes: totals.upload_bytes.max(0),
+                    download_bytes: totals.download_bytes.max(0),
+                });
+                false
+            } else {
+                true
+            }
+        });
+        drained.sort_by(|left, right| {
+            (
+                left.bucket_start_epoch,
+                left.source.as_str(),
+                left.upstream_base_url_host.as_str(),
+                left.upstream_account_id,
+            )
+                .cmp(&(
+                    right.bucket_start_epoch,
+                    right.source.as_str(),
+                    right.upstream_base_url_host.as_str(),
+                    right.upstream_account_id,
+                ))
+        });
+        drained
+    }
+
+    pub(crate) fn restore_completed_socket_minute_rows(
+        &self,
+        rows: Vec<DashboardNetworkMinuteRollupRow>,
+    ) {
+        if rows.is_empty() {
+            return;
+        }
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("dashboard network speed cache should not be poisoned");
+        for row in rows {
+            let key = DashboardNetworkMinuteBucketKey {
+                bucket_start_epoch_second: row.bucket_start_epoch,
+                source: row.source,
+                upstream_base_url_host: row.upstream_base_url_host,
+                upstream_account_id: row.upstream_account_id,
+            };
+            let entry = inner.minute_buckets.entry(key).or_default();
+            entry.add_assign(DashboardNetworkByteTotals {
+                upload_bytes: row.upload_bytes,
+                download_bytes: row.download_bytes,
+            });
+        }
+    }
 }
 
 fn record_scope_delta_locked(
@@ -752,6 +861,31 @@ fn record_host_delta_locked(
     }
     open_bucket.delta_totals.add_assign(totals);
     prune_second_buckets_locked(inner, observed_epoch_second);
+}
+
+fn record_minute_delta_locked(
+    inner: &mut DashboardNetworkSpeedCacheInner,
+    source: &str,
+    upstream_account_id: Option<i64>,
+    upstream_base_url_host: &str,
+    observed_epoch_second: i64,
+    totals: DashboardNetworkByteTotals,
+) {
+    if totals.upload_bytes <= 0 && totals.download_bytes <= 0 {
+        return;
+    }
+    let bucket_start_epoch_second = current_minute_start_epoch_second(observed_epoch_second);
+    let normalized_upstream_base_url_host =
+        normalize_dashboard_network_upstream_host(Some(upstream_base_url_host))
+            .unwrap_or_else(|| DASHBOARD_NETWORK_UNKNOWN_UPSTREAM_HOST.to_string());
+    let key = DashboardNetworkMinuteBucketKey {
+        bucket_start_epoch_second,
+        source: source.to_string(),
+        upstream_base_url_host: normalized_upstream_base_url_host,
+        upstream_account_id,
+    };
+    let entry = inner.minute_buckets.entry(key).or_default();
+    entry.add_assign(totals);
 }
 
 fn record_bucket_delta_locked(
@@ -1027,6 +1161,10 @@ fn current_bucket_start_epoch_second(epoch_second: i64) -> i64 {
     epoch_second - epoch_second.rem_euclid(DASHBOARD_NETWORK_BUCKET_SECONDS)
 }
 
+fn current_minute_start_epoch_second(epoch_second: i64) -> i64 {
+    epoch_second - epoch_second.rem_euclid(60)
+}
+
 fn epoch_second_to_utc(epoch_second: i64) -> DateTime<Utc> {
     Utc.timestamp_opt(epoch_second, 0)
         .single()
@@ -1038,6 +1176,89 @@ fn normalize_dashboard_network_upstream_host(value: Option<&str>) -> Option<Stri
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.to_ascii_lowercase())
+}
+
+async fn upsert_dashboard_network_socket_minute_rows_tx(
+    tx: &mut SqliteConnection,
+    rows: &[DashboardNetworkMinuteRollupRow],
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let mut aggregates =
+        BTreeMap::<(i64, String, String, Option<i64>), DashboardNetworkByteTotals>::new();
+    for row in rows {
+        let entry = aggregates
+            .entry((
+                row.bucket_start_epoch,
+                row.source.clone(),
+                row.upstream_base_url_host.clone(),
+                row.upstream_account_id,
+            ))
+            .or_default();
+        entry.upload_bytes = entry.upload_bytes.saturating_add(row.upload_bytes.max(0));
+        entry.download_bytes = entry
+            .download_bytes
+            .saturating_add(row.download_bytes.max(0));
+    }
+
+    for ((bucket_start_epoch, source, upstream_base_url_host, upstream_account_id), totals) in
+        aggregates
+    {
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_socket_network_minute (
+                bucket_start_epoch,
+                source,
+                upstream_base_url_host,
+                upstream_account_id,
+                upload_bytes,
+                download_bytes,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+            ON CONFLICT(bucket_start_epoch, source, upstream_base_url_host, upstream_account_id) DO UPDATE SET
+                upload_bytes = upstream_socket_network_minute.upload_bytes + excluded.upload_bytes,
+                download_bytes = upstream_socket_network_minute.download_bytes + excluded.download_bytes,
+                updated_at = datetime('now')
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .bind(source)
+        .bind(upstream_base_url_host)
+        .bind(upstream_account_id)
+        .bind(totals.upload_bytes.max(0))
+        .bind(totals.download_bytes.max(0))
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn flush_dashboard_network_socket_minute_rollups(
+    pool: &Pool<Sqlite>,
+    dashboard_network_speed_cache: &DashboardNetworkSpeedCache,
+    observed_at: DateTime<Utc>,
+) -> Result<u64> {
+    let rows = dashboard_network_speed_cache.drain_completed_socket_minute_rows(observed_at);
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    let mut tx = pool.begin().await?;
+    if let Err(err) = upsert_dashboard_network_socket_minute_rows_tx(tx.as_mut(), &rows).await {
+        let _ = tx.rollback().await;
+        dashboard_network_speed_cache.restore_completed_socket_minute_rows(rows);
+        return Err(err).context("failed to flush dashboard socket minute rollups");
+    }
+    if let Err(err) = tx.commit().await {
+        dashboard_network_speed_cache.restore_completed_socket_minute_rows(rows);
+        return Err(err).context("failed to commit dashboard socket minute rollups");
+    }
+
+    Ok(rows.len() as u64)
 }
 
 #[cfg(test)]

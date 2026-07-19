@@ -509,6 +509,7 @@ pub(crate) async fn resolve_proxy_request_timeouts(
 pub(crate) struct ForwardProxyUpstreamResponse {
     pub(crate) selected_proxy: SelectedForwardProxy,
     pub(crate) response: ProxyUpstreamResponseBody,
+    pub(crate) transport_bytes_live_counted: bool,
     pub(crate) connect_latency_ms: f64,
     /// `Instant` captured right before sending the upstream request for the final attempt.
     /// Used to record end-to-end latency once streaming finishes.
@@ -684,6 +685,7 @@ pub(crate) async fn read_pool_upstream_first_chunk_with_timeout(
 pub(crate) struct PoolUpstreamResponse {
     pub(crate) account: PoolResolvedAccount,
     pub(crate) response: ProxyUpstreamResponseBody,
+    pub(crate) transport_bytes_live_counted: bool,
     pub(crate) stream_timeout: Option<Duration>,
     pub(crate) oauth_responses_debug: Option<oauth_bridge::OauthResponsesDebugInfo>,
     pub(crate) connect_latency_ms: f64,
@@ -1419,7 +1421,7 @@ pub(crate) struct PoolReplayBodyBuffer {
 }
 
 pub(crate) struct PoolReplayableRequestBody {
-    pub(crate) body: reqwest::Body,
+    pub(crate) body: Body,
     pub(crate) status_rx: watch::Receiver<PoolReplayBodyStatus>,
     pub(crate) sticky_key_probe_rx: watch::Receiver<PoolReplayBodyStickyKeyProbeStatus>,
     pub(crate) cancel: CancellationToken,
@@ -2103,10 +2105,10 @@ pub(crate) async fn pool_replay_snapshot_from_vec(
 }
 
 impl PoolReplayBodySnapshot {
-    pub(crate) fn to_reqwest_body(&self) -> reqwest::Body {
+    pub(crate) fn to_http_body(&self) -> Body {
         match self {
-            Self::Empty => reqwest::Body::from(Bytes::new()),
-            Self::Memory(bytes) => reqwest::Body::from(bytes.clone()),
+            Self::Empty => Body::from(Bytes::new()),
+            Self::Memory(bytes) => Body::from(bytes.clone()),
             Self::File { temp_file, size } => {
                 let temp_file = temp_file.clone();
                 let expected_size = *size;
@@ -2140,7 +2142,7 @@ impl PoolReplayBodySnapshot {
                         }
                     },
                 );
-                reqwest::Body::wrap_stream(stream)
+                Body::from_stream(stream)
             }
         }
     }
@@ -2306,7 +2308,7 @@ impl RequestBodyContentEncoding {
 
 #[derive(Debug)]
 pub(crate) struct PreparedPoolUpstreamRequestBody {
-    pub(crate) body: reqwest::Body,
+    pub(crate) body: Body,
     pub(crate) content_length: Option<usize>,
     pub(crate) content_encoding: RequestBodyContentEncoding,
     pub(crate) compression_mode: PoolRequestBodyCompressionMode,
@@ -2400,21 +2402,18 @@ pub(crate) fn http_visible_header_bytes_approx(headers: &HeaderMap) -> usize {
         .sum()
 }
 
-pub(crate) fn counted_reqwest_body_from_bytes(
-    bytes: Bytes,
-    counter: ObservedByteCounter,
-) -> reqwest::Body {
+pub(crate) fn counted_http_body_from_bytes(bytes: Bytes, counter: ObservedByteCounter) -> Body {
     if bytes.is_empty() {
-        return reqwest::Body::from(Bytes::new());
+        return Body::from(Bytes::new());
     }
     let stream = stream::once(async move {
         counter.add(bytes.len());
         Ok::<Bytes, io::Error>(bytes)
     });
-    reqwest::Body::wrap_stream(stream)
+    Body::from_stream(stream)
 }
 
-fn counted_reqwest_body_from_reader<R>(reader: R, counter: ObservedByteCounter) -> reqwest::Body
+fn counted_http_body_from_reader<R>(reader: R, counter: ObservedByteCounter) -> Body
 where
     R: AsyncRead + Send + 'static,
 {
@@ -2424,17 +2423,17 @@ where
         }
         chunk
     });
-    reqwest::Body::wrap_stream(stream)
+    Body::from_stream(stream)
 }
 
-fn counted_reqwest_body_from_snapshot(
+fn counted_http_body_from_snapshot(
     snapshot: &PoolReplayBodySnapshot,
     counter: ObservedByteCounter,
-) -> reqwest::Body {
+) -> Body {
     match snapshot {
-        PoolReplayBodySnapshot::Empty => reqwest::Body::from(Bytes::new()),
+        PoolReplayBodySnapshot::Empty => Body::from(Bytes::new()),
         PoolReplayBodySnapshot::Memory(bytes) => {
-            counted_reqwest_body_from_bytes(bytes.clone(), counter)
+            counted_http_body_from_bytes(bytes.clone(), counter)
         }
         PoolReplayBodySnapshot::File { temp_file, size } => {
             let temp_file = temp_file.clone();
@@ -2470,7 +2469,7 @@ fn counted_reqwest_body_from_snapshot(
                     }
                 },
             );
-            reqwest::Body::wrap_stream(stream)
+            Body::from_stream(stream)
         }
     }
 }
@@ -2729,7 +2728,7 @@ pub(crate) async fn build_pool_upstream_request_body(
     if matches!(prepared.snapshot, PoolReplayBodySnapshot::Empty) {
         let transmitted_body_bytes = ObservedByteCounter::default();
         return Ok(PreparedPoolUpstreamRequestBody {
-            body: reqwest::Body::from(Bytes::new()),
+            body: Body::from(Bytes::new()),
             content_length: Some(0),
             content_encoding: RequestBodyContentEncoding::Identity,
             compression_mode: PoolRequestBodyCompressionMode::Identity,
@@ -2758,7 +2757,7 @@ pub(crate) async fn build_pool_upstream_request_body(
     {
         let transmitted_body_bytes = ObservedByteCounter::default();
         return Ok(PreparedPoolUpstreamRequestBody {
-            body: counted_reqwest_body_from_snapshot(
+            body: counted_http_body_from_snapshot(
                 &prepared.snapshot,
                 transmitted_body_bytes.clone(),
             ),
@@ -2790,7 +2789,7 @@ pub(crate) async fn build_pool_upstream_request_body(
             )
         };
         return Ok(PreparedPoolUpstreamRequestBody {
-            body: counted_reqwest_body_from_snapshot(
+            body: counted_http_body_from_snapshot(
                 &prepared.snapshot,
                 transmitted_body_bytes.clone(),
             ),
@@ -2814,7 +2813,7 @@ pub(crate) async fn build_pool_upstream_request_body(
     if matches!(target_encoding, RequestBodyContentEncoding::Identity) {
         let transmitted_body_bytes = ObservedByteCounter::default();
         return Ok(PreparedPoolUpstreamRequestBody {
-            body: counted_reqwest_body_from_reader(decoded_reader, transmitted_body_bytes.clone()),
+            body: counted_http_body_from_reader(decoded_reader, transmitted_body_bytes.clone()),
             content_length: None,
             content_encoding: RequestBodyContentEncoding::Identity,
             compression_mode: PoolRequestBodyCompressionMode::Identity,
@@ -2844,7 +2843,7 @@ pub(crate) async fn build_pool_upstream_request_body(
     let encoded_reader = encode_pool_request_reader(decoded_reader, target_encoding, level);
     let transmitted_body_bytes = ObservedByteCounter::default();
     Ok(PreparedPoolUpstreamRequestBody {
-        body: counted_reqwest_body_from_reader(encoded_reader, transmitted_body_bytes.clone()),
+        body: counted_http_body_from_reader(encoded_reader, transmitted_body_bytes.clone()),
         content_length: None,
         content_encoding: target_encoding,
         compression_mode: PoolRequestBodyCompressionMode::Recompressed,
@@ -3385,7 +3384,7 @@ pub(crate) fn spawn_pool_replayable_request_body(
     });
 
     PoolReplayableRequestBody {
-        body: reqwest::Body::wrap_stream(ReceiverStream::new(rx)),
+        body: Body::from_stream(ReceiverStream::new(rx)),
         status_rx,
         sticky_key_probe_rx,
         cancel,

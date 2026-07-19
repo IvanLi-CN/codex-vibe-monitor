@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::{Arc as StdArc, Mutex as StdMutex};
 
 pub(crate) trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
 
@@ -237,6 +238,7 @@ pub(crate) fn websocket_requires_response_create_first_frame(path: &str) -> bool
 
 pub(crate) struct PreparedUpstreamWebSocket {
     upstream: UpstreamWsStream,
+    transport_flush_task: Option<UpstreamSocketFlushTask>,
     pending_attempt_record: Option<PendingPoolAttemptRecord>,
     deferred_cleanup_guard: Option<PoolEarlyPhaseOrphanCleanupGuard>,
     reservation_guard: PoolRoutingReservationGuard,
@@ -245,6 +247,60 @@ pub(crate) struct PreparedUpstreamWebSocket {
     prompt_cache_key: Option<String>,
     connect_latency_ms: f64,
     requires_response_create_first_frame: bool,
+}
+
+struct UpstreamSocketFlushTask {
+    task: JoinHandle<()>,
+    meter: UpstreamSocketByteMeter,
+    reporter: UpstreamTrafficReporter,
+    last_reported: StdArc<StdMutex<UpstreamSocketByteTotals>>,
+}
+
+impl UpstreamSocketFlushTask {
+    fn spawn(meter: UpstreamSocketByteMeter, reporter: UpstreamTrafficReporter) -> Self {
+        let last_reported = StdArc::new(StdMutex::new(meter.snapshot()));
+        let task_last_reported = last_reported.clone();
+        let task_meter = meter.clone();
+        let task_reporter = reporter.clone();
+        let task = tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_secs(1));
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                let mut last_reported = task_last_reported
+                    .lock()
+                    .expect("lock websocket upstream byte flush state");
+                let snapshot = task_meter.snapshot();
+                let delta = snapshot.delta_since(*last_reported);
+                *last_reported = snapshot;
+                if delta.upload_bytes > 0 || delta.download_bytes > 0 {
+                    task_reporter.record_delta(delta, Utc::now());
+                }
+            }
+        });
+        Self {
+            task,
+            meter,
+            reporter,
+            last_reported,
+        }
+    }
+}
+
+impl Drop for UpstreamSocketFlushTask {
+    fn drop(&mut self) {
+        self.task.abort();
+        let mut last_reported = self
+            .last_reported
+            .lock()
+            .expect("lock websocket upstream byte flush state");
+        let snapshot = self.meter.snapshot();
+        let delta = snapshot.delta_since(*last_reported);
+        *last_reported = snapshot;
+        if delta.upload_bytes > 0 || delta.download_bytes > 0 {
+            self.reporter.record_delta(delta, Utc::now());
+        }
+    }
 }
 
 pub(crate) struct PoolRoutingReservationGuard {
@@ -738,23 +794,42 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         }
     };
 
+    let socket_meter = UpstreamSocketByteMeter::default();
+    let traffic_reporter = UpstreamTrafficReporter::new(
+        state.clone(),
+        trace.invoke_id.clone(),
+        trace.occurred_at.clone(),
+        Some(account.account_id),
+        upstream_url.host_str(),
+    );
     let connect_started = Instant::now();
     let connect_timeout = runtime_timeouts.default_send_timeout;
     let connect_result = timeout(
         connect_timeout,
-        connect_upstream_websocket(request, &upstream_url, selected_proxy.endpoint_url.as_ref()),
+        connect_upstream_websocket(
+            request,
+            &upstream_url,
+            selected_proxy.endpoint_url.as_ref(),
+            socket_meter.clone(),
+        ),
     )
     .await;
-    let (upstream, selected_subprotocol) = match connect_result {
+    let (upstream, selected_subprotocol, transport_flush_task) = match connect_result {
         Ok(Ok((stream, response))) => {
+            traffic_reporter.record_delta(socket_meter.snapshot(), Utc::now());
+            let transport_flush_task = Some(UpstreamSocketFlushTask::spawn(
+                socket_meter.clone(),
+                traffic_reporter.clone(),
+            ));
             let selected_subprotocol = response
                 .headers()
                 .get(HeaderName::from_static("sec-websocket-protocol"))
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_string);
-            (stream, selected_subprotocol)
+            (stream, selected_subprotocol, transport_flush_task)
         }
         Ok(Err(err)) => {
+            traffic_reporter.record_delta(socket_meter.snapshot(), Utc::now());
             let message = format!("failed to contact websocket upstream: {err}");
             let should_mark_ws_unsupported =
                 websocket_upstream_error_marks_account_ws_unsupported(&err);
@@ -815,6 +890,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
             });
         }
         Err(_) => {
+            traffic_reporter.record_delta(socket_meter.snapshot(), Utc::now());
             let message = proxy_request_send_timeout_message(None, connect_timeout);
             finalize_ws_attempt(
                 state.as_ref(),
@@ -864,6 +940,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
     if let Some(required_subprotocol) = required_subprotocol
         && selected_subprotocol.as_deref() != Some(required_subprotocol)
     {
+        traffic_reporter.record_delta(socket_meter.snapshot(), Utc::now());
         let message = match selected_subprotocol.as_deref() {
             Some(selected) => format!(
                 "websocket upstream selected subprotocol {selected}, expected {required_subprotocol}"
@@ -951,6 +1028,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
 
     Ok(PreparedUpstreamWebSocket {
         upstream,
+        transport_flush_task,
         pending_attempt_record,
         deferred_cleanup_guard,
         reservation_guard,
@@ -973,6 +1051,7 @@ pub(crate) async fn proxy_websocket_tunnel(
 ) {
     let PreparedUpstreamWebSocket {
         upstream,
+        transport_flush_task: _transport_flush_task,
         pending_attempt_record,
         mut deferred_cleanup_guard,
         mut reservation_guard,
@@ -2255,12 +2334,13 @@ pub(crate) async fn connect_upstream_websocket(
     request: TungsteniteRequest<()>,
     upstream_url: &Url,
     forward_proxy_url: Option<&Url>,
+    meter: UpstreamSocketByteMeter,
 ) -> std::result::Result<
     (UpstreamWsStream, tungstenite::handshake::client::Response),
     tungstenite::Error,
 > {
     let Some(forward_proxy_url) = forward_proxy_url else {
-        let stream = connect_tcp_target(upstream_url).await?;
+        let stream = CountedIo::new(connect_tcp_target(upstream_url).await?, meter);
         return client_async_tls_with_config(request, Box::new(stream) as BoxedWsIo, None, None)
             .await;
     };
@@ -2303,10 +2383,10 @@ pub(crate) async fn connect_upstream_websocket(
             proxy_port,
             &socks_target_host,
             upstream_port,
+            meter.clone(),
         )
         .await?;
-        return client_async_tls_with_config(request, Box::new(stream) as BoxedWsIo, None, None)
-            .await;
+        return client_async_tls_with_config(request, stream, None, None).await;
     }
     if !matches!(proxy_scheme, "http" | "https") {
         return Err(tungstenite::Error::Io(io::Error::new(
@@ -2317,7 +2397,8 @@ pub(crate) async fn connect_upstream_websocket(
         )));
     }
 
-    let mut stream = connect_http_forward_proxy(forward_proxy_url, proxy_host, proxy_port).await?;
+    let mut stream =
+        connect_http_forward_proxy(forward_proxy_url, proxy_host, proxy_port, meter).await?;
     let mut connect_request =
         format!("CONNECT {target_authority} HTTP/1.1\r\nHost: {target_authority}\r\n");
     if let Some(credential) = forward_proxy_basic_auth_credential(forward_proxy_url) {
@@ -2413,10 +2494,14 @@ pub(crate) async fn connect_http_forward_proxy(
     forward_proxy_url: &Url,
     proxy_host: &str,
     proxy_port: u16,
+    meter: UpstreamSocketByteMeter,
 ) -> std::result::Result<BoxedWsIo, tungstenite::Error> {
-    let stream = TcpStream::connect((proxy_host, proxy_port))
-        .await
-        .map_err(tungstenite::Error::Io)?;
+    let stream = CountedIo::new(
+        TcpStream::connect((proxy_host, proxy_port))
+            .await
+            .map_err(tungstenite::Error::Io)?,
+        meter,
+    );
     if forward_proxy_url.scheme() != "https" {
         return Ok(Box::new(stream));
     }
@@ -2447,10 +2532,14 @@ pub(crate) async fn connect_socks5_forward_proxy(
     proxy_port: u16,
     upstream_host: &str,
     upstream_port: u16,
-) -> std::result::Result<TcpStream, tungstenite::Error> {
-    let mut stream = TcpStream::connect((proxy_host, proxy_port))
-        .await
-        .map_err(tungstenite::Error::Io)?;
+    meter: UpstreamSocketByteMeter,
+) -> std::result::Result<BoxedWsIo, tungstenite::Error> {
+    let mut stream = CountedIo::new(
+        TcpStream::connect((proxy_host, proxy_port))
+            .await
+            .map_err(tungstenite::Error::Io)?,
+        meter,
+    );
     let username = forward_proxy_username(forward_proxy_url);
     let password = forward_proxy_password(forward_proxy_url).unwrap_or_default();
     let use_password_auth = !username.is_empty();
@@ -2576,7 +2665,7 @@ pub(crate) async fn connect_socks5_forward_proxy(
         .read_exact(&mut discard)
         .await
         .map_err(tungstenite::Error::Io)?;
-    Ok(stream)
+    Ok(Box::new(stream))
 }
 
 pub(crate) async fn resolve_socks5_local_target_host(

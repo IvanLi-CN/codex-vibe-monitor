@@ -679,7 +679,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     method: Method,
     original_uri: &Uri,
     headers: &HeaderMap,
-    body: reqwest::Body,
+    body: Body,
     prompt_cache_key: Option<&str>,
     handshake_timeout: Duration,
     responses_total_timeout: Option<Duration>,
@@ -761,9 +761,14 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     let mut pending_attempt_record: Option<PendingPoolAttemptRecord>;
     let mut deferred_early_phase_cleanup_guard: Option<PoolEarlyPhaseOrphanCleanupGuard>;
     let mut live_attempt_activity_lease: Option<PoolLiveAttemptActivityLease>;
-    let (response, mut oauth_responses_debug, forward_proxy_selection) = match &account.auth {
+    let (
+        response,
+        mut oauth_responses_debug,
+        forward_proxy_selection,
+        transport_bytes_live_counted,
+    ) = match &account.auth {
         PoolResolvedAuth::ApiKey { authorization } => {
-            let (forward_proxy_scope, selected_proxy, client) =
+            let (forward_proxy_scope, selected_proxy, _client) =
                 match select_pool_account_forward_proxy_client(state.as_ref(), &account).await {
                     Ok(selection) => selection,
                     Err(message) => {
@@ -868,22 +873,45 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     "failed to advance live-first pool attempt into sending-request phase"
                 );
             }
-            let mut request = client.request(method.clone(), api_key_target_url);
+            let mut outbound_headers = HeaderMap::new();
             for (name, value) in headers {
                 if *name == header::AUTHORIZATION || *name == header::CONTENT_LENGTH {
                     continue;
                 }
                 if should_forward_proxy_header(name, &request_connection_scoped) {
-                    request = request.header(name, value);
+                    outbound_headers.append(name.clone(), value.clone());
                 }
             }
-            request = request.header(header::AUTHORIZATION, authorization.clone());
-            request = request.body(body);
-            match timeout(attempt_send_timeout, request.send()).await {
+            if let Ok(value) = HeaderValue::from_str(authorization) {
+                outbound_headers.insert(header::AUTHORIZATION, value);
+            }
+            let live_reporter = trace_context.map(|trace| {
+                UpstreamTrafficReporter::new(
+                    state.clone(),
+                    trace.invoke_id.as_str(),
+                    trace.occurred_at.as_str(),
+                    Some(account.account_id),
+                    account.upstream_base_url.host_str(),
+                )
+            });
+            match timeout(
+                attempt_send_timeout,
+                send_counted_upstream_http_request(
+                    method.clone(),
+                    &api_key_target_url,
+                    &outbound_headers,
+                    body,
+                    selected_proxy.endpoint_url.as_ref(),
+                    live_reporter,
+                ),
+            )
+            .await
+            {
                 Ok(Ok(response)) => (
-                    ProxyUpstreamResponseBody::Reqwest(response),
+                    ProxyUpstreamResponseBody::Axum(response.response),
                     None,
                     Some((forward_proxy_scope, selected_proxy)),
+                    true,
                 ),
                 Ok(Err(err)) => {
                     record_pool_account_forward_proxy_result(
@@ -894,7 +922,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     )
                     .await;
                     release_pool_routing_reservation(state.as_ref(), &reservation_key);
-                    let message = format!("failed to contact upstream: {err}");
+                    let message = err.message;
                     finalize_tracked_live_first_pool_attempt(
                         state.as_ref(),
                         pending_attempt_record.as_ref(),
@@ -988,7 +1016,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             access_token,
             chatgpt_account_id,
         } => {
-            let (forward_proxy_scope, selected_proxy, client) =
+            let (forward_proxy_scope, selected_proxy, _client) =
                 match select_pool_account_forward_proxy_client(state.as_ref(), &account).await {
                     Ok(selection) => selection,
                     Err(message) => {
@@ -1065,12 +1093,20 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     "failed to advance live-first oauth pool attempt into sending-request phase"
                 );
             }
-            let oauth_response = oauth_bridge::send_oauth_upstream_request(
-                &client,
+            let live_reporter = trace_context.map(|trace| {
+                UpstreamTrafficReporter::new(
+                    state.clone(),
+                    trace.invoke_id.as_str(),
+                    trace.occurred_at.as_str(),
+                    Some(account.account_id),
+                    account.upstream_base_url.host_str(),
+                )
+            });
+            let oauth_response = oauth_bridge::send_counted_oauth_upstream_request(
                 method.clone(),
                 original_uri,
                 headers,
-                oauth_bridge::OauthUpstreamRequestBody::Stream {
+                oauth_bridge::CountedOauthUpstreamRequestBody::Stream {
                     body,
                     debug_body_prefix: None,
                     request_is_stream: None,
@@ -1083,12 +1119,15 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 chatgpt_account_id.as_deref(),
                 Some(&state.oauth_installation_seed),
                 state.upstream_accounts.crypto_key.as_ref(),
+                selected_proxy.endpoint_url.as_ref(),
+                live_reporter,
             )
             .await;
             (
                 ProxyUpstreamResponseBody::Axum(oauth_response.response),
                 oauth_response.request_debug,
                 Some((forward_proxy_scope, selected_proxy)),
+                true,
             )
         }
     };
@@ -1235,6 +1274,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             return Ok(PoolUpstreamResponse {
                 account,
                 response: ProxyUpstreamResponseBody::Axum(response),
+                transport_bytes_live_counted: false,
                 stream_timeout,
                 oauth_responses_debug,
                 connect_latency_ms,
@@ -1544,6 +1584,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     Ok(PoolUpstreamResponse {
         account,
         response,
+        transport_bytes_live_counted,
         stream_timeout,
         oauth_responses_debug,
         connect_latency_ms,
@@ -3065,6 +3106,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 let live_pool_attempt_activity_lease =
                                     upstream.live_attempt_activity_lease;
                                 let upstream_response = upstream.response;
+                                let transport_bytes_live_counted =
+                                    upstream.transport_bytes_live_counted;
                                 let rewritten_location = normalize_proxy_location_header(
                                     upstream_response.status(),
                                     upstream_response.headers(),
@@ -3262,7 +3305,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         forwarded_chunks = forwarded_chunks.saturating_add(1);
                                         forwarded_bytes =
                                             forwarded_bytes.saturating_add(chunk.len());
-                                        if let Some(invoke_id) = invoke_id_for_record.as_deref() {
+                                        if !transport_bytes_live_counted
+                                            && let Some(invoke_id) = invoke_id_for_record.as_deref()
+                                        {
                                             state_for_record
                                                 .dashboard_network_speed_cache
                                                 .record_response_chunk_bytes(
@@ -3319,8 +3364,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                     forwarded_chunks.saturating_add(1);
                                                 forwarded_bytes =
                                                     forwarded_bytes.saturating_add(chunk.len());
-                                                if let Some(invoke_id) =
-                                                    invoke_id_for_record.as_deref()
+                                                if !transport_bytes_live_counted
+                                                    && let Some(invoke_id) =
+                                                        invoke_id_for_record.as_deref()
                                                 {
                                                     state_for_record
                                                         .dashboard_network_speed_cache
@@ -3754,6 +3800,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
             upstream.deferred_early_phase_cleanup_guard;
         let live_pool_attempt_activity_lease = upstream.live_attempt_activity_lease;
         let upstream_response = upstream.response;
+        let transport_bytes_live_counted = upstream.transport_bytes_live_counted;
         let rewritten_location = normalize_proxy_location_header(
             upstream_response.status(),
             upstream_response.headers(),
@@ -3962,7 +4009,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                 response_parse_buffer.append(&chunk);
                 forwarded_chunks = forwarded_chunks.saturating_add(1);
                 forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
-                if let Some(invoke_id) = invoke_id_for_record.as_deref() {
+                if !transport_bytes_live_counted
+                    && let Some(invoke_id) = invoke_id_for_record.as_deref()
+                {
                     state_for_record
                         .dashboard_network_speed_cache
                         .record_response_chunk_bytes(
@@ -4009,7 +4058,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         response_parse_buffer.append(&chunk);
                         forwarded_chunks = forwarded_chunks.saturating_add(1);
                         forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
-                        if let Some(invoke_id) = invoke_id_for_record.as_deref() {
+                        if !transport_bytes_live_counted
+                            && let Some(invoke_id) = invoke_id_for_record.as_deref()
+                        {
                             state_for_record
                                 .dashboard_network_speed_cache
                                 .record_response_chunk_bytes(
@@ -4216,13 +4267,14 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
     target_url: Url,
     headers: &HeaderMap,
     body: Option<Bytes>,
+    live_reporter: Option<UpstreamTrafficReporter>,
     handshake_timeout: Duration,
     capture_target: Option<ProxyCaptureTarget>,
     upstream_429_max_retries: u8,
 ) -> Result<ForwardProxyUpstreamResponse, ForwardProxyUpstreamError> {
-    async fn drain_reqwest_response_body_bytes(response: reqwest::Response) -> usize {
+    async fn drain_proxy_response_body_bytes(response: ProxyUpstreamResponseBody) -> usize {
         let mut total = 0usize;
-        let mut stream = response.bytes_stream();
+        let mut stream = response.into_bytes_stream();
         while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(bytes) => {
@@ -4267,57 +4319,43 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
                 });
             }
         };
-        let client = match state
-            .http_clients
-            .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
-        {
-            Ok(client) => client,
-            Err(err) => {
-                return Err(ForwardProxyUpstreamError {
-                    selected_proxy,
-                    status: StatusCode::BAD_GATEWAY,
-                    message: format!("failed to initialize forward proxy client: {err}"),
-                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                    attempt_failure_kind: FORWARD_PROXY_FAILURE_SEND_ERROR,
-                    connect_latency_ms: 0.0,
-                    http_approx: ForwardProxyHttpApproxObservation::default(),
-                });
-            }
-        };
-
-        let mut request = client.request(method.clone(), target_url.clone());
         let mut outbound_headers = HeaderMap::new();
         for (name, value) in headers {
             if should_forward_proxy_header(name, &request_connection_scoped) {
-                request = request.header(name, value);
                 outbound_headers.append(name.clone(), value.clone());
             }
         }
-        let body_counter = ObservedByteCounter::default();
-        if let Some(body_bytes) = body.clone() {
-            if !outbound_headers.contains_key(header::CONTENT_LENGTH)
-                && let Ok(content_length) = HeaderValue::from_str(&body_bytes.len().to_string())
-            {
-                outbound_headers.insert(header::CONTENT_LENGTH, content_length.clone());
-                request = request.header(header::CONTENT_LENGTH, content_length);
-            }
-            request = request.body(counted_reqwest_body_from_bytes(
-                body_bytes,
-                body_counter.clone(),
-            ));
+        let transmitted_body_bytes = body.as_ref().map(Bytes::len).unwrap_or_default();
+        if let Some(body_bytes) = body.clone()
+            && !outbound_headers.contains_key(header::CONTENT_LENGTH)
+            && let Ok(content_length) = HeaderValue::from_str(&body_bytes.len().to_string())
+        {
+            outbound_headers.insert(header::CONTENT_LENGTH, content_length.clone());
         }
         let request_header_bytes_approx = http_visible_header_bytes_approx(&outbound_headers);
 
         let connect_started = Instant::now();
-        let response = match timeout(handshake_timeout, request.send()).await {
+        let response = match timeout(
+            handshake_timeout,
+            send_counted_upstream_http_request(
+                method.clone(),
+                &target_url,
+                &outbound_headers,
+                body.clone().map(Body::from).unwrap_or_else(Body::empty),
+                selected_proxy.endpoint_url.as_ref(),
+                live_reporter.clone(),
+            ),
+        )
+        .await
+        {
             Ok(Ok(response)) => response,
             Ok(Err(err)) => {
                 let attempt_upload_bytes =
-                    request_header_bytes_approx.saturating_add(body_counter.load());
+                    request_header_bytes_approx.saturating_add(transmitted_body_bytes);
                 return Err(ForwardProxyUpstreamError {
                     selected_proxy,
                     status: StatusCode::BAD_GATEWAY,
-                    message: format!("failed to contact upstream: {err}"),
+                    message: err.message,
                     failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                     attempt_failure_kind: FORWARD_PROXY_FAILURE_SEND_ERROR,
                     connect_latency_ms: elapsed_ms(connect_started),
@@ -4331,7 +4369,7 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
                                 algorithm: observation.algorithm.clone(),
                                 mode: observation.mode.clone(),
                                 logical_body_bytes: observation.logical_body_bytes,
-                                transmitted_body_bytes: body_counter.load(),
+                                transmitted_body_bytes,
                             }
                         }),
                         request_transmission_complete: false,
@@ -4340,7 +4378,7 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
             }
             Err(_) => {
                 let attempt_upload_bytes =
-                    request_header_bytes_approx.saturating_add(body_counter.load());
+                    request_header_bytes_approx.saturating_add(transmitted_body_bytes);
                 return Err(ForwardProxyUpstreamError {
                     selected_proxy,
                     status: StatusCode::BAD_GATEWAY,
@@ -4358,7 +4396,7 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
                                 algorithm: observation.algorithm.clone(),
                                 mode: observation.mode.clone(),
                                 logical_body_bytes: observation.logical_body_bytes,
-                                transmitted_body_bytes: body_counter.load(),
+                                transmitted_body_bytes,
                             }
                         }),
                         request_transmission_complete: false,
@@ -4368,13 +4406,15 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
         };
 
         let connect_latency_ms = elapsed_ms(connect_started);
-        let attempt_upload_bytes = request_header_bytes_approx.saturating_add(body_counter.load());
+        let attempt_upload_bytes =
+            request_header_bytes_approx.saturating_add(transmitted_body_bytes);
         approx_upload_bytes = approx_upload_bytes.saturating_add(attempt_upload_bytes);
-        let response_header_bytes_approx = http_visible_header_bytes_approx(response.headers());
+        let response_header_bytes_approx =
+            http_visible_header_bytes_approx(response.response.headers());
         approx_download_bytes_before_response_body =
             approx_download_bytes_before_response_body.saturating_add(response_header_bytes_approx);
         let request_transmission_complete =
-            request_body_len.is_none_or(|len| body_counter.load() == len);
+            request_body_len.is_none_or(|len| transmitted_body_bytes == len);
         let final_request_compression =
             request_compression
                 .as_ref()
@@ -4382,12 +4422,13 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
                     algorithm: observation.algorithm.clone(),
                     mode: observation.mode.clone(),
                     logical_body_bytes: observation.logical_body_bytes,
-                    transmitted_body_bytes: body_counter.load(),
+                    transmitted_body_bytes,
                 });
-        if response.status() != StatusCode::TOO_MANY_REQUESTS {
+        if response.response.status() != StatusCode::TOO_MANY_REQUESTS {
             return Ok(ForwardProxyUpstreamResponse {
                 selected_proxy,
-                response: ProxyUpstreamResponseBody::Reqwest(response),
+                response: ProxyUpstreamResponseBody::Axum(response.response),
+                transport_bytes_live_counted: true,
                 connect_latency_ms,
                 attempt_started_at: connect_started,
                 attempt_recorded: false,
@@ -4414,6 +4455,7 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
             .await;
 
             let retry_delay = response
+                .response
                 .headers()
                 .get(header::RETRY_AFTER)
                 .and_then(parse_retry_after_delay)
@@ -4429,7 +4471,12 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
                 "upstream responded 429; retrying forward proxy request"
             );
             approx_download_bytes_before_response_body = approx_download_bytes_before_response_body
-                .saturating_add(drain_reqwest_response_body_bytes(response).await);
+                .saturating_add(
+                    drain_proxy_response_body_bytes(ProxyUpstreamResponseBody::Axum(
+                        response.response,
+                    ))
+                    .await,
+                );
             sleep(retry_delay).await;
             continue;
         }
@@ -4438,7 +4485,8 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
         // the response body, so a later stream error can override this classification.
         return Ok(ForwardProxyUpstreamResponse {
             selected_proxy,
-            response: ProxyUpstreamResponseBody::Reqwest(response),
+            response: ProxyUpstreamResponseBody::Axum(response.response),
+            transport_bytes_live_counted: true,
             connect_latency_ms,
             attempt_started_at: connect_started,
             attempt_recorded: false,
