@@ -90,7 +90,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
       items: [
         {
           attemptId: "4V7MYPJG",
-          invokeId: "POOLCALL001",
+          invokeId: "K7QM9ZD4HP",
           occurredAt: "2026-07-11T12:00:00.000Z",
           endpoint: "/v1/responses",
           upstreamAccountId: 101,
@@ -131,45 +131,50 @@ describe("UpstreamAccountAttemptTimeline", () => {
     renderTimeline();
     await flushAsync();
 
-    const table = host?.querySelector<HTMLTableElement>(
-      '[data-testid="upstream-account-call-records-table"]',
+    const list = host?.querySelector<HTMLElement>('[data-testid="upstream-account-attempt-list"]');
+    expect(list).not.toBeNull();
+    const card = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-4V7MYPJG"]',
     );
-    expect(table).not.toBeNull();
-    expect(table?.textContent).toMatch(/上游 HTTP 500|upstream http 500/i);
-    expect(table?.textContent).toContain("JP Edge 01");
-    expect(table?.querySelector("th")?.parentElement?.textContent).not.toMatch(/端点|endpoint/i);
-    const mobileTable = host?.querySelector<HTMLTableElement>(
-      '[data-testid="upstream-account-call-records-mobile-table"]',
+    expect(card).not.toBeNull();
+    expect(card?.textContent).toMatch(/上游 HTTP 500|upstream http 500/i);
+    expect(card?.textContent).toContain("K7QM9ZD4HP");
+    expect(card?.textContent).not.toContain("POOLCALL001");
+    const requestHeadersButton = Array.from(card?.querySelectorAll("button") ?? []).find((button) =>
+      /请求头|headers/i.test(button.textContent ?? ""),
     );
-    expect(mobileTable?.querySelector("a")?.className).toContain("whitespace-nowrap");
-    expect(mobileTable?.querySelector("a")?.className).not.toContain("truncate");
-
-    const disclosure = host?.querySelector<HTMLDetailsElement>(
-      '[data-testid="account-attempt-evidence-4V7MYPJG"]',
-    );
-    expect(disclosure).not.toBeNull();
-    expect(disclosure?.closest("td")?.colSpan).toBe(7);
-    expect(disclosure?.querySelector("summary")?.className).toContain("min-h-11");
+    expect(requestHeadersButton).toBeDefined();
     act(() => {
-      disclosure
-        ?.querySelector("summary")
-        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      requestHeadersButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(disclosure?.open).toBe(true);
-    expect(disclosure?.textContent).toContain("req_upstream_123");
-    expect(disclosure?.textContent).toContain("route-tokyo-primary");
-    expect(disclosure?.textContent).toMatch(/下游 HTTP|downstream http/i);
-    expect(disclosure?.textContent).toContain("502");
-    expect(disclosure?.textContent).toMatch(/下游请求压缩|downstream request compression/i);
-    expect(disclosure?.textContent).toMatch(/上游请求压缩|upstream request compression/i);
-    expect(disclosure?.textContent).toMatch(/压缩发送模式|compression send mode/i);
-    expect(disclosure?.textContent).toMatch(/gzip/i);
-    expect(disclosure?.textContent).toMatch(/zstd/i);
-    expect(disclosure?.textContent).toContain("-42% (1,000 B -> 580 B)");
-    expect(disclosure?.textContent).toContain("644 B");
-    expect(disclosure?.textContent).toContain("812 B");
-    expect(disclosure?.textContent).toMatch(/upstream returned an oversized diagnostic payload/i);
-    expect(disclosure?.querySelector("dl")?.className).toContain("2xl:grid-cols-5");
+    expect(card?.textContent).toContain("JP Edge 01");
+    expect(card?.textContent).toContain("route-tokyo-primary");
+    const requestBodyButton = Array.from(card?.querySelectorAll("button") ?? []).find((button) =>
+      /请求体|body/i.test(button.textContent ?? ""),
+    );
+    expect(requestBodyButton).toBeDefined();
+    act(() => {
+      requestBodyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(card?.textContent).toMatch(/http request compression|http 请求压缩/i);
+    expect(card?.textContent).toMatch(/zstd/i);
+    expect(card?.textContent).toContain("-42% (1,000 B -> 580 B)");
+    const timingButton = Array.from(card?.querySelectorAll("button") ?? []).find((button) =>
+      /时间|timing/i.test(button.textContent ?? ""),
+    );
+    expect(timingButton).toBeDefined();
+    act(() => {
+      timingButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(card?.textContent).toContain("req_upstream_123");
+    const responseButton = Array.from(card?.querySelectorAll("button") ?? []).find((button) =>
+      /^(响应|response)/i.test((button.textContent ?? "").trim()),
+    );
+    expect(responseButton).toBeDefined();
+    act(() => {
+      responseButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(card?.textContent).toMatch(/upstream returned an oversized diagnostic payload/i);
   });
 
   it("shows the pending attempt phase without adding another permanent column", async () => {
@@ -177,7 +182,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
       items: [
         {
           attemptId: "QADKN5Z9",
-          invokeId: "POOLPENDING",
+          invokeId: "M8R7XZ4Q2W",
           occurredAt: "2026-07-11T12:00:00.000Z",
           endpoint: "/v1/responses",
           upstreamAccountId: 101,
@@ -200,17 +205,18 @@ describe("UpstreamAccountAttemptTimeline", () => {
     renderTimeline();
     await flushAsync();
 
-    const table = host?.querySelector<HTMLTableElement>(
-      '[data-testid="upstream-account-call-records-table"]',
+    const card = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-QADKN5Z9"]',
     );
-    expect(table?.textContent).toMatch(/等待首字节|waiting for first byte/i);
-    expect(table?.querySelector("th")?.parentElement?.textContent).not.toMatch(/阶段|phase/i);
+    expect(card).not.toBeNull();
+    expect(card?.textContent).toContain("waiting_first_byte");
+    expect(card?.textContent).not.toMatch(/阶段|phase/i);
   });
 
   it("opens the exact attempt diagnostics when event navigation focuses it", async () => {
     const focusedAttempt = {
       attemptId: "YG7P25XG",
-      invokeId: "POOLFOCUSED",
+      invokeId: "YG7P25XG9K",
       occurredAt: "2026-07-11T12:00:00.000Z",
       endpoint: "/v1/responses",
       upstreamAccountId: 101,
@@ -243,10 +249,11 @@ describe("UpstreamAccountAttemptTimeline", () => {
     renderTimeline("YG7P25XG");
     await flushAsync();
 
-    const disclosures = host?.querySelectorAll<HTMLDetailsElement>(
-      '[data-testid="account-attempt-evidence-YG7P25XG"]',
+    const record = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-YG7P25XG"]',
     );
-    expect(disclosures).toHaveLength(2);
-    expect(Array.from(disclosures ?? []).every((disclosure) => disclosure.open)).toBe(true);
+    expect(record).not.toBeNull();
+    expect(record?.textContent).toMatch(/关键诊断|key diagnostics/i);
+    expect(record?.textContent).toMatch(/上游 HTTP 状态|upstream http/i);
   });
 });

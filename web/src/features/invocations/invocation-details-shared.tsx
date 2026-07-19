@@ -35,6 +35,7 @@ import {
   getReasoningEffortTone,
   REASONING_EFFORT_TONE_CLASSNAMES,
 } from "./invocation-table-reasoning";
+import { PoolAttemptRecordCard } from "./PoolAttemptRecordCard";
 import { StructuredPayloadViewer } from "./StructuredPayloadViewer";
 
 export const FALLBACK_CELL = "—";
@@ -1052,43 +1053,6 @@ function resolvePoolAttemptPhase(attempt: ApiPoolUpstreamRequestAttempt) {
   return "failed";
 }
 
-function poolAttemptPhaseMeta(phase: string | null | undefined): {
-  variant: "default" | "secondary" | "warning" | "info";
-  key: TranslationKey;
-} {
-  switch (phase?.trim().toLowerCase()) {
-    case "connecting":
-      return {
-        variant: "secondary",
-        key: "table.poolAttempts.phase.connecting",
-      };
-    case "sending_request":
-      return {
-        variant: "default",
-        key: "table.poolAttempts.phase.sendingRequest",
-      };
-    case "waiting_first_byte":
-      return {
-        variant: "warning",
-        key: "table.poolAttempts.phase.waitingFirstByte",
-      };
-    case "streaming_response":
-      return {
-        variant: "info",
-        key: "table.poolAttempts.phase.streamingResponse",
-      };
-    case "completed":
-      return {
-        variant: "secondary",
-        key: "table.poolAttempts.phase.completed",
-      };
-    case "failed":
-      return { variant: "secondary", key: "table.poolAttempts.phase.failed" };
-    default:
-      return { variant: "secondary", key: "table.poolAttempts.phase.unknown" };
-  }
-}
-
 function isPoolAttemptTerminal(attempt: ApiPoolUpstreamRequestAttempt) {
   if (attempt.finishedAt?.trim()) return true;
   return attempt.status.trim().toLowerCase() !== "pending";
@@ -1575,14 +1539,6 @@ function renderPoolAttemptsContent(
             {realAttempts && realAttempts.length > 0 ? (
               <div className="space-y-2" data-testid="pool-attempts-list">
                 {realAttempts.map((attempt) => {
-                  const statusMeta = poolAttemptStatusMeta(attempt.status);
-                  const phase = resolvePoolAttemptPhase(attempt);
-                  const phaseMeta = poolAttemptPhaseMeta(phase);
-                  const accountLabel = formatPoolAttemptAccountLabel(attempt);
-                  const httpStatusValue = formatOptionalStatusCode(attempt.httpStatus);
-                  const downstreamHttpStatusValue = formatOptionalStatusCode(
-                    attempt.downstreamHttpStatus,
-                  );
                   const proxyBindingDisplay = formatPoolAttemptProxyBindingDisplay(
                     attempt,
                     proxyBindingNodesByKey,
@@ -1591,123 +1547,14 @@ function renderPoolAttemptsContent(
                     focusedAttemptId != null && attempt.attemptId === focusedAttemptId;
 
                   return (
-                    <div
+                    <PoolAttemptRecordCard
                       key={`${attempt.attemptId}-${attempt.attemptIndex}`}
-                      className={cn(
-                        "rounded-lg border bg-base-100/70 p-3",
-                        isFocused
-                          ? "border-primary/45 bg-primary/8 ring-1 ring-inset ring-primary/35"
-                          : "border-base-300/70",
-                      )}
-                      data-testid="pool-attempt-item"
-                      data-attempt-id={attempt.attemptId}
+                      attempt={attempt}
+                      proxyDisplay={proxyBindingDisplay}
+                      isFocused={isFocused}
+                      t={t}
+                      testId="pool-attempt-item"
                     >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Badge variant={statusMeta.variant}>{t(statusMeta.key)}</Badge>
-                        {!isPoolAttemptTerminal(attempt) ? (
-                          <Badge variant={phaseMeta.variant} data-testid="pool-attempt-phase-badge">
-                            {t(phaseMeta.key)}
-                          </Badge>
-                        ) : null}
-                        <span className="font-mono text-xs text-base-content/70">
-                          #{attempt.attemptIndex}
-                        </span>
-                        <span className="font-mono text-xs text-info">{attempt.attemptId}</span>
-                        <span className="text-sm font-medium">{accountLabel}</span>
-                      </div>
-                      <div className="mt-2 grid gap-2 text-sm md:grid-cols-2 xl:grid-cols-3">
-                        <div className="flex items-start gap-2">
-                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                            {t("table.poolAttempts.retry")}
-                          </span>
-                          <span className="font-mono">
-                            {attempt.sameAccountRetryIndex}/{attempt.distinctAccountIndex}
-                          </span>
-                        </div>
-                        <div className="flex items-start gap-2">
-                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                            {t("table.poolAttempts.proxy")}
-                          </span>
-                          <span
-                            className={cn(
-                              "min-w-0 truncate whitespace-nowrap",
-                              proxyBindingDisplay.resolved ? "font-medium" : "font-mono",
-                            )}
-                            title={proxyBindingDisplay.title}
-                            data-testid="pool-attempt-proxy-value"
-                          >
-                            {proxyBindingDisplay.value}
-                          </span>
-                        </div>
-                        <div className="flex items-start gap-2">
-                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                            {t("table.poolAttempts.upstreamHttpStatus")}
-                          </span>
-                          <span className="font-mono">{httpStatusValue}</span>
-                        </div>
-                        <div className="flex items-start gap-2">
-                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                            {t("table.poolAttempts.downstreamHttpStatus")}
-                          </span>
-                          <span className="font-mono">{downstreamHttpStatusValue}</span>
-                        </div>
-                        <div className="flex items-start gap-2">
-                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                            {t("table.poolAttempts.failureKind")}
-                          </span>
-                          <span className="break-all font-mono">
-                            {formatOptionalText(attempt.failureKind)}
-                          </span>
-                        </div>
-                        <div className="flex items-start gap-2">
-                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                            {t("table.poolAttempts.connectLatency")}
-                          </span>
-                          <span className="font-mono">
-                            {formatMilliseconds(attempt.connectLatencyMs)}
-                          </span>
-                        </div>
-                        <div className="flex items-start gap-2">
-                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                            {t("table.poolAttempts.firstByteLatency")}
-                          </span>
-                          <span className="font-mono">
-                            {formatMilliseconds(attempt.firstByteLatencyMs)}
-                          </span>
-                        </div>
-                        <div className="flex items-start gap-2">
-                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                            {t("table.poolAttempts.streamLatency")}
-                          </span>
-                          <span className="font-mono">
-                            {formatMilliseconds(attempt.streamLatencyMs)}
-                          </span>
-                        </div>
-                        <div className="flex items-start gap-2">
-                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                            {t("table.poolAttempts.startedAt")}
-                          </span>
-                          <span className="font-mono">
-                            {formatDetailTimestamp(attempt.startedAt)}
-                          </span>
-                        </div>
-                        <div className="flex items-start gap-2">
-                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                            {t("table.poolAttempts.finishedAt")}
-                          </span>
-                          <span className="font-mono">
-                            {formatDetailTimestamp(attempt.finishedAt)}
-                          </span>
-                        </div>
-                        <div className="flex items-start gap-2">
-                          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                            {t("table.poolAttempts.upstreamRequestId")}
-                          </span>
-                          <span className="break-all font-mono">
-                            {formatOptionalText(attempt.upstreamRequestId)}
-                          </span>
-                        </div>
-                      </div>
                       {attempt.errorMessage?.trim() ? (
                         <div
                           className="mt-2 flex flex-col gap-1"
@@ -1734,7 +1581,7 @@ function renderPoolAttemptsContent(
                           </pre>
                         </div>
                       ) : null}
-                    </div>
+                    </PoolAttemptRecordCard>
                   );
                 })}
               </div>

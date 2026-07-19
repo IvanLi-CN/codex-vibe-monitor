@@ -2371,7 +2371,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     await flushAsync();
     expect(document.body.textContent).toMatch(/上游尝试 ID|Upstream attempt ID/);
     expect(document.body.textContent).toContain("4V7MYPJG");
-    expect(document.body.textContent).not.toMatch(/调用 ID: invk_action_001/);
+    expect(document.body.textContent).not.toMatch(/请求 ID: invk_action_001/);
   });
 
   it.skip("locates a health event invocation in the legacy records tab", async () => {
@@ -2436,7 +2436,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       pageSize: 50,
     });
     const recordsTab = Array.from(document.body.querySelectorAll('button[role="tab"]')).find(
-      (button) => /调用记录|records/i.test(button.textContent ?? ""),
+      (button) => /请求|requests/i.test(button.textContent ?? ""),
     );
     expect(recordsTab?.getAttribute("aria-selected")).toBe("true");
     await waitForAssertion(() => {
@@ -2448,7 +2448,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       align: "center",
     });
     expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalled();
-    expect(document.body.textContent).toMatch(/Return to latest records|返回最新记录/);
+    expect(document.body.textContent).toMatch(/Return to latest requests|返回最新请求/);
   });
 
   it.skip("keeps the legacy records tab open and focuses a not-found locator alert", async () => {
@@ -2498,7 +2498,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       expect(alert).toBe(document.activeElement);
     });
     const recordsTab = Array.from(document.body.querySelectorAll('button[role="tab"]')).find(
-      (button) => /调用记录|records/i.test(button.textContent ?? ""),
+      (button) => /请求|requests/i.test(button.textContent ?? ""),
     );
     expect(recordsTab?.getAttribute("aria-selected")).toBe("true");
   });
@@ -2549,7 +2549,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       );
     });
 
-    clickTab(/调用记录|records/i);
+    clickTab(/请求|requests/i);
     await flushAsync();
     await waitForAssertion(() => {
       expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
@@ -2635,7 +2635,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     });
     expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(0);
 
-    clickTab(/调用记录|records/i);
+    clickTab(/请求|requests/i);
     await flushAsync();
     await waitForAssertion(() => {
       expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
@@ -2644,9 +2644,10 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       document.body.querySelector('[data-testid="upstream-account-records-activity-overview"]'),
     ).toBeNull();
     expect(document.body.textContent).not.toMatch(/记录数量|Rows/);
-    expect(document.body.textContent).not.toMatch(
-      /查看这个上游账号最近保留的调用记录|latest retained invocations/i,
+    expect(document.body.textContent).toMatch(
+      /最近 7 天主库中的尝试请求|request attempts from the primary database/i,
     );
+    expect(document.body.textContent).toMatch(/请求 ID|request id/i);
     expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
 
     const drawerBody = document.body.querySelector(".drawer-body");
@@ -2681,7 +2682,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
       sortOrder: "desc",
     });
     expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
-    expect(document.body.textContent).toMatch(/Loading more records|正在加载更多记录/);
+    expect(document.body.textContent).toMatch(/Loading more request attempts|正在加载更多尝试请求/);
 
     act(() => {
       secondFetch.resolve({
@@ -2711,7 +2712,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     });
     expect(renderedInvocationAccountNames()).toHaveLength(2);
     expect(document.body.textContent).toMatch(
-      /All 2 retained records loaded|已加载全部 2 条保留调用记录/,
+      /All 2 request attempts loaded|已加载全部 2 条尝试请求/,
     );
   }, 30000);
 
@@ -2772,7 +2773,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     await waitForAssertion(() => {
       expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(0);
     });
-    clickTab(/调用记录|records/i);
+    clickTab(/请求|requests/i);
     await flushAsync();
     await waitForAssertion(() => {
       expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
@@ -2781,7 +2782,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
 
     clickTab(/概览|overview/i);
     await flushAsync();
-    clickTab(/调用记录|records/i);
+    clickTab(/请求|requests/i);
     await flushAsync();
 
     await waitForAssertion(() => {

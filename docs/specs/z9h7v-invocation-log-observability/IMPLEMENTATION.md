@@ -20,15 +20,15 @@
 - 运行态 V2 识别来自 request body 的 `context_management[type=compaction][compact_threshold]`，终态识别来自响应内实际出现的 compaction item；两者独立写入 payload，不回填历史记录。
 - raw request/response payload 的完整保留合同不作为 SQLite 止血牺牲项；本轮只补充 raw file write 的 `raw_kind`、codec、file bytes、observed bytes、truncated、path 与 elapsed 证据，并继续同步持久化 terminal usage/status/failure/raw metadata。
 - `pool_upstream_request_attempts` live + archive 现已统一持久化 `attempt_public_id`，使用 8 位 Base58 风格短串生成；生成结果强制至少包含一个字母，避免 owner-facing 纯数字 ID。新写入在入库时生成，启动期 backfill 会顺序补齐 live 表与 archive manifest 指向的历史 gzip sqlite。
-- 账号详情调用记录现显示并跳转 `attemptId`；健康与事件的上游尝试入口、账号详情尝试列表与 Records 新链接统一使用该短 ID。`invokeId` 只保留在诊断上下文，不再承担 attempt 主入口。
+- 账号详情请求 tab 现显示并跳转 `attemptId` 作为 owner-facing “请求 ID”；健康与事件的上游尝试入口、账号详情尝试列表与 Records 新链接统一使用该短 ID。列表若展示调用侧次级标识，只显示 owner-facing 调用短 ID，不再裸露原始 `invokeId`。
 - `/api/invocations/locate` 现接受显式 `attemptId`，先解析父 `invokeId` 再返回目标分页窗口与精确 attempt 高亮所需上下文；旧 `requestId` 入口继续兼容读取，但新 UI 不再生成它作为 attempt 跳转参数。
 - 账号活动聚合、按模型用量分组、受限 recent 读取与路由 sticky escape 检测现在会在超过 1 秒时输出结构化 warn；日志只含 endpoint/operation、范围、候选或返回行数、阶段与耗时，不含 SQL、payload 或账号敏感内容。
-- 账号详情已将最终调用记录表替换为真实上游调用表：按账号从 `pool_upstream_request_attempts` 读取最近 7 天主库数据，按 `occurred_at DESC, id DESC` 分页。每行只显示本次调用的时间、ID、请求模型与响应模型、状态、代理、三段延迟和错误；不显示 endpoint，也不混入重试序号、最终调用 tokens/费用或其他调用上下文。列表以 `(invoke_id, occurred_at)` 关联 invocation payload 的 `requestModel` / `responseModel`，请求模型缺失时回退 `model`，避免依赖旧数据库不存在的列。
+- 账号详情已将最终调用记录表替换为真实上游尝试请求列表：按账号从 `pool_upstream_request_attempts` 读取最近 7 天主库数据，按 `occurred_at DESC, id DESC` 分页。请求 tab 直接复用调用详情里的 pool attempt 摘要卡，并在摘要卡内补充时间、调用短 ID 与模型映射；点击摘要卡后展开对应详情面板。列表以 `(invoke_id, occurred_at)` 关联 invocation payload 的 `requestModel` / `responseModel`，请求模型缺失时回退 `model`，避免依赖旧数据库不存在的列。
 - Dashboard 活动快照现额外返回全局与账号级的模型性能分组。仅状态成功、失败分类为 `none` 且 `cost` 非空的调用参与 TPM、流式响应速率、响应时长、首字用时、墙钟时长、累计时长和并行数；零费用成功调用保留。模型按响应模型归属，空思考程度在前端显示“未指定”。后端在单次 retained live interval 扫描里同时生成全局、账号、模型与账号+模型四级墙钟并集，并继续累加各 scope 的 `t_total_ms`，统一对外返回 `wallClockUsageDurationMs`、`cumulativeUsageDurationMs` 与 `parallelism`。
 - `modelPerformance` 继续服务 Dashboard 完整范围性能明细入口，不再回流为顶部实时 KPI 当前值；顶部 `TPM / 消费速率 / 首字用时 / 响应时间` 已改由 `z6ysw` 的后端 `last_complete_1m_sma` 合同驱动。
 - `ModelPerformanceTrigger` 在桌面通过可点击、可聚焦的 Tooltip 展示总计及按累计时长排序的模型行，在窄屏通过详情抽屉展示无横向滚动的指标网格；入口仍挂在总览与账号区域，但展示的是完整范围性能明细而非实时 1 分钟值。owner-facing 明细显式拆成 `墙钟时长 / 累计时长 / 并行数` 三列，并补充说明“跨模型重叠时模型行墙钟和可能大于总计”。
-- 调用结果中的 HTTP 现在明确为上游 HTTP；下游 HTTP 仅在不一致时置入当前记录下方的全宽诊断展开区。错误列保持失败分类和两行摘要，失败诊断使用紧凑元数据带而非字段卡；完整错误可复制，上游请求 ID、路由键与代理绑定键一并作为诊断证据。代理绑定优先解析为当前节点显示名，历史或未知绑定键降级为截短值并保留完整提示。
-- 窄屏调用列表继续使用表格而非卡片：主表仅保留时间、调用/模型、结果和错误摘要，代理、阶段耗时与完整错误放进展开证据区；`pending` 行在结果下方显示当前请求阶段。
+- 调用结果中的 HTTP 现在明确为上游 HTTP；下游 HTTP、完整错误、上游请求 ID、路由键、压缩与近似传输字节仅在当前尝试对应的详情面板中展示。代理绑定优先解析为当前节点显示名，历史或未知绑定键降级为截短值并保留完整提示。
+- 桌面与窄屏请求 tab 现统一使用同一套摘要卡与详情面板交互；`focusedAttemptId` 会自动展开目标摘要卡，不再维护单独的桌面/移动表格布局。
 - `pool_upstream_account_events` 新增可空 `attempt_id`。failover 路径在已获得 pending attempt ID 时，将新生成的 call 事件直接绑定到同一账号、同一请求尝试；历史事件不回填，前端不会再用 `invokeId` 猜测其对应尝试。带关联的健康事件明确显示并点击“上游尝试 ID”，不将为空的最终 `invokeId` 渲染为入口。
 - direct invocation payload 与 `pool_upstream_request_attempts` 现在都持久化上游请求压缩与 HTTP 近似真值所需字节事实：请求逻辑体、实际发送体、可见请求头近似字节、响应体字节和可见响应头近似字节；`savedBytes` / `ratioPct` 继续在 API 层派生，避免双写漂移。
 - 调用详情与账号上游尝试详情现在统一显示 `压缩比 + 前/后字节` 以及 `近似上传 / 近似下载`。调用详情桌面端固定为单行五列；账号尝试诊断区改为宽屏稳定网格，避免压缩证据横向溢出。
@@ -89,4 +89,4 @@
 - [x] M14: 重组共享调用详情组件的信息架构与视觉层级，补齐成功、运行中、异常、号池终态、长字段、light/dark 与窄屏 Storybook 证据。
 - [x] M15: 保留完整 raw payload 合同，为 raw 文件写入与 terminal raw metadata 写入补齐低开销耗时证据。
 - [x] M16: 为运行态号池调用补齐当前上游账号呼吸提示，并覆盖 Live、Records、Dashboard working conversations 与 Dashboard 调用详情抽屉的共享账号展示路径。
-- [x] M17: 为账号详情补齐调用 ID 展示、账号作用域锚点分页、虚拟滚动定位与结构化未找到反馈。
+- [x] M17: 为账号详情补齐请求 ID 展示、账号作用域锚点分页、虚拟滚动定位与结构化未找到反馈。

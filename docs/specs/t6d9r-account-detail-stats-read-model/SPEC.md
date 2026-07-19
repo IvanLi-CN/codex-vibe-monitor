@@ -17,7 +17,7 @@
 
 ### Non-goals
 
-- 不改调用记录表正文的分页、排序与筛选语义。
+- 不改请求 tab 中尝试请求表正文的分页、排序与筛选语义。
 - 不使用 stale cache、近似值或“先展示旧值再纠正”的首屏兜底。
 - 不把全站 dashboard 统计统一重构为同一套 read-model，只修账号详情链路。
 - 不变更 upstream account roster、分组、标签、路由与限流语义。
@@ -95,9 +95,9 @@
 - 同账号重复请求必须去重。
 - 切换账号、关闭抽屉或 query key 失效时，旧请求必须被取消或结果丢弃。
 - SSE 与列表刷新最多触发一次受控详情刷新，不能叠加出重复重型请求。
-- 调用 ID 历史定位必须由后端返回目标所在固定页窗口；前端以该页为锚点向新、旧两个方向按需加载，不得逐页扫描目标或预取无关页。
-- 锚点窗口必须冻结到定位响应的 `snapshotId + anchorId` 并暂停 records SSE；`anchorId` 负责让双向分页复现定位时的 runtime overlay，用户返回最新记录后才恢复第一页与实时订阅。
-- 账号详情调用记录中的调用 ID 必须使用等宽字体单行完整展示，不得换行或截断；仅该详情面板可收紧用时、输入与输出列，为调用 ID 保留稳定宽度，不改变其他 `InvocationTable` 使用方。
+- 请求 ID 历史定位必须由后端返回目标所在固定页窗口；前端以该页为锚点向新、旧两个方向按需加载，不得逐页扫描目标或预取无关页。
+- 锚点窗口必须冻结到定位响应的 `snapshotId + anchorId` 并暂停 records SSE；`anchorId` 负责让双向分页复现定位时的 runtime overlay，用户返回最新请求后才恢复第一页与实时订阅。
+- 账号详情请求 tab 中的请求摘要卡必须复用调用详情里的 pool attempt 摘要样式；`attemptId` 作为主请求 ID 保留醒目入口，次级调用短 ID 与模型映射在摘要卡内清晰可见，点击摘要卡即可展开对应详情面板。
 - 程序化定位目标行必须使用不改变布局的单层短暂高亮，并抑制浏览器默认 outline，避免边框、阴影与焦点轮廓叠加。
 - 桌面 overlay 模式的共享账号详情抽屉必须使用 `min(90rem, calc(100vw - 2rem))` 的确定宽度；加载状态、数据结算与 tab 切换不得改变抽屉宽度。紧凑视口页面化模式继续占满可用宽度。
 
@@ -110,8 +110,8 @@
 - 前端必须覆盖：首次懒加载、切换账号取消旧请求、SSE / roster refresh 不重复触发重型统计。
 - 后端必须覆盖：增量维护、历史补齐幂等、boundary + live tail 精确性、cursor 恢复、接口只读 read-model 行为。
 - 前端必须覆盖：锚点页虚拟定位、向上 prepend 保持视口、向下 append、稳定去重、返回最新恢复 SSE，以及定位 `404`/请求失败提示。
-- 前端必须覆盖：桌面与移动布局均完整单行展示调用 ID，目标行聚焦后只出现一层清晰高亮且不产生横向溢出。
-- 前端必须通过真实浏览器布局覆盖：详情加载态、数据结算态及概览、上游调用、编辑、路由、健康与事件 tab 的抽屉宽度保持一致。
+- 前端必须覆盖：桌面与移动布局均正确渲染请求摘要卡、点击摘要展开详情面板、目标项聚焦后自动展开且只出现一层清晰高亮。
+- 前端必须通过真实浏览器布局覆盖：详情加载态、数据结算态及概览、请求、编辑、路由、健康与事件 tab 的抽屉宽度保持一致。
 - 后端必须覆盖：账号作用域首/中/末页定位、runtime overlay、固定快照、账号不匹配和 retention 后未找到语义，且定位响应不得包含全量历史。
 
 ## Visual Evidence
@@ -121,32 +121,32 @@
 PR: include
 ![账号详情抽屉固定桌面宽度](./assets/detail-drawer-fixed-width-health-events.png)
 
-- 账号详情调用 ID 锚点定位成功态（mock Storybook；冻结历史窗口、返回最新入口、目标行居中聚焦与非布局型高亮）
+- 账号详情请求 ID 锚点定位成功态（mock Storybook；冻结历史窗口、返回最新入口、目标行居中聚焦与非布局型高亮）
 
 PR: include
-![账号详情调用 ID 锚点定位成功态](./assets/detail-drawer-invocation-locate-success.png)
+![账号详情请求 ID 锚点定位成功态](./assets/detail-drawer-invocation-locate-success.png)
 
-- 账号详情调用 ID 未找到态（mock Storybook；停留调用记录 tab，警告包含目标 ID 且获得焦点）
-
-PR: include
-![账号详情调用 ID 未找到态](./assets/detail-drawer-invocation-locate-not-found.png)
-
-- 账号详情调用 ID 移动端定位态（mock Storybook；ID 保持单行完整显示，抽屉无横向溢出）
+- 账号详情请求 ID 未找到态（mock Storybook；停留请求 tab，警告包含目标 ID 且获得焦点）
 
 PR: include
-![账号详情调用 ID 移动端定位态](./assets/detail-drawer-invocation-locate-mobile.png)
+![账号详情请求 ID 未找到态](./assets/detail-drawer-invocation-locate-not-found.png)
+
+- 账号详情请求 ID 移动端定位态（mock Storybook；ID 保持单行完整显示，抽屉无横向溢出）
+
+PR: include
+![账号详情请求 ID 移动端定位态](./assets/detail-drawer-invocation-locate-mobile.png)
 
 - 详情抽屉概览页活动总览（mock Storybook；账号活动总览已归属概览页，记录页不再承载统计图表）
 
 ![账号详情概览页活动总览](./assets/detail-drawer-overview-activity-overview.png)
 
-- 详情抽屉 records tab 表格本体（mock Storybook；records tab 移除外层 records 卡片、标题说明与记录数量选择，只保留调用表格）
+- 详情抽屉请求 tab 摘要卡列表（mock Storybook；请求 tab 移除外层 records 卡片、标题说明与记录数量选择，直接复用 pool attempt 摘要卡列表）
 
-![账号详情调用记录表格本体](./assets/detail-drawer-records-bare-table.png)
+![账号详情请求 tab 摘要卡列表](./assets/detail-drawer-records-bare-table.png)
 
-- 详情抽屉 records tab 无限滚动（mock Storybook；固定页大小加载后滚动追加下一页，保留记录表格本体）
+- 详情抽屉请求 tab 分页加载（mock Storybook；固定页大小加载后切换下一页，保留尝试请求摘要卡列表）
 
-![账号详情调用记录无限滚动](./assets/detail-drawer-records-infinite-scroll.png)
+![账号详情请求 tab 无限滚动](./assets/detail-drawer-records-infinite-scroll.png)
 
 - 详情抽屉记录页默认态（mock Storybook，记录页 tab 已选中；右上角请求日志证明此时只读取详情与账号 stats，不再额外预取 roster `/api/pool/upstream-accounts` 或 sticky `/sticky-keys`）
 
@@ -156,11 +156,11 @@ PR: include
 
 ![账号详情路由页按需加载](./assets/detail-drawer-routing-request-gating.png)
 
-- 详情抽屉 records tab 稳定态（mock Storybook；记录列表已进入 settled state，records tab 只保留调用表格本体，不再承载账号活动总览）
+- 详情抽屉请求 tab 稳定态（mock Storybook；记录列表已进入 settled state，请求 tab 只保留尝试请求摘要卡列表，不再承载账号活动总览）
 
 ![账号详情记录页实时推送稳定态](./assets/detail-drawer-records-live-sync-stable.png)
 
-- 详情抽屉 records tab 宽屏放宽态（mock Storybook；共享抽屉桌面宽度提升到 `90rem` 后，记录表格横向空间更充足，不再被旧的 `60rem` 壳层过早压缩）
+- 详情抽屉请求 tab 宽屏放宽态（mock Storybook；共享抽屉桌面宽度提升到 `90rem` 后，请求摘要卡列表有更稳定的阅读空间，不再被旧的 `60rem` 壳层过早压缩）
 
 ![账号详情记录页宽屏放宽态](./assets/detail-drawer-records-settled-wide.png)
 
