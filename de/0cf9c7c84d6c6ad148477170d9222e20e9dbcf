@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.42.3",
+  "base_stable_version": "2.42.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-19T10:58:36Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.42.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "f784b3fcd3c34c0e9956f5866b9f3f02d36cfd80",
+  "pr_number": 656,
+  "pr_title": "feat(proxy): track real upstream socket bandwidth",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.42.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.42.3",
+  "target_sha": "de0cf9c7c84d6c6ad148477170d9222e20e9dbcf",
+  "type_label": "type:patch"
+}
