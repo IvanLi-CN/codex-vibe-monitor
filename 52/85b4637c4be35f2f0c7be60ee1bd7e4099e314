@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.42.4",
+  "base_stable_version": "2.42.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-19T15:38:11Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.42.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "2660e3ac72a289b0c32d18e21f874bda711b8267",
+  "pr_number": 657,
+  "pr_title": "fix(stats): coalesce dashboard read-side snapshots",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.42.4",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.42.4",
+  "target_sha": "5285b4637c4be35f2f0c7be60ee1bd7e4099e314",
+  "type_label": "type:patch"
+}
