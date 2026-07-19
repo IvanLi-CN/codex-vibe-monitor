@@ -25,7 +25,7 @@ import { AppIcon } from "../shared/AppIcon";
 import { StructuredPayloadViewer } from "./StructuredPayloadViewer";
 
 type DetailPanelSize = "compact" | "default";
-type AttemptSection =
+export type AttemptSection =
   | "timing"
   | "requestParsed"
   | "requestHeaders"
@@ -2075,6 +2075,8 @@ function TimelineSummary({
   isOpen,
   activeSection,
   onSelectSection,
+  attemptIdentityOverride,
+  testId,
 }: {
   entry: ApiInvocationWorkflowTimelineEntry;
   localeTag: string;
@@ -2082,11 +2084,13 @@ function TimelineSummary({
   isOpen: boolean;
   activeSection: AttemptSection | GenericSection | null;
   onSelectSection: (section: AttemptSection | GenericSection) => void;
+  attemptIdentityOverride?: string | null;
+  testId?: string;
 }) {
   const kindMeta = resolveKindMeta(entry.kind, isZh);
   const statusMeta = resolveStatusMeta(entry.status, isZh);
   const summaryFacts = buildTimelineFacts(entry, isZh, localeTag);
-  const attemptId = entry.attempt?.attemptId?.trim() || null;
+  const attemptId = attemptIdentityOverride?.trim() || entry.attempt?.attemptId?.trim() || null;
   const showTitle = !entry.attempt;
   const metricActions = entry.attempt
     ? buildAttemptMetricActions(entry, localeTag, isZh)
@@ -2094,6 +2098,7 @@ function TimelineSummary({
 
   return (
     <div
+      data-testid={testId}
       data-open={isOpen ? "true" : "false"}
       className={cn(
         "invocation-detail-block w-full rounded-[1rem] px-4 py-3 text-left transition-[background-color,border-color] duration-200",
@@ -2147,7 +2152,7 @@ function TimelineSummary({
       </div>
       {metricActions.length > 0 ? (
         <div className="invocation-detail-rail mt-3 overflow-hidden rounded-[0.95rem]">
-          <div className="grid gap-px sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-7">
+          <div className="grid gap-px sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
             {metricActions.map((action) => (
               <TimelineMetricButton
                 key={`${entry.blockId}-${action.section}`}
@@ -2165,6 +2170,149 @@ function TimelineSummary({
             ))}
           </div>
         </div>
+      ) : null}
+    </div>
+  );
+}
+
+interface InvocationWorkflowAttemptRecordProps {
+  record: ApiInvocation;
+  entry: ApiInvocationWorkflowTimelineEntry;
+  localeTag: string;
+  isZh: boolean;
+  summaryIdentity?: string | null;
+  focused?: boolean;
+  defaultSection?: AttemptSection | null;
+  isOpen?: boolean;
+  activeSection?: AttemptSection | null;
+  onSelectSection?: (section: AttemptSection) => void;
+  className?: string;
+  testId?: string;
+}
+
+export function InvocationWorkflowAttemptRecord({
+  record,
+  entry,
+  localeTag,
+  isZh,
+  summaryIdentity,
+  focused = false,
+  defaultSection = null,
+  isOpen,
+  activeSection,
+  onSelectSection,
+  className,
+  testId,
+}: InvocationWorkflowAttemptRecordProps) {
+  const isControlled = isOpen !== undefined && activeSection !== undefined && !!onSelectSection;
+  const [internalSection, setInternalSection] = useState<AttemptSection | null>(defaultSection);
+  const [requestBodyState, setRequestBodyState] = useState<
+    PayloadFetchState<ApiInvocationRequestBodyResponse>
+  >(createIdlePayloadState());
+  const [responseBodyState, setResponseBodyState] = useState<
+    PayloadFetchState<ApiInvocationResponseBodyResponse>
+  >(createIdlePayloadState());
+
+  const currentSection = isControlled ? activeSection : internalSection;
+  const currentOpen = isControlled ? isOpen : currentSection != null;
+
+  useEffect(() => {
+    setRequestBodyState(createIdlePayloadState());
+    setResponseBodyState(createIdlePayloadState());
+  }, [entry.blockId, record.id]);
+
+  useEffect(() => {
+    if (isControlled || !focused || !defaultSection) return;
+    setInternalSection(defaultSection);
+  }, [defaultSection, focused, isControlled]);
+
+  useEffect(() => {
+    if (!(record.id > 0)) return;
+    if (currentSection && isRequestSection(currentSection) && requestBodyState.status === "idle") {
+      let cancelled = false;
+      setRequestBodyState({ status: "loading", data: null, error: null });
+      void fetchInvocationRequestBody(record.id)
+        .then((data) => {
+          if (!cancelled) {
+            setRequestBodyState({ status: "loaded", data, error: null });
+          }
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            setRequestBodyState({
+              status: "error",
+              data: null,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+  }, [currentSection, record.id, requestBodyState.status]);
+
+  useEffect(() => {
+    if (!(record.id > 0)) return;
+    if (
+      currentSection &&
+      isResponseSection(currentSection) &&
+      responseBodyState.status === "idle"
+    ) {
+      let cancelled = false;
+      setResponseBodyState({ status: "loading", data: null, error: null });
+      void fetchInvocationResponseBody(record.id)
+        .then((data) => {
+          if (!cancelled) {
+            setResponseBodyState({ status: "loaded", data, error: null });
+          }
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            setResponseBodyState({
+              status: "error",
+              data: null,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+  }, [currentSection, record.id, responseBodyState.status]);
+
+  const handleSelectSection = (section: AttemptSection) => {
+    if (isControlled) {
+      onSelectSection?.(section);
+      return;
+    }
+    setInternalSection((current) => (current === section ? null : section));
+  };
+
+  if (!entry.attempt) return null;
+
+  return (
+    <div className={className} data-testid={testId}>
+      <TimelineSummary
+        entry={entry}
+        localeTag={localeTag}
+        isZh={isZh}
+        isOpen={currentOpen}
+        activeSection={currentSection}
+        onSelectSection={(section) => handleSelectSection(section as AttemptSection)}
+        attemptIdentityOverride={summaryIdentity}
+      />
+      {currentOpen && currentSection ? (
+        <AttemptDetail
+          record={record}
+          entry={entry}
+          localeTag={localeTag}
+          isZh={isZh}
+          activeSection={currentSection}
+          requestBodyState={requestBodyState}
+          responseBodyState={responseBodyState}
+        />
       ) : null}
     </div>
   );
@@ -2189,9 +2337,6 @@ export function InvocationWorkflowDetailPanel({
   const [requestBodyState, setRequestBodyState] = useState<
     PayloadFetchState<ApiInvocationRequestBodyResponse>
   >(createIdlePayloadState());
-  const [responseBodyState, setResponseBodyState] = useState<
-    PayloadFetchState<ApiInvocationResponseBodyResponse>
-  >(createIdlePayloadState());
 
   useEffect(() => {
     if (!(record.id > 0)) {
@@ -2208,7 +2353,6 @@ export function InvocationWorkflowDetailPanel({
     setIsLoading(true);
     setLoadError(null);
     setRequestBodyState(createIdlePayloadState());
-    setResponseBodyState(createIdlePayloadState());
 
     void fetchInvocationWorkflowDetail(record.id)
       .then((response) => {
@@ -2238,7 +2382,6 @@ export function InvocationWorkflowDetailPanel({
     setAttemptSection(null);
     setGenericSection(null);
     setRequestBodyState(createIdlePayloadState());
-    setResponseBodyState(createIdlePayloadState());
   }, [detail]);
 
   useEffect(() => {
@@ -2250,16 +2393,11 @@ export function InvocationWorkflowDetailPanel({
     setOpenBlockId(focusedEntry.blockId);
     setAttemptSection("timing");
     setGenericSection(null);
-    setRequestBodyState(createIdlePayloadState());
-    setResponseBodyState(createIdlePayloadState());
   }, [detail, focusedAttemptId]);
 
   useEffect(() => {
     if (!(record.id > 0)) return;
-    if (
-      ((attemptSection && isRequestSection(attemptSection)) || genericSection === "requestBody") &&
-      requestBodyState.status === "idle"
-    ) {
+    if (genericSection === "requestBody" && requestBodyState.status === "idle") {
       let cancelled = false;
       setRequestBodyState({ status: "loading", data: null, error: null });
       void fetchInvocationRequestBody(record.id)
@@ -2281,37 +2419,7 @@ export function InvocationWorkflowDetailPanel({
         cancelled = true;
       };
     }
-  }, [attemptSection, genericSection, record.id, requestBodyState.status]);
-
-  useEffect(() => {
-    if (!(record.id > 0)) return;
-    if (
-      attemptSection &&
-      isResponseSection(attemptSection) &&
-      responseBodyState.status === "idle"
-    ) {
-      let cancelled = false;
-      setResponseBodyState({ status: "loading", data: null, error: null });
-      void fetchInvocationResponseBody(record.id)
-        .then((data) => {
-          if (!cancelled) {
-            setResponseBodyState({ status: "loaded", data, error: null });
-          }
-        })
-        .catch((error) => {
-          if (!cancelled) {
-            setResponseBodyState({
-              status: "error",
-              data: null,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        });
-      return () => {
-        cancelled = true;
-      };
-    }
-  }, [attemptSection, record.id, responseBodyState.status]);
+  }, [genericSection, record.id, requestBodyState.status]);
 
   if (!(record.id > 0)) {
     return (
@@ -2625,42 +2733,39 @@ export function InvocationWorkflowDetailPanel({
                     )}
                   />
                   <div className="ml-5">
-                    <TimelineSummary
-                      entry={entry}
-                      localeTag={localeTag}
-                      isZh={isZh}
-                      isOpen={isOpen}
-                      activeSection={
-                        isOpen ? (entry.attempt ? attemptSection : genericSection) : null
-                      }
-                      onSelectSection={(section) => {
-                        if (entry.attempt) {
-                          toggleAttemptSection(entry, section as AttemptSection);
-                        } else {
-                          toggleGenericSection(entry, section as GenericSection);
-                        }
-                      }}
-                    />
-                    {isOpen && entry.attempt && attemptSection ? (
-                      <AttemptDetail
+                    {entry.attempt ? (
+                      <InvocationWorkflowAttemptRecord
                         record={record}
                         entry={entry}
                         localeTag={localeTag}
                         isZh={isZh}
-                        activeSection={attemptSection}
-                        requestBodyState={requestBodyState}
-                        responseBodyState={responseBodyState}
+                        isOpen={isOpen}
+                        activeSection={isOpen ? attemptSection : null}
+                        onSelectSection={(section) => toggleAttemptSection(entry, section)}
                       />
-                    ) : null}
-                    {isOpen && !entry.attempt && genericSection ? (
-                      <GenericDetail
-                        entry={entry}
-                        localeTag={localeTag}
-                        isZh={isZh}
-                        activeSection={genericSection}
-                        requestBodyState={requestBodyState}
-                      />
-                    ) : null}
+                    ) : (
+                      <>
+                        <TimelineSummary
+                          entry={entry}
+                          localeTag={localeTag}
+                          isZh={isZh}
+                          isOpen={isOpen}
+                          activeSection={isOpen ? genericSection : null}
+                          onSelectSection={(section) =>
+                            toggleGenericSection(entry, section as GenericSection)
+                          }
+                        />
+                        {isOpen && genericSection ? (
+                          <GenericDetail
+                            entry={entry}
+                            localeTag={localeTag}
+                            isZh={isZh}
+                            activeSection={genericSection}
+                            requestBodyState={requestBodyState}
+                          />
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 </div>
               );

@@ -81,7 +81,7 @@ function AttemptTimelineFetchMock({ accountId }: { accountId: number }) {
             items: [
               {
                 attemptId: "4V7MYPJG",
-                invokeId: "POOLCALL001",
+                invokeId: "K7QM9ZD4HP",
                 occurredAt: "2026-07-11T12:00:00.000Z",
                 endpoint: "/v1/responses",
                 upstreamAccountId: accountId,

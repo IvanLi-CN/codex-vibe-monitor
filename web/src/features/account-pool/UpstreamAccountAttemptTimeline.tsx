@@ -1,126 +1,32 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "../../components/ui/alert";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
-import { Tooltip } from "../../components/ui/tooltip";
 import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
 import { useTranslation } from "../../i18n";
-import {
-  type ApiPoolUpstreamRequestAttempt,
-  type ForwardProxyBindingNode,
-  fetchUpstreamAccountAttempts,
-  locateUpstreamAccountAttempt,
-  type UpstreamAccountAttemptListResponse,
+import type {
+  ApiInvocation,
+  ApiInvocationWorkflowTimelineEntry,
+  ApiPoolUpstreamRequestAttempt,
+  ForwardProxyBindingNode,
+  UpstreamAccountAttemptListResponse,
 } from "../../lib/api";
-import {
-  requestCompressionAlgorithmLabel,
-  requestCompressionModeLabel,
-} from "../../lib/requestCompression";
-import { AppIcon } from "../shared/AppIcon";
+import { fetchUpstreamAccountAttempts, locateUpstreamAccountAttempt } from "../../lib/api";
+import { InvocationWorkflowAttemptRecord } from "../invocations/InvocationWorkflowDetailPanel";
 
 const PAGE_SIZE = 50;
-
-type Translator = ReturnType<typeof useTranslation>["t"];
-
-function attemptVariant(status: string) {
-  if (status === "success") return "success" as const;
-  if (status === "pending") return "warning" as const;
-  return "error" as const;
-}
-
-function formatLatency(value: number | null | undefined) {
-  if (value == null || !Number.isFinite(value)) return "-";
-  return value >= 1000 ? `${(value / 1000).toFixed(2)} s` : `${Math.round(value)} ms`;
-}
-
-function formatCompactByteSize(value: number | null | undefined, locale: string) {
-  if (value == null || !Number.isFinite(value) || value < 0) return "-";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let scaled = value;
-  let unitIndex = 0;
-  while (scaled >= 1024 && unitIndex < units.length - 1) {
-    scaled /= 1024;
-    unitIndex += 1;
-  }
-  return `${scaled.toLocaleString(locale, {
-    minimumFractionDigits: unitIndex === 0 ? 0 : 1,
-    maximumFractionDigits: unitIndex === 0 ? 0 : 1,
-  })} ${units[unitIndex]}`;
-}
-
-function formatSignedPercent(value: number | null | undefined, locale: string) {
-  if (value == null || !Number.isFinite(value)) return "-";
-  const rounded = Math.round(value);
-  if (rounded > 0) return `+${rounded.toLocaleString(locale)}%`;
-  return `${rounded.toLocaleString(locale)}%`;
-}
-
-function compressionRatioSummary(attempt: ApiPoolUpstreamRequestAttempt, locale: string) {
-  if (
-    attempt.logicalBodyBytes == null ||
-    attempt.transmittedBodyBytes == null ||
-    attempt.ratioPct == null
-  ) {
-    return "-";
-  }
-  return `${formatSignedPercent(attempt.ratioPct, locale)} (${formatCompactByteSize(
-    attempt.logicalBodyBytes,
-    locale,
-  )} -> ${formatCompactByteSize(attempt.transmittedBodyBytes, locale)})`;
-}
-
-function statusLabel(status: string, t: Translator) {
-  const known = new Set(["success", "pending", "http_failure", "transport_failure", "failed"]);
-  return known.has(status) ? t(`accountPool.upstreamAttempts.status.${status}`) : status;
-}
-
-function pendingPhaseLabel(phase: string | null | undefined, t: Translator) {
-  switch (phase?.trim().toLowerCase()) {
-    case "connecting":
-      return t("accountPool.upstreamAttempts.phase.connecting");
-    case "waiting_first_byte":
-      return t("accountPool.upstreamAttempts.phase.waitingFirstByte");
-    case "streaming_response":
-      return t("accountPool.upstreamAttempts.phase.streamingResponse");
-    case "sending_request":
-      return t("accountPool.upstreamAttempts.phase.sendingRequest");
-    default:
-      return t("accountPool.upstreamAttempts.phase.sendingRequest");
-  }
-}
-
-function compressionAlgorithmValueLabel(value: string | null | undefined, t: Translator) {
-  return requestCompressionAlgorithmLabel(
-    value === "follow" ||
-      value === "identity" ||
-      value === "gzip" ||
-      value === "deflate" ||
-      value === "zstd"
-      ? value
-      : "identity",
-    {
-      requestCompressionFollow: t("accountPool.requestCompression.follow"),
-      requestCompressionIdentity: t("accountPool.requestCompression.identity"),
-      requestCompressionGzip: t("accountPool.requestCompression.gzip"),
-      requestCompressionDeflate: t("accountPool.requestCompression.deflate"),
-      requestCompressionZstd: t("accountPool.requestCompression.zstd"),
-    },
-  );
-}
-
-function compressionModeValueLabel(value: string | null | undefined, t: Translator) {
-  return requestCompressionModeLabel(value, {
-    requestCompressionModeIdentity: t("accountPool.requestCompression.mode.identity"),
-    requestCompressionModePassthrough: t("accountPool.requestCompression.mode.passthrough"),
-    requestCompressionModeRecompressed: t("accountPool.requestCompression.mode.recompressed"),
-  });
-}
+const CALL_SHORT_ID_PATTERN = /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{10}$/;
 
 function compactProxyBindingKey(value: string) {
   if (value.length <= 18) return value;
   return `${value.slice(0, 8)}...${value.slice(-6)}`;
+}
+
+function displayCallShortId(invokeId: string | null | undefined) {
+  const normalized = invokeId?.trim().toUpperCase() ?? "";
+  if (!normalized) return null;
+  if (CALL_SHORT_ID_PATTERN.test(normalized)) return normalized;
+  return null;
 }
 
 function collectProxyBindingKeys(items: ApiPoolUpstreamRequestAttempt[] | undefined) {
@@ -145,13 +51,12 @@ function buildProxyBindingNodeMap(nodes: ForwardProxyBindingNode[]) {
 function formatProxyBinding(
   attempt: ApiPoolUpstreamRequestAttempt,
   nodesByKey: Map<string, ForwardProxyBindingNode>,
-  t: Translator,
+  proxyDirectLabel: string,
 ) {
   const key = attempt.proxyBindingKeySnapshot?.trim();
   if (!key) return { value: "-", title: "-", resolved: false };
   if (key === "__direct__") {
-    const value = t("accountPool.upstreamAttempts.proxyDirect");
-    return { value, title: value, resolved: true };
+    return { value: proxyDirectLabel, title: proxyDirectLabel, resolved: true };
   }
   const displayName = nodesByKey.get(key)?.displayName.trim();
   if (displayName && displayName !== key) {
@@ -164,316 +69,106 @@ function formatProxyBinding(
   return { value: compactProxyBindingKey(key), title: key, resolved: false };
 }
 
-function ModelMapping({ attempt, t }: { attempt: ApiPoolUpstreamRequestAttempt; t: Translator }) {
-  const requestModel =
-    attempt.requestModel?.trim() ||
-    attempt.model?.trim() ||
-    t("accountPool.upstreamAttempts.modelUnavailable");
-  const responseModel = attempt.responseModel?.trim() || "-";
-  return (
-    <div className="text-xs text-base-content/80">
-      <div className="whitespace-nowrap">
-        <span className="text-base-content/55">
-          {t("accountPool.upstreamAttempts.requestModel")}
-        </span>
-        <span className="ml-1 font-mono">{requestModel}</span>
-      </div>
-      <div className="mt-1 whitespace-nowrap">
-        <span className="text-base-content/55">
-          {t("accountPool.upstreamAttempts.responseModel")}
-        </span>
-        <span className="ml-1 font-mono">{responseModel}</span>
-      </div>
-    </div>
-  );
-}
-
-function AttemptResult({ attempt, t }: { attempt: ApiPoolUpstreamRequestAttempt; t: Translator }) {
-  const isPending = attempt.status === "pending";
-  return (
-    <div className="space-y-1">
-      <div className="flex flex-wrap items-center gap-1.5">
-        <Badge variant={attemptVariant(attempt.status)}>{statusLabel(attempt.status, t)}</Badge>
-        {attempt.httpStatus != null ? (
-          <span className="font-mono text-xs text-base-content/70">
-            {t("accountPool.upstreamAttempts.upstreamHttp", {
-              status: attempt.httpStatus,
-            })}
-          </span>
-        ) : null}
-      </div>
-      {isPending ? (
-        <p className="text-xs text-base-content/60">{pendingPhaseLabel(attempt.phase, t)}</p>
-      ) : null}
-    </div>
-  );
-}
-
-function AttemptTiming({
-  attempt,
-  compact = false,
-  t,
-}: {
-  attempt: ApiPoolUpstreamRequestAttempt;
-  compact?: boolean;
-  t: Translator;
-}) {
-  if (compact) {
-    return (
-      <span>
-        {t("accountPool.upstreamAttempts.timingCompact", {
-          connect: formatLatency(attempt.connectLatencyMs),
-          firstByte: formatLatency(attempt.firstByteLatencyMs),
-          stream: formatLatency(attempt.streamLatencyMs),
-        })}
-      </span>
-    );
-  }
-  return (
-    <>
-      <div>
-        {t("accountPool.upstreamAttempts.connect", {
-          value: formatLatency(attempt.connectLatencyMs),
-        })}
-      </div>
-      <div>
-        {t("accountPool.upstreamAttempts.firstByte", {
-          value: formatLatency(attempt.firstByteLatencyMs),
-        })}
-      </div>
-      <div>
-        {t("accountPool.upstreamAttempts.stream", {
-          value: formatLatency(attempt.streamLatencyMs),
-        })}
-      </div>
-    </>
-  );
-}
-
-function AttemptEvidenceDisclosure({
-  attempt,
-  proxy,
-  includeTimings,
-  isFocused,
-  localeTag,
-  t,
-}: {
-  attempt: ApiPoolUpstreamRequestAttempt;
-  proxy: ReturnType<typeof formatProxyBinding>;
-  includeTimings: boolean;
-  isFocused: boolean;
-  localeTag: string;
-  t: Translator;
-}) {
-  const [copied, setCopied] = useState(false);
-  const [isOpen, setIsOpen] = useState(isFocused);
-  const errorMessage = attempt.errorMessage?.trim() || "";
-  const downstreamDiffers =
-    attempt.downstreamHttpStatus != null && attempt.downstreamHttpStatus !== attempt.httpStatus;
-  const metadataItemClass = "min-w-0 space-y-1";
-  const copyError = async () => {
-    if (!errorMessage || !navigator.clipboard?.writeText) return;
-    try {
-      await navigator.clipboard.writeText(errorMessage);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1800);
-    } catch {
-      setCopied(false);
-    }
+function buildSyntheticInvocationRecord(attempt: ApiPoolUpstreamRequestAttempt): ApiInvocation {
+  return {
+    id: 0,
+    invokeId: attempt.invokeId,
+    occurredAt: attempt.occurredAt,
+    endpoint: attempt.endpoint,
+    requestModel: attempt.requestModel ?? attempt.model ?? undefined,
+    responseModel: attempt.responseModel ?? undefined,
+    status: attempt.status,
+    requesterIp: attempt.requesterIp ?? undefined,
+    upstreamAccountId: attempt.upstreamAccountId ?? undefined,
+    upstreamAccountName: attempt.upstreamAccountName ?? undefined,
+    upstreamRequestId: attempt.upstreamRequestId ?? undefined,
+    routeMode: "pool",
+    createdAt: attempt.createdAt,
   };
-  useEffect(() => {
-    if (isFocused) setIsOpen(true);
-  }, [isFocused]);
-  return (
-    <details
-      className="group overflow-hidden rounded-md border border-base-300/70 text-xs"
-      data-testid={`account-attempt-evidence-${attempt.attemptId}`}
-      onToggle={(event) => setIsOpen(event.currentTarget.open)}
-      open={isOpen}
-    >
-      <summary className="flex min-h-11 cursor-pointer list-none select-none items-center gap-2 px-3 py-2 font-medium text-info focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary [&::-webkit-details-marker]:hidden">
-        <AppIcon
-          aria-hidden
-          className="h-4 w-4 shrink-0 transition-transform duration-150 group-open:rotate-90"
-          name="chevron-right"
-        />
-        {t("accountPool.upstreamAttempts.details")}
-      </summary>
-      <div className="space-y-2 border-t border-base-300/70 bg-base-200/35 px-3 py-2.5 text-base-content/75">
-        <dl className="grid gap-x-5 gap-y-2 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5">
-          <div className={metadataItemClass}>
-            <dt className="text-base-content/55">
-              {t("accountPool.upstreamAttempts.proxyBinding")}
-            </dt>
-            <dd className={proxy.resolved ? "font-medium" : "font-mono"} title={proxy.title}>
-              {proxy.value}
-            </dd>
-          </div>
-          {attempt.upstreamRequestId?.trim() ? (
-            <div className={metadataItemClass}>
-              <dt className="text-base-content/55">
-                {t("accountPool.upstreamAttempts.upstreamRequestId")}
-              </dt>
-              <dd className="break-all font-mono">{attempt.upstreamRequestId}</dd>
-            </div>
-          ) : null}
-          {attempt.upstreamRouteKey?.trim() ? (
-            <div className={metadataItemClass}>
-              <dt className="text-base-content/55">{t("accountPool.upstreamAttempts.routeKey")}</dt>
-              <dd className="break-all font-mono">{attempt.upstreamRouteKey}</dd>
-            </div>
-          ) : null}
-          {downstreamDiffers ? (
-            <div className={metadataItemClass}>
-              <dt className="text-base-content/55">
-                {t("accountPool.upstreamAttempts.downstreamHttp")}
-              </dt>
-              <dd className="font-mono">{attempt.downstreamHttpStatus}</dd>
-            </div>
-          ) : null}
-          <div className={metadataItemClass}>
-            <dt className="text-base-content/55">
-              {t("accountPool.upstreamAttempts.downstreamRequestCompression")}
-            </dt>
-            <dd>{compressionAlgorithmValueLabel(attempt.downstreamRequestContentEncoding, t)}</dd>
-          </div>
-          <div className={metadataItemClass}>
-            <dt className="text-base-content/55">
-              {t("accountPool.upstreamAttempts.upstreamRequestCompression")}
-            </dt>
-            <dd>
-              {compressionAlgorithmValueLabel(attempt.upstreamRequestCompressionAlgorithm, t)}
-            </dd>
-          </div>
-          <div className={metadataItemClass}>
-            <dt className="text-base-content/55">
-              {t("accountPool.upstreamAttempts.upstreamRequestCompressionMode")}
-            </dt>
-            <dd>{compressionModeValueLabel(attempt.upstreamRequestCompressionMode, t)}</dd>
-          </div>
-          <div className={metadataItemClass}>
-            <dt className="text-base-content/55">
-              {t("accountPool.upstreamAttempts.compressionRatio")}
-            </dt>
-            <dd>{compressionRatioSummary(attempt, localeTag)}</dd>
-          </div>
-          <div className={metadataItemClass}>
-            <dt className="text-base-content/55">
-              {t("accountPool.upstreamAttempts.approxUpload")}
-            </dt>
-            <dd>{formatCompactByteSize(attempt.approxUploadBytes, localeTag)}</dd>
-          </div>
-          <div className={metadataItemClass}>
-            <dt className="text-base-content/55">
-              {t("accountPool.upstreamAttempts.approxDownload")}
-            </dt>
-            <dd>{formatCompactByteSize(attempt.approxDownloadBytes, localeTag)}</dd>
-          </div>
-          {includeTimings ? (
-            <div className={metadataItemClass}>
-              <dt className="text-base-content/55">
-                {t("accountPool.upstreamAttempts.columns.timing")}
-              </dt>
-              <dd className="font-mono tabular-nums">
-                <AttemptTiming attempt={attempt} compact t={t} />
-              </dd>
-            </div>
-          ) : null}
-        </dl>
-        {errorMessage ? (
-          <div
-            className={
-              includeTimings
-                ? "border-t border-base-300/70 pt-2"
-                : "flex min-w-0 items-start gap-2 border-t border-base-300/70 pt-2"
-            }
-          >
-            <div className="flex shrink-0 items-center gap-1.5">
-              <p className="text-base-content/55">{t("accountPool.upstreamAttempts.fullError")}</p>
-              <Tooltip
-                content={
-                  copied
-                    ? t("accountPool.upstreamAttempts.copied")
-                    : t("accountPool.upstreamAttempts.copyError")
-                }
-              >
-                <Button
-                  aria-label={t("accountPool.upstreamAttempts.copyError")}
-                  className="h-7 w-7"
-                  size="icon"
-                  type="button"
-                  variant="ghost"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void copyError();
-                  }}
-                >
-                  <AppIcon aria-hidden className="h-4 w-4" name="content-copy" />
-                </Button>
-              </Tooltip>
-            </div>
-            <pre
-              className={
-                includeTimings
-                  ? "mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-base-content/85"
-                  : "min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-xs leading-5 text-base-content/85"
-              }
-            >
-              {errorMessage}
-            </pre>
-          </div>
-        ) : null}
-      </div>
-    </details>
-  );
 }
 
-function hasAttemptEvidence(attempt: ApiPoolUpstreamRequestAttempt, includeTimings: boolean) {
-  return Boolean(
-    includeTimings ||
-      attempt.failureKind ||
-      attempt.errorMessage?.trim() ||
-      (attempt.downstreamHttpStatus != null &&
-        attempt.downstreamHttpStatus !== attempt.httpStatus) ||
-      attempt.logicalBodyBytes != null ||
-      attempt.transmittedBodyBytes != null ||
-      attempt.approxUploadBytes != null ||
-      attempt.approxDownloadBytes != null,
-  );
-}
+function buildSyntheticWorkflowAttemptEntry(
+  attempt: ApiPoolUpstreamRequestAttempt,
+  proxyDisplay: ReturnType<typeof formatProxyBinding>,
+): ApiInvocationWorkflowTimelineEntry {
+  const requestSummary: Record<string, unknown> = {
+    requestModel: attempt.requestModel ?? attempt.model ?? null,
+    responseModel: attempt.responseModel ?? null,
+    endpoint: attempt.endpoint ?? null,
+    routing: {
+      routeMode: "pool",
+      proxyDisplayName: proxyDisplay.value !== "-" ? proxyDisplay.value : null,
+      upstreamRouteKey: attempt.upstreamRouteKey ?? null,
+      proxyBindingKey: attempt.proxyBindingKeySnapshot ?? null,
+      stickyKey: attempt.stickyKey ?? null,
+    },
+    compression: {
+      algorithm: attempt.upstreamRequestCompressionAlgorithm ?? null,
+      mode: attempt.upstreamRequestCompressionMode ?? null,
+      logicalBodyBytes: attempt.logicalBodyBytes ?? null,
+      transmittedBodyBytes: attempt.transmittedBodyBytes ?? null,
+      ratioPct: attempt.ratioPct ?? null,
+      approxUploadBytes: attempt.approxUploadBytes ?? null,
+      approxDownloadBytes: attempt.approxDownloadBytes ?? null,
+    },
+  };
+  const requestBodySize =
+    attempt.logicalBodyBytes ?? attempt.transmittedBodyBytes ?? attempt.approxUploadBytes ?? null;
+  if (requestBodySize != null) {
+    requestSummary.bodyCapture = { size: requestBodySize };
+  }
 
-function AttemptError({ attempt }: { attempt: ApiPoolUpstreamRequestAttempt }) {
-  const message = attempt.errorMessage?.trim() || "";
-  return (
-    <div className="min-w-0">
-      <p className="line-clamp-2 break-words text-xs leading-5 text-base-content/75">
-        {attempt.failureKind ? (
-          <span className="font-mono text-base-content/85">{attempt.failureKind}</span>
-        ) : null}
-        {attempt.failureKind && message ? <span className="text-base-content/45"> · </span> : null}
-        {message || (attempt.failureKind ? null : "-")}
-      </p>
-    </div>
-  );
-}
+  const responseSummary: Record<string, unknown> = {
+    status: attempt.status,
+    failureKind: attempt.failureKind ?? null,
+    errorMessage: attempt.errorMessage ?? null,
+    downstreamErrorMessage: attempt.downstreamErrorMessage ?? null,
+  };
+  if (attempt.approxDownloadBytes != null) {
+    responseSummary.responseBodyCapture = { size: attempt.approxDownloadBytes };
+  }
 
-function AttemptTime({
-  attempt,
-  dateFormatter,
-  timeFormatter,
-}: {
-  attempt: ApiPoolUpstreamRequestAttempt;
-  dateFormatter: Intl.DateTimeFormat;
-  timeFormatter: Intl.DateTimeFormat;
-}) {
-  const time = new Date(attempt.occurredAt);
-  if (Number.isNaN(time.valueOf())) return <>{attempt.occurredAt}</>;
-  return (
-    <time dateTime={attempt.occurredAt}>
-      <span className="block whitespace-nowrap">{dateFormatter.format(time)}</span>
-      <span className="block whitespace-nowrap">{timeFormatter.format(time)}</span>
-    </time>
-  );
+  return {
+    blockId: `upstream-account-attempt-${attempt.attemptId}`,
+    kind: "attempt",
+    occurredAt: attempt.occurredAt,
+    title: "",
+    status: attempt.status,
+    attempt: {
+      synthetic: false,
+      attemptId: attempt.attemptId,
+      occurredAt: attempt.occurredAt,
+      endpoint: attempt.endpoint,
+      stickyKey: attempt.stickyKey ?? null,
+      upstreamAccountId: attempt.upstreamAccountId ?? null,
+      upstreamAccountName: attempt.upstreamAccountName ?? null,
+      requestModel: attempt.requestModel ?? attempt.model ?? null,
+      responseModel: attempt.responseModel ?? null,
+      upstreamRouteKey: attempt.upstreamRouteKey ?? null,
+      proxyBindingKeySnapshot: attempt.proxyBindingKeySnapshot ?? null,
+      attemptIndex: attempt.attemptIndex,
+      distinctAccountIndex: attempt.distinctAccountIndex,
+      sameAccountRetryIndex: attempt.sameAccountRetryIndex,
+      requesterIp: attempt.requesterIp ?? (proxyDisplay.value !== "-" ? proxyDisplay.value : null),
+      startedAt: attempt.startedAt ?? null,
+      finishedAt: attempt.finishedAt ?? null,
+      status: attempt.status,
+      phase: attempt.phase ?? null,
+      httpStatus: attempt.httpStatus ?? null,
+      downstreamHttpStatus: attempt.downstreamHttpStatus ?? null,
+      failureKind: attempt.failureKind ?? null,
+      errorMessage: attempt.errorMessage ?? null,
+      downstreamErrorMessage: attempt.downstreamErrorMessage ?? null,
+      connectLatencyMs: attempt.connectLatencyMs ?? null,
+      firstByteLatencyMs: attempt.firstByteLatencyMs ?? null,
+      streamLatencyMs: attempt.streamLatencyMs ?? null,
+      upstreamRequestId: attempt.upstreamRequestId ?? null,
+      requestSummary,
+      responseSummary,
+    },
+    detail: null,
+    responseBody: null,
+  };
 }
 
 export function UpstreamAccountAttemptTimeline({
@@ -489,20 +184,8 @@ export function UpstreamAccountAttemptTimeline({
   const [error, setError] = useState<string | null>(null);
   const requestSeqRef = useRef(0);
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
-  const dateFormatter = useMemo(
-    () => new Intl.DateTimeFormat(localeTag, { month: "2-digit", day: "2-digit" }),
-    [localeTag],
-  );
-  const timeFormatter = useMemo(
-    () =>
-      new Intl.DateTimeFormat(localeTag, {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false,
-      }),
-    [localeTag],
-  );
+  const isZh = locale === "zh";
+  const proxyDirectLabel = t("accountPool.upstreamAttempts.proxyDirect");
   const proxyBindingKeys = useMemo(
     () => collectProxyBindingKeys(response?.items),
     [response?.items],
@@ -566,25 +249,28 @@ export function UpstreamAccountAttemptTimeline({
         if (requestSeq === requestSeqRef.current) setResponse(next);
       })
       .catch((requestError) => {
-        if (requestSeq === requestSeqRef.current)
+        if (requestSeq === requestSeqRef.current) {
           setError(requestError instanceof Error ? requestError.message : String(requestError));
+        }
       })
       .finally(() => {
         if (requestSeq === requestSeqRef.current) setLoading(false);
       });
   };
 
-  if (loading && !response)
+  if (loading && !response) {
     return (
       <div className="flex justify-center py-10">
         <Spinner />
       </div>
     );
+  }
   if (error) return <Alert variant="warning">{error}</Alert>;
-  if (!response || response.items.length === 0)
+  if (!response || response.items.length === 0) {
     return (
       <p className="text-sm text-base-content/68">{t("accountPool.upstreamAttempts.empty")}</p>
     );
+  }
 
   return (
     <section className="space-y-3" data-testid="upstream-account-call-records">
@@ -596,182 +282,32 @@ export function UpstreamAccountAttemptTimeline({
           {t("accountPool.upstreamAttempts.total", { count: response.total })}
         </span>
       </div>
-      <div className="hidden overflow-x-auto rounded-lg border border-base-300/70 bg-base-100/65 pb-1 pl-6 pr-1 pt-1 md:block">
-        <table
-          className="min-w-full w-max border-collapse text-left text-sm"
-          data-testid="upstream-account-call-records-table"
-        >
-          <thead className="border-b border-base-300/70 bg-base-200/55 text-xs font-medium text-base-content/65">
-            <tr>
-              <th className="min-w-24 px-3 py-2.5">
-                {t("accountPool.upstreamAttempts.columns.time")}
-              </th>
-              <th className="whitespace-nowrap px-3 py-2.5">
-                {t("accountPool.upstreamAttempts.columns.call")}
-              </th>
-              <th className="min-w-56 px-3 py-2.5">
-                {t("accountPool.upstreamAttempts.columns.model")}
-              </th>
-              <th className="w-40 px-3 py-2.5">
-                {t("accountPool.upstreamAttempts.columns.result")}
-              </th>
-              <th className="w-40 px-3 py-2.5">
-                {t("accountPool.upstreamAttempts.columns.proxy")}
-              </th>
-              <th className="w-48 px-3 py-2.5">
-                {t("accountPool.upstreamAttempts.columns.timing")}
-              </th>
-              <th className="min-w-64 px-3 py-2.5">
-                {t("accountPool.upstreamAttempts.columns.error")}
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-base-300/70">
-            {response.items.map((attempt) => {
-              const proxy = formatProxyBinding(attempt, proxyBindingNodesByKey, t);
-              return (
-                <Fragment key={attempt.attemptId}>
-                  <tr
-                    className={
-                      attempt.attemptId === focusedAttemptId ? "bg-info/10" : "hover:bg-base-200/35"
-                    }
-                    data-attempt-id={attempt.attemptId}
-                    data-testid={`account-attempt-record-${attempt.attemptId}`}
-                  >
-                    <td className="min-w-24 px-3 py-3 align-top font-mono text-xs tabular-nums text-base-content/70">
-                      <AttemptTime
-                        attempt={attempt}
-                        dateFormatter={dateFormatter}
-                        timeFormatter={timeFormatter}
-                      />
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-3 align-top font-mono text-xs">
-                      <Link
-                        className="inline-block whitespace-nowrap text-info underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                        title={attempt.attemptId}
-                        to={`/records?attemptId=${encodeURIComponent(attempt.attemptId)}&rangePreset=7d`}
-                      >
-                        {attempt.attemptId}
-                      </Link>
-                      <div className="mt-1 text-[11px] text-base-content/55">
-                        {attempt.invokeId}
-                      </div>
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                      <ModelMapping attempt={attempt} t={t} />
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                      <AttemptResult attempt={attempt} t={t} />
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                      <span
-                        className={
-                          proxy.resolved
-                            ? "block max-w-40 truncate font-medium"
-                            : "block max-w-40 truncate font-mono text-xs"
-                        }
-                        title={proxy.title}
-                      >
-                        {proxy.value}
-                      </span>
-                    </td>
-                    <td className="px-3 py-3 align-top font-mono text-xs tabular-nums text-base-content/75">
-                      <AttemptTiming attempt={attempt} t={t} />
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                      <AttemptError attempt={attempt} />
-                    </td>
-                  </tr>
-                  {hasAttemptEvidence(attempt, false) ? (
-                    <tr className={attempt.attemptId === focusedAttemptId ? "bg-info/10" : ""}>
-                      <td className="px-3 pb-3 pt-0" colSpan={7}>
-                        <AttemptEvidenceDisclosure
-                          attempt={attempt}
-                          includeTimings={false}
-                          isFocused={attempt.attemptId === focusedAttemptId}
-                          localeTag={localeTag}
-                          proxy={proxy}
-                          t={t}
-                        />
-                      </td>
-                    </tr>
-                  ) : null}
-                </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <div className="overflow-x-auto rounded-lg border border-base-300/70 bg-base-100/65 md:hidden">
-        <table
-          className="min-w-[560px] w-max border-collapse text-left text-xs"
-          data-testid="upstream-account-call-records-mobile-table"
-        >
-          <thead className="border-b border-base-300/70 bg-base-200/55 text-base-content/65">
-            <tr>
-              <th className="w-16 px-2 py-2">{t("accountPool.upstreamAttempts.columns.time")}</th>
-              <th className="px-2 py-2">{t("accountPool.upstreamAttempts.columns.call")}</th>
-              <th className="w-20 px-2 py-2">{t("accountPool.upstreamAttempts.columns.result")}</th>
-              <th className="px-2 py-2">{t("accountPool.upstreamAttempts.columns.error")}</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-base-300/70">
-            {response.items.map((attempt) => {
-              const proxy = formatProxyBinding(attempt, proxyBindingNodesByKey, t);
-              return (
-                <Fragment key={attempt.attemptId}>
-                  <tr
-                    className={attempt.attemptId === focusedAttemptId ? "bg-info/10" : ""}
-                    data-attempt-id={attempt.attemptId}
-                  >
-                    <td className="px-2 py-2 align-top font-mono tabular-nums text-base-content/70">
-                      <AttemptTime
-                        attempt={attempt}
-                        dateFormatter={dateFormatter}
-                        timeFormatter={timeFormatter}
-                      />
-                    </td>
-                    <td className="px-2 py-2 align-top">
-                      <Link
-                        className="block whitespace-nowrap font-mono text-info underline underline-offset-4"
-                        title={attempt.attemptId}
-                        to={`/records?attemptId=${encodeURIComponent(attempt.attemptId)}&rangePreset=7d`}
-                      >
-                        {attempt.attemptId}
-                      </Link>
-                      <div className="mt-1 font-mono text-[11px] text-base-content/55">
-                        {attempt.invokeId}
-                      </div>
-                      <div className="mt-1">
-                        <ModelMapping attempt={attempt} t={t} />
-                      </div>
-                    </td>
-                    <td className="px-2 py-2 align-top">
-                      <AttemptResult attempt={attempt} t={t} />
-                    </td>
-                    <td className="px-2 py-2 align-top">
-                      <AttemptError attempt={attempt} />
-                    </td>
-                  </tr>
-                  {hasAttemptEvidence(attempt, true) ? (
-                    <tr className={attempt.attemptId === focusedAttemptId ? "bg-info/10" : ""}>
-                      <td className="px-2 pb-2 pt-0" colSpan={4}>
-                        <AttemptEvidenceDisclosure
-                          attempt={attempt}
-                          includeTimings
-                          isFocused={attempt.attemptId === focusedAttemptId}
-                          localeTag={localeTag}
-                          proxy={proxy}
-                          t={t}
-                        />
-                      </td>
-                    </tr>
-                  ) : null}
-                </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
+      <div className="space-y-3" data-testid="upstream-account-attempt-list">
+        {response.items.map((attempt) => {
+          const proxyDisplay = formatProxyBinding(
+            attempt,
+            proxyBindingNodesByKey,
+            proxyDirectLabel,
+          );
+          const callShortId = displayCallShortId(attempt.invokeId);
+          const syntheticEntry = buildSyntheticWorkflowAttemptEntry(attempt, proxyDisplay);
+          const syntheticRecord = buildSyntheticInvocationRecord(attempt);
+          const isFocused = attempt.attemptId === focusedAttemptId;
+
+          return (
+            <InvocationWorkflowAttemptRecord
+              key={attempt.attemptId}
+              record={syntheticRecord}
+              entry={syntheticEntry}
+              localeTag={localeTag}
+              isZh={isZh}
+              summaryIdentity={callShortId ?? attempt.attemptId}
+              focused={isFocused}
+              defaultSection={isFocused ? "timing" : null}
+              testId={`account-attempt-record-${attempt.attemptId}`}
+            />
+          );
+        })}
       </div>
       <div className="flex items-center justify-end gap-2">
         <Button

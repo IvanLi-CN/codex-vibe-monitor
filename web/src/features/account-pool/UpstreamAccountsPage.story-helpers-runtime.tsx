@@ -1042,7 +1042,7 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         const attempts: ApiPoolUpstreamRequestAttempt[] = [
           {
             attemptId: "4V7MYPJG",
-            invokeId: "storybook-pool-retry-001",
+            invokeId: "K7QM9ZD4HP",
             occurredAt: "2026-07-11T12:00:00.000Z",
             endpoint: "/v1/responses",
             stickyKey: "storybook-sticky",
@@ -1079,7 +1079,7 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
           },
           {
             attemptId: "QADKN5Z9",
-            invokeId: "storybook-pool-retry-001",
+            invokeId: "K7QM9ZD4HP",
             occurredAt: "2026-07-11T12:00:01.000Z",
             endpoint: "/v1/responses",
             stickyKey: "storybook-sticky",
@@ -1116,7 +1116,7 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         if (storyId?.endsWith("--detail-drawer-records-pending-mobile")) {
           attempts.unshift({
             attemptId: "YG7P25XG",
-            invokeId: "storybook-pool-pending-001",
+            invokeId: "M8R7XZ4Q2W",
             occurredAt: "2026-07-11T12:00:02.000Z",
             endpoint: "/v1/responses",
             upstreamAccountId: accountId,
