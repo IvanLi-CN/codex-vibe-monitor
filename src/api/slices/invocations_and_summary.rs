@@ -9899,7 +9899,7 @@ async fn load_dashboard_activity_account_build_result(
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let mut account_activity = HashMap::<Option<i64>, UpstreamAccountActivityAccumulator>::new();
     let mut model_performance = ModelPerformanceAccumulator::default();
-    let mut materialized_archive_fallback_totals = StatsTotals::default();
+    let materialized_archive_fallback_totals = StatsTotals::default();
     let mut materialized_archive_details_limited = false;
     let current_snapshot_by_account = if range_name == "yesterday" {
         load_dashboard_activity_current_minute_accumulators_by_account(state, source_scope, range)
@@ -10043,47 +10043,45 @@ async fn load_dashboard_activity_account_build_result(
                 .add_aggregate_row(&row);
         }
         if !skipped_materialized_ranges.is_empty() {
-            let mut account_fallback_totals =
-                dashboard_activity_materialized_archive_account_fallback_totals(
-                    state,
-                    source_scope,
-                    &skipped_materialized_ranges,
-                )
-                .await?;
-            if builder_kind == DashboardActivityAccountBuilderKind::DashboardFull {
-                let global_fallback_totals =
-                    dashboard_activity_materialized_archive_fallback_totals(
+            let global_fallback_totals = dashboard_activity_materialized_archive_fallback_totals(
+                state,
+                source_scope,
+                skipped_materialized_ranges.clone(),
+            )
+            .await?;
+            if dashboard_activity_stats_totals_has_values(global_fallback_totals) {
+                if builder_kind == DashboardActivityAccountBuilderKind::DashboardFull {
+                    materialized_archive_details_limited = true;
+                }
+                let mut account_fallback_totals =
+                    dashboard_activity_materialized_archive_account_fallback_totals(
                         state,
                         source_scope,
-                        skipped_materialized_ranges.clone(),
+                        &skipped_materialized_ranges,
                     )
                     .await?;
-                if dashboard_activity_stats_totals_has_values(global_fallback_totals) {
-                    materialized_archive_fallback_totals = global_fallback_totals;
-                    materialized_archive_details_limited = true;
-                    let account_fallback_sum = account_fallback_totals
-                        .values()
-                        .fold(StatsTotals::default(), |total, account_totals| {
-                            total.add(account_totals.stats_totals())
-                        });
-                    let residual_fallback_totals = dashboard_activity_stats_totals_subtract(
-                        global_fallback_totals,
-                        account_fallback_sum,
-                    );
-                    if dashboard_activity_stats_totals_has_values(residual_fallback_totals) {
-                        account_fallback_totals.entry(None).or_default().add_assign(
-                            DashboardActivityAccountFallbackTotals::from_stats_totals(
-                                residual_fallback_totals,
-                            ),
-                        );
-                    }
-                }
-            }
-            for (upstream_account_id, totals) in account_fallback_totals {
-                dashboard_activity_merge_account_fallback_totals(
-                    account_activity.entry(upstream_account_id).or_default(),
-                    totals,
+                let account_fallback_sum = account_fallback_totals
+                    .values()
+                    .fold(StatsTotals::default(), |total, account_totals| {
+                        total.add(account_totals.stats_totals())
+                    });
+                let residual_fallback_totals = dashboard_activity_stats_totals_subtract(
+                    global_fallback_totals,
+                    account_fallback_sum,
                 );
+                if dashboard_activity_stats_totals_has_values(residual_fallback_totals) {
+                    account_fallback_totals.entry(None).or_default().add_assign(
+                        DashboardActivityAccountFallbackTotals::from_stats_totals(
+                            residual_fallback_totals,
+                        ),
+                    );
+                }
+                for (upstream_account_id, totals) in account_fallback_totals {
+                    dashboard_activity_merge_account_fallback_totals(
+                        account_activity.entry(upstream_account_id).or_default(),
+                        totals,
+                    );
+                }
             }
         }
     }
