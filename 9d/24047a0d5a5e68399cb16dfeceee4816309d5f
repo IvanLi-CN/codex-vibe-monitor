@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.42.2",
+  "base_stable_version": "2.42.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-19T08:50:12Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.42.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "ba6fd5a46b56f6d9fa3c68ffbd7331e9f664544a",
+  "pr_number": 655,
+  "pr_title": "fix(web): reuse attempt cards in upstream account requests",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.42.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.42.2",
+  "target_sha": "9d24047a0d5a5e68399cb16dfeceee4816309d5f",
+  "type_label": "type:patch"
+}
