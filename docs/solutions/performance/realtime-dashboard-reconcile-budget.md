@@ -61,6 +61,8 @@ related_specs:
 - 不要把 `records` 事件继续暴露成“页面自己决定要不要重拉”的契约；主应用订阅面应该直接消费 topic payload。
 - 不要为覆盖范围内页面保留健康态 timer reconcile、open-resync 或页面私有 fallback；那会重新引入第二真相源。
 - 不要把 closed-range / history-only 页面硬塞进持续推送；纯 SSE 的边界是“常驻当前态订阅”，不是“所有页面都实时化”。
+- 如果某个 topic 仍需要短 TTL 的服务端 DB 基础快照缓存，cache key 只能包含稳定请求参数与明确允许的 bucket 维度；live runtime 状态、最新持久化行 ID 这类高抖动因子必须留在响应阶段 overlay，否则 singleflight 会被打散，订阅与 HTTP 都会继续重复重算同一份基底。
+- 与 Dashboard 同屏但不共享同一 owner-facing contract 的接口，不要为了“省实现”直接复用 dashboard full snapshot builder；应复用更低层的账户活动聚合块，避免把 summary/model-performance/reconcile 之类 dashboard-only 组装再次带回实时主链路。
 - 不要为 replay 失败发明第三条恢复路径。恢复规则只应是 replay 或 snapshot。
 - 手动“立即重连”不应偷偷复用旧 `resume` 去赌 replay 命中。若产品语义是“人工要求重新拉一份当前态”，前端就应该对 active topics 强制 fresh snapshot，并给这次连接分配独立 `attempt/reason` 供前后端对账。
 - topic 参数必须 canonicalize；否则 resume cursor 与 cache key 会漂移。

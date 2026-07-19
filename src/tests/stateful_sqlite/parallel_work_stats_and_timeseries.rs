@@ -13501,6 +13501,10 @@ async fn dashboard_activity_cached_snapshot_overlays_new_live_accounts() {
             .iter()
             .all(|account| account.account_key != "upstream:99")
     );
+    {
+        let cache = state.dashboard_activity_snapshot_cache.lock().await;
+        assert_eq!(cache.entries.len(), 1);
+    }
 
     let cached_existing_recent_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
     sqlx::query(
@@ -13728,6 +13732,10 @@ async fn dashboard_activity_cached_snapshot_overlays_new_live_accounts() {
             .expect("cached summary spend rate"),
         0.32,
     );
+    {
+        let cache = state.dashboard_activity_snapshot_cache.lock().await;
+        assert_eq!(cache.entries.len(), 1);
+    }
 }
 
 #[tokio::test]
@@ -15034,6 +15042,89 @@ async fn dashboard_activity_progressive_summary_keeps_archived_account_aggregate
     assert_eq!(compatible_account.request_count, 2);
     assert_eq!(compatible_account.total_tokens, 30);
     assert_eq!(compatible_account.recent_invocations.len(), 2);
+}
+
+#[tokio::test]
+async fn upstream_account_activity_does_not_populate_dashboard_snapshot_cache() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, group_name, plan_type, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(42_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Cache Isolation")
+    .bind("Primary")
+    .bind("enterprise")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert cache isolation account");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(97_001_i64)
+    .bind("upstream-cache-isolation")
+    .bind(format_naive(
+        Utc::now().with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(123_i64)
+    .bind(0.12_f64)
+    .bind(
+        json!({
+            "promptCacheKey": "pck-upstream-cache-isolation",
+            "upstreamAccountId": 42_i64,
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert cache isolation invocation");
+
+    {
+        let cache = state.dashboard_activity_snapshot_cache.lock().await;
+        assert!(cache.entries.is_empty());
+        assert!(cache.in_flight.is_empty());
+    }
+
+    let Json(response) = fetch_upstream_account_activity(
+        State(state.clone()),
+        Query(UpstreamAccountActivityQuery {
+            range: "today".to_string(),
+            recent_limit: Some(2),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch upstream account activity without dashboard cache coupling");
+    assert_eq!(response.accounts.len(), 1);
+    assert_eq!(response.accounts[0].upstream_account_id, 42_i64);
+
+    {
+        let cache = state.dashboard_activity_snapshot_cache.lock().await;
+        assert!(cache.entries.is_empty());
+        assert!(cache.in_flight.is_empty());
+    }
 }
 
 #[tokio::test]

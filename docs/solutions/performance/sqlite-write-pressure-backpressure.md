@@ -14,6 +14,7 @@
 - `proxy capture follow-up` 也必须遵守这个分级：没有 SSE 订阅者时，不得再消耗 summary/quota 或 hourly rollup refresh 预算。
 - 即使存在 active SSE 订阅者，terminal follow-up 也不应强制 `flush_now` 式 SQLite barrier；terminal overlay 是 UI 的立即收敛来源，summary/quota 可以在 write controller 后续 flush 后最终一致。
 - 对请求收尾里的同一实体写入，要优先消除“重复唯一键探测 + 紧跟二次更新”“先重算 rollup 再补 timing 再重算一次”这类单请求内自我放大；SQLite 压力常常不是来自单条大 SQL，而是来自几条语义重复的写语句连发。
+- 对 owner-facing 聚合读路径，同样要先消除“整窗扫明细再丢弃大部分结果”和“同参请求因 cache key 掺入 runtime 抖动而无法合并”这两类读放大；它们会和写侧单写者争用同一 SQLite 预算，并以 `database is locked` 的形式回灌到前台。
 - 当并发不能降低且业务成功率高于观测记录完整性时，用进程内短窗口 write controller 承接所有观测记录写：terminal invocation 进入 P1 best-effort 队列，attempt 中间进度、rollup/live progress、account touch、system task finish 等可延迟项进入 P2 并按 key coalesce。记录入队/flush 失败必须报警和计数，但不得让已经完成的业务响应失败。
 - 高频 runtime snapshot 不应默认等同于主事实写。`running` / first-byte / response-ready 这类 UI 新鲜度事件可以先走进程内共享 runtime store + SSE/HTTP overlay；如果服务选择业务优先于记录，terminal success/failure 也可以先进入 P1 write controller，并用 SSE terminal payload + runtime tombstone 支撑短暂最终一致窗口。
 - 路由公平性字段如果不是路由正确性的硬状态，可以拆成“进程内立即生效 + batch 落库”。例如 `last_selected_at` 可先写内存锚点并叠加候选排序，账号 status/cooldown/failure 则继续同步写。
@@ -62,6 +63,7 @@
 - write controller 必须有有界队列、flush 触发（时间窗口 / row count / 最大等待）、coalesced row count、oldest age、flush elapsed、queue depth、enqueue failed 与 dropped count 证据；否则只是把 SQLite 锁问题藏到内存里。
 - buffered progress 不能立刻广播“已持久化”的 DB snapshot；要么广播内存态，要么等后续 reconcile/terminal 更新。否则会把 stale DB state 伪装成实时状态。
 - 如果选择内存态广播，就必须让所有相关读方共享同一个 runtime store，包括 SSE、records open-resync、current summary、current timeseries、账号活动 in-flight 统计与 prompt-cache working conversations；否则去掉 DB running 写后会产生多套不一致实时视图。
+- Dashboard / account activity 这类短 TTL 聚合快照，如果允许 `<=2s` 的服务端合并刷新预算，就不应再把 live runtime 状态或最新持久化行 ID 放进 cache key；否则表面上有 singleflight，实测仍会长期 `wait_on_in_flight=0`，既保不住实时性，也保不住 SQLite。
 - `INSERT OR IGNORE` 会静默吞掉 `NOT NULL` 约束错误；用于占位写时必须绑定所有 NOT NULL 默认列，或者检查 `rows_affected` 并记录结构化证据，否则会误以为 batch flush 成功。
 - 为每个后台入口单独做局部退避，容易遗漏同一压力窗口内的其他维护任务；进程级 gate 更容易统一行为。
 - `SELECT MAX(id) ... WHERE <稀疏条件>`、`NOT EXISTS` + 低选择性 phase 过滤这类查询，即使最终只返回 1 行，也可能在 SQLite 上吃掉秒级读锁预算；若它们会与前台 HTTP 共享同一数据库，必须先压成 cursor 读取或用 partial index 固定扫描面。
