@@ -8242,7 +8242,7 @@ fn dashboard_live_snapshot_in_progress_counts(
 }
 
 pub(crate) const DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES: i64 = 5;
-const DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS: u64 = 5;
+pub(crate) const DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS: u64 = 5;
 
 #[derive(Debug, Clone)]
 pub(crate) struct DashboardActivitySnapshot {
@@ -8912,7 +8912,7 @@ fn dashboard_activity_full_hour_exact_range(
     }))
 }
 
-fn sort_dashboard_activity_accounts(accounts: &mut [DashboardActivityAccountResponse]) {
+pub(crate) fn sort_dashboard_activity_accounts(accounts: &mut [DashboardActivityAccountResponse]) {
     accounts.sort_by(|left, right| {
         right
             .total_tokens
@@ -8938,7 +8938,7 @@ fn sort_dashboard_activity_accounts(accounts: &mut [DashboardActivityAccountResp
     });
 }
 
-fn dashboard_activity_account_from_live(
+pub(crate) fn dashboard_activity_account_from_live(
     live_account: &DashboardActivityLiveAccount,
     meta: Option<&UpstreamAccountActivityMetaRow>,
     range: ExactUtcRange,
@@ -9525,7 +9525,7 @@ fn sum_dashboard_activity_current_minute_accumulators(
     total
 }
 
-fn sum_dashboard_activity_current_snapshots(
+pub(crate) fn sum_dashboard_activity_current_snapshots(
     snapshots: impl IntoIterator<Item = DashboardActivityCurrentSnapshot>,
 ) -> DashboardActivityCurrentSnapshot {
     let mut total = DashboardActivityCurrentSnapshot::default();

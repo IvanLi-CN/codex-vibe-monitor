@@ -1,5 +1,6 @@
 use super::*;
 use serde::de::DeserializeOwned;
+use serde_json::json;
 
 const SUBSCRIPTION_REPLAY_WINDOW_SECS: i64 = 60;
 const SUBSCRIPTION_REPLAY_MAX_EVENTS_PER_TOPIC: usize = 512;
@@ -12,6 +13,12 @@ const SUBSCRIPTION_DEFAULT_PROMPT_CACHE_RECENT_LIMIT: i64 = 16;
 const SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES: i64 = 5;
 const SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_PAGE_SIZE: i64 = 20;
 const SUBSCRIPTION_DEFAULT_INVOCATION_LIMIT: i64 = 20;
+
+#[cfg(not(test))]
+const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration =
+    Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS);
+#[cfg(test)]
+const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -111,6 +118,8 @@ struct CachedSubscriptionTopic {
     descriptor: SubscriptionTopicDescriptor,
     schema_epoch: String,
     cursor: u64,
+    snapshot_built_at: Instant,
+    refresh_scheduled: bool,
     snapshot_payload: Value,
     snapshot_bytes: usize,
     replay_events: VecDeque<ReplayableTopicEvent>,
@@ -466,6 +475,8 @@ impl SubscriptionHub {
                 descriptor: descriptor.clone(),
                 schema_epoch: schema_epoch.clone(),
                 cursor: next_cursor,
+                snapshot_built_at: Instant::now(),
+                refresh_scheduled: false,
                 snapshot_payload: payload.clone(),
                 snapshot_bytes: payload_bytes,
                 replay_events: guard
@@ -533,15 +544,62 @@ impl SubscriptionHub {
                 .topics
                 .values()
                 .filter(|cached| cached.topic.is_affected_by(&payload))
-                .map(|cached| cached.topic.clone())
+                .cloned()
                 .collect::<Vec<_>>()
         };
 
-        for topic in affected {
-            if let Err(err) = self.refresh_topic(state.clone(), topic.clone(), true).await {
+        for cached in affected {
+            if cached.topic.uses_dashboard_activity_live_overlay()
+                && let BroadcastPayload::DashboardActivityLive { snapshot } = &payload
+                && let Err(err) = self
+                    .apply_dashboard_activity_live_overlay(
+                        state.clone(),
+                        &cached.topic,
+                        snapshot.clone(),
+                    )
+                    .await
+            {
                 warn!(
                     ?err,
-                    topic = %topic.name(),
+                    topic = %cached.topic.name(),
+                    "failed to apply dashboard activity live overlay"
+                );
+                continue;
+            }
+
+            if matches!(&payload, BroadcastPayload::Records { .. })
+                && cached.topic.uses_dashboard_activity_live_overlay()
+            {
+                let needs_refresh = match &payload {
+                    BroadcastPayload::Records { records } => records
+                        .iter()
+                        .any(crate::app_state::runtime_store_record_is_terminal),
+                    _ => false,
+                };
+                if needs_refresh
+                    && let Err(err) = self
+                        .schedule_dashboard_activity_topic_refresh(
+                            state.clone(),
+                            cached.topic.clone(),
+                        )
+                        .await
+                {
+                    warn!(
+                        ?err,
+                        topic = %cached.topic.name(),
+                        "failed to schedule dashboard activity topic refresh"
+                    );
+                }
+                continue;
+            }
+
+            if let Err(err) = self
+                .refresh_topic(state.clone(), cached.topic.clone(), true)
+                .await
+            {
+                warn!(
+                    ?err,
+                    topic = %cached.topic.name(),
                     "failed to refresh subscription topic"
                 );
             }
@@ -553,6 +611,382 @@ impl Default for SubscriptionHub {
     fn default() -> Self {
         Self::new()
     }
+}
+
+impl SubscriptionHub {
+    async fn clear_dashboard_activity_topic_refresh_flag(&self, topic: &SubscriptionTopic) {
+        let Ok(topic_key) = topic.cache_key() else {
+            return;
+        };
+        let mut guard = self.state.lock().await;
+        if let Some(cached) = guard.topics.get_mut(&topic_key) {
+            cached.refresh_scheduled = false;
+        }
+    }
+
+    async fn schedule_dashboard_activity_topic_refresh(
+        &self,
+        state: Arc<AppState>,
+        topic: SubscriptionTopic,
+    ) -> Result<(), ApiError> {
+        let topic_key = topic.cache_key()?;
+        let delay = {
+            let mut guard = self.state.lock().await;
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                return Ok(());
+            };
+            let age = cached.snapshot_built_at.elapsed();
+            if age >= DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL {
+                cached.refresh_scheduled = false;
+                None
+            } else if cached.refresh_scheduled {
+                return Ok(());
+            } else {
+                cached.refresh_scheduled = true;
+                Some(DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL.saturating_sub(age))
+            }
+        };
+
+        if let Some(delay) = delay {
+            let hub = state.subscription_hub.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                invalidate_dashboard_activity_snapshot_cache(
+                    state.dashboard_activity_snapshot_cache.as_ref(),
+                )
+                .await;
+                if let Err(err) = hub.refresh_topic(state.clone(), topic.clone(), true).await {
+                    warn!(
+                        ?err,
+                        topic = %topic.name(),
+                        "failed to run deferred dashboard activity topic refresh"
+                    );
+                    hub.clear_dashboard_activity_topic_refresh_flag(&topic)
+                        .await;
+                }
+            });
+            return Ok(());
+        }
+
+        invalidate_dashboard_activity_snapshot_cache(
+            state.dashboard_activity_snapshot_cache.as_ref(),
+        )
+        .await;
+        self.refresh_topic(state, topic, true).await?;
+        Ok(())
+    }
+
+    async fn apply_dashboard_activity_live_overlay(
+        &self,
+        state: Arc<AppState>,
+        topic: &SubscriptionTopic,
+        live: DashboardActivityLiveSnapshot,
+    ) -> Result<(), ApiError> {
+        let topic_key = topic.cache_key()?;
+        let dispatch = {
+            let mut guard = self.state.lock().await;
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                return Ok(());
+            };
+            let mut payload = cached.snapshot_payload.clone();
+            if !apply_dashboard_activity_live_overlay_to_payload(
+                state.as_ref(),
+                &mut payload,
+                &live,
+            )? {
+                return Ok(());
+            }
+
+            let payload_bytes = serialized_len(&payload)?;
+            cached.cursor = cached.cursor.saturating_add(1);
+            cached.snapshot_payload = payload.clone();
+            cached.snapshot_bytes = payload_bytes;
+            cached.replay_events.push_back(ReplayableTopicEvent {
+                cursor: cached.cursor,
+                payload: payload.clone(),
+                bytes: payload_bytes,
+                emitted_at: Utc::now(),
+            });
+            cached.replay_bytes = cached.replay_bytes.saturating_add(payload_bytes);
+            prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
+
+            SubscriptionDispatchEvent {
+                topic_key: topic_key.clone(),
+                schema_epoch: cached.schema_epoch.clone(),
+                cursor: cached.cursor,
+                payload,
+                descriptor: cached.descriptor.clone(),
+            }
+        };
+
+        let _ = self.broadcaster.send(dispatch);
+        Ok(())
+    }
+}
+
+fn set_json_field(object: &mut serde_json::Map<String, Value>, key: &str, value: Value) {
+    object.insert(key.to_string(), value);
+}
+
+async fn invalidate_dashboard_activity_snapshot_cache(
+    cache: &Mutex<DashboardActivitySnapshotCacheState>,
+) {
+    let in_flight = {
+        let mut guard = cache.lock().await;
+        guard.entries.clear();
+        std::mem::take(&mut guard.in_flight)
+    };
+    for flight in in_flight.into_values() {
+        let _ = flight.signal.send(true);
+    }
+}
+
+fn set_json_optional_field(
+    object: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: Option<Value>,
+) {
+    match value {
+        Some(value) => {
+            object.insert(key.to_string(), value);
+        }
+        None => {
+            object.remove(key);
+        }
+    }
+}
+
+fn dashboard_activity_payload_exact_range(payload: &Value) -> Option<ExactUtcRange> {
+    let object = payload.as_object()?;
+    let range_start = object.get("rangeStart")?.as_str()?;
+    let range_end = object.get("rangeEnd")?.as_str()?;
+    Some(ExactUtcRange {
+        start: parse_to_utc_datetime(range_start)?,
+        end: parse_to_utc_datetime(range_end)?,
+    })
+}
+
+fn dashboard_activity_account_sort_tuple(value: &Value) -> (i64, Option<&str>, i64) {
+    let total_tokens = value
+        .get("totalTokens")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let first_recent_occurred_at = value
+        .get("recentInvocations")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .and_then(|row| row.get("occurredAt"))
+        .and_then(Value::as_str);
+    let upstream_account_id = value
+        .get("upstreamAccountId")
+        .and_then(Value::as_i64)
+        .unwrap_or(i64::MIN);
+    (total_tokens, first_recent_occurred_at, upstream_account_id)
+}
+
+fn apply_dashboard_activity_live_overlay_to_payload(
+    state: &AppState,
+    payload: &mut Value,
+    live: &DashboardActivityLiveSnapshot,
+) -> Result<bool, ApiError> {
+    let request_range = dashboard_activity_payload_exact_range(payload);
+    let Some(root) = payload.as_object_mut() else {
+        return Ok(false);
+    };
+    let model_performance_available = root
+        .get("summary")
+        .and_then(Value::as_object)
+        .and_then(|summary| summary.get("modelPerformance"))
+        .and_then(Value::as_object)
+        .and_then(|model| model.get("available"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    root.insert("liveRevision".to_string(), json!(live.revision));
+    set_json_optional_field(
+        root,
+        "networkLiveBucket",
+        live.network_live_bucket
+            .clone()
+            .map(serde_json::to_value)
+            .transpose()?,
+    );
+    set_json_optional_field(
+        root,
+        "networkRealtimeRate",
+        live.network_realtime_rate
+            .clone()
+            .map(serde_json::to_value)
+            .transpose()?,
+    );
+    let current_snapshot_by_account = state
+        .dashboard_network_speed_cache
+        .snapshot_dashboard_activity_accounts(Utc::now());
+    let current_snapshot_summary =
+        sum_dashboard_activity_current_snapshots(current_snapshot_by_account.values().copied());
+    {
+        let Some(summary) = root.get_mut("summary").and_then(Value::as_object_mut) else {
+            return Ok(false);
+        };
+        let Some(stats) = summary.get_mut("stats").and_then(Value::as_object_mut) else {
+            return Ok(false);
+        };
+        stats.insert(
+            "inProgressConversationCount".to_string(),
+            json!(live.in_progress_invocation_count),
+        );
+        stats.insert(
+            "inProgressRetryConversationCount".to_string(),
+            json!(live.retry_invocation_count),
+        );
+        stats.insert(
+            "inProgressPhaseCounts".to_string(),
+            serde_json::to_value(live.in_progress_phase_counts)?,
+        );
+        summary.insert(
+            "tokensPerMinute".to_string(),
+            json!(current_snapshot_summary.qualified_tokens.max(0) as f64),
+        );
+        summary.insert(
+            "spendRate".to_string(),
+            json!(current_snapshot_summary.total_cost.max(0.0)),
+        );
+        if let Some(value) = current_snapshot_summary.first_response_byte_total_avg_ms() {
+            summary.insert(
+                "currentFirstResponseByteTotalAvgMs".to_string(),
+                json!(value),
+            );
+        }
+        if let Some(value) = current_snapshot_summary.avg_total_ms() {
+            summary.insert("currentAvgTotalMs".to_string(), json!(value));
+        }
+    }
+
+    let Some(accounts_value) = root.get_mut("accounts") else {
+        return Ok(true);
+    };
+    let Some(accounts) = accounts_value.as_array_mut() else {
+        return Ok(true);
+    };
+
+    let live_accounts = live
+        .accounts
+        .iter()
+        .map(|account| (account.account_key.as_str(), account))
+        .collect::<HashMap<_, _>>();
+    let mut existing_account_keys = HashSet::new();
+
+    for account in accounts.iter_mut() {
+        let Some(account_object) = account.as_object_mut() else {
+            continue;
+        };
+        let Some(account_key) = account_object.get("accountKey").and_then(Value::as_str) else {
+            continue;
+        };
+        existing_account_keys.insert(account_key.to_string());
+        let live_account = live_accounts.get(account_key).copied();
+        let upstream_account_id = account_object
+            .get("upstreamAccountId")
+            .and_then(Value::as_i64);
+        let current_snapshot = current_snapshot_by_account
+            .get(&upstream_account_id)
+            .copied()
+            .unwrap_or_default();
+
+        set_json_field(
+            account_object,
+            "inProgressInvocationCount",
+            json!(live_account.map_or(0, |account| account.in_progress_invocation_count)),
+        );
+        set_json_field(
+            account_object,
+            "inProgressPhaseCounts",
+            serde_json::to_value(
+                live_account
+                    .map(|account| account.in_progress_phase_counts)
+                    .unwrap_or_default(),
+            )?,
+        );
+        set_json_field(
+            account_object,
+            "retryInvocationCount",
+            json!(live_account.map_or(0, |account| account.retry_invocation_count)),
+        );
+        set_json_field(
+            account_object,
+            "uploadBytesPerSecond",
+            json!(live_account.map_or(0.0, |account| account.upload_bytes_per_second)),
+        );
+        set_json_field(
+            account_object,
+            "downloadBytesPerSecond",
+            json!(live_account.map_or(0.0, |account| account.download_bytes_per_second)),
+        );
+        set_json_field(
+            account_object,
+            "tokensPerMinute",
+            json!(current_snapshot.qualified_tokens.max(0) as f64),
+        );
+        set_json_field(
+            account_object,
+            "spendRate",
+            json!(current_snapshot.total_cost.max(0.0)),
+        );
+        if let Some(value) = current_snapshot.first_response_byte_total_avg_ms() {
+            set_json_field(
+                account_object,
+                "currentFirstResponseByteTotalAvgMs",
+                json!(value),
+            );
+        }
+        if let Some(value) = current_snapshot.avg_total_ms() {
+            set_json_field(account_object, "currentAvgTotalMs", json!(value));
+        }
+        if let Some(live_account) = live_account {
+            let current_request_count = account_object
+                .get("requestCount")
+                .and_then(Value::as_i64)
+                .unwrap_or_default();
+            set_json_field(
+                account_object,
+                "requestCount",
+                json!(current_request_count.max(live_account.in_progress_invocation_count.max(0))),
+            );
+        }
+    }
+
+    if let Some(request_range) = request_range {
+        for live_account in &live.accounts {
+            if existing_account_keys.contains(&live_account.account_key) {
+                continue;
+            }
+            let current_snapshot = current_snapshot_by_account
+                .get(&live_account.upstream_account_id)
+                .copied()
+                .unwrap_or_default();
+            let placeholder = dashboard_activity_account_from_live(
+                live_account,
+                None,
+                request_range,
+                current_snapshot,
+                model_performance_available,
+                None,
+                Vec::new(),
+            );
+            accounts.push(serde_json::to_value(placeholder)?);
+        }
+        accounts.sort_by(|left, right| {
+            let left_key = dashboard_activity_account_sort_tuple(left);
+            let right_key = dashboard_activity_account_sort_tuple(right);
+            right_key
+                .0
+                .cmp(&left_key.0)
+                .then_with(|| right_key.1.cmp(&left_key.1))
+                .then_with(|| right_key.2.cmp(&left_key.2))
+        });
+    }
+
+    Ok(true)
 }
 
 pub(crate) fn spawn_subscription_broadcast_listener(state: Arc<AppState>) {
@@ -654,6 +1088,13 @@ pub(crate) async fn topic_sse_stream(
 }
 
 impl SubscriptionTopic {
+    fn uses_dashboard_activity_live_overlay(&self) -> bool {
+        matches!(
+            self,
+            Self::DashboardActivityCurrent { range, .. } if range != "yesterday"
+        )
+    }
+
     fn from_descriptor(descriptor: &SubscriptionTopicDescriptor) -> Result<Self, ApiError> {
         let topic = descriptor.topic.trim();
         let params = &descriptor.params;
@@ -1562,6 +2003,8 @@ mod tests {
             descriptor,
             schema_epoch,
             cursor,
+            snapshot_built_at: Instant::now(),
+            refresh_scheduled: false,
             snapshot_payload: json!({ "cursor": cursor }),
             snapshot_bytes: 32,
             replay_events,

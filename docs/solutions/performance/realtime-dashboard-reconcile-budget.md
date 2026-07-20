@@ -62,6 +62,7 @@ related_specs:
 - 不要为覆盖范围内页面保留健康态 timer reconcile、open-resync 或页面私有 fallback；那会重新引入第二真相源。
 - 不要把 closed-range / history-only 页面硬塞进持续推送；纯 SSE 的边界是“常驻当前态订阅”，不是“所有页面都实时化”。
 - 如果某个 topic 仍需要短 TTL 的服务端 DB 基础快照缓存，cache key 只能包含稳定请求参数与明确允许的自然日锚点等低抖动维度；移动中的 exact `rangeStart/rangeEnd`、live runtime 状态、最新持久化行 ID 这类高抖动因子必须留在响应阶段 overlay，否则 singleflight 会被打散，订阅与 HTTP 都会继续重复重算同一份基底。
+- 对 `dashboard.activity.current` 这类 open-range topic，`live` 广播不应该再反向触发完整 DB snapshot builder。更稳妥的模式是：topic cache 内存 snapshot 直接覆写当前态字段并立即 fanout；terminal `records` 只负责安排一次 `<=TTL` 的节流 refresh，且 refresh 前必须失效对应的 dashboard snapshot cache，否则 deferred refresh 仍可能命中旧 TTL 快照，owner-facing totals 会比预算再多滞后一个窗口。
 - Dashboard / upstream-account 的 recent 预览不得再为了补当前态而对整个选中 range 扫 persisted `running/pending` 行；当前态应来自 runtime/live read model，旧持久化运行态最多只能作为 bounded recent 候选参与展示。
 - 与 Dashboard 同屏但不共享同一 owner-facing contract 的接口，不要为了“省实现”直接复用 dashboard full snapshot builder；应复用更低层的账户活动聚合块，避免把 summary/model-performance/reconcile 之类 dashboard-only 组装再次带回实时主链路。
 - 不要为 replay 失败发明第三条恢复路径。恢复规则只应是 replay 或 snapshot。

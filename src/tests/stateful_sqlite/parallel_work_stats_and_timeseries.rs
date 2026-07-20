@@ -14142,6 +14142,453 @@ async fn dashboard_activity_cached_snapshot_refreshes_terminal_recent_without_li
     );
 }
 
+fn dashboard_activity_topic_descriptor() -> SubscriptionTopicDescriptor {
+    SubscriptionTopicDescriptor {
+        topic: "dashboard.activity.current".to_string(),
+        params: BTreeMap::from([
+            ("range".to_string(), "today".to_string()),
+            ("timeZone".to_string(), "Asia/Shanghai".to_string()),
+            ("recentLimit".to_string(), "2".to_string()),
+            ("includeAccounts".to_string(), "true".to_string()),
+            ("includeRecent".to_string(), "true".to_string()),
+        ]),
+    }
+}
+
+fn extract_subscription_snapshot_payload(prepared: PreparedSubscriptionConnection) -> Value {
+    let mut initial = prepared.initial.into_iter();
+    match initial.next().expect("subscription snapshot event") {
+        SubscriptionEventEnvelope::Snapshot { payload, .. }
+        | SubscriptionEventEnvelope::Replay { payload, .. }
+        | SubscriptionEventEnvelope::Live { payload, .. } => payload,
+    }
+}
+
+#[tokio::test]
+async fn dashboard_activity_subscription_live_overlay_updates_cached_snapshot_without_db_rebuild() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let initial_prepared = state
+        .subscription_hub
+        .prepare_connection(
+            state.clone(),
+            vec![dashboard_activity_topic_descriptor()],
+            vec![],
+        )
+        .await
+        .expect("prepare dashboard activity subscription snapshot");
+    let initial_payload = extract_subscription_snapshot_payload(initial_prepared);
+    let initial_accounts = initial_payload
+        .get("accounts")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(initial_accounts.iter().all(|account| {
+        account.get("accountKey").and_then(Value::as_str) != Some("upstream:99")
+    }));
+
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    state
+        .proxy_runtime_invocations
+        .upsert(crate::api::ApiInvocation {
+            id: 93_001,
+            invoke_id: "dashboard-subscription-live-running".to_string(),
+            occurred_at: occurred_at.clone(),
+            source: SOURCE_PROXY.to_string(),
+            proxy_display_name: None,
+            model: Some("gpt-5".to_string()),
+            request_model: Some("gpt-5".to_string()),
+            response_model: Some("gpt-5".to_string()),
+            input_tokens: Some(0),
+            output_tokens: Some(0),
+            cache_input_tokens: Some(0),
+            reasoning_tokens: Some(0),
+            reasoning_effort: None,
+            total_tokens: Some(0),
+            cost: Some(0.0),
+            cost_input: None,
+            cost_cache_write: None,
+            cost_cache_read: None,
+            cost_output: None,
+            cost_reasoning: None,
+            cache_write_tokens: Some(0),
+            status: Some("running".to_string()),
+            live_phase: Some("requesting".to_string()),
+            error_message: None,
+            downstream_status_code: None,
+            failure_kind: None,
+            blocked_binding: None,
+            blocked_binding_json: None,
+            stream_terminal_event: None,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            downstream_error_message: None,
+            upstream_request_id: None,
+            failure_class: None,
+            is_actionable: None,
+            endpoint: Some("/v1/responses".to_string()),
+            compaction_request_kind: None,
+            compaction_response_kind: None,
+            image_intent: None,
+            requester_ip: None,
+            prompt_cache_key: Some("pck-dashboard-subscription-live-running".to_string()),
+            sticky_key: None,
+            route_mode: None,
+            upstream_account_id: Some(99),
+            upstream_account_name: Some("Live Overlay Account".to_string()),
+            response_content_encoding: None,
+            transport: None,
+            pool_attempt_count: None,
+            pool_distinct_account_count: None,
+            pool_attempt_terminal_reason: None,
+            requested_service_tier: None,
+            service_tier: None,
+            billing_service_tier: None,
+            proxy_weight_delta: None,
+            cost_estimated: None,
+            price_version: None,
+            request_raw_path: None,
+            request_raw_size: None,
+            request_raw_truncated: None,
+            request_raw_truncated_reason: None,
+            response_raw_path: None,
+            response_raw_size: None,
+            response_raw_truncated: None,
+            response_raw_truncated_reason: None,
+            detail_level: DETAIL_LEVEL_FULL.to_string(),
+            detail_pruned_at: None,
+            detail_prune_reason: None,
+            t_total_ms: None,
+            t_req_read_ms: Some(0.0),
+            t_req_parse_ms: Some(0.0),
+            t_upstream_connect_ms: Some(0.0),
+            t_upstream_ttfb_ms: Some(0.0),
+            t_upstream_stream_ms: None,
+            t_resp_parse_ms: None,
+            t_persist_ms: None,
+            created_at: occurred_at.clone(),
+        });
+    state
+        .dashboard_network_speed_cache
+        .finalize_dashboard_activity_invocation(
+            &crate::api::ApiInvocation {
+                id: 93_002,
+                invoke_id: "dashboard-subscription-live-current".to_string(),
+                occurred_at: occurred_at.clone(),
+                source: SOURCE_PROXY.to_string(),
+                proxy_display_name: None,
+                model: Some("gpt-5".to_string()),
+                request_model: Some("gpt-5".to_string()),
+                response_model: Some("gpt-5".to_string()),
+                input_tokens: Some(100),
+                output_tokens: Some(221),
+                cache_input_tokens: Some(0),
+                reasoning_tokens: Some(0),
+                reasoning_effort: None,
+                total_tokens: Some(321),
+                cost: Some(0.32),
+                cost_input: None,
+                cost_cache_write: None,
+                cost_cache_read: None,
+                cost_output: None,
+                cost_reasoning: None,
+                cache_write_tokens: Some(0),
+                status: Some("success".to_string()),
+                live_phase: None,
+                error_message: None,
+                downstream_status_code: None,
+                failure_kind: None,
+                blocked_binding: None,
+                blocked_binding_json: None,
+                stream_terminal_event: None,
+                upstream_error_code: None,
+                upstream_error_message: None,
+                downstream_error_message: None,
+                upstream_request_id: None,
+                failure_class: None,
+                is_actionable: None,
+                endpoint: Some("/v1/responses".to_string()),
+                compaction_request_kind: None,
+                compaction_response_kind: None,
+                image_intent: None,
+                requester_ip: None,
+                prompt_cache_key: Some("pck-dashboard-subscription-live-current".to_string()),
+                sticky_key: None,
+                route_mode: None,
+                upstream_account_id: Some(99),
+                upstream_account_name: Some("Live Overlay Account".to_string()),
+                response_content_encoding: None,
+                transport: None,
+                pool_attempt_count: None,
+                pool_distinct_account_count: None,
+                pool_attempt_terminal_reason: None,
+                requested_service_tier: None,
+                service_tier: None,
+                billing_service_tier: None,
+                proxy_weight_delta: None,
+                cost_estimated: None,
+                price_version: None,
+                request_raw_path: None,
+                request_raw_size: None,
+                request_raw_truncated: None,
+                request_raw_truncated_reason: None,
+                response_raw_path: None,
+                response_raw_size: None,
+                response_raw_truncated: None,
+                response_raw_truncated_reason: None,
+                detail_level: DETAIL_LEVEL_FULL.to_string(),
+                detail_pruned_at: None,
+                detail_prune_reason: None,
+                t_total_ms: Some(640.0),
+                t_req_read_ms: Some(0.0),
+                t_req_parse_ms: Some(0.0),
+                t_upstream_connect_ms: Some(0.0),
+                t_upstream_ttfb_ms: Some(80.0),
+                t_upstream_stream_ms: None,
+                t_resp_parse_ms: None,
+                t_persist_ms: None,
+                created_at: occurred_at.clone(),
+            },
+            Utc::now(),
+        );
+
+    let live_snapshot = capture_dashboard_activity_live_snapshot(state.as_ref())
+        .await
+        .expect("capture dashboard activity live snapshot");
+    state
+        .subscription_hub
+        .handle_internal_broadcast(
+            state.clone(),
+            BroadcastPayload::DashboardActivityLive {
+                snapshot: live_snapshot,
+            },
+        )
+        .await;
+
+    let updated_prepared = state
+        .subscription_hub
+        .prepare_connection(
+            state.clone(),
+            vec![dashboard_activity_topic_descriptor()],
+            vec![],
+        )
+        .await
+        .expect("prepare updated dashboard activity subscription snapshot");
+    let updated_payload = extract_subscription_snapshot_payload(updated_prepared);
+    let updated_accounts = updated_payload
+        .get("accounts")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let live_only = updated_accounts
+        .iter()
+        .find(|account| account.get("accountKey").and_then(Value::as_str) == Some("upstream:99"))
+        .expect("live overlay account should be injected into cached topic snapshot");
+    assert_eq!(
+        live_only
+            .get("inProgressInvocationCount")
+            .and_then(Value::as_i64),
+        Some(1)
+    );
+    assert_eq!(
+        live_only.get("tokensPerMinute").and_then(Value::as_f64),
+        Some(321.0)
+    );
+    assert_eq!(
+        live_only.get("spendRate").and_then(Value::as_f64),
+        Some(0.32)
+    );
+}
+
+#[tokio::test]
+async fn dashboard_activity_subscription_terminal_refresh_is_deferred_until_ttl() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let initial_prepared = state
+        .subscription_hub
+        .prepare_connection(
+            state.clone(),
+            vec![dashboard_activity_topic_descriptor()],
+            vec![],
+        )
+        .await
+        .expect("prepare initial dashboard activity subscription snapshot");
+    let initial_payload = extract_subscription_snapshot_payload(initial_prepared);
+    assert_eq!(
+        initial_payload
+            .get("summary")
+            .and_then(Value::as_object)
+            .and_then(|summary| summary.get("stats"))
+            .and_then(Value::as_object)
+            .and_then(|stats| stats.get("totalCount"))
+            .and_then(Value::as_i64)
+            .unwrap_or_default(),
+        0
+    );
+
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(93_101_i64)
+    .bind("dashboard-subscription-terminal-refresh")
+    .bind(occurred_at.as_str())
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(100_i64)
+    .bind(0.01_f64)
+    .bind(json!({ "upstreamAccountId": 42_i64 }).to_string())
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert terminal invocation for deferred dashboard topic refresh");
+
+    state
+        .subscription_hub
+        .handle_internal_broadcast(
+            state.clone(),
+            BroadcastPayload::Records {
+                records: vec![crate::api::ApiInvocation {
+                    id: 93_101_i64,
+                    invoke_id: "dashboard-subscription-terminal-refresh".to_string(),
+                    occurred_at: occurred_at.clone(),
+                    source: SOURCE_PROXY.to_string(),
+                    proxy_display_name: None,
+                    model: Some("gpt-5".to_string()),
+                    request_model: Some("gpt-5".to_string()),
+                    response_model: Some("gpt-5".to_string()),
+                    input_tokens: Some(50),
+                    output_tokens: Some(50),
+                    cache_input_tokens: Some(0),
+                    reasoning_tokens: Some(0),
+                    reasoning_effort: None,
+                    total_tokens: Some(100),
+                    cost: Some(0.01),
+                    cost_input: None,
+                    cost_cache_write: None,
+                    cost_cache_read: None,
+                    cost_output: None,
+                    cost_reasoning: None,
+                    cache_write_tokens: Some(50),
+                    status: Some("success".to_string()),
+                    live_phase: None,
+                    error_message: None,
+                    downstream_status_code: None,
+                    failure_kind: None,
+                    blocked_binding: None,
+                    blocked_binding_json: None,
+                    stream_terminal_event: None,
+                    upstream_error_code: None,
+                    upstream_error_message: None,
+                    downstream_error_message: None,
+                    upstream_request_id: None,
+                    failure_class: None,
+                    is_actionable: None,
+                    endpoint: Some("/v1/responses".to_string()),
+                    compaction_request_kind: None,
+                    compaction_response_kind: None,
+                    image_intent: None,
+                    requester_ip: None,
+                    prompt_cache_key: Some(
+                        "pck-dashboard-subscription-terminal-refresh".to_string(),
+                    ),
+                    sticky_key: None,
+                    route_mode: None,
+                    upstream_account_id: Some(42),
+                    upstream_account_name: Some("Deferred Refresh Account".to_string()),
+                    response_content_encoding: None,
+                    transport: None,
+                    pool_attempt_count: None,
+                    pool_distinct_account_count: None,
+                    pool_attempt_terminal_reason: None,
+                    requested_service_tier: None,
+                    service_tier: None,
+                    billing_service_tier: None,
+                    proxy_weight_delta: None,
+                    cost_estimated: None,
+                    price_version: None,
+                    request_raw_path: None,
+                    request_raw_size: None,
+                    request_raw_truncated: None,
+                    request_raw_truncated_reason: None,
+                    response_raw_path: None,
+                    response_raw_size: None,
+                    response_raw_truncated: None,
+                    response_raw_truncated_reason: None,
+                    detail_level: DETAIL_LEVEL_FULL.to_string(),
+                    detail_pruned_at: None,
+                    detail_prune_reason: None,
+                    t_total_ms: Some(100.0),
+                    t_req_read_ms: Some(0.0),
+                    t_req_parse_ms: Some(0.0),
+                    t_upstream_connect_ms: Some(0.0),
+                    t_upstream_ttfb_ms: Some(10.0),
+                    t_upstream_stream_ms: None,
+                    t_resp_parse_ms: None,
+                    t_persist_ms: None,
+                    created_at: occurred_at.clone(),
+                }],
+            },
+        )
+        .await;
+
+    let immediate_prepared = state
+        .subscription_hub
+        .prepare_connection(
+            state.clone(),
+            vec![dashboard_activity_topic_descriptor()],
+            vec![],
+        )
+        .await
+        .expect("prepare dashboard activity topic before deferred refresh window");
+    let immediate_payload = extract_subscription_snapshot_payload(immediate_prepared);
+    assert_eq!(
+        immediate_payload
+            .get("summary")
+            .and_then(Value::as_object)
+            .and_then(|summary| summary.get("stats"))
+            .and_then(Value::as_object)
+            .and_then(|stats| stats.get("totalCount"))
+            .and_then(Value::as_i64)
+            .unwrap_or_default(),
+        0
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    let refreshed_prepared = state
+        .subscription_hub
+        .prepare_connection(
+            state.clone(),
+            vec![dashboard_activity_topic_descriptor()],
+            vec![],
+        )
+        .await
+        .expect("prepare dashboard activity topic after deferred refresh window");
+    let refreshed_payload = extract_subscription_snapshot_payload(refreshed_prepared);
+    assert_eq!(
+        refreshed_payload
+            .get("summary")
+            .and_then(Value::as_object)
+            .and_then(|summary| summary.get("stats"))
+            .and_then(Value::as_object)
+            .and_then(|stats| stats.get("totalCount"))
+            .and_then(Value::as_i64),
+        Some(1)
+    );
+}
+
 #[tokio::test]
 async fn dashboard_activity_summary_only_excludes_archived_rows_for_live_ids() {
     let mut config = test_config();
