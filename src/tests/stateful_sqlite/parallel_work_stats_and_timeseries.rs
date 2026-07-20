@@ -13734,7 +13734,25 @@ async fn dashboard_activity_cached_snapshot_overlays_new_live_accounts() {
     );
     {
         let cache = state.dashboard_activity_snapshot_cache.lock().await;
-        assert_eq!(cache.entries.len(), 1);
+        // The cached "today" selection rolls every 2 seconds, so a live-overlay refresh can
+        // legitimately leave both the previous and current fresh buckets resident.
+        let selections = cache.entries.keys().cloned().collect::<Vec<_>>();
+        assert!(
+            (1..=2).contains(&selections.len()),
+            "expected one cached dashboard snapshot or a single rollover pair, got {}",
+            selections.len()
+        );
+        let baseline = selections.first().expect("dashboard cache selection");
+        for selection in &selections {
+            assert_eq!(selection.range, "today");
+            assert_eq!(selection.range_start, baseline.range_start);
+            assert_eq!(selection.time_zone, baseline.time_zone);
+            assert_eq!(selection.source_scope, baseline.source_scope);
+            assert_eq!(selection.recent_limit, baseline.recent_limit);
+            assert_eq!(selection.include_accounts, baseline.include_accounts);
+            assert_eq!(selection.include_recent, baseline.include_recent);
+        }
+        assert!(cache.in_flight.is_empty());
     }
 }
 
