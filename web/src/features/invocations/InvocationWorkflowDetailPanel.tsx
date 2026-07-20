@@ -170,25 +170,25 @@ function resolveKindMeta(kind: string, isZh: boolean) {
       return {
         label: isZh ? "路由" : "Route",
         variant: "secondary" as const,
-        markerClass: "border-info/55 bg-info/18 text-info",
+        markerClass: "border-info/55 bg-info/18 tone-ink-info",
       };
     case "routingWait":
       return {
         label: isZh ? "等待" : "Wait",
         variant: "secondary" as const,
-        markerClass: "border-accent/55 bg-accent/18 text-accent-content",
+        markerClass: "border-accent/55 bg-accent/18 tone-ink-accent",
       };
     case "systemFinalFailure":
       return {
         label: isZh ? "裁定" : "Final",
         variant: "warning" as const,
-        markerClass: "border-warning/70 bg-warning/25 text-warning-content",
+        markerClass: "border-warning/70 bg-warning/25 tone-ink-warning",
       };
     default:
       return {
         label: isZh ? "尝试" : "Attempt",
         variant: "default" as const,
-        markerClass: "border-primary/60 bg-primary/14 text-primary",
+        markerClass: "border-primary/60 bg-primary/14 tone-ink-primary",
       };
   }
 }
@@ -892,25 +892,29 @@ function SummaryRows({
     };
   }>;
 }) {
+  const toneClassFor = (variant?: "default" | "secondary" | "success" | "warning" | "error") => {
+    if (variant === "success") return "tone-ink-success";
+    if (variant === "warning") return "tone-ink-warning";
+    if (variant === "error") return "tone-ink-error";
+    if (variant === "default") return "tone-ink-info";
+    return "text-base-content/88";
+  };
+
   return (
-    <dl className="divide-y divide-base-300/62">
+    <dl className="divide-y divide-base-300/42">
       {rows.map((row) => (
         <div key={row.label} className="flex items-start justify-between gap-4 py-3">
           <dt className="text-[11px] font-medium text-base-content/58">{row.label}</dt>
-          <dd
-            className={cn(
-              "min-w-0 text-right text-sm font-medium text-base-content/88",
-              row.variant === "success" && "text-success",
-              row.variant === "warning" && "text-warning-content",
-              row.variant === "error" && "text-error",
-              row.variant === "default" && "text-info",
-            )}
-          >
+          <dd className={cn("min-w-0 text-right text-sm font-medium", toneClassFor(row.variant))}>
             {row.action ? (
               <button
                 type="button"
                 title={row.action.title}
-                className="break-all text-right underline decoration-dotted underline-offset-2 transition hover:text-primary"
+                className={cn(
+                  "break-all text-right underline decoration-dotted decoration-current/50 underline-offset-2 transition-colors",
+                  row.variant ? toneClassFor(row.variant) : "tone-ink-info",
+                  "hover:text-primary focus-visible:outline-none focus-visible:text-primary",
+                )}
                 onClick={row.action.onClick}
               >
                 {row.value}
@@ -940,10 +944,10 @@ function SnapshotMetric({
       <div
         className={cn(
           "mt-1 break-all text-sm font-semibold text-base-content",
-          variant === "success" && "text-success",
-          variant === "warning" && "text-warning-content",
-          variant === "error" && "text-error",
-          variant === "default" && "text-info",
+          variant === "success" && "tone-ink-success",
+          variant === "warning" && "tone-ink-warning",
+          variant === "error" && "tone-ink-error",
+          variant === "default" && "tone-ink-info",
         )}
       >
         {value}

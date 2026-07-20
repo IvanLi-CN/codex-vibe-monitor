@@ -159,7 +159,7 @@ function SseOfflineBanner({ topClassName }: { topClassName: string }) {
               <div className="min-w-0 flex-1 space-y-1">
                 <div className="flex flex-wrap items-center gap-3">
                   <span className="font-semibold">{t("app.sse.banner.title")}</span>
-                  <span className="rounded-full bg-warning/20 px-2 py-0.5 text-xs font-mono text-warning-content">
+                  <span className="rounded-full bg-warning/20 px-2 py-0.5 text-xs font-mono tone-ink-warning">
                     {durationChipLabel}
                   </span>
                 </div>
@@ -664,7 +664,7 @@ export function AppLayout() {
               <div className="min-w-0 space-y-1">
                 <div className="flex flex-wrap items-center gap-3">
                   <span className="font-semibold">{t("app.pwa.offline.title")}</span>
-                  <span className="rounded-full bg-warning/12 px-2 py-0.5 text-xs font-medium text-warning-content">
+                  <span className="rounded-full bg-warning/12 px-2 py-0.5 text-xs font-medium tone-ink-warning">
                     {pwaRuntime.shellReady
                       ? t("app.pwa.install.shellReady")
                       : t("app.pwa.install.shellPending")}
