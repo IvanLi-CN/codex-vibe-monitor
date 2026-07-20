@@ -982,7 +982,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   onInitialDeleteConfirmHandled,
   onClose,
 }: SharedUpstreamAccountDetailDrawerProps) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const navigate = useNavigate();
   const isCompactViewport = useCompactViewport();
   const { openUpstreamAccount } = useUpstreamAccountDetailRoute();
@@ -2118,6 +2118,35 @@ function SharedUpstreamAccountDetailDrawerInner({
     selectedDetail?.lastError ?? selected?.lastError,
   );
   const selectedRecentActions = selectedDetail?.recentActions ?? [];
+  const openBlockedBindingWorkingConversations = useCallback(
+    (event: {
+      blockedBinding?: {
+        upstreamAccountId?: number | null;
+        constraintSource?: string | null;
+      } | null;
+    }) => {
+      const blockedBinding = event.blockedBinding;
+      if (!blockedBinding) return;
+      const search = new URLSearchParams();
+      if (
+        typeof blockedBinding.upstreamAccountId === "number" &&
+        Number.isFinite(blockedBinding.upstreamAccountId)
+      ) {
+        search.set(
+          "blockedBindingUpstreamAccountId",
+          String(Math.trunc(blockedBinding.upstreamAccountId)),
+        );
+      }
+      if (
+        typeof blockedBinding.constraintSource === "string" &&
+        blockedBinding.constraintSource.trim()
+      ) {
+        search.set("blockedBindingConstraintSource", blockedBinding.constraintSource.trim());
+      }
+      navigate({ pathname: "/dashboard", search: `?${search.toString()}` });
+    },
+    [navigate],
+  );
   const detailTabIds = {
     overview: {
       tab: `${detailDrawerTabsBaseId}-overview-tab`,
@@ -4262,6 +4291,29 @@ function SharedUpstreamAccountDetailDrawerInner({
                                 <p className="mt-2 text-sm leading-6 text-base-content/75">
                                   {actionEvent.reasonMessage}
                                 </p>
+                              ) : null}
+                              {actionEvent.blockedBinding ? (
+                                <div className="mt-3 flex flex-wrap items-center gap-2">
+                                  <Badge variant="info">
+                                    {actionEvent.blockedBinding.constraintSource ===
+                                    "encryptedSessionOwner"
+                                      ? "加密 owner 约束"
+                                      : "单账号显式绑定"}
+                                  </Badge>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="ghost"
+                                    data-testid="upstream-account-recent-action-open-blocked-binding"
+                                    onClick={() =>
+                                      openBlockedBindingWorkingConversations(actionEvent)
+                                    }
+                                  >
+                                    {locale === "zh"
+                                      ? "打开受影响会话"
+                                      : "Open affected conversations"}
+                                  </Button>
+                                </div>
                               ) : null}
                               {actionEvent.attemptId != null ? (
                                 <button

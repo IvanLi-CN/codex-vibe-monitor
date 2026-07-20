@@ -188,6 +188,7 @@ function createPreview(
     tRespParseMs: overrides.tRespParseMs ?? 12,
     tPersistMs: overrides.tPersistMs ?? 9,
     tTotalMs: overrides.tTotalMs ?? 418,
+    blockedBinding: "blockedBinding" in overrides ? (overrides.blockedBinding ?? null) : undefined,
   };
 }
 
@@ -214,6 +215,7 @@ function createConversation(
     encryptedOwnerAccountName: overrides.encryptedOwnerAccountName ?? null,
     encryptedOwnerGroupName: overrides.encryptedOwnerGroupName ?? null,
     manualBinding: overrides.manualBinding ?? null,
+    blockedBinding: "blockedBinding" in overrides ? (overrides.blockedBinding ?? null) : undefined,
     upstreamAccounts: overrides.upstreamAccounts ?? [],
     recentInvocations,
     last24hRequests: overrides.last24hRequests ?? [],
@@ -707,6 +709,11 @@ function renderSection(
     upstreamAccountRecentError?: string | null;
     upstreamAccountRecentPreviewLimit?: number;
     onConversationsChanged?: () => void;
+    activeBlockedBindingFilter?: {
+      upstreamAccountId?: number | null;
+      constraintSource?: "upstreamAccountBinding" | "encryptedSessionOwner" | null;
+    } | null;
+    onClearBlockedBindingFilter?: () => void;
   },
 ) {
   return renderSectionWithCards(mapPromptCacheConversationsToDashboardCards(response), options);
@@ -746,6 +753,11 @@ function renderSectionWithCards(
     upstreamAccountRecentLoading?: boolean;
     upstreamAccountRecentError?: string | null;
     upstreamAccountRecentPreviewLimit?: number;
+    activeBlockedBindingFilter?: {
+      upstreamAccountId?: number | null;
+      constraintSource?: "upstreamAccountBinding" | "encryptedSessionOwner" | null;
+    } | null;
+    onClearBlockedBindingFilter?: () => void;
   },
 ) {
   host = document.createElement("div");
@@ -777,6 +789,8 @@ function renderSectionWithCards(
             upstreamAccountRecentError={options?.upstreamAccountRecentError}
             upstreamAccountRecentPreviewLimit={options?.upstreamAccountRecentPreviewLimit}
             onConversationsChanged={options?.onConversationsChanged}
+            activeBlockedBindingFilter={options?.activeBlockedBindingFilter}
+            onClearBlockedBindingFilter={options?.onClearBlockedBindingFilter}
           />
         </I18nProvider>
       </ThemeProvider>,
@@ -846,6 +860,11 @@ function rerenderSection(
     upstreamAccountRecentError?: string | null;
     upstreamAccountRecentPreviewLimit?: number;
     onConversationsChanged?: () => void;
+    activeBlockedBindingFilter?: {
+      upstreamAccountId?: number | null;
+      constraintSource?: "upstreamAccountBinding" | "encryptedSessionOwner" | null;
+    } | null;
+    onClearBlockedBindingFilter?: () => void;
   },
 ) {
   return rerenderSectionWithCards(mapPromptCacheConversationsToDashboardCards(response), options);
@@ -887,6 +906,11 @@ function rerenderSectionWithCards(
     upstreamAccountRecentError?: string | null;
     upstreamAccountRecentPreviewLimit?: number;
     onConversationsChanged?: () => void;
+    activeBlockedBindingFilter?: {
+      upstreamAccountId?: number | null;
+      constraintSource?: "upstreamAccountBinding" | "encryptedSessionOwner" | null;
+    } | null;
+    onClearBlockedBindingFilter?: () => void;
   },
 ) {
   if (!root) {
@@ -918,6 +942,8 @@ function rerenderSectionWithCards(
             upstreamAccountRecentError={options?.upstreamAccountRecentError}
             upstreamAccountRecentPreviewLimit={options?.upstreamAccountRecentPreviewLimit}
             onConversationsChanged={options?.onConversationsChanged}
+            activeBlockedBindingFilter={options?.activeBlockedBindingFilter}
+            onClearBlockedBindingFilter={options?.onClearBlockedBindingFilter}
           />
         </I18nProvider>
       </ThemeProvider>,
@@ -4133,6 +4159,69 @@ describe("DashboardWorkingConversationsSection", () => {
 
     const accountLabel = host?.querySelector('[title="未分配上游账号"]');
     expect(accountLabel).not.toBeNull();
+  });
+
+  it("shows the blocked-binding recovery banner and reuses the clear-affinity confirmation flow", async () => {
+    const onClearBlockedBindingFilter = vi.fn();
+    renderSection(
+      createResponse([
+        createConversation("pck-banner-blocked", [
+          createPreview({
+            id: 91,
+            invokeId: "invoke-banner-blocked",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "failed",
+            failureClass: "service_failure",
+            failureKind: "pool_assigned_account_blocked",
+            blockedBinding: {
+              constraintSource: "encryptedSessionOwner",
+              upstreamAccountId: 2890,
+              upstreamAccountLabel: "dzw",
+              promptCacheKey: "pck-banner-blocked",
+              recoveryAction: "clearAndResetAffinity",
+            },
+          }),
+        ]),
+      ]),
+      {
+        activeBlockedBindingFilter: {
+          upstreamAccountId: 2890,
+          constraintSource: "encryptedSessionOwner",
+        },
+        onClearBlockedBindingFilter,
+      },
+    );
+
+    const upstreamAccountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (node) => node.textContent?.includes("上游账号"),
+    );
+    if (!(upstreamAccountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+    expect(upstreamAccountTab.disabled).toBe(true);
+    expect(
+      host?.querySelector('[data-testid="dashboard-blocked-binding-banner"]')?.textContent ?? "",
+    ).toContain("单账号会话约束阻塞");
+    expect(host?.textContent ?? "").toContain("dzw");
+
+    const user = userEvent.setup();
+    await user.click(
+      host?.querySelector(
+        '[data-testid="dashboard-blocked-binding-clear-filter-button"]',
+      ) as HTMLElement,
+    );
+    expect(onClearBlockedBindingFilter).toHaveBeenCalledTimes(1);
+
+    await user.click(
+      host?.querySelector(
+        '[data-testid="dashboard-blocked-binding-clear-and-reselect-button"]',
+      ) as HTMLElement,
+    );
+    expect(
+      document.body.querySelector(
+        '[data-testid="dashboard-working-conversations-clear-affinity-dialog"]',
+      ),
+    ).not.toBeNull();
   });
 
   it("opens invocation details from the slot container by click and keyboard", () => {

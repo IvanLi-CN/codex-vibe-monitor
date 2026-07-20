@@ -40,6 +40,7 @@ pub(crate) const INVOCATION_BILLING_SERVICE_TIER_SQL: &str = "CASE   WHEN json_v
 pub(crate) const INVOCATION_POOL_ATTEMPT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolAttemptCount') AS INTEGER) END";
 pub(crate) const INVOCATION_POOL_DISTINCT_ACCOUNT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolDistinctAccountCount') AS INTEGER) END";
 pub(crate) const INVOCATION_POOL_ATTEMPT_TERMINAL_REASON_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolAttemptTerminalReason') AS TEXT) END";
+pub(crate) const INVOCATION_BLOCKED_BINDING_JSON_SQL: &str = "CASE WHEN json_valid(payload) AND json_type(payload, '$.blockedBinding') = 'object' THEN json_extract(payload, '$.blockedBinding') END";
 pub(crate) const PROMPT_CACHE_CONVERSATION_UPSTREAM_ACCOUNT_LIMIT: usize = 3;
 pub(crate) const PROMPT_CACHE_CONVERSATION_INVOCATION_PREVIEW_LIMIT: usize = 5;
 pub(crate) const INVOCATION_STATUS_NORMALIZED_SQL: &str = "LOWER(TRIM(COALESCE(status, '')))";
@@ -309,6 +310,11 @@ pub(crate) fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
         .push(INVOCATION_FAILURE_KIND_SQL)
         .push(
             " AS failure_kind, \
+         ",
+        )
+        .push(INVOCATION_BLOCKED_BINDING_JSON_SQL)
+        .push(
+            " AS blocked_binding_json, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.streamTerminalEvent') END AS stream_terminal_event, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamErrorCode') END AS upstream_error_code, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamErrorMessage') END AS upstream_error_message, \
@@ -2134,10 +2140,13 @@ async fn list_invocations_with_runtime_overlay(
         append_invocation_order_clause(&mut query, request.sort_by, request.sort_order);
         query.push(" LIMIT ").push_bind(request.page_size);
 
-        let records = query
+        let mut records = query
             .build_query_as::<ApiInvocation>()
             .fetch_all(&state.pool)
             .await?;
+        for record in &mut records {
+            hydrate_api_invocation_blocked_binding(record);
+        }
         let total = records.len() as i64;
         let (records, total) = overlay_runtime_records_for_current_page(
             &request,
@@ -2283,6 +2292,9 @@ async fn list_invocations_with_runtime_overlay(
         .build_query_as::<ApiInvocation>()
         .fetch_all(&mut *tx)
         .await?;
+    for record in &mut records {
+        hydrate_api_invocation_blocked_binding(record);
+    }
     let page_positions = page_ids
         .into_iter()
         .enumerate()

@@ -136,6 +136,10 @@ async fn prompt_cache_conversations_include_recent_upstream_account_summaries() 
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -447,6 +451,10 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -577,6 +585,10 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: Some(6),
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -603,6 +615,10 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
             snapshot_at: None,
             detail: Some("compact".to_string()),
             recent_invocation_limit: Some(6),
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -863,6 +879,10 @@ async fn prompt_cache_conversations_include_manual_binding_summaries() {
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -1173,6 +1193,10 @@ async fn prompt_cache_conversations_preserve_upstream_account_history_after_raw_
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -1254,6 +1278,10 @@ async fn prompt_cache_conversations_keep_totals_when_recent_preview_is_empty() {
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -1338,6 +1366,10 @@ async fn prompt_cache_conversations_count_mode_reports_inactive_recent_history_f
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -1430,6 +1462,10 @@ async fn prompt_cache_conversations_count_mode_reports_all_skipped_newer_inactiv
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -1519,6 +1555,10 @@ async fn prompt_cache_conversations_count_mode_clamps_sparse_inactive_hidden_row
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -1579,6 +1619,10 @@ async fn prompt_cache_conversations_activity_window_caps_results_to_fifty() {
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -1645,6 +1689,10 @@ async fn prompt_cache_conversations_activity_minutes_legacy_path_still_caps_resu
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -1753,6 +1801,10 @@ async fn prompt_cache_conversations_activity_minutes_include_running_only_rows_a
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -1844,6 +1896,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_compact_can_scrol
             snapshot_at: None,
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -1899,6 +1955,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_compact_can_scrol
             snapshot_at: Some(first_snapshot.clone()),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -1928,6 +1988,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_compact_can_scrol
             snapshot_at: Some(first_snapshot.clone()),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -1961,6 +2025,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_compact_can_scrol
             snapshot_at: Some(first_snapshot),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2080,6 +2148,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_preserves_sort_an
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2106,6 +2178,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_preserves_sort_an
             snapshot_at: None,
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2128,6 +2204,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_preserves_sort_an
             snapshot_at: first_page.snapshot_at.clone(),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2235,6 +2315,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_cursor_uses_worki
             snapshot_at: None,
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2261,6 +2345,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_cursor_uses_worki
             snapshot_at: first_page.snapshot_at.clone(),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2283,6 +2371,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_cursor_uses_worki
             snapshot_at: second_page.snapshot_at.clone(),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2376,6 +2468,10 @@ async fn prompt_cache_conversations_activity_minutes_exclude_stale_terminal_rows
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2402,6 +2498,10 @@ async fn prompt_cache_conversations_activity_minutes_exclude_stale_terminal_rows
             snapshot_at: None,
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2487,6 +2587,10 @@ async fn prompt_cache_conversations_paginated_cursors_support_prompt_cache_keys_
             snapshot_at: None,
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2511,6 +2615,10 @@ async fn prompt_cache_conversations_paginated_cursors_support_prompt_cache_keys_
             snapshot_at: Some(snapshot_at.clone()),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2529,6 +2637,10 @@ async fn prompt_cache_conversations_paginated_cursors_support_prompt_cache_keys_
             snapshot_at: Some(snapshot_at),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2573,6 +2685,10 @@ async fn prompt_cache_conversations_paginated_invalid_snapshot_at_returns_bad_re
             snapshot_at: Some("not-a-timestamp".to_string()),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2604,6 +2720,10 @@ async fn prompt_cache_conversations_paginated_invalid_cursor_returns_bad_request
             snapshot_at: Some(Utc::now().to_rfc3339()),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2708,6 +2828,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_respect_requested
             snapshot_at: Some(snapshot_at_rfc3339.clone()),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2730,6 +2854,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_respect_requested
             snapshot_at: Some(snapshot_at_rfc3339),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2833,6 +2961,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
             snapshot_at: Some(requested_snapshot_at.to_rfc3339()),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2871,6 +3003,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
             snapshot_at: first_page.snapshot_at.clone(),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2971,6 +3107,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_whole_second_snap
             snapshot_at: Some(format_utc_iso(snapshot_second)),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -3008,6 +3148,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_whole_second_snap
             snapshot_at: first_page.snapshot_at.clone(),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -3102,6 +3246,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
             snapshot_at: Some(requested_snapshot_at.to_rfc3339()),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -3135,6 +3283,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
             snapshot_at: first_page.snapshot_at.clone(),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -3247,6 +3399,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_preserve
             snapshot_at: Some(snapshot_at_rfc3339.clone()),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -3272,6 +3428,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_preserve
             snapshot_at: Some(snapshot_at_rfc3339),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -3376,6 +3536,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_includes
             snapshot_at: Some(snapshot_at.to_rfc3339()),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -3534,6 +3698,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
             snapshot_at: Some(snapshot_at.to_rfc3339()),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -3652,6 +3820,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_keeps_hy
             snapshot_at: Some(snapshot_at_rfc3339.clone()),
             detail: Some("full".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -3674,6 +3846,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_keeps_hy
             snapshot_at: Some(snapshot_at_rfc3339),
             detail: Some("full".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -3811,6 +3987,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_full_det
             snapshot_at: Some(snapshot_at_rfc3339.clone()),
             detail: Some("full".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -3827,6 +4007,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_full_det
             snapshot_at: Some(snapshot_at_rfc3339),
             detail: Some("full".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -3956,6 +4140,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_keeps_running_and
             snapshot_at: None,
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -4092,6 +4280,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_overlays_memory_r
             snapshot_at: None,
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -4259,6 +4451,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_ignores_stale_ter
             snapshot_at: Some(format_utc_iso_precise(snapshot_at)),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -4350,6 +4546,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_sorts_by_newer_in
             snapshot_at: None,
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -4441,6 +4641,10 @@ async fn prompt_cache_conversations_chart_window_caps_history_to_recent_24_hours
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -4560,6 +4764,10 @@ async fn prompt_cache_conversation_activity_keeps_http_200_errors_out_of_success
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -4620,6 +4828,10 @@ async fn prompt_cache_conversation_timestamps_serialize_as_utc_iso() {
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -4717,6 +4929,10 @@ async fn prompt_cache_conversations_live_response_includes_encrypted_owner_metad
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -4833,6 +5049,10 @@ async fn prompt_cache_conversations_snapshot_excludes_future_encrypted_owner_loc
             snapshot_at: Some(snapshot_at),
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -4859,6 +5079,10 @@ async fn prompt_cache_conversations_snapshot_excludes_future_encrypted_owner_loc
             snapshot_at: None,
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -4932,6 +5156,10 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -4975,6 +5203,10 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -5039,6 +5271,10 @@ async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -5074,6 +5310,10 @@ async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -5140,6 +5380,10 @@ async fn prompt_cache_conversations_cache_ignores_proxy_captures_without_prompt_
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -5170,6 +5414,10 @@ async fn prompt_cache_conversations_cache_ignores_proxy_captures_without_prompt_
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -5245,6 +5493,10 @@ async fn prompt_cache_conversations_cache_returns_under_sustained_invalidations(
                 snapshot_at: None,
                 detail: None,
                 recent_invocation_limit: None,
+
+                blocked_binding_upstream_account_id: None,
+
+                blocked_binding_constraint_source: None,
             }),
         ),
     )
@@ -5316,6 +5568,10 @@ async fn prompt_cache_conversations_concurrent_requests_same_limit_do_not_stall(
                         snapshot_at: None,
                         detail: None,
                         recent_invocation_limit: None,
+
+                        blocked_binding_upstream_account_id: None,
+
+                        blocked_binding_constraint_source: None,
                     }),
                 ),
             )

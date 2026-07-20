@@ -2374,6 +2374,75 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     expect(document.body.textContent).not.toMatch(/请求 ID: invk_action_001/);
   });
 
+  it("opens the blocked-binding working conversation filter from a health event", async () => {
+    mockAccountsPage({
+      detail: {
+        recentActions: [
+          {
+            id: 71,
+            occurredAt: "2026-03-16T02:06:00.000Z",
+            action: "route_hard_unavailable",
+            source: "call",
+            reasonCode: "pool_assigned_account_blocked",
+            reasonMessage: "This conversation is pinned to one blocked account",
+            httpStatus: 502,
+            failureKind: "pool_assigned_account_blocked",
+            invokeId: "invk_action_001",
+            attemptId: "4V7MYPJG",
+            stickyKey: "sticky-dup-001",
+            createdAt: "2026-03-16T02:06:00.000Z",
+            blockedBinding: {
+              upstreamAccountId: 2890,
+              constraintSource: "encryptedSessionOwner",
+            },
+          },
+        ],
+      },
+    });
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+      root?.render(
+        <ThemeProvider>
+          <I18nProvider>
+            <SystemNotificationProvider>
+              <MemoryRouter>
+                <SharedUpstreamAccountDetailDrawer
+                  open
+                  accountId={5}
+                  initialTab="healthEvents"
+                  onClose={vi.fn()}
+                />
+              </MemoryRouter>
+            </SystemNotificationProvider>
+          </I18nProvider>
+        </ThemeProvider>,
+      );
+    });
+
+    await flushAsync();
+    expect(document.body.textContent).toContain("加密 owner 约束");
+
+    const openButton = document.body.querySelector(
+      '[data-testid="upstream-account-recent-action-open-blocked-binding"]',
+    );
+    if (!(openButton instanceof HTMLButtonElement)) {
+      throw new Error("missing blocked binding action button");
+    }
+
+    act(() => {
+      openButton.click();
+    });
+
+    expect(navigateMock).toHaveBeenCalledWith({
+      pathname: "/dashboard",
+      search:
+        "?blockedBindingUpstreamAccountId=2890&blockedBindingConstraintSource=encryptedSessionOwner",
+    });
+  });
+
   it.skip("locates a health event invocation in the legacy records tab", async () => {
     mockAccountsPage();
     apiMocks.fetchInvocationRecordLocation.mockResolvedValue({

@@ -30,7 +30,10 @@ import { SelectField } from "../../components/ui/select-field";
 import { Spinner } from "../../components/ui/spinner";
 import { Tooltip } from "../../components/ui/tooltip";
 import { useDashboardUpstreamAccountActivity } from "../../hooks/useDashboardUpstreamAccountActivity";
-import { DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX } from "../../hooks/useDashboardWorkingConversations";
+import {
+  DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
+  type DashboardWorkingConversationsBlockedBindingFilter,
+} from "../../hooks/useDashboardWorkingConversations";
 import type { TranslationKey } from "../../i18n";
 import { useTranslation } from "../../i18n";
 import type {
@@ -156,6 +159,8 @@ interface DashboardWorkingConversationsSectionProps {
   onUpstreamAccountActivityEnabledChange?: (enabled: boolean) => void;
   onUpstreamAccountPolicyChanged?: () => void;
   onConversationsChanged?: () => void;
+  activeBlockedBindingFilter?: DashboardWorkingConversationsBlockedBindingFilter | null;
+  onClearBlockedBindingFilter?: () => void;
 }
 
 function readBrowserOfflineState() {
@@ -254,6 +259,19 @@ function resolveDashboardManualBindingBadgeMeta(
     }),
     toneClassName: "border-secondary/45 bg-secondary/14 text-secondary",
   };
+}
+
+function blockedBindingConstraintSourceLabel(
+  source: string | null | undefined,
+  locale: "zh" | "en",
+) {
+  if (source === "encryptedSessionOwner") {
+    return locale === "zh" ? "加密 owner 约束" : "encrypted owner lock";
+  }
+  if (source === "upstreamAccountBinding") {
+    return locale === "zh" ? "显式上游账号绑定" : "explicit upstream-account binding";
+  }
+  return locale === "zh" ? "单账号约束" : "single-account binding";
 }
 
 function conversationBindingAccountLabel(account: UpstreamAccountSummary) {
@@ -3941,6 +3959,8 @@ export function DashboardWorkingConversationsSection({
   onUpstreamAccountActivityEnabledChange,
   onUpstreamAccountPolicyChanged,
   onConversationsChanged,
+  activeBlockedBindingFilter,
+  onClearBlockedBindingFilter,
 }: DashboardWorkingConversationsSectionProps) {
   const { t, locale } = useTranslation();
   const [preferredView, setPreferredView] = useState<DashboardWorkspaceView>(() =>
@@ -4049,9 +4069,11 @@ export function DashboardWorkingConversationsSection({
     setBulkFeedback(null);
     closeConversationBulkDialogs();
   }, [closeConversationBulkDialogs]);
+  const blockedBindingFilterActive = activeBlockedBindingFilter != null;
   const upstreamAccountsDisabled = activeRange === "usage";
-  const activeView: DashboardWorkspaceView =
-    upstreamAccountsDisabled && preferredView === "upstreamAccounts"
+  const activeView: DashboardWorkspaceView = blockedBindingFilterActive
+    ? "conversations"
+    : upstreamAccountsDisabled && preferredView === "upstreamAccounts"
       ? "conversations"
       : preferredView;
   const upstreamAccountActivityEnabled =
@@ -4672,6 +4694,38 @@ export function DashboardWorkingConversationsSection({
     locale === "zh"
       ? `已选 ${selectedConversationCount} 个对话`
       : `${selectedConversationCount} conversations selected`;
+  const blockedBindingBannerMeta = useMemo(() => {
+    if (!activeBlockedBindingFilter) return null;
+    const diagnostic =
+      cards.find(
+        (card) =>
+          card.currentInvocation.preview.blockedBinding != null ||
+          card.previousInvocation?.preview.blockedBinding != null,
+      )?.currentInvocation.preview.blockedBinding ??
+      cards.find((card) => card.previousInvocation?.preview.blockedBinding != null)
+        ?.previousInvocation?.preview.blockedBinding ??
+      null;
+    const upstreamAccountId = activeBlockedBindingFilter.upstreamAccountId ?? null;
+    const accountLabel =
+      diagnostic?.upstreamAccountLabel?.trim() ||
+      (upstreamAccountId != null
+        ? `#${upstreamAccountId}`
+        : locale === "zh"
+          ? "目标账号"
+          : "target account");
+    const constraintSource =
+      diagnostic?.constraintSource ?? activeBlockedBindingFilter.constraintSource ?? null;
+    const sourceLabel = blockedBindingConstraintSourceLabel(constraintSource, locale);
+    return {
+      accountLabel,
+      sourceLabel,
+      title: locale === "zh" ? "单账号会话约束阻塞" : "Single-account conversation binding blocked",
+      description:
+        locale === "zh"
+          ? `这些会话被 ${sourceLabel} 固定在 ${accountLabel}，该账号当前不可选，所以需要先清空绑定并重选。`
+          : `These conversations are pinned to ${accountLabel} by ${sourceLabel}, and that account is currently not selectable. Clear the binding before rerouting.`,
+    };
+  }, [activeBlockedBindingFilter, cards, locale]);
   const routeBindDialogTitle = locale === "zh" ? "批量路由绑定" : "Bulk route binding";
   const routeBindDialogDescription =
     locale === "zh"
@@ -4979,6 +5033,18 @@ export function DashboardWorkingConversationsSection({
     },
     [toggleConversationSelection],
   );
+  const selectVisibleConversations = useCallback(
+    (options?: { openClearDialog?: boolean }) => {
+      if (cards.length === 0) return;
+      setBulkFeedback(null);
+      setSelectionModeEnabled(true);
+      setSelectedPromptCacheKeys(Array.from(new Set(cards.map((card) => card.promptCacheKey))));
+      if (options?.openClearDialog) {
+        setClearAffinityDialogOpen(true);
+      }
+    },
+    [cards],
+  );
 
   if (error && cards.length === 0) {
     return (
@@ -5024,7 +5090,7 @@ export function DashboardWorkingConversationsSection({
               active={activeView === "upstreamAccounts"}
               role="tab"
               aria-selected={activeView === "upstreamAccounts"}
-              disabled={upstreamAccountsDisabled}
+              disabled={upstreamAccountsDisabled || blockedBindingFilterActive}
               className="h-11 flex-1 px-3.5 text-[0.95rem]"
               onClick={() => setPreferredView("upstreamAccounts")}
             >
@@ -5124,6 +5190,52 @@ export function DashboardWorkingConversationsSection({
           </Alert>
         ) : null}
 
+        {activeView === "conversations" && blockedBindingBannerMeta ? (
+          <Alert
+            variant={cards.length > 0 ? "info" : "warning"}
+            data-testid="dashboard-blocked-binding-banner"
+            className="flex-col gap-3 desktop:flex-row desktop:items-center desktop:justify-between"
+          >
+            <div className="min-w-0 space-y-1">
+              <div className="font-semibold">{blockedBindingBannerMeta.title}</div>
+              <p className="text-sm leading-6 text-current/85">
+                {blockedBindingBannerMeta.description}
+              </p>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={bulkActionBusy != null || cards.length === 0}
+                data-testid="dashboard-blocked-binding-select-visible-button"
+                onClick={() => selectVisibleConversations()}
+              >
+                {locale === "zh" ? "选择当前结果" : "Select current results"}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="destructive"
+                disabled={bulkActionBusy != null || cards.length === 0}
+                data-testid="dashboard-blocked-binding-clear-and-reselect-button"
+                onClick={() => selectVisibleConversations({ openClearDialog: true })}
+              >
+                {locale === "zh" ? "清空并重选" : "Clear and reselect"}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                data-testid="dashboard-blocked-binding-clear-filter-button"
+                onClick={onClearBlockedBindingFilter}
+              >
+                {locale === "zh" ? "清除筛选" : "Clear filter"}
+              </Button>
+            </div>
+          </Alert>
+        ) : null}
+
         {activeView === "upstreamAccounts" ? (
           <>
             {upstreamAccountActivityError ? (
@@ -5199,7 +5311,11 @@ export function DashboardWorkingConversationsSection({
         !isLoading &&
         cards.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-base-300/75 bg-base-100/45 px-5 py-8 text-sm text-base-content/65">
-            {t("dashboard.workingConversations.empty")}
+            {blockedBindingFilterActive
+              ? locale === "zh"
+                ? "当前没有匹配这组单账号约束阻塞筛选的工作会话。"
+                : "No working conversations currently match this single-account binding block filter."
+              : t("dashboard.workingConversations.empty")}
           </div>
         ) : null}
 

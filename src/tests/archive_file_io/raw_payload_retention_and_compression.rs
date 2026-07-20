@@ -2322,6 +2322,7 @@ async fn insert_pool_upstream_terminal_attempt_skips_pre_dispatch_pseudo_attempt
             message: "terminal scoped failure".to_string(),
             canonical_error_message: Some("terminal scoped failure".to_string()),
             failure_kind: PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
+            blocked_binding: None,
             connect_latency_ms: 0.0,
             upstream_error_code: None,
             upstream_error_message: None,
@@ -2380,6 +2381,7 @@ async fn insert_pool_upstream_terminal_attempt_skips_oauth_pre_dispatch_pseudo_a
                 .to_string(),
             canonical_error_message: Some("oauth codex upstream handshake timed out".to_string()),
             failure_kind: PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
+            blocked_binding: None,
             connect_latency_ms: 0.0,
             upstream_error_code: None,
             upstream_error_message: None,
@@ -2618,6 +2620,7 @@ async fn insert_and_broadcast_pool_upstream_terminal_attempt_skips_pre_dispatch_
         message: "pool budget exhausted after failover".to_string(),
         canonical_error_message: None,
         failure_kind: PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED,
+        blocked_binding: None,
         connect_latency_ms: 0.0,
         upstream_error_code: None,
         upstream_error_message: None,
@@ -6898,16 +6901,24 @@ async fn send_pool_request_with_failover_returns_owner_unavailable_for_encrypted
 
     assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(
+        err.message,
+        "encrypted session owner routing is constrained to upstream account Encrypted Owner Unavailable but that account is currently unavailable"
+    );
+    assert_eq!(
         err.failure_kind,
-        PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE
+        PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED
     );
+    assert_eq!(err.upstream_error_code.as_deref(), None);
+    assert_eq!(err.upstream_error_message.as_deref(), None);
     assert_eq!(
-        err.upstream_error_code.as_deref(),
-        Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
-    );
-    assert_eq!(
-        err.upstream_error_message.as_deref(),
-        Some(ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE)
+        err.blocked_binding,
+        Some(BlockedBindingDiagnostic {
+            constraint_source: BlockedBindingConstraintSource::EncryptedSessionOwner,
+            upstream_account_id: owner_account_id,
+            upstream_account_label: "Encrypted Owner Unavailable".to_string(),
+            prompt_cache_key: Some("encrypted-owner-unavailable-prompt-cache-key".to_string()),
+            recovery_action: BlockedBindingRecoveryAction::ClearAndResetAffinity,
+        })
     );
     assert_eq!(
         err.account.as_ref().map(|account| account.account_id),

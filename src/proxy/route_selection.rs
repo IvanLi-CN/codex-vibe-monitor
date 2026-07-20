@@ -3,7 +3,19 @@ use std::{future::Future, pin::Pin};
 use super::*;
 
 type ViaPoolResponseFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Response, (StatusCode, String)>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<Response, ProxyErrorResponse>> + Send + 'a>>;
+
+fn plain_proxy_error(status: StatusCode, message: impl Into<String>) -> ProxyErrorResponse {
+    let message = message.into();
+    ProxyErrorResponse {
+        retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
+        status,
+        message,
+        cvm_id: None,
+        code: None,
+        blocked_binding: None,
+    }
+}
 
 pub(crate) fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
     let authorization = headers.get(header::AUTHORIZATION)?.to_str().ok()?.trim();
@@ -403,21 +415,28 @@ impl ViaPoolResolutionTerminalError {
     }
 }
 
-pub(crate) async fn maybe_persist_encrypted_session_owner_guard_terminal_error(
+pub(crate) async fn maybe_persist_single_account_binding_terminal_error(
     state: &AppState,
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
     owner_auto_guard_active: bool,
+    prompt_cache_key: Option<&str>,
+    account: Option<PoolResolvedAccount>,
+    message: Option<String>,
     attempt_count: usize,
     distinct_account_count: usize,
-) -> Option<(StatusCode, String)> {
-    if !owner_auto_guard_active {
-        return None;
-    }
-    let err = build_encrypted_session_owner_unavailable_error(
-        None,
+) -> Option<ProxyErrorResponse> {
+    let err = build_single_account_binding_blocked_error(
+        state,
+        binding_constraint,
+        owner_auto_guard_active,
+        account,
+        prompt_cache_key,
+        message,
         attempt_count,
         distinct_account_count,
-    );
+    )
+    .await?;
     if let Some(trace_context) = trace_context
         && let Err(record_err) = insert_and_broadcast_pool_upstream_terminal_attempt(
             state,
@@ -425,17 +444,17 @@ pub(crate) async fn maybe_persist_encrypted_session_owner_guard_terminal_error(
             &err,
             attempt_count as i64,
             distinct_account_count as i64,
-            PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
+            err.failure_kind,
         )
         .await
     {
         warn!(
             invoke_id = trace_context.invoke_id,
             error = %record_err,
-            "failed to persist via-pool encrypted-owner terminal attempt"
+            "failed to persist via-pool single-account binding terminal attempt"
         );
     }
-    Some((err.status, err.message))
+    Some(proxy_error_response_from_pool_upstream_error(err, None))
 }
 
 pub(crate) async fn unwrap_via_pool_initial_account(
@@ -444,8 +463,10 @@ pub(crate) async fn unwrap_via_pool_initial_account(
     resolution: Result<PoolAccountResolutionWithWait>,
     no_available_wait_deadline: Option<Instant>,
     responses_total_timeout: Option<Duration>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
     owner_auto_guard_active: bool,
-) -> Result<(PoolResolvedAccount, Option<Instant>), (StatusCode, String)> {
+    prompt_cache_key: Option<&str>,
+) -> Result<(PoolResolvedAccount, Option<Instant>), ProxyErrorResponse> {
     let initial_account = match resolution {
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(account))) => {
             account
@@ -453,17 +474,21 @@ pub(crate) async fn unwrap_via_pool_initial_account(
         Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired) => {
             let total_timeout = responses_total_timeout
                 .expect("pre-attempt total-timeout expiry requires responses timeout");
-            return Err((
+            return Err(plain_proxy_error(
                 StatusCode::GATEWAY_TIMEOUT,
                 pool_total_timeout_exhausted_message(total_timeout),
             ));
         }
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Unavailable))
         | Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::NoCandidate)) => {
-            if let Some(err) = maybe_persist_encrypted_session_owner_guard_terminal_error(
+            if let Some(err) = maybe_persist_single_account_binding_terminal_error(
                 state,
                 trace_context,
+                binding_constraint,
                 owner_auto_guard_active,
+                prompt_cache_key,
+                None,
+                None,
                 1,
                 1,
             )
@@ -471,16 +496,20 @@ pub(crate) async fn unwrap_via_pool_initial_account(
             {
                 return Err(err);
             }
-            return Err((
+            return Err(plain_proxy_error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
             ));
         }
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::RateLimited)) => {
-            if let Some(err) = maybe_persist_encrypted_session_owner_guard_terminal_error(
+            if let Some(err) = maybe_persist_single_account_binding_terminal_error(
                 state,
                 trace_context,
+                binding_constraint,
                 owner_auto_guard_active,
+                prompt_cache_key,
+                None,
+                None,
                 1,
                 1,
             )
@@ -488,16 +517,20 @@ pub(crate) async fn unwrap_via_pool_initial_account(
             {
                 return Err(err);
             }
-            return Err((
+            return Err(plain_proxy_error(
                 StatusCode::TOO_MANY_REQUESTS,
                 POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
             ));
         }
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::DegradedOnly)) => {
-            if let Some(err) = maybe_persist_encrypted_session_owner_guard_terminal_error(
+            if let Some(err) = maybe_persist_single_account_binding_terminal_error(
                 state,
                 trace_context,
+                binding_constraint,
                 owner_auto_guard_active,
+                prompt_cache_key,
+                None,
+                None,
                 1,
                 1,
             )
@@ -505,7 +538,7 @@ pub(crate) async fn unwrap_via_pool_initial_account(
             {
                 return Err(err);
             }
-            return Err((
+            return Err(plain_proxy_error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
             ));
@@ -513,10 +546,14 @@ pub(crate) async fn unwrap_via_pool_initial_account(
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::AssignedBlocked(
             blocked,
         ))) => {
-            if let Some(err) = maybe_persist_encrypted_session_owner_guard_terminal_error(
+            if let Some(err) = maybe_persist_single_account_binding_terminal_error(
                 state,
                 trace_context,
+                binding_constraint,
                 owner_auto_guard_active,
+                prompt_cache_key,
+                Some(blocked.account.clone()),
+                Some(blocked.message.clone()),
                 1,
                 1,
             )
@@ -526,15 +563,22 @@ pub(crate) async fn unwrap_via_pool_initial_account(
             }
             let terminal_error = ViaPoolResolutionTerminalError::assigned_blocked(blocked);
             terminal_error.persist_if_needed(state, trace_context).await;
-            return Err((terminal_error.status, terminal_error.message));
+            return Err(plain_proxy_error(
+                terminal_error.status,
+                terminal_error.message,
+            ));
         }
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::BlockedByPolicy(
             message,
         ))) => {
-            if let Some(err) = maybe_persist_encrypted_session_owner_guard_terminal_error(
+            if let Some(err) = maybe_persist_single_account_binding_terminal_error(
                 state,
                 trace_context,
+                binding_constraint,
                 owner_auto_guard_active,
+                prompt_cache_key,
+                None,
+                Some(message.clone()),
                 1,
                 1,
             )
@@ -542,10 +586,10 @@ pub(crate) async fn unwrap_via_pool_initial_account(
             {
                 return Err(err);
             }
-            return Err((StatusCode::SERVICE_UNAVAILABLE, message));
+            return Err(plain_proxy_error(StatusCode::SERVICE_UNAVAILABLE, message));
         }
         Err(err) => {
-            return Err((
+            return Err(plain_proxy_error(
                 StatusCode::BAD_GATEWAY,
                 format!("failed to resolve pool account: {err}"),
             ));
@@ -702,6 +746,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         message: format!("failed to resolve effective request-path timeouts: {err}"),
         canonical_error_message: None,
         failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+        blocked_binding: None,
         connect_latency_ms: 0.0,
         upstream_error_code: None,
         upstream_error_message: None,
@@ -778,6 +823,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                             status: StatusCode::BAD_GATEWAY,
                             message,
                             failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                            blocked_binding: None,
                             connect_latency_ms: 0.0,
                             upstream_error_code: None,
                             upstream_error_message: None,
@@ -807,6 +853,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                             message: format!("failed to build pool upstream url: {err}"),
                             canonical_error_message: None,
                             failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                            blocked_binding: None,
                             connect_latency_ms: 0.0,
                             upstream_error_code: None,
                             upstream_error_message: None,
@@ -944,6 +991,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         message,
                         canonical_error_message: None,
                         failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                        blocked_binding: None,
                         connect_latency_ms: elapsed_ms(connect_started),
                         upstream_error_code: None,
                         upstream_error_message: None,
@@ -994,6 +1042,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         message,
                         canonical_error_message: None,
                         failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+                        blocked_binding: None,
                         connect_latency_ms: elapsed_ms(connect_started),
                         upstream_error_code: None,
                         upstream_error_message: None,
@@ -1026,6 +1075,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                             status: StatusCode::BAD_GATEWAY,
                             message,
                             failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                            blocked_binding: None,
                             connect_latency_ms: 0.0,
                             upstream_error_code: None,
                             upstream_error_message: None,
@@ -1260,6 +1310,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         message: format!("failed to build proxy response: {err}"),
                         canonical_error_message: None,
                         failure_kind: PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+                        blocked_binding: None,
                         connect_latency_ms,
                         upstream_error_code: None,
                         upstream_error_message: None,
@@ -1384,6 +1435,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             message: route_error_message,
             canonical_error_message: canonical_override,
             failure_kind,
+            blocked_binding: None,
             connect_latency_ms,
             upstream_error_code,
             upstream_error_message,
@@ -1466,6 +1518,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 status: StatusCode::BAD_GATEWAY,
                 message,
                 failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                blocked_binding: None,
                 connect_latency_ms,
                 upstream_error_code: None,
                 upstream_error_message: None,
@@ -1647,6 +1700,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                 ),
                 canonical_error_message: None,
                 failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                blocked_binding: None,
                 connect_latency_ms: first_error.connect_latency_ms,
                 upstream_error_code: None,
                 upstream_error_message: None,
@@ -1723,6 +1777,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                     ),
                     canonical_error_message: None,
                     failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                    blocked_binding: None,
                     connect_latency_ms: first_error.connect_latency_ms,
                     upstream_error_code: None,
                     upstream_error_message: None,
@@ -1785,6 +1840,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                 message,
                 canonical_error_message: None,
                 failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                blocked_binding: None,
                 connect_latency_ms: first_error.connect_latency_ms,
                 upstream_error_code: None,
                 upstream_error_message: None,
@@ -1923,6 +1979,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                 message: err.message,
                 canonical_error_message: None,
                 failure_kind: err.failure_kind,
+                blocked_binding: None,
                 connect_latency_ms: first_error.connect_latency_ms,
                 upstream_error_code: None,
                 upstream_error_message: None,
@@ -1942,6 +1999,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 message,
                 failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                blocked_binding: None,
                 connect_latency_ms: first_error.connect_latency_ms,
                 upstream_error_code: None,
                 upstream_error_message: None,
@@ -2068,8 +2126,10 @@ pub(crate) fn proxy_openai_v1_via_pool(
             pre_attempt_total_timeout_deadline.is_some_and(|deadline| Instant::now() >= deadline)
         };
         let pre_attempt_total_timeout_error = || {
-            pool_pre_attempt_total_timeout_error(
+            plain_proxy_error(
+                StatusCode::GATEWAY_TIMEOUT,
                 responses_total_timeout
+                    .map(pool_total_timeout_exhausted_message)
                     .expect("pre-attempt total-timeout requires responses timeout"),
             )
         };
@@ -2111,7 +2171,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         proxy_request_id,
                     )
                     .await
-                    .map_err(|err| (err.status, err.message))?;
+                    .map_err(|err| plain_proxy_error(err.status, err.message))?;
                     if pre_attempt_total_timeout_exceeded() {
                         return Err(pre_attempt_total_timeout_error());
                     }
@@ -2146,7 +2206,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         effective_prompt_cache_key.as_deref(),
                         request_contains_encrypted_content,
                     )
-                    .await?;
+                    .await
+                    .map_err(|(status, message)| plain_proxy_error(status, message))?;
                     let pool_attempt_trace_context = build_via_pool_attempt_trace_context(
                         proxy_request_id,
                         original_uri.path(),
@@ -2194,7 +2255,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
                         )
                         .await
-                        .map_err(|err| (err.status, err.message))?,
+                        .map_err(|err| proxy_error_response_from_pool_upstream_error(err, None))?,
                         body_sticky_key,
                         effective_prompt_cache_key,
                         request_contains_encrypted_content,
@@ -2409,10 +2470,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             let now = Instant::now();
                             let remaining = request_body_deadline.saturating_duration_since(now);
                             if remaining.is_zero() {
-                                return Err((
-                                    request_body_timeout_error().status,
-                                    request_body_timeout_error().message,
-                                ));
+                                let err = request_body_timeout_error();
+                                return Err(plain_proxy_error(err.status, err.message));
                             }
                             let request_body_wait_budget = if let Some(total_timeout_deadline) =
                                 pre_attempt_total_timeout_deadline
@@ -2423,7 +2482,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     let total_timeout = responses_total_timeout.expect(
                                     "pre-attempt total-timeout expiry requires responses timeout",
                                 );
-                                    return Err((
+                                    return Err(plain_proxy_error(
                                         StatusCode::GATEWAY_TIMEOUT,
                                         pool_total_timeout_exhausted_message(total_timeout),
                                     ));
@@ -2448,7 +2507,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                 responses_total_timeout.expect(
                                                     "pre-attempt total-timeout expiry requires responses timeout",
                                                 );
-                                            return Err((
+                                            return Err(plain_proxy_error(
                                                 StatusCode::GATEWAY_TIMEOUT,
                                                 pool_total_timeout_exhausted_message(total_timeout),
                                             ));
@@ -2517,7 +2576,10 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                     .or(header_prompt_cache_key.as_deref()),
                                                 false,
                                             )
-                                            .await?;
+                                            .await
+                                            .map_err(|(status, message)| {
+                                                plain_proxy_error(status, message)
+                                            })?;
                                         if prompt_cache_binding_constraint.is_none()
                                             && conversation_override.is_none()
                                         {
@@ -2529,7 +2591,10 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             terminal_error
                                                 .persist_if_needed(state.as_ref(), Some(&trace_context))
                                                 .await;
-                                            return Err((terminal_error.status, terminal_error.message));
+                                            return Err(plain_proxy_error(
+                                                terminal_error.status,
+                                                terminal_error.message,
+                                            ));
                                         }
                                     }
                                 }
@@ -2543,18 +2608,18 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                 let total_timeout = responses_total_timeout.expect(
                                                     "pre-attempt total-timeout expiry requires responses timeout",
                                                 );
-                                                return Err((
+                                                return Err(plain_proxy_error(
                                                     StatusCode::GATEWAY_TIMEOUT,
                                                     pool_total_timeout_exhausted_message(total_timeout),
                                                 ));
                                             }
                                             let err = request_body_timeout_error();
-                                            return Err((err.status, err.message));
+                                            return Err(plain_proxy_error(err.status, err.message));
                                         }
                                     };
                                     let Some(chunk) = next_chunk else {
                                         break request_body_buffer.finish().await.map_err(|err| {
-                                            (
+                                            plain_proxy_error(
                                                 StatusCode::BAD_GATEWAY,
                                                 format!("failed to cache request body for oauth replay: {err}"),
                                             )
@@ -2563,21 +2628,21 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     let chunk = match chunk {
                                         Ok(chunk) => chunk,
                                         Err(err) => {
-                                            return Err((
+                                            return Err(plain_proxy_error(
                                                 StatusCode::BAD_REQUEST,
                                                 format!("failed to read request body stream: {err}"),
                                             ));
                                         }
                                     };
                                     if request_body_len.saturating_add(chunk.len()) > body_limit {
-                                        return Err((
+                                        return Err(plain_proxy_error(
                                             StatusCode::PAYLOAD_TOO_LARGE,
                                             format!("request body exceeds {body_limit} bytes"),
                                         ));
                                     }
                                     request_body_len = request_body_len.saturating_add(chunk.len());
                                     request_body_buffer.append(&chunk).await.map_err(|err| {
-                                        (
+                                        plain_proxy_error(
                                             StatusCode::BAD_GATEWAY,
                                             format!("failed to cache request body for oauth replay: {err}"),
                                         )
@@ -2615,7 +2680,10 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                     .or(header_prompt_cache_key.as_deref()),
                                                 false,
                                             )
-                                            .await?;
+                                            .await
+                                            .map_err(|(status, message)| {
+                                                plain_proxy_error(status, message)
+                                            })?;
                                         if prompt_cache_binding_constraint.is_none()
                                             && conversation_override.is_none()
                                         {
@@ -2627,7 +2695,10 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             terminal_error
                                                 .persist_if_needed(state.as_ref(), Some(&trace_context))
                                                 .await;
-                                            return Err((terminal_error.status, terminal_error.message));
+                                            return Err(plain_proxy_error(
+                                                terminal_error.status,
+                                                terminal_error.message,
+                                            ));
                                         }
                                     }
                                 }
@@ -2657,7 +2728,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     let total_timeout = responses_total_timeout.expect(
                                     "pre-attempt total-timeout expiry requires responses timeout",
                                 );
-                                    return Err((
+                                    return Err(plain_proxy_error(
                                         StatusCode::GATEWAY_TIMEOUT,
                                         pool_total_timeout_exhausted_message(total_timeout),
                                     ));
@@ -2752,7 +2823,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 .or(header_prompt_cache_key.as_deref()),
                             request_contains_encrypted_content,
                         )
-                        .await?;
+                        .await
+                        .map_err(|(status, message)| plain_proxy_error(status, message))?;
                         let requested_model =
                             extract_model_from_replay_snapshot(&request_body_snapshot).await;
                         if prompt_cache_binding_constraint.is_none()
@@ -2768,7 +2840,10 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             terminal_error
                                 .persist_if_needed(state.as_ref(), Some(&trace_context))
                                 .await;
-                            return Err((terminal_error.status, terminal_error.message));
+                            return Err(plain_proxy_error(
+                                terminal_error.status,
+                                terminal_error.message,
+                            ));
                         }
                         let mut no_available_wait_deadline =
                             header_sticky_wait_deadline.or(*shared_wait_deadline
@@ -2804,7 +2879,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     resolution,
                                     no_available_wait_deadline,
                                     responses_total_timeout,
+                                    prompt_cache_binding_constraint.as_ref(),
                                     owner_auto_guard_active,
+                                    body_sticky_key.as_deref(),
                                 )
                                 .await?;
                             no_available_wait_deadline = updated_no_available_wait_deadline;
@@ -2818,7 +2895,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     original_uri.path(),
                                     request_image_intent,
                                 )
-                                .await?
+                                .await
+                                .map_err(|(status, message)| plain_proxy_error(status, message))?
                                 {
                                     account
                                 } else {
@@ -2848,7 +2926,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             resolution,
                                             no_available_wait_deadline,
                                             responses_total_timeout,
+                                            prompt_cache_binding_constraint.as_ref(),
                                             owner_auto_guard_active,
+                                            body_sticky_key.as_deref(),
                                         )
                                         .await?;
                                     no_available_wait_deadline = updated_no_available_wait_deadline;
@@ -2881,7 +2961,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         resolution,
                                         no_available_wait_deadline,
                                         responses_total_timeout,
+                                        prompt_cache_binding_constraint.as_ref(),
                                         owner_auto_guard_active,
+                                        body_sticky_key.as_deref(),
                                     )
                                     .await?;
                                 no_available_wait_deadline = updated_no_available_wait_deadline;
@@ -2914,7 +2996,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     resolution,
                                     no_available_wait_deadline,
                                     responses_total_timeout,
+                                    prompt_cache_binding_constraint.as_ref(),
                                     owner_auto_guard_active,
+                                    body_sticky_key.as_deref(),
                                 )
                                 .await?;
                             no_available_wait_deadline = updated_no_available_wait_deadline;
@@ -2983,7 +3067,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             live_prompt_cache_key.as_deref(),
                             live_request_contains_encrypted_content,
                         )
-                        .await?;
+                        .await
+                        .map_err(|(status, message)| plain_proxy_error(status, message))?;
                         let live_first_requirements_known =
                             live_first_image_intent_known(capture_target, request_image_intent)
                                 && (live_requested_model.is_some()
@@ -3035,7 +3120,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     resolution,
                                     no_available_wait_deadline,
                                     responses_total_timeout,
+                                    prompt_cache_binding_constraint.as_ref(),
                                     owner_auto_guard_active,
+                                    live_body_sticky_key.as_deref(),
                                 )
                                 .await?;
                             let pool_attempt_trace_context = build_via_pool_attempt_trace_context(
@@ -3090,7 +3177,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         first_error,
                                     )
                                     .await
-                                    .map_err(|err| (err.status, err.message))?,
+                                    .map_err(|err| {
+                                        proxy_error_response_from_pool_upstream_error(err, None)
+                                    })?,
                                 };
                                 let account = upstream.account;
                                 let upstream_attempt_started_at_utc =
@@ -3114,7 +3203,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     &account.upstream_base_url,
                                 )
                                 .map_err(|err| {
-                                    (
+                                    plain_proxy_error(
                                         StatusCode::BAD_GATEWAY,
                                         format!("failed to process upstream redirect: {err}"),
                                     )
@@ -3252,7 +3341,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     }
                                     }
                                     return response_builder.body(Body::empty()).map_err(|err| {
-                                        (
+                                        plain_proxy_error(
                                             StatusCode::INTERNAL_SERVER_ERROR,
                                             format!("failed to build proxy response: {err}"),
                                         )
@@ -3575,7 +3664,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 return response_builder
                                     .body(Body::from_stream(ReceiverStream::new(rx)))
                                     .map_err(|err| {
-                                        (
+                                        plain_proxy_error(
                                             StatusCode::INTERNAL_SERVER_ERROR,
                                             format!("failed to build proxy response: {err}"),
                                         )
@@ -3592,7 +3681,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             runtime_timeouts.request_read_timeout,
                             live_responses_total_timeout_started_at,
                         )
-                        .await?;
+                        .await
+                        .map_err(|(status, message)| plain_proxy_error(status, message))?;
                         let body_sticky_key =
                             extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
                                 .await
@@ -3631,7 +3721,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 .or(header_prompt_cache_key.as_deref()),
                             request_contains_encrypted_content,
                         )
-                        .await?;
+                        .await
+                        .map_err(|(status, message)| plain_proxy_error(status, message))?;
                         let mut no_available_wait_deadline = None;
                         let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
                     state.as_ref(),
@@ -3660,7 +3751,11 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 resolution,
                                 no_available_wait_deadline,
                                 responses_total_timeout,
+                                prompt_cache_binding_constraint.as_ref(),
                                 owner_auto_guard_active,
+                                body_prompt_cache_key
+                                    .as_deref()
+                                    .or(header_prompt_cache_key.as_deref()),
                             )
                             .await?;
                         let request_body_model =
@@ -3723,7 +3818,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
                         )
                         .await
-                        .map_err(|err| (err.status, err.message))?,
+                        .map_err(|err| proxy_error_response_from_pool_upstream_error(err, None))?,
                         body_sticky_key,
                         body_prompt_cache_key,
                         request_contains_encrypted_content,
@@ -3744,7 +3839,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     header_prompt_cache_key.as_deref(),
                     false,
                 )
-                .await?;
+                .await
+                .map_err(|(status, message)| plain_proxy_error(status, message))?;
                 let header_capture_target =
                     capture_target_for_request(original_uri.path(), &method)
                         .unwrap_or(ProxyCaptureTarget::Responses);
@@ -3781,7 +3877,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         same_account_attempts,
                     )
                     .await
-                    .map_err(|err| (err.status, err.message))?,
+                    .map_err(|err| proxy_error_response_from_pool_upstream_error(err, None))?,
                     header_sticky_key,
                     header_prompt_cache_key.clone(),
                     false,
@@ -3807,7 +3903,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
             &account.upstream_base_url,
         )
         .map_err(|err| {
-            (
+            plain_proxy_error(
                 StatusCode::BAD_GATEWAY,
                 format!("failed to process upstream redirect: {err}"),
             )
@@ -3965,7 +4061,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                 }
             }
             return response_builder.body(Body::empty()).map_err(|err| {
-                (
+                plain_proxy_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("failed to build proxy response: {err}"),
                 )
@@ -4253,7 +4349,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
         response_builder
             .body(Body::from_stream(ReceiverStream::new(rx)))
             .map_err(|err| {
-                (
+                plain_proxy_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("failed to build proxy response: {err}"),
                 )

@@ -31,6 +31,27 @@ pub(crate) fn prompt_cache_runtime_record_is_in_working_window(
         })
 }
 
+pub(crate) fn prompt_cache_runtime_record_matches_blocked_binding_filter(
+    record: &ApiInvocation,
+    blocked_binding_filter: Option<&PromptCacheConversationBlockedBindingFilter>,
+) -> bool {
+    let Some(blocked_binding_filter) = blocked_binding_filter else {
+        return true;
+    };
+    if !blocked_binding_filter.is_active() {
+        return true;
+    }
+    let Some(blocked_binding) = record.blocked_binding.as_ref() else {
+        return false;
+    };
+    blocked_binding_filter
+        .upstream_account_id
+        .is_none_or(|value| blocked_binding.upstream_account_id == value)
+        && blocked_binding_filter
+            .constraint_source
+            .is_none_or(|value| blocked_binding.constraint_source == value)
+}
+
 pub(crate) fn prompt_cache_runtime_record_sort_anchor(record: &ApiInvocation) -> String {
     record.occurred_at.clone()
 }
@@ -97,6 +118,7 @@ pub(crate) fn runtime_prompt_cache_overlay_records(
     state: &AppState,
     source_scope: InvocationSourceScope,
     range_start_bound: &str,
+    blocked_binding_filter: Option<&PromptCacheConversationBlockedBindingFilter>,
 ) -> Vec<ApiInvocation> {
     state
         .proxy_runtime_invocations
@@ -111,6 +133,12 @@ pub(crate) fn runtime_prompt_cache_overlay_records(
                 .prompt_cache_key
                 .as_deref()
                 .is_some_and(|key| !key.trim().is_empty())
+        })
+        .filter(|record| {
+            prompt_cache_runtime_record_matches_blocked_binding_filter(
+                record,
+                blocked_binding_filter,
+            )
         })
         .collect()
 }
@@ -336,12 +364,17 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request(
         snapshot_hour_start_epoch,
         &snapshot_hour_start_bound,
         source_scope,
+        request.blocked_binding_filter.as_ref(),
         cursor.as_ref(),
         db_page_limit,
     )
     .await?;
-    let runtime_overlay_records =
-        runtime_prompt_cache_overlay_records(state, source_scope, &range_start_bound);
+    let runtime_overlay_records = runtime_prompt_cache_overlay_records(
+        state,
+        source_scope,
+        &range_start_bound,
+        request.blocked_binding_filter.as_ref(),
+    );
     let mut aggregates = merge_runtime_prompt_cache_aggregates(
         aggregates,
         &runtime_overlay_records,
@@ -367,6 +400,7 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request(
         &range_start_bound,
         &snapshot_filter,
         source_scope,
+        request.blocked_binding_filter.as_ref(),
     )
     .await?;
     let runtime_overlay_keys = runtime_prompt_cache_overlay_keys(&runtime_overlay_records);
@@ -375,6 +409,7 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request(
         &range_start_bound,
         source_scope,
         &runtime_overlay_keys,
+        request.blocked_binding_filter.as_ref(),
     )
     .await?;
     let total_matched = db_total_matched
@@ -464,7 +499,7 @@ pub(crate) async fn build_prompt_cache_conversations_response_with_recent_limit(
     let range_start_bound = db_occurred_at_lower_bound(range_start);
     let display_limit = selection.display_limit();
     let runtime_overlay_records =
-        runtime_prompt_cache_overlay_records(state, source_scope, &range_start_bound);
+        runtime_prompt_cache_overlay_records(state, source_scope, &range_start_bound, None);
 
     let (aggregates, active_filtered_count) = match selection {
         PromptCacheConversationSelection::Count(limit) => {
@@ -538,6 +573,7 @@ pub(crate) async fn build_prompt_cache_conversations_response_with_recent_limit(
                     &range_start_bound,
                     source_scope,
                     &runtime_overlay_keys,
+                    None,
                 )
                 .await?;
             (

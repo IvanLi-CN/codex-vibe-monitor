@@ -1715,6 +1715,8 @@ pub(crate) struct UpstreamAccountActionEvent {
     pub(crate) invoke_id: Option<String>,
     pub(crate) attempt_id: Option<String>,
     pub(crate) sticky_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) blocked_binding: Option<BlockedBindingDiagnostic>,
     pub(crate) created_at: String,
 }
 

@@ -1,6 +1,10 @@
 use super::*;
 use sqlx::FromRow;
 
+const PROMPT_CACHE_KEY_JSON_SQL: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+const BLOCKED_BINDING_JSON_EXISTS_SQL: &str =
+    "json_valid(payload) AND json_type(payload, '$.blockedBinding') = 'object'";
+
 pub(crate) fn append_working_set_freshness_filter<'a>(
     query: &mut QueryBuilder<'a, Sqlite>,
     range_start_bound: &'a str,
@@ -24,6 +28,55 @@ pub(crate) fn append_working_set_freshness_filter<'a>(
         .push(" >= ")
         .push_bind(range_start_bound)
         .push("))");
+}
+
+pub(crate) fn append_working_set_blocked_binding_filter<'a>(
+    query: &mut QueryBuilder<'a, Sqlite>,
+    source_scope: InvocationSourceScope,
+    prompt_cache_key_column: &str,
+    last_terminal_column: &str,
+    blocked_binding_filter: Option<&PromptCacheConversationBlockedBindingFilter>,
+) {
+    let Some(blocked_binding_filter) = blocked_binding_filter else {
+        return;
+    };
+    if !blocked_binding_filter.is_active() {
+        return;
+    }
+
+    query
+        .push(" AND ")
+        .push(last_terminal_column)
+        .push(" IS NOT NULL")
+        .push(" AND EXISTS (SELECT 1 FROM codex_invocations AS blocked_invocation WHERE ")
+        .push(BLOCKED_BINDING_JSON_EXISTS_SQL)
+        .push(" AND ")
+        .push(PROMPT_CACHE_KEY_JSON_SQL.replace("payload", "blocked_invocation.payload"))
+        .push(" = ")
+        .push(prompt_cache_key_column)
+        .push(" AND blocked_invocation.occurred_at = ")
+        .push(last_terminal_column);
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query
+            .push(" AND blocked_invocation.source = ")
+            .push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = blocked_binding_filter.upstream_account_id {
+        query
+            .push(" AND CAST(json_extract(blocked_invocation.payload, '$.blockedBinding.upstreamAccountId') AS INTEGER) = ")
+            .push_bind(upstream_account_id);
+    }
+    if let Some(constraint_source) = blocked_binding_filter.constraint_source {
+        let raw = match constraint_source {
+            BlockedBindingConstraintSource::UpstreamAccountBinding => "upstreamAccountBinding",
+            BlockedBindingConstraintSource::EncryptedSessionOwner => "encryptedSessionOwner",
+        };
+        query
+            .push(" AND CAST(json_extract(blocked_invocation.payload, '$.blockedBinding.constraintSource') AS TEXT) = ")
+            .push_bind(raw);
+    }
+    query.push(")");
 }
 
 pub(crate) async fn query_prompt_cache_conversation_aggregates(
@@ -165,6 +218,7 @@ pub(crate) async fn query_working_prompt_cache_conversation_count_at_snapshot(
     range_start_bound: &str,
     _snapshot: &PromptCacheConversationSnapshotFilter,
     source_scope: InvocationSourceScope,
+    blocked_binding_filter: Option<&PromptCacheConversationBlockedBindingFilter>,
 ) -> Result<i64> {
     let mut query = QueryBuilder::<Sqlite>::new(match source_scope {
         InvocationSourceScope::All => {
@@ -194,6 +248,16 @@ pub(crate) async fn query_working_prompt_cache_conversation_count_at_snapshot(
             "proxy_last_in_flight_at",
         ),
     }
+    append_working_set_blocked_binding_filter(
+        &mut query,
+        source_scope,
+        "prompt_cache_key",
+        match source_scope {
+            InvocationSourceScope::All => "last_terminal_at",
+            InvocationSourceScope::ProxyOnly => "proxy_last_terminal_at",
+        },
+        blocked_binding_filter,
+    );
 
     let (count,) = query.build_query_as::<(i64,)>().fetch_one(pool).await?;
     Ok(count)
@@ -204,6 +268,7 @@ pub(crate) async fn query_existing_working_prompt_cache_conversation_keys(
     range_start_bound: &str,
     source_scope: InvocationSourceScope,
     prompt_cache_keys: &HashSet<String>,
+    blocked_binding_filter: Option<&PromptCacheConversationBlockedBindingFilter>,
 ) -> Result<HashSet<String>> {
     if prompt_cache_keys.is_empty() {
         return Ok(HashSet::new());
@@ -242,6 +307,16 @@ pub(crate) async fn query_existing_working_prompt_cache_conversation_keys(
             "proxy_last_in_flight_at",
         ),
     }
+    append_working_set_blocked_binding_filter(
+        &mut query,
+        source_scope,
+        "prompt_cache_key",
+        match source_scope {
+            InvocationSourceScope::All => "last_terminal_at",
+            InvocationSourceScope::ProxyOnly => "proxy_last_terminal_at",
+        },
+        blocked_binding_filter,
+    );
     query.push(" AND prompt_cache_key IN (");
     {
         let mut separated = query.separated(", ");
@@ -408,6 +483,7 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates_page(
     _snapshot_hour_start_epoch: i64,
     _snapshot_hour_start_bound: &str,
     source_scope: InvocationSourceScope,
+    blocked_binding_filter: Option<&PromptCacheConversationBlockedBindingFilter>,
     cursor: Option<&(String, String, String, Option<i64>)>,
     limit: i64,
 ) -> Result<Vec<PromptCacheConversationAggregateRow>> {
@@ -458,6 +534,16 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates_page(
             "proxy_last_in_flight_at",
         ),
     }
+    append_working_set_blocked_binding_filter(
+        &mut query,
+        source_scope,
+        "prompt_cache_key",
+        match source_scope {
+            InvocationSourceScope::All => "last_terminal_at",
+            InvocationSourceScope::ProxyOnly => "proxy_last_terminal_at",
+        },
+        blocked_binding_filter,
+    );
 
     if let Some((cursor_sort_anchor_at, cursor_created_at, cursor_prompt_cache_key, _)) = cursor {
         let created_at_cursor_expr = match source_scope {

@@ -138,6 +138,8 @@ pub(crate) async fn proxy_openai_v1_ws_common(
                 message: "websocket proxy requires GET".to_string(),
                 cvm_id: None,
                 retry_after_secs: None,
+                code: None,
+                blocked_binding: None,
             },
             &invoke_id,
         );
@@ -150,6 +152,8 @@ pub(crate) async fn proxy_openai_v1_ws_common(
                 message: PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE.to_string(),
                 cvm_id: None,
                 retry_after_secs: None,
+                code: None,
+                blocked_binding: None,
             },
             &invoke_id,
         );
@@ -2130,6 +2134,7 @@ pub(crate) async fn persist_ws_usage_event(
         pool_attempt_count: None,
         pool_distinct_account_count: None,
         pool_attempt_terminal_reason: None,
+        blocked_binding: None,
     });
     let payload = mark_websocket_payload_transport(payload)?;
     let is_completed_terminal_event = ws_usage_event_is_completed_success(&event);
