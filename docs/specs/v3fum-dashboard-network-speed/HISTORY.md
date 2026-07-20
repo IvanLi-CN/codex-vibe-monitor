@@ -18,3 +18,4 @@
 - 2026-07-20 recent 诊断面板选择独立的全局 300 秒、1 秒粒度读模型，由 `DashboardNetworkSpeedCache` 直接产出，并通过 `GET /api/stats/dashboard-network-recent` 与 `dashboard.network-recent.current` 暴露；不复用分钟桶，也不新增 SQLite 落盘。
 - 2026-07-20 recent 面板前端明确遵守 topic-only SSE 约束：只消费 `dashboard.network-recent.current`，仅在面板打开期间以 1 秒 cadence refresh，同屏不再引入 open-resync 或第二真相源。
 - 2026-07-20 进程启动不足 5 分钟时，recent 面板前导区间统一显示为 `isAvailable=false` 空档并标记 warming；这些空档不再伪装成真实 `0 B/s` 历史。
+- 2026-07-20 线上验证发现：recent 面板首次打开会先经过 loading 分支，再切到真实图表数据；原实现把一个 `useMemo` 放在早退分支之后，导致同一组件实例在 `loading -> data` 间触发 React hook order 崩溃（线上表现为 React 310）。修复改为无条件的普通 tick 派生计算，并补回归测试锁住这个路径。
