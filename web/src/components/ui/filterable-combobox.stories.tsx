@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useState } from "react";
-import { FilterableCombobox } from "./filterable-combobox";
+import { FilterableCombobox, type FilterableComboboxOption } from "./filterable-combobox";
 
 const noop = () => {};
 
@@ -23,7 +23,7 @@ function ControlledCombobox({
   disabled,
 }: {
   label: string;
-  options: string[];
+  options: Array<string | FilterableComboboxOption>;
   placeholder?: string;
   emptyText?: string;
   disabled?: boolean;
@@ -121,6 +121,27 @@ export const Disabled: Story = {
       emptyText="No matches"
       disabled
       options={["proxy-a", "proxy-b", "proxy-c"]}
+    />
+  ),
+};
+
+export const LabeledOptions: Story = {
+  args: {
+    label: "Combobox",
+    value: "",
+    onValueChange: noop,
+    options: [],
+  },
+  render: () => (
+    <ControlledCombobox
+      label="Upstream account"
+      placeholder="Search account name or ID"
+      emptyText="No matches"
+      options={[
+        { value: "42", label: "Pool Alpha (#42)", searchText: "Pool Alpha 42" },
+        { value: "77", label: "Pool Beta (#77)", searchText: "Pool Beta 77" },
+        { value: "105", label: "Nightly QA (#105)", searchText: "Nightly QA 105" },
+      ]}
     />
   ),
 };

@@ -2501,7 +2501,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     await flushAsync();
 
     expect(apiMocks.fetchInvocationRecordLocation).toHaveBeenCalledWith({
-      requestId: "invk_action_001",
+      invokeId: "invk_action_001",
       upstreamAccountId: 5,
       pageSize: 50,
     });

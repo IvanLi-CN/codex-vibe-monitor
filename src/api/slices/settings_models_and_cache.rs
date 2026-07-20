@@ -1703,12 +1703,19 @@ pub(crate) struct ListQuery {
     pub(crate) from: Option<String>,
     pub(crate) to: Option<String>,
     pub(crate) model: Option<String>,
+    pub(crate) models: Option<String>,
+    pub(crate) model_target: Option<String>,
+    pub(crate) model_rerouted: Option<String>,
     pub(crate) status: Option<String>,
     // Kept for compatibility so stale /records URLs with `?proxy=...` deserialize cleanly,
     // but records queries intentionally ignore this field.
     #[allow(dead_code)]
     pub(crate) proxy: Option<String>,
     pub(crate) endpoint: Option<String>,
+    pub(crate) invoke_id: Option<String>,
+    pub(crate) attempt_id: Option<String>,
+    // Kept for compatibility so stale /records URLs with `?requestId=...` still resolve.
+    // Owner-facing records surfaces should use `invokeId` instead.
     pub(crate) request_id: Option<String>,
     pub(crate) failure_class: Option<String>,
     pub(crate) failure_kind: Option<String>,
@@ -1716,6 +1723,11 @@ pub(crate) struct ListQuery {
     pub(crate) sticky_key: Option<String>,
     pub(crate) upstream_scope: Option<String>,
     pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) proxy_display_name: Option<String>,
+    pub(crate) transport: Option<String>,
+    pub(crate) service_tier: Option<String>,
+    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) reasoning_efforts: Option<String>,
     pub(crate) requester_ip: Option<String>,
     pub(crate) keyword: Option<String>,
     pub(crate) min_total_tokens: Option<i64>,
@@ -1729,6 +1741,7 @@ pub(crate) struct ListQuery {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LocateInvocationQuery {
+    pub(crate) invoke_id: Option<String>,
     pub(crate) request_id: Option<String>,
     pub(crate) attempt_id: Option<String>,
     pub(crate) upstream_account_id: Option<i64>,

@@ -16,14 +16,24 @@ type RealtimeFilters = Pick<
   | "to"
   | "status"
   | "model"
+  | "models"
+  | "modelTarget"
+  | "modelRerouted"
   | "endpoint"
+  | "invokeId"
+  | "attemptId"
   | "requestId"
   | "failureClass"
   | "failureKind"
   | "promptCacheKey"
-  | "stickyKey"
+  | "upstreamScope"
   | "requesterIp"
   | "upstreamAccountId"
+  | "proxyDisplayName"
+  | "transport"
+  | "serviceTier"
+  | "reasoningEffort"
+  | "reasoningEfforts"
   | "keyword"
   | "minTotalTokens"
   | "maxTotalTokens"
@@ -42,7 +52,10 @@ interface UseInvocationRecordsRealtimeOptions {
   getRecords: () => ApiInvocation[];
   onRecordsChange: (
     next: ApiInvocation[],
-    meta: { visibleInsertedKeys: string[]; payload: BroadcastPayload & { type: "records" } },
+    meta: {
+      visibleInsertedKeys: string[];
+      payload: BroadcastPayload & { type: "records" };
+    },
   ) => void;
   onOpenResync: () => void;
   openResyncCooldownMs?: number;
@@ -69,14 +82,24 @@ function supportsRealtimeTopic(
   const {
     from,
     to,
+    models,
+    modelTarget,
+    modelRerouted,
     endpoint,
+    invokeId,
+    attemptId,
     requestId,
     failureClass,
     failureKind,
     promptCacheKey,
-    stickyKey,
+    upstreamScope,
     requesterIp,
     upstreamAccountId,
+    proxyDisplayName,
+    transport,
+    serviceTier,
+    reasoningEffort,
+    reasoningEfforts,
     keyword,
     minTotalTokens,
     maxTotalTokens,
@@ -86,14 +109,24 @@ function supportsRealtimeTopic(
   return !(
     from ||
     to ||
+    (models != null && models.length > 0) ||
+    modelTarget ||
+    modelRerouted != null ||
     endpoint ||
+    invokeId ||
+    attemptId ||
     requestId ||
     failureClass ||
     failureKind ||
     promptCacheKey ||
-    stickyKey ||
+    upstreamScope ||
     requesterIp ||
     upstreamAccountId != null ||
+    proxyDisplayName ||
+    transport ||
+    serviceTier ||
+    reasoningEffort ||
+    (reasoningEfforts != null && reasoningEfforts.length > 0) ||
     keyword ||
     minTotalTokens != null ||
     maxTotalTokens != null ||

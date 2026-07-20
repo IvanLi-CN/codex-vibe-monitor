@@ -95,6 +95,13 @@ beforeAll(() => {
       value: () => undefined,
     });
   }
+  if (typeof HTMLElement.prototype.scrollIntoView !== "function") {
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      writable: true,
+      value: () => undefined,
+    });
+  }
 });
 
 afterEach(() => {
@@ -179,10 +186,17 @@ function createSuggestions(
   const emptyBucket = { items: [], hasMore: false };
   return {
     model: emptyBucket,
+    requestModel: emptyBucket,
+    responseModel: emptyBucket,
     endpoint: emptyBucket,
     failureKind: emptyBucket,
+    stickyKey: emptyBucket,
     promptCacheKey: emptyBucket,
     requesterIp: emptyBucket,
+    proxyDisplayName: emptyBucket,
+    upstreamAccount: emptyBucket,
+    serviceTier: emptyBucket,
+    reasoningEffort: emptyBucket,
     ...overrides,
   };
 }
@@ -193,7 +207,7 @@ function mockInvocationRecords(
   const draft = {
     ...createDefaultInvocationRecordsDraft(),
     ...createDefaultCustomRange(),
-    model: "alp",
+    models: ["alp"],
   };
   hookMocks.useInvocationRecords.mockReturnValue({
     draft,
@@ -254,6 +268,29 @@ function getNewDataLabel(testId: "records-new-data-label-idle" | "records-new-da
 }
 
 describe("RecordsPage suggestions", () => {
+  function openModelSelector() {
+    const fieldTrigger = document.body.querySelector(
+      '[data-testid="records-filter-model-selection-trigger"]',
+    );
+    if (!(fieldTrigger instanceof HTMLButtonElement)) {
+      throw new Error("missing model filter field trigger");
+    }
+    act(() => {
+      fieldTrigger.click();
+    });
+
+    const trigger = document.body.querySelector(
+      'button[role="combobox"][aria-label="records.filters.model"]',
+    );
+    if (!(trigger instanceof HTMLButtonElement)) {
+      throw new Error("missing model selector trigger");
+    }
+    act(() => {
+      trigger.click();
+    });
+    return trigger;
+  }
+
   it("does not render the removed proxy filter control", () => {
     mockInvocationRecords();
 
@@ -261,7 +298,7 @@ describe("RecordsPage suggestions", () => {
     openFilters();
 
     expect(document.body.querySelector("#records-filter-proxy")).toBeNull();
-    expect(document.body.textContent ?? "").not.toContain("records.filters.proxy");
+    expect(document.body.querySelector('input[name="proxy"]')).toBeNull();
   });
 
   it("disables browser native autocomplete for filter controls", () => {
@@ -270,20 +307,29 @@ describe("RecordsPage suggestions", () => {
     render(<RecordsPage />);
     openFilters();
 
-    const modelInput = document.body.querySelector("#records-filter-model");
     const rangePresetSelect = document.body.querySelector('select[name="rangePreset"]');
-    const rangePresetTrigger = getSelectTrigger("records.filters.rangePreset");
+    const timeRangeField = document.body.querySelector('[data-testid="records-filter-time-range"]');
     const keywordInput = document.body.querySelector('input[name="keyword"]');
-    const minTotalTokensInput = document.body.querySelector('input[name="minTotalTokens"]');
+    const minTotalTokensSlider = document.body.querySelector(
+      'input[aria-label="records.filters.totalTokensRange.min slider"]',
+    );
 
-    if (!(modelInput instanceof HTMLInputElement)) {
-      throw new Error("missing model input");
+    if (!(timeRangeField instanceof HTMLElement)) {
+      throw new Error("missing time range field");
     }
     if (!(keywordInput instanceof HTMLInputElement)) {
       throw new Error("missing keyword input");
     }
-    if (!(minTotalTokensInput instanceof HTMLInputElement)) {
-      throw new Error("missing min total tokens input");
+    if (!(minTotalTokensSlider instanceof HTMLInputElement)) {
+      throw new Error("missing min total tokens slider");
+    }
+
+    openModelSelector();
+    const modelInput = document.body.querySelector(
+      '[cmdk-input][aria-label="records.filters.model"]',
+    );
+    if (!(modelInput instanceof HTMLInputElement)) {
+      throw new Error("missing model input");
     }
 
     expect(modelInput.autocomplete).toBe("off");
@@ -291,12 +337,24 @@ describe("RecordsPage suggestions", () => {
     expect(modelInput.getAttribute("autocapitalize")).toBe("none");
     expect(modelInput.getAttribute("spellcheck")).toBe("false");
     expect(rangePresetSelect).toBeNull();
-    expect(rangePresetTrigger.getAttribute("aria-label")).toBe("records.filters.rangePreset");
+    expect(timeRangeField.textContent ?? "").toContain("records.filters.rangePreset.today");
+    const timeRangeTrigger = timeRangeField.querySelector("button");
+    if (!(timeRangeTrigger instanceof HTMLButtonElement)) {
+      throw new Error("missing time range trigger");
+    }
+    act(() => {
+      timeRangeTrigger.click();
+    });
+    const customFromInput = document.body.querySelector('input[name="customFrom"]');
+    if (!(customFromInput instanceof HTMLInputElement)) {
+      throw new Error("missing custom from input");
+    }
+    expect(customFromInput.autocomplete).toBe("off");
     expect(keywordInput.autocomplete).toBe("off");
     expect(keywordInput.getAttribute("autocorrect")).toBe("off");
     expect(keywordInput.getAttribute("autocapitalize")).toBe("none");
     expect(keywordInput.getAttribute("spellcheck")).toBe("false");
-    expect(minTotalTokensInput.autocomplete).toBe("off");
+    expect(document.body.querySelector('input[name="minTotalTokens"]')).toBeNull();
   });
 
   it("loads suggestions lazily after a combobox opens", async () => {
@@ -313,15 +371,7 @@ describe("RecordsPage suggestions", () => {
     await flushAsync();
     expect(apiMocks.fetchInvocationSuggestions).not.toHaveBeenCalled();
 
-    const input = document.body.querySelector("#records-filter-model");
-    if (!(input instanceof HTMLInputElement)) {
-      throw new Error("missing model input");
-    }
-
-    act(() => {
-      input.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      input.focus();
-    });
+    openModelSelector();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
@@ -330,7 +380,7 @@ describe("RecordsPage suggestions", () => {
 
     expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledTimes(1);
     expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledWith(
-      expect.objectContaining({ snapshotId: 84, suggestField: "model", suggestQuery: "alp" }),
+      expect.objectContaining({ snapshotId: 84, suggestField: "requestModel" }),
     );
   });
 
@@ -347,7 +397,7 @@ describe("RecordsPage suggestions", () => {
       )
       .mockResolvedValueOnce(
         createSuggestions({
-          model: {
+          requestModel: {
             items: [{ value: "alp-fresh", count: 3 }],
             hasMore: false,
           },
@@ -358,16 +408,12 @@ describe("RecordsPage suggestions", () => {
 
     render(<RecordsPage />);
     openFilters();
-
-    const input = document.body.querySelector("#records-filter-model");
-    if (!(input instanceof HTMLInputElement)) {
-      throw new Error("missing model input");
+    const drawer = document.body.querySelector('[data-testid="records-filters-drawer"]');
+    if (!(drawer instanceof HTMLDivElement)) {
+      throw new Error("missing filters drawer");
     }
 
-    act(() => {
-      input.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      input.focus();
-    });
+    openModelSelector();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
@@ -375,18 +421,24 @@ describe("RecordsPage suggestions", () => {
     await flushAsync();
     expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledTimes(1);
 
+    const keywordInput = document.body.querySelector('input[name="keyword"]');
+    if (!(keywordInput instanceof HTMLInputElement)) {
+      throw new Error("missing keyword input");
+    }
     act(() => {
-      input.blur();
+      keywordInput.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      keywordInput.focus();
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
     await flushAsync();
+    expect(drawer.dataset.suggestionsOpen).toBe("false");
 
     act(() => {
       resolveFirst?.(
         createSuggestions({
-          model: {
+          requestModel: {
             items: [{ value: "alp-stale", count: 1 }],
             hasMore: false,
           },
@@ -395,9 +447,10 @@ describe("RecordsPage suggestions", () => {
     });
     await flushAsync();
 
-    act(() => {
-      input.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      input.focus();
+    openModelSelector();
+    expect(drawer.dataset.suggestionsOpen).toBe("true");
+    await act(async () => {
+      await Promise.resolve();
     });
     await flushAsync();
 
@@ -476,8 +529,15 @@ describe("RecordsPage suggestions", () => {
 
 describe("RecordsPage filter drawer", () => {
   it("keeps draft controls out of the page flow and summarizes only applied filters", () => {
-    const baseDraft = { ...createDefaultInvocationRecordsDraft(), ...createDefaultCustomRange() };
-    const appliedDraft = { ...baseDraft, model: "gpt-5.3-codex", status: "failed" };
+    const baseDraft = {
+      ...createDefaultInvocationRecordsDraft(),
+      ...createDefaultCustomRange(),
+    };
+    const appliedDraft = {
+      ...baseDraft,
+      models: ["gpt-5.3-codex"],
+      status: "failed",
+    };
     const applyDraft = vi.fn(() => Promise.resolve());
     mockInvocationRecords({
       draft: { ...appliedDraft, endpoint: "/v1/responses" },
@@ -487,15 +547,17 @@ describe("RecordsPage filter drawer", () => {
 
     render(<RecordsPage />);
 
-    expect(host?.querySelector("#records-filter-model")).toBeNull();
+    expect(host?.querySelector("#records-filter-model-input")).toBeNull();
     const activeFilters = host?.querySelector('[data-testid="records-active-filters"]');
-    expect(activeFilters?.textContent).toContain("records.filters.model: gpt-5.3-codex");
+    expect(activeFilters?.textContent).toContain(
+      "records.filters.model: records.filters.modelTarget.request · gpt-5.3-codex",
+    );
     expect(activeFilters?.textContent).toContain(
       "records.filters.status: records.filters.status.failed",
     );
     expect(activeFilters?.textContent).not.toContain("/v1/responses");
 
-    const modelChip = host?.querySelector('[data-testid="records-active-filter-model"]');
+    const modelChip = host?.querySelector('[data-testid="records-active-filter-modelSelection"]');
     if (!(modelChip instanceof HTMLButtonElement)) {
       throw new Error("missing applied model filter chip");
     }
@@ -504,7 +566,7 @@ describe("RecordsPage filter drawer", () => {
     });
 
     expect(applyDraft).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "", status: "failed" }),
+      expect.objectContaining({ models: [], status: "failed" }),
     );
   });
 
@@ -516,7 +578,38 @@ describe("RecordsPage filter drawer", () => {
     expect(host?.querySelector('[data-testid="records-filters-drawer"]')).toBeNull();
     const drawer = openFilters();
     expect(drawer.closest('[role="dialog"]')).not.toBeNull();
-    expect(document.body.querySelector("#records-filter-model")).toBeInstanceOf(HTMLInputElement);
+    expect(
+      document.body.querySelector('[data-testid="records-filter-model-selection"]'),
+    ).toBeInstanceOf(HTMLDivElement);
+    expect(
+      document.body.querySelector('[data-testid="records-filter-model-selection-trigger"]'),
+    ).toBeInstanceOf(HTMLButtonElement);
+  });
+
+  it("disables apply when a range field is invalid", () => {
+    mockInvocationRecords({
+      draft: {
+        ...createDefaultInvocationRecordsDraft(),
+        ...createDefaultCustomRange(),
+        minTotalTokens: "40",
+        maxTotalTokens: "20",
+      },
+    });
+
+    render(<RecordsPage />);
+    openFilters();
+
+    const applyButton = Array.from(document.body.querySelectorAll("button")).find(
+      (candidate) => candidate.textContent === "records.filters.apply",
+    );
+    if (!(applyButton instanceof HTMLButtonElement)) {
+      throw new Error("missing apply button");
+    }
+
+    expect(applyButton.disabled).toBe(true);
+    expect(document.body.textContent ?? "").toContain(
+      "records.filters.validation.totalTokens.order",
+    );
   });
 });
 
@@ -590,7 +683,10 @@ describe("RecordsPage new data action", () => {
     await flushAsync();
 
     expect(search).toHaveBeenCalledTimes(1);
-    expect(search).toHaveBeenCalledWith({ source: "applied", preserveSummary: true });
+    expect(search).toHaveBeenCalledWith({
+      source: "applied",
+      preserveSummary: true,
+    });
     expect(button.disabled).toBe(true);
     expect(button.dataset.state).toBe("loading");
     expect(button.dataset.icon).toBe("refresh");
@@ -669,7 +765,7 @@ describe("RecordsPage new data action", () => {
       draft: {
         ...createDefaultInvocationRecordsDraft(),
         ...createDefaultCustomRange(),
-        model: "alp",
+        models: ["alp"],
       },
       focus: "token",
       page: 1,
@@ -777,13 +873,61 @@ describe("RecordsPage new data action", () => {
     expect(host?.querySelector('[data-testid="records-new-data-button"]')).toBeNull();
   });
 
-  it("updates the request ID draft filter from the new input", () => {
+  it("shows short invoke and attempt ID filters without legacy request or sticky key fields", () => {
+    mockInvocationRecords();
+
+    render(<RecordsPage />);
+    openFilters();
+
+    expect(document.body.textContent ?? "").toContain("records.filters.invokeId");
+    expect(document.body.textContent ?? "").toContain("records.filters.attemptId");
+    expect(document.body.textContent ?? "").not.toContain("records.filters.requestId");
+    expect(document.body.textContent ?? "").not.toContain("records.filters.stickyKey");
+    expect(document.body.querySelector('input[name="invokeId"]')).toBeTruthy();
+    expect(document.body.querySelector('input[name="attemptId"]')).toBeTruthy();
+    expect(document.body.querySelector('input[name="requestId"]')).toBeNull();
+    expect(document.body.querySelector('[name="stickyKey"]')).toBeNull();
+  });
+
+  it("removes the redundant drawer description and shows slider range summaries", () => {
+    mockInvocationRecords({
+      draft: {
+        ...createDefaultInvocationRecordsDraft(),
+        ...createDefaultCustomRange(),
+        minTotalTokens: "2400",
+        maxTotalTokens: "6400",
+        minTotalMs: "125.5",
+        maxTotalMs: "800.5",
+      },
+      summary: {
+        ...createSummary(),
+        snapshotId: 42,
+        token: {
+          ...createSummary().token,
+          maxTokensPerRequest: 12000,
+        },
+        network: {
+          ...createSummary().network,
+          maxTotalMs: 2400,
+        },
+      },
+    });
+
+    render(<RecordsPage />);
+    openFilters();
+
+    expect(document.body.textContent ?? "").not.toContain("records.filters.description");
+    expect(document.body.textContent ?? "").toContain("2,400 - 6,400 TOKENS");
+    expect(document.body.textContent ?? "").toContain("125.5 - 800.5 MS");
+  });
+
+  it("updates the invocation ID draft filter from the new input", () => {
     const updateDraft = vi.fn();
     mockInvocationRecords({
       draft: {
         ...createDefaultInvocationRecordsDraft(),
         ...createDefaultCustomRange(),
-        requestId: "",
+        invokeId: "",
       },
       updateDraft,
     });
@@ -791,9 +935,9 @@ describe("RecordsPage new data action", () => {
     render(<RecordsPage />);
     openFilters();
 
-    const input = document.body.querySelector('input[name="requestId"]');
+    const input = document.body.querySelector('input[name="invokeId"]');
     if (!(input instanceof HTMLInputElement)) {
-      throw new Error("missing request ID input");
+      throw new Error("missing invocation ID input");
     }
 
     act(() => {
@@ -803,23 +947,23 @@ describe("RecordsPage new data action", () => {
       input.dispatchEvent(new Event("change", { bubbles: true }));
     });
 
-    expect(updateDraft).toHaveBeenCalledWith("requestId", "invoke-xyz");
+    expect(updateDraft).toHaveBeenCalledWith("invokeId", "invoke-xyz");
   });
 
-  it("resets stale filters before searching a request ID deep link", async () => {
+  it("resets stale filters before searching an invocation ID deep link", async () => {
     const resetDraft = vi.fn();
     const updateDraft = vi.fn();
     const search = vi.fn();
     mockInvocationRecords({ resetDraft, updateDraft, search });
 
     vi.useFakeTimers();
-    render(<RecordsPage />, ["/records?requestId=invoke-target&rangePreset=7d"]);
+    render(<RecordsPage />, ["/records?invokeId=invoke-target&rangePreset=7d"]);
     await act(async () => {
       await vi.runAllTimersAsync();
     });
 
     expect(resetDraft).toHaveBeenCalledTimes(1);
-    expect(updateDraft).toHaveBeenNthCalledWith(1, "requestId", "invoke-target");
+    expect(updateDraft).toHaveBeenNthCalledWith(1, "invokeId", "invoke-target");
     expect(updateDraft).toHaveBeenNthCalledWith(2, "rangePreset", "7d");
     expect(search).toHaveBeenCalledTimes(1);
   });

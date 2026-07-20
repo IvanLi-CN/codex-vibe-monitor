@@ -132,25 +132,22 @@ describe("invocationRecordsLive", () => {
     expect(merged[0]?.totalTokens).toBe(18);
   });
 
-  it("matches sticky filters against promptCacheKey when stickyKey is absent", () => {
+  it("keeps transient records out of an attempt-scoped merge until the server resolves them", () => {
     const current = [
       createRecord({
         id: 30,
-        invokeId: "invoke-sticky-fallback",
+        invokeId: "invoke-attempt-filter",
         occurredAt: "2026-03-10T00:05:00Z",
-        promptCacheKey: "sticky-legacy",
-        stickyKey: null,
       }),
     ];
 
     const merged = mergeInvocationWindowRecords(current, [], {
-      filters: { stickyKey: "sticky-legacy" },
+      filters: { attemptId: "4V7MYPJG" },
       sortBy: "occurredAt",
       sortOrder: "desc",
       limit: 10,
     });
 
-    expect(merged).toHaveLength(1);
-    expect(merged[0]?.invokeId).toBe("invoke-sticky-fallback");
+    expect(merged).toHaveLength(0);
   });
 });

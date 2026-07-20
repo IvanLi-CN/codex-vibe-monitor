@@ -120,6 +120,7 @@ async fn locate_invocation_returns_account_scoped_anchor_pages() {
         let response = locate_invocation_page(
             state.clone(),
             &LocateInvocationQuery {
+                invoke_id: Some(request_id.to_string()),
                 request_id: Some(request_id.to_string()),
                 attempt_id: None,
                 upstream_account_id: Some(17),
@@ -134,6 +135,7 @@ async fn locate_invocation_returns_account_scoped_anchor_pages() {
         assert_eq!(response.page_size, 50);
         assert_eq!(response.target_index, expected_index);
         assert_eq!(response.target_absolute_index, expected_absolute_index);
+        assert_eq!(response.invoke_id, request_id);
         assert_eq!(response.records[expected_index].invoke_id, request_id);
         assert!(response.records.len() <= 50);
     }
@@ -141,6 +143,7 @@ async fn locate_invocation_returns_account_scoped_anchor_pages() {
     let account_mismatch = locate_invocation_page(
         state.clone(),
         &LocateInvocationQuery {
+            invoke_id: Some("locate-060".to_string()),
             request_id: Some("locate-060".to_string()),
             attempt_id: None,
             upstream_account_id: Some(18),
@@ -154,6 +157,7 @@ async fn locate_invocation_returns_account_scoped_anchor_pages() {
     let anchored = locate_invocation_page(
         state.clone(),
         &LocateInvocationQuery {
+            invoke_id: Some("locate-060".to_string()),
             request_id: Some("locate-060".to_string()),
             attempt_id: None,
             upstream_account_id: Some(17),
@@ -197,6 +201,139 @@ async fn locate_invocation_returns_account_scoped_anchor_pages() {
             .iter()
             .all(|record| record.invoke_id != "locate-newer")
     );
+}
+
+#[tokio::test]
+async fn invocation_queries_support_short_invoke_and_attempt_ids() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, occurred_at, model) in [
+        ("invoke-short-a", "2026-03-10 08:00:00", "gpt-5.4"),
+        ("invoke-short-b", "2026-03-10 08:01:00", "gpt-5.4-mini"),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                model,
+                status,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, 'success', ?5, '{}')
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(model)
+        .bind(r#"{"upstreamAccountId":17,"upstreamAccountName":"anchor-account"}"#)
+        .execute(&state.pool)
+        .await
+        .expect("insert short-id invocation row");
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            attempt_public_id,
+            invoke_id,
+            occurred_at,
+            endpoint,
+            route_mode,
+            sticky_key,
+            upstream_account_id,
+            upstream_route_key,
+            attempt_index,
+            distinct_account_index,
+            same_account_retry_index,
+            requester_ip,
+            started_at,
+            finished_at,
+            status,
+            phase,
+            created_at
+        )
+        VALUES (
+            ?1, ?2, ?3, '/v1/responses', ?4, 'pck-short-a', 17, 'route-short-a', 1, 1, 0,
+            '203.0.113.10', ?3, ?3, 'success', 'completed', datetime('now')
+        )
+        "#,
+    )
+    .bind("4V7MYPJG")
+    .bind("invoke-short-a")
+    .bind("2026-03-10 08:00:00")
+    .bind(INVOCATION_ROUTE_MODE_POOL)
+    .execute(&state.pool)
+    .await
+    .expect("insert short attempt row");
+
+    let Json(invoke_filtered) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            invoke_id: Some("invoke-short-a".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("invokeId list query should succeed");
+    assert_eq!(invoke_filtered.total, 1);
+    assert_eq!(invoke_filtered.records[0].invoke_id, "invoke-short-a");
+
+    let Json(attempt_filtered) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            attempt_id: Some("4V7MYPJG".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("attemptId list query should succeed");
+    assert_eq!(attempt_filtered.total, 1);
+    assert_eq!(attempt_filtered.records[0].invoke_id, "invoke-short-a");
+
+    let Json(summary) = fetch_invocation_summary(
+        State(state.clone()),
+        Query(ListQuery {
+            attempt_id: Some("4V7MYPJG".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("attemptId summary query should succeed");
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.success_count, 1);
+
+    let Json(suggestions) = fetch_invocation_suggestions(
+        State(state.clone()),
+        Query(ListQuery {
+            attempt_id: Some("4V7MYPJG".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("attemptId suggestions query should succeed");
+    assert_eq!(suggestions.model.items.len(), 1);
+    assert_eq!(suggestions.model.items[0].value, "gpt-5.4");
+    assert_eq!(suggestions.model.items[0].count, 1);
+
+    let Json(mismatch) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            invoke_id: Some("invoke-short-b".to_string()),
+            attempt_id: Some("4V7MYPJG".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("mismatched invokeId + attemptId query should succeed");
+    assert_eq!(mismatch.total, 0);
+    assert!(mismatch.records.is_empty());
 }
 
 #[tokio::test]
@@ -777,6 +914,114 @@ async fn invocation_queries_filter_upstream_scope_and_treat_legacy_rows_as_exter
         .map(|item| item.value.as_str())
         .collect::<Vec<_>>();
     assert_eq!(values, vec!["model-internal"]);
+}
+
+#[tokio::test]
+async fn list_invocations_filters_extended_route_and_diagnostics_dimensions() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, payload) in [
+        (
+            "route-diagnostics-hit",
+            json!({
+                "upstreamScope": "internal",
+                "routeMode": "pool",
+                "proxyDisplayName": "tokyo-edge-a",
+                "transport": "websocket",
+                "serviceTier": "priority",
+                "reasoningEffort": "high",
+                "upstreamAccountId": 42,
+                "upstreamAccountName": "Pool Alpha",
+                "stickyKey": "sticky-a"
+            }),
+        ),
+        (
+            "route-diagnostics-wrong-transport",
+            json!({
+                "upstreamScope": "internal",
+                "routeMode": "pool",
+                "proxyDisplayName": "tokyo-edge-a",
+                "transport": "http",
+                "serviceTier": "priority",
+                "reasoningEffort": "high",
+                "upstreamAccountId": 42,
+                "upstreamAccountName": "Pool Alpha",
+                "stickyKey": "sticky-a"
+            }),
+        ),
+        (
+            "route-diagnostics-wrong-tier",
+            json!({
+                "upstreamScope": "external",
+                "routeMode": "forward_proxy",
+                "proxyDisplayName": "tokyo-edge-b",
+                "transport": "websocket",
+                "serviceTier": "flex",
+                "reasoningEffort": "medium",
+                "upstreamAccountId": 77,
+                "upstreamAccountName": "Pool Beta",
+                "stickyKey": "sticky-b"
+            }),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-03-11 10:00:00")
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(payload.to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert route diagnostics invocation");
+    }
+
+    let Json(response) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            upstream_scope: Some("internal".to_string()),
+            proxy_display_name: Some("tokyo-edge-a".to_string()),
+            transport: Some("websocket".to_string()),
+            service_tier: Some("priority".to_string()),
+            reasoning_effort: Some("high".to_string()),
+            page: Some(1),
+            page_size: Some(20),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("extended route diagnostics filters should succeed");
+
+    assert_eq!(response.total, 1);
+    assert_eq!(response.records[0].invoke_id, "route-diagnostics-hit");
+    assert_eq!(
+        response.records[0].proxy_display_name.as_deref(),
+        Some("tokyo-edge-a")
+    );
+    assert_eq!(response.records[0].transport.as_deref(), Some("websocket"));
+    assert_eq!(
+        response.records[0].service_tier.as_deref(),
+        Some("priority")
+    );
+    assert_eq!(
+        response.records[0].reasoning_effort.as_deref(),
+        Some("high")
+    );
 }
 
 #[tokio::test]
@@ -2403,6 +2648,232 @@ async fn fetch_invocation_suggestions_orders_by_count_and_respects_time_bounds()
         "suggestions should not contain empty values"
     );
     assert!(!suggestions.model.has_more);
+}
+
+#[tokio::test]
+async fn fetch_invocation_suggestions_include_extended_buckets_and_account_labels() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, payload) in [
+        (
+            "suggest-extended-1",
+            json!({
+                "stickyKey": "sticky-alpha",
+                "proxyDisplayName": "proxy-zeta",
+                "upstreamAccountId": 42,
+                "upstreamAccountName": "Pool Alpha",
+                "serviceTier": "priority",
+                "reasoningEffort": "high",
+                "requestModel": "gpt-5.4",
+                "responseModel": "gpt-5.4-routing"
+            }),
+        ),
+        (
+            "suggest-extended-2",
+            json!({
+                "stickyKey": "sticky-alpha",
+                "proxyDisplayName": "proxy-zeta",
+                "upstreamAccountId": 42,
+                "upstreamAccountName": "Pool Alpha",
+                "serviceTier": "priority",
+                "reasoningEffort": "high",
+                "requestModel": "gpt-5.4",
+                "responseModel": "gpt-5.4-routing"
+            }),
+        ),
+        (
+            "suggest-extended-3",
+            json!({
+                "stickyKey": "sticky-beta",
+                "proxyDisplayName": "proxy-eta",
+                "upstreamAccountId": 77,
+                "upstreamAccountName": "Pool Beta",
+                "serviceTier": "flex",
+                "reasoningEffort": "medium",
+                "requestModel": "gpt-5-mini",
+                "responseModel": "gpt-5-mini"
+            }),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-03-11 11:00:00")
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(payload.to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert extended suggestion invocation");
+    }
+
+    let Json(suggestions) =
+        fetch_invocation_suggestions(State(state.clone()), Query(ListQuery::default()))
+            .await
+            .expect("extended suggestions query should succeed");
+
+    assert_eq!(suggestions.sticky_key.items[0].value, "sticky-alpha");
+    assert_eq!(suggestions.proxy_display_name.items[0].value, "proxy-zeta");
+    assert_eq!(suggestions.service_tier.items[0].value, "priority");
+    assert_eq!(suggestions.reasoning_effort.items[0].value, "high");
+    assert_eq!(suggestions.request_model.items[0].value, "gpt-5.4");
+    assert_eq!(suggestions.response_model.items[0].value, "gpt-5.4-routing");
+    assert_eq!(suggestions.upstream_account.items[0].value, "42");
+    assert_eq!(
+        suggestions.upstream_account.items[0].label.as_deref(),
+        Some("Pool Alpha (#42)")
+    );
+    assert_eq!(suggestions.upstream_account.items[0].count, 2);
+
+    let Json(filtered) = fetch_invocation_suggestions(
+        State(state),
+        Query(ListQuery {
+            suggest_field: Some("upstreamAccount".to_string()),
+            suggest_query: Some("42".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("upstream account suggestions should match by id");
+
+    let values = filtered
+        .upstream_account
+        .items
+        .iter()
+        .map(|item| item.value.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(values, vec!["42"]);
+    assert_eq!(
+        filtered.upstream_account.items[0].label.as_deref(),
+        Some("Pool Alpha (#42)")
+    );
+}
+
+#[tokio::test]
+async fn list_invocations_supports_model_target_multi_select_and_rerouted_filters() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, model, payload) in [
+        (
+            "model-filter-match",
+            "gpt-5.4-routing",
+            json!({
+                "requestModel": "gpt-5.4",
+                "responseModel": "gpt-5.4-routing",
+                "reasoningEffort": "high"
+            }),
+        ),
+        (
+            "model-filter-stable",
+            "gpt-5.4",
+            json!({
+                "requestModel": "gpt-5.4",
+                "responseModel": "gpt-5.4",
+                "reasoningEffort": "high"
+            }),
+        ),
+        (
+            "model-filter-other",
+            "gpt-5.6",
+            json!({
+                "requestModel": "gpt-5.6",
+                "responseModel": "gpt-5.6",
+                "reasoningEffort": "medium"
+            }),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                model,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-03-11 12:00:00")
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(model)
+        .bind(payload.to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert model filter invocation");
+    }
+
+    let Json(request_filtered) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            models: Some("gpt-5.4,gpt-5.5".to_string()),
+            model_target: Some("request".to_string()),
+            model_rerouted: Some("true".to_string()),
+            reasoning_efforts: Some("high".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("request-side model filter should succeed");
+
+    assert_eq!(request_filtered.total, 1);
+    assert_eq!(request_filtered.records[0].invoke_id, "model-filter-match");
+
+    let Json(response_filtered) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            models: Some("gpt-5.4-routing".to_string()),
+            model_target: Some("response".to_string()),
+            model_rerouted: Some("true".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("response-side model filter should succeed");
+
+    assert_eq!(response_filtered.total, 1);
+    assert_eq!(response_filtered.records[0].invoke_id, "model-filter-match");
+
+    let Json(not_rerouted_filtered) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            models: Some("gpt-5.4".to_string()),
+            model_target: Some("response".to_string()),
+            model_rerouted: Some("false".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("not-rerouted model filter should succeed");
+
+    assert_eq!(not_rerouted_filtered.total, 1);
+    assert_eq!(
+        not_rerouted_filtered.records[0].invoke_id,
+        "model-filter-stable"
+    );
 }
 
 #[tokio::test]
