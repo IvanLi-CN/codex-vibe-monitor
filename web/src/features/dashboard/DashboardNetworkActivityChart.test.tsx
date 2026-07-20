@@ -50,7 +50,6 @@ vi.mock("../../i18n", () => ({
         "chart.noDataRange": "No data",
         "dashboard.activityOverview.networkUpload": "Upload",
         "dashboard.activityOverview.networkDownload": "Download",
-        "dashboard.activityOverview.networkLiveNote": "5-minute average",
         "dashboard.activityOverview.networkRefreshing": "Refreshing",
       };
       return map[key] ?? key;
@@ -169,6 +168,7 @@ describe("DashboardNetworkActivityChart", () => {
         ?.querySelector('[data-testid="dashboard-network-activity-chart"]')
         ?.getAttribute("data-theme"),
     ).toBe("vibe-dark");
+    expect(host?.textContent).not.toContain("5-minute average");
     expect(html).toContain('data-theme="vibe-dark"');
     expect(html).toContain("Upload");
     expect(html).toContain("Download");

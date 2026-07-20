@@ -3,7 +3,7 @@
 ## 后端
 
 - 新增 `src/dashboard_network_speed.rs`，集中维护：
-  - global、host、account 三维最近 15 秒秒桶滚动窗口。
+  - global、host、account 三维原始秒桶与上一完整秒快照读取路径。
   - 当前开放 5 分钟桶的上传/下载累计。
   - invocation 级连接字节追踪、终态清理与 Dashboard live stream 心跳预算。
 - 代理热路径在以下时机写入缓存：
@@ -14,7 +14,7 @@
 - 新增 `upstream_socket_network_minute`，按 `(bucket_start_epoch, source, upstream_base_url_host, upstream_account_id)` 持久化真实 socket 分钟累计。
 - socket minute materializer 复用现有 live replay 框架，但首次只把 cursor seed 到当前 live table 尾部，不做历史回填。
 - `AppState` 新增 `process_started_at_utc` 与 `dashboard_network_speed_cache`，runtime 初始化时统一挂载。
-- `GET /api/stats/dashboard-activity` / `dashboardActivityLive` 在兼容保留账号级速率字段的同时，新增全局 `networkLiveBucket`。
+- `GET /api/stats/dashboard-activity` / `dashboardActivityLive` 在兼容保留账号级速率字段的同时，新增全局 `networkLiveBucket` 与 `networkRealtimeRate`。
 - 新增 `GET /api/stats/dashboard-network-timeseries`：
   - 只接受 `today | yesterday | 1d`。
   - 固定返回 5 分钟桶。
@@ -35,17 +35,17 @@
   - `today / yesterday` 的 metric toggle 新增 `network`，保留 `trend`。
   - `24 小时` 新增 `network`，选中时用网速面积图替换 heatmap。
   - `7 日 / 历史` 保持原行为不变。
-- `useDashboardUpstreamAccountActivity` 与相关 normalize 逻辑把新的 `networkLiveBucket` 完整透传给上游账号 tab。
-- `Dashboard.tsx` 页面壳层也必须把 `dashboardActivity.networkLiveBucket` 继续下传给 `DashboardWorkingConversationsSection`；否则即使 `/api/stats/dashboard-activity` 已返回非零 live bucket，工作区顶部总速率胶囊仍会退回 `0 B/s`。
+- `useDashboardUpstreamAccountActivity` 与相关 normalize 逻辑把 `networkLiveBucket` 和 `networkRealtimeRate` 一起透传给上游账号 tab。
+- `Dashboard.tsx` 页面壳层也必须把 `dashboardActivity.networkRealtimeRate` 继续下传给 `DashboardWorkingConversationsSection`；否则即使 `/api/stats/dashboard-activity` 已返回非零 realtime 快照，工作区顶部总速率胶囊仍会退回 `0 B/s`。
 - `DashboardWorkingConversationsSection` 同时在两个位置展示网速：
-  - 工作区右上 badge 区展示所有上游请求的全局总上/下行实时速率，直接读取 `networkLiveBucket`。
+  - 工作区右上 badge 区展示所有上游请求的全局总上/下行实时速率，直接读取 `networkRealtimeRate`，口径固定为上一完整 1 秒。
   - 账号卡标题区删除单账号上传/下载速率，只保留活动账号数量、TPM、消费速率、进行中等摘要。
 - 新增 `dashboardNetworkFormatting.ts` 统一处理 `B/s / KiB/s / MiB/s` 与字节单位格式化。
 
 ## 测试与 Storybook
 
 - 前端定向单测覆盖：
-  - live snapshot 合并全局 `networkLiveBucket`。
+  - live snapshot 合并全局 `networkLiveBucket` 与 `networkRealtimeRate`。
   - Dashboard `network` metric 的可见性与 24 小时图切换。
   - 对话工作区右上总网速与账号卡速率删除断言。
 - 后端定向单测覆盖：

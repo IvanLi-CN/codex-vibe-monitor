@@ -249,6 +249,15 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
       downloadBytes: 5 * 1024 * 1024 * 300,
       isLiveBucket: true,
     },
+    networkRealtimeRate: {
+      sampleStart: "2026-04-04T10:04:59Z",
+      sampleEnd: "2026-04-04T10:05:00Z",
+      sampleSeconds: 1,
+      uploadBytesPerSecond: 1_536,
+      downloadBytesPerSecond: 5 * 1024 * 1024,
+      uploadBytes: 1_536,
+      downloadBytes: 5 * 1024 * 1024,
+    },
     accounts: [
       {
         upstreamAccountId: 42,
@@ -1394,14 +1403,14 @@ describe("DashboardWorkingConversationsSection", () => {
       downloadBytesPerSecond: 1024 * 1024,
       recentInvocations: [],
     });
-    upstreamActivity.networkLiveBucket = {
-      bucketStart: "2026-04-04T10:00:00Z",
-      bucketEnd: "2026-04-04T10:05:00Z",
+    upstreamActivity.networkRealtimeRate = {
+      sampleStart: "2026-04-04T10:04:59Z",
+      sampleEnd: "2026-04-04T10:05:00Z",
+      sampleSeconds: 1,
       uploadBytesPerSecond: 2_048,
       downloadBytesPerSecond: 6 * 1024 * 1024,
-      uploadBytes: 2_048 * 300,
-      downloadBytes: 6 * 1024 * 1024 * 300,
-      isLiveBucket: true,
+      uploadBytes: 2_048,
+      downloadBytes: 6 * 1024 * 1024,
     };
 
     renderSection(
