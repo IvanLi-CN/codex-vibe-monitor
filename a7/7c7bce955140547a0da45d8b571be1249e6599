@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "",
+  "base_stable_version": "",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-20T04:32:14Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "ab29c85207d67a28931277b2275fa3fa3a266081",
+  "pr_number": 661,
+  "pr_title": "test(backend): tolerate dashboard cache bucket rollover",
+  "registry": "ghcr.io",
+  "release_bump": "skip",
+  "release_channel": "stable",
+  "release_enabled": false,
+  "release_prerelease": false,
+  "release_tag": "",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "",
+  "target_sha": "a77c7bce955140547a0da45d8b571be1249e6599",
+  "type_label": "type:skip"
+}
