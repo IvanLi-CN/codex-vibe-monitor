@@ -503,6 +503,45 @@ describe("InvocationRecordsTable", () => {
     expect(host?.textContent ?? "").toContain("gpt-5-legacy");
   });
 
+  it("keeps only the detail-strip warning icon after a mismatched cost row expands", async () => {
+    const record = createRecord({
+      cost: 0.6375,
+      costAudit: {
+        recorded: {
+          total: 0.6375,
+        },
+        local: {
+          cacheWrite: 0.451,
+          cacheRead: 0.1266,
+          output: 0.0189,
+          reasoning: 0,
+          total: 0.5965,
+        },
+        mismatch: true,
+        reason: "price_version_changed",
+        absoluteDiffUsd: 0.041,
+        recordedPriceVersion: "openai-standard-2026-07-01@response-tier",
+        localPriceVersion: "openai-standard-2026-07-20@response-tier",
+      },
+    });
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValueOnce(
+      createWorkflowDetailFixture(record),
+    );
+
+    render(<InvocationRecordsTable focus="token" isLoading={false} records={[record]} />);
+
+    clickFirstToggle();
+    await waitFor(
+      () => host?.querySelector('[data-testid="records-expanded-detail-panel"]') != null,
+    );
+
+    expect(host?.querySelector('[data-testid="records-table-cost-warning"]')).toBeNull();
+    expect(host?.querySelector('[data-testid="records-mobile-cost-warning"]')).toBeNull();
+    expect(host?.querySelectorAll('[data-testid="records-detail-strip-cost-warning"]').length).toBe(
+      2,
+    );
+  });
+
   it("renders failed workflow detail in the expanded row and exposes the full-details drawer entry", async () => {
     const record = createRecord({
       status: "failed",

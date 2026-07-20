@@ -381,6 +381,7 @@ export function renderInvocationModelRoutingSummary({
   t,
   adornments,
   className,
+  indicatorTestId,
 }: {
   requestModelValue: string;
   responseModelValue: string;
@@ -388,6 +389,7 @@ export function renderInvocationModelRoutingSummary({
   t: Translator;
   adornments?: ReactNode;
   className?: string;
+  indicatorTestId?: string;
 }) {
   if (!hasMismatch) return null;
 
@@ -403,6 +405,14 @@ export function renderInvocationModelRoutingSummary({
     >
       <div className="flex min-w-0 items-center justify-between gap-2">
         <div className="flex min-w-0 flex-1 items-center gap-2">
+          <span
+            className="inline-flex h-4 w-4 flex-none items-center justify-center text-base-content/55"
+            title={t("table.model.routingMismatchTitle")}
+            data-testid={indicatorTestId}
+            aria-hidden
+          >
+            <AppIcon name="compare-horizontal" className="h-3.5 w-3.5" />
+          </span>
           <span
             className="min-w-0 truncate font-mono text-sm font-medium leading-6 text-base-content/58 line-through decoration-base-content/30 decoration-1"
             title={requestModelValue}

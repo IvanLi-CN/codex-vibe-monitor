@@ -791,7 +791,13 @@ export function summarizeInvocationRecords(records: ApiInvocation[]) {
     requestCount: records.length,
     totalTokens,
     avgTokensPerRequest: records.length > 0 ? Number((totalTokens / records.length).toFixed(2)) : 0,
+    cacheWriteTokens: sum(
+      records.map((record) =>
+        Math.max((record.inputTokens ?? 0) - (record.cacheInputTokens ?? 0), 0),
+      ),
+    ),
     cacheInputTokens: sum(records.map((record) => record.cacheInputTokens ?? 0)),
+    outputTokens: sum(records.map((record) => record.outputTokens ?? 0)),
     totalCost: Number(totalCost.toFixed(4)),
   };
 

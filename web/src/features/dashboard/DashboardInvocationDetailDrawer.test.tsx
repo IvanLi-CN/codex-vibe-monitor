@@ -527,7 +527,7 @@ describe("DashboardInvocationDetailDrawer", () => {
     expect(drawer.textContent ?? "").not.toContain("WC-AB364A");
     expect(drawer.textContent ?? "").toContain("019d5ea7-519d-7312-a2e8-ef07abb7c09f");
 
-    const drawerBody = drawer.closest("section")?.querySelector(".drawer-body");
+    const drawerBody = drawer.closest('[role="dialog"], section')?.querySelector(".drawer-body");
     expect(drawerBody?.classList.contains("overflow-x-hidden")).toBe(true);
     expect(drawerBody?.classList.contains("overflow-y-auto")).toBe(true);
     expect(drawerBody?.textContent ?? "").toContain("调用详情");

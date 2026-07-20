@@ -134,7 +134,7 @@ describe("ForwardProxyLiveTable", () => {
     expect(html).toContain('aria-label="Proxy A 近 24 小时权重趋势图"');
     expect(html).toContain('data-chart-kind="proxy-request-trend"');
     expect(html).toContain('data-chart-kind="proxy-weight-trend"');
-    expect(html).not.toContain("<title>");
+    expect(html).toContain("<title>Proxy A 近 24 小时权重趋势图</title>");
     expect(countOccurrences(html, "成功 10")).toBe(1);
     expect(countOccurrences(html, "失败 2")).toBe(1);
   });

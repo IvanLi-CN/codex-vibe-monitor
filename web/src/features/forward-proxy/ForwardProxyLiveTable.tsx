@@ -384,6 +384,7 @@ function WeightTrendCell({
             className="block h-10 w-full rounded-md border border-base-300/55 bg-base-100/40"
             data-chart-kind="proxy-weight-trend"
           >
+            <title>{ariaLabel}</title>
             <defs>
               <clipPath id={positiveClipId}>
                 <rect x={0} y={0} width={geometry.chartWidth} height={positiveHeight} />

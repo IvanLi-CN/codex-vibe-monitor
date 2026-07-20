@@ -9,14 +9,20 @@ import { cn } from "../../lib/utils";
 import { AccountDetailDrawerShell } from "../account-pool/AccountDetailDrawerShell";
 import { InvocationWorkflowDetailPanel } from "../invocations/InvocationWorkflowDetailPanel";
 import {
+  renderInvocationCostAuditWarning,
+  resolveInvocationCostAuditDisplay,
+} from "../invocations/invocation-cost-audit";
+import {
   buildInvocationDetailViewModel,
   FALLBACK_CELL,
   formatOptionalText,
   INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
   renderEndpointSummary,
   renderFastIndicator,
+  renderImageIntentBadge,
   renderInvocationModelBadge,
   renderInvocationModelRoutingSummary,
+  renderReasoningEffortBadge,
 } from "../invocations/invocation-details-shared";
 import { renderInvocationTransportBadge } from "../invocations/invocation-transport-badge";
 import { AppIcon } from "../shared/AppIcon";
@@ -68,12 +74,16 @@ interface InvocationRecordsRowViewModel {
   totalTokensValue: string;
   endpointValue: string;
   endpointDisplay: ReturnType<typeof buildInvocationDetailViewModel>["endpointDisplay"];
+  imageIntentDisplay: ReturnType<typeof buildInvocationDetailViewModel>["imageIntentDisplay"];
   errorMessage: string;
   collapsedErrorSummary: string;
   totalLatencyValue: string;
   firstResponseByteTotalValue: string;
   firstByteLatencyValue: string;
   responseContentEncodingValue: string;
+  localCostValue: string;
+  costMismatch: boolean;
+  costAuditReason: string | null;
   detailNotice: string | null;
   detailPairs: ReturnType<typeof buildInvocationDetailViewModel>["detailPairs"];
   timingPairs: ReturnType<typeof buildInvocationDetailViewModel>["timingPairs"];
@@ -168,10 +178,53 @@ function formatActionableText(
     : t("records.table.exception.actionableNo");
 }
 
+function formatOptionalCurrency(
+  value: number | null | undefined,
+  formatter: Intl.NumberFormat,
+): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? formatter.format(value)
+    : FALLBACK_CELL;
+}
+
+function renderCostAuditSummary(
+  row: InvocationRecordsRowViewModel,
+  t: ReturnType<typeof useTranslation>["t"],
+  costFormatter: Intl.NumberFormat,
+  testId?: string,
+  showWarning = true,
+) {
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-end gap-1">
+        <span className="font-mono text-base-content/84">{row.costValue}</span>
+        {showWarning
+          ? renderInvocationCostAuditWarning(
+              row.record.costAudit,
+              t,
+              (value) => formatOptionalCurrency(value, costFormatter),
+              { testId },
+            )
+          : null}
+      </div>
+      <div className="text-[11px] font-mono text-base-content/65">
+        {`${t("records.costAudit.localShort")} ${row.localCostValue}`}
+      </div>
+      {!row.costMismatch && row.costAuditReason ? (
+        <div className="text-[11px] text-base-content/52">
+          {t("records.costAudit.notComparable")}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function renderFocusSummary(
   row: InvocationRecordsRowViewModel,
   focus: InvocationFocus,
   t: ReturnType<typeof useTranslation>["t"],
+  costFormatter: Intl.NumberFormat,
+  showCostWarning = true,
 ) {
   switch (focus) {
     case "network":
@@ -226,7 +279,9 @@ function renderFocusSummary(
           <dt className="text-base-content/60">{t("records.table.token.totalTokens")}</dt>
           <dd className="truncate text-right font-mono">{row.totalTokensValue}</dd>
           <dt className="text-base-content/60">{t("records.table.token.cost")}</dt>
-          <dd className="truncate text-right font-mono">{row.costValue}</dd>
+          <dd className="text-right">
+            {renderCostAuditSummary(row, t, costFormatter, undefined, showCostWarning)}
+          </dd>
         </dl>
       );
   }
@@ -236,13 +291,119 @@ function renderDetailSummaryStrip(
   row: InvocationRecordsRowViewModel,
   focus: InvocationFocus,
   t: ReturnType<typeof useTranslation>["t"],
+  costFormatter: Intl.NumberFormat,
   renderAccountValue: (
     accountLabel: string,
     accountId: number | null,
     accountClickable: boolean,
     className?: string,
   ) => ReactNode,
+  layout: "grid" | "flat" = "grid",
 ) {
+  if (layout === "flat") {
+    return (
+      <div className="space-y-4" data-testid="records-detail-summary-strip">
+        <section className="space-y-2">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/60">
+            {t("table.column.status")}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={row.statusMeta.variant}>{row.statusLabel}</Badge>
+            <span className="truncate text-xs text-base-content/70">{row.occurredAtLabel}</span>
+          </div>
+          <div className="text-sm font-medium">
+            {renderAccountValue(
+              row.accountLabel,
+              row.accountId,
+              row.accountClickable,
+              row.accountRoutingInProgress
+                ? INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME
+                : undefined,
+            )}
+          </div>
+          <div className="truncate text-xs text-base-content/70" title={row.proxyDisplayName}>
+            {row.proxyDisplayName}
+          </div>
+        </section>
+
+        <section className="space-y-2 border-t border-base-300/60 pt-4">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/60">
+            {t("table.column.model")}
+          </div>
+          {row.modelHasMismatch ? (
+            renderInvocationModelRoutingSummary({
+              requestModelValue: row.requestModelValue,
+              responseModelValue: row.responseModelValue,
+              hasMismatch: true,
+              t,
+              indicatorTestId: "invocation-records-model-routing-indicator",
+              adornments: (
+                <>
+                  {renderReasoningEffortBadge(row.reasoningEffortValue)}
+                  {renderImageIntentBadge(row.imageIntentDisplay, t)}
+                  {renderInvocationTransportBadge(row.record)}
+                  {renderFastIndicator(row.fastIndicatorState, t)}
+                </>
+              ),
+            })
+          ) : (
+            <div
+              className="flex min-w-0 flex-wrap items-center gap-1 text-sm font-medium"
+              title={row.modelValue}
+            >
+              {renderInvocationModelBadge(row.modelValue, {
+                t,
+                hasMismatch: false,
+                testId: "invocation-records-model",
+              })}
+              {renderReasoningEffortBadge(row.reasoningEffortValue)}
+              {renderImageIntentBadge(row.imageIntentDisplay, t)}
+              {renderInvocationTransportBadge(row.record)}
+              {renderFastIndicator(row.fastIndicatorState, t)}
+            </div>
+          )}
+        </section>
+
+        <section className="space-y-2 border-t border-base-300/60 pt-4">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/60">
+            {t("table.latency.firstByteTotal")}
+          </div>
+          <dl className="space-y-2 text-xs">
+            <div className="grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-start gap-3">
+              <dt className="text-base-content/60">{t("records.table.network.totalMs")}</dt>
+              <dd className="min-w-0 text-right font-mono">{row.totalLatencyValue}</dd>
+            </div>
+            <div className="grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-start gap-3">
+              <dt className="text-base-content/60">
+                {t("records.table.network.firstResponseByteTotal")}
+              </dt>
+              <dd className="min-w-0 text-right font-mono">{row.firstResponseByteTotalValue}</dd>
+            </div>
+            <div className="grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-start gap-3">
+              <dt className="text-base-content/60">{t("table.details.httpCompression")}</dt>
+              <dd className="min-w-0 break-all text-right font-mono">
+                {row.responseContentEncodingValue}
+              </dd>
+            </div>
+          </dl>
+        </section>
+
+        <section className="space-y-2 border-t border-base-300/60 pt-4">
+          <div className="flex items-center justify-between gap-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/60">
+            {t("records.table.focusTitle")}
+            {renderInvocationCostAuditWarning(
+              row.record.costAudit,
+              t,
+              (value) => formatOptionalCurrency(value, costFormatter),
+              { testId: "records-detail-strip-cost-warning" },
+            )}
+          </div>
+          {renderFocusSummary(row, focus, t, costFormatter, false)}
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div
       className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"
@@ -281,8 +442,11 @@ function renderDetailSummaryStrip(
             responseModelValue: row.responseModelValue,
             hasMismatch: true,
             t,
+            indicatorTestId: "invocation-records-model-routing-indicator",
             adornments: (
               <>
+                {renderReasoningEffortBadge(row.reasoningEffortValue)}
+                {renderImageIntentBadge(row.imageIntentDisplay, t)}
                 {renderInvocationTransportBadge(row.record)}
                 {renderFastIndicator(row.fastIndicatorState, t)}
               </>
@@ -298,6 +462,8 @@ function renderDetailSummaryStrip(
               hasMismatch: false,
               testId: "invocation-records-model",
             })}
+            {renderReasoningEffortBadge(row.reasoningEffortValue)}
+            {renderImageIntentBadge(row.imageIntentDisplay, t)}
             {renderInvocationTransportBadge(row.record)}
             {renderFastIndicator(row.fastIndicatorState, t)}
           </div>
@@ -321,10 +487,16 @@ function renderDetailSummaryStrip(
       </div>
 
       <div className="rounded-xl border border-base-300/70 bg-base-100/65 p-3">
-        <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/60">
+        <div className="mb-2 flex items-center justify-between gap-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/60">
           {t("records.table.focusTitle")}
+          {renderInvocationCostAuditWarning(
+            row.record.costAudit,
+            t,
+            (value) => formatOptionalCurrency(value, costFormatter),
+            { testId: "records-detail-strip-cost-warning" },
+          )}
         </div>
-        {renderFocusSummary(row, focus, t)}
+        {renderFocusSummary(row, focus, t, costFormatter, false)}
       </div>
     </div>
   );
@@ -416,6 +588,10 @@ export function InvocationRecordsTable({
           resolveInvocationDisplayStatus(record) || "unknown"
         ).toLowerCase();
         const statusMeta = resolveStatusMeta(resolveInvocationDisplayStatus(record));
+        const costAuditDisplay = resolveInvocationCostAuditDisplay(
+          record.costAudit,
+          record.cost ?? null,
+        );
         const detailView = buildInvocationDetailViewModel({
           record,
           normalizedStatus,
@@ -436,6 +612,9 @@ export function InvocationRecordsTable({
           statusLabel: statusMeta.labelKey
             ? t(statusMeta.labelKey)
             : (statusMeta.label ?? t("table.status.unknown")),
+          localCostValue: formatOptionalCurrency(costAuditDisplay.localTotal, costFormatter),
+          costMismatch: costAuditDisplay.mismatch,
+          costAuditReason: costAuditDisplay.reason,
           ...detailView,
         };
       }),
@@ -559,7 +738,7 @@ export function InvocationRecordsTable({
 
   const detailColSpan = headers.length + 5;
 
-  const renderFocusCells = (row: InvocationRecordsRowViewModel) => {
+  const renderFocusCells = (row: InvocationRecordsRowViewModel, isExpanded: boolean) => {
     switch (focus) {
       case "network":
         return (
@@ -634,13 +813,21 @@ export function InvocationRecordsTable({
             <td className="px-3 py-3 align-middle text-right font-mono text-xs">
               {row.totalTokensValue}
             </td>
-            <td className="px-3 py-3 align-middle text-right font-mono text-xs">{row.costValue}</td>
+            <td className="px-3 py-3 align-middle text-right text-xs">
+              {renderCostAuditSummary(
+                row,
+                t,
+                costFormatter,
+                "records-table-cost-warning",
+                !isExpanded,
+              )}
+            </td>
           </>
         );
     }
   };
 
-  const renderMobileFocus = (row: InvocationRecordsRowViewModel) => {
+  const renderMobileFocus = (row: InvocationRecordsRowViewModel, isExpanded: boolean) => {
     switch (focus) {
       case "network":
         return (
@@ -671,23 +858,29 @@ export function InvocationRecordsTable({
         const failureClass = resolveFailureClassMeta(row.record.failureClass);
         return (
           <>
-            <div className="flex items-center justify-between gap-3">
+            <div className="grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-start gap-3">
               <dt>{t("records.table.exception.failureKind")}</dt>
-              <dd className="truncate font-mono">{formatOptionalText(row.record.failureKind)}</dd>
+              <dd className="min-w-0 break-all text-right font-mono">
+                {formatOptionalText(row.record.failureKind)}
+              </dd>
             </div>
-            <div className="flex items-center justify-between gap-3">
+            <div className="grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-start gap-3">
               <dt>{t("records.table.exception.failureClass")}</dt>
-              <dd className="truncate">
+              <dd className="min-w-0 text-right">
                 {failureClass.labelKey ? t(failureClass.labelKey) : FALLBACK_CELL}
               </dd>
             </div>
-            <div className="flex items-center justify-between gap-3">
+            <div className="grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-start gap-3">
               <dt>{t("records.table.exception.actionable")}</dt>
-              <dd>{formatActionableText(row.record.isActionable, t)}</dd>
+              <dd className="min-w-0 text-right">
+                {formatActionableText(row.record.isActionable, t)}
+              </dd>
             </div>
-            <div className="flex items-center justify-between gap-3">
+            <div className="grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-start gap-3">
               <dt>{t("records.table.exception.error")}</dt>
-              <dd className="truncate font-mono">{row.collapsedErrorSummary || FALLBACK_CELL}</dd>
+              <dd className="min-w-0 break-all text-right font-mono">
+                {row.collapsedErrorSummary || FALLBACK_CELL}
+              </dd>
             </div>
           </>
         );
@@ -695,21 +888,29 @@ export function InvocationRecordsTable({
       default:
         return (
           <>
-            <div className="flex items-center justify-between gap-3">
+            <div className="grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-start gap-3">
               <dt>{t("records.table.token.inputCache")}</dt>
-              <dd className="font-mono">{`IN ${row.inputTokensValue} / CW ${row.cacheWriteTokensValue} / C ${row.cacheInputTokensValue}`}</dd>
+              <dd className="min-w-0 break-all text-right font-mono">{`IN ${row.inputTokensValue} / CW ${row.cacheWriteTokensValue} / C ${row.cacheInputTokensValue}`}</dd>
             </div>
-            <div className="flex items-center justify-between gap-3">
+            <div className="grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-start gap-3">
               <dt>{t("records.table.token.outputReasoning")}</dt>
-              <dd className="font-mono">{`${row.outputTokensValue} / ${row.reasoningTokensValue}`}</dd>
+              <dd className="min-w-0 text-right font-mono">{`${row.outputTokensValue} / ${row.reasoningTokensValue}`}</dd>
             </div>
-            <div className="flex items-center justify-between gap-3">
+            <div className="grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-start gap-3">
               <dt>{t("records.table.token.totalTokens")}</dt>
-              <dd className="font-mono">{row.totalTokensValue}</dd>
+              <dd className="min-w-0 text-right font-mono">{row.totalTokensValue}</dd>
             </div>
-            <div className="flex items-center justify-between gap-3">
+            <div className="grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-start gap-3">
               <dt>{t("records.table.token.cost")}</dt>
-              <dd className="font-mono">{row.costValue}</dd>
+              <dd className="min-w-0 text-right">
+                {renderCostAuditSummary(
+                  row,
+                  t,
+                  costFormatter,
+                  "records-mobile-cost-warning",
+                  !isExpanded,
+                )}
+              </dd>
             </div>
           </>
         );
@@ -730,7 +931,7 @@ export function InvocationRecordsTable({
           return (
             <article
               key={row.rowKey}
-              className="rounded-xl border border-base-300/70 bg-base-100/45 px-4 py-4"
+              className="rounded-xl border border-base-300/70 bg-base-100/45 px-3.5 py-3.5"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -768,8 +969,11 @@ export function InvocationRecordsTable({
                     responseModelValue: row.responseModelValue,
                     hasMismatch: true,
                     t,
+                    indicatorTestId: "invocation-records-model-routing-indicator",
                     adornments: (
                       <>
+                        {renderReasoningEffortBadge(row.reasoningEffortValue)}
+                        {renderImageIntentBadge(row.imageIntentDisplay, t)}
                         {renderInvocationTransportBadge(row.record)}
                         {renderFastIndicator(row.fastIndicatorState, t)}
                       </>
@@ -777,7 +981,7 @@ export function InvocationRecordsTable({
                   })
                 ) : (
                   <div
-                    className="flex items-center gap-1 text-sm font-medium"
+                    className="flex min-w-0 flex-wrap items-center gap-1 text-sm font-medium"
                     title={row.modelValue}
                   >
                     {renderInvocationModelBadge(row.modelValue, {
@@ -785,6 +989,8 @@ export function InvocationRecordsTable({
                       hasMismatch: false,
                       testId: "invocation-records-model",
                     })}
+                    {renderReasoningEffortBadge(row.reasoningEffortValue)}
+                    {renderImageIntentBadge(row.imageIntentDisplay, t)}
                     {renderInvocationTransportBadge(row.record)}
                     {renderFastIndicator(row.fastIndicatorState, t)}
                   </div>
@@ -802,26 +1008,37 @@ export function InvocationRecordsTable({
                 </div>
               </div>
 
-              <dl className="mt-3 space-y-2 text-xs text-base-content/75">
-                {renderMobileFocus(row)}
+              <dl className="mt-3 space-y-2.5 text-xs text-base-content/75">
+                {renderMobileFocus(row, isExpanded)}
               </dl>
 
               {isExpanded ? (
-                <div className="mt-3 space-y-3 rounded-xl border border-base-300/70 bg-base-200/55 p-3">
-                  {renderDetailSummaryStrip(row, focus, t, renderAccountValue)}
-                  {row.record.id > 0 ? (
-                    <div className="flex justify-end">
-                      <button
-                        type="button"
-                        className="inline-flex items-center gap-2 rounded-full border border-base-300/70 bg-base-100/70 px-3 py-1.5 text-xs font-medium text-base-content/78 transition hover:border-base-300 hover:bg-base-100"
-                        onClick={() => setDrawerRecordId(row.record.id)}
-                      >
-                        <AppIcon name="chevron-right-circle" className="h-3.5 w-3.5" aria-hidden />
-                        {t("table.responseBody.openFullDetails")}
-                      </button>
-                    </div>
-                  ) : null}
-                  <div id={detailId}>
+                <div className="mt-4 border-t border-base-300/60 pt-4" id={detailId}>
+                  <div className="space-y-4" data-testid="records-expanded-detail-panel">
+                    {renderDetailSummaryStrip(
+                      row,
+                      focus,
+                      t,
+                      costFormatter,
+                      renderAccountValue,
+                      "flat",
+                    )}
+                    {row.record.id > 0 ? (
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-2 rounded-full border border-base-300/70 bg-base-100/70 px-3 py-1.5 text-xs font-medium text-base-content/78 transition hover:border-base-300 hover:bg-base-100"
+                          onClick={() => setDrawerRecordId(row.record.id)}
+                        >
+                          <AppIcon
+                            name="chevron-right-circle"
+                            className="h-3.5 w-3.5"
+                            aria-hidden
+                          />
+                          {t("table.responseBody.openFullDetails")}
+                        </button>
+                      </div>
+                    ) : null}
                     <InvocationWorkflowDetailPanel
                       record={row.record}
                       focusedAttemptId={isExpanded ? focusedAttemptId : null}
@@ -871,20 +1088,40 @@ export function InvocationRecordsTable({
                       {row.proxyDisplayName}
                     </td>
                     <td className="max-w-[14rem] px-3 py-3 align-middle text-left text-xs">
-                      <div className="flex items-center gap-1" title={row.modelValue}>
-                        {renderInvocationModelBadge(row.modelValue, {
+                      {row.modelHasMismatch ? (
+                        renderInvocationModelRoutingSummary({
+                          requestModelValue: row.requestModelValue,
+                          responseModelValue: row.responseModelValue,
+                          hasMismatch: true,
                           t,
-                          hasMismatch: row.modelHasMismatch,
-                          testId: "invocation-records-model",
-                        })}
-                        {renderInvocationTransportBadge(row.record)}
-                        {renderFastIndicator(row.fastIndicatorState, t)}
-                      </div>
+                          indicatorTestId: "invocation-records-model-routing-indicator",
+                          adornments: (
+                            <>
+                              {renderReasoningEffortBadge(row.reasoningEffortValue)}
+                              {renderImageIntentBadge(row.imageIntentDisplay, t)}
+                              {renderInvocationTransportBadge(row.record)}
+                              {renderFastIndicator(row.fastIndicatorState, t)}
+                            </>
+                          ),
+                        })
+                      ) : (
+                        <div className="flex items-center gap-1" title={row.modelValue}>
+                          {renderInvocationModelBadge(row.modelValue, {
+                            t,
+                            hasMismatch: false,
+                            testId: "invocation-records-model",
+                          })}
+                          {renderReasoningEffortBadge(row.reasoningEffortValue)}
+                          {renderImageIntentBadge(row.imageIntentDisplay, t)}
+                          {renderInvocationTransportBadge(row.record)}
+                          {renderFastIndicator(row.fastIndicatorState, t)}
+                        </div>
+                      )}
                     </td>
                     <td className="px-3 py-3 align-middle text-left text-xs">
                       <Badge variant={row.statusMeta.variant}>{row.statusLabel}</Badge>
                     </td>
-                    {renderFocusCells(row)}
+                    {renderFocusCells(row, isExpanded)}
                     <td className="px-3 py-3 align-middle text-right">
                       <button
                         type="button"
@@ -915,7 +1152,13 @@ export function InvocationRecordsTable({
                           className="space-y-3 rounded-xl border border-base-300/70 bg-base-200/45 p-3"
                           data-testid="records-expanded-detail-panel"
                         >
-                          {renderDetailSummaryStrip(row, focus, t, renderAccountValue)}
+                          {renderDetailSummaryStrip(
+                            row,
+                            focus,
+                            t,
+                            costFormatter,
+                            renderAccountValue,
+                          )}
                           {row.record.id > 0 ? (
                             <div className="flex justify-end">
                               <button
@@ -978,7 +1221,7 @@ export function InvocationRecordsTable({
             </div>
           }
         >
-          {renderDetailSummaryStrip(drawerRow, focus, t, renderAccountValue)}
+          {renderDetailSummaryStrip(drawerRow, focus, t, costFormatter, renderAccountValue)}
 
           <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-4">
             <InvocationWorkflowDetailPanel
