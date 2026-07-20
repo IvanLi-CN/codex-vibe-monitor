@@ -29,6 +29,7 @@ import {
   hashDashboardWorkingConversationKey,
   mapPromptCacheConversationsToDashboardCards,
 } from "../../lib/dashboardWorkingConversations";
+import { useTheme } from "../../theme";
 import { AccountDetailDrawerShell } from "../account-pool/AccountDetailDrawerShell";
 import { PromptCacheConversationHistoryDrawer } from "../prompt-cache/PromptCacheConversationTable";
 import { formatStoryAttemptId } from "../records/invocationRecordsStoryFixtures";
@@ -81,25 +82,73 @@ function ForcedWorkspaceViewStory({
 }
 
 function useStoryTheme(theme?: "vibe-light" | "vibe-dark") {
+  const { setThemeMode } = useTheme();
+
   useLayoutEffect(() => {
     if (!theme) return;
-    const previousHtmlTheme = document.documentElement.getAttribute("data-theme");
     const previousBodyTheme = document.body.getAttribute("data-theme");
-    document.documentElement.setAttribute("data-theme", theme);
+    const previousBodyColorMode = document.body.getAttribute("data-color-mode");
+    const nextThemeMode = theme === "vibe-dark" ? "dark" : "light";
+
+    setThemeMode(nextThemeMode);
     document.body.setAttribute("data-theme", theme);
+    document.body.setAttribute("data-color-mode", nextThemeMode);
+
     return () => {
-      if (previousHtmlTheme) {
-        document.documentElement.setAttribute("data-theme", previousHtmlTheme);
-      } else {
-        document.documentElement.removeAttribute("data-theme");
-      }
       if (previousBodyTheme) {
         document.body.setAttribute("data-theme", previousBodyTheme);
       } else {
         document.body.removeAttribute("data-theme");
       }
+      if (previousBodyColorMode) {
+        document.body.setAttribute("data-color-mode", previousBodyColorMode);
+      } else {
+        document.body.removeAttribute("data-color-mode");
+      }
     };
-  }, [theme]);
+  }, [setThemeMode, theme]);
+}
+
+function readPerceptualChannel(color: string) {
+  const match = color.match(/-?\d*\.?\d+/);
+  return match ? Number.parseFloat(match[0]) : Number.NaN;
+}
+
+async function openBulkClearBindingDialog(canvasElement: HTMLElement) {
+  await selectConversationForBulkActions(canvasElement);
+
+  const clearButton = canvasElement.ownerDocument.body.querySelector(
+    '[data-testid="dashboard-working-conversations-clear-binding-button"]',
+  );
+  if (!(clearButton instanceof HTMLButtonElement)) {
+    throw new Error("missing clear binding button");
+  }
+
+  await userEvent.click(clearButton);
+
+  await waitFor(() => {
+    const dialog = canvasElement.ownerDocument.body.querySelector(
+      '[data-testid="dashboard-working-conversations-clear-binding-dialog"]',
+    );
+    expect(dialog).not.toBeNull();
+    expect(dialog?.textContent).toContain("清空绑定");
+    expect(dialog?.textContent).not.toContain("重选");
+  });
+
+  const dialog = canvasElement.ownerDocument.body.querySelector(
+    '[data-testid="dashboard-working-conversations-clear-binding-dialog"]',
+  );
+  if (!(dialog instanceof HTMLElement)) {
+    throw new Error("missing clear binding dialog");
+  }
+
+  const footer = dialog.querySelectorAll(".dialog-chrome-surface")[1];
+  const callout = dialog.querySelector(".destructive-callout-surface");
+  if (!(footer instanceof HTMLElement) || !(callout instanceof HTMLElement)) {
+    throw new Error("missing themed destructive surfaces");
+  }
+
+  return { dialog, footer, callout };
 }
 
 function normalizeCssColor(value: string) {
@@ -5277,9 +5326,11 @@ function BulkSelectionStorySurface({
           binding: buildBulkSelectionStoryBindingResponse(promptCacheKey, {
             bindingKind:
               payload.action === "bind"
-                ? payload.bindingKind === "upstreamAccount"
-                  ? "upstreamAccount"
-                  : "group"
+                ? payload.bindingKind === "none"
+                  ? "none"
+                  : payload.bindingKind === "upstreamAccount"
+                    ? "upstreamAccount"
+                    : "group"
                 : "none",
             groupName: payload.bindingKind === "group" ? (payload.groupName ?? "CIII") : null,
             upstreamAccountId:
@@ -5441,22 +5492,22 @@ export const ConversationBulkClearConfirm: Story = {
     viewport: { defaultViewport: "desktop1660" },
   },
   play: async ({ canvasElement }) => {
-    await selectConversationForBulkActions(canvasElement);
-    const clearButton = canvasElement.ownerDocument.body.querySelector(
-      '[data-testid="dashboard-working-conversations-clear-affinity-button"]',
-    );
-    if (!(clearButton instanceof HTMLButtonElement)) {
-      throw new Error("missing clear affinity button");
-    }
-
-    await userEvent.click(clearButton);
     await waitFor(() => {
-      expect(
-        canvasElement.ownerDocument.body.querySelector(
-          '[data-testid="dashboard-working-conversations-clear-affinity-dialog"]',
-        ),
-      ).not.toBeNull();
+      expect(canvasElement.ownerDocument.documentElement.getAttribute("data-theme")).toBe(
+        "vibe-dark",
+      );
+      expect(canvasElement.ownerDocument.body.getAttribute("data-theme")).toBe("vibe-dark");
     });
+
+    const { footer, callout } = await openBulkClearBindingDialog(canvasElement);
+
+    const footerBg =
+      canvasElement.ownerDocument.defaultView?.getComputedStyle(footer).backgroundColor ?? "";
+    const calloutBg =
+      canvasElement.ownerDocument.defaultView?.getComputedStyle(callout).backgroundColor ?? "";
+
+    expect(readPerceptualChannel(footerBg)).toBeLessThan(0.5);
+    expect(readPerceptualChannel(calloutBg)).toBeLessThan(0.5);
   },
 };
 
@@ -5466,7 +5517,24 @@ export const ConversationBulkClearConfirmLight: Story = {
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
   },
-  play: ConversationBulkClearConfirm.play,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      expect(canvasElement.ownerDocument.documentElement.getAttribute("data-theme")).toBe(
+        "vibe-light",
+      );
+      expect(canvasElement.ownerDocument.body.getAttribute("data-theme")).toBe("vibe-light");
+    });
+
+    const { footer, callout } = await openBulkClearBindingDialog(canvasElement);
+
+    const footerBg =
+      canvasElement.ownerDocument.defaultView?.getComputedStyle(footer).backgroundColor ?? "";
+    const calloutBg =
+      canvasElement.ownerDocument.defaultView?.getComputedStyle(callout).backgroundColor ?? "";
+
+    expect(readPerceptualChannel(footerBg)).toBeGreaterThan(0.8);
+    expect(readPerceptualChannel(calloutBg)).toBeGreaterThan(0.8);
+  },
 };
 
 export const ConversationBulkFastModeChooser: Story = {

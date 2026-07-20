@@ -441,19 +441,6 @@ const BULK_BINDING_ACCOUNTS = [
   },
 ] as const;
 
-function findSelectOption(label: string) {
-  return Array.from(document.querySelectorAll('[role="option"]')).find((option) =>
-    option.textContent?.includes(label),
-  );
-}
-
-async function flushInteractive() {
-  await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
-  });
-}
-
 function createBulkConversationFetchMock(options?: {
   failKeys?: string[];
   onBulkPayload?: (payload: Record<string, unknown>) => void;
@@ -6020,7 +6007,7 @@ describe("DashboardWorkingConversationsSection", () => {
     }
   });
 
-  it("confirms clear-and-reset affinity before submitting the destructive bulk action", async () => {
+  it("confirms manual binding clear before submitting the destructive bulk action", async () => {
     const originalFetch = globalThis.fetch;
     let capturedPayload: Record<string, unknown> | null = null;
     const fetchMock = createBulkConversationFetchMock({
@@ -6034,10 +6021,10 @@ describe("DashboardWorkingConversationsSection", () => {
     try {
       renderSection(
         createResponse([
-          createConversation("pck-clear-affinity-1", [
+          createConversation("pck-clear-binding-1", [
             createPreview({
               id: 101,
-              invokeId: "invoke-clear-affinity-1",
+              invokeId: "invoke-clear-binding-1",
               occurredAt: "2026-04-04T10:05:00Z",
               status: "running",
             }),
@@ -6057,28 +6044,31 @@ describe("DashboardWorkingConversationsSection", () => {
       );
       await user.click(
         document.body.querySelector(
-          '[data-testid="dashboard-working-conversations-clear-affinity-button"]',
+          '[data-testid="dashboard-working-conversations-clear-binding-button"]',
         ) as HTMLElement,
       );
 
       const confirmDialog = document.body.querySelector(
-        '[data-testid="dashboard-working-conversations-clear-affinity-dialog"]',
+        '[data-testid="dashboard-working-conversations-clear-binding-dialog"]',
       );
+      expect(confirmDialog?.textContent).toContain("手工绑定");
       expect(confirmDialog?.textContent).toContain("sticky route");
       expect(confirmDialog?.textContent).toContain("owner lock");
+      expect(confirmDialog?.textContent).not.toContain("重选");
 
       const confirmButton = Array.from(confirmDialog?.querySelectorAll("button") ?? []).find(
-        (button) => button.textContent?.includes("确认清空"),
+        (button) => button.textContent?.includes("确认清空绑定"),
       );
       if (!(confirmButton instanceof HTMLButtonElement)) {
-        throw new Error("missing clear affinity confirm button");
+        throw new Error("missing clear binding confirm button");
       }
       await user.click(confirmButton);
 
       await waitFor(() => expect(onConversationsChanged).toHaveBeenCalledTimes(1));
       expect(capturedPayload).toMatchObject({
-        action: "clearAndResetAffinity",
-        promptCacheKeys: ["pck-clear-affinity-1"],
+        action: "bind",
+        bindingKind: "none",
+        promptCacheKeys: ["pck-clear-binding-1"],
       });
       expect(
         document.body.querySelector('[data-testid="dashboard-working-conversations-bulk-panel"]'),
@@ -6147,7 +6137,7 @@ describe("DashboardWorkingConversationsSection", () => {
         ).toBeNull();
         expect(
           document.body.querySelector(
-            '[data-testid="dashboard-working-conversations-clear-affinity-dialog"]',
+            '[data-testid="dashboard-working-conversations-clear-binding-dialog"]',
           ),
         ).not.toBeNull();
       });
