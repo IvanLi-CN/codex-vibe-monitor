@@ -134,7 +134,22 @@ export function NumericRangeField({
 
   return (
     <div className={cn("field", className)} data-testid={testId}>
-      <FormFieldFeedback label={label} message={error} messageId={error ? feedbackId : undefined} />
+      <FormFieldFeedback
+        label={
+          <span className="flex w-full min-w-0 items-center justify-between gap-3">
+            <span className="min-w-0 truncate">{label}</span>
+            <span
+              aria-hidden="true"
+              className="min-w-0 max-w-[72%] truncate text-right text-[11px] font-medium tabular-nums normal-case tracking-normal text-base-content/60"
+            >
+              {currentRangeSummary}
+            </span>
+          </span>
+        }
+        labelClassName="flex min-w-0 flex-1"
+        message={error}
+        messageId={error ? feedbackId : undefined}
+      />
       <div
         className={cn(
           isEmbedded ? "px-0 py-1" : "rounded-lg border border-base-300/80 bg-base-100 px-3 py-3",
@@ -142,11 +157,9 @@ export function NumericRangeField({
           disabled && "opacity-60",
         )}
       >
-        <div className="space-y-2.5">
-          <div className="flex justify-end text-[11px] font-medium tabular-nums text-base-content/60">
-            <span>{currentRangeSummary}</span>
-          </div>
+        <div className="space-y-1">
           <Slider
+            className="h-8"
             data-testid={testId ? `${testId}-slider` : undefined}
             value={[trackStartValue, trackEndValue]}
             min={effectiveSliderMin}
