@@ -795,6 +795,7 @@ pub(crate) struct UpstreamAccountActionEventRow {
     pub(crate) invoke_id: Option<String>,
     pub(crate) attempt_public_id: Option<String>,
     pub(crate) sticky_key: Option<String>,
+    pub(crate) blocked_binding_json: Option<String>,
     pub(crate) created_at: String,
 }
 

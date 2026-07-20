@@ -1,4 +1,5 @@
 import type {
+  BlockedBindingDiagnostic,
   ForwardProxyBindingNode,
   StickyKeyConversationSelection,
   UpstreamStickyConversationsResponse,
@@ -6,6 +7,7 @@ import type {
 import {
   ensureJsonRequestOk,
   fetchJson,
+  normalizeBlockedBindingDiagnostic,
   normalizeCompactSupportState,
   normalizeFiniteNumber,
   normalizeForwardProxyBindingNode,
@@ -305,6 +307,7 @@ export interface UpstreamAccountActionEvent {
   invokeId?: string | null;
   attemptId?: string | null;
   stickyKey?: string | null;
+  blockedBinding?: BlockedBindingDiagnostic | null;
   createdAt: string;
 }
 
@@ -1362,6 +1365,7 @@ function normalizeUpstreamAccountActionEvent(raw: unknown): UpstreamAccountActio
     invokeId: typeof payload.invokeId === "string" ? payload.invokeId : null,
     attemptId,
     stickyKey: typeof payload.stickyKey === "string" ? payload.stickyKey : null,
+    blockedBinding: normalizeBlockedBindingDiagnostic(payload.blockedBinding),
     createdAt,
   };
 }

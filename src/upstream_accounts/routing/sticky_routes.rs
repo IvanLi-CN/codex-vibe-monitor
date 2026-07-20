@@ -172,6 +172,7 @@ pub(crate) async fn build_account_sticky_keys_response(
                     downstream_status_code: row.downstream_status_code,
                     downstream_error_message: row.downstream_error_message,
                     failure_kind: row.failure_kind,
+                    blocked_binding: None,
                     is_actionable: row.is_actionable.map(|value| value != 0),
                     response_content_encoding: row.response_content_encoding,
                     transport: row.transport,

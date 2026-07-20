@@ -377,6 +377,13 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
                     .as_ref()
                     .and_then(|value| value.owner_group_name.clone()),
                 manual_binding: manual_binding_by_key.remove(&row.prompt_cache_key),
+                blocked_binding: grouped_recent_invocations
+                    .get(&row.prompt_cache_key)
+                    .and_then(|previews| {
+                        previews
+                            .iter()
+                            .find_map(|preview| preview.blocked_binding.clone())
+                    }),
                 upstream_accounts: grouped_upstream_accounts
                     .remove(&row.prompt_cache_key)
                     .unwrap_or_default(),
@@ -573,6 +580,7 @@ pub(crate) fn prompt_cache_invocation_preview_from_runtime_record(
             record.downstream_error_message.clone(),
         ),
         failure_kind: normalize_trimmed_optional_string(record.failure_kind.clone()),
+        blocked_binding: record.blocked_binding.clone(),
         is_actionable: record.is_actionable,
         response_content_encoding: normalize_trimmed_optional_string(
             record.response_content_encoding.clone(),
@@ -659,6 +667,7 @@ pub(crate) fn prompt_cache_invocation_preview_from_row(
         downstream_status_code: row.downstream_status_code,
         downstream_error_message: normalize_trimmed_optional_string(row.downstream_error_message),
         failure_kind: normalize_trimmed_optional_string(row.failure_kind),
+        blocked_binding: None,
         is_actionable: row.is_actionable.map(|value| value != 0),
         response_content_encoding: normalize_trimmed_optional_string(row.response_content_encoding),
         transport: normalize_trimmed_optional_string(row.transport),
@@ -713,6 +722,7 @@ pub(crate) fn upstream_account_invocation_preview_from_row(
         downstream_status_code: row.downstream_status_code,
         downstream_error_message: normalize_trimmed_optional_string(row.downstream_error_message),
         failure_kind: normalize_trimmed_optional_string(row.failure_kind),
+        blocked_binding: None,
         is_actionable: row.is_actionable.map(|value| value != 0),
         response_content_encoding: normalize_trimmed_optional_string(row.response_content_encoding),
         transport: normalize_trimmed_optional_string(row.transport),

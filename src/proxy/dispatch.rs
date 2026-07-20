@@ -187,6 +187,8 @@ pub(crate) async fn proxy_openai_v1_inner(
             message: PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE.to_string(),
             cvm_id: None,
             retry_after_secs: None,
+            code: None,
+            blocked_binding: None,
         });
     }
 
@@ -252,13 +254,7 @@ pub(crate) async fn proxy_openai_v1_inner(
             runtime_timeouts,
             proxy_request_permit.take(),
         )
-        .await
-        .map_err(|(status, message)| ProxyErrorResponse {
-            retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
-            status,
-            message,
-            cvm_id: None,
-        });
+        .await;
     }
 
     if let Some(target) = capture_target_for_request(original_uri.path(), &method) {
@@ -285,6 +281,8 @@ pub(crate) async fn proxy_openai_v1_inner(
             status,
             message,
             cvm_id: Some(tracked_invoke_id),
+            code: None,
+            blocked_binding: None,
         });
     }
 
@@ -298,13 +296,7 @@ pub(crate) async fn proxy_openai_v1_inner(
         runtime_timeouts,
         proxy_request_permit.take(),
     )
-    .await
-    .map_err(|(status, message)| ProxyErrorResponse {
-        retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
-        status,
-        message,
-        cvm_id: None,
-    });
+    .await;
 }
 
 pub(crate) fn capture_target_for_request(
@@ -335,6 +327,8 @@ fn build_local_capture_error_envelope(
             message: message.to_string(),
             cvm_id: Some(invoke_id.to_string()),
             retry_after_secs: retry_after_secs_for_proxy_error(status, message),
+            code: None,
+            blocked_binding: None,
         },
         invoke_id,
     )
@@ -481,6 +475,7 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
             pool_attempt_count: Some(0),
             pool_distinct_account_count: Some(0),
             pool_attempt_terminal_reason: Some(failure_kind),
+            blocked_binding: None,
         })),
         raw_response: response_envelope.body_text.clone(),
         response_body_preview_enabled: true,
@@ -741,6 +736,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     pool_attempt_count: None,
                     pool_distinct_account_count: None,
                     pool_attempt_terminal_reason: None,
+                    blocked_binding: None,
                 })),
                 raw_response: response_envelope.body_text.clone(),
                 response_body_preview_enabled: true,
@@ -909,6 +905,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     pool_attempt_count: None,
                     pool_distinct_account_count: None,
                     pool_attempt_terminal_reason: None,
+                    blocked_binding: None,
                 })),
                 raw_response: response_envelope.body_text.clone(),
                 response_body_preview_enabled: true,
@@ -1377,6 +1374,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             .attempt_summary
                             .pool_attempt_terminal_reason
                             .as_deref(),
+                        blocked_binding: err.blocked_binding.as_ref(),
                     })),
                     raw_response: response_envelope.body_text.clone(),
                     response_body_preview_enabled: true,
@@ -1605,6 +1603,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         pool_attempt_count: None,
                         pool_distinct_account_count: None,
                         pool_attempt_terminal_reason: None,
+                        blocked_binding: None,
                     })),
                     raw_response: response_envelope.body_text.clone(),
                     response_body_preview_enabled: true,
@@ -1816,6 +1815,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     pool_attempt_count: None,
                     pool_distinct_account_count: None,
                     pool_attempt_terminal_reason: None,
+                    blocked_binding: None,
                 })),
                 raw_response: response_envelope.body_text.clone(),
                 response_body_preview_enabled: true,
@@ -3016,6 +3016,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             pool_attempt_terminal_reason: pool_account_for_task
                 .as_ref()
                 .and(pending_pool_attempt_terminal_reason.as_deref()),
+            blocked_binding: None,
         });
 
         let record = ProxyCaptureRecord {

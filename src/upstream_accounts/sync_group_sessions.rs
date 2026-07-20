@@ -788,6 +788,7 @@ pub(crate) fn build_action_event_from_row(
         invoke_id: row.invoke_id.clone(),
         attempt_id: row.attempt_public_id.clone(),
         sticky_key: row.sticky_key.clone(),
+        blocked_binding: parse_blocked_binding_json(row.blocked_binding_json.as_deref()),
         created_at: row.created_at.clone(),
     }
 }

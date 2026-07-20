@@ -105,6 +105,28 @@ pub(crate) fn normalize_prompt_cache_conversation_recent_invocation_limit(
     Ok(Some(value))
 }
 
+pub(crate) fn normalize_prompt_cache_blocked_binding_filter(
+    upstream_account_id: Option<i64>,
+    constraint_source: Option<&str>,
+) -> Result<Option<PromptCacheConversationBlockedBindingFilter>, ApiError> {
+    let constraint_source = constraint_source
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            BlockedBindingConstraintSource::from_query_param(value).ok_or_else(|| {
+                ApiError::bad_request(anyhow!(
+                    "blockedBindingConstraintSource must be one of: upstreamAccountBinding, encryptedSessionOwner"
+                ))
+            })
+        })
+        .transpose()?;
+    let filter = PromptCacheConversationBlockedBindingFilter {
+        upstream_account_id,
+        constraint_source,
+    };
+    Ok(filter.is_active().then_some(filter))
+}
+
 pub(crate) fn resolve_prompt_cache_conversation_detail_level(
     raw: Option<&str>,
 ) -> Result<PromptCacheConversationDetailLevel, ApiError> {
@@ -132,14 +154,22 @@ pub(crate) fn resolve_prompt_cache_conversations_request(
         snapshot_at: None,
         detail: None,
         recent_invocation_limit: None,
+        blocked_binding_upstream_account_id: None,
+        blocked_binding_constraint_source: None,
     })?;
     let detail_level = resolve_prompt_cache_conversation_detail_level(params.detail.as_deref())?;
     let recent_invocation_limit = normalize_prompt_cache_conversation_recent_invocation_limit(
         params.recent_invocation_limit,
     )?;
+    let blocked_binding_filter = normalize_prompt_cache_blocked_binding_filter(
+        params.blocked_binding_upstream_account_id,
+        params.blocked_binding_constraint_source.as_deref(),
+    )?;
     let normalized_page_size = normalize_prompt_cache_conversation_page_size(params.page_size)?;
-    let uses_pagination =
-        normalized_page_size.is_some() || params.cursor.is_some() || params.snapshot_at.is_some();
+    let uses_pagination = normalized_page_size.is_some()
+        || params.cursor.is_some()
+        || params.snapshot_at.is_some()
+        || blocked_binding_filter.is_some();
 
     if params.cursor.is_some() && params.snapshot_at.is_none() {
         return Err(ApiError::bad_request(anyhow!("cursor requires snapshotAt")));
@@ -167,6 +197,7 @@ pub(crate) fn resolve_prompt_cache_conversations_request(
         },
         cursor: params.cursor,
         snapshot_at: params.snapshot_at,
+        blocked_binding_filter,
     })
 }
 

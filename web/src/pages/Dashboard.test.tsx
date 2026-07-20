@@ -695,6 +695,33 @@ describe("DashboardPage", () => {
     );
   });
 
+  it("passes the blocked-binding route filter into the working conversations subscription hook", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [createWorkingConversationCard()],
+      totalMatched: 1,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      recentPreviewLimit: 4,
+      setRefreshTargetCount: vi.fn(),
+      refresh: vi.fn(),
+    });
+
+    render(
+      <DashboardPage />,
+      "/dashboard?blockedBindingUpstreamAccountId=2890&blockedBindingConstraintSource=encryptedSessionOwner",
+    );
+
+    expect(hookMocks.useDashboardWorkingConversations).toHaveBeenCalled();
+    expect(hookMocks.useDashboardWorkingConversations.mock.calls.at(-1)?.[0]).toEqual({
+      upstreamAccountId: 2890,
+      constraintSource: "encryptedSessionOwner",
+    });
+  });
+
   it("keeps today inside the shared overview card instead of as a standalone top card", () => {
     installSummaryMocks();
     const setRefreshTargetCount = vi.fn();

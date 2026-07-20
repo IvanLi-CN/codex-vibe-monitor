@@ -52,6 +52,8 @@ pub(crate) async fn proxy_openai_v1_with_connect_info(
                     ),
                     cvm_id: None,
                     retry_after_secs: None,
+                    code: None,
+                    blocked_binding: None,
                 },
                 &invoke_id,
             );
@@ -129,6 +131,8 @@ pub(crate) async fn proxy_openai_v1_common(
                         message: format!("failed to build upstream url: {err}"),
                         cvm_id: None,
                         retry_after_secs: None,
+                        code: None,
+                        blocked_binding: None,
                     },
                     &invoke_id,
                 );
@@ -200,6 +204,8 @@ pub(crate) async fn proxy_openai_v1_common(
             message: PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE.to_string(),
             cvm_id: None,
             retry_after_secs: None,
+            code: None,
+            blocked_binding: None,
         };
         if let Some(runtime_snapshot) = admitted_runtime_snapshot.as_ref() {
             terminalize_proxy_runtime_snapshot_with_error(
@@ -311,6 +317,8 @@ pub(crate) struct ProxyErrorResponse {
     pub(crate) message: String,
     pub(crate) cvm_id: Option<String>,
     pub(crate) retry_after_secs: Option<u64>,
+    pub(crate) code: Option<String>,
+    pub(crate) blocked_binding: Option<BlockedBindingDiagnostic>,
 }
 
 #[derive(Debug, Clone)]
@@ -355,13 +363,17 @@ pub(crate) fn build_proxy_error_response_envelope(
         && err
             .message
             .contains(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT))
-    .then_some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT);
+    .then_some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT.to_string())
+    .or_else(|| err.code.clone());
     let mut payload = json!({ "error": err.message });
     if let Some(cvm_id) = err.cvm_id.as_ref() {
         payload["cvmId"] = json!(cvm_id);
     }
-    if let Some(code) = code {
+    if let Some(code) = code.as_ref() {
         payload["code"] = json!(code);
+    }
+    if let Some(blocked_binding) = err.blocked_binding.as_ref() {
+        payload["blockedBinding"] = json!(blocked_binding);
     }
     ProxyErrorResponseEnvelope {
         status: err.status,
@@ -376,6 +388,131 @@ pub(crate) const PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE: &str =
     "pool route key missing or invalid";
 pub(crate) fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &str) -> Response {
     build_proxy_error_response_envelope(&err, invoke_id).into_response()
+}
+
+pub(crate) fn build_blocked_binding_diagnostic(
+    constraint_source: BlockedBindingConstraintSource,
+    upstream_account_id: i64,
+    upstream_account_label: Option<&str>,
+    prompt_cache_key: Option<&str>,
+) -> BlockedBindingDiagnostic {
+    BlockedBindingDiagnostic {
+        constraint_source,
+        upstream_account_id,
+        upstream_account_label: blocked_binding_account_label(
+            upstream_account_label,
+            upstream_account_id,
+        ),
+        prompt_cache_key: prompt_cache_key
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+        recovery_action: BlockedBindingRecoveryAction::ClearAndResetAffinity,
+    }
+}
+
+pub(crate) fn single_account_binding_constraint_source(
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    owner_auto_guard_active: bool,
+) -> Option<(BlockedBindingConstraintSource, i64)> {
+    let PromptCacheConversationBindingConstraint::UpstreamAccount(upstream_account_id) =
+        binding_constraint?
+    else {
+        return None;
+    };
+    Some((
+        if owner_auto_guard_active {
+            BlockedBindingConstraintSource::EncryptedSessionOwner
+        } else {
+            BlockedBindingConstraintSource::UpstreamAccountBinding
+        },
+        *upstream_account_id,
+    ))
+}
+
+pub(crate) async fn build_single_account_binding_blocked_error(
+    state: &AppState,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    owner_auto_guard_active: bool,
+    account: Option<PoolResolvedAccount>,
+    prompt_cache_key: Option<&str>,
+    message: Option<String>,
+    attempt_count: usize,
+    distinct_account_count: usize,
+) -> Option<PoolUpstreamError> {
+    let prompt_cache_key = prompt_cache_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let explicit_constraint =
+        single_account_binding_constraint_source(binding_constraint, owner_auto_guard_active);
+    let mut owner_row = None;
+    let (constraint_source, upstream_account_id) =
+        if let Some(explicit_constraint) = explicit_constraint {
+            explicit_constraint
+        } else {
+            if owner_auto_guard_active && let Some(key) = prompt_cache_key {
+                owner_row = load_prompt_cache_encrypted_session_owner_row(&state.pool, key)
+                    .await
+                    .ok()
+                    .flatten();
+            }
+            owner_row.as_ref().map(|row| {
+                (
+                    BlockedBindingConstraintSource::EncryptedSessionOwner,
+                    row.owner_upstream_account_id,
+                )
+            })?
+        };
+    let upstream_account_label = account
+        .as_ref()
+        .map(|value| value.display_name.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            owner_row
+                .as_ref()
+                .and_then(|row| row.owner_upstream_account_name.clone())
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        });
+    let blocked_binding = build_blocked_binding_diagnostic(
+        constraint_source,
+        upstream_account_id,
+        upstream_account_label.as_deref(),
+        prompt_cache_key,
+    );
+    let default_message = match constraint_source {
+        BlockedBindingConstraintSource::UpstreamAccountBinding => format!(
+            "prompt cache conversation is bound to upstream account {} but that account is currently unavailable",
+            blocked_binding.upstream_account_label
+        ),
+        BlockedBindingConstraintSource::EncryptedSessionOwner => format!(
+            "encrypted session owner routing is constrained to upstream account {} but that account is currently unavailable",
+            blocked_binding.upstream_account_label
+        ),
+    };
+    Some(build_pool_assigned_binding_blocked_error(
+        account,
+        message.unwrap_or(default_message),
+        PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED,
+        Some(blocked_binding),
+        attempt_count,
+        distinct_account_count,
+    ))
+}
+
+pub(crate) fn proxy_error_response_from_pool_upstream_error(
+    err: PoolUpstreamError,
+    cvm_id: Option<String>,
+) -> ProxyErrorResponse {
+    ProxyErrorResponse {
+        retry_after_secs: retry_after_secs_for_proxy_error(err.status, &err.message),
+        status: err.status,
+        message: err.message,
+        cvm_id,
+        code: Some(err.failure_kind.to_string()),
+        blocked_binding: err.blocked_binding,
+    }
 }
 
 #[derive(Debug)]
@@ -461,6 +598,8 @@ pub(crate) async fn resolve_proxy_route_context_for_request(
                 message: format!("failed to resolve pool routing settings: {err}"),
                 cvm_id: None,
                 retry_after_secs: None,
+                code: None,
+                blocked_binding: None,
             });
         }
     };
@@ -471,6 +610,8 @@ pub(crate) async fn resolve_proxy_route_context_for_request(
             message: PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE.to_string(),
             cvm_id: None,
             retry_after_secs: None,
+            code: None,
+            blocked_binding: None,
         });
     }
 
@@ -489,6 +630,8 @@ pub(crate) async fn resolve_proxy_route_context_for_request(
                 message: format!("failed to resolve pool routing timeouts: {err}"),
                 cvm_id: None,
                 retry_after_secs: None,
+                code: None,
+                blocked_binding: None,
             })
         }
     }
@@ -707,6 +850,7 @@ pub(crate) struct PoolUpstreamError {
     pub(crate) message: String,
     pub(crate) canonical_error_message: Option<String>,
     pub(crate) failure_kind: &'static str,
+    pub(crate) blocked_binding: Option<BlockedBindingDiagnostic>,
     pub(crate) connect_latency_ms: f64,
     pub(crate) upstream_error_code: Option<String>,
     pub(crate) upstream_error_message: Option<String>,
@@ -759,6 +903,7 @@ pub(crate) fn build_pool_rate_limited_error(
         message: POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
         canonical_error_message: None,
         failure_kind,
+        blocked_binding: None,
         connect_latency_ms: 0.0,
         upstream_error_code: None,
         upstream_error_message: None,
@@ -787,6 +932,7 @@ pub(crate) fn build_pool_no_available_account_error(
         message: POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
         canonical_error_message: None,
         failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
+        blocked_binding: None,
         connect_latency_ms: 0.0,
         upstream_error_code: None,
         upstream_error_message: None,
@@ -819,6 +965,7 @@ pub(crate) fn build_encrypted_session_owner_unavailable_error(
         message: ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE.to_string(),
         canonical_error_message: None,
         failure_kind: PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
+        blocked_binding: None,
         connect_latency_ms: 0.0,
         upstream_error_code: Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE.to_string()),
         upstream_error_message: Some(ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE.to_string()),
@@ -843,12 +990,31 @@ pub(crate) fn build_pool_assigned_account_blocked_error(
     attempt_count: usize,
     distinct_account_count: usize,
 ) -> PoolUpstreamError {
+    build_pool_assigned_binding_blocked_error(
+        Some(account),
+        message,
+        failure_kind,
+        None,
+        attempt_count,
+        distinct_account_count,
+    )
+}
+
+pub(crate) fn build_pool_assigned_binding_blocked_error(
+    account: Option<PoolResolvedAccount>,
+    message: String,
+    failure_kind: &'static str,
+    blocked_binding: Option<BlockedBindingDiagnostic>,
+    attempt_count: usize,
+    distinct_account_count: usize,
+) -> PoolUpstreamError {
     PoolUpstreamError {
-        account: Some(account),
+        account,
         status: StatusCode::SERVICE_UNAVAILABLE,
         message,
         canonical_error_message: None,
         failure_kind,
+        blocked_binding,
         connect_latency_ms: 0.0,
         upstream_error_code: None,
         upstream_error_message: None,
@@ -888,6 +1054,7 @@ pub(crate) fn build_pool_degraded_only_error(
         message: POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
         canonical_error_message: None,
         failure_kind: PROXY_FAILURE_POOL_ALL_ACCOUNTS_DEGRADED,
+        blocked_binding: None,
         connect_latency_ms: 0.0,
         upstream_error_code: None,
         upstream_error_message: None,

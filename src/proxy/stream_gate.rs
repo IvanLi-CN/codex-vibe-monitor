@@ -517,6 +517,7 @@ pub(crate) fn build_pool_total_timeout_exhausted_error(
         message: pool_total_timeout_exhausted_message(total_timeout),
         canonical_error_message: None,
         failure_kind: PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
+        blocked_binding: None,
         connect_latency_ms: 0.0,
         upstream_error_code: None,
         upstream_error_message: None,

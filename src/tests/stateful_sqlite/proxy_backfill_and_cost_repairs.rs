@@ -1966,6 +1966,10 @@ async fn dashboard_read_endpoints_stay_queryable_under_sqlite_write_lock() {
             snapshot_at: None,
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -2125,6 +2129,10 @@ async fn runtime_snapshot_batches_prompt_cache_rollups_without_background_follow
             snapshot_at: None,
             detail: Some("compact".to_string()),
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await

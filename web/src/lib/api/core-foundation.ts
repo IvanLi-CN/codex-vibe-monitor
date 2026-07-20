@@ -38,11 +38,22 @@ export const withBase = (path: string) => `${API_BASE}${path}`;
 
 export class ApiRequestError extends Error {
   readonly status: number;
+  readonly code?: string;
+  readonly blockedBinding?: BlockedBindingDiagnostic | null;
 
-  constructor(status: number, message: string) {
+  constructor(
+    status: number,
+    message: string,
+    options?: {
+      code?: string;
+      blockedBinding?: BlockedBindingDiagnostic | null;
+    },
+  ) {
     super(message);
     this.name = "ApiRequestError";
     this.status = status;
+    this.code = options?.code;
+    this.blockedBinding = options?.blockedBinding ?? null;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
@@ -50,9 +61,24 @@ export class ApiRequestError extends Error {
 function buildRequestError(response: Response, rawText: string): ApiRequestError {
   const compactText = rawText.replace(/\s+/g, " ").trim();
   const detail = (compactText || response.statusText || "").slice(0, 220);
+  let parsedCode: string | undefined;
+  let parsedBlockedBinding: BlockedBindingDiagnostic | null = null;
+  try {
+    const payload = JSON.parse(rawText) as Record<string, unknown>;
+    parsedCode =
+      typeof payload.code === "string" && payload.code.trim() ? payload.code.trim() : undefined;
+    parsedBlockedBinding = normalizeBlockedBindingDiagnostic(payload.blockedBinding);
+  } catch {
+    parsedCode = undefined;
+    parsedBlockedBinding = null;
+  }
   return new ApiRequestError(
     response.status,
     detail ? `Request failed: ${response.status} ${detail}` : `Request failed: ${response.status}`,
+    {
+      code: parsedCode,
+      blockedBinding: parsedBlockedBinding,
+    },
   );
 }
 
@@ -368,6 +394,7 @@ export interface ApiInvocation {
   detailLevel?: "full" | "structured_only";
   detailPrunedAt?: string | null;
   detailPruneReason?: string | null;
+  blockedBinding?: BlockedBindingDiagnostic | null;
   createdAt: string;
 }
 
@@ -388,6 +415,21 @@ export interface InvocationCostAudit {
   absoluteDiffUsd?: number | null;
   recordedPriceVersion?: string | null;
   localPriceVersion?: string | null;
+}
+
+export type BlockedBindingConstraintSource =
+  | "upstreamAccountBinding"
+  | "encryptedSessionOwner"
+  | string;
+
+export type BlockedBindingRecoveryAction = "clearAndResetAffinity" | string;
+
+export interface BlockedBindingDiagnostic {
+  constraintSource: BlockedBindingConstraintSource;
+  upstreamAccountId: number | null;
+  upstreamAccountLabel?: string | null;
+  promptCacheKey?: string | null;
+  recoveryAction?: BlockedBindingRecoveryAction | null;
 }
 
 export type InvocationLivePhase = "queued" | "requesting" | "responding";
@@ -1525,6 +1567,7 @@ export interface PromptCacheConversationInvocationPreview {
   tRespParseMs?: ApiInvocation["tRespParseMs"];
   tPersistMs?: ApiInvocation["tPersistMs"];
   tTotalMs?: ApiInvocation["tTotalMs"];
+  blockedBinding?: ApiInvocation["blockedBinding"];
 }
 
 export interface PromptCacheConversation {
@@ -1545,6 +1588,7 @@ export interface PromptCacheConversation {
   upstreamAccounts: PromptCacheConversationUpstreamAccount[];
   recentInvocations: PromptCacheConversationInvocationPreview[];
   last24hRequests: PromptCacheConversationRequestPoint[];
+  blockedBinding?: BlockedBindingDiagnostic | null;
 }
 
 export type PromptCacheConversationBindingKind = "none" | "group" | "upstreamAccount";
@@ -1764,6 +1808,8 @@ export interface PromptCacheConversationPageQuery {
   snapshotAt?: string | null;
   detail?: PromptCacheConversationDetailLevel;
   recentInvocationLimit?: number;
+  blockedBindingUpstreamAccountId?: number | null;
+  blockedBindingConstraintSource?: BlockedBindingConstraintSource | null;
   signal?: AbortSignal;
 }
 
@@ -2457,6 +2503,36 @@ function normalizePromptCacheConversationRequestPoint(
   return normalizeConversationRequestPoint(raw);
 }
 
+export function normalizeBlockedBindingDiagnostic(raw: unknown): BlockedBindingDiagnostic | null {
+  if (!raw || typeof raw !== "object") return null;
+  const payload = raw as Record<string, unknown>;
+  const constraintSource =
+    typeof payload.constraintSource === "string" && payload.constraintSource.trim()
+      ? payload.constraintSource.trim()
+      : null;
+  if (!constraintSource) return null;
+  const upstreamAccountId = normalizeFiniteNumber(payload.upstreamAccountId) ?? null;
+  const upstreamAccountLabel =
+    typeof payload.upstreamAccountLabel === "string" && payload.upstreamAccountLabel.trim()
+      ? payload.upstreamAccountLabel.trim()
+      : null;
+  const promptCacheKey =
+    typeof payload.promptCacheKey === "string" && payload.promptCacheKey.trim()
+      ? payload.promptCacheKey.trim()
+      : null;
+  const recoveryAction =
+    typeof payload.recoveryAction === "string" && payload.recoveryAction.trim()
+      ? payload.recoveryAction.trim()
+      : null;
+  return {
+    constraintSource,
+    upstreamAccountId,
+    upstreamAccountLabel,
+    promptCacheKey,
+    recoveryAction,
+  };
+}
+
 function normalizePromptCacheConversationUpstreamAccount(
   raw: unknown,
 ): PromptCacheConversationUpstreamAccount | null {
@@ -2606,6 +2682,7 @@ function normalizePromptCacheConversationInvocationPreview(
     tRespParseMs: normalizeFiniteNumber(payload.tRespParseMs),
     tPersistMs: normalizeFiniteNumber(payload.tPersistMs),
     tTotalMs: normalizeFiniteNumber(payload.tTotalMs),
+    blockedBinding: normalizeBlockedBindingDiagnostic(payload.blockedBinding),
   };
 }
 
@@ -2655,6 +2732,7 @@ function normalizePromptCacheConversation(raw: unknown): PromptCacheConversation
     last24hRequests: requestsRaw
       .map(normalizePromptCacheConversationRequestPoint)
       .filter((item): item is PromptCacheConversationRequestPoint => item != null),
+    blockedBinding: normalizeBlockedBindingDiagnostic(payload.blockedBinding),
   };
 }
 
@@ -3933,6 +4011,12 @@ export async function fetchPromptCacheConversationsPage(
   }
   if (options.recentInvocationLimit != null) {
     search.set("recentInvocationLimit", String(options.recentInvocationLimit));
+  }
+  if (options.blockedBindingUpstreamAccountId != null) {
+    search.set("blockedBindingUpstreamAccountId", String(options.blockedBindingUpstreamAccountId));
+  }
+  if (options.blockedBindingConstraintSource) {
+    search.set("blockedBindingConstraintSource", options.blockedBindingConstraintSource);
   }
   const response = await fetchJson<unknown>(
     `/api/stats/prompt-cache-conversations?${search.toString()}`,

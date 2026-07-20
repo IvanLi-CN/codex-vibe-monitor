@@ -1,5 +1,9 @@
 import { useCallback, useMemo, useState } from "react";
-import type { PromptCacheConversation, PromptCacheConversationsResponse } from "../lib/api";
+import type {
+  BlockedBindingConstraintSource,
+  PromptCacheConversation,
+  PromptCacheConversationsResponse,
+} from "../lib/api";
 import {
   DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
   mapPromptCacheConversationsToDashboardCards,
@@ -13,6 +17,11 @@ export const DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN = 4;
 export const DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX = 16;
 
 const WORKING_SET_WINDOW_MS = 5 * 60 * 1_000;
+
+export interface DashboardWorkingConversationsBlockedBindingFilter {
+  upstreamAccountId?: number | null;
+  constraintSource?: BlockedBindingConstraintSource | null;
+}
 
 function parseEpoch(value: string | null | undefined) {
   if (!value) return null;
@@ -53,10 +62,16 @@ function normalizeRequestedPageSize(value: number) {
   );
 }
 
-function buildWorkingConversationsTopic(pageSize: number, recentInvocationLimit: number) {
+function buildWorkingConversationsTopic(
+  pageSize: number,
+  recentInvocationLimit: number,
+  blockedBindingFilter?: DashboardWorkingConversationsBlockedBindingFilter | null,
+) {
   return buildTopicDescriptor("dashboard.working-conversations.current", {
     pageSize,
     recentInvocationLimit,
+    blockedBindingUpstreamAccountId: blockedBindingFilter?.upstreamAccountId ?? null,
+    blockedBindingConstraintSource: blockedBindingFilter?.constraintSource ?? null,
   });
 }
 
@@ -80,7 +95,9 @@ export function resolveDashboardWorkingConversationsRecentPreviewLimit(
   return clampRecentPreviewLimit(maxRecentInFlightCount);
 }
 
-export function useDashboardWorkingConversations() {
+export function useDashboardWorkingConversations(
+  blockedBindingFilter?: DashboardWorkingConversationsBlockedBindingFilter | null,
+) {
   const [requestedPageSize, setRequestedPageSize] = useState(
     DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
   );
@@ -89,8 +106,9 @@ export function useDashboardWorkingConversations() {
       buildWorkingConversationsTopic(
         requestedPageSize,
         DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
+        blockedBindingFilter,
       ),
-    [requestedPageSize],
+    [blockedBindingFilter, requestedPageSize],
   );
   const { data, isLoading, error, refresh } =
     useSubscriptionTopic<PromptCacheConversationsResponse>(topic);

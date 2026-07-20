@@ -2919,6 +2919,10 @@ fn resolve_prompt_cache_conversation_selection_rejects_mutually_exclusive_params
         snapshot_at: None,
         detail: None,
         recent_invocation_limit: None,
+
+        blocked_binding_upstream_account_id: None,
+
+        blocked_binding_constraint_source: None,
     })
     .expect_err("selection should reject mutually exclusive params");
 
@@ -2942,6 +2946,10 @@ fn resolve_prompt_cache_conversation_selection_rejects_activity_hours_and_minute
         snapshot_at: None,
         detail: None,
         recent_invocation_limit: None,
+
+        blocked_binding_upstream_account_id: None,
+
+        blocked_binding_constraint_source: None,
     })
     .expect_err("selection should reject mixed hour and minute windows");
 
@@ -3081,6 +3089,10 @@ async fn prompt_cache_conversations_groups_recent_keys_and_uses_history_totals()
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -3194,6 +3206,10 @@ async fn prompt_cache_last24h_requests_keep_null_status_rows_neutral() {
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -3261,6 +3277,10 @@ async fn prompt_cache_last24h_requests_treat_running_rows_with_failure_class_as_
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -3327,6 +3347,10 @@ async fn prompt_cache_last24h_requests_treat_running_rows_with_error_text_as_fai
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -3400,6 +3424,10 @@ async fn prompt_cache_last24h_requests_treat_pending_rows_with_failure_kind_as_f
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await
@@ -3466,6 +3494,10 @@ async fn prompt_cache_last24h_requests_keep_status_only_http_failures_marked_as_
             snapshot_at: None,
             detail: None,
             recent_invocation_limit: None,
+
+            blocked_binding_upstream_account_id: None,
+
+            blocked_binding_constraint_source: None,
         }),
     )
     .await

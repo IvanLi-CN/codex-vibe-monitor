@@ -684,6 +684,71 @@ pub(crate) enum PromptCacheConversationDetailLevel {
     Compact,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum BlockedBindingConstraintSource {
+    UpstreamAccountBinding,
+    EncryptedSessionOwner,
+}
+
+impl BlockedBindingConstraintSource {
+    pub(crate) fn from_query_param(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "upstreamAccountBinding" => Some(Self::UpstreamAccountBinding),
+            "encryptedSessionOwner" => Some(Self::EncryptedSessionOwner),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum BlockedBindingRecoveryAction {
+    ClearAndResetAffinity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BlockedBindingDiagnostic {
+    pub(crate) constraint_source: BlockedBindingConstraintSource,
+    pub(crate) upstream_account_id: i64,
+    pub(crate) upstream_account_label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) recovery_action: BlockedBindingRecoveryAction,
+}
+
+pub(crate) fn blocked_binding_account_label(
+    upstream_account_label: Option<&str>,
+    upstream_account_id: i64,
+) -> String {
+    upstream_account_label
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("#{upstream_account_id}"))
+}
+
+pub(crate) fn parse_blocked_binding_json(raw: Option<&str>) -> Option<BlockedBindingDiagnostic> {
+    let value = raw?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    serde_json::from_str(value).ok()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct PromptCacheConversationBlockedBindingFilter {
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) constraint_source: Option<BlockedBindingConstraintSource>,
+}
+
+impl PromptCacheConversationBlockedBindingFilter {
+    pub(crate) fn is_active(&self) -> bool {
+        self.upstream_account_id.is_some() || self.constraint_source.is_some()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct PromptCacheConversationsRequest {
     pub(crate) selection: PromptCacheConversationSelection,
@@ -692,6 +757,7 @@ pub(crate) struct PromptCacheConversationsRequest {
     pub(crate) page_size: Option<i64>,
     pub(crate) cursor: Option<String>,
     pub(crate) snapshot_at: Option<String>,
+    pub(crate) blocked_binding_filter: Option<PromptCacheConversationBlockedBindingFilter>,
 }
 
 impl PromptCacheConversationsRequest {
@@ -703,6 +769,7 @@ impl PromptCacheConversationsRequest {
             page_size: None,
             cursor: None,
             snapshot_at: None,
+            blocked_binding_filter: None,
         }
     }
 
@@ -712,6 +779,7 @@ impl PromptCacheConversationsRequest {
             && self.page_size.is_none()
             && self.cursor.is_none()
             && self.snapshot_at.is_none()
+            && self.blocked_binding_filter.is_none()
     }
 }
 
@@ -832,6 +900,8 @@ pub(crate) struct PromptCacheConversationResponse {
     pub(crate) encrypted_owner_group_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) manual_binding: Option<PromptCacheConversationManualBindingResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) blocked_binding: Option<BlockedBindingDiagnostic>,
     pub(crate) upstream_accounts: Vec<PromptCacheConversationUpstreamAccountResponse>,
     pub(crate) recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
     pub(crate) last24h_requests: Vec<PromptCacheConversationRequestPointResponse>,
@@ -882,6 +952,8 @@ pub(crate) struct PromptCacheConversationInvocationPreviewResponse {
     pub(crate) downstream_status_code: Option<i64>,
     pub(crate) downstream_error_message: Option<String>,
     pub(crate) failure_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) blocked_binding: Option<BlockedBindingDiagnostic>,
     pub(crate) is_actionable: Option<bool>,
     pub(crate) response_content_encoding: Option<String>,
     pub(crate) transport: Option<String>,
@@ -1473,6 +1545,7 @@ pub(crate) struct PromptCacheConversationInvocationPreviewRow {
     pub(crate) downstream_status_code: Option<i64>,
     pub(crate) downstream_error_message: Option<String>,
     pub(crate) failure_kind: Option<String>,
+    pub(crate) blocked_binding_json: Option<String>,
     pub(crate) is_actionable: Option<i64>,
     pub(crate) proxy_display_name: Option<String>,
     pub(crate) upstream_account_id: Option<i64>,
@@ -1658,6 +1731,8 @@ pub(crate) struct PromptCacheConversationsQuery {
     pub(crate) snapshot_at: Option<String>,
     pub(crate) detail: Option<String>,
     pub(crate) recent_invocation_limit: Option<i64>,
+    pub(crate) blocked_binding_upstream_account_id: Option<i64>,
+    pub(crate) blocked_binding_constraint_source: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
