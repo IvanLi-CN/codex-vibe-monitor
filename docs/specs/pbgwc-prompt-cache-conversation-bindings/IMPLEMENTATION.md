@@ -37,6 +37,8 @@
 - The bottom bulk action bar is viewport-anchored, theme-aligned, and clears only successful items after each action so failed items remain selected for retry.
 - The bulk route-bind dialog now uses compact dropdowns on a single row (`绑定到 / kind / target`) instead of the previous segmented switch, while destructive manual binding clear remains a separate footer action that ignores the current target dropdowns.
 - `POST /api/stats/prompt-cache-conversation-bindings/bulk-actions` validates the shared action payload first, then executes each selected `promptCacheKey` through the same save/clear helpers as the single-conversation surface and returns a per-item binding snapshot for UI recovery.
+- The bulk clear confirmation dialog now consumes theme-scoped semantic surface tokens instead of `:root`-locked derived colors, so its header/footer chrome and destructive callout stay dark when Storybook or other nested theme hosts render the dialog under `data-theme='vibe-dark'`.
+- The Storybook-local theme override now routes through `ThemeProvider`, keeping `html` and `body` theme attributes aligned before the clear-confirm interaction assertions evaluate the dialog.
 
 ## Conversation Operations Update
 
@@ -100,6 +102,7 @@
 - Web demo `attention` scene evidence: `./assets/dashboard-bulk-actions-selection-panel-web-demo.png` shows viewport-bottom bulk actions and modifier-key selection without entering persistent selection mode.
 - Web demo `attention` scene evidence: `./assets/dashboard-bulk-route-bind-dropdown-open-current.png` shows the compact one-line route-bind dialog while the route-bind kind dropdown is expanded with `分组` and `上游账号` choices.
 - Storybook `ConversationBulkClearConfirm` mock evidence: `./assets/dashboard-bulk-clear-binding-confirm-storybook.png` shows the Dashboard destructive confirmation copy as `清空绑定` / `确认清空绑定`, with no `重选` wording and with sticky route / owner lock preservation stated in the dialog body.
+- Storybook `ConversationBulkClearConfirm` also asserts that dark-theme footer and destructive-callout surfaces stay below the light-story lightness threshold, preventing regressions where `dialog-chrome` or destructive surface tokens silently resolve from root-light values.
 - Storybook `LargeHistoryVirtualizedDrawer` browser evidence: 15,000 total retained records, 50 initial drawer records, 100 after one scroll-triggered page, 28 mounted table rows, first page still visible at the nested table offset, account-binding combobox opened in about 169 ms.
 - Storybook `DrawerBindingAndTimeouts` mock evidence: one drawer shows binding controls plus the timeout subpanel, with mixed `conversation/account/root` source badges, collapsed inherited rows, expanded conversation-owned timeout rows, and editable timeout-only persistence when `bindingKind='none'`.
 - Storybook `DrawerBindingAndTimeouts` mock evidence: one drawer shows the “对话详情” title, conversation-level policy override rows with source badges, binding controls, and the timeout subpanel in the Settings tab.

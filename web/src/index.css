@@ -256,7 +256,9 @@ body,
   --working-conversation-placeholder-line: rgba(255, 255, 255, 0.1);
 }
 
-:root {
+:root,
+[data-theme="vibe-light"],
+[data-theme="vibe-dark"] {
   --surface-card-bg: color-mix(
     in oklab,
     oklch(var(--color-base-100) / 0.9) 82%,

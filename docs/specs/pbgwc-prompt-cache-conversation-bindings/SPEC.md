@@ -42,6 +42,7 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - A `Cmd`/`Ctrl`-modified card click toggles only the clicked card's selection without switching the header into persistent selection mode.
 - Any non-zero selection shows a fixed bottom-center floating bulk action bar with selected count, route binding, manual binding clear, FAST mode, and cancel-selection actions.
 - Bulk route binding supports `none`, `group`, and `upstreamAccount` payloads; the Dashboard clear action remains a separate destructive manual-binding action that submits `bindingKind='none'`.
+- The Dashboard bulk clear confirmation dialog resolves its header/footer chrome and destructive callout surfaces from the active themed ancestor so dark-theme or nested-theme renders cannot inherit light-theme mixed surfaces from `:root`.
 - The separate `clearAndResetAffinity` API action removes the manual conversation binding, `pool_sticky_routes`, and `prompt_cache_encrypted_session_owners` rows for each selected key so the next request reselects an upstream account from normal routing.
 - Bulk FAST mode writes one of the four concrete rewrite modes per selected key and preserves the key's current binding kind.
 - Conversation timeout overrides reuse only the existing request-path timeout fields:
@@ -237,6 +238,7 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given selected Dashboard conversations and a bulk bind payload to an upstream account, when the request succeeds, then every successful item returns an `upstreamAccount` binding snapshot and the selected keys' sticky routes align to that account.
 - Given a selected conversation has a manual binding, sticky route, and encrypted owner lock, when the operator runs dashboard bulk clear binding, then only the manual binding is removed and sticky / owner affinity remains available to routing.
 - Given a selected conversation has a manual binding, sticky route, and encrypted owner lock, when a client calls bulk `clearAndResetAffinity`, then all three affinity rows are removed and the next routing constraint resolves as unconstrained.
+- Given the bulk clear confirmation dialog renders inside a `data-theme='vibe-dark'` subtree or another non-root themed surface, when the dialog opens, then its chrome and destructive callout surfaces use the active dark-theme semantic colors instead of inheriting light-theme mixed values.
 - Given selected conversations with mixed existing binding kinds, when the operator applies bulk FAST mode, then each selected key stores the requested FAST rewrite mode and keeps its previous binding kind.
 - Given a bulk bind request references an invalid group or account target, when the server rejects the shared target validation, then the response is `400` and no selected key is partially written.
 
@@ -283,7 +285,7 @@ Recommended PR subset for this Dashboard bulk-actions change: the two web-demo c
 - submission_gate: approved
 - story_id_or_title: `Monitoring/DashboardWorkingConversationsSection/ConversationBulkClearConfirm`
 - state: selected Dashboard conversations with the destructive manual-binding clear confirmation dialog open
-- evidence_note: verifies the owner-facing copy says `清空绑定` / `确认清空绑定`, omits the prior `重选` wording, and states that sticky route plus encrypted owner lock rows are not cleared by this Dashboard action.
+- evidence_note: verifies the owner-facing copy says `清空绑定` / `确认清空绑定`, omits the prior `重选` wording, states that sticky route plus encrypted owner lock rows are not cleared by this Dashboard action, and keeps the dialog chrome plus destructive callout on the active dark-theme surfaces instead of mixing in light-theme header/footer colors.
 
 ### Conversation Drawer Controls (Storybook)
 
