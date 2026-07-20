@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.42.5",
+  "base_stable_version": "2.42.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-20T03:02:53Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.42.5",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "75054633ffac3eee97d4a24cfdad6df61155cd5b",
+  "pr_number": 658,
+  "pr_title": "fix(dashboard): use realtime network rate",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.42.5",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.42.5",
+  "target_sha": "6c17e14a9efbe1dab2142f92ab2eee4fa6cb64ac",
+  "type_label": "type:patch"
+}
