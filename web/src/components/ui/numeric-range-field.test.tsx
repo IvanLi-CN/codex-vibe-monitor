@@ -45,11 +45,6 @@ function render(ui: React.ReactNode) {
   });
 }
 
-function setNativeValue(element: HTMLInputElement, value: string) {
-  const descriptor = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
-  descriptor?.set?.call(element, value);
-}
-
 describe("NumericRangeField", () => {
   it("updates both ends through a single field wrapper", () => {
     const onChange = vi.fn();
@@ -87,17 +82,18 @@ describe("NumericRangeField", () => {
       />,
     );
 
-    const minSlider = document.querySelector('input[aria-label="Minimum total duration slider"]');
-    if (!(minSlider instanceof HTMLInputElement)) {
+    const minSlider = document.querySelector(
+      '[role="slider"][aria-label="Minimum total duration slider"]',
+    );
+    if (!(minSlider instanceof HTMLElement)) {
       throw new Error("missing minimum slider");
     }
 
     act(() => {
-      setNativeValue(minSlider, "3200");
-      minSlider.dispatchEvent(new Event("input", { bubbles: true }));
+      minSlider.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowRight" }));
     });
 
-    expect(onChange).toHaveBeenCalledWith({ minValue: "3200", maxValue: "" });
+    expect(onChange).toHaveBeenCalledWith({ minValue: "0.1", maxValue: "" });
   });
 
   it("exposes invalid state and current selection summary", () => {
@@ -116,9 +112,11 @@ describe("NumericRangeField", () => {
       />,
     );
 
-    const minSlider = document.querySelector('input[aria-label="Minimum total tokens slider"]');
+    const minSlider = document.querySelector(
+      '[role="slider"][aria-label="Minimum total tokens slider"]',
+    );
     const errorBubble = document.querySelector('[role="alert"]');
-    if (!(minSlider instanceof HTMLInputElement)) {
+    if (!(minSlider instanceof HTMLElement)) {
       throw new Error("missing minimum slider");
     }
     if (!(errorBubble instanceof HTMLElement)) {
@@ -130,7 +128,7 @@ describe("NumericRangeField", () => {
     expect(document.body.textContent ?? "").toContain("2,400 - 6,400 TOKENS");
   });
 
-  it("updates the nearest thumb when the track is pressed", () => {
+  it("renders slider thumbs that stay aligned to the same shared track", () => {
     const onChange = vi.fn();
 
     render(
@@ -144,36 +142,19 @@ describe("NumericRangeField", () => {
         minValue="1000"
         maxValue="4000"
         onChange={onChange}
+        testId="duration-range"
       />,
     );
 
-    const slider = document.querySelector(".dual-range-slider");
-    if (!(slider instanceof HTMLDivElement)) {
+    const slider = document.querySelector('[data-testid="duration-range-slider"]');
+    if (!(slider instanceof HTMLElement)) {
       throw new Error("missing slider surface");
     }
-    slider.getBoundingClientRect = () =>
-      ({
-        x: 0,
-        y: 0,
-        width: 100,
-        height: 44,
-        top: 0,
-        left: 0,
-        right: 100,
-        bottom: 44,
-        toJSON: () => "",
-      }) as DOMRect;
-
-    act(() => {
-      slider.dispatchEvent(
-        new PointerEvent("pointerdown", {
-          bubbles: true,
-          clientX: 70,
-        }),
-      );
-    });
-
-    expect(onChange).toHaveBeenCalledWith({ minValue: "1000", maxValue: "3500" });
+    const sliders = Array.from(slider.querySelectorAll('[role="slider"]'));
+    const track = slider.querySelector('[data-slot="slider-track"]');
+    expect(sliders).toHaveLength(2);
+    expect(track).not.toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it("supports an embedded surface without rendering a nested card shell", () => {

@@ -11,6 +11,7 @@
 - 2026-07-19：根据 UI audit 补齐范围控件的可访问性错误语义、轨道直调交互与当前区间摘要，并移除抽屉标题下的冗余说明文案。
 - 2026-07-19：为 `NumericRangeField` 增加嵌入态 surface，并让 Records 范围分组改用无内层卡片的嵌入式布局，消除嵌套卡片感。
 - 2026-07-20：修正 Records 模型筛选器内层标签选择器的 overlay host 继承，避免嵌套 popup 被 portal 到 `body` 后落到抽屉遮罩下方，并补充新的 mock-only 视觉证据。
+- 2026-07-20：将 `NumericRangeField` 从自绘双 `range` 叠层切换为共享 `Slider` 原语封装，修复 thumb 与轨道的对齐偏差，并刷新范围控件视觉证据。
 
 ## Key Reasons / Replacements
 

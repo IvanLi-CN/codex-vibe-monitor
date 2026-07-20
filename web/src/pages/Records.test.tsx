@@ -310,8 +310,8 @@ describe("RecordsPage suggestions", () => {
     const rangePresetSelect = document.body.querySelector('select[name="rangePreset"]');
     const timeRangeField = document.body.querySelector('[data-testid="records-filter-time-range"]');
     const keywordInput = document.body.querySelector('input[name="keyword"]');
-    const minTotalTokensSlider = document.body.querySelector(
-      'input[aria-label="records.filters.totalTokensRange.min slider"]',
+    const totalTokensRange = document.body.querySelector(
+      '[data-testid="records-filter-total-tokens-range-slider"]',
     );
 
     if (!(timeRangeField instanceof HTMLElement)) {
@@ -320,8 +320,8 @@ describe("RecordsPage suggestions", () => {
     if (!(keywordInput instanceof HTMLInputElement)) {
       throw new Error("missing keyword input");
     }
-    if (!(minTotalTokensSlider instanceof HTMLInputElement)) {
-      throw new Error("missing min total tokens slider");
+    if (!(totalTokensRange instanceof HTMLElement)) {
+      throw new Error("missing total tokens range slider");
     }
 
     openModelSelector();

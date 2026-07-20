@@ -1,6 +1,7 @@
-import { type ReactNode, type PointerEvent as ReactPointerEvent, useId } from "react";
+import { type ReactNode, useId } from "react";
 import { cn } from "../../lib/utils";
 import { FormFieldFeedback } from "./form-field-feedback";
+import { Slider, SliderRange, SliderThumb, SliderTrack } from "./slider";
 
 interface NumericRangeFieldProps {
   label: ReactNode;
@@ -43,19 +44,10 @@ function formatSliderValue(value: number, step?: number) {
   return String(Number(value.toFixed(precision)));
 }
 
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
 function snapToStep(value: number, min: number, step: number) {
   const offset = (value - min) / step;
   const snapped = min + Math.round(offset) * step;
   return Number(snapped.toFixed(resolveStepPrecision(step)));
-}
-
-function resolvePercent(value: number, min: number, max: number) {
-  if (max <= min) return 0;
-  return ((value - min) / (max - min)) * 100;
 }
 
 function formatDisplayValue(value: number, step?: number) {
@@ -109,20 +101,16 @@ export function NumericRangeField({
       : effectiveSliderMin + effectiveStep;
   const parsedMinValue = parseFiniteNumber(minValue);
   const parsedMaxValue = parseFiniteNumber(maxValue);
-  const resolvedMinThumb = clamp(
-    parsedMinValue ?? effectiveSliderMin,
-    effectiveSliderMin,
+  const resolvedMinThumb = Math.min(
     effectiveSliderMax,
+    Math.max(effectiveSliderMin, parsedMinValue ?? effectiveSliderMin),
   );
-  const resolvedMaxThumb = clamp(
-    parsedMaxValue ?? effectiveSliderMax,
-    effectiveSliderMin,
+  const resolvedMaxThumb = Math.min(
     effectiveSliderMax,
+    Math.max(effectiveSliderMin, parsedMaxValue ?? effectiveSliderMax),
   );
   const trackStartValue = Math.min(resolvedMinThumb, resolvedMaxThumb);
   const trackEndValue = Math.max(resolvedMinThumb, resolvedMaxThumb);
-  const startPercent = resolvePercent(trackStartValue, effectiveSliderMin, effectiveSliderMax);
-  const endPercent = resolvePercent(trackEndValue, effectiveSliderMin, effectiveSliderMax);
   const currentRangeSummary = formatRangeSummary(
     trackStartValue,
     trackEndValue,
@@ -130,54 +118,18 @@ export function NumericRangeField({
     unitLabel,
   );
 
-  const applyThumbValue = (thumb: "min" | "max", nextThumb: number) => {
-    if (thumb === "min") {
-      const resolved = clamp(nextThumb, effectiveSliderMin, resolvedMaxThumb);
-      onChange({
-        minValue: resolved <= effectiveSliderMin ? "" : formatSliderValue(resolved, effectiveStep),
-        maxValue,
-      });
-      return;
-    }
-
-    const resolved = clamp(nextThumb, resolvedMinThumb, effectiveSliderMax);
+  const applyThumbValues = (nextValues: number[]) => {
+    const [nextMinRaw = effectiveSliderMin, nextMaxRaw = effectiveSliderMax] = nextValues;
+    const nextMin = Math.min(nextMinRaw, nextMaxRaw);
+    const nextMax = Math.max(nextMinRaw, nextMaxRaw);
+    const normalizedMin = snapToStep(nextMin, effectiveSliderMin, effectiveStep);
+    const normalizedMax = snapToStep(nextMax, effectiveSliderMin, effectiveStep);
     onChange({
-      minValue,
-      maxValue: resolved >= effectiveSliderMax ? "" : formatSliderValue(resolved, effectiveStep),
+      minValue:
+        normalizedMin <= effectiveSliderMin ? "" : formatSliderValue(normalizedMin, effectiveStep),
+      maxValue:
+        normalizedMax >= effectiveSliderMax ? "" : formatSliderValue(normalizedMax, effectiveStep),
     });
-  };
-
-  const handleTrackPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (disabled) return;
-    if (event.target instanceof HTMLInputElement) return;
-    event.preventDefault();
-    const { left, width } = event.currentTarget.getBoundingClientRect();
-    if (width <= 0) return;
-    const resolveThumbValue = (clientX: number) => {
-      const percent = clamp((clientX - left) / width, 0, 1);
-      const raw = effectiveSliderMin + percent * (effectiveSliderMax - effectiveSliderMin);
-      return snapToStep(raw, effectiveSliderMin, effectiveStep);
-    };
-    const initialValue = resolveThumbValue(event.clientX);
-    const targetThumb =
-      Math.abs(initialValue - resolvedMinThumb) <= Math.abs(initialValue - resolvedMaxThumb)
-        ? "min"
-        : "max";
-    const handleClientX = (clientX: number) => {
-      applyThumbValue(targetThumb, resolveThumbValue(clientX));
-    };
-    handleClientX(event.clientX);
-    const handlePointerMove = (pointerEvent: PointerEvent) => {
-      handleClientX(pointerEvent.clientX);
-    };
-    const handlePointerUp = () => {
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-      window.removeEventListener("pointercancel", handlePointerUp);
-    };
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", handlePointerUp);
-    window.addEventListener("pointercancel", handlePointerUp);
   };
 
   return (
@@ -194,53 +146,32 @@ export function NumericRangeField({
           <div className="flex justify-end text-[11px] font-medium tabular-nums text-base-content/60">
             <span>{currentRangeSummary}</span>
           </div>
-          <div
-            className="dual-range-slider"
-            data-disabled={disabled ? "true" : "false"}
-            onPointerDown={handleTrackPointerDown}
+          <Slider
+            data-testid={testId ? `${testId}-slider` : undefined}
+            value={[trackStartValue, trackEndValue]}
+            min={effectiveSliderMin}
+            max={effectiveSliderMax}
+            step={effectiveStep}
+            minStepsBetweenThumbs={0}
+            disabled={disabled}
+            onValueChange={applyThumbValues}
           >
-            <div className="dual-range-slider__track" aria-hidden />
-            <div
-              className="dual-range-slider__range"
-              aria-hidden
-              style={{
-                left: `${startPercent}%`,
-                width: `${Math.max(0, endPercent - startPercent)}%`,
-              }}
-            />
-            <input
-              type="range"
-              min={effectiveSliderMin}
-              max={effectiveSliderMax}
-              step={effectiveStep}
-              disabled={disabled}
+            <SliderTrack>
+              <SliderRange />
+            </SliderTrack>
+            <SliderThumb
               aria-describedby={error ? feedbackId : undefined}
               aria-invalid={error ? true : undefined}
               aria-label={minAriaLabel ? `${minAriaLabel} slider` : "Minimum value slider"}
-              aria-valuetext={formatValueText(resolvedMinThumb, effectiveStep, unitLabel)}
-              value={resolvedMinThumb}
-              onChange={(event) => {
-                applyThumbValue("min", Number(event.target.value));
-              }}
-              className="dual-range-slider__input dual-range-slider__input--min"
+              aria-valuetext={formatValueText(trackStartValue, effectiveStep, unitLabel)}
             />
-            <input
-              type="range"
-              min={effectiveSliderMin}
-              max={effectiveSliderMax}
-              step={effectiveStep}
-              disabled={disabled}
+            <SliderThumb
               aria-describedby={error ? feedbackId : undefined}
               aria-invalid={error ? true : undefined}
               aria-label={maxAriaLabel ? `${maxAriaLabel} slider` : "Maximum value slider"}
-              aria-valuetext={formatValueText(resolvedMaxThumb, effectiveStep, unitLabel)}
-              value={resolvedMaxThumb}
-              onChange={(event) => {
-                applyThumbValue("max", Number(event.target.value));
-              }}
-              className="dual-range-slider__input dual-range-slider__input--max"
+              aria-valuetext={formatValueText(trackEndValue, effectiveStep, unitLabel)}
             />
-          </div>
+          </Slider>
 
           <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/45">
             <span>{formatDisplayValue(effectiveSliderMin, effectiveStep)}</span>
