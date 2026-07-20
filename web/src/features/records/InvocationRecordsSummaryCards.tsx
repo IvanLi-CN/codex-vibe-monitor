@@ -134,20 +134,20 @@ export function InvocationRecordsSummaryCards({
             toneClass: "text-primary",
           },
           {
-            label: t("records.summary.token.totalTokens"),
-            value: formatNumber(summary?.token.totalTokens),
-          },
-          {
-            label: t("records.summary.token.avgTokens"),
-            value: formatNumber(summary?.token.avgTokensPerRequest),
+            label: t("records.summary.token.cacheWrite"),
+            value: formatNumber(summary?.token.cacheWriteTokens),
           },
           {
             label: t("records.summary.token.cacheInput"),
             value: formatNumber(summary?.token.cacheInputTokens),
+          },
+          {
+            label: t("records.summary.token.output"),
+            value: formatNumber(summary?.token.outputTokens),
             toneClass: "text-info",
           },
           {
-            label: t("records.summary.token.totalCost"),
+            label: t("records.summary.token.amount"),
             value: formatCost(summary?.token.totalCost),
           },
         ];

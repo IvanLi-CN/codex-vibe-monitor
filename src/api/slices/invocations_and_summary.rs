@@ -1,4 +1,9 @@
 use super::*;
+use crate::{
+    EXPLICIT_BILLING_PRICE_VERSION_SUFFIX, ProxyPricingMode, REQUESTED_TIER_PRICE_VERSION_SUFFIX,
+    RESPONSE_TIER_PRICE_VERSION_SUFFIX, estimate_proxy_cost_breakdown, has_billable_usage,
+    proxy_price_version,
+};
 use anyhow::anyhow;
 use chrono::Timelike;
 use futures_util::TryStreamExt;
@@ -514,7 +519,9 @@ pub(crate) struct InvocationSummaryAggRow {
     failure_count: i64,
     total_tokens: i64,
     total_cost: f64,
+    cache_write_tokens: i64,
     cache_input_tokens: i64,
+    output_tokens: i64,
 }
 
 #[derive(Debug, FromRow)]
@@ -540,7 +547,9 @@ pub(crate) struct InvocationTokenSummary {
     pub(crate) request_count: i64,
     pub(crate) total_tokens: i64,
     pub(crate) avg_tokens_per_request: f64,
+    pub(crate) cache_write_tokens: i64,
     pub(crate) cache_input_tokens: i64,
+    pub(crate) output_tokens: i64,
     pub(crate) total_cost: f64,
 }
 
@@ -1668,7 +1677,9 @@ pub(crate) struct RuntimeSummaryOverlayDelta {
     failure_count: i64,
     total_tokens: i64,
     total_cost: f64,
+    cache_write_tokens: i64,
     cache_input_tokens: i64,
+    output_tokens: i64,
     service_failure_count: i64,
     client_failure_count: i64,
     client_abort_count: i64,
@@ -1678,7 +1689,10 @@ impl RuntimeSummaryOverlayDelta {
     fn add_terminal_record(&mut self, record: &ApiInvocation) {
         self.total_tokens += record.total_tokens.unwrap_or_default();
         self.total_cost += record.cost.unwrap_or_default();
+        self.cache_write_tokens +=
+            resolve_invocation_cache_write_tokens(record).unwrap_or_default();
         self.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
+        self.output_tokens += record.output_tokens.unwrap_or_default();
         let failure_class = normalized_runtime_text(record.failure_class.as_deref());
         if failure_class == "none" && runtime_record_is_success_for_summary(record) {
             self.success_count += 1;
@@ -2139,7 +2153,7 @@ async fn list_invocations_with_runtime_overlay(
             .fetch_all(&state.pool)
             .await?;
         let total = records.len() as i64;
-        let (records, total) = overlay_runtime_records_for_current_page(
+        let (mut records, total) = overlay_runtime_records_for_current_page(
             &request,
             source_scope,
             runtime_overlay_records,
@@ -2150,6 +2164,8 @@ async fn list_invocations_with_runtime_overlay(
             total,
             "invocation_records_legacy",
         );
+        let pricing_catalog = state.pricing_catalog.read().await.clone();
+        apply_invocation_cost_audits(&mut records, &pricing_catalog);
 
         return Ok(Json(ListResponse {
             snapshot_id: 0,
@@ -2243,7 +2259,7 @@ async fn list_invocations_with_runtime_overlay(
         .collect::<Vec<_>>();
 
     if page_ids.is_empty() {
-        let (records, total) = overlay_runtime_records_for_current_page(
+        let (mut records, total) = overlay_runtime_records_for_current_page(
             &request,
             source_scope,
             runtime_overlay_records,
@@ -2254,6 +2270,8 @@ async fn list_invocations_with_runtime_overlay(
             total,
             "invocation_records",
         );
+        let pricing_catalog = state.pricing_catalog.read().await.clone();
+        apply_invocation_cost_audits(&mut records, &pricing_catalog);
         return Ok(Json(ListResponse {
             snapshot_id,
             total,
@@ -2294,7 +2312,7 @@ async fn list_invocations_with_runtime_overlay(
             .copied()
             .unwrap_or(usize::MAX)
     });
-    let (records, total) = overlay_runtime_records_for_current_page(
+    let (mut records, total) = overlay_runtime_records_for_current_page(
         &request,
         source_scope,
         runtime_overlay_records,
@@ -2305,6 +2323,8 @@ async fn list_invocations_with_runtime_overlay(
         total,
         "invocation_records",
     );
+    let pricing_catalog = state.pricing_catalog.read().await.clone();
+    apply_invocation_cost_audits(&mut records, &pricing_catalog);
 
     Ok(Json(ListResponse {
         snapshot_id,
@@ -2998,6 +3018,268 @@ fn invocation_status_is_success_like(record: &ApiInvocation) -> bool {
     )
 }
 
+pub(crate) const INVOCATION_COST_AUDIT_MISMATCH_EPSILON_USD: f64 = 0.000001;
+pub(crate) const INVOCATION_COST_AUDIT_REASON_RECORDED_COST_MISSING: &str = "recorded_cost_missing";
+pub(crate) const INVOCATION_COST_AUDIT_REASON_RECORDED_PRICE_VERSION_MISSING: &str =
+    "recorded_price_version_missing";
+pub(crate) const INVOCATION_COST_AUDIT_REASON_PRICING_MODE_UNKNOWN: &str = "pricing_mode_unknown";
+pub(crate) const INVOCATION_COST_AUDIT_REASON_USAGE_MISSING: &str = "usage_missing";
+pub(crate) const INVOCATION_COST_AUDIT_REASON_MODEL_MISSING: &str = "model_missing";
+pub(crate) const INVOCATION_COST_AUDIT_REASON_MODEL_PRICING_MISSING: &str = "model_pricing_missing";
+pub(crate) const INVOCATION_COST_AUDIT_REASON_PRICE_VERSION_CHANGED: &str = "price_version_changed";
+pub(crate) const INVOCATION_COST_AUDIT_REASON_TOTAL_MISMATCH: &str = "total_mismatch";
+
+fn resolve_invocation_cache_write_tokens(record: &ApiInvocation) -> Option<i64> {
+    record.cache_write_tokens.or_else(|| {
+        record
+            .input_tokens
+            .map(|input| input.saturating_sub(record.cache_input_tokens.unwrap_or_default().max(0)))
+    })
+}
+
+fn invocation_has_usage_evidence(record: &ApiInvocation) -> bool {
+    [
+        record.input_tokens,
+        record.output_tokens,
+        record.cache_input_tokens,
+        record.reasoning_tokens,
+        record.total_tokens,
+        resolve_invocation_cache_write_tokens(record),
+    ]
+    .into_iter()
+    .any(|value| value.is_some())
+        || record.cost.is_some()
+        || record.cost_input.is_some()
+        || record.cost_cache_write.is_some()
+        || record.cost_cache_read.is_some()
+        || record.cost_output.is_some()
+        || record.cost_reasoning.is_some()
+}
+
+fn invocation_usage_for_cost_audit(record: &ApiInvocation) -> ParsedUsage {
+    ParsedUsage {
+        input_tokens: record.input_tokens,
+        output_tokens: record.output_tokens,
+        cache_input_tokens: record.cache_input_tokens,
+        reasoning_tokens: record.reasoning_tokens,
+        total_tokens: record.total_tokens,
+    }
+}
+
+fn invocation_billable_model(record: &ApiInvocation) -> Option<&str> {
+    record
+        .response_model
+        .as_deref()
+        .or(record.model.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn resolve_invocation_pricing_mode(
+    price_version: Option<&str>,
+) -> Result<ProxyPricingMode, &'static str> {
+    let normalized = price_version
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(INVOCATION_COST_AUDIT_REASON_RECORDED_PRICE_VERSION_MISSING)?;
+    if normalized.ends_with(REQUESTED_TIER_PRICE_VERSION_SUFFIX) {
+        return Ok(ProxyPricingMode::RequestedTier);
+    }
+    if normalized.ends_with(RESPONSE_TIER_PRICE_VERSION_SUFFIX) {
+        return Ok(ProxyPricingMode::ResponseTier);
+    }
+    if normalized.ends_with(EXPLICIT_BILLING_PRICE_VERSION_SUFFIX) {
+        return Ok(ProxyPricingMode::ExplicitBilling);
+    }
+    Err(INVOCATION_COST_AUDIT_REASON_PRICING_MODE_UNKNOWN)
+}
+
+fn build_invocation_cost_audit_breakdown(
+    total: Option<f64>,
+    input: Option<f64>,
+    cache_write: Option<f64>,
+    cache_read: Option<f64>,
+    output: Option<f64>,
+    reasoning: Option<f64>,
+    include_breakdown: bool,
+) -> Option<InvocationCostAuditBreakdown> {
+    let has_components = [input, cache_write, cache_read, output, reasoning]
+        .into_iter()
+        .any(|value| value.is_some());
+    if total.is_none() && !(include_breakdown && has_components) {
+        return None;
+    }
+    Some(InvocationCostAuditBreakdown {
+        input: include_breakdown.then_some(input).flatten(),
+        cache_write: include_breakdown.then_some(cache_write).flatten(),
+        cache_read: include_breakdown.then_some(cache_read).flatten(),
+        output: include_breakdown.then_some(output).flatten(),
+        reasoning: include_breakdown.then_some(reasoning).flatten(),
+        total,
+    })
+}
+
+fn build_recorded_invocation_cost_breakdown(
+    record: &ApiInvocation,
+    include_breakdown: bool,
+) -> Option<InvocationCostAuditBreakdown> {
+    build_invocation_cost_audit_breakdown(
+        record.cost,
+        record.cost_input,
+        record.cost_cache_write,
+        record.cost_cache_read,
+        record.cost_output,
+        record.cost_reasoning,
+        include_breakdown,
+    )
+}
+
+fn build_local_invocation_cost_breakdown(
+    record: &ApiInvocation,
+    catalog: &PricingCatalog,
+    include_breakdown: bool,
+) -> (
+    Option<InvocationCostAuditBreakdown>,
+    Option<String>,
+    Option<&'static str>,
+) {
+    let pricing_mode = match resolve_invocation_pricing_mode(record.price_version.as_deref()) {
+        Ok(mode) => mode,
+        Err(reason) => return (None, None, Some(reason)),
+    };
+    let local_price_version = Some(proxy_price_version(&catalog.version, pricing_mode));
+    let usage = invocation_usage_for_cost_audit(record);
+    if !has_billable_usage(&usage) {
+        return (
+            None,
+            local_price_version,
+            Some(INVOCATION_COST_AUDIT_REASON_USAGE_MISSING),
+        );
+    }
+    let Some(model) = invocation_billable_model(record) else {
+        return (
+            None,
+            local_price_version,
+            Some(INVOCATION_COST_AUDIT_REASON_MODEL_MISSING),
+        );
+    };
+    let (breakdown, _, _) = estimate_proxy_cost_breakdown(
+        catalog,
+        Some(model),
+        &usage,
+        record.billing_service_tier.as_deref(),
+        pricing_mode,
+    );
+    let Some(breakdown) = breakdown else {
+        return (
+            None,
+            local_price_version,
+            Some(INVOCATION_COST_AUDIT_REASON_MODEL_PRICING_MISSING),
+        );
+    };
+    (
+        build_invocation_cost_audit_breakdown(
+            Some(breakdown.total()),
+            Some(breakdown.input),
+            Some(breakdown.cache_write),
+            Some(breakdown.cache_read),
+            Some(breakdown.output),
+            Some(breakdown.reasoning),
+            include_breakdown,
+        ),
+        local_price_version,
+        None,
+    )
+}
+
+fn build_invocation_cost_audit(
+    record: &ApiInvocation,
+    catalog: &PricingCatalog,
+    include_breakdown: bool,
+) -> Option<InvocationCostAudit> {
+    let recorded = build_recorded_invocation_cost_breakdown(record, include_breakdown);
+    let recorded_total = recorded.as_ref().and_then(|value| value.total);
+    let (local, local_price_version, unavailable_reason) =
+        build_local_invocation_cost_breakdown(record, catalog, include_breakdown);
+    let local_total = local.as_ref().and_then(|value| value.total);
+    let absolute_diff_usd = match (recorded_total, local_total) {
+        (Some(recorded_total), Some(local_total)) => Some((recorded_total - local_total).abs()),
+        _ => None,
+    };
+    let mismatch =
+        absolute_diff_usd.is_some_and(|diff| diff > INVOCATION_COST_AUDIT_MISMATCH_EPSILON_USD);
+    let recorded_price_version = normalize_query_text(record.price_version.as_deref());
+    let reason = if mismatch {
+        if recorded_price_version.as_deref() != local_price_version.as_deref() {
+            Some(INVOCATION_COST_AUDIT_REASON_PRICE_VERSION_CHANGED.to_string())
+        } else {
+            Some(INVOCATION_COST_AUDIT_REASON_TOTAL_MISMATCH.to_string())
+        }
+    } else if recorded_total.is_none() && local_total.is_some() {
+        Some(INVOCATION_COST_AUDIT_REASON_RECORDED_COST_MISSING.to_string())
+    } else if recorded_total.is_some() && local_total.is_none() {
+        unavailable_reason.map(str::to_string)
+    } else {
+        None
+    };
+    if recorded.is_none()
+        && local.is_none()
+        && recorded_price_version.is_none()
+        && local_price_version.is_none()
+        && reason.is_none()
+    {
+        return None;
+    }
+    Some(InvocationCostAudit {
+        recorded,
+        local,
+        mismatch,
+        reason,
+        absolute_diff_usd,
+        recorded_price_version,
+        local_price_version,
+    })
+}
+
+fn apply_invocation_cost_audits(records: &mut [ApiInvocation], catalog: &PricingCatalog) {
+    for record in records {
+        record.cost_audit = build_invocation_cost_audit(record, catalog, false);
+    }
+}
+
+fn build_invocation_usage_summary(
+    record: &ApiInvocation,
+    cost_audit: &InvocationCostAudit,
+) -> Value {
+    let recorded = cost_audit
+        .recorded
+        .as_ref()
+        .map(|breakdown| json!(breakdown));
+    let local = cost_audit.local.as_ref().map(|breakdown| json!(breakdown));
+    json!({
+        "inputTokens": record.input_tokens,
+        "cacheWriteTokens": resolve_invocation_cache_write_tokens(record),
+        "cacheInputTokens": record.cache_input_tokens,
+        "outputTokens": record.output_tokens,
+        "reasoningTokens": record.reasoning_tokens,
+        "totalTokens": record.total_tokens,
+        "cost": record.cost,
+        "tokens": {
+            "input": record.input_tokens,
+            "cacheWrite": resolve_invocation_cache_write_tokens(record),
+            "cacheRead": record.cache_input_tokens,
+            "output": record.output_tokens,
+            "reasoning": record.reasoning_tokens,
+            "total": record.total_tokens,
+        },
+        "costs": {
+            "recorded": recorded,
+            "local": local,
+        },
+        "audit": cost_audit,
+    })
+}
+
 fn build_workflow_hero(
     record: &ApiInvocation,
     timeline_attempt_count: usize,
@@ -3091,7 +3373,7 @@ fn build_attempt_response_summary(
     record: &ApiInvocation,
     attempt: &InvocationWorkflowAttemptRow,
     payload: Option<&Value>,
-    include_usage: bool,
+    usage_cost_audit: Option<&InvocationCostAudit>,
 ) -> Value {
     json!({
         "status": attempt.status.clone(),
@@ -3135,16 +3417,7 @@ fn build_attempt_response_summary(
             "detailLevel": record.detail_level.clone(),
             "detailPruneReason": record.detail_prune_reason.clone(),
         },
-        "usage": include_usage.then(|| {
-            json!({
-                "inputTokens": record.input_tokens,
-                "outputTokens": record.output_tokens,
-                "cacheInputTokens": record.cache_input_tokens,
-                "reasoningTokens": record.reasoning_tokens,
-                "totalTokens": record.total_tokens,
-                "cost": record.cost,
-            })
-        }),
+        "usage": usage_cost_audit.map(|audit| build_invocation_usage_summary(record, audit)),
     })
 }
 
@@ -3152,7 +3425,7 @@ fn build_workflow_attempt_from_row(
     record: &ApiInvocation,
     attempt: &InvocationWorkflowAttemptRow,
     payload: Option<&Value>,
-    include_usage: bool,
+    usage_cost_audit: Option<&InvocationCostAudit>,
 ) -> InvocationWorkflowAttempt {
     InvocationWorkflowAttempt {
         synthetic: false,
@@ -3207,7 +3480,7 @@ fn build_workflow_attempt_from_row(
         ),
         response_summary: parse_summary_json_or_fallback(
             attempt.response_summary_json.as_deref(),
-            || build_attempt_response_summary(record, attempt, payload, include_usage),
+            || build_attempt_response_summary(record, attempt, payload, usage_cost_audit),
         ),
     }
 }
@@ -3215,6 +3488,7 @@ fn build_workflow_attempt_from_row(
 fn build_synthetic_workflow_attempt(
     record: &ApiInvocation,
     payload: Option<&Value>,
+    usage_cost_audit: Option<&InvocationCostAudit>,
 ) -> InvocationWorkflowAttempt {
     let request_compression = request_compression_value(
         payload_string(payload, &["requestCompressionAlgorithm"]),
@@ -3291,14 +3565,7 @@ fn build_synthetic_workflow_attempt(
             "detailLevel": record.detail_level.clone(),
             "detailPruneReason": record.detail_prune_reason.clone(),
         },
-        "usage": {
-            "inputTokens": record.input_tokens,
-            "outputTokens": record.output_tokens,
-            "cacheInputTokens": record.cache_input_tokens,
-            "reasoningTokens": record.reasoning_tokens,
-            "totalTokens": record.total_tokens,
-            "cost": record.cost,
-        },
+        "usage": usage_cost_audit.map(|audit| build_invocation_usage_summary(record, audit)),
     });
     InvocationWorkflowAttempt {
         synthetic: true,
@@ -3462,6 +3729,18 @@ fn invocation_workflow_attempt_row_is_pseudo_terminal(
             .as_deref()
             .map(str::trim)
             .is_none_or(str::is_empty)
+}
+
+fn last_success_like_attempt_index(attempt_rows: &[&InvocationWorkflowAttemptRow]) -> Option<i64> {
+    attempt_rows
+        .iter()
+        .rfind(|attempt| {
+            matches!(
+                normalized_runtime_text(Some(attempt.status.as_str())).as_str(),
+                "success" | "completed" | "warning_success"
+            )
+        })
+        .map(|attempt| attempt.attempt_index)
 }
 
 fn build_workflow_timeline_entries(
@@ -3767,10 +4046,12 @@ pub(crate) async fn fetch_invocation_workflow_detail(
         .iter()
         .filter(|attempt| !invocation_workflow_attempt_row_is_pseudo_terminal(attempt))
         .collect::<Vec<_>>();
-    let last_success_attempt_index = real_attempt_rows
-        .iter()
-        .rfind(|attempt| normalized_runtime_text(Some(attempt.status.as_str())) == "success")
-        .map(|attempt| attempt.attempt_index);
+    let last_success_attempt_index = last_success_like_attempt_index(&real_attempt_rows);
+    let pricing_catalog = state.pricing_catalog.read().await.clone();
+    let usage_cost_audit = (invocation_status_is_success_like(&record)
+        && invocation_has_usage_evidence(&record))
+    .then(|| build_invocation_cost_audit(&record, &pricing_catalog, true))
+    .flatten();
     let pool_route = normalized_runtime_text(record.route_mode.as_deref()) == "pool";
     let render_route_only = pool_route
         && !invocation_status_is_success_like(&record)
@@ -3780,9 +4061,11 @@ pub(crate) async fn fetch_invocation_workflow_detail(
         pseudo_attempt_rows
             .last()
             .map(|attempt| {
-                build_workflow_attempt_from_row(&record, attempt, payload_value.as_ref(), false)
+                build_workflow_attempt_from_row(&record, attempt, payload_value.as_ref(), None)
             })
-            .unwrap_or_else(|| build_synthetic_workflow_attempt(&record, payload_value.as_ref()))
+            .unwrap_or_else(|| {
+                build_synthetic_workflow_attempt(&record, payload_value.as_ref(), None)
+            })
     });
     let attempts = if real_attempt_rows.is_empty() {
         if route_only_attempt.is_some() {
@@ -3791,6 +4074,7 @@ pub(crate) async fn fetch_invocation_workflow_detail(
             vec![build_synthetic_workflow_attempt(
                 &record,
                 payload_value.as_ref(),
+                usage_cost_audit.as_ref(),
             )]
         }
     } else {
@@ -3801,8 +4085,9 @@ pub(crate) async fn fetch_invocation_workflow_detail(
                     &record,
                     attempt,
                     payload_value.as_ref(),
-                    last_success_attempt_index == Some(attempt.attempt_index)
-                        && (record.total_tokens.is_some() || record.cost.is_some()),
+                    (last_success_attempt_index == Some(attempt.attempt_index))
+                        .then_some(usage_cost_audit.as_ref())
+                        .flatten(),
                 )
             })
             .collect::<Vec<_>>()
@@ -4235,7 +4520,9 @@ pub(crate) async fn fetch_invocation_summary(
          COALESCE(SUM(CASE WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
          COALESCE(SUM(total_tokens), 0) AS total_tokens, \
          COALESCE(SUM(cost), 0.0) AS total_cost, \
-         COALESCE(SUM(cache_input_tokens), 0) AS cache_input_tokens \
+         COALESCE(SUM(MAX(COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0), 0)), 0) AS cache_write_tokens, \
+         COALESCE(SUM(cache_input_tokens), 0) AS cache_input_tokens, \
+         COALESCE(SUM(output_tokens), 0) AS output_tokens \
          FROM codex_invocations WHERE 1 = 1",
         status_norm = INVOCATION_STATUS_NORMALIZED_SQL,
         resolved_failure = INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
@@ -4312,8 +4599,11 @@ pub(crate) async fn fetch_invocation_summary(
     let failure_count = (totals.failure_count + runtime_overlay_delta.failure_count).max(0);
     let total_tokens = (totals.total_tokens + runtime_overlay_delta.total_tokens).max(0);
     let total_cost = totals.total_cost + runtime_overlay_delta.total_cost;
+    let cache_write_tokens =
+        (totals.cache_write_tokens + runtime_overlay_delta.cache_write_tokens).max(0);
     let cache_input_tokens =
         (totals.cache_input_tokens + runtime_overlay_delta.cache_input_tokens).max(0);
+    let output_tokens = (totals.output_tokens + runtime_overlay_delta.output_tokens).max(0);
     let avg_tokens_per_request = if total_count <= 0 {
         0.0
     } else {
@@ -4347,7 +4637,9 @@ pub(crate) async fn fetch_invocation_summary(
             request_count: total_count,
             total_tokens,
             avg_tokens_per_request,
+            cache_write_tokens,
             cache_input_tokens,
+            output_tokens,
             total_cost,
         },
         network,
@@ -12188,4 +12480,284 @@ pub(crate) fn push_exact_range(
     }
     ranges.push(range);
     Ok(())
+}
+
+#[cfg(test)]
+mod invocation_cost_audit_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn sample_pricing_catalog() -> PricingCatalog {
+        PricingCatalog {
+            version: "unit-test".to_string(),
+            models: HashMap::from([(
+                "gpt-5.4".to_string(),
+                ModelPricing {
+                    input_per_1m: 1.0,
+                    output_per_1m: 2.0,
+                    cache_input_per_1m: Some(0.1),
+                    cache_read_per_1m: Some(0.2),
+                    cache_write_per_1m: Some(1.25),
+                    reasoning_per_1m: Some(3.0),
+                    source: "unit-test".to_string(),
+                },
+            )]),
+        }
+    }
+
+    fn sample_invocation(reasoning_tokens: Option<i64>) -> ApiInvocation {
+        ApiInvocation {
+            id: 7,
+            invoke_id: "invocation-cost-audit".to_string(),
+            occurred_at: "2026-07-20 10:25:09".to_string(),
+            source: SOURCE_PROXY.to_string(),
+            proxy_display_name: Some("ciii".to_string()),
+            model: Some("gpt-5.4".to_string()),
+            request_model: Some("gpt-5.4".to_string()),
+            response_model: Some("gpt-5.4".to_string()),
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            cache_input_tokens: Some(400),
+            reasoning_tokens,
+            reasoning_effort: Some("medium".to_string()),
+            total_tokens: Some(1_200),
+            cost: Some(0.0099),
+            cost_input: None,
+            cost_cache_write: None,
+            cost_cache_read: None,
+            cost_output: None,
+            cost_reasoning: None,
+            cache_write_tokens: None,
+            status: Some("success".to_string()),
+            live_phase: None,
+            error_message: None,
+            downstream_status_code: Some(200),
+            failure_kind: None,
+            stream_terminal_event: None,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            downstream_error_message: None,
+            upstream_request_id: Some("req_cost_audit".to_string()),
+            failure_class: Some("none".to_string()),
+            is_actionable: Some(false),
+            endpoint: Some("/v1/responses".to_string()),
+            compaction_request_kind: Some("remote_v2".to_string()),
+            compaction_response_kind: Some("remote_v2".to_string()),
+            image_intent: Some("no".to_string()),
+            requester_ip: Some("192.168.31.6".to_string()),
+            prompt_cache_key: Some("pck-cost-audit".to_string()),
+            sticky_key: None,
+            route_mode: Some("pool".to_string()),
+            upstream_account_id: Some(17),
+            upstream_account_name: Some("Pool 17".to_string()),
+            response_content_encoding: Some("identity".to_string()),
+            transport: Some("http".to_string()),
+            pool_attempt_count: Some(3),
+            pool_distinct_account_count: Some(2),
+            pool_attempt_terminal_reason: Some("success".to_string()),
+            requested_service_tier: Some("default".to_string()),
+            service_tier: Some("default".to_string()),
+            billing_service_tier: Some("default".to_string()),
+            proxy_weight_delta: None,
+            cost_estimated: Some(0),
+            price_version: Some("legacy@response-tier".to_string()),
+            cost_audit: None,
+            request_raw_path: None,
+            request_raw_size: None,
+            request_raw_truncated: None,
+            request_raw_truncated_reason: None,
+            response_raw_path: None,
+            response_raw_size: None,
+            response_raw_truncated: None,
+            response_raw_truncated_reason: None,
+            detail_level: "full".to_string(),
+            detail_pruned_at: None,
+            detail_prune_reason: None,
+            t_total_ms: Some(3_450.0),
+            t_req_read_ms: Some(20.0),
+            t_req_parse_ms: Some(8.0),
+            t_upstream_connect_ms: Some(190.0),
+            t_upstream_ttfb_ms: Some(330.0),
+            t_upstream_stream_ms: Some(2_800.0),
+            t_resp_parse_ms: Some(12.0),
+            t_persist_ms: Some(6.0),
+            created_at: "2026-07-20 10:25:09".to_string(),
+        }
+    }
+
+    fn sample_attempt_row(attempt_index: i64, status: &str) -> InvocationWorkflowAttemptRow {
+        InvocationWorkflowAttemptRow {
+            attempt_id: Some(format!("attempt-{attempt_index}")),
+            invoke_id: "invocation-cost-audit".to_string(),
+            occurred_at: "2026-07-20 10:25:09".to_string(),
+            endpoint: "/v1/responses".to_string(),
+            sticky_key: None,
+            upstream_account_id: Some(17),
+            upstream_account_name: Some("Pool 17".to_string()),
+            upstream_route_key: Some("route-17".to_string()),
+            proxy_binding_key_snapshot: Some("binding-17".to_string()),
+            attempt_index,
+            distinct_account_index: attempt_index,
+            same_account_retry_index: 0,
+            requester_ip: Some("192.168.31.6".to_string()),
+            started_at: Some("2026-07-20 10:25:09".to_string()),
+            finished_at: Some("2026-07-20 10:25:12".to_string()),
+            status: status.to_string(),
+            phase: Some(if status == "failed" {
+                "streaming".to_string()
+            } else {
+                "completed".to_string()
+            }),
+            http_status: Some(if status == "failed" { 500 } else { 200 }),
+            downstream_http_status: Some(200),
+            failure_kind: (status == "failed").then_some("upstream_error".to_string()),
+            error_message: (status == "failed").then_some("upstream error".to_string()),
+            downstream_error_message: None,
+            connect_latency_ms: Some(120.0),
+            first_byte_latency_ms: Some(240.0),
+            stream_latency_ms: Some(1_500.0),
+            upstream_request_id: Some(format!("req-{attempt_index}")),
+            upstream_request_compression_algorithm: None,
+            upstream_request_compression_mode: None,
+            upstream_request_logical_body_bytes: None,
+            upstream_request_transmitted_body_bytes: None,
+            upstream_request_header_bytes_approx: None,
+            upstream_response_body_bytes: None,
+            upstream_response_header_bytes_approx: None,
+            compact_support_status: None,
+            compact_support_reason: None,
+            request_summary_json: None,
+            response_summary_json: None,
+        }
+    }
+
+    fn assert_close(left: f64, right: f64) {
+        assert!(
+            (left - right).abs() < 1e-12,
+            "expected {left} to be close to {right}"
+        );
+    }
+
+    #[test]
+    fn build_invocation_cost_audit_flags_price_version_change_and_keeps_total_only_history() {
+        let record = sample_invocation(None);
+        let catalog = sample_pricing_catalog();
+
+        let audit =
+            build_invocation_cost_audit(&record, &catalog, true).expect("cost audit should exist");
+
+        assert!(audit.mismatch);
+        assert_eq!(
+            audit.reason.as_deref(),
+            Some(INVOCATION_COST_AUDIT_REASON_PRICE_VERSION_CHANGED)
+        );
+        assert_eq!(
+            audit.recorded_price_version.as_deref(),
+            Some("legacy@response-tier")
+        );
+        assert_eq!(
+            audit.local_price_version.as_deref(),
+            Some("unit-test@response-tier")
+        );
+
+        let recorded = audit.recorded.expect("recorded breakdown");
+        assert_eq!(recorded.total, Some(0.0099));
+        assert_eq!(recorded.input, None);
+        assert_eq!(recorded.cache_write, None);
+        assert_eq!(recorded.cache_read, None);
+        assert_eq!(recorded.output, None);
+        assert_eq!(recorded.reasoning, None);
+
+        let local = audit.local.expect("local breakdown");
+        assert_close(local.input.expect("input cost"), 0.0);
+        assert_close(local.cache_write.expect("cache write cost"), 0.00075);
+        assert_close(local.cache_read.expect("cache read cost"), 0.00008);
+        assert_close(local.output.expect("output cost"), 0.0004);
+        assert_close(local.reasoning.expect("reasoning cost"), 0.0);
+        assert_close(local.total.expect("total cost"), 0.00123);
+        assert!(
+            audit.absolute_diff_usd.expect("absolute diff")
+                > INVOCATION_COST_AUDIT_MISMATCH_EPSILON_USD
+        );
+    }
+
+    #[test]
+    fn build_invocation_usage_summary_preserves_reasoning_null_vs_zero() {
+        let catalog = sample_pricing_catalog();
+
+        let record_without_reasoning = sample_invocation(None);
+        let audit_without_reasoning =
+            build_invocation_cost_audit(&record_without_reasoning, &catalog, true)
+                .expect("cost audit for null reasoning");
+        let usage_without_reasoning =
+            build_invocation_usage_summary(&record_without_reasoning, &audit_without_reasoning);
+        assert!(usage_without_reasoning["reasoningTokens"].is_null());
+        assert!(usage_without_reasoning["tokens"]["reasoning"].is_null());
+
+        let record_with_zero_reasoning = sample_invocation(Some(0));
+        let audit_with_zero_reasoning =
+            build_invocation_cost_audit(&record_with_zero_reasoning, &catalog, true)
+                .expect("cost audit for zero reasoning");
+        let usage_with_zero_reasoning =
+            build_invocation_usage_summary(&record_with_zero_reasoning, &audit_with_zero_reasoning);
+        assert_eq!(
+            usage_with_zero_reasoning["reasoningTokens"].as_i64(),
+            Some(0)
+        );
+        assert_eq!(
+            usage_with_zero_reasoning["tokens"]["reasoning"].as_i64(),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn workflow_usage_audit_only_attaches_to_last_success_like_attempt() {
+        let record = sample_invocation(Some(0));
+        let catalog = sample_pricing_catalog();
+        let usage_cost_audit =
+            build_invocation_cost_audit(&record, &catalog, true).expect("cost audit");
+
+        let attempt_rows = [
+            sample_attempt_row(1, "failed"),
+            sample_attempt_row(2, "success"),
+            sample_attempt_row(3, "warning_success"),
+        ];
+        let attempt_refs = attempt_rows.iter().collect::<Vec<_>>();
+        let last_success_attempt_index = last_success_like_attempt_index(&attempt_refs);
+        assert_eq!(last_success_attempt_index, Some(3));
+
+        let attempts = attempt_rows
+            .iter()
+            .map(|attempt| {
+                build_workflow_attempt_from_row(
+                    &record,
+                    attempt,
+                    None,
+                    (last_success_attempt_index == Some(attempt.attempt_index))
+                        .then_some(&usage_cost_audit),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        for attempt in &attempts[..2] {
+            let response_summary = attempt.response_summary.as_ref().expect("response summary");
+            assert!(
+                response_summary.get("usage").is_some_and(Value::is_null),
+                "non-terminal success attempts should not receive usage audit"
+            );
+        }
+
+        let final_response_summary = attempts[2]
+            .response_summary
+            .as_ref()
+            .expect("final response summary");
+        assert_eq!(
+            final_response_summary["usage"]["reasoningTokens"].as_i64(),
+            Some(0)
+        );
+        assert_eq!(
+            final_response_summary["usage"]["audit"]["reason"].as_str(),
+            Some(INVOCATION_COST_AUDIT_REASON_PRICE_VERSION_CHANGED)
+        );
+    }
 }

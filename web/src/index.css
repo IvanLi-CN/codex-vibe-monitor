@@ -791,6 +791,42 @@ body {
         grid-column: span 2 / span 2;
       }
     }
+
+    .invocation-detail-mobile-flat .invocation-detail-hero-surface,
+    .invocation-detail-mobile-flat .invocation-detail-timeline-surface,
+    .invocation-detail-mobile-flat .invocation-detail-card-surface {
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .invocation-detail-mobile-flat .invocation-detail-hero-surface,
+    .invocation-detail-mobile-flat .invocation-detail-timeline-surface {
+      padding-inline: 0;
+    }
+
+    .invocation-detail-mobile-flat .invocation-detail-hero-surface {
+      padding-block: 0 1rem;
+      border-bottom: 1px solid var(--app-surface-border);
+    }
+
+    .invocation-detail-mobile-flat .invocation-detail-card-surface {
+      padding: 0;
+    }
+
+    .invocation-detail-mobile-flat
+      .invocation-detail-card-surface
+      + .invocation-detail-card-surface {
+      margin-top: 1rem;
+      border-top: 1px solid var(--app-surface-border);
+      padding-top: 1rem;
+    }
+
+    .invocation-detail-mobile-flat .invocation-detail-timeline-surface {
+      padding-block: 1rem 0;
+      border-top: 1px solid var(--app-surface-border);
+    }
   }
 
   .working-conversation-card-surface {
@@ -882,6 +918,7 @@ body {
     @apply text-base-content;
     border-top: 1px solid var(--app-surface-border);
     background-color: oklch(var(--color-base-100) / 0.985);
+    pointer-events: auto;
     box-shadow:
       0 -20px 56px rgba(15, 23, 42, 0.16),
       0 -1px 0 rgba(148, 163, 184, 0.24);
@@ -909,6 +946,7 @@ body {
     display: flex;
     align-items: flex-end;
     justify-content: flex-end;
+    pointer-events: none;
   }
 
   .drawer-shell.drawer-shell--detail-wide {

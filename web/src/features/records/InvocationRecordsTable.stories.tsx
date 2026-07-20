@@ -6,6 +6,7 @@ import type {
   ApiInvocation,
   ApiInvocationRecordDetailResponse,
   ApiInvocationResponseBodyResponse,
+  ApiInvocationWorkflowDetailResponse,
   ApiPoolUpstreamRequestAttempt,
 } from "../../lib/api";
 import { InvocationRecordsTable } from "./InvocationRecordsTable";
@@ -22,6 +23,7 @@ import {
 type PoolAttemptsByInvokeId = Record<string, ApiPoolUpstreamRequestAttempt[]>;
 type InvocationRecordDetailsById = Record<number, ApiInvocationRecordDetailResponse>;
 type InvocationResponseBodiesById = Record<number, ApiInvocationResponseBodyResponse>;
+type InvocationWorkflowDetailsById = Record<number, ApiInvocationWorkflowDetailResponse>;
 
 const POOL_ROUTING_ACCOUNT_STATE_RECORDS: ApiInvocation[] = [
   {
@@ -104,6 +106,170 @@ const ENDPOINT_CHIP_RECORDS: ApiInvocation[] = [
   },
 ];
 
+const TOKEN_COST_AUDIT_WARNING_RECORDS: ApiInvocation[] = [
+  {
+    ...STORYBOOK_INVOCATION_RECORDS[0]!,
+    id: 6601,
+    invokeId: "inv_story_cost_audit_warning",
+    model: "gpt-5.5",
+    requestModel: "gpt-5.4",
+    responseModel: "gpt-5.5",
+    imageIntent: "yes",
+    inputTokens: 132_219,
+    cacheWriteTokens: 5_632,
+    cacheInputTokens: 126_587,
+    outputTokens: 59,
+    reasoningTokens: undefined,
+    totalTokens: 132_278,
+    cost: 0.6375,
+    costAudit: {
+      recorded: {
+        total: 0.6375,
+      },
+      local: {
+        input: 0,
+        cacheWrite: 0.451,
+        cacheRead: 0.1266,
+        output: 0.0189,
+        reasoning: 0,
+        total: 0.5965,
+      },
+      mismatch: true,
+      reason: "price_version_changed",
+      absoluteDiffUsd: 0.041,
+      recordedPriceVersion: "openai-standard-2026-07-01@response-tier",
+      localPriceVersion: "openai-standard-2026-07-20@response-tier",
+    },
+  },
+];
+
+function buildStoryWorkflowUsage(record: ApiInvocation) {
+  if (!record.costAudit) return null;
+  return {
+    inputTokens: record.inputTokens ?? null,
+    cacheWriteTokens: record.cacheWriteTokens ?? null,
+    cacheInputTokens: record.cacheInputTokens ?? null,
+    outputTokens: record.outputTokens ?? null,
+    reasoningTokens: record.reasoningTokens ?? null,
+    totalTokens: record.totalTokens ?? null,
+    cost: record.cost ?? null,
+    tokens: {
+      input: record.inputTokens ?? null,
+      cacheWrite: record.cacheWriteTokens ?? null,
+      cacheRead: record.cacheInputTokens ?? null,
+      output: record.outputTokens ?? null,
+      reasoning: record.reasoningTokens ?? null,
+      total: record.totalTokens ?? null,
+    },
+    costs: {
+      recorded: record.costAudit.recorded ?? null,
+      local: record.costAudit.local ?? null,
+    },
+    audit: record.costAudit,
+  };
+}
+
+function buildStoryWorkflowDetailResponse(
+  record: ApiInvocation,
+): ApiInvocationWorkflowDetailResponse {
+  return {
+    hero: {
+      recordId: record.id,
+      invokeId: record.invokeId,
+      promptCacheKey: record.promptCacheKey ?? null,
+      routeMode: record.routeMode ?? null,
+      endpoint: record.endpoint ?? null,
+      requestModel: record.requestModel ?? record.model ?? null,
+      responseModel: record.responseModel ?? record.model ?? null,
+      finalStatus: record.status,
+      failureClass: record.failureClass ?? null,
+      downstreamStatusCode: record.downstreamStatusCode ?? null,
+      upstreamAccountId: record.upstreamAccountId ?? null,
+      upstreamAccountName: record.upstreamAccountName ?? null,
+      totalDurationMs: record.tTotalMs ?? null,
+      timelineAttemptCount: 1,
+      poolAttemptCount: record.routeMode === "pool" ? 1 : null,
+      totalTokens: record.totalTokens ?? null,
+      cost: record.cost ?? null,
+      occurredAt: record.occurredAt,
+    },
+    timeline: [
+      {
+        blockId: `route-${record.id}`,
+        kind: "routingDecision",
+        occurredAt: record.occurredAt,
+        title: "Route summary",
+        subtitle: `${record.routeMode ?? "direct"} ${record.endpoint ?? ""}`.trim(),
+        status: record.routeMode ?? "direct",
+        detail: {
+          request: {
+            endpoint: record.endpoint ?? null,
+            routeMode: record.routeMode ?? null,
+            requestModel: record.requestModel ?? record.model ?? null,
+            responseModel: record.responseModel ?? record.model ?? null,
+            reasoningEffort: record.reasoningEffort ?? null,
+            imageIntent: record.imageIntent ?? null,
+            promptCacheKey: record.promptCacheKey ?? null,
+            requesterIp: record.requesterIp ?? null,
+            routing: {
+              proxyDisplayName: record.proxyDisplayName ?? null,
+              transport: record.transport ?? null,
+            },
+          },
+        },
+      },
+      {
+        blockId: `attempt-${record.id}`,
+        kind: "attempt",
+        occurredAt: record.occurredAt,
+        title: "Attempt 1",
+        subtitle: record.upstreamAccountName ?? record.proxyDisplayName ?? "Direct",
+        status: record.status,
+        attempt: {
+          synthetic: true,
+          occurredAt: record.occurredAt,
+          endpoint: record.endpoint ?? "/v1/responses",
+          stickyKey: record.stickyKey ?? null,
+          upstreamAccountId: record.upstreamAccountId ?? null,
+          upstreamAccountName: record.upstreamAccountName ?? null,
+          requestModel: record.requestModel ?? record.model ?? null,
+          responseModel: record.responseModel ?? record.model ?? null,
+          attemptIndex: 1,
+          distinctAccountIndex: 1,
+          sameAccountRetryIndex: 1,
+          requesterIp: record.requesterIp ?? null,
+          status: record.status ?? "success",
+          httpStatus: record.downstreamStatusCode ?? 200,
+          downstreamHttpStatus: record.downstreamStatusCode ?? 200,
+          connectLatencyMs: record.tUpstreamConnectMs ?? null,
+          firstByteLatencyMs: record.tUpstreamTtfbMs ?? null,
+          streamLatencyMs: record.tUpstreamStreamMs ?? null,
+          responseSummary: {
+            status: record.status ?? "success",
+            httpStatus: record.downstreamStatusCode ?? 200,
+            responseContentEncoding: record.responseContentEncoding ?? null,
+            serviceTier: record.serviceTier ?? null,
+            billingServiceTier: record.billingServiceTier ?? null,
+            usage: buildStoryWorkflowUsage(record),
+          },
+        },
+      },
+    ],
+    reconstructed: true,
+    partial: false,
+  };
+}
+
+function createStoryWorkflowDetailsById(
+  records: readonly ApiInvocation[],
+): InvocationWorkflowDetailsById {
+  return Object.fromEntries(
+    records
+      .filter((record) => Number.isFinite(record.id) && record.id > 0)
+      .map((record) => [record.id, buildStoryWorkflowDetailResponse(record)]),
+  );
+}
+
 type StorybookPoolAttemptsRegistry = {
   originalFetch: typeof window.fetch;
   providers: Map<
@@ -112,6 +278,7 @@ type StorybookPoolAttemptsRegistry = {
       poolAttemptsByInvokeId: PoolAttemptsByInvokeId;
       detailsById: InvocationRecordDetailsById;
       responseBodiesById: InvocationResponseBodiesById;
+      workflowDetailsById: InvocationWorkflowDetailsById;
     }
   >;
 };
@@ -156,6 +323,7 @@ function ensureStorybookPoolAttemptsRegistry() {
     const proxyBindingNodesMatch = url.pathname === "/api/pool/forward-proxy-binding-nodes";
     const detailMatch = url.pathname.match(/^\/api\/invocations\/(\d+)\/detail$/);
     const responseBodyMatch = url.pathname.match(/^\/api\/invocations\/(\d+)\/response-body$/);
+    const workflowDetailMatch = url.pathname.match(/^\/api\/invocations\/(\d+)\/workflow-detail$/);
 
     if (poolAttemptsMatch) {
       const invokeId = decodeURIComponent(poolAttemptsMatch[1] ?? "");
@@ -203,6 +371,25 @@ function ensureStorybookPoolAttemptsRegistry() {
       return jsonResponse({ available: false, unavailableReason: "missing_body" });
     }
 
+    if (workflowDetailMatch) {
+      const recordId = Number(workflowDetailMatch[1] ?? "0");
+      const providerGetters = Array.from(providers.values()).reverse();
+
+      for (const getWorkflowDetailsById of providerGetters) {
+        const workflowDetail = getWorkflowDetailsById().workflowDetailsById[recordId];
+        if (workflowDetail) {
+          return jsonResponse(workflowDetail);
+        }
+      }
+
+      return new Response(JSON.stringify({ error: "missing workflow detail story fixture" }), {
+        status: 404,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+    }
+
     return originalFetch(input, init);
   };
 
@@ -231,14 +418,17 @@ function StorybookPoolAttemptsMock({
     () => createStoryInvocationResponseBodiesById(records),
     [records],
   );
+  const workflowDetailsById = useMemo(() => createStoryWorkflowDetailsById(records), [records]);
   const poolAttemptsByInvokeIdRef = useRef(poolAttemptsByInvokeId);
   const detailsByIdRef = useRef(detailsById);
   const responseBodiesByIdRef = useRef(responseBodiesById);
+  const workflowDetailsByIdRef = useRef(workflowDetailsById);
   const providerIdRef = useRef<symbol>(Symbol("storybook-pool-attempts"));
 
   poolAttemptsByInvokeIdRef.current = poolAttemptsByInvokeId;
   detailsByIdRef.current = detailsById;
   responseBodiesByIdRef.current = responseBodiesById;
+  workflowDetailsByIdRef.current = workflowDetailsById;
 
   useEffect(() => {
     const registry = ensureStorybookPoolAttemptsRegistry();
@@ -250,6 +440,7 @@ function StorybookPoolAttemptsMock({
       poolAttemptsByInvokeId: poolAttemptsByInvokeIdRef.current,
       detailsById: detailsByIdRef.current,
       responseBodiesById: responseBodiesByIdRef.current,
+      workflowDetailsById: workflowDetailsByIdRef.current,
     }));
 
     return () => {
@@ -356,6 +547,67 @@ export const ModelRoutingMismatch: Story = {
       ).not.toBeNull();
       expect(document.body.textContent ?? "").toContain("gpt-5.4");
       expect(document.body.textContent ?? "").toContain("gpt-5.5");
+    });
+  },
+};
+
+export const TokenCostAuditWarningMobile390: Story = {
+  args: {
+    focus: "token",
+    records: TOKEN_COST_AUDIT_WARNING_RECORDS,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+    docs: {
+      description: {
+        story:
+          "390px regression surface for the shared Token and cost warning state. It keeps the reroute model summary, mismatch warning, and local-vs-recorded cost copy visible without horizontal overflow.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: /展开详情|show details/i }));
+    await waitFor(() => {
+      expect(canvasElement.querySelector('[data-testid="records-mobile-cost-warning"]')).toBeNull();
+      expect(canvasElement.querySelector('[data-testid="records-table-cost-warning"]')).toBeNull();
+      expect(
+        canvasElement.querySelector('[data-testid="records-detail-strip-cost-warning"]'),
+      ).not.toBeNull();
+      expect(document.body.textContent ?? "").toContain("Token 与成本");
+      expect(document.body.textContent ?? "").toContain("本地");
+    });
+  },
+};
+
+export const TokenCostAuditWarningDesktop: Story = {
+  args: {
+    focus: "token",
+    records: TOKEN_COST_AUDIT_WARNING_RECORDS,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Desktop regression surface for the shared Token and cost warning state after removing duplicate warning markers and reverting mismatch amounts to normal text color.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: /展开详情|show details/i }));
+    await waitFor(() => {
+      expect(canvasElement.querySelector('[data-testid="records-mobile-cost-warning"]')).toBeNull();
+      expect(canvasElement.querySelector('[data-testid="records-table-cost-warning"]')).toBeNull();
+      expect(
+        canvasElement.querySelector('[data-testid="records-detail-strip-cost-warning"]'),
+      ).not.toBeNull();
+      expect(document.body.textContent ?? "").toContain("Token 与成本");
+      expect(document.body.textContent ?? "").toContain("本地");
     });
   },
 };

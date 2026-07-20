@@ -2555,6 +2555,7 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         proxy_weight_delta: payload_f64(payload, "proxyWeightDelta"),
         cost_estimated: Some(record.cost_estimated as i64),
         price_version: record.price_version.clone(),
+        cost_audit: None,
         request_raw_path: record.req_raw.path.clone(),
         request_raw_size: Some(record.req_raw.size_bytes),
         request_raw_truncated: Some(record.req_raw.truncated as i64),

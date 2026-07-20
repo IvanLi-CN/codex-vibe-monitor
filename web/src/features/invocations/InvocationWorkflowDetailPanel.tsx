@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
 import { Spinner } from "../../components/ui/spinner";
+import { Tooltip } from "../../components/ui/tooltip";
 import { useTranslation } from "../../i18n";
 import type {
   ApiInvocation,
@@ -9,6 +10,8 @@ import type {
   ApiInvocationResponseBodyResponse,
   ApiInvocationWorkflowDetailResponse,
   ApiInvocationWorkflowTimelineEntry,
+  InvocationCostAudit,
+  InvocationCostAuditBreakdown,
 } from "../../lib/api";
 import {
   fetchInvocationRequestBody,
@@ -22,6 +25,10 @@ import {
 import { resolveInvocationDisplayStatus } from "../../lib/invocationStatus";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
+import {
+  renderInvocationCostAuditWarning,
+  resolveInvocationCostAuditDisplay,
+} from "./invocation-cost-audit";
 import { StructuredPayloadViewer } from "./StructuredPayloadViewer";
 
 type DetailPanelSize = "compact" | "default";
@@ -39,6 +46,24 @@ interface PayloadFetchState<T> {
   status: "idle" | "loading" | "loaded" | "error";
   data: T | null;
   error: string | null;
+}
+
+interface AttemptUsageAudit {
+  inputTokens: number | null;
+  cacheWriteTokens: number | null;
+  cacheInputTokens: number | null;
+  outputTokens: number | null;
+  reasoningTokens: number | null;
+  totalTokens: number | null;
+  recordedCosts: InvocationCostAuditBreakdown | null;
+  localCosts: InvocationCostAuditBreakdown | null;
+  audit: InvocationCostAudit | null;
+}
+
+interface TimelineFact {
+  key: string;
+  label: string;
+  tooltip?: string;
 }
 
 interface InvocationWorkflowDetailPanelProps {
@@ -228,6 +253,86 @@ function readRecord(value: unknown) {
 
 function readArray(value: unknown) {
   return Array.isArray(value) ? value : null;
+}
+
+function readCostAuditBreakdown(value: unknown): InvocationCostAuditBreakdown | null {
+  const record = readRecord(value);
+  if (!record) return null;
+  const input = readNumber(record.input);
+  const cacheWrite = readNumber(record.cacheWrite);
+  const cacheRead = readNumber(record.cacheRead);
+  const output = readNumber(record.output);
+  const reasoning = readNumber(record.reasoning);
+  const total = readNumber(record.total);
+  if (
+    input == null &&
+    cacheWrite == null &&
+    cacheRead == null &&
+    output == null &&
+    reasoning == null &&
+    total == null
+  ) {
+    return null;
+  }
+  return {
+    input,
+    cacheWrite,
+    cacheRead,
+    output,
+    reasoning,
+    total,
+  };
+}
+
+function readCostAudit(value: unknown): InvocationCostAudit | null {
+  const record = readRecord(value);
+  if (!record) return null;
+  const recorded = readCostAuditBreakdown(record.recorded);
+  const local = readCostAuditBreakdown(record.local);
+  const mismatch = record.mismatch === true;
+  const reason = readString(record.reason);
+  const absoluteDiffUsd = readNumber(record.absoluteDiffUsd);
+  const recordedPriceVersion = readString(record.recordedPriceVersion);
+  const localPriceVersion = readString(record.localPriceVersion);
+  if (
+    recorded == null &&
+    local == null &&
+    !mismatch &&
+    reason == null &&
+    absoluteDiffUsd == null &&
+    recordedPriceVersion == null &&
+    localPriceVersion == null
+  ) {
+    return null;
+  }
+  return {
+    recorded,
+    local,
+    mismatch,
+    reason,
+    absoluteDiffUsd,
+    recordedPriceVersion,
+    localPriceVersion,
+  };
+}
+
+function readAttemptUsageAudit(value: unknown): AttemptUsageAudit | null {
+  const usage = readRecord(value);
+  if (!usage) return null;
+  const tokens = readRecord(usage.tokens);
+  const costs = readRecord(usage.costs);
+  const audit = readCostAudit(usage.audit);
+  return {
+    inputTokens: readNumber(usage.inputTokens) ?? readNumber(tokens?.input),
+    cacheWriteTokens: readNumber(usage.cacheWriteTokens) ?? readNumber(tokens?.cacheWrite),
+    cacheInputTokens: readNumber(usage.cacheInputTokens) ?? readNumber(tokens?.cacheRead),
+    outputTokens: readNumber(usage.outputTokens) ?? readNumber(tokens?.output),
+    reasoningTokens: readNumber(usage.reasoningTokens) ?? readNumber(tokens?.reasoning),
+    totalTokens: readNumber(usage.totalTokens) ?? readNumber(tokens?.total),
+    recordedCosts: readCostAuditBreakdown(costs?.recorded),
+    localCosts: readCostAuditBreakdown(costs?.local),
+    audit,
+  };
 }
 
 function formatBooleanLabel(value: boolean | null | undefined, isZh: boolean) {
@@ -570,9 +675,11 @@ function buildTimelineFacts(
   isZh: boolean,
   localeTag: string,
 ) {
-  const facts: string[] = [];
+  const facts: TimelineFact[] = [];
   if (entry.attempt) {
     const attempt = entry.attempt;
+    const responseSummary = readRecord(attempt.responseSummary);
+    const usageAudit = readAttemptUsageAudit(responseSummary?.usage);
     const phase = formatOptionalText(attempt.phase);
     const upstreamStatus = formatHttpStatus(attempt.httpStatus, localeTag);
     const latencyValue =
@@ -582,37 +689,92 @@ function buildTimelineFacts(
           ? `TTFB ${formatDurationMs(attempt.firstByteLatencyMs, localeTag)}`
           : null;
 
-    if (attempt.upstreamAccountName?.trim()) facts.push(attempt.upstreamAccountName.trim());
-    if (phase !== FALLBACK_CELL) facts.push(phase);
-    if (upstreamStatus) facts.push(isZh ? `上游 ${upstreamStatus}` : `Upstream ${upstreamStatus}`);
-    if (latencyValue) facts.push(latencyValue);
-    if (attempt.synthetic) facts.push(isZh ? "合成尝试" : "Synthetic");
+    if (attempt.upstreamAccountName?.trim()) {
+      facts.push({
+        key: "upstream-account",
+        label: attempt.upstreamAccountName.trim(),
+      });
+    }
+    if (phase !== FALLBACK_CELL) facts.push({ key: "phase", label: phase });
+    if (upstreamStatus) {
+      facts.push({
+        key: "upstream-status",
+        label: isZh ? `上游 ${upstreamStatus}` : `Upstream ${upstreamStatus}`,
+      });
+    }
+    if (latencyValue) facts.push({ key: "latency", label: latencyValue });
+    if (usageAudit?.cacheWriteTokens != null) {
+      facts.push({
+        key: "cache-write",
+        label: isZh
+          ? `输入写 ${usageAudit.cacheWriteTokens.toLocaleString(localeTag)}`
+          : `Input write ${usageAudit.cacheWriteTokens.toLocaleString(localeTag)}`,
+        tooltip: isZh ? "输入（未命中缓存）" : "Input (uncached)",
+      });
+    }
+    if (usageAudit?.cacheInputTokens != null) {
+      facts.push({
+        key: "cache-read",
+        label: isZh
+          ? `输入读 ${usageAudit.cacheInputTokens.toLocaleString(localeTag)}`
+          : `Input read ${usageAudit.cacheInputTokens.toLocaleString(localeTag)}`,
+        tooltip: isZh ? "输入（命中缓存）" : "Input (cached)",
+      });
+    }
+    if (usageAudit?.outputTokens != null) {
+      facts.push({
+        key: "output",
+        label: isZh
+          ? `输出 ${usageAudit.outputTokens.toLocaleString(localeTag)}`
+          : `Output ${usageAudit.outputTokens.toLocaleString(localeTag)}`,
+      });
+    }
+    const usageCostDisplay = resolveInvocationCostAuditDisplay(
+      usageAudit?.audit,
+      usageAudit?.recordedCosts?.total ?? null,
+    );
+    if (usageCostDisplay.recordedTotal != null) {
+      facts.push({
+        key: "amount",
+        label: isZh
+          ? `金额 ${formatCurrency(usageCostDisplay.recordedTotal, localeTag)}`
+          : `Amount ${formatCurrency(usageCostDisplay.recordedTotal, localeTag)}`,
+      });
+    }
+    if (attempt.synthetic) facts.push({ key: "synthetic", label: isZh ? "合成尝试" : "Synthetic" });
     return facts;
   }
 
-  if (entry.subtitle?.trim()) facts.push(entry.subtitle.trim());
+  if (entry.subtitle?.trim()) facts.push({ key: "subtitle", label: entry.subtitle.trim() });
 
   const routeRequest = readRecord(entry.detail?.request);
   const routeMode = formatRouteMode(
     readString(routeRequest?.routeMode) ?? readString(entry.detail?.routeMode),
     isZh,
   );
-  if (routeMode !== FALLBACK_CELL) facts.push(routeMode);
+  if (routeMode !== FALLBACK_CELL) facts.push({ key: "route-mode", label: routeMode });
 
   const poolAttemptCount =
     readNumber(routeRequest?.poolAttemptCount) ?? readNumber(entry.detail?.poolAttemptCount);
   if (poolAttemptCount != null) {
-    facts.push(isZh ? `尝试预算 ${poolAttemptCount}` : `Attempt budget ${poolAttemptCount}`);
+    facts.push({
+      key: "pool-attempt-count",
+      label: isZh ? `尝试预算 ${poolAttemptCount}` : `Attempt budget ${poolAttemptCount}`,
+    });
   }
 
   const downstreamStatusCode = readNumber(entry.detail?.downstreamStatusCode);
-  if (downstreamStatusCode != null)
-    facts.push(`HTTP ${downstreamStatusCode.toLocaleString(localeTag)}`);
+  if (downstreamStatusCode != null) {
+    facts.push({
+      key: "downstream-status",
+      label: `HTTP ${downstreamStatusCode.toLocaleString(localeTag)}`,
+    });
+  }
 
   const failureClass = readString(entry.detail?.failureClass);
-  if (failureClass) facts.push(failureClass);
+  if (failureClass) facts.push({ key: "failure-class", label: failureClass });
 
-  return facts.filter(Boolean);
+  return facts;
 }
 
 function buildAttemptMetricActions(
@@ -935,7 +1097,7 @@ function SnapshotMetric({
   variant?: "default" | "secondary" | "success" | "warning" | "error";
 }) {
   return (
-    <div className="invocation-detail-subsurface rounded-[0.95rem] px-3 py-3">
+    <div className="invocation-detail-subsurface rounded-[0.95rem] px-2.5 py-2.5 sm:px-3 sm:py-3">
       <div className="text-[11px] font-medium text-base-content/56">{label}</div>
       <div
         className={cn(
@@ -995,6 +1157,117 @@ function DetailInfoPanel({
         <OverviewGrid className={overviewClassName} items={items} />
       </div>
     </section>
+  );
+}
+
+function AttemptUsageAuditPanel({
+  usageAudit,
+  localeTag,
+  isZh,
+}: {
+  usageAudit: AttemptUsageAudit | null;
+  localeTag: string;
+  isZh: boolean;
+}) {
+  const { t } = useTranslation();
+  if (!usageAudit) return null;
+
+  const totalCostDisplay = resolveInvocationCostAuditDisplay(
+    usageAudit.audit,
+    usageAudit.recordedCosts?.total ?? null,
+  );
+  const metricItems = [
+    {
+      label: isZh ? "未命中缓存输入 Token" : "Uncached input tokens",
+      value: formatOptionalNumber(usageAudit.cacheWriteTokens, localeTag),
+    },
+    {
+      label: isZh ? "命中缓存输入 Token" : "Cached input tokens",
+      value: formatOptionalNumber(usageAudit.cacheInputTokens, localeTag),
+    },
+    {
+      label: isZh ? "输出 Token" : "Output tokens",
+      value: formatOptionalNumber(usageAudit.outputTokens, localeTag),
+    },
+    {
+      label: isZh ? "金额" : "Amount",
+      value: formatCurrency(totalCostDisplay.recordedTotal, localeTag),
+    },
+  ].filter((item) => item.value !== FALLBACK_CELL);
+
+  const rows = [
+    {
+      key: "cacheWrite",
+      label: isZh ? "未命中缓存输入成本" : "Uncached input cost",
+      recorded: usageAudit.recordedCosts?.cacheWrite ?? null,
+      local: usageAudit.localCosts?.cacheWrite ?? null,
+    },
+    {
+      key: "cacheRead",
+      label: isZh ? "命中缓存输入成本" : "Cached input cost",
+      recorded: usageAudit.recordedCosts?.cacheRead ?? null,
+      local: usageAudit.localCosts?.cacheRead ?? null,
+    },
+    {
+      key: "output",
+      label: isZh ? "输出成本" : "Output cost",
+      recorded: usageAudit.recordedCosts?.output ?? null,
+      local: usageAudit.localCosts?.output ?? null,
+    },
+    {
+      key: "reasoning",
+      label: isZh ? "推理成本" : "Reasoning cost",
+      recorded: usageAudit.recordedCosts?.reasoning ?? null,
+      local: usageAudit.localCosts?.reasoning ?? null,
+    },
+    {
+      key: "total",
+      label: isZh ? "总成本" : "Total cost",
+      recorded: totalCostDisplay.recordedTotal,
+      local: totalCostDisplay.localTotal,
+    },
+  ];
+
+  return (
+    <>
+      <DetailMetaStrip items={metricItems} />
+      <section className="invocation-detail-subsurface rounded-[0.95rem] px-3.5 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-[11px] font-medium text-base-content/56">
+            {isZh ? "Token 与成本" : "Token and cost"}
+          </div>
+          {renderInvocationCostAuditWarning(
+            usageAudit.audit,
+            t,
+            (value) => formatCurrency(value, localeTag),
+            { testId: "workflow-usage-cost-warning" },
+          )}
+        </div>
+        <div className="mt-3 space-y-2">
+          {rows.map((row) => {
+            return (
+              <div
+                key={row.key}
+                className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 rounded-xl border border-base-300/60 bg-base-100/72 px-3 py-2 text-xs"
+              >
+                <div className="min-w-0 text-base-content/68">{row.label}</div>
+                <div className="font-mono text-base-content/84">
+                  {formatCurrency(row.recorded, localeTag)}
+                </div>
+                <div className="font-mono text-base-content/62">
+                  {`${isZh ? "本地" : "Local"} ${formatCurrency(row.local, localeTag)}`}
+                </div>
+              </div>
+            );
+          })}
+          {!totalCostDisplay.mismatch && totalCostDisplay.reason ? (
+            <div className="rounded-xl border border-base-300/55 bg-base-100/65 px-3 py-2 text-xs text-base-content/58">
+              {t("records.costAudit.notComparable")}
+            </div>
+          ) : null}
+        </div>
+      </section>
+    </>
   );
 }
 
@@ -1212,6 +1485,7 @@ function AttemptDetail({
   const labels = buildPayloadViewerLabels(isZh);
   const requestSummary = readRecord(attempt.requestSummary);
   const responseSummary = readRecord(attempt.responseSummary);
+  const usageAudit = readAttemptUsageAudit(responseSummary?.usage);
   const requestBodyParsed = requestBodyState.data?.bodyText
     ? extractRequestBusinessSnapshot(requestBodyState.data.bodyText)
     : null;
@@ -1752,6 +2026,7 @@ function AttemptDetail({
             title={isZh ? "传输与下游收口" : "Delivery and downstream"}
             items={responseDeliveryItems}
           />
+          <AttemptUsageAuditPanel usageAudit={usageAudit} localeTag={localeTag} isZh={isZh} />
           {responseBodyState.status === "loading" ? (
             <PayloadNotice>{isZh ? "加载响应体…" : "Loading response body…"}</PayloadNotice>
           ) : null}
@@ -2125,14 +2400,27 @@ function TimelineSummary({
                   showTitle ? "mt-1" : "mt-0.5",
                 )}
               >
-                {summaryFacts.map((fact) => (
-                  <span
-                    key={`${entry.blockId}-${fact}`}
-                    className="invocation-detail-fact-chip min-w-0 break-all rounded-full px-2 py-0.5"
-                  >
-                    {fact}
-                  </span>
-                ))}
+                {summaryFacts.map((fact) =>
+                  fact.tooltip ? (
+                    <Tooltip
+                      key={`${entry.blockId}-${fact.key}`}
+                      content={fact.tooltip}
+                      side="top"
+                      sideOffset={8}
+                    >
+                      <span className="invocation-detail-fact-chip min-w-0 break-all rounded-full px-2 py-0.5">
+                        {fact.label}
+                      </span>
+                    </Tooltip>
+                  ) : (
+                    <span
+                      key={`${entry.blockId}-${fact.key}`}
+                      className="invocation-detail-fact-chip min-w-0 break-all rounded-full px-2 py-0.5"
+                    >
+                      {fact.label}
+                    </span>
+                  ),
+                )}
               </div>
             ) : null}
           </div>
@@ -2577,7 +2865,9 @@ export function InvocationWorkflowDetailPanel({
   };
 
   return (
-    <div className={cn("space-y-4", size === "compact" ? "text-sm" : "")}>
+    <div
+      className={cn("space-y-4", size === "compact" ? "invocation-detail-mobile-flat text-sm" : "")}
+    >
       <section className="invocation-detail-hero-surface rounded-[1.2rem] px-4 py-4 sm:px-5 sm:py-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
@@ -2637,7 +2927,7 @@ export function InvocationWorkflowDetailPanel({
               </div>
             </div>
 
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="mt-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4 sm:gap-3">
               {snapshotMetrics.map((metric) => (
                 <SnapshotMetric
                   key={metric.label}
@@ -2717,8 +3007,13 @@ export function InvocationWorkflowDetailPanel({
           </div>
         </div>
 
-        <div className="relative pl-5">
-          <div className="absolute left-[0.55rem] top-3 bottom-3 w-px bg-base-300/72" />
+        <div className={cn("relative", size === "compact" ? "pl-4" : "pl-5")}>
+          <div
+            className={cn(
+              "absolute top-3 bottom-3 w-px bg-base-300/72",
+              size === "compact" ? "left-[0.45rem]" : "left-[0.55rem]",
+            )}
+          />
           <div className="space-y-3">
             {timeline.map((entry) => {
               const isOpen = openBlockId === entry.blockId;
@@ -2732,7 +3027,7 @@ export function InvocationWorkflowDetailPanel({
                       kindMeta.markerClass,
                     )}
                   />
-                  <div className="ml-5">
+                  <div className={cn(size === "compact" ? "ml-4" : "ml-5")}>
                     {entry.attempt ? (
                       <InvocationWorkflowAttemptRecord
                         record={record}

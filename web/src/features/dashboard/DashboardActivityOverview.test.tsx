@@ -260,15 +260,12 @@ function createSummaryStore() {
   });
 
   return {
-    use(window: string) {
-      return useSyncExternalStore(
-        (listener) => {
-          listeners.add(listener);
-          return () => listeners.delete(listener);
-        },
-        () => values.get(window) ?? getFallback(),
-        () => values.get(window) ?? getFallback(),
-      );
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    getSnapshot(window: string) {
+      return values.get(window) ?? getFallback();
     },
     set(
       window: string,
@@ -289,6 +286,14 @@ function createSummaryStore() {
 }
 
 const summaryStore = createSummaryStore();
+
+function useSummaryStoreValue(window: string) {
+  return useSyncExternalStore(
+    (listener) => summaryStore.subscribe(listener),
+    () => summaryStore.getSnapshot(window),
+    () => summaryStore.getSnapshot(window),
+  );
+}
 
 beforeAll(() => {
   Object.defineProperty(window, "localStorage", {
@@ -403,7 +408,7 @@ function installSummaryMocks() {
     error: null,
   });
 
-  hookMocks.useSummary.mockImplementation((window: string) => summaryStore.use(window));
+  hookMocks.useSummary.mockImplementation(useSummaryStoreValue);
 
   hookMocks.useTimeseries.mockReturnValue({
     data: {

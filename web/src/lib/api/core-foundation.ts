@@ -352,6 +352,7 @@ export interface ApiInvocation {
   proxyWeightDelta?: number;
   costEstimated?: number;
   priceVersion?: string;
+  costAudit?: InvocationCostAudit | null;
   tTotalMs?: number | null;
   tReqReadMs?: number | null;
   tReqParseMs?: number | null;
@@ -368,6 +369,25 @@ export interface ApiInvocation {
   detailPrunedAt?: string | null;
   detailPruneReason?: string | null;
   createdAt: string;
+}
+
+export interface InvocationCostAuditBreakdown {
+  input?: number | null;
+  cacheWrite?: number | null;
+  cacheRead?: number | null;
+  output?: number | null;
+  reasoning?: number | null;
+  total?: number | null;
+}
+
+export interface InvocationCostAudit {
+  recorded?: InvocationCostAuditBreakdown | null;
+  local?: InvocationCostAuditBreakdown | null;
+  mismatch: boolean;
+  reason?: string | null;
+  absoluteDiffUsd?: number | null;
+  recordedPriceVersion?: string | null;
+  localPriceVersion?: string | null;
 }
 
 export type InvocationLivePhase = "queued" | "requesting" | "responding";
@@ -504,7 +524,9 @@ export interface InvocationTokenSummary {
   requestCount: number;
   totalTokens: number;
   avgTokensPerRequest: number;
+  cacheWriteTokens: number;
   cacheInputTokens: number;
+  outputTokens: number;
   totalCost: number;
 }
 

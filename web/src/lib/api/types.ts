@@ -95,6 +95,8 @@ export type {
   ImportedOauthValidationSnapshotEventPayload,
   ImportOauthCredentialFilePayload,
   ImportValidatedOauthAccountsPayload,
+  InvocationCostAudit,
+  InvocationCostAuditBreakdown,
   InvocationExceptionSummary,
   InvocationFocus,
   InvocationLivePhase,
