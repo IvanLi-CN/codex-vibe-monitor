@@ -4162,66 +4162,96 @@ describe("DashboardWorkingConversationsSection", () => {
   });
 
   it("shows the blocked-binding recovery banner and reuses the clear-affinity confirmation flow", async () => {
-    const onClearBlockedBindingFilter = vi.fn();
-    renderSection(
-      createResponse([
-        createConversation("pck-banner-blocked", [
-          createPreview({
-            id: 91,
-            invokeId: "invoke-banner-blocked",
-            occurredAt: "2026-04-04T10:04:00Z",
-            status: "failed",
-            failureClass: "service_failure",
-            failureKind: "pool_assigned_account_blocked",
-            blockedBinding: {
-              constraintSource: "encryptedSessionOwner",
-              upstreamAccountId: 2890,
-              upstreamAccountLabel: "dzw",
-              promptCacheKey: "pck-banner-blocked",
-              recoveryAction: "clearAndResetAffinity",
-            },
-          }),
-        ]),
-      ]),
-      {
-        activeBlockedBindingFilter: {
-          upstreamAccountId: 2890,
-          constraintSource: "encryptedSessionOwner",
-        },
-        onClearBlockedBindingFilter,
+    const originalFetch = globalThis.fetch;
+    let capturedPayload: Record<string, unknown> | null = null;
+    const fetchMock = createBulkConversationFetchMock({
+      onBulkPayload: (payload) => {
+        capturedPayload = payload;
       },
-    );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const onClearBlockedBindingFilter = vi.fn();
+    try {
+      renderSection(
+        createResponse([
+          createConversation("pck-banner-blocked", [
+            createPreview({
+              id: 91,
+              invokeId: "invoke-banner-blocked",
+              occurredAt: "2026-04-04T10:04:00Z",
+              status: "failed",
+              failureClass: "service_failure",
+              failureKind: "pool_assigned_account_blocked",
+              blockedBinding: {
+                constraintSource: "encryptedSessionOwner",
+                upstreamAccountId: 2890,
+                upstreamAccountLabel: "dzw",
+                promptCacheKey: "pck-banner-blocked",
+                recoveryAction: "clearAndResetAffinity",
+              },
+            }),
+          ]),
+        ]),
+        {
+          activeBlockedBindingFilter: {
+            upstreamAccountId: 2890,
+            constraintSource: "encryptedSessionOwner",
+          },
+          onClearBlockedBindingFilter,
+          onConversationsChanged: vi.fn(),
+        },
+      );
 
-    const upstreamAccountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
-      (node) => node.textContent?.includes("上游账号"),
-    );
-    if (!(upstreamAccountTab instanceof HTMLButtonElement)) {
-      throw new Error("missing upstream account tab");
-    }
-    expect(upstreamAccountTab.disabled).toBe(true);
-    expect(
-      host?.querySelector('[data-testid="dashboard-blocked-binding-banner"]')?.textContent ?? "",
-    ).toContain("单账号会话约束阻塞");
-    expect(host?.textContent ?? "").toContain("dzw");
+      const upstreamAccountTab = Array.from(
+        host?.querySelectorAll('button[role="tab"]') ?? [],
+      ).find((node) => node.textContent?.includes("上游账号"));
+      if (!(upstreamAccountTab instanceof HTMLButtonElement)) {
+        throw new Error("missing upstream account tab");
+      }
+      expect(upstreamAccountTab.disabled).toBe(true);
+      expect(
+        host?.querySelector('[data-testid="dashboard-blocked-binding-banner"]')?.textContent ?? "",
+      ).toContain("单账号会话约束阻塞");
+      expect(host?.textContent ?? "").toContain("dzw");
 
-    const user = userEvent.setup();
-    await user.click(
-      host?.querySelector(
-        '[data-testid="dashboard-blocked-binding-clear-filter-button"]',
-      ) as HTMLElement,
-    );
-    expect(onClearBlockedBindingFilter).toHaveBeenCalledTimes(1);
+      const user = userEvent.setup();
+      await user.click(
+        host?.querySelector(
+          '[data-testid="dashboard-blocked-binding-clear-filter-button"]',
+        ) as HTMLElement,
+      );
+      expect(onClearBlockedBindingFilter).toHaveBeenCalledTimes(1);
 
-    await user.click(
-      host?.querySelector(
-        '[data-testid="dashboard-blocked-binding-clear-and-reselect-button"]',
-      ) as HTMLElement,
-    );
-    expect(
-      document.body.querySelector(
+      await user.click(
+        host?.querySelector(
+          '[data-testid="dashboard-blocked-binding-clear-and-reselect-button"]',
+        ) as HTMLElement,
+      );
+
+      const confirmDialog = document.body.querySelector(
         '[data-testid="dashboard-working-conversations-clear-affinity-dialog"]',
-      ),
-    ).not.toBeNull();
+      );
+      expect(confirmDialog?.textContent).toContain("加密 owner 约束");
+      expect(confirmDialog?.textContent).toContain("sticky route");
+      expect(confirmDialog?.textContent).toContain("重选");
+
+      const confirmButton = Array.from(confirmDialog?.querySelectorAll("button") ?? []).find(
+        (button) => button.textContent?.includes("确认清空并重选"),
+      );
+      if (!(confirmButton instanceof HTMLButtonElement)) {
+        throw new Error("missing clear affinity confirm button");
+      }
+      await user.click(confirmButton);
+
+      await waitFor(() =>
+        expect(capturedPayload).toMatchObject({
+          action: "clearAndResetAffinity",
+          promptCacheKeys: ["pck-banner-blocked"],
+        }),
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("opens invocation details from the slot container by click and keyboard", () => {

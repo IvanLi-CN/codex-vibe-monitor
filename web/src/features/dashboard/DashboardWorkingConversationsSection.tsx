@@ -211,6 +211,7 @@ type DashboardManualBindingBadgeMeta = {
 };
 
 type DashboardConversationBulkBindTargetKind = "group" | "upstreamAccount";
+type DashboardConversationClearDialogAction = "bind" | "clearAndResetAffinity";
 
 type DashboardConversationBulkFeedback = {
   variant: "success" | "warning" | "error";
@@ -3998,6 +3999,8 @@ export function DashboardWorkingConversationsSection({
   const [selectedPromptCacheKeys, setSelectedPromptCacheKeys] = useState<string[]>([]);
   const [routeBindDialogOpen, setRouteBindDialogOpen] = useState(false);
   const [clearBindingDialogOpen, setClearBindingDialogOpen] = useState(false);
+  const [clearBindingDialogAction, setClearBindingDialogAction] =
+    useState<DashboardConversationClearDialogAction>("bind");
   const [fastModePopoverOpen, setFastModePopoverOpen] = useState(false);
   const [routeBindTargetKind, setRouteBindTargetKind] =
     useState<DashboardConversationBulkBindTargetKind>("group");
@@ -4005,9 +4008,9 @@ export function DashboardWorkingConversationsSection({
   const [routeBindAccountId, setRouteBindAccountId] = useState("");
   const [bulkFastModeRewriteMode, setBulkFastModeRewriteMode] =
     useState<PromptCacheConversationRewriteMode>("keep_original");
-  const [bulkActionBusy, setBulkActionBusy] = useState<"bind" | "setFastModeRewriteMode" | null>(
-    null,
-  );
+  const [bulkActionBusy, setBulkActionBusy] = useState<
+    "bind" | "clearAndResetAffinity" | "setFastModeRewriteMode" | null
+  >(null);
   const [bulkFeedback, setBulkFeedback] = useState<DashboardConversationBulkFeedback | null>(null);
   const [bindingTargets, setBindingTargets] =
     useState<DashboardConversationBulkBindingTargetsState>({
@@ -4061,6 +4064,7 @@ export function DashboardWorkingConversationsSection({
   const closeConversationBulkDialogs = useCallback(() => {
     setRouteBindDialogOpen(false);
     setClearBindingDialogOpen(false);
+    setClearBindingDialogAction("bind");
     setFastModePopoverOpen(false);
   }, []);
   const resetConversationSelectionState = useCallback(() => {
@@ -4298,6 +4302,9 @@ export function DashboardWorkingConversationsSection({
             action: "bind";
             bindingKind: "upstreamAccount";
             upstreamAccountId: number;
+          }
+        | {
+            action: "clearAndResetAffinity";
           }
         | {
             action: "setFastModeRewriteMode";
@@ -4731,35 +4738,102 @@ export function DashboardWorkingConversationsSection({
     locale === "zh"
       ? "支持批量绑定到分组或上游账号；如果要清空手工绑定，可在此弹窗底部直接进入确认。"
       : "Bind the selected conversations to a group or upstream account. If you need to clear manual bindings instead, use the destructive action shortcut in this dialog footer.";
-  const clearBindingDialogTitle = locale === "zh" ? "清空绑定" : "Clear binding";
+  const clearBindingDialogTitle =
+    clearBindingDialogAction === "clearAndResetAffinity"
+      ? locale === "zh"
+        ? "清空并重选"
+        : "Clear and reselect"
+      : locale === "zh"
+        ? "清空绑定"
+        : "Clear binding";
   const clearBindingDialogDescription =
-    locale === "zh"
-      ? "会删除选中对话的手工绑定；不会应用当前分组或账号选择，也不会清理 sticky route 或加密 owner lock。"
-      : "This removes manual bindings from the selected conversations. It does not apply the current group or account selection, and it does not clear sticky routes or encrypted owner locks.";
+    clearBindingDialogAction === "clearAndResetAffinity"
+      ? locale === "zh"
+        ? "会清空选中对话的单账号亲和性约束，并允许这些会话重新选择健康账号。"
+        : "This clears the single-account affinity constraints on the selected conversations and lets them reroute onto a healthy account."
+      : locale === "zh"
+        ? "会删除选中对话的手工绑定；不会应用当前分组或账号选择，也不会清理 sticky route 或加密 owner lock。"
+        : "This removes manual bindings from the selected conversations. It does not apply the current group or account selection, and it does not clear sticky routes or encrypted owner locks.";
   const clearBindingCalloutTitle =
-    locale === "zh"
-      ? "会立即清理以下会话级手工绑定"
-      : "This immediately clears the following conversation-level manual binding";
+    clearBindingDialogAction === "clearAndResetAffinity"
+      ? locale === "zh"
+        ? "会立即重置以下会话级亲和性"
+        : "This immediately resets the following conversation affinity"
+      : locale === "zh"
+        ? "会立即清理以下会话级手工绑定"
+        : "This immediately clears the following conversation-level manual binding";
   const clearBindingCalloutDescription =
-    locale === "zh"
-      ? "当前弹窗里的分组或账号选择不会被应用；现有 sticky / owner 亲和性保持不变。"
-      : "The group or account selection in this dialog will not be applied. Existing sticky and owner affinity stays unchanged.";
+    clearBindingDialogAction === "clearAndResetAffinity"
+      ? locale === "zh"
+        ? "用于恢复被单账号约束卡住的会话。成功后，这些会话会重新参与路由选择。"
+        : "Use this when conversations are blocked by a single-account constraint. Successful items re-enter normal routing."
+      : locale === "zh"
+        ? "当前弹窗里的分组或账号选择不会被应用；现有 sticky / owner 亲和性保持不变。"
+        : "The group or account selection in this dialog will not be applied. Existing sticky and owner affinity stays unchanged.";
   const clearBindingCalloutItems =
-    locale === "zh"
-      ? [
-          {
-            key: "manual-binding",
-            label: "对话级手动绑定",
-            detail: "conversation manual binding",
-          },
-        ]
-      : [
-          {
-            key: "manual-binding",
-            label: "Conversation manual binding",
-            detail: "Conversation-level account override.",
-          },
-        ];
+    clearBindingDialogAction === "clearAndResetAffinity"
+      ? locale === "zh"
+        ? [
+            {
+              key: "manual-binding",
+              label: "对话级手动绑定",
+              detail: "conversation manual binding",
+            },
+            {
+              key: "sticky-route",
+              label: "sticky route",
+              detail: "prompt-cache single-account affinity",
+            },
+            {
+              key: "owner-lock",
+              label: "加密 owner 约束",
+              detail: "encrypted session owner lock",
+            },
+          ]
+        : [
+            {
+              key: "manual-binding",
+              label: "Conversation manual binding",
+              detail: "Conversation-level account override.",
+            },
+            {
+              key: "sticky-route",
+              label: "Sticky route",
+              detail: "Prompt-cache single-account affinity.",
+            },
+            {
+              key: "owner-lock",
+              label: "Encrypted owner lock",
+              detail: "Encrypted-session account affinity.",
+            },
+          ]
+      : locale === "zh"
+        ? [
+            {
+              key: "manual-binding",
+              label: "对话级手动绑定",
+              detail: "conversation manual binding",
+            },
+          ]
+        : [
+            {
+              key: "manual-binding",
+              label: "Conversation manual binding",
+              detail: "Conversation-level account override.",
+            },
+          ];
+  const clearBindingDialogTestId =
+    clearBindingDialogAction === "clearAndResetAffinity"
+      ? "dashboard-working-conversations-clear-affinity-dialog"
+      : "dashboard-working-conversations-clear-binding-dialog";
+  const clearBindingConfirmLabel =
+    clearBindingDialogAction === "clearAndResetAffinity"
+      ? locale === "zh"
+        ? "确认清空并重选"
+        : "Confirm clear and reselect"
+      : locale === "zh"
+        ? "确认清空绑定"
+        : "Confirm clear binding";
   const fastModePopoverTitle = locale === "zh" ? "FAST 模式" : "FAST mode";
   const fastModePopoverDescription =
     locale === "zh"
@@ -4970,7 +5044,10 @@ export function DashboardWorkingConversationsSection({
                   variant="destructive"
                   disabled={bulkActionBusy != null}
                   data-testid="dashboard-working-conversations-clear-binding-button"
-                  onClick={() => setClearBindingDialogOpen(true)}
+                  onClick={() => {
+                    setClearBindingDialogAction("bind");
+                    setClearBindingDialogOpen(true);
+                  }}
                 >
                   {locale === "zh" ? "清空绑定" : "Clear binding"}
                 </Button>
@@ -5034,13 +5111,17 @@ export function DashboardWorkingConversationsSection({
     [toggleConversationSelection],
   );
   const selectVisibleConversations = useCallback(
-    (options?: { openClearDialog?: boolean }) => {
+    (options?: {
+      openClearDialog?: boolean;
+      clearDialogAction?: DashboardConversationClearDialogAction;
+    }) => {
       if (cards.length === 0) return;
       setBulkFeedback(null);
       setSelectionModeEnabled(true);
       setSelectedPromptCacheKeys(Array.from(new Set(cards.map((card) => card.promptCacheKey))));
       if (options?.openClearDialog) {
-        setClearAffinityDialogOpen(true);
+        setClearBindingDialogAction(options.clearDialogAction ?? "bind");
+        setClearBindingDialogOpen(true);
       }
     },
     [cards],
@@ -5219,7 +5300,12 @@ export function DashboardWorkingConversationsSection({
                 variant="destructive"
                 disabled={bulkActionBusy != null || cards.length === 0}
                 data-testid="dashboard-blocked-binding-clear-and-reselect-button"
-                onClick={() => selectVisibleConversations({ openClearDialog: true })}
+                onClick={() =>
+                  selectVisibleConversations({
+                    openClearDialog: true,
+                    clearDialogAction: "clearAndResetAffinity",
+                  })
+                }
               >
                 {locale === "zh" ? "清空并重选" : "Clear and reselect"}
               </Button>
@@ -5717,6 +5803,7 @@ export function DashboardWorkingConversationsSection({
               disabled={bulkActionBusy != null}
               onClick={() => {
                 setRouteBindDialogOpen(false);
+                setClearBindingDialogAction("bind");
                 setClearBindingDialogOpen(true);
               }}
             >
@@ -5769,7 +5856,7 @@ export function DashboardWorkingConversationsSection({
         <DialogContent
           role="alertdialog"
           className="overflow-hidden p-0"
-          data-testid="dashboard-working-conversations-clear-binding-dialog"
+          data-testid={clearBindingDialogTestId}
         >
           <div className="dialog-chrome-surface border-b px-5 py-4 desktop:px-6">
             <DialogHeader>
@@ -5834,20 +5921,24 @@ export function DashboardWorkingConversationsSection({
                 type="button"
                 variant="destructive"
                 disabled={bulkActionBusy != null}
-                onClick={() =>
-                  void applyBulkConversationAction({
-                    action: "bind",
-                    bindingKind: "none",
-                  })
-                }
+                onClick={() => {
+                  void applyBulkConversationAction(
+                    clearBindingDialogAction === "clearAndResetAffinity"
+                      ? {
+                          action: "clearAndResetAffinity",
+                        }
+                      : {
+                          action: "bind",
+                          bindingKind: "none",
+                        },
+                  );
+                }}
               >
-                {bulkActionBusy === "bind"
+                {bulkActionBusy === "bind" || bulkActionBusy === "clearAndResetAffinity"
                   ? locale === "zh"
                     ? "处理中…"
                     : "Applying..."
-                  : locale === "zh"
-                    ? "确认清空绑定"
-                    : "Confirm clear binding"}
+                  : clearBindingConfirmLabel}
               </Button>
             </div>
           </div>
