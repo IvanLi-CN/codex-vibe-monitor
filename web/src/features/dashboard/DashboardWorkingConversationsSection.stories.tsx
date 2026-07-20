@@ -22,6 +22,7 @@ import type {
   PromptCacheConversationsResponse,
   UpstreamAccountActivityResponse,
 } from "../../lib/api";
+import { metricAccent } from "../../lib/chartTheme";
 import {
   type DashboardWorkingConversationInvocationSelection,
   formatDashboardWorkingConversationSequenceId,
@@ -99,6 +100,12 @@ function useStoryTheme(theme?: "vibe-light" | "vibe-dark") {
       }
     };
   }, [theme]);
+}
+
+function normalizeCssColor(value: string) {
+  const sample = document.createElement("div");
+  sample.style.color = value;
+  return sample.style.color;
 }
 
 function jsonResponse(payload: unknown, status = 200) {
@@ -3194,6 +3201,18 @@ export const CurrentAndPrevious: Story = {
     );
     await expect(imageBadge.className).toMatch(/rounded-full/);
     await expect(imageBadge.className).toMatch(/border/);
+    const usageLine = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-line"]',
+    );
+    const usageCost = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-cost"]',
+    );
+    if (!(usageLine instanceof HTMLElement) || !(usageCost instanceof HTMLElement)) {
+      throw new Error("missing compact usage line");
+    }
+    await expect(usageLine).toHaveTextContent(/Hit .*Token .*\$/);
+    await expect(usageLine.textContent ?? "").not.toMatch(/\bIN\b|\bCW\b|\bO\b/);
+    await expect(usageCost.style.color).toBe(normalizeCssColor(metricAccent("totalCost", "light")));
     await expect(currentSlot).not.toHaveTextContent(/RQ |UP |ED |TT /);
   },
 };

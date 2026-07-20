@@ -15,6 +15,7 @@
 - 已实现：Dashboard 工作区头部控制条重新对齐 spec 基线，桌面布局恢复为“左侧 tabs、右侧 当前对话 badge + 排序按钮”的紧凑顺序，不再出现 `badge -> tabs -> 排序` 的错误节奏；对应视觉证据已刷新为当前实现。
 - 已实现：Dashboard `上游账号` 视图的 background refresh 提示从占位 chip 收口为头部轻量状态表达；桌面端改为非 badge 的 spinner + `刷新中` 文本并固定放在“当前活动账号”计数 badge 左侧，移动端只保留 spinner 视觉表现，idle 时不再预留隐藏宽度空白，同时继续沿用既有 `300ms` show delay 与 `600ms` 最短可见时长。
 - 已实现：workspace sort 的 `createdAt / lastInvocation / cost / tokens` 4 种模式已全部统一为倒序；账号视图中的 `未分配上游账号` 聚合项无论当前排序模式为何，都会统一收在所有已分配账号之后，再在未分配项内部沿用当前倒序规则。
+- 已实现：Dashboard 对话卡片 `当前调用 / 上一条调用` 槽位的可见 `用量` 行已收敛为 `Hit · Token · $` 三项；`Hit` 固定按 `cacheInputTokens / totalTokens` 计算，可见成本值复用金额主题 accent，而完整 `输入 / Cache write / 缓存输入 / 输出 / 总 Tokens / 成本 / 推理 Tokens` 诊断明细继续保留在 hover/title。
 
 - 已实现：Dashboard 页面提升并共享顶部 range 状态，工作区 section 接入 `对话 / 上游账号` 双 tabs，并保留既有对话 working-set 行为。
 - 已实现：Dashboard 工作区 tabs 额外持久化用户上次主动选择的视图；重新打开 Dashboard 或切回总览页时，在当前 range 允许的前提下恢复该视图；`usage` 仅临时强制回退到 `对话`，不会覆盖已记住的 `上游账号` 偏好。
