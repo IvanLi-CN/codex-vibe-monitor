@@ -957,6 +957,25 @@ export interface DashboardNetworkTimeseriesResponse {
   points: DashboardNetworkTimeseriesPoint[];
 }
 
+export interface DashboardRecentNetworkWindowPoint {
+  sampleStart: string;
+  sampleEnd: string;
+  uploadBytesPerSecond: number;
+  downloadBytesPerSecond: number;
+  uploadBytes: number;
+  downloadBytes: number;
+  isAvailable: boolean;
+}
+
+export interface DashboardRecentNetworkWindowResponse {
+  rangeStart: string;
+  rangeEnd: string;
+  windowSeconds: number;
+  sampleSeconds: number;
+  isWarmingUp: boolean;
+  points: DashboardRecentNetworkWindowPoint[];
+}
+
 export interface StatsMaintenanceResponse {
   rawCompressionBacklog?: RawCompressionBacklogResponse;
   startupBackfill?: StartupBackfillResponse;
@@ -3502,6 +3521,42 @@ function normalizeDashboardNetworkTimeseriesResponse(
   };
 }
 
+function normalizeDashboardRecentNetworkWindowPoint(
+  raw: unknown,
+): DashboardRecentNetworkWindowPoint | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const point = raw as Record<string, unknown>;
+  return {
+    sampleStart: typeof point.sampleStart === "string" ? point.sampleStart : "",
+    sampleEnd: typeof point.sampleEnd === "string" ? point.sampleEnd : "",
+    uploadBytesPerSecond: normalizeFiniteNumber(point.uploadBytesPerSecond) ?? 0,
+    downloadBytesPerSecond: normalizeFiniteNumber(point.downloadBytesPerSecond) ?? 0,
+    uploadBytes: normalizeFiniteNumber(point.uploadBytes) ?? 0,
+    downloadBytes: normalizeFiniteNumber(point.downloadBytes) ?? 0,
+    isAvailable: point.isAvailable === true,
+  };
+}
+
+function normalizeDashboardRecentNetworkWindowResponse(
+  raw: unknown,
+): DashboardRecentNetworkWindowResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
+    rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
+    windowSeconds: normalizeFiniteNumber(payload.windowSeconds) ?? 300,
+    sampleSeconds: normalizeFiniteNumber(payload.sampleSeconds) ?? 1,
+    isWarmingUp: payload.isWarmingUp === true,
+    points: Array.isArray(payload.points)
+      ? payload.points
+          .map(normalizeDashboardRecentNetworkWindowPoint)
+          .filter((item): item is DashboardRecentNetworkWindowPoint => item != null)
+      : [],
+  };
+}
+
 function normalizeSettingsPayload(raw: unknown): SettingsPayload {
   const payload = (raw ?? {}) as Record<string, unknown>;
   return {
@@ -3887,6 +3942,13 @@ export async function fetchDashboardNetworkTimeseries(
     { signal: options?.signal },
   );
   return normalizeDashboardNetworkTimeseriesResponse(response);
+}
+
+export async function fetchDashboardRecentNetworkWindow(options?: { signal?: AbortSignal }) {
+  const response = await fetchJson<unknown>("/api/stats/dashboard-network-recent", {
+    signal: options?.signal,
+  });
+  return normalizeDashboardRecentNetworkWindowResponse(response);
 }
 
 export async function fetchForwardProxyLiveStats() {

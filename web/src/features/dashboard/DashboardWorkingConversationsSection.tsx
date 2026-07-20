@@ -94,7 +94,6 @@ import {
 } from "../invocations/invocation-table-reasoning";
 import { renderInvocationTransportBadge } from "../invocations/invocation-transport-badge";
 import { AdaptiveDisplayValue } from "../shared/AdaptiveMetricValue";
-import { AnimatedDigits } from "../shared/AnimatedDigits";
 import { AppIcon, type AppIconName } from "../shared/AppIcon";
 import {
   type AdaptiveDisplayValueSpec,
@@ -105,6 +104,8 @@ import {
   buildAdaptivePercentTextSpec,
   buildAdaptiveTextSpec,
 } from "../shared/adaptiveMetricValueSpec";
+import { DashboardNetworkRecentPopover } from "./DashboardNetworkRecentPopover";
+import { DashboardNetworkSpeedCapsule } from "./DashboardNetworkSpeedCapsule";
 import {
   DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY,
   type DashboardActivityRangeKey,
@@ -112,7 +113,6 @@ import {
   persistDashboardWorkspaceView,
   readPersistedDashboardWorkspaceView,
 } from "./dashboardActivityRange";
-import { formatDashboardNetworkSpeed } from "./dashboardNetworkFormatting";
 import {
   compareDashboardConversationCards,
   compareDashboardUpstreamAccounts,
@@ -1729,52 +1729,6 @@ function AccountInlineMetric({
   );
 
   return wrappedMetric;
-}
-
-function NetworkSpeedInline({
-  uploadBytesPerSecond,
-  downloadBytesPerSecond,
-  localeTag,
-  uploadLabel,
-  downloadLabel,
-  testId,
-  className,
-}: {
-  uploadBytesPerSecond: number;
-  downloadBytesPerSecond: number;
-  localeTag: string;
-  uploadLabel: string;
-  downloadLabel: string;
-  testId?: string;
-  className?: string;
-}) {
-  const uploadValue = formatDashboardNetworkSpeed(uploadBytesPerSecond, localeTag);
-  const downloadValue = formatDashboardNetworkSpeed(downloadBytesPerSecond, localeTag);
-
-  return (
-    <div
-      data-testid={testId}
-      className={cn(
-        "inline-flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-full border border-base-300/65 bg-base-100/78 px-2.5 py-1",
-        className,
-      )}
-      aria-label={`${uploadLabel} ${uploadValue}; ${downloadLabel} ${downloadValue}`}
-      title={`${uploadLabel}: ${uploadValue} · ${downloadLabel}: ${downloadValue}`}
-    >
-      <span className="inline-flex min-w-0 items-center gap-1 whitespace-nowrap text-sky-500 dark:text-sky-300">
-        <AppIcon name="arrow-up-bold" className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-        <span className="font-mono text-[0.82rem] font-semibold leading-none">
-          <AnimatedDigits value={uploadValue} />
-        </span>
-      </span>
-      <span className="inline-flex min-w-0 items-center gap-1 whitespace-nowrap text-emerald-500 dark:text-emerald-300">
-        <AppIcon name="arrow-down-bold" className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-        <span className="font-mono text-[0.82rem] font-semibold leading-none">
-          <AnimatedDigits value={downloadValue} />
-        </span>
-      </span>
-    </div>
-  );
 }
 
 function AccountSegmentList({
@@ -5194,14 +5148,19 @@ export function DashboardWorkingConversationsSection({
                 />
               ) : null}
               {shouldShowTotalNetworkSpeed ? (
-                <NetworkSpeedInline
-                  uploadBytesPerSecond={totalNetworkSpeed.uploadBytesPerSecond}
-                  downloadBytesPerSecond={totalNetworkSpeed.downloadBytesPerSecond}
-                  localeTag={localeTag}
-                  uploadLabel={networkUploadLabel}
-                  downloadLabel={networkDownloadLabel}
-                  testId="dashboard-upstream-account-total-network-speed"
-                  className="bg-base-100/62"
+                <DashboardNetworkRecentPopover
+                  triggerAriaLabel={t("dashboard.networkRecent.openPanel")}
+                  trigger={
+                    <DashboardNetworkSpeedCapsule
+                      uploadBytesPerSecond={totalNetworkSpeed.uploadBytesPerSecond}
+                      downloadBytesPerSecond={totalNetworkSpeed.downloadBytesPerSecond}
+                      localeTag={localeTag}
+                      uploadLabel={networkUploadLabel}
+                      downloadLabel={networkDownloadLabel}
+                      testId="dashboard-upstream-account-total-network-speed"
+                      className="bg-base-100/62"
+                    />
+                  }
                 />
               ) : null}
               <Badge

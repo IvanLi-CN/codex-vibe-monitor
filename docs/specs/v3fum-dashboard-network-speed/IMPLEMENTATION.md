@@ -20,6 +20,13 @@
   - 固定返回 5 分钟桶。
   - 无 scope 时闭合桶从 `upstream_socket_network_minute` 聚合，当前开放桶读全局 live bucket。
   - `upstreamAccountId` 存在时同样改读 `upstream_socket_network_minute` 的账号 scoped 聚合。
+- `DashboardNetworkSpeedCache` 的全局秒桶保留窗口扩展到完整 300 秒，并新增 recent snapshot builder：
+  - 固定返回最近 300 个上一完整秒样本。
+  - 进程启动前的前导区间统一标记 `isAvailable=false`，数值清零但不代表真实零流量。
+  - recent 秒级历史只保留运行期内存窗口，不写 SQLite，也不从分钟表反推。
+- 新增 `GET /api/stats/dashboard-network-recent` 与 `dashboard.network-recent.current`：
+  - 由后端直接组装 `DashboardRecentNetworkWindowResponse` / `DashboardRecentNetworkWindowPoint`。
+  - topic payload 与 HTTP response 共用同一权威读模型，固定 `windowSeconds=300`、`sampleSeconds=1`。
 - `src/oauth_bridge.rs` 新增 counted OAuth transport path，避免 OAuth HTTP 请求继续走 reqwest body 近似值。
 - `src/proxy/upstream_transport.rs` 提供 counted HTTP transport，`src/proxy/websocket.rs` 复用同一套 meter / reporter，统一 direct、pool、OAuth 与 WebSocket 的真实网速事实源。
 
@@ -41,6 +48,14 @@
   - 工作区右上 badge 区展示所有上游请求的全局总上/下行实时速率，直接读取 `networkRealtimeRate`，口径固定为上一完整 1 秒。
   - 账号卡标题区删除单账号上传/下载速率，只保留活动账号数量、TPM、消费速率、进行中等摘要。
 - 新增 `dashboardNetworkFormatting.ts` 统一处理 `B/s / KiB/s / MiB/s` 与字节单位格式化。
+- 新增 `web/src/hooks/useDashboardRecentNetworkWindow.ts`：
+  - 只消费 `dashboard.network-recent.current` topic。
+  - 仅在 recent 面板打开期间订阅，并以 1 秒 cadence 对同一 topic 触发 `refresh()`，关闭即停止。
+- 新增 `web/src/features/dashboard/DashboardNetworkRecentPopover.tsx`：
+  - 以 `NetworkSpeedInline` 作为唯一触发器。
+  - 桌面端复用现有 popover chrome，实现 `hover 打开 + click 固定 + 再次点击/外点/Esc 关闭`。
+  - 窄屏端改用 dialog/sheet 承载同一 panel 内容。
+  - 图表层将 `isAvailable=false` 样本渲染成空档，并用 warming callout / tooltip 明确“历史积累中”而不是零流量。
 
 ## 测试与 Storybook
 
@@ -48,10 +63,18 @@
   - live snapshot 合并全局 `networkLiveBucket` 与 `networkRealtimeRate`。
   - Dashboard `network` metric 的可见性与 24 小时图切换。
   - 对话工作区右上总网速与账号卡速率删除断言。
+- 前端新增 recent 面板单测覆盖：
+  - `useDashboardRecentNetworkWindow` 的 topic descriptor、打开期间 1 秒 refresh cadence 与关闭停表。
+  - `DashboardNetworkRecentPopover` 的桌面 hover/click 固定、`Esc` 关闭、窄屏 dialog 打开与 warming banner 渲染。
 - 后端定向单测覆盖：
   - global/host/account runtime bucket 记账。
   - socket minute rollup 的 direct 写入、cursor seed 与 pool retry host split。
   - Dashboard 无 scope timeseries 改读 socket minute 5 分钟聚合。
   - counted HTTP、OAuth timeout / retry、WebSocket usage 持久化的真实字节计数。
+- 后端新增 recent 面板定向单测覆盖：
+  - 300 秒 recent 窗口保留与上一完整秒快照语义。
+  - 进程启动不足 5 分钟时 recent 前导空档的 `isAvailable=false` 语义。
+  - recent endpoint response builder 与 subscription topic schema epoch。
 - `DashboardPage.stories.tsx` 新增页面级 SSE / HTTP bootstrap，确保整页证据能同时覆盖活动总览网速图和上游账号顶部总速率胶囊，不再依赖缺失首帧 snapshot 的假空态。
 - Storybook 继续使用 `DashboardNetworkActivityChart` 与 `UpstreamAccountTab` 场景验证图表背景与账号 tab 顶部总速率展示，并补充整页 `UnifiedActivitySnapshot` 证据验证 page-shell 接线。
+- 新增 `DashboardNetworkRecentPopover.stories.tsx`，提供桌面固定展开态与窄屏 sheet warming 态，作为 recent 诊断面板的稳定视觉证据入口。

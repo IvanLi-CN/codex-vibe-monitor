@@ -207,6 +207,7 @@ enum SubscriptionTopic {
         time_zone: String,
         upstream_account_id: Option<i64>,
     },
+    DashboardNetworkRecentCurrent,
     DashboardWorkingConversationsCurrent {
         page_size: i64,
         recent_invocation_limit: i64,
@@ -1155,6 +1156,7 @@ impl SubscriptionTopic {
                 time_zone: param_or_default(params, "timeZone", SUBSCRIPTION_DEFAULT_TIME_ZONE),
                 upstream_account_id: parse_optional_i64_param(params, "upstreamAccountId")?,
             }),
+            "dashboard.network-recent.current" => Ok(Self::DashboardNetworkRecentCurrent),
             "dashboard.working-conversations.current" => {
                 Ok(Self::DashboardWorkingConversationsCurrent {
                     page_size: parse_i64_param(
@@ -1279,6 +1281,10 @@ impl SubscriptionTopic {
                     params,
                 }
             }
+            Self::DashboardNetworkRecentCurrent => SubscriptionTopicDescriptor {
+                topic: self.name().to_string(),
+                params: BTreeMap::new(),
+            },
             Self::DashboardWorkingConversationsCurrent {
                 page_size,
                 recent_invocation_limit,
@@ -1450,6 +1456,7 @@ impl SubscriptionTopic {
             Self::QuotaCurrent => "quota.current",
             Self::DashboardActivityCurrent { .. } => "dashboard.activity.current",
             Self::DashboardNetworkTimeseriesWindow { .. } => "dashboard.network-timeseries.window",
+            Self::DashboardNetworkRecentCurrent => "dashboard.network-recent.current",
             Self::DashboardWorkingConversationsCurrent { .. } => {
                 "dashboard.working-conversations.current"
             }
@@ -1471,6 +1478,9 @@ impl SubscriptionTopic {
             Self::DashboardActivityCurrent { .. } => "dashboard.activity.current/v2".to_string(),
             Self::DashboardNetworkTimeseriesWindow { .. } => {
                 "dashboard.network-timeseries.window/v1".to_string()
+            }
+            Self::DashboardNetworkRecentCurrent => {
+                "dashboard.network-recent.current/v1".to_string()
             }
             Self::DashboardWorkingConversationsCurrent { .. } => {
                 "dashboard.working-conversations.current/v1".to_string()
@@ -1496,6 +1506,7 @@ impl SubscriptionTopic {
                 self,
                 Self::DashboardActivityCurrent { .. }
                     | Self::DashboardNetworkTimeseriesWindow { .. }
+                    | Self::DashboardNetworkRecentCurrent
                     | Self::DashboardWorkingConversationsCurrent { .. }
                     | Self::InvocationWindow { .. }
                     | Self::PromptCacheWindow { .. }
@@ -1510,6 +1521,7 @@ impl SubscriptionTopic {
                     self,
                     Self::DashboardActivityCurrent { .. }
                         | Self::DashboardNetworkTimeseriesWindow { .. }
+                        | Self::DashboardNetworkRecentCurrent
                 )
             }
             BroadcastPayload::PoolAttempts { invoke_id, .. } => matches!(
@@ -1564,6 +1576,14 @@ impl SubscriptionTopic {
                         time_zone: Some(time_zone.clone()),
                         upstream_account_id: *upstream_account_id,
                     }),
+                )
+                .await?;
+                Ok(serde_json::to_value(response)?)
+            }
+            Self::DashboardNetworkRecentCurrent => {
+                let Json(response) = fetch_dashboard_network_recent(
+                    State(state),
+                    Query(DashboardRecentNetworkWindowQuery::default()),
                 )
                 .await?;
                 Ok(serde_json::to_value(response)?)
@@ -2077,6 +2097,38 @@ mod tests {
         assert_eq!(
             canonical.params.get("limit").map(String::as_str),
             Some("20")
+        );
+    }
+
+    #[test]
+    fn dashboard_network_recent_topic_uses_empty_descriptor_and_stable_schema_epoch() {
+        let descriptor = SubscriptionTopicDescriptor {
+            topic: "dashboard.network-recent.current".to_string(),
+            params: BTreeMap::new(),
+        };
+
+        let topic =
+            SubscriptionTopic::from_descriptor(&descriptor).expect("recent topic should parse");
+
+        assert_eq!(topic.descriptor(), descriptor);
+        assert_eq!(topic.name(), "dashboard.network-recent.current");
+        assert_eq!(topic.schema_epoch(), "dashboard.network-recent.current/v1");
+        assert!(topic.is_affected_by(&BroadcastPayload::Records {
+            records: Vec::new()
+        }));
+        assert!(
+            topic.is_affected_by(&BroadcastPayload::DashboardActivityLive {
+                snapshot: DashboardActivityLiveSnapshot {
+                    revision: 1,
+                    generated_at: "2026-07-20T00:00:00.000Z".to_string(),
+                    in_progress_invocation_count: 0,
+                    in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
+                    retry_invocation_count: 0,
+                    network_live_bucket: None,
+                    network_realtime_rate: None,
+                    accounts: Vec::new(),
+                },
+            })
         );
     }
 
