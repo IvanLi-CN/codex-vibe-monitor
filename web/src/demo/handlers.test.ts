@@ -275,6 +275,60 @@ describe("demo MSW handlers", () => {
     expect(proxyHistory.nodes.every((node) => node.buckets.length > 0)).toBe(true);
   });
 
+  it("serves shareable dashboard invocation detail data for unavailable request-body playback", async () => {
+    const [detailResponse, requestBodyResponse, responseBodyResponse] = await Promise.all([
+      fetch("http://demo.invalid/api/invocations/9002/workflow-detail"),
+      fetch("http://demo.invalid/api/invocations/9002/request-body"),
+      fetch("http://demo.invalid/api/invocations/9002/response-body"),
+    ]);
+    const detail = (await detailResponse.json()) as {
+      hero: { invokeId: string; finalStatus: string };
+      timeline: Array<{
+        kind: string;
+        attempt?: {
+          attemptId?: string | null;
+          requestSummary?: {
+            bodyCapture?: { availableAtInvocationLevel?: boolean | null };
+            compression?: { algorithm?: string | null; ratioPct?: number | null };
+          } | null;
+        } | null;
+      }>;
+    };
+    const requestBody = (await requestBodyResponse.json()) as {
+      available: boolean;
+      unavailableReason?: string | null;
+    };
+    const responseBody = (await responseBodyResponse.json()) as {
+      available: boolean;
+      bodySize?: number | null;
+    };
+
+    expect(detailResponse.ok).toBe(true);
+    expect(requestBodyResponse.ok).toBe(true);
+    expect(responseBodyResponse.ok).toBe(true);
+    expect(detail.hero).toMatchObject({
+      invokeId: "demo-invocation-9002",
+      finalStatus: "completed",
+    });
+    const attemptEntry = detail.timeline.find((entry) => entry.kind === "attempt");
+    expect(attemptEntry?.attempt?.attemptId).toBe("qPvNNAK8");
+    expect(attemptEntry?.attempt?.requestSummary?.bodyCapture?.availableAtInvocationLevel).toBe(
+      false,
+    );
+    expect(attemptEntry?.attempt?.requestSummary?.compression).toMatchObject({
+      algorithm: "zstd",
+      ratioPct: -63,
+    });
+    expect(requestBody).toMatchObject({
+      available: false,
+      unavailableReason: "missing_body",
+    });
+    expect(responseBody).toMatchObject({
+      available: true,
+      bodySize: 138_649,
+    });
+  });
+
   it("fails closed instead of returning a real network response in network-failure scene", async () => {
     demoModel.setScene("network-failure");
 
