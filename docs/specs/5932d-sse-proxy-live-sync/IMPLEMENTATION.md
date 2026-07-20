@@ -23,6 +23,7 @@
 - 已实现：开发环境把当前页使用中的 SSE 单例以 `window.__CVM_SSE__` 暴露出来，仅用于浏览器 drill 与诊断，不进入生产路径。
 - 已实现：`AppLayout` 版本信息切到 `app.version` topic，主应用 shell 不再额外打 `/api/version` 作为首屏 bootstrap。
 - 已实现：订阅 envelope 统一以 camelCase `topicKey/schemaEpoch` 对外发送；前端消费层同时兼容历史 `topic_key/schema_epoch`，避免灰度期间把 authoritative snapshot 吞掉。
+- 已实现：`stats.summary.current` 与 `/api/stats/summary` 现共享同一套内部 summary range builder；open-range `usage_breakdown` 与 `non_success_tokens` 已改为 live/archive aggregate merge，不再经 `full_range_preview_rows(limit=None)` 或 live-id overlap 全窗扫描构建。
 
 ## Migrated consumers
 

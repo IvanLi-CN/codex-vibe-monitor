@@ -2325,6 +2325,21 @@ async fn archived_range_reads_include_unmaterialized_batches_without_inline_repa
         0.20,
     );
     assert_eq!(summary.non_success_tokens, Some(20));
+    let usage_breakdown = summary
+        .usage_breakdown
+        .expect("historical summary should include usage breakdown");
+    assert_eq!(usage_breakdown.cache_write_tokens, 0);
+    assert_eq!(usage_breakdown.cache_read_tokens, 0);
+    assert_eq!(usage_breakdown.output_tokens, 0);
+    let usage_costs = usage_breakdown
+        .costs
+        .expect("historical usage breakdown should preserve known total cost");
+    assert_f64_close(usage_costs.input, 0.0);
+    assert_f64_close(usage_costs.cache_write, 0.0);
+    assert_f64_close(usage_costs.cache_read, 0.0);
+    assert_f64_close(usage_costs.output, 0.0);
+    assert_f64_close(usage_costs.reasoning, 0.0);
+    assert_f64_close(usage_costs.unknown, 0.30);
 
     let Json(failure_summary) = fetch_failure_summary(
         State(state.clone()),
@@ -2550,6 +2565,17 @@ async fn archived_range_reads_skip_archive_fallback_rows_already_counted_in_live
     assert_eq!(summary.failure_count, 1);
     assert_eq!(summary.total_tokens, 30);
     assert!((summary.total_cost - 0.30).abs() < 1e-9);
+    assert_eq!(summary.non_success_tokens, Some(20));
+    let usage_breakdown = summary
+        .usage_breakdown
+        .expect("overlapping archive/live summary should include usage breakdown");
+    assert_eq!(usage_breakdown.cache_write_tokens, 0);
+    assert_eq!(usage_breakdown.cache_read_tokens, 0);
+    assert_eq!(usage_breakdown.output_tokens, 0);
+    let usage_costs = usage_breakdown
+        .costs
+        .expect("overlapping archive/live summary should preserve known total cost");
+    assert_f64_close(usage_costs.unknown, 0.30);
 
     let Json(failure_summary) = fetch_failure_summary(
         State(state.clone()),
@@ -11491,6 +11517,127 @@ async fn ranged_summary_keeps_exact_costs_when_historical_cost_is_mixed_in() {
 }
 
 #[tokio::test]
+async fn summary_topic_builder_matches_http_for_open_range() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+
+    for (
+        id,
+        invoke_id,
+        status,
+        total_tokens,
+        cost,
+        cost_input,
+        cost_cache_write,
+        cost_cache_read,
+        cost_output,
+        cost_reasoning,
+        error_message,
+        failure_kind,
+        failure_class,
+    ) in [
+        (
+            470_i64,
+            "summary-topic-success",
+            "success",
+            120_i64,
+            Some(0.50_f64),
+            Some(0.06_f64),
+            Some(0.14_f64),
+            Some(0.04_f64),
+            Some(0.21_f64),
+            Some(0.05_f64),
+            None,
+            None,
+            Some("none"),
+        ),
+        (
+            471_i64,
+            "summary-topic-failed",
+            "failed",
+            80_i64,
+            Some(0.20_f64),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("HTTP 429 too many requests"),
+            Some("upstream_response_failed"),
+            Some("service_failure"),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, model, status,
+                input_tokens, cache_input_tokens, output_tokens, reasoning_tokens, total_tokens,
+                cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning,
+                error_message, failure_kind, failure_class, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(&occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind("gpt-5.6")
+        .bind(status)
+        .bind(100_i64)
+        .bind(40_i64)
+        .bind(25_i64)
+        .bind(5_i64)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(cost_input)
+        .bind(cost_cache_write)
+        .bind(cost_cache_read)
+        .bind(cost_output)
+        .bind(cost_reasoning)
+        .bind(error_message)
+        .bind(failure_kind)
+        .bind(failure_class)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert summary topic builder row");
+    }
+
+    let Json(http_summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("7d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch summary over http");
+    let topic_summary = load_summary_response_from_query(
+        state.as_ref(),
+        &SummaryQuery {
+            window: Some("7d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        },
+        SummaryBuildRoute::Topic,
+    )
+    .await
+    .expect("build summary for topic");
+
+    assert_eq!(
+        serde_json::to_value(http_summary).expect("serialize http summary"),
+        serde_json::to_value(topic_summary).expect("serialize topic summary"),
+    );
+}
+
+#[tokio::test]
 async fn empty_summary_response_keeps_live_in_progress_conversation_count() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -16739,6 +16886,16 @@ async fn account_scoped_historical_stats_include_unmaterialized_archived_hours()
         0.20,
     );
     assert_eq!(summary.non_success_tokens, Some(20));
+    let usage_breakdown = summary
+        .usage_breakdown
+        .expect("account historical summary should include usage breakdown");
+    assert_eq!(usage_breakdown.cache_write_tokens, 0);
+    assert_eq!(usage_breakdown.cache_read_tokens, 0);
+    assert_eq!(usage_breakdown.output_tokens, 0);
+    let usage_costs = usage_breakdown
+        .costs
+        .expect("account historical usage breakdown should preserve known total cost");
+    assert_f64_close(usage_costs.unknown, 0.30);
 
     let Json(timeseries) = fetch_timeseries(
         State(state.clone()),
