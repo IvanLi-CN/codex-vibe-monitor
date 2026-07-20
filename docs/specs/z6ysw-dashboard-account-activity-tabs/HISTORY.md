@@ -4,6 +4,7 @@
 
 ## Decision Trace
 
+- 2026-07-20：Dashboard 7d 总览残留慢点确认不只来自 account activity；同轮把 `/api/stats/summary` 与 `stats.summary.current` 的 open-range `usage_breakdown / non_success_tokens` 改成 aggregate-only builder，移除 raw preview 全窗扫描与 live-id overlap 扫描，避免 overview bundle 在 `fetchDashboardActivity("7d") + fetchSummary("7d")` 下继续把 SQLite 压力打回读侧。
 - 2026-07-20：落实 Dashboard 读侧 CPU 修复。`upstream-account-activity` 与 dashboard full path 不再对完整 `7d` range 做 persisted `running/pending` preview 扫描，recent 改为“每账号 bounded candidate + hydration + runtime/live overlay”；同日把 non-`yesterday` dashboard 基础快照缓存收敛为稳定请求参数选择键与 `5s` TTL，并补齐 `route / builder / purpose / limit / cache_ttl_ms / cache_entry_age_ms / cache_entry_count / in_flight_count` 遥测，便于线上继续判定是缓存未合并还是 preview 仍过宽。
 - 2026-07-20：收紧 Dashboard 对话卡片 `当前调用 / 上一条调用` 的可见用量行。此前槽位常驻展示 `IN / CW / C / O / T / $`，在窄卡里噪声偏高；本轮冻结为只显示 `Hit / Token / $` 三项，其中 `Hit` 口径固定为 `cacheInputTokens / totalTokens`，成本值复用金额主题 accent，而完整 token/cost/reasoning 明细继续保留在 hover/title，避免压缩卡面时丢失诊断能力。
 - 2026-07-19：101 线上 12 小时复盘确认 `dashboard-activity full` 慢点仍主要来自读侧合并不足，而不是内存瓶颈。已冻结两条后续约束：一，non-`yesterday` 基础快照缓存只允许按稳定请求参数 + 短 TTL 合并，不能再把 live runtime 状态或最新持久化行 ID 放进选择键；二，`/api/stats/upstream-account-activity` 不得继续借道 dashboard full snapshot，必须走独立账户活动 builder，并补足 route/builder/preview hydration telemetry 便于下一轮定位残余慢点。

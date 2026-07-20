@@ -4799,6 +4799,7 @@ pub(crate) async fn fetch_stats(
             include_in_progress: true,
             include_non_success_tokens: false,
         },
+        None,
     )
     .await?;
     apply_summary_live_augmentation(&mut response, augmentation);
@@ -4816,6 +4817,121 @@ pub(crate) async fn load_in_progress_conversation_count(
             .await?
             .in_progress_count,
     )
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SummaryBuildRoute {
+    Http,
+    Topic,
+}
+
+impl SummaryBuildRoute {
+    fn telemetry_route(self) -> &'static str {
+        match self {
+            Self::Http => "summary_http",
+            Self::Topic => "summary_topic",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SummaryRangeBuildTelemetry {
+    route: SummaryBuildRoute,
+    window_kind: &'static str,
+    window_name: &'static str,
+}
+
+impl SummaryRangeBuildTelemetry {
+    fn new(
+        route: SummaryBuildRoute,
+        window: &SummaryWindow,
+        requested_window: Option<&str>,
+    ) -> Self {
+        let window_kind = match window {
+            SummaryWindow::Duration(_) => "duration",
+            SummaryWindow::Calendar(_) => "calendar",
+            SummaryWindow::PreviousFullDays(_) => "previous_full_days",
+            SummaryWindow::All => "all",
+            SummaryWindow::Current(_) => "current",
+        };
+        let window_name = match window {
+            SummaryWindow::Duration(_) => match requested_window {
+                Some("7d") => "7d",
+                Some("1d") | None => "1d",
+                _ => "range",
+            },
+            SummaryWindow::Calendar(spec) => match spec.as_str() {
+                "today" => "today",
+                "yesterday" => "yesterday",
+                _ => "range",
+            },
+            SummaryWindow::PreviousFullDays(7) => "previous7d",
+            _ => "range",
+        };
+        Self {
+            route,
+            window_kind,
+            window_name,
+        }
+    }
+
+    fn route_label(self) -> &'static str {
+        self.route.telemetry_route()
+    }
+}
+
+fn emit_summary_range_builder_telemetry(
+    telemetry: SummaryRangeBuildTelemetry,
+    builder: &'static str,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    aggregation_mode: &'static str,
+    archive_overlap_strategy: &'static str,
+    live_group_row_count: usize,
+    archive_group_row_count: usize,
+    live_row_scan_mode: &'static str,
+    live_id_overlap_scan_mode: &'static str,
+    elapsed_ms: u64,
+) {
+    let route = telemetry.route_label();
+    let group_row_count = live_group_row_count + archive_group_row_count;
+    if elapsed_ms >= 250 {
+        tracing::warn!(
+            route,
+            builder,
+            ?source_scope,
+            upstream_account_id,
+            window_kind = telemetry.window_kind,
+            window_name = telemetry.window_name,
+            aggregation_mode,
+            archive_overlap_strategy,
+            live_group_row_count,
+            archive_group_row_count,
+            group_row_count,
+            live_row_scan_mode,
+            live_id_overlap_scan_mode,
+            elapsed_ms,
+            "summary range builder exceeded slow-path threshold"
+        );
+    } else {
+        tracing::debug!(
+            route,
+            builder,
+            ?source_scope,
+            upstream_account_id,
+            window_kind = telemetry.window_kind,
+            window_name = telemetry.window_name,
+            aggregation_mode,
+            archive_overlap_strategy,
+            live_group_row_count,
+            archive_group_row_count,
+            group_row_count,
+            live_row_scan_mode,
+            live_id_overlap_scan_mode,
+            elapsed_ms,
+            "summary range builder completed"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -4862,6 +4978,7 @@ pub(crate) async fn load_summary_live_augmentation(
     upstream_account_id: Option<i64>,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
     policy: SummaryLiveAugmentationPolicy,
+    range_telemetry: Option<SummaryRangeBuildTelemetry>,
 ) -> Result<SummaryLiveAugmentation, ApiError> {
     let in_progress = if policy.include_in_progress {
         let snapshot =
@@ -4877,8 +4994,19 @@ pub(crate) async fn load_summary_live_augmentation(
     };
     let non_success_tokens = if policy.include_non_success_tokens {
         if let Some((start, end)) = range {
-            load_non_success_tokens_snapshot(state, source_scope, upstream_account_id, start, end)
-                .await?
+            let telemetry = range_telemetry.ok_or_else(|| {
+                ApiError::from(anyhow!(
+                    "summary range telemetry is required for non-success token augmentation"
+                ))
+            })?;
+            load_non_success_tokens_snapshot(
+                state,
+                source_scope,
+                upstream_account_id,
+                ExactUtcRange { start, end },
+                telemetry,
+            )
+            .await?
         } else {
             None
         }
@@ -5203,194 +5331,144 @@ pub(crate) async fn load_non_success_tokens_snapshot(
     state: &AppState,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
+    range: ExactUtcRange,
+    telemetry: SummaryRangeBuildTelemetry,
 ) -> Result<Option<i64>, ApiError> {
     let started_at = Instant::now();
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT \
-            COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS non_success_tokens \
-         FROM codex_invocations \
-         WHERE occurred_at >= ",
-    );
-    query
-        .push_bind(db_occurred_at_lower_bound(start))
-        .push(" AND occurred_at < ")
-        .push_bind(db_occurred_at_upper_bound(end))
-        .push(" AND LOWER(TRIM(")
-        .push(invocation_display_status_sql())
-        .push(")) IN ('failed', 'interrupted')");
-
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
-    }
-    if let Some(upstream_account_id) = upstream_account_id {
-        query
-            .push(" AND ")
-            .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
-            .push(" = ")
-            .push_bind(upstream_account_id);
-    }
-
-    let live_tokens = match query
-        .build_query_scalar::<i64>()
-        .fetch_one(&state.pool)
-        .await
-    {
-        Ok(tokens) => tokens,
-        Err(err) => {
-            let err = anyhow!(err);
-            if crate::is_sqlite_lock_error(&err) {
-                tracing::warn!(
-                    endpoint = "/api/stats/summary",
-                    window = "range",
-                    ?source_scope,
-                    upstream_account_id,
-                    start = %start,
-                    end = %end,
-                    "summary live non-success token snapshot skipped because sqlite is locked"
-                );
-                return Ok(None);
-            }
-            return Err(ApiError::from(err));
-        }
-    };
-
-    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
-    if start >= retention_cutoff {
-        let elapsed_ms = started_at.elapsed().as_millis() as u64;
-        if elapsed_ms >= 250 {
-            tracing::warn!(
-                endpoint = "/api/stats/summary",
-                window = "range",
-                ?source_scope,
-                upstream_account_id,
-                cache_hit_or_miss = "live_only",
-                elapsed_ms,
-                row_count = 0_i64,
-                start = %start,
-                end = %end,
-                "summary non-success token snapshot exceeded slow-path threshold"
-            );
-        } else {
-            tracing::debug!(
-                endpoint = "/api/stats/summary",
-                window = "range",
-                ?source_scope,
-                upstream_account_id,
-                cache_hit_or_miss = "live_only",
-                elapsed_ms,
-                row_count = 0_i64,
-                start = %start,
-                end = %end,
-                "summary non-success token snapshot completed"
-            );
-        }
-        return Ok(Some(live_tokens));
-    }
-
-    let live_invocation_ids = match load_live_invocation_ids_in_range(
+    let live_rows = match query_live_upstream_account_activity_aggregate_rows(
         &state.pool,
         source_scope,
-        upstream_account_id,
-        start,
-        end,
+        range,
+        false,
+        DashboardActivityExcludedInvocationIdsFilter::None,
     )
     .await
     {
-        Ok(ids) => ids,
+        Ok(rows) => rows,
+        Err(err) => {
+            if let ApiError::Internal(ref internal) = err
+                && crate::is_sqlite_lock_error(internal)
+            {
+                tracing::warn!(
+                    route = telemetry.route_label(),
+                    builder = "summary_non_success_tokens",
+                    ?source_scope,
+                    upstream_account_id,
+                    window_kind = telemetry.window_kind,
+                    window_name = telemetry.window_name,
+                    aggregation_mode = "fallback",
+                    archive_overlap_strategy = "fallback",
+                    live_group_row_count = 0_usize,
+                    archive_group_row_count = 0_usize,
+                    live_row_scan_mode = "none",
+                    live_id_overlap_scan_mode = "fallback",
+                    start = %range.start,
+                    end = %range.end,
+                    "summary non-success token aggregate skipped because sqlite is locked"
+                );
+                return Ok(None);
+            }
+            return Err(err);
+        }
+    };
+    let live_group_row_count = live_rows.len();
+    let live_tokens = live_rows
+        .into_iter()
+        .filter(|row| {
+            upstream_account_id.is_none_or(|account_id| row.upstream_account_id == Some(account_id))
+        })
+        .map(|row| row.non_success_tokens)
+        .sum::<i64>();
+
+    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
+    if range.start >= retention_cutoff {
+        let elapsed_ms = started_at.elapsed().as_millis() as u64;
+        emit_summary_range_builder_telemetry(
+            telemetry,
+            "summary_non_success_tokens",
+            source_scope,
+            upstream_account_id,
+            "aggregate_only",
+            "aggregate_merge",
+            live_group_row_count,
+            0,
+            "none",
+            "none",
+            elapsed_ms,
+        );
+        return Ok(Some(live_tokens));
+    }
+
+    let archive_rows = match query_completed_invocation_archive_activity_aggregate_rows(
+        &state.pool,
+        source_scope,
+        range,
+    )
+    .await
+    {
+        Ok(rows) => rows,
         Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
             tracing::warn!(
-                endpoint = "/api/stats/summary",
-                window = "range",
+                route = telemetry.route_label(),
+                builder = "summary_non_success_tokens",
                 ?source_scope,
                 upstream_account_id,
-                start = %start,
-                end = %end,
-                "summary archive overlap scan skipped because sqlite is locked"
+                window_kind = telemetry.window_kind,
+                window_name = telemetry.window_name,
+                aggregation_mode = "fallback",
+                archive_overlap_strategy = "fallback",
+                live_group_row_count,
+                archive_group_row_count = 0_usize,
+                live_row_scan_mode = "none",
+                live_id_overlap_scan_mode = "fallback",
+                start = %range.start,
+                end = %range.end,
+                "summary archive aggregate overlap merge skipped because sqlite is locked"
             );
             return Ok(None);
         }
         Err(err) => return Err(err),
     };
-    let archived_tokens = if let Some(upstream_account_id) = upstream_account_id {
-        match crate::stats::query_completed_upstream_account_archive_non_success_usage(
-            &state.pool,
+    let archive_group_row_count = archive_rows.aggregates.len();
+    if !archive_rows.skipped_materialized_ranges.is_empty() {
+        let elapsed_ms = started_at.elapsed().as_millis() as u64;
+        emit_summary_range_builder_telemetry(
+            telemetry,
+            "summary_non_success_tokens",
             source_scope,
-            Some((start, end)),
-            Some(&live_invocation_ids),
             upstream_account_id,
-        )
-        .await
-        {
-            Ok((_, tokens)) => tokens,
-            Err(err) if crate::is_sqlite_lock_error(&err) => {
-                tracing::warn!(
-                    endpoint = "/api/stats/summary",
-                    window = "range",
-                    ?source_scope,
-                    upstream_account_id,
-                    start = %start,
-                    end = %end,
-                    "summary archived non-success token lookup skipped because sqlite is locked"
-                );
-                return Ok(None);
-            }
-            Err(err) => return Err(ApiError::from(err)),
-        }
-    } else {
-        match crate::stats::query_completed_invocation_archive_non_success_usage(
-            &state.pool,
-            source_scope,
-            Some((start, end)),
-            Some(&live_invocation_ids),
-        )
-        .await
-        {
-            Ok((_, tokens)) => tokens,
-            Err(err) if crate::is_sqlite_lock_error(&err) => {
-                tracing::warn!(
-                    endpoint = "/api/stats/summary",
-                    window = "range",
-                    ?source_scope,
-                    start = %start,
-                    end = %end,
-                    "summary archived non-success token lookup skipped because sqlite is locked"
-                );
-                return Ok(None);
-            }
-            Err(err) => return Err(ApiError::from(err)),
-        }
-    };
-    let elapsed_ms = started_at.elapsed().as_millis() as u64;
-    let row_count = live_invocation_ids.len() as i64;
-    if elapsed_ms >= 250 {
-        tracing::warn!(
-            endpoint = "/api/stats/summary",
-            window = "range",
-            ?source_scope,
-            upstream_account_id,
-            cache_hit_or_miss = "live_plus_archive",
+            "fallback",
+            "fallback",
+            live_group_row_count,
+            archive_group_row_count,
+            "none",
+            "fallback",
             elapsed_ms,
-            row_count,
-            start = %start,
-            end = %end,
-            "summary non-success token snapshot exceeded slow-path threshold"
         );
-    } else {
-        tracing::debug!(
-            endpoint = "/api/stats/summary",
-            window = "range",
-            ?source_scope,
-            upstream_account_id,
-            cache_hit_or_miss = "live_plus_archive",
-            elapsed_ms,
-            row_count,
-            start = %start,
-            end = %end,
-            "summary non-success token snapshot completed"
-        );
+        return Ok(None);
     }
+    let archived_tokens = archive_rows
+        .aggregates
+        .into_iter()
+        .filter(|row| {
+            upstream_account_id.is_none_or(|account_id| row.upstream_account_id == Some(account_id))
+        })
+        .map(|row| row.non_success_tokens)
+        .sum::<i64>();
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    emit_summary_range_builder_telemetry(
+        telemetry,
+        "summary_non_success_tokens",
+        source_scope,
+        upstream_account_id,
+        "aggregate_only",
+        "aggregate_merge",
+        live_group_row_count,
+        archive_group_row_count,
+        "none",
+        "none",
+        elapsed_ms,
+    );
     Ok(Some(live_tokens + archived_tokens))
 }
 
@@ -5423,6 +5501,7 @@ pub(crate) async fn build_empty_summary_response(
             include_in_progress: true,
             include_non_success_tokens: false,
         },
+        None,
     )
     .await?;
     apply_summary_live_augmentation(&mut response, augmentation);
@@ -6814,7 +6893,7 @@ async fn query_live_upstream_account_usage_breakdown_rows(
         "COALESCE(NULLIF(TRIM({}), ''), NULLIF(TRIM(model), ''), 'unknown')",
         INVOCATION_RESPONSE_MODEL_SQL
     );
-    let reasoning_effort_sql = INVOCATION_REASONING_EFFORT_SQL;
+    let reasoning_effort_sql = format!("NULLIF(TRIM({}), '')", INVOCATION_REASONING_EFFORT_SQL);
     let cost_complete_sql = if has_cost_breakdown_columns {
         "cost_input IS NOT NULL AND cost_cache_write IS NOT NULL AND cost_cache_read IS NOT NULL AND cost_output IS NOT NULL AND cost_reasoning IS NOT NULL"
     } else {
@@ -6926,7 +7005,7 @@ async fn query_live_model_performance_duration_overrides(
         "COALESCE(NULLIF(TRIM({}), ''), NULLIF(TRIM(model), ''), 'unknown')",
         INVOCATION_RESPONSE_MODEL_SQL
     );
-    let reasoning_effort_sql = INVOCATION_REASONING_EFFORT_SQL;
+    let reasoning_effort_sql = format!("NULLIF(TRIM({}), '')", INVOCATION_REASONING_EFFORT_SQL);
     let occurred_at_epoch_ms_sql = "(CAST(CASE WHEN instr(occurred_at, 'T') > 0 THEN strftime('%s', occurred_at) ELSE strftime('%s', occurred_at || '+08:00') END AS REAL) * 1000.0)";
     let failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
     let success_billed_sql = format!(
@@ -6940,7 +7019,7 @@ async fn query_live_model_performance_duration_overrides(
         .push(" AS upstream_account_id, ")
         .push(model_sql.as_str())
         .push(" AS model, ")
-        .push(reasoning_effort_sql)
+        .push(reasoning_effort_sql.as_str())
         .push(" AS reasoning_effort, ")
         .push(occurred_at_epoch_ms_sql)
         .push(" AS start_epoch_ms, MIN(")
@@ -7882,47 +7961,92 @@ pub(crate) async fn load_usage_breakdown_for_range(
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
     range: ExactUtcRange,
-) -> Result<UsageBreakdownResponse, ApiError> {
-    let account_metadata_table_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM sqlite_master \
-         WHERE type = 'table' \
-           AND name IN ('pool_upstream_accounts', 'pool_upstream_account_limit_samples')",
-    )
-    .fetch_one(&state.pool)
-    .await?;
-    let mut live_rows = if account_metadata_table_count == 2 {
-        query_live_upstream_account_activity_preview_rows(&state.pool, source_scope, range).await?
-    } else {
-        Vec::new()
-    };
-    overlay_runtime_upstream_account_activity_preview_rows(
-        state,
-        &mut live_rows,
+    telemetry: SummaryRangeBuildTelemetry,
+) -> Result<Option<UsageBreakdownResponse>, ApiError> {
+    let started_at = Instant::now();
+    let has_cost_breakdown_columns =
+        crate::stats::sqlite_table_has_column(&state.pool, "codex_invocations", "cost_input")
+            .await?;
+    let mut usage_breakdown = UsageBreakdownAccumulator::default();
+    let live_rows = query_live_upstream_account_usage_breakdown_rows(
+        &state.pool,
         source_scope,
         range,
-    );
-    let live_ids = live_rows.iter().map(|row| row.id).collect::<HashSet<_>>();
-    let mut rows = live_rows;
-    if range.start < shanghai_retention_cutoff(state.config.invocation_max_days) {
-        rows.extend(
-            crate::stats::query_completed_invocation_archive_preview_rows(
-                &state.pool,
-                source_scope,
-                range,
-                Some(&live_ids),
-            )
-            .await?,
-        );
-    }
-
-    let mut usage_breakdown = UsageBreakdownAccumulator::default();
-    for row in rows {
+        has_cost_breakdown_columns,
+        true,
+        DashboardActivityExcludedInvocationIdsFilter::None,
+    )
+    .await?;
+    let live_group_row_count = live_rows.len();
+    for row in live_rows {
         if upstream_account_id.is_none_or(|account_id| row.upstream_account_id == Some(account_id))
         {
-            usage_breakdown.add_row(&row);
+            usage_breakdown.add_aggregate_row(&row);
         }
     }
-    Ok(usage_breakdown.into_response())
+    if range.start < shanghai_retention_cutoff(state.config.invocation_max_days) {
+        let archive_rows = query_completed_invocation_archive_activity_aggregate_rows(
+            &state.pool,
+            source_scope,
+            range,
+        )
+        .await?;
+        let archive_group_row_count = archive_rows.usage_breakdowns.len();
+        if !archive_rows.skipped_materialized_ranges.is_empty() {
+            let elapsed_ms = started_at.elapsed().as_millis() as u64;
+            emit_summary_range_builder_telemetry(
+                telemetry,
+                "summary_usage_breakdown",
+                source_scope,
+                upstream_account_id,
+                "fallback",
+                "fallback",
+                live_group_row_count,
+                archive_group_row_count,
+                "none",
+                "none",
+                elapsed_ms,
+            );
+            return Ok(None);
+        }
+        for row in archive_rows.usage_breakdowns {
+            if upstream_account_id
+                .is_none_or(|account_id| row.upstream_account_id == Some(account_id))
+            {
+                usage_breakdown.add_aggregate_row(&row);
+            }
+        }
+        let elapsed_ms = started_at.elapsed().as_millis() as u64;
+        emit_summary_range_builder_telemetry(
+            telemetry,
+            "summary_usage_breakdown",
+            source_scope,
+            upstream_account_id,
+            "aggregate_only",
+            "aggregate_merge",
+            live_group_row_count,
+            archive_group_row_count,
+            "none",
+            "none",
+            elapsed_ms,
+        );
+        return Ok(Some(usage_breakdown.into_response()));
+    }
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    emit_summary_range_builder_telemetry(
+        telemetry,
+        "summary_usage_breakdown",
+        source_scope,
+        upstream_account_id,
+        "aggregate_only",
+        "aggregate_merge",
+        live_group_row_count,
+        0,
+        "none",
+        "none",
+        elapsed_ms,
+    );
+    Ok(Some(usage_breakdown.into_response()))
 }
 
 pub(crate) async fn query_upstream_account_activity_meta(
@@ -9912,6 +10036,7 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
             // scan here would defeat the summary-only fast path.
             include_non_success_tokens: false,
         },
+        None,
     )
     .await?;
     apply_summary_live_augmentation(&mut stats, augmentation);
@@ -12233,12 +12358,13 @@ mod model_performance_duration_override_tests {
     }
 }
 
-pub(crate) async fn fetch_summary(
-    State(state): State<Arc<AppState>>,
-    Query(params): Query<SummaryQuery>,
-) -> Result<Json<StatsResponse>, ApiError> {
+pub(crate) async fn load_summary_response_from_query(
+    state: &AppState,
+    params: &SummaryQuery,
+    route: SummaryBuildRoute,
+) -> Result<StatsResponse, ApiError> {
     let default_limit = state.config.list_limit_max as i64;
-    let window = parse_summary_window(&params, default_limit)?;
+    let window = parse_summary_window(params, default_limit)?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let upstream_account_id = params.upstream_account_id;
@@ -12251,7 +12377,7 @@ pub(crate) async fn fetch_summary(
                     ApiError::from(anyhow!("invalid account all-time summary start"))
                 })?;
                 query_hourly_backed_summary_range_for_account(
-                    state.as_ref(),
+                    state,
                     start,
                     Utc::now(),
                     source_scope,
@@ -12282,7 +12408,7 @@ pub(crate) async fn fetch_summary(
             let start = now - duration;
             if let Some(upstream_account_id) = upstream_account_id {
                 query_hourly_backed_summary_range_for_account(
-                    state.as_ref(),
+                    state,
                     start,
                     now,
                     source_scope,
@@ -12290,21 +12416,19 @@ pub(crate) async fn fetch_summary(
                 )
                 .await?
             } else {
-                query_hourly_backed_summary_since(state.as_ref(), start, source_scope).await?
+                query_hourly_backed_summary_since(state, start, source_scope).await?
             }
         }
         SummaryWindow::Calendar(ref spec) => {
             let range_window =
                 resolve_range_window(spec.as_str(), reporting_tz).map_err(ApiError::from)?;
             if range_window.start >= range_window.end {
-                return Ok(Json(
-                    build_empty_summary_response(state.as_ref(), source_scope, upstream_account_id)
-                        .await?,
-                ));
+                return build_empty_summary_response(state, source_scope, upstream_account_id)
+                    .await;
             }
             if let Some(upstream_account_id) = upstream_account_id {
                 query_hourly_backed_summary_range_for_account(
-                    state.as_ref(),
+                    state,
                     range_window.start,
                     range_window.end,
                     source_scope,
@@ -12313,7 +12437,7 @@ pub(crate) async fn fetch_summary(
                 .await?
             } else {
                 query_hourly_backed_summary_range(
-                    state.as_ref(),
+                    state,
                     range_window.start,
                     range_window.end,
                     source_scope,
@@ -12328,7 +12452,7 @@ pub(crate) async fn fetch_summary(
                 })?;
             if let Some(upstream_account_id) = upstream_account_id {
                 query_hourly_backed_summary_range_for_account(
-                    state.as_ref(),
+                    state,
                     start,
                     end,
                     source_scope,
@@ -12336,7 +12460,7 @@ pub(crate) async fn fetch_summary(
                 )
                 .await?
             } else {
-                query_hourly_backed_summary_range(state.as_ref(), start, end, source_scope).await?
+                query_hourly_backed_summary_range(state, start, end, source_scope).await?
             }
         }
     };
@@ -12344,29 +12468,41 @@ pub(crate) async fn fetch_summary(
     let mut response = totals.into_response();
     response.non_success_cost = Some(totals.non_success_cost);
     let range = summary_window_range(&window, reporting_tz, now)?;
+    let range_telemetry =
+        range.map(|_| SummaryRangeBuildTelemetry::new(route, &window, params.window.as_deref()));
     if let Some((start, end)) = range {
-        response.usage_breakdown = Some(
-            load_usage_breakdown_for_range(
-                state.as_ref(),
-                source_scope,
-                upstream_account_id,
-                ExactUtcRange { start, end },
-            )
-            .await?,
-        );
+        let telemetry = range_telemetry.expect("summary range telemetry should exist");
+        response.usage_breakdown = load_usage_breakdown_for_range(
+            state,
+            source_scope,
+            upstream_account_id,
+            ExactUtcRange { start, end },
+            telemetry,
+        )
+        .await?;
     }
     let policy = summary_live_augmentation_policy(&window, range, now);
     let augmentation = load_summary_live_augmentation(
-        state.as_ref(),
+        state,
         source_scope,
         upstream_account_id,
         range,
         policy,
+        range_telemetry,
     )
     .await?;
     apply_summary_live_augmentation(&mut response, augmentation);
-    response.maintenance = Some(load_stats_maintenance_response(state.as_ref()).await?);
-    Ok(Json(response))
+    response.maintenance = Some(load_stats_maintenance_response(state).await?);
+    Ok(response)
+}
+
+pub(crate) async fn fetch_summary(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<SummaryQuery>,
+) -> Result<Json<StatsResponse>, ApiError> {
+    Ok(Json(
+        load_summary_response_from_query(state.as_ref(), &params, SummaryBuildRoute::Http).await?,
+    ))
 }
 
 pub(crate) async fn load_stats_maintenance_response(

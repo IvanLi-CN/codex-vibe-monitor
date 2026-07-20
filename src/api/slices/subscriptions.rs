@@ -1694,14 +1694,15 @@ impl SubscriptionTopic {
                 limit,
                 upstream_account_id,
             } => {
-                let Json(response) = fetch_summary(
-                    State(state),
-                    Query(SummaryQuery {
+                let response = load_summary_response_from_query(
+                    state.as_ref(),
+                    &SummaryQuery {
                         window: Some(window.clone()),
                         limit: *limit,
                         time_zone: Some(time_zone.clone()),
                         upstream_account_id: *upstream_account_id,
-                    }),
+                    },
+                    SummaryBuildRoute::Topic,
                 )
                 .await?;
                 Ok(serde_json::to_value(response)?)

@@ -2,6 +2,7 @@
 
 ## Key Decisions
 
+- 2026-07-20：`stats.summary.current` 的 open-range 残留慢链从旧 HTTP summary 构建器完全收口到共享内部 builder；同轮把 `usage_breakdown` 和 `non_success_tokens` 改成 live/archive aggregate merge，去掉 `full_range_preview_rows(limit=None)` 与 live invocation id overlap 全窗扫描，避免 topic SSE 与 Dashboard 7d overview 再次把 summary 读压打回 SQLite。
 - 2026-07-17：手动“立即重连”被收紧为同页 fresh snapshot 恢复，而不是“复用旧 resume 的软重连”或整页刷新。前端现在为每次连接分配 `attempt` 和 `reason`，手动重连会对当前 active topics 全量 forced snapshot，并把同一轮证据同时暴露到黄条诊断文本与后端 `/events` 初始化日志。
 - 2026-07-17：浏览器 drill 暴露出一个更底层的缺口：等价 topic descriptor 在 React 重渲时会反复退订/重订，叠加 `eventsource-error` 的立即重连，能把 `attempt` 冲到数千次。现已把订阅稳定性下沉到 `useSubscriptionTopic` 的语义 key，并把失败恢复重新收紧为指数退避。
 - 2026-07-16：主应用常驻订阅从“`records` SSE + HTTP bootstrap/open-resync/reconcile + 页面私有 fallback”一次性切到单 `/events` 的 topic SSE 合同。覆盖范围内连接只消费 `snapshot/replay/live` envelope；恢复只走 replay 或新 snapshot，不再偷偷打 HTTP。
