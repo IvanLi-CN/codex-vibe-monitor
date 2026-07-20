@@ -110,51 +110,61 @@ export function AccountDetailDrawerShell({
 
   if (!open) return null;
 
-  const shell = (
-    <section
-      ref={handleSectionRef}
-      role={presentation === "page" ? "region" : "dialog"}
-      aria-modal={presentation === "overlay" ? "true" : undefined}
-      aria-labelledby={labelledBy}
-      className={cn(
-        "drawer-shell flex w-full flex-col overflow-hidden",
-        presentation === "page"
-          ? "min-h-[calc(100dvh-8.5rem)] bg-base-100"
-          : "h-[min(100dvh-0.5rem,100dvh)]",
-        "desktop:h-full desktop:rounded-none desktop:border-0",
-        shellClassName,
-      )}
-      onClick={(event) => event.stopPropagation()}
-    >
-      <OverlayHostProvider value={sectionElement ?? undefined}>
-        <div className="drawer-header px-4 py-4 sm:px-5 desktop:px-6 desktop:py-4">
-          <div className="flex items-start gap-4">
-            <div className="min-w-0 flex-1">{header}</div>
-            <Button
-              ref={closeButtonRef}
-              type="button"
-              variant="ghost"
-              size="icon"
-              onClick={onClose}
-              disabled={closeDisabled}
-            >
-              <AppIcon name="close" className="h-5 w-5" aria-hidden />
-              <span className="sr-only">{closeLabel}</span>
-            </Button>
-          </div>
+  const shellBody = (
+    <OverlayHostProvider value={sectionElement ?? undefined}>
+      <div className="drawer-header px-4 py-4 sm:px-5 desktop:px-6 desktop:py-4">
+        <div className="flex items-start gap-4">
+          <div className="min-w-0 flex-1">{header}</div>
+          <Button
+            ref={closeButtonRef}
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={onClose}
+            disabled={closeDisabled}
+          >
+            <AppIcon name="close" className="h-5 w-5" aria-hidden />
+            <span className="sr-only">{closeLabel}</span>
+          </Button>
         </div>
-        <div
-          ref={handleBodyRef}
-          className={cn(
-            "drawer-body min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-4 sm:px-5 sm:py-5 desktop:px-6 desktop:py-6",
-            bodyClassName,
-          )}
-        >
-          {children}
-        </div>
-      </OverlayHostProvider>
-    </section>
+      </div>
+      <div
+        ref={handleBodyRef}
+        className={cn(
+          "drawer-body min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-4 sm:px-5 sm:py-5 desktop:px-6 desktop:py-6",
+          bodyClassName,
+        )}
+      >
+        {children}
+      </div>
+    </OverlayHostProvider>
   );
+
+  const shellClassNames = cn(
+    "drawer-shell flex w-full flex-col overflow-hidden",
+    presentation === "page"
+      ? "min-h-[calc(100dvh-8.5rem)] bg-base-100"
+      : "h-[min(100dvh-0.5rem,100dvh)]",
+    "desktop:h-full desktop:rounded-none desktop:border-0",
+    shellClassName,
+  );
+
+  const shell =
+    presentation === "page" ? (
+      <section ref={handleSectionRef} aria-labelledby={labelledBy} className={shellClassNames}>
+        {shellBody}
+      </section>
+    ) : (
+      <div
+        ref={handleSectionRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={labelledBy}
+        className={shellClassNames}
+      >
+        {shellBody}
+      </div>
+    );
 
   if (presentation === "page") {
     return shell;
@@ -169,9 +179,7 @@ export function AccountDetailDrawerShell({
         className="absolute inset-0 bg-neutral/50 backdrop-blur-sm"
         onClick={closeDisabled ? undefined : onClose}
       />
-      <div className="drawer-frame" onClick={closeDisabled ? undefined : onClose}>
-        {shell}
-      </div>
+      <div className="drawer-frame">{shell}</div>
     </div>,
     document.body,
   );

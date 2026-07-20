@@ -88,7 +88,14 @@
 - `/v1/responses` 请求若由 `gpt-image-*`、`image_generation` 或等价图片工具信号触发，必须持久化 `imageIntent="yes"`；`/v1/images/generations|edits` 必须持久化 `imageIntent="direct_image"`。
 - `requestBodyLoggingEnabled=false` 时，`compactionRequestKind` 与 `imageIntent` 仍必须稳定落库并对外可见，不能依赖 request raw body 后读。
 - 公开模型展示合同固定为：主显示值采用 `responseModel ?? model ?? requestModel`；只有在 `requestModel` 与 `responseModel` 同时存在、且忽略空白/大小写并按 dated alias/base-model 归并后仍不一致时，才显示“上游改路由”的差异图标。
+- Records 展开摘要与调用详情首屏模型卡必须在主模型值之外，稳定展示 `reasoningEffort`、`imageIntent` 与上游改路由信号；缺值显示 `—`，不得补假值。
+- Records 展开摘要右上卡、列表展开摘要与 workflow 响应 Token 审计面板统一命名为 `Token 与成本`；成本 warning 的图标、tooltip 文案与红色差异态必须跨这些入口复用同一套语义。
 - 调用详情必须固定展示“请求模型 / 响应模型”两个字段；旧记录若只有历史 `model` 字段，则回填到“响应模型”，请求模型显示 `—`。
+- `GET /api/invocations` 的每条记录可选返回 `costAudit`，用于对比持久化 `cost` 与按当前本地 pricing catalog 重算出的金额；该对象只做对账与告警，不改写记录真值。
+- `costAudit` mismatch 判定采用 `0.000001 USD` 绝对容差；差值大于阈值时 `mismatch=true`。若 recorded/local `priceVersion` 不一致，则 `reason=price_version_changed`；否则总额不一致时 `reason=total_mismatch`。缺少 recorded cost、价表或 usage 证据时返回不可比较原因而不是误报 mismatch。
+- 历史记录只有总成本、没有持久化逐桶成本时，`costAudit` 仍可比较 recorded/local 总额，但 recorded 分桶保持 unavailable，不得伪造 input/cache/output/reasoning 的 recorded 金额。
+- `GET /api/invocations/:id/workflow-detail` 仅在顶层调用属于成功终态、且存在 usage 证据时，为最终成功 attempt 的 `responseSummary.usage` 注入 Token/成本审计对象；更早的重试 attempt、失败 attempt 与无 usage 历史记录保持 `usage=null`。
+- workflow 响应 usage 审计对象必须同时暴露 `input/cacheWrite/cacheRead/output/reasoning/total` Token 视图，以及 recorded/local 成本分桶与审计元数据；`reasoningTokens` 缺失时保持 `null`，只有真实记录值为 `0` 时才显示 `0`。
 - 新 HTTP proxy invocation 的 `invokeId` 必须匹配 `^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{10}$`，字符集固定为 `ABCDEFGHJKMNPQRSTUVWXYZ23456789`，不包含 `I`、`L`、`O`、`0`、`1`、连字符、业务前缀或时间戳。
 - 内部 `proxy_request_id` 继续作为日志、路由预约、临时文件、并发控制与 pool replay 的 numeric ID；不得从短 `invokeId` 反向解析内部 ID。
 - `pool_routing_reservation_key_for_invoke_id` 只对历史 `proxy-{numeric}-{timestamp}` 格式恢复 `pool-route-{numeric}`，新短格式不生成 reservation key。
@@ -120,8 +127,10 @@
 - Dashboard 活动快照从 retained live 调用按响应模型与思考程度聚合成功已计费性能样本，同时分别生成全局、账号、模型与账号+模型四级的墙钟并集与累计时长，并在全局和账号级 `modelPerformance` 响应里显式返回 `wallClockUsageDurationMs`、`cumulativeUsageDurationMs` 与 `parallelism`；原始费用、token 明细和调用列表聚合保持不变。
 - Dashboard 性能明细入口继续展示当前选择范围的完整周期总计；顶部实时 KPI 与账号标题实时指标改由 `z6ysw` 的最近完整 1 分钟 bucket 提供，不再把 `modelPerformance` 总计当作当前值。
 - 前端表格默认显示关键字段（token/cost/latency），用户展开后看到请求元信息与阶段耗时明细。
+- `/api/invocations` 列表在合并 archive + runtime overlay 后，可按当前 pricing catalog 为每条记录附带 `costAudit`；前端据此在 Records 列表成本列、展开摘要与详情卡渲染 recorded/local 对照与 mismatch warning。
 - 前端展开详情时隐藏 `source` 行，避免把来源分类误读成出站代理。
 - `/api/invocations/{invoke_id}/pool-attempts` 读取 `pool_upstream_request_attempts.proxy_binding_key_snapshot` 并作为 `proxyBindingKeySnapshot` 返回。
+- workflow detail 仅为最终成功 attempt 注入 `responseSummary.usage` 审计对象；该对象复用 invocation 级 recorded/local 成本对账结果，并补齐 `未命中缓存输入 Token / 命中缓存输入 Token / 输出 Token / 金额` 这四项 owner-facing 关键指标。
 - `GET /api/pool/upstream-accounts/{accountId}/call-attempts` 返回该账号最近 7 天主库尝试的分页列表；`GET .../call-attempts/locate?attemptId=...` 返回目标尝试所在页，未命中返回 `404`。
 - 号池详情中，真实上游尝试与合成终态记录分开展示。`budget_exhausted_final` 或 `sameAccountRetryIndex <= 0` 仅作为号池终态说明，不作为普通尝试卡片展示，不显示同账号重试序号或阶段耗时。
 - 启动阶段执行历史回填：读取 `request_raw_path` 指向的原始请求 JSON，提取 `prompt_cache_key` 后写回 payload。
@@ -145,6 +154,7 @@
 - `promptCacheKey?: string`
 - `endpoint?: string`
 - `failureKind?: string`
+- `costAudit?: { recorded?: { input?: number; cacheWrite?: number; cacheRead?: number; output?: number; reasoning?: number; total?: number }; local?: { input?: number; cacheWrite?: number; cacheRead?: number; output?: number; reasoning?: number; total?: number }; mismatch: boolean; reason?: string | null; absoluteDiffUsd?: number | null; recordedPriceVersion?: string | null; localPriceVersion?: string | null }`
 
 ### `GET /api/invocations/{invokeId}/pool-attempts` 尝试对象
 
@@ -170,6 +180,20 @@
 - `imageIntent?: "yes" | "direct_image" | "no" | "unknown" | null`
 - `requestModel?: string | null`
 - `responseModel?: string | null`
+
+### `GET /api/invocations/:id/workflow-detail` 最终成功 attempt 的 `responseSummary.usage`
+
+- `inputTokens?: number | null`
+- `cacheWriteTokens?: number | null`
+- `cacheInputTokens?: number | null`
+- `outputTokens?: number | null`
+- `reasoningTokens?: number | null`
+- `totalTokens?: number | null`
+- `cost?: number | null`
+- `tokens?: { input?: number | null; cacheWrite?: number | null; cacheRead?: number | null; output?: number | null; reasoning?: number | null; total?: number | null }`
+- `costs?: { recorded?: { input?: number; cacheWrite?: number; cacheRead?: number; output?: number; reasoning?: number; total?: number }; local?: { input?: number; cacheWrite?: number; cacheRead?: number; output?: number; reasoning?: number; total?: number } }`
+- `audit?: { mismatch: boolean; reason?: string | null; absoluteDiffUsd?: number | null; recordedPriceVersion?: string | null; localPriceVersion?: string | null }`
+- 仅最终成功 attempt 且存在 usage 证据时返回该对象；其他 attempt 保持 `usage?: null`
 
 ### Shared invocation preview object（沿用扩展字段）
 
@@ -216,8 +240,12 @@
 - Given 历史 invocation 缺少 `imageIntent`，When Records 或 Dashboard 渲染，Then 列表不显示图片徽标，详情字段显示 `—`。
 - Given 新记录同时携带 `requestModel=gpt-5.4` 与 `responseModel=gpt-5.5`，When Records、InvocationTable 或 Dashboard working conversations 渲染，Then 主模型文本显示 `gpt-5.5`，并在模型 badge 前显示上游路由差异图标。
 - Given `requestModel` 与 `responseModel` 仅大小写不同，或仅 dated alias/base-model 归并后等价，When 列表渲染，Then 不显示模型路由差异图标。
+- Given Records 展开摘要与详情首屏模型卡存在 `reasoningEffort`、`imageIntent` 或重路由信号，When 记录渲染，Then 这些值与 badge 会稳定显示；缺值显示 `—`，不伪造默认值。
 - Given 调用详情打开，When 记录存在双模型字段，Then 页面始终分别展示“请求模型 / 响应模型”，且 mismatch 时仅响应模型带差异图标。
 - Given 历史记录仅存在 `model`，When 调用详情打开，Then 请求模型显示 `—`，响应模型显示该历史 `model` 值。
+- Given 某条 invocation 同时存在 recorded `cost` 与按当前 catalog 重算出的 local 成本，When `abs(recorded-local) > 0.000001 USD`，Then Records 列表成本列、展开摘要与 `Token 与成本` 卡以红色差异态显示 warning 图标；When 差值小于等于阈值，Then 不显示 warning。
+- Given 某条 invocation 缺少 recorded cost、recorded price version、usage 证据或本地价表匹配，When Records 渲染成本审计，Then UI 展示不可比较说明，不把该情况标成 mismatch。
+- Given 历史记录只有总成本、没有逐桶 persisted cost，When 展示 `Token 与成本`，Then recorded/local 总额仍可对比，但 recorded 分桶金额保持 `—`。
 - Given Dashboard 上游账号 recent 行来源于共享 invocation preview，When 用户点击调用打开详情，Then selection 使用真实 `promptCacheKey` 建立对话关联，而不是退化成 `invokeId`。
 - Given Live 表格展开详情或 Dashboard 调用详情抽屉打开，When 记录包含调用 ID、账号、端点、请求/响应模型、请求方 IP、重试和失败字段，Then 首屏按请求身份、路由与模型、失败信号、细节保留、阶段耗时分组展示，不再以无差别双列字段平铺呈现。
 - Given 调用详情包含长 `invokeId`、`promptCacheKey`、endpoint、IPv6 或错误消息，When 页面在桌面和窄屏渲染，Then 文本在容器内换行或截断，不造成横向滚动或相邻内容遮挡。
@@ -228,6 +256,9 @@
 - Given 上游 HTTP 为 500 且下游 HTTP 为 502，When 用户展开对应摘要卡，Then 详情面板显示下游 HTTP 502、上游请求 ID、路由键与完整可复制错误。
 - Given 账号尝试请求列表在 `mobile390` 渲染，When 用户查看失败项，Then 移动端仍使用同一套摘要卡与详情面板交互，并可在展开后看到代理、压缩与完整错误信息。
 - Given 历史事件缺少 `attemptId` 或目标尝试已被 7 天 retention 清理，When 用户查看事件，Then 界面明确不可定位或显示结构化未找到提示，且不以 `invokeId` 模糊匹配。
+- Given workflow detail 的最终成功 attempt 带有 usage 审计对象，When owner 打开响应详情，Then 时间线摘要与 `Token 与成本` 面板显示 `未命中缓存输入 Token / 命中缓存输入 Token / 输出 Token / 金额` 四项关键指标，并同时展示 recorded/local 成本对照。
+- Given workflow detail 的某个非最终成功 attempt、失败 attempt 或无 usage 历史 attempt，When owner 打开响应详情，Then 不注入伪造的 usage 审计对象。
+- Given workflow detail 的 usage 里 `reasoningTokens=null`，When owner 查看 `Token 与成本`，Then 推理显示 `—`；Given 真实 `reasoningTokens=0`，When owner 查看同一面板，Then 推理显示 `0`。
 - Given 号池调用仍处于 `running` 或 `pending` 且已有 `upstreamAccountName`，When Live、Records、Dashboard working conversations 或 Dashboard 调用详情抽屉渲染该 invocation，Then 账号位置显示该账号名并使用蓝色呼吸文本，不显示“号池路由中”。
 - Given 号池运行态调用没有 `upstreamAccountName` 或 `upstreamAccountId`，When owner-facing 调用界面渲染，Then 继续显示既有“号池路由中”fallback，且不伪造账号、不启用呼吸状态。
 - Given 号池调用已进入成功或失败等终态，When owner-facing 调用界面渲染其账号字段，Then 保持普通账号显示与点击行为，不启用运行态呼吸状态。
@@ -241,6 +272,118 @@
 - 启动 backend/frontend 后打开 `/dashboard` 与 `/#/live`，验证新增列与详情展开可用。
 
 ## Visual Evidence
+
+- source_type: storybook_canvas
+  story_id_or_title: Records/InvocationRecordsTable TokenCostAuditWarningMobile390
+  state: 390px records token-and-cost warning summary
+  requested_viewport: 390x844
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the 390px Records expand state switches to a flattened single-column detail stack so the rerouted model summary, warning state, and embedded workflow panel keep the full working width without horizontal overflow.
+  PR: include
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only invocation data
+  submission_gate: approved
+  image:
+  ![Records token cost warning at 390px](./assets/records-token-cost-audit-warning-mobile390-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Records/InvocationRecordsTable TokenCostAuditWarning
+  state: desktop records token-and-cost warning overview
+  requested_viewport: 1440x1200
+  viewport_strategy: browser-resize-fallback
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the desktop Records list shows rerouted request/response models, reasoning/image badges, a single shared cost-mismatch warning entry, normal text-color amounts, and the linked invocation detail below the row.
+  PR: include
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only invocation data
+  submission_gate: approved
+  image:
+  ![Records desktop token cost warning overview](./assets/records-token-cost-audit-warning-desktop-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Records/InvocationRecordsTable TokenCostAuditWarning
+  state: desktop records cost mismatch tooltip
+  requested_viewport: 1440x1200
+  viewport_strategy: browser-resize-fallback
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the shared warning icon opens an opaque custom mismatch tooltip with `成本不一致`, recorded/local rows, delta, and price-version explanation, without underlying table text bleeding through the surface.
+  PR: include
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only invocation data
+  submission_gate: approved
+  image:
+  ![Records cost mismatch tooltip](./assets/records-cost-audit-warning-tooltip-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Records/InvocationRecordsTable DetailLayoutMobileLongFields
+  state: mobile records detail long-field wrapping
+  requested_viewport: 390x844
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies long invoke IDs, prompt cache keys, endpoint paths, and IPv6 values wrap inside the flattened mobile detail layout without clipping adjacent content or causing horizontal overflow at the tighter 390px viewport.
+  PR: include
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only invocation data
+  submission_gate: approved
+  image:
+  ![Records mobile long-field detail layout](./assets/records-detail-layout-mobile-long-fields-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Invocations/InvocationWorkflowDetailPanel SuccessfulTokenCostAudit
+  state: successful workflow response token-and-cost audit
+  requested_viewport: desktop1660
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the successful final attempt exposes `未命中缓存输入 Token / 命中缓存输入 Token / 输出 Token / 金额`, abbreviates the timeline chips to `输入写 / 输入读`, keeps rerouted request/response models visible, and renders recorded-vs-local cost comparison plus warning icon in the response `Token 与成本` panel.
+  PR: include
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only workflow data
+  submission_gate: approved
+  image:
+  ![Workflow token cost audit response panel](./assets/workflow-token-cost-audit-success-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Invocations/InvocationWorkflowDetailPanel SuccessfulTokenCostAuditMobile
+  state: 390px compact workflow detail layout
+  requested_viewport: 390x844
+  viewport_strategy: browser-resize-fallback
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the compact workflow detail stops wasting horizontal space on narrow screens by flattening nested card padding and packing the four summary metrics into a single row at 390px.
+  PR: include
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only workflow data
+  submission_gate: approved
+  image:
+  ![Workflow mobile compact token cost audit layout](./assets/workflow-token-cost-audit-mobile-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Invocations/InvocationWorkflowDetailPanel SuccessfulTokenCostAudit
+  state: workflow input-read tooltip
+  requested_viewport: 1660x980
+  viewport_strategy: browser-resize-fallback
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the workflow attempt summary abbreviates the cache-hit bucket to `输入读` while the custom tooltip expands the full label `输入（命中缓存）`.
+  PR: include
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only workflow data
+  submission_gate: approved
+  image:
+  ![Workflow input read tooltip](./assets/workflow-token-chip-tooltip-read-storybook.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Dashboard/ModelPerformanceTrigger/DesktopTooltip

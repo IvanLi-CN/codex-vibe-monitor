@@ -180,9 +180,9 @@ describe("OauthMailboxChip", () => {
     expect(getTooltip()?.getAttribute("style") ?? "").not.toContain("border-color");
     expect(getTooltip()?.getAttribute("style") ?? "").not.toContain("backdrop-filter");
     const manualValue = document.body.querySelector(
-      '[role="textbox"][aria-readonly="true"]',
-    ) as HTMLDivElement | null;
-    expect(manualValue?.textContent).toContain("manual-chip@mail-tw.707079.xyz");
+      'input[aria-label="Auto copy failed. Please copy the mailbox below manually."]',
+    ) as HTMLInputElement | null;
+    expect(manualValue?.value).toContain("manual-chip@mail-tw.707079.xyz");
     expect(manualValue?.getAttribute("data-lpignore")).toBe("true");
   });
 

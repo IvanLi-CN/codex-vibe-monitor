@@ -11,6 +11,9 @@
 - invocation payload 现在额外携带 `imageIntent`，并通过 `/api/invocations`、SSE `records`、Prompt Cache / Dashboard preview 一路透出，公开合同为 `yes | direct_image | no | unknown | null`。
 - Records 与 Dashboard 列表共用图片信号 resolver：仅 `yes` / `direct_image` 渲染独立“图片工具”徽标；详情区保留四态文本区分，历史缺字段降级为 `—`。
 - invocation payload 现已对外打通 `requestModel` / `responseModel`；Records、InvocationTable、Dashboard working conversations 与详情抽屉统一采用“响应模型优先”显示，并在规范化后的请求/响应模型真正不一致时显示上游路由差异图标。
+- Records 页面现已将首屏模型摘要收口为“响应模型主值 + reroute 信号 + reasoningEffort badge + imageIntent badge”，缺值统一降级为 `—`，不再把推理或图片工具状态藏在次级明细里。
+- `/api/invocations` 现会复用当前 pricing catalog 为每条记录生成 advisory `costAudit`，比较持久化 `cost` 与本地重算成本；mismatch 使用 `0.000001 USD` 容差，warning 文案、图标与红色差异态在 Records 列表、展开摘要与详情卡复用同一套实现。
+- invocation workflow detail 现仅为最终成功 attempt 注入 `responseSummary.usage` Token/成本审计对象，补齐 `未命中缓存输入 Token / 命中缓存输入 Token / 输出 Token / 金额` 四项指标，并保持 `reasoningTokens` 的 `null` 与真实 `0` 语义分离。
 - 共享 invocation preview 现已继续透出真实 `promptCacheKey`；Dashboard 上游账号活动 recent 行据此恢复稳定的对话短 ID 生成与详情抽屉 selection 关联，不再误用 `invokeId` 充当对话键。
 - 新 HTTP proxy invocation 的 `invokeId` 由 `nanoid` 使用固定 10 位大写可读 alphabet 生成，格式为 `^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{10}$`；历史 `proxy-...` ID 不迁移，旧 reservation recovery 解析只对历史格式生效。
 - 调用详情现在固定展示“请求模型 / 响应模型”两个 badge；旧记录仅有历史 `model` 时，响应模型回填旧值，请求模型显示 `—`。
@@ -90,3 +93,4 @@
 - [x] M15: 保留完整 raw payload 合同，为 raw 文件写入与 terminal raw metadata 写入补齐低开销耗时证据。
 - [x] M16: 为运行态号池调用补齐当前上游账号呼吸提示，并覆盖 Live、Records、Dashboard working conversations 与 Dashboard 调用详情抽屉的共享账号展示路径。
 - [x] M17: 为账号详情补齐请求 ID 展示、账号作用域锚点分页、虚拟滚动定位与结构化未找到反馈。
+- [x] M18: 为 Records 与 workflow detail 补齐记录侧成本审计、最终成功 attempt Token/成本面板、reasoning `null` vs `0` 合同与共享 warning 语义。

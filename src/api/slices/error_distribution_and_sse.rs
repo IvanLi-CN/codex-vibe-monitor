@@ -1773,6 +1773,7 @@ mod tests {
             proxy_weight_delta: None,
             cost_estimated: None,
             price_version: None,
+            cost_audit: None,
             request_raw_path: None,
             request_raw_size: None,
             request_raw_truncated: None,
@@ -2422,6 +2423,10 @@ pub(crate) struct ApiInvocation {
     #[sqlx(default)]
     pub(crate) price_version: Option<String>,
     #[sqlx(default)]
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cost_audit: Option<InvocationCostAudit>,
+    #[sqlx(default)]
     pub(crate) request_raw_path: Option<String>,
     #[sqlx(default)]
     pub(crate) request_raw_size: Option<i64>,
@@ -2461,6 +2466,41 @@ pub(crate) struct ApiInvocation {
     pub(crate) t_persist_ms: Option<f64>,
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
     pub(crate) created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationCostAuditBreakdown {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) input: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cache_write: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cache_read: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) output: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reasoning: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) total: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationCostAudit {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) recorded: Option<InvocationCostAuditBreakdown>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) local: Option<InvocationCostAuditBreakdown>,
+    pub(crate) mismatch: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) absolute_diff_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) recorded_price_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) local_price_version: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
