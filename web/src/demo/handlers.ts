@@ -1,5 +1,38 @@
 import { HttpResponse, http, type JsonBodyType } from "msw";
+import type { ApiInvocationWorkflowDetailResponse } from "../lib/api";
 import { demoModel, demoNow } from "./model";
+
+const DEMO_INVOCATION_REQUEST_BODY_SIZE = 8_681_416;
+const DEMO_INVOCATION_REQUEST_BODY_TRANSMITTED_BYTES = 3_039_648;
+const DEMO_INVOCATION_RESPONSE_BODY_SIZE = 138_649;
+const DEMO_INVOCATION_RESPONSE_BODY_TEXT = JSON.stringify(
+  {
+    id: "resp_demo_9002",
+    object: "response",
+    status: "completed",
+    model: "gpt-5.6-sol",
+    service_tier: "default",
+    output: [
+      {
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "output_text",
+            text: "Demo response body retained locally for visual inspection.",
+          },
+        ],
+      },
+    ],
+    usage: {
+      input_tokens: 9320,
+      output_tokens: 882,
+      total_tokens: 10202,
+    },
+  },
+  null,
+  2,
+);
 
 type DemoAccount = {
   id: number;
@@ -1649,6 +1682,230 @@ function poolAttempts(invokeId: string) {
   ];
 }
 
+function buildDemoInvocationWorkflowDetail(
+  record: ReturnType<typeof invocations>[number],
+): ApiInvocationWorkflowDetailResponse {
+  const finalStatus =
+    record.status === "success"
+      ? "completed"
+      : record.status === "running"
+        ? "running"
+        : record.status;
+  const requestModel = record.requestModel ?? record.model ?? "gpt-5.6-sol";
+  const responseModel = record.responseModel ?? record.model ?? requestModel;
+  const requestHeaders = {
+    userAgent: "monitor-ui/1.0",
+    xForwardedFor: record.requesterIp ?? "203.0.113.24",
+    forwarded: `for=${record.requesterIp ?? "203.0.113.24"};proto=https`,
+  };
+  const requestCompression = {
+    algorithm: "zstd",
+    mode: "recompressed",
+    logicalBodyBytes: DEMO_INVOCATION_REQUEST_BODY_SIZE,
+    transmittedBodyBytes: DEMO_INVOCATION_REQUEST_BODY_TRANSMITTED_BYTES,
+    savedBytes: DEMO_INVOCATION_REQUEST_BODY_SIZE - DEMO_INVOCATION_REQUEST_BODY_TRANSMITTED_BYTES,
+    ratioPct: -63,
+    approxUploadBytes: DEMO_INVOCATION_REQUEST_BODY_TRANSMITTED_BYTES,
+    approxDownloadBytes: 135_800,
+  };
+  const requestRouting = {
+    routeMode: record.routeMode ?? "pool",
+    proxyDisplayName: record.proxyDisplayName ?? "Tokyo demo relay",
+    upstreamRouteKey: `route-${record.routeMode ?? "pool"}-primary`,
+    proxyBindingKey: "fpb_demo_tokyo_primary",
+    promptCacheKey: record.promptCacheKey ?? null,
+    stickyKey: record.stickyKey ?? null,
+  };
+  const routeRequest = {
+    endpoint: record.endpoint ?? "/v1/responses",
+    routeMode: record.routeMode ?? "pool",
+    transport: record.transport ?? "http",
+    requestModel,
+    responseModel,
+    requestedServiceTier: record.requestedServiceTier ?? "priority",
+    reasoningEffort: record.reasoningEffort ?? "high",
+    compactionRequestKind: "remote_v2",
+    promptCacheKey: record.promptCacheKey ?? null,
+    stickyKey: record.stickyKey ?? null,
+    requesterIp: record.requesterIp ?? null,
+    routing: requestRouting,
+    headers: requestHeaders,
+    bodyCapture: {
+      availableAtInvocationLevel: false,
+      size: DEMO_INVOCATION_REQUEST_BODY_SIZE,
+      truncated: false,
+      detailLevel: "full",
+    },
+  };
+  const attemptResponseSummary = {
+    status: finalStatus,
+    phase: record.status === "running" ? "responding" : "completed",
+    serviceTier: "default",
+    billingServiceTier: record.billingServiceTier ?? "standard",
+    responseContentEncoding: "identity",
+    compactionResponseKind: "remote_v2",
+    outputItems: 1,
+    headers: {
+      contentEncoding: "identity",
+      upstreamRequestId: `req_demo_${record.id}`,
+      cvmInvokeId: record.invokeId,
+    },
+    delivery: {
+      forwardedChunkCount: 12,
+      forwardedBytes: 138_649,
+      usageObserved: true,
+      downstreamClosePhase: null,
+    },
+    responseBodyCapture: {
+      availableAtInvocationLevel: true,
+      size: DEMO_INVOCATION_RESPONSE_BODY_SIZE,
+      truncated: false,
+      detailLevel: "full",
+    },
+    usage: {
+      totalTokens: record.totalTokens ?? null,
+    },
+  };
+
+  const timeline: ApiInvocationWorkflowDetailResponse["timeline"] = [
+    {
+      blockId: `route-${record.id}`,
+      kind: "routingDecision",
+      occurredAt: record.occurredAt,
+      title: "Route resolution",
+      subtitle: `${requestModel} · ${record.endpoint ?? "/v1/responses"}`,
+      status: record.routeMode ?? "pool",
+      detail: {
+        request: routeRequest,
+        requestHeaders,
+        requestBody: {
+          availableAtInvocationLevel: false,
+          size: DEMO_INVOCATION_REQUEST_BODY_SIZE,
+          truncated: false,
+          detailLevel: "full",
+        },
+        routeMode: record.routeMode ?? "pool",
+        poolAttemptCount: record.poolAttemptCount ?? 1,
+      },
+    },
+    {
+      blockId: `attempt-${record.id}-1`,
+      kind: "attempt",
+      occurredAt: record.occurredAt,
+      title: "Attempt 1",
+      subtitle: record.upstreamAccountName ?? record.proxyDisplayName ?? "Demo account",
+      status: finalStatus,
+      attempt: {
+        synthetic: false,
+        attemptId: "qPvNNAK8",
+        occurredAt: record.occurredAt,
+        endpoint: record.endpoint ?? "/v1/responses",
+        stickyKey: record.stickyKey ?? null,
+        upstreamAccountId: record.upstreamAccountId ?? null,
+        upstreamAccountName: record.upstreamAccountName ?? null,
+        requestModel,
+        responseModel,
+        upstreamRouteKey: requestRouting.upstreamRouteKey,
+        proxyBindingKeySnapshot: requestRouting.proxyBindingKey,
+        attemptIndex: 1,
+        distinctAccountIndex: 1,
+        sameAccountRetryIndex: 0,
+        requesterIp: record.requesterIp ?? null,
+        startedAt: record.occurredAt,
+        finishedAt: record.occurredAt,
+        status: finalStatus,
+        phase: "streaming",
+        httpStatus: 200,
+        downstreamHttpStatus: record.downstreamStatusCode ?? 200,
+        failureKind: record.failureKind ?? null,
+        errorMessage: record.errorMessage ?? null,
+        connectLatencyMs: record.tUpstreamConnectMs ?? 184,
+        firstByteLatencyMs: record.tUpstreamTtfbMs ?? 0,
+        streamLatencyMs: 4_830,
+        upstreamRequestId: `req_demo_${record.id}`,
+        requestSummary: {
+          endpoint: record.endpoint ?? "/v1/responses",
+          routeMode: record.routeMode ?? "pool",
+          transport: record.transport ?? "http",
+          requestModel,
+          responseModel,
+          stickyKey: record.stickyKey ?? null,
+          requestedServiceTier: record.requestedServiceTier ?? "priority",
+          reasoningEffort: record.reasoningEffort ?? "high",
+          compactionRequestKind: "remote_v2",
+          headers: requestHeaders,
+          routing: requestRouting,
+          compression: requestCompression,
+          bodyCapture: {
+            availableAtInvocationLevel: false,
+            size: DEMO_INVOCATION_REQUEST_BODY_SIZE,
+            truncated: false,
+            detailLevel: "full",
+          },
+        },
+        responseSummary: attemptResponseSummary,
+      },
+    },
+  ];
+
+  if (record.failureClass && record.failureClass !== "none") {
+    timeline.push({
+      blockId: `final-${record.id}`,
+      kind: "systemFinalFailure",
+      occurredAt: record.occurredAt,
+      title: "Final downstream response",
+      subtitle: record.failureKind ?? "service_failure",
+      status: record.status ?? "failed",
+      detail: {
+        downstreamStatusCode: record.downstreamStatusCode ?? 502,
+        failureClass: record.failureClass,
+        failureKind: record.failureKind ?? null,
+        errorMessage: record.errorMessage ?? null,
+      },
+      responseBody: {
+        available: true,
+        bodyText: JSON.stringify(
+          {
+            error: record.errorMessage ?? "demo invocation failed",
+            invoke_id: record.invokeId,
+            code: record.failureKind ?? "service_failure",
+            status: record.downstreamStatusCode ?? 502,
+          },
+          null,
+          2,
+        ),
+      },
+    });
+  }
+
+  return {
+    hero: {
+      recordId: record.id,
+      invokeId: record.invokeId,
+      promptCacheKey: record.promptCacheKey ?? null,
+      routeMode: record.routeMode ?? null,
+      endpoint: record.endpoint ?? null,
+      requestModel,
+      responseModel,
+      finalStatus,
+      failureClass: record.failureClass ?? null,
+      downstreamStatusCode: record.downstreamStatusCode ?? null,
+      upstreamAccountId: record.upstreamAccountId ?? null,
+      upstreamAccountName: record.upstreamAccountName ?? null,
+      totalDurationMs: record.tTotalMs ?? null,
+      timelineAttemptCount: 1,
+      poolAttemptCount: record.poolAttemptCount ?? 1,
+      totalTokens: record.totalTokens ?? null,
+      cost: record.cost ?? null,
+      occurredAt: record.occurredAt,
+    },
+    timeline,
+    reconstructed: false,
+    partial: false,
+    partialReason: null,
+  };
+}
+
 function recordsToSuggestionCounts<T>(
   records: T[],
   selector: (record: T) => string | null | undefined,
@@ -1902,9 +2159,70 @@ export async function handleDemoRequest(request: Request) {
             },
     });
   }
+  if (pathname.endsWith("/workflow-detail")) {
+    const id = Number(pathname.split("/").at(-2));
+    const record = invocations().find((item) => item.id === id);
+    if (!record) return json({ error: `Demo invocation ${id} not found.` }, { status: 404 });
+    return json(buildDemoInvocationWorkflowDetail(record));
+  }
+  if (pathname.endsWith("/request-body")) {
+    const id = Number(pathname.split("/").at(-2));
+    const record = invocations().find((item) => item.id === id);
+    if (!record) return json({ error: `Demo invocation ${id} not found.` }, { status: 404 });
+    if (id === 9002) {
+      return json({
+        available: false,
+        unavailableReason: "missing_body",
+      });
+    }
+    return json({
+      available: true,
+      bodyText: JSON.stringify(
+        {
+          model: record.requestModel ?? record.model,
+          endpoint: record.endpoint,
+          invoke_id: record.invokeId,
+          demo: true,
+        },
+        null,
+        2,
+      ),
+      headers: {
+        userAgent: "monitor-ui/1.0",
+        xForwardedFor: record.requesterIp ?? "203.0.113.24",
+      },
+      routing: {
+        routeMode: record.routeMode ?? "pool",
+        promptCacheKey: record.promptCacheKey ?? null,
+        proxyDisplayName: record.proxyDisplayName ?? null,
+      },
+      bodySize: 412,
+      bodyTruncated: false,
+      detailLevel: "full",
+      captureSource: "raw_file",
+    });
+  }
   if (pathname.endsWith("/response-body")) {
     const id = Number(pathname.split("/").at(-2));
     const record = invocations().find((item) => item.id === id);
+    if (id === 9002) {
+      return json({
+        available: true,
+        bodyText: DEMO_INVOCATION_RESPONSE_BODY_TEXT,
+        headers: {
+          contentEncoding: "identity",
+          upstreamRequestId: `req_demo_${id}`,
+          cvmInvokeId: record?.invokeId ?? null,
+        },
+        routing: {
+          forwardedChunkCount: 12,
+        },
+        bodySize: DEMO_INVOCATION_RESPONSE_BODY_SIZE,
+        bodyTruncated: false,
+        detailLevel: "full",
+        captureSource: "raw_file",
+      });
+    }
     const isFailure = record?.failureClass && record.failureClass !== "none";
     return json(
       isFailure

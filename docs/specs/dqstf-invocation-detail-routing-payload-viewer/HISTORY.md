@@ -22,3 +22,6 @@
 - 2026-07-18: 路由块详情 contract 固定为 `请求 / 请求头 / 请求体` 三分区，其中 `请求体` 继续回放调用级原始 request body，而不是复制 attempt-level raw body。
 - 2026-07-18: 本地终态错误响应改为复用共享 envelope；HTTP 下游返回与 `ProxyCaptureRecord` 持久化使用同一份 status/headers/body，`systemFinalFailure.responseBody` 因而回放真实裁定 body，不再依赖 `"{}"` / `missing_body` 占位。
 - 2026-07-18: Dashboard 调用详情抽屉在首轮只命中瞬态 `id <= 0` 记录时，会继续按 `invokeId` 重查持久化行，避免异步落盘期间长期停在“调用未落盘”。
+- 2026-07-20: 修正调用详情 payload lazy loader 的 effect 竞态；请求体/响应体 fetch 完成后改用 sequence guard 判定最新请求，避免成功返回后仍永远停在 `加载请求体…` / `加载响应体…`。
+- 2026-07-20: unavailable payload reason 统一映射为人类可读文案；UI 不再直接暴露 `missing_body`、`raw_file_missing` 等内部 reason code。
+- 2026-07-20: mock-only Web Demo 为 `demo-invocation-9002` 补齐 Dashboard 路由级 workflow detail / request-body / response-body 夹具，页面级最终证据切回真实 `#/dashboard/invocations/:invokeId` 抽屉，而不是只依赖 Storybook 组件画布。

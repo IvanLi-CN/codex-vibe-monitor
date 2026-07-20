@@ -52,9 +52,13 @@ function WorkflowPageSurface({ children }: { children: ReactNode }) {
 function WorkflowFetchMock({
   recordId,
   response,
+  requestBodyPayload,
+  responseBodyPayload,
 }: {
   recordId: number;
   response: ApiInvocationWorkflowDetailResponse;
+  requestBodyPayload?: Record<string, unknown>;
+  responseBodyPayload?: Record<string, unknown>;
 }) {
   useEffect(() => {
     const originalFetch = globalThis.fetch;
@@ -88,6 +92,7 @@ function WorkflowFetchMock({
             bodySize: failedWorkflowRequestBodySize,
             detailLevel: "full",
             captureSource: "raw_file",
+            ...requestBodyPayload,
           }),
           {
             status: 200,
@@ -114,6 +119,7 @@ function WorkflowFetchMock({
             bodySize: failedWorkflowResponseBodySize,
             detailLevel: "full",
             captureSource: "raw_file",
+            ...responseBodyPayload,
           }),
           {
             status: 200,
@@ -823,6 +829,41 @@ export const BlockedPoolWorkflowDark: Story = {
     await expect(canvas.getAllByText(/HTTP 503/i)[0]).toBeVisible();
     await expect(canvas.getAllByText(/pool_assigned_account_blocked/i)[0]).toBeVisible();
     await expect(canvas.getByText(/Final downstream response/i)).toBeVisible();
+  },
+};
+
+export const BlockedPoolWorkflowMissingArchivedRequestBody: Story = {
+  args: {
+    record: blockedWorkflowRecord,
+    size: "default",
+  },
+  decorators: [
+    (Story) => (
+      <>
+        <WorkflowFetchMock
+          recordId={77}
+          response={blockedWorkflowResponse}
+          requestBodyPayload={{
+            available: false,
+            unavailableReason: "missing_body",
+          }}
+        />
+        <Story />
+      </>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(async () => {
+      const buttons = await canvas.findAllByRole("button", { name: /请求体/i });
+      expect(buttons.length).toBeGreaterThan(0);
+    });
+    const requestBodyButton = (await canvas.findAllByRole("button", { name: /请求体/i }))[0];
+    await userEvent.click(requestBodyButton);
+    await waitFor(() => {
+      expect(canvasElement.textContent ?? "").toContain("该记录没有保留可展示的载荷。");
+    });
+    expect(canvasElement.textContent ?? "").not.toContain("missing_body");
   },
 };
 

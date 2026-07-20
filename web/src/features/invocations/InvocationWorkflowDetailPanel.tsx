@@ -540,6 +540,37 @@ function createIdlePayloadState<T>(): PayloadFetchState<T> {
   };
 }
 
+function formatPayloadUnavailableReason(reason: string | null | undefined, isZh: boolean) {
+  const normalized = reason?.trim().toLowerCase() ?? "";
+  if (normalized === "not_abnormal") {
+    return isZh
+      ? "该记录没有异常响应体。"
+      : "No abnormal response body is available for this record.";
+  }
+  if (normalized === "detail_pruned") {
+    return isZh
+      ? "该记录的完整载荷已不再在线保留。"
+      : "The full payload for this record is no longer retained online.";
+  }
+  if (normalized.startsWith("raw_file_missing")) {
+    return isZh ? "归档 raw 文件已不可用。" : "The archived raw file is no longer available.";
+  }
+  if (normalized.startsWith("raw_file_unreadable")) {
+    return isZh ? "归档 raw 文件暂时无法读取。" : "The archived raw file could not be read.";
+  }
+  if (normalized.startsWith("preview_only")) {
+    return isZh
+      ? "该记录当前仅保留载荷节选。"
+      : "Only a preview of this payload is currently available.";
+  }
+  if (normalized.startsWith("missing_body")) {
+    return isZh
+      ? "该记录没有保留可展示的载荷。"
+      : "No displayable payload was retained for this record.";
+  }
+  return isZh ? "载荷当前不可用。" : "The payload is currently unavailable.";
+}
+
 function formatHttpStatus(value: number | null | undefined, locale: string) {
   const status = formatOptionalNumber(value, locale);
   if (status === FALLBACK_CELL) return null;
@@ -1006,7 +1037,7 @@ function buildGenericMetricActions(
             ? isZh
               ? "可用"
               : "Available"
-            : formatOptionalText(entry.responseBody.unavailableReason),
+            : formatPayloadUnavailableReason(entry.responseBody.unavailableReason, isZh),
       secondary: compactJoin([
         formatOptionalText(readString(entry.detail?.failureClass)),
         formatOptionalText(readString(entry.detail?.failureKind)),
@@ -2045,7 +2076,7 @@ function AttemptDetail({
           ) : (
             <PayloadNotice tone="warning">
               {isZh ? "请求体不可用：" : "Request body unavailable: "}
-              {requestBodyState.data?.unavailableReason ?? FALLBACK_CELL}
+              {formatPayloadUnavailableReason(requestBodyState.data?.unavailableReason, isZh)}
             </PayloadNotice>
           )}
         </>
@@ -2100,7 +2131,7 @@ function AttemptDetail({
           ) : (
             <PayloadNotice tone="warning">
               {isZh ? "响应体不可用：" : "Response body unavailable: "}
-              {responseBodyState.data?.unavailableReason ?? FALLBACK_CELL}
+              {formatPayloadUnavailableReason(responseBodyState.data?.unavailableReason, isZh)}
             </PayloadNotice>
           )}
         </>
@@ -2347,7 +2378,7 @@ function GenericDetail({
           ) : (
             <PayloadNotice tone="warning">
               {isZh ? "请求体不可用：" : "Request body unavailable: "}
-              {requestBodyState.data?.unavailableReason ?? FALLBACK_CELL}
+              {formatPayloadUnavailableReason(requestBodyState.data?.unavailableReason, isZh)}
             </PayloadNotice>
           )}
         </>
@@ -2369,7 +2400,7 @@ function GenericDetail({
         ) : (
           <div className="rounded-xl border border-warning/25 bg-warning/8 px-3 py-3 text-sm text-base-content/72">
             {isZh ? "响应体不可用：" : "Response body unavailable: "}
-            {entry.responseBody.unavailableReason ?? FALLBACK_CELL}
+            {formatPayloadUnavailableReason(entry.responseBody.unavailableReason, isZh)}
           </div>
         )
       ) : null}
@@ -2527,6 +2558,8 @@ export function InvocationWorkflowAttemptRecord({
   testId,
 }: InvocationWorkflowAttemptRecordProps) {
   const isControlled = isOpen !== undefined && activeSection !== undefined && !!onSelectSection;
+  const requestBodyFetchSeqRef = useRef(0);
+  const responseBodyFetchSeqRef = useRef(0);
   const [internalSection, setInternalSection] = useState<AttemptSection | null>(defaultSection);
   const [requestBodyState, setRequestBodyState] = useState<
     PayloadFetchState<ApiInvocationRequestBodyResponse>
@@ -2539,6 +2572,8 @@ export function InvocationWorkflowAttemptRecord({
   const currentOpen = isControlled ? isOpen : currentSection != null;
 
   useEffect(() => {
+    requestBodyFetchSeqRef.current += 1;
+    responseBodyFetchSeqRef.current += 1;
     setRequestBodyState(createIdlePayloadState());
     setResponseBodyState(createIdlePayloadState());
   }, [entry.blockId, record.id]);
@@ -2550,58 +2585,58 @@ export function InvocationWorkflowAttemptRecord({
 
   useEffect(() => {
     if (!(record.id > 0)) return;
-    if (currentSection && isRequestSection(currentSection) && requestBodyState.status === "idle") {
-      let cancelled = false;
-      setRequestBodyState({ status: "loading", data: null, error: null });
-      void fetchInvocationRequestBody(record.id)
-        .then((data) => {
-          if (!cancelled) {
-            setRequestBodyState({ status: "loaded", data, error: null });
-          }
-        })
-        .catch((error) => {
-          if (!cancelled) {
-            setRequestBodyState({
-              status: "error",
-              data: null,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        });
-      return () => {
-        cancelled = true;
-      };
+    if (
+      !currentSection ||
+      !isRequestSection(currentSection) ||
+      requestBodyState.status !== "idle"
+    ) {
+      return;
     }
+
+    const requestSeq = requestBodyFetchSeqRef.current + 1;
+    requestBodyFetchSeqRef.current = requestSeq;
+    setRequestBodyState({ status: "loading", data: null, error: null });
+    void fetchInvocationRequestBody(record.id)
+      .then((data) => {
+        if (requestSeq !== requestBodyFetchSeqRef.current) return;
+        setRequestBodyState({ status: "loaded", data, error: null });
+      })
+      .catch((error) => {
+        if (requestSeq !== requestBodyFetchSeqRef.current) return;
+        setRequestBodyState({
+          status: "error",
+          data: null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
   }, [currentSection, record.id, requestBodyState.status]);
 
   useEffect(() => {
     if (!(record.id > 0)) return;
     if (
-      currentSection &&
-      isResponseSection(currentSection) &&
-      responseBodyState.status === "idle"
+      !currentSection ||
+      !isResponseSection(currentSection) ||
+      responseBodyState.status !== "idle"
     ) {
-      let cancelled = false;
-      setResponseBodyState({ status: "loading", data: null, error: null });
-      void fetchInvocationResponseBody(record.id)
-        .then((data) => {
-          if (!cancelled) {
-            setResponseBodyState({ status: "loaded", data, error: null });
-          }
-        })
-        .catch((error) => {
-          if (!cancelled) {
-            setResponseBodyState({
-              status: "error",
-              data: null,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        });
-      return () => {
-        cancelled = true;
-      };
+      return;
     }
+
+    const requestSeq = responseBodyFetchSeqRef.current + 1;
+    responseBodyFetchSeqRef.current = requestSeq;
+    setResponseBodyState({ status: "loading", data: null, error: null });
+    void fetchInvocationResponseBody(record.id)
+      .then((data) => {
+        if (requestSeq !== responseBodyFetchSeqRef.current) return;
+        setResponseBodyState({ status: "loaded", data, error: null });
+      })
+      .catch((error) => {
+        if (requestSeq !== responseBodyFetchSeqRef.current) return;
+        setResponseBodyState({
+          status: "error",
+          data: null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
   }, [currentSection, record.id, responseBodyState.status]);
 
   const handleSelectSection = (section: AttemptSection) => {
@@ -2650,6 +2685,7 @@ export function InvocationWorkflowDetailPanel({
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const isZh = locale === "zh";
   const requestSeqRef = useRef(0);
+  const requestBodyFetchSeqRef = useRef(0);
   const [detail, setDetail] = useState<ApiInvocationWorkflowDetailResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -2663,6 +2699,7 @@ export function InvocationWorkflowDetailPanel({
   useEffect(() => {
     if (!(record.id > 0)) {
       requestSeqRef.current += 1;
+      requestBodyFetchSeqRef.current += 1;
       setDetail(null);
       setIsLoading(false);
       setLoadError(null);
@@ -2694,6 +2731,7 @@ export function InvocationWorkflowDetailPanel({
   }, [record.id]);
 
   useEffect(() => {
+    requestBodyFetchSeqRef.current += 1;
     if (!detail) {
       setOpenBlockId(null);
       setAttemptSection(null);
@@ -2719,28 +2757,24 @@ export function InvocationWorkflowDetailPanel({
 
   useEffect(() => {
     if (!(record.id > 0)) return;
-    if (genericSection === "requestBody" && requestBodyState.status === "idle") {
-      let cancelled = false;
-      setRequestBodyState({ status: "loading", data: null, error: null });
-      void fetchInvocationRequestBody(record.id)
-        .then((data) => {
-          if (!cancelled) {
-            setRequestBodyState({ status: "loaded", data, error: null });
-          }
-        })
-        .catch((error) => {
-          if (!cancelled) {
-            setRequestBodyState({
-              status: "error",
-              data: null,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
+    if (genericSection !== "requestBody" || requestBodyState.status !== "idle") return;
+
+    const requestSeq = requestBodyFetchSeqRef.current + 1;
+    requestBodyFetchSeqRef.current = requestSeq;
+    setRequestBodyState({ status: "loading", data: null, error: null });
+    void fetchInvocationRequestBody(record.id)
+      .then((data) => {
+        if (requestSeq !== requestBodyFetchSeqRef.current) return;
+        setRequestBodyState({ status: "loaded", data, error: null });
+      })
+      .catch((error) => {
+        if (requestSeq !== requestBodyFetchSeqRef.current) return;
+        setRequestBodyState({
+          status: "error",
+          data: null,
+          error: error instanceof Error ? error.message : String(error),
         });
-      return () => {
-        cancelled = true;
-      };
-    }
+      });
   }, [genericSection, record.id, requestBodyState.status]);
 
   if (!(record.id > 0)) {
