@@ -11513,6 +11513,56 @@ fn build_dashboard_network_realtime_rate_response(
     }
 }
 
+fn build_dashboard_recent_network_window_response(
+    snapshot: crate::dashboard_network_speed::DashboardRecentNetworkWindowSnapshot,
+) -> DashboardRecentNetworkWindowResponse {
+    DashboardRecentNetworkWindowResponse {
+        range_start: format_utc_iso_precise(
+            Utc.timestamp_opt(snapshot.range_start_epoch_second, 0)
+                .single()
+                .expect("valid recent network range start"),
+        ),
+        range_end: format_utc_iso_precise(
+            Utc.timestamp_opt(snapshot.range_end_epoch_second, 0)
+                .single()
+                .expect("valid recent network range end"),
+        ),
+        window_seconds: snapshot.window_seconds,
+        sample_seconds: snapshot.sample_seconds,
+        is_warming_up: snapshot.is_warming_up,
+        points: snapshot
+            .points
+            .into_iter()
+            .map(|point| DashboardRecentNetworkWindowPointResponse {
+                sample_start: format_utc_iso_precise(
+                    Utc.timestamp_opt(point.sample_start_epoch_second, 0)
+                        .single()
+                        .expect("valid recent network sample start"),
+                ),
+                sample_end: format_utc_iso_precise(
+                    Utc.timestamp_opt(point.sample_end_epoch_second, 0)
+                        .single()
+                        .expect("valid recent network sample end"),
+                ),
+                upload_bytes_per_second: if point.is_available {
+                    point.totals.upload_bytes.max(0) as f64 / snapshot.sample_seconds.max(1) as f64
+                } else {
+                    0.0
+                },
+                download_bytes_per_second: if point.is_available {
+                    point.totals.download_bytes.max(0) as f64
+                        / snapshot.sample_seconds.max(1) as f64
+                } else {
+                    0.0
+                },
+                upload_bytes: point.totals.upload_bytes.max(0),
+                download_bytes: point.totals.download_bytes.max(0),
+                is_available: point.is_available,
+            })
+            .collect(),
+    }
+}
+
 fn build_dashboard_network_timeseries_point_response(
     bucket_start: DateTime<Utc>,
     bucket_end: DateTime<Utc>,
@@ -11566,6 +11616,27 @@ async fn load_dashboard_network_live_bucket_point(
         },
         true,
     ))
+}
+
+pub(crate) async fn fetch_dashboard_network_recent(
+    State(state): State<Arc<AppState>>,
+    Query(_params): Query<DashboardRecentNetworkWindowQuery>,
+) -> Result<Json<DashboardRecentNetworkWindowResponse>, ApiError> {
+    let started_at = Instant::now();
+    let snapshot = state
+        .dashboard_network_speed_cache
+        .snapshot_recent_global_window(Utc::now());
+    let response = build_dashboard_recent_network_window_response(snapshot);
+    tracing::debug!(
+        endpoint = "/api/stats/dashboard-network-recent",
+        window_seconds = response.window_seconds,
+        sample_seconds = response.sample_seconds,
+        point_count = response.points.len(),
+        is_warming_up = response.is_warming_up,
+        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "dashboard recent network window completed"
+    );
+    Ok(Json(response))
 }
 
 pub(crate) async fn fetch_dashboard_network_timeseries(
@@ -12900,5 +12971,48 @@ mod invocation_cost_audit_tests {
             final_response_summary["usage"]["audit"]["reason"].as_str(),
             Some(INVOCATION_COST_AUDIT_REASON_PRICE_VERSION_CHANGED)
         );
+    }
+}
+
+#[cfg(test)]
+mod dashboard_recent_network_window_response_tests {
+    use super::*;
+
+    #[test]
+    fn recent_window_response_preserves_unavailable_gap_points() {
+        let response = build_dashboard_recent_network_window_response(
+            crate::dashboard_network_speed::DashboardRecentNetworkWindowSnapshot {
+                range_start_epoch_second: 1_000,
+                range_end_epoch_second: 1_300,
+                window_seconds: 300,
+                sample_seconds: 1,
+                is_warming_up: true,
+                points: vec![
+                    crate::dashboard_network_speed::DashboardRecentNetworkWindowPointSnapshot {
+                        sample_start_epoch_second: 1_000,
+                        sample_end_epoch_second: 1_001,
+                        totals: DashboardNetworkByteTotals::default(),
+                        is_available: false,
+                    },
+                    crate::dashboard_network_speed::DashboardRecentNetworkWindowPointSnapshot {
+                        sample_start_epoch_second: 1_001,
+                        sample_end_epoch_second: 1_002,
+                        totals: DashboardNetworkByteTotals {
+                            upload_bytes: 2_048,
+                            download_bytes: 4_096,
+                        },
+                        is_available: true,
+                    },
+                ],
+            },
+        );
+
+        assert!(response.is_warming_up);
+        assert_eq!(response.points.len(), 2);
+        assert_eq!(response.points[0].upload_bytes_per_second, 0.0);
+        assert!(!response.points[0].is_available);
+        assert_eq!(response.points[1].upload_bytes_per_second, 2_048.0);
+        assert_eq!(response.points[1].download_bytes_per_second, 4_096.0);
+        assert!(response.points[1].is_available);
     }
 }

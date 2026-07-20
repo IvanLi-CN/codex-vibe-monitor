@@ -14,3 +14,7 @@
 - 真实网速实现保留 host + account 归因，但 Dashboard 展示仍只暴露全局总量与账号 scoped 视图；不新增 host UI。
 - 为避免 timeout / cancel 导致已发生的真实流量被吞掉，HTTP counted transport 与 WebSocket flush task 都补了 drop-time final flush。
 - 2026-07-19 进一步确认：15 秒 SMA 不符合“实时网速”语义，因此顶部胶囊改为读取上一完整 1 秒快照；历史图继续显示 5 分钟桶，并移除左上角误导性说明文案。
+- 2026-07-20 为排查“网速看起来诡异”的现场问题，工作区顶部总速率胶囊新增 recent 诊断面板，但不改胶囊本身的 `networkRealtimeRate` 口径。
+- 2026-07-20 recent 诊断面板选择独立的全局 300 秒、1 秒粒度读模型，由 `DashboardNetworkSpeedCache` 直接产出，并通过 `GET /api/stats/dashboard-network-recent` 与 `dashboard.network-recent.current` 暴露；不复用分钟桶，也不新增 SQLite 落盘。
+- 2026-07-20 recent 面板前端明确遵守 topic-only SSE 约束：只消费 `dashboard.network-recent.current`，仅在面板打开期间以 1 秒 cadence refresh，同屏不再引入 open-resync 或第二真相源。
+- 2026-07-20 进程启动不足 5 分钟时，recent 面板前导区间统一显示为 `isAvailable=false` 空档并标记 warming；这些空档不再伪装成真实 `0 B/s` 历史。

@@ -7,6 +7,7 @@
 - Dashboard 已经能展示调用量、成本、Token、延迟和进行中调用，但“系统对所有上游的真实带宽占用”仍缺少 owner-facing 观测面。
 - 旧版 Dashboard 网速以账号卡 header 展示单账号速率，并让总览图在闭合区间继续扫 invocation 级事实；当 pool invocation 在多个 host 间重试时，这个口径既不是真正的全局总量，也无法稳定承接后续 minute rollup。
 - 活动总览的 `今日 / 昨日 / 24 小时` 已具备网速视图，但仍需要把“当前全局 live 速率”和“闭合历史分钟桶”统一到同一套连接级真实 socket 字节口径下，同时避免每秒重扫明细表。
+- 工作区顶部总速率胶囊仍缺少诊断异常峰值、假零值与抖动的 owner-facing 近历史窗口；只看“上一完整 1 秒”胶囊和 5 分钟桶图，不足以排查最近数分钟内的逐秒变化。
 
 ## 目标 / 非目标
 
@@ -16,6 +17,7 @@
 - 在 `今日 / 昨日 / 24 小时` 的活动总览 metric toggle 中继续提供 `网速`，并让闭合历史桶读取按 host 聚合的分钟 rollup，live 末桶继续显示当前开放 5 分钟桶。
 - 保留账号 scoped activity overview 的既有语义，不让这次全局真值切源改坏账号详情页。
 - 在工作台上游账号区顶部保留总上传/总下载速率胶囊，但它必须直接显示“上一完整 1 秒”的全局真实 socket 速率，而不是由各账号卡速率求和得到。
+- 在现有全局网速胶囊上新增 5 分钟逐秒诊断面板：桌面端支持 `hover 打开 + click 固定`，窄屏端改用 `dialog/sheet`，面板只展示最近 300 秒全局上传/下载真历史并实时右移。
 
 ### Non-goals
 
@@ -24,6 +26,9 @@
 - 不新增 host 列表、host 详情视图或 host 数量 badge。
 - 不在 Dashboard 上游账号卡内继续显示上传/下载速率。
 - 不做历史回填；真实 socket minute rollup 只从这次实现落地后开始累计。
+- 不把诊断面板扩展成账号级、host 级或可切 scope 的网络分析器。
+- 不替换现有 `dashboard-network-timeseries` 5 分钟桶图，也不改变顶部胶囊继续读取 `networkRealtimeRate` 的数值口径。
+- 不把逐秒历史写入 SQLite；进程重启后 recent 面板只重新积累运行期窗口。
 
 ## 范围（Scope）
 
@@ -33,6 +38,8 @@
 - `pool_upstream_request_attempts.upstream_base_url_host` 与新的 `upstream_socket_network_minute` 分钟表。
 - `GET /api/stats/dashboard-activity` 与 `dashboardActivityLive`：追加全局 `networkLiveBucket` 与 `networkRealtimeRate`，并把账号级实时字段统一成上一完整 1 秒语义。
 - `GET /api/stats/dashboard-network-timeseries`：无 scope 时切到 host minute rollup + 全局 live bucket；账号 scoped 时保留既有路径。
+- `GET /api/stats/dashboard-network-recent` 与 `dashboard.network-recent.current`：提供无 scope 的最近 300 秒、1 秒粒度全局读模型，专供诊断面板消费。
+- `web/src/hooks/useDashboardRecentNetworkWindow.ts`、`DashboardNetworkRecentPopover.tsx` 与 `DashboardWorkingConversationsSection.tsx`：新增工作区顶部胶囊诊断入口、桌面浮层 / 窄屏 dialog、warming gap 呈现与只在打开期间运行的 refresh cadence。
 - `web/src/features/dashboard/DashboardActivityOverview.tsx`、`DashboardNetworkActivityChart.tsx`、`DashboardWorkingConversationsSection.tsx`、相关 hook、测试与视觉证据。
 
 ### Out of scope
@@ -56,6 +63,11 @@
 - 工作台顶部总速率胶囊必须直接读取 `networkRealtimeRate`；`networkLiveBucket` 继续表示当前开放 5 分钟桶；账号卡不得继续显示上传/下载速率。
 - 当前 5 分钟桶与上一完整 1 秒实时快照必须以内存缓存为主；socket minute rollup 不做历史回填，初次 materialize 时只从当前 live table 尾部开始累计。
 - 连接在握手前失败、等待首包超时或流式途中提前 drop 时，已实际发生的 socket 字节仍必须冲刷到 live bucket 与 minute rollup，不能因为 future 被取消而丢样本。
+- `GET /api/stats/dashboard-network-recent` 与 `dashboard.network-recent.current` 必须固定返回 `windowSeconds=300`、`sampleSeconds=1`、完整 300 点全局窗口，以及 `rangeStart`、`rangeEnd`、`isWarmingUp` 与每个点的 `isAvailable` 状态。
+- recent 面板历史必须直接来自 `DashboardNetworkSpeedCache` 的运行期秒桶真历史；不得从分钟表反推，也不得新增 SQLite 持久化。
+- 进程启动不足 5 分钟时，recent 面板前导缺失区间必须通过 `isAvailable=false` 表示空档，数值字段固定归零仅供渲染；前端不得把这些点伪装成真实 `0 B/s` 历史。
+- recent 面板只允许展示全局上传/下载两条秒级曲线；顶部胶囊自身继续独立读取 `networkRealtimeRate`，不与 recent 面板共享回退或格式化语义。
+- recent 面板的唯一触发器必须是 `NetworkSpeedInline`；桌面端需要支持 `hover 打开 + click 固定 + 再次点击/外点/Esc 关闭`，窄屏端 `<=768px` 必须改为 dialog/sheet。
 
 ### SHOULD
 
@@ -63,6 +75,7 @@
 - 账号级实时网速与 dashboard live snapshot 保持同一 SSE/HTTP 合并策略，不因较旧 HTTP 响应回退到旧值。
 - 连接归因优先级固定为 `SNI -> Host/authority -> 配置的 upstream host`；缺失 host 仍写入 `__unknown__`。
 - 上传/下载均以 socket 实际读写字节为准；不再从 header/body 近似值反推带宽。
+- recent 面板前端只消费 `dashboard.network-recent.current` 这一条 topic；面板打开期间才允许对同一 topic 以 1 秒 cadence 调用 `refresh()`，关闭后立即停止，不保留页面级健康态轮询、open-resync 或第二真相源 fallback。
 
 ## 功能与行为规格（Functional/Behavior Spec）
 
@@ -73,6 +86,9 @@
 - Dashboard 活动总览在 `today / yesterday` 选择 `网速` 时，顶部七卡保持原样，仅图表区域切换为网速面积图。
 - `24 小时` 选择 `网速` 时，用同款面积图替代现有 heatmap；切回其它指标时恢复 heatmap。
 - 工作台上游账号 tab 始终在右上 badge 区显示总上传/总下载实时速率；账号卡只保留活动账号数量、TPM、消费速率、进行中等摘要信息。
+- owner 悬浮工作区顶部网速胶囊时，桌面端弹出最近 5 分钟逐秒诊断面板；点击同一胶囊后面板保持固定打开，直到再次点击、点击外部或按 `Esc` 关闭。
+- 窄屏端点击同一胶囊时，改用 dialog/sheet 承载同一份 recent 面板内容；关闭 overlay 后立即停止面板专用 refresh cadence。
+- recent 面板打开期间每秒请求同一 topic 的新 snapshot，以便即使当前 1 秒没有新流量，窗口右边界也会继续按 1 秒 cadence 前进。
 
 ### Edge cases / errors
 
@@ -80,21 +96,29 @@
 - 当前开放桶尚未 lazy seed 命中历史样本时，只展示进程内已观测到的实时字节；不得阻塞请求。
 - 缺失 host 的 direct/pool 字节样本写入 `__unknown__`；图表与总速率仍必须计入这些样本。
 - 网速接口失败时，只影响图表区域错误态，不影响同一 range 的摘要卡与其它 metric。
+- 进程启动不足 5 分钟时，recent 面板前导区间必须显示为空档并提示“正在积累历史”；这些空档不是低速样本，也不代表真实 `0 B/s`。
+- recent 面板打开期间即使 1 秒内没有新流量，窗口也必须继续右移；关闭面板后不再继续 refresh。
+- recent 面板接口或 topic 失败时，只影响诊断浮层 / dialog 自身，不得改变胶囊实时值、badge 排列或活动总览网络图。
 
 ## 接口契约（Interfaces & Contracts）
 
 ### 接口清单（Inventory）
 
-| 接口（Name）                                       | 类型（Kind）        | 范围（Scope） | 变更（Change） | 负责人（Owner） | 使用方（Consumers）         | 备注（Notes）                               |
-| -------------------------------------------------- | ------------------- | ------------- | -------------- | --------------- | --------------------------- | ------------------------------------------- |
-| `GET /api/stats/dashboard-network-timeseries`      | http-endpoint       | external      | Add            | backend/stats   | Dashboard activity overview | dashboard-only；无 scope 时读 host minute   |
-| `DashboardActivityAccountResponse.*BytesPerSecond` | http-response-field | external      | Add            | backend/stats   | Dashboard upstream cards    | 账号级上一完整 1 秒原始速率                 |
-| `DashboardActivityLiveAccount.*BytesPerSecond`     | sse/http-live-field | external      | Add            | backend/stats   | Dashboard live merge        | 与账号级上一完整 1 秒快照保持同语义         |
-| `DashboardActivityResponse.networkLiveBucket`      | http-response-field | external      | Add            | backend/stats   | Dashboard network chart     | 当前开放 5 分钟桶，用于历史图末桶           |
-| `DashboardActivityResponse.networkRealtimeRate`    | http-response-field | external      | Add            | backend/stats   | Dashboard upstream summary  | 全局上一完整 1 秒实时总速率                 |
-| `DashboardNetworkSpeedCache`                       | runtime-cache       | internal      | Update         | backend/proxy   | proxy dispatch / stats read | 维护 global + host + account 秒桶与开放桶   |
-| `upstream_socket_network_minute`                   | sqlite-table        | internal      | Add            | backend/stats   | Dashboard network history   | host + account 维度分钟累计，不存 global 行 |
-| `useDashboardNetworkTimeseries`                    | ui-hook             | internal      | Update         | web/dashboard   | Dashboard activity overview | 初次 hydrate + SSE 合并当前开放桶           |
+| 接口（Name）                                       | 类型（Kind）        | 范围（Scope） | 变更（Change） | 负责人（Owner） | 使用方（Consumers）         | 备注（Notes）                                                 |
+| -------------------------------------------------- | ------------------- | ------------- | -------------- | --------------- | --------------------------- | ------------------------------------------------------------- |
+| `GET /api/stats/dashboard-network-timeseries`      | http-endpoint       | external      | Add            | backend/stats   | Dashboard activity overview | dashboard-only；无 scope 时读 host minute                     |
+| `DashboardActivityAccountResponse.*BytesPerSecond` | http-response-field | external      | Add            | backend/stats   | Dashboard upstream cards    | 账号级上一完整 1 秒原始速率                                   |
+| `DashboardActivityLiveAccount.*BytesPerSecond`     | sse/http-live-field | external      | Add            | backend/stats   | Dashboard live merge        | 与账号级上一完整 1 秒快照保持同语义                           |
+| `DashboardActivityResponse.networkLiveBucket`      | http-response-field | external      | Add            | backend/stats   | Dashboard network chart     | 当前开放 5 分钟桶，用于历史图末桶                             |
+| `DashboardActivityResponse.networkRealtimeRate`    | http-response-field | external      | Add            | backend/stats   | Dashboard upstream summary  | 全局上一完整 1 秒实时总速率                                   |
+| `GET /api/stats/dashboard-network-recent`          | http-endpoint       | external      | Add            | backend/stats   | Dashboard recent panel      | global only；固定 300 点 / 1 秒窗口                           |
+| `dashboard.network-recent.current`                 | sse-topic           | external      | Add            | backend/stats   | Dashboard recent panel      | topic-only 真值读模型；snapshot/replay/live                   |
+| `DashboardRecentNetworkWindowResponse`             | http/sse-payload    | external      | Add            | backend/stats   | web/dashboard               | 包含 `isWarmingUp` 与逐点 `isAvailable` 空档                  |
+| `DashboardNetworkSpeedCache`                       | runtime-cache       | internal      | Update         | backend/proxy   | proxy dispatch / stats read | 维护 global + host + account 秒桶、开放桶与 recent 300 秒窗口 |
+| `upstream_socket_network_minute`                   | sqlite-table        | internal      | Add            | backend/stats   | Dashboard network history   | host + account 维度分钟累计，不存 global 行                   |
+| `useDashboardNetworkTimeseries`                    | ui-hook             | internal      | Update         | web/dashboard   | Dashboard activity overview | 初次 hydrate + SSE 合并当前开放桶                             |
+| `useDashboardRecentNetworkWindow`                  | ui-hook             | internal      | Add            | web/dashboard   | Dashboard recent panel      | topic-only 订阅 + 仅打开期间的 1 秒 refresh                   |
+| `DashboardNetworkRecentPopover`                    | ui-component        | internal      | Add            | web/dashboard   | Dashboard workspace summary | 桌面 hover/click lock；窄屏 dialog/sheet                      |
 
 ## 验收标准（Acceptance Criteria）
 
@@ -106,6 +130,10 @@
 - Given `昨日` 选择 `网速`，When 图表渲染完成，Then 不包含实时开放桶，只显示闭合历史 5 分钟桶。
 - Given 同一 pool invocation 跨多个 host 重试，When 查询 host minute rollup 并查看 Dashboard 总览，Then 每个 host attempt 的上传/下载都会被分别记账，而图表和总速率反映其全量累计。
 - Given OAuth HTTP 请求或 `/v1/responses` WebSocket 在握手后超时或提前关闭，When 查看 live bucket 与分钟汇总，Then 已经发生的 socket 读写字节仍会被记账，不会因为 transport future 被取消而掉成 `0 B/s`。
+- Given owner 把鼠标移到工作区顶部网速胶囊，When 当前 viewport 为桌面宽度，Then recent 诊断面板立即出现；When owner 点击胶囊，Then 面板保持固定打开，直到再次点击、外点或 `Esc`。
+- Given owner 在窄屏设备点击同一网速胶囊，When overlay 打开，Then 以 dialog/sheet 承载同一 recent 面板内容，且图表区域不溢出容器。
+- Given 进程运行不足 5 分钟，When recent 面板渲染最近 300 秒窗口，Then 前导缺失区间显示为空档并带 warming 提示，而不是伪造的 `0 B/s` 历史。
+- Given recent 面板处于打开状态但当前 1 秒没有新增流量，When 等待下一个 cadence，Then 时间窗右侧仍会右移；When 面板关闭，Then 这条 cadence 停止。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
@@ -113,17 +141,43 @@
 
 - Backend tests: runtime speed cache 的 global/host/account 秒桶、开放桶、lazy seed、pool retry host split、minute materializer、OAuth HTTP / WebSocket 的连接级字节计数。
 - Frontend tests: SSE live merge、无 steady-state 轮询、网速 metric 可见性、24 小时 heatmap -> network chart 切换、顶部总速率胶囊、账号卡速率删除。
+- Backend tests: recent 300 秒窗口保留、上一完整 1 秒语义、启动不足 5 分钟时的 `isAvailable=false` 前导空档、recent endpoint/topic payload 组装。
+- Frontend tests: recent 面板桌面 hover/click 固定、再次点击或 `Esc` 关闭、窄屏 dialog/sheet 打开、warming gap 呈现、面板关闭后停止 refresh。
 
 ### Quality checks
 
 - `cargo check`
 - `cargo test dashboard_network -- --nocapture`
+- `cargo test recent_global_window -- --nocapture`
+- `cargo test recent_window_response -- --nocapture`
 - `cargo test upstream_host_network -- --nocapture`
 - `cd web && bun run test DashboardWorkingConversationsSection useDashboardUpstreamAccountActivity DashboardActivityOverview DashboardNetworkActivityChart`
+- `cd web && bun run test -- DashboardNetworkRecentPopover useDashboardRecentNetworkWindow`
 - `cd web && bun run storybook:build`
 
 ## Visual Evidence
 
+- SHA `current-worktree`
+- source_type: `storybook_iframe`
+  story_id_or_title: `dashboard-dashboardnetworkrecentpopover--desktop-fixed-open`
+  scenario: `desktop locked recent diagnostic popover`
+  evidence_note: `验证工作区网速胶囊在桌面端以固定展开态展示最近 5 分钟逐秒上传/下载曲线，并保留胶囊自身的实时速率摘要。`
+  PR: include
+  ![Dashboard recent desktop popover](./assets/dashboard-network-recent-desktop-fixed-open.png)
+- SHA `current-worktree`
+- source_type: `storybook_iframe`
+  story_id_or_title: `dashboard-dashboardnetworkrecentpopover--desktop-fixed-open-light`
+  scenario: `desktop locked recent diagnostic popover in light theme`
+  evidence_note: `验证亮色主题下同一套网速胶囊与副窗头部语汇保持一致，未回到另一套配色/卡片体系。`
+  PR: include
+  ![Dashboard recent desktop popover light](./assets/dashboard-network-recent-desktop-fixed-open-light.png)
+- SHA `current-worktree`
+- source_type: `storybook_iframe`
+  story_id_or_title: `dashboard-dashboardnetworkrecentpopover--compact-sheet-warming`
+  scenario: `compact recent diagnostic sheet with warming gap`
+  evidence_note: `验证窄屏 dialog/sheet 呈现、warming 提示文案以及前导空档不伪装成 0 B/s 的语义。`
+  PR: include
+  ![Dashboard recent compact sheet](./assets/dashboard-network-recent-compact-sheet.png)
 - SHA `current-worktree`
 - source_type: `storybook_canvas`
   story_id_or_title: `dashboard-dashboardnetworkactivitychart--tooltip-upload-download`
@@ -147,3 +201,4 @@
 
 - `docs/specs/z6ysw-dashboard-account-activity-tabs/SPEC.md`
 - `docs/specs/gz5ns-dashboard-natural-day-kpi-semantics/SPEC.md`
+- `docs/solutions/performance/realtime-dashboard-reconcile-budget.md`

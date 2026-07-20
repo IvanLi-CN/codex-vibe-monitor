@@ -1820,6 +1820,10 @@ pub(crate) struct DashboardNetworkTimeseriesQuery {
     pub(crate) upstream_account_id: Option<i64>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardRecentNetworkWindowQuery {}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PerfQuery {
@@ -1971,6 +1975,29 @@ pub(crate) struct DashboardNetworkTimeseriesResponse {
     pub(crate) snapshot_id: i64,
     pub(crate) bucket_seconds: i64,
     pub(crate) points: Vec<DashboardNetworkTimeseriesPointResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardRecentNetworkWindowPointResponse {
+    pub(crate) sample_start: String,
+    pub(crate) sample_end: String,
+    pub(crate) upload_bytes_per_second: f64,
+    pub(crate) download_bytes_per_second: f64,
+    pub(crate) upload_bytes: i64,
+    pub(crate) download_bytes: i64,
+    pub(crate) is_available: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardRecentNetworkWindowResponse {
+    pub(crate) range_start: String,
+    pub(crate) range_end: String,
+    pub(crate) window_seconds: i64,
+    pub(crate) sample_seconds: i64,
+    pub(crate) is_warming_up: bool,
+    pub(crate) points: Vec<DashboardRecentNetworkWindowPointResponse>,
 }
 
 #[derive(Debug, Clone, Serialize)]

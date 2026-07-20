@@ -1,7 +1,9 @@
 use super::*;
 
 pub(crate) const DASHBOARD_NETWORK_BUCKET_SECONDS: i64 = 300;
-const DASHBOARD_NETWORK_SECOND_BUCKET_RETENTION_SECONDS: i64 = 45;
+pub(crate) const DASHBOARD_NETWORK_RECENT_WINDOW_SECONDS: i64 = 300;
+const DASHBOARD_NETWORK_SECOND_BUCKET_RETENTION_SECONDS: i64 =
+    DASHBOARD_NETWORK_RECENT_WINDOW_SECONDS;
 pub(crate) const DASHBOARD_ACTIVITY_REALTIME_WINDOW_SECONDS: i64 = 60;
 const DASHBOARD_ACTIVITY_SECOND_BUCKET_RETENTION_SECONDS: i64 = 180;
 pub(crate) const DASHBOARD_NETWORK_UNKNOWN_UPSTREAM_HOST: &str = "__unknown__";
@@ -36,6 +38,24 @@ pub(crate) struct DashboardNetworkRealtimeByteSnapshot {
     pub(crate) sample_end_epoch_second: i64,
     pub(crate) sample_seconds: i64,
     pub(crate) totals: DashboardNetworkByteTotals,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DashboardRecentNetworkWindowPointSnapshot {
+    pub(crate) sample_start_epoch_second: i64,
+    pub(crate) sample_end_epoch_second: i64,
+    pub(crate) totals: DashboardNetworkByteTotals,
+    pub(crate) is_available: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DashboardRecentNetworkWindowSnapshot {
+    pub(crate) range_start_epoch_second: i64,
+    pub(crate) range_end_epoch_second: i64,
+    pub(crate) window_seconds: i64,
+    pub(crate) sample_seconds: i64,
+    pub(crate) is_warming_up: bool,
+    pub(crate) points: Vec<DashboardRecentNetworkWindowPointSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -645,6 +665,60 @@ impl DashboardNetworkSpeedCache {
         prune_second_buckets_locked(&mut inner, now_epoch_second);
         let buckets = inner.second_buckets.get(&scope);
         snapshot_complete_second_rate_from_optional_buckets(buckets, now_epoch_second)
+    }
+
+    pub(crate) fn snapshot_recent_global_window(
+        &self,
+        now: DateTime<Utc>,
+    ) -> DashboardRecentNetworkWindowSnapshot {
+        let now_epoch_second = now.timestamp();
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("dashboard network speed cache should not be poisoned");
+        prune_second_buckets_locked(&mut inner, now_epoch_second);
+
+        let range_end_epoch_second = now_epoch_second;
+        let range_start_epoch_second =
+            range_end_epoch_second.saturating_sub(DASHBOARD_NETWORK_RECENT_WINDOW_SECONDS);
+        let first_available_epoch_second = self.process_started_at_utc.timestamp();
+        let recent_buckets = inner
+            .second_buckets
+            .get(&DashboardNetworkScopeKey::Global)
+            .map(|buckets| {
+                buckets
+                    .iter()
+                    .map(|bucket| (bucket.epoch_second, bucket.totals))
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let mut points = Vec::with_capacity(DASHBOARD_NETWORK_RECENT_WINDOW_SECONDS as usize);
+        for sample_start_epoch_second in range_start_epoch_second..range_end_epoch_second {
+            let is_available = sample_start_epoch_second >= first_available_epoch_second;
+            points.push(DashboardRecentNetworkWindowPointSnapshot {
+                sample_start_epoch_second,
+                sample_end_epoch_second: sample_start_epoch_second
+                    .saturating_add(DASHBOARD_NETWORK_REALTIME_SAMPLE_SECONDS),
+                totals: if is_available {
+                    recent_buckets
+                        .get(&sample_start_epoch_second)
+                        .copied()
+                        .unwrap_or_default()
+                } else {
+                    DashboardNetworkByteTotals::default()
+                },
+                is_available,
+            });
+        }
+
+        DashboardRecentNetworkWindowSnapshot {
+            range_start_epoch_second,
+            range_end_epoch_second,
+            window_seconds: DASHBOARD_NETWORK_RECENT_WINDOW_SECONDS,
+            sample_seconds: DASHBOARD_NETWORK_REALTIME_SAMPLE_SECONDS,
+            is_warming_up: range_start_epoch_second < first_available_epoch_second,
+            points,
+        }
     }
 
     pub(crate) fn should_keep_dashboard_activity_live_stream(&self, now: DateTime<Utc>) -> bool {
@@ -1442,6 +1516,104 @@ mod tests {
         assert_eq!(snapshot.totals.download_bytes, 4096);
         assert!((rate.upload_bytes_per_second - 8240.0).abs() < f64::EPSILON);
         assert!((rate.download_bytes_per_second - 4096.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn recent_global_window_keeps_three_hundred_seconds_of_complete_samples() {
+        let cache = DashboardNetworkSpeedCache::new(fixed_utc(0));
+        cache.record_request_bytes(
+            "invoke-1",
+            "2026-07-15 12:00:00",
+            Some(7),
+            Some("api.openai.com"),
+            600,
+            fixed_utc(900),
+        );
+        cache.record_response_chunk_bytes(
+            "invoke-2",
+            "2026-07-15 12:00:01",
+            Some(7),
+            Some("api.openai.com"),
+            900,
+            fixed_utc(1199),
+        );
+
+        let snapshot = cache.snapshot_recent_global_window(fixed_utc(1200));
+
+        assert_eq!(snapshot.range_start_epoch_second, 900);
+        assert_eq!(snapshot.range_end_epoch_second, 1200);
+        assert_eq!(snapshot.window_seconds, 300);
+        assert_eq!(snapshot.sample_seconds, 1);
+        assert!(!snapshot.is_warming_up);
+        assert_eq!(snapshot.points.len(), 300);
+        assert_eq!(
+            snapshot
+                .points
+                .first()
+                .map(|point| point.sample_start_epoch_second),
+            Some(900)
+        );
+        assert_eq!(
+            snapshot
+                .points
+                .first()
+                .map(|point| point.totals.upload_bytes),
+            Some(600)
+        );
+        assert_eq!(
+            snapshot
+                .points
+                .last()
+                .map(|point| point.sample_start_epoch_second),
+            Some(1199)
+        );
+        assert_eq!(
+            snapshot
+                .points
+                .last()
+                .map(|point| point.totals.download_bytes),
+            Some(900)
+        );
+    }
+
+    #[test]
+    fn recent_global_window_marks_prestart_gap_unavailable_but_keeps_runtime_zeros_available() {
+        let cache = DashboardNetworkSpeedCache::new(fixed_utc(1_150));
+        cache.record_request_bytes(
+            "invoke-1",
+            "2026-07-15 12:00:00",
+            Some(3),
+            Some("api.openai.com"),
+            240,
+            fixed_utc(1_180),
+        );
+
+        let snapshot = cache.snapshot_recent_global_window(fixed_utc(1_200));
+
+        assert!(snapshot.is_warming_up);
+        let unavailable_point = snapshot
+            .points
+            .iter()
+            .find(|point| point.sample_start_epoch_second == 900)
+            .expect("expected leading unavailable point");
+        assert!(!unavailable_point.is_available);
+        assert_eq!(unavailable_point.totals.upload_bytes, 0);
+
+        let zero_available_point = snapshot
+            .points
+            .iter()
+            .find(|point| point.sample_start_epoch_second == 1_179)
+            .expect("expected runtime zero point");
+        assert!(zero_available_point.is_available);
+        assert_eq!(zero_available_point.totals.upload_bytes, 0);
+
+        let populated_point = snapshot
+            .points
+            .iter()
+            .find(|point| point.sample_start_epoch_second == 1_180)
+            .expect("expected populated runtime point");
+        assert!(populated_point.is_available);
+        assert_eq!(populated_point.totals.upload_bytes, 240);
     }
 
     #[test]
