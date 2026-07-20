@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.42.8",
+  "base_stable_version": "2.42.7",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-20T04:46:00Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.42.8",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "41c25bb7445facc0d6b24c6c425dc8b0ca68da09",
+  "pr_number": 662,
+  "pr_title": "fix(web): enforce semantic tone contrast contract",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.42.8",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.42.8",
+  "target_sha": "d9720626c09e39922a8492bcc8beb669bd50e8de",
+  "type_label": "type:patch"
+}
