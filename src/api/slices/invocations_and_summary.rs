@@ -8242,7 +8242,7 @@ fn dashboard_live_snapshot_in_progress_counts(
 }
 
 pub(crate) const DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES: i64 = 5;
-const DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS: u64 = 5;
+pub(crate) const DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS: u64 = 5;
 
 #[derive(Debug, Clone)]
 pub(crate) struct DashboardActivitySnapshot {
@@ -8271,6 +8271,54 @@ impl DashboardActivitySnapshot {
 
     pub(crate) fn summary(&self) -> &DashboardActivitySummaryResponse {
         &self.summary
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_stub(range: &str) -> Self {
+        let now = Utc::now();
+        Self {
+            range: range.to_string(),
+            range_start: now,
+            range_end: now + ChronoDuration::minutes(1),
+            accounts: Vec::new(),
+            summary: DashboardActivitySummaryResponse {
+                stats: StatsResponse {
+                    total_count: 0,
+                    success_count: 0,
+                    failure_count: 0,
+                    total_cost: 0.0,
+                    total_tokens: 0,
+                    usage_breakdown: None,
+                    in_progress_conversation_count: None,
+                    in_progress_retry_conversation_count: None,
+                    in_progress_avg_wait_ms: None,
+                    in_progress_phase_counts: None,
+                    non_success_cost: None,
+                    non_success_tokens: None,
+                    maintenance: None,
+                },
+                tokens_per_minute: None,
+                spend_rate: None,
+                current_first_response_byte_total_avg_ms: None,
+                current_avg_total_ms: None,
+                model_performance: ModelPerformanceResponse {
+                    available: false,
+                    total: ModelPerformanceMetricsResponse {
+                        tokens_per_minute: 0.0,
+                        streaming_response_rate: None,
+                        avg_response_ms: None,
+                        avg_first_response_byte_total_ms: None,
+                        wall_clock_usage_duration_ms: None,
+                        cumulative_usage_duration_ms: None,
+                        parallelism: None,
+                    },
+                    models: Vec::new(),
+                },
+            },
+            materialized_archive_fallback_totals: StatsTotals::default(),
+            materialized_archive_details_limited: false,
+            build_telemetry: DashboardActivityBuildTelemetry::default(),
+        }
     }
 }
 
@@ -8839,7 +8887,7 @@ fn dashboard_activity_source_scope_cache_key(source_scope: InvocationSourceScope
     }
 }
 
-fn build_dashboard_activity_snapshot_selection(
+pub(crate) fn build_dashboard_activity_snapshot_selection(
     range: &str,
     exact_range: ExactUtcRange,
     reporting_tz: Tz,
@@ -8889,7 +8937,7 @@ fn resolve_dashboard_activity_exact_range(
     })
 }
 
-fn resolve_dashboard_activity_cached_range(
+pub(crate) fn resolve_dashboard_activity_cached_range(
     range_name: &str,
     reporting_tz: Tz,
 ) -> Result<ExactUtcRange, ApiError> {
@@ -8912,7 +8960,7 @@ fn dashboard_activity_full_hour_exact_range(
     }))
 }
 
-fn sort_dashboard_activity_accounts(accounts: &mut [DashboardActivityAccountResponse]) {
+pub(crate) fn sort_dashboard_activity_accounts(accounts: &mut [DashboardActivityAccountResponse]) {
     accounts.sort_by(|left, right| {
         right
             .total_tokens
@@ -8938,7 +8986,7 @@ fn sort_dashboard_activity_accounts(accounts: &mut [DashboardActivityAccountResp
     });
 }
 
-fn dashboard_activity_account_from_live(
+pub(crate) fn dashboard_activity_account_from_live(
     live_account: &DashboardActivityLiveAccount,
     meta: Option<&UpstreamAccountActivityMetaRow>,
     range: ExactUtcRange,
@@ -9525,7 +9573,7 @@ fn sum_dashboard_activity_current_minute_accumulators(
     total
 }
 
-fn sum_dashboard_activity_current_snapshots(
+pub(crate) fn sum_dashboard_activity_current_snapshots(
     snapshots: impl IntoIterator<Item = DashboardActivityCurrentSnapshot>,
 ) -> DashboardActivityCurrentSnapshot {
     let mut total = DashboardActivityCurrentSnapshot::default();

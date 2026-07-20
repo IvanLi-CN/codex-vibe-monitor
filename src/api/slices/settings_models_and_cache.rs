@@ -1159,6 +1159,21 @@ impl Drop for DashboardActivitySnapshotFlightGuard {
     }
 }
 
+pub(crate) async fn invalidate_dashboard_activity_snapshot_cache(
+    cache: &Mutex<DashboardActivitySnapshotCacheState>,
+    selection: &DashboardActivitySnapshotSelection,
+) {
+    let in_flight = {
+        let mut state = cache.lock().await;
+        state.entries.remove(selection);
+        state.in_flight.remove(selection)
+    };
+
+    if let Some(flight) = in_flight {
+        let _ = flight.signal.send(true);
+    }
+}
+
 pub(crate) async fn invalidate_prompt_cache_conversations_cache(
     cache: &Arc<Mutex<PromptCacheConversationsCacheState>>,
 ) {

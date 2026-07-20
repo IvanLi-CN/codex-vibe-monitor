@@ -70,6 +70,7 @@
 - 已实现：账号卡 recent 调用在 SQLite batch flush 前也会读取同一 runtime store；同键 runtime 行覆盖非终态 DB shell，短暂 terminal overlay 立即可见，落库后不会形成重复行。
 - 已实现：non-`yesterday` 的 `dashboard-activity` 基础快照缓存已收敛为“稳定请求参数 + `today` 本地日期锚点 + 5 秒 TTL”选择键，不再把移动中的 exact `rangeStart/rangeEnd`、live runtime 状态或最新持久化行 ID 放进 cache key；fresh live overlay、exact 响应边界与 `live_revision` 继续在响应阶段叠加，允许 terminal totals 最多 `<=5s` 滞后，同时保持当前态与 recent 的 owner-facing 实时语义不变。
 - 已实现：`/api/stats/upstream-account-activity` 改走独立账户活动 builder，不再借道 dashboard full snapshot 的 summary/model-performance 组装；后端新增 `route / builder / purpose / in_progress_only / limit / preview_read_mode / candidate_preview_id_count / hydrated_preview_row_count / cache_bypass_reason / cache_ttl_ms / cache_entry_age_ms / cache_entry_count / in_flight_count` 结构化 telemetry，用于复盘读侧放大、缓存命中率与 DB 压力重合。
+- 已实现：`dashboard.activity.current` 的 open-range topic refresh 不再在每个 `records` / `DashboardActivityLive` 广播上反向调用完整 `fetch_dashboard_activity`。live 广播现在直接覆写 subscription hub 内存 snapshot 的当前态字段并立即 fanout，terminal `records` 仅触发 `<=5s` 节流后的 DB refresh，且 refresh 前会主动失效内部 dashboard snapshot cache，避免 topic 层 deferred refresh 又命中旧 TTL 快照。
 
 ## Remaining Gaps
 
