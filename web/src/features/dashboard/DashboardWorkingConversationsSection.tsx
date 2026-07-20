@@ -49,6 +49,7 @@ import {
   fetchUpstreamAccounts,
   updateUpstreamAccount,
 } from "../../lib/api";
+import { metricAccent } from "../../lib/chartTheme";
 import type {
   DashboardWorkingConversationCardModel,
   DashboardWorkingConversationInvocationModel,
@@ -74,6 +75,7 @@ import {
 } from "../../lib/upstreamAccountBadges";
 import { emitUpstreamAccountsChanged } from "../../lib/upstreamAccountsEvents";
 import { cn } from "../../lib/utils";
+import { useTheme } from "../../theme";
 import { InvocationPhaseBadge, InvocationPhaseSegments } from "../invocations/InvocationPhaseBadge";
 import {
   buildInvocationDetailViewModel,
@@ -803,6 +805,20 @@ function accountCostShare(numerator: number | null | undefined, total: number | 
   if (resolvedNumerator == null || resolvedTotal == null) return null;
   if (resolvedTotal <= 0) return resolvedNumerator <= 0 ? 0 : null;
   return Math.max(0, resolvedNumerator) / resolvedTotal;
+}
+
+function invocationCacheHitRate({
+  cacheInputTokens,
+  totalTokens,
+}: {
+  cacheInputTokens?: number | null;
+  totalTokens?: number | null;
+}) {
+  const resolvedCacheInputTokens = finiteNumber(cacheInputTokens);
+  const resolvedTotalTokens = finiteNumber(totalTokens);
+  if (resolvedCacheInputTokens == null || resolvedTotalTokens == null) return null;
+  if (resolvedTotalTokens <= 0) return resolvedCacheInputTokens <= 0 ? 0 : null;
+  return Math.max(0, resolvedCacheInputTokens) / resolvedTotalTokens;
 }
 
 function SummaryMetric({ label, value }: { label: string; value: ReactNode }) {
@@ -2315,6 +2331,7 @@ function InvocationSlot({
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   onOpenInvocation?: (selection: DashboardWorkingConversationInvocationSelection) => void;
 }) {
+  const { themeMode } = useTheme();
   const { t } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
@@ -2435,6 +2452,11 @@ function InvocationSlot({
   const compactCostValue = viewModel.costValue.startsWith("US$")
     ? `$${viewModel.costValue.slice(3)}`
     : viewModel.costValue;
+  const compactHitRateValue = formatAccountPercentValue(
+    invocationCacheHitRate(invocation.record),
+    localeTag,
+  );
+  const costAccentColor = metricAccent("totalCost", themeMode);
   const compactLatencyValues = useMemo(() => {
     const normalizedStatus = invocation.displayStatus.trim().toLowerCase();
     return {
@@ -2666,28 +2688,24 @@ function InvocationSlot({
           label={lineLabels.usage}
           title={`${t("table.column.inputTokens")}: ${viewModel.inputTokensValue} · Cache write: ${viewModel.cacheWriteTokensValue} · ${t("table.column.cacheInputTokens")}: ${viewModel.cacheInputTokensValue} · ${t("table.column.outputTokens")}: ${viewModel.outputTokensValue} · ${t("table.column.totalTokens")}: ${viewModel.totalTokensValue} · ${t("table.column.costUsd")}: ${viewModel.costValue} · ${t("table.details.reasoningTokens")}: ${viewModel.reasoningTokensValue}`}
           value={
-            <div className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5">
-              <span>IN {viewModel.inputTokensValue}</span>
+            <div
+              data-testid="dashboard-working-conversation-usage-line"
+              className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5"
+            >
+              <span data-testid="dashboard-working-conversation-usage-hit">
+                Hit {compactHitRateValue}
+              </span>
               <span className="text-base-content/28">·</span>
-              <span
-                title="Cache write tokens"
-                aria-label={`Cache write tokens: ${viewModel.cacheWriteTokensValue}`}
-              >
-                CW {viewModel.cacheWriteTokensValue}
+              <span data-testid="dashboard-working-conversation-usage-token">
+                Token {viewModel.totalTokensValue}
               </span>
               <span className="text-base-content/28">·</span>
               <span
-                title="Cache read tokens"
-                aria-label={`Cache read tokens: ${viewModel.cacheInputTokensValue}`}
+                data-testid="dashboard-working-conversation-usage-cost"
+                style={{ color: costAccentColor }}
               >
-                C {viewModel.cacheInputTokensValue}
+                {compactCostValue}
               </span>
-              <span className="text-base-content/28">·</span>
-              <span>O {viewModel.outputTokensValue}</span>
-              <span className="text-base-content/28">·</span>
-              <span>T {viewModel.totalTokensValue}</span>
-              <span className="text-base-content/28">·</span>
-              <span>{compactCostValue}</span>
             </div>
           }
         />

@@ -85,6 +85,7 @@
 - recent bridge 作为 recent 区标题行右侧统计例外，必须显示完整状态文字；运行态必须拆成 `排队中 / 请求中 / 响应中`，数值来自账号级 `inProgressPhaseCounts`，终态继续使用账号级 `successCount / failureCount / nonSuccessCount`，并与左侧“最近 4 条调用”标题保持同一垂直对齐节奏。
 - 单账号卡下半部分必须展示当前范围内最近 4 条调用记录，复用现有紧凑调用行语言，而不是再做卡中卡；4 条记录必须在卡内完整可见，不得依赖展开、滚动或裁切。
 - 账号卡内每条 recent 调用记录的信息密度不得低于 Dashboard 对话卡片中的调用记录：至少需要覆盖状态、模型、endpoint、Token 用量摘要，以及 `RQ / UP / ED / TT` 时序摘要。
+- Dashboard 对话卡片 `当前调用 / 上一条调用` 槽位中的可见用量行必须收敛为 `Hit <percent> · Token <total> · <cost>` 三项；`Hit` 口径固定为 `cacheInputTokens / totalTokens`，可见成本值复用项目金额主题色，完整 `输入 / Cache write / 缓存输入 / 输出 / 总 Tokens / 成本 / 推理 Tokens` 诊断明细继续只通过 hover / title 暴露。
 - Dashboard 工作区 `对话` tab 的 recent/current 调用错误摘要，以及 `上游账号` tab recent 行错误摘要，必须统一保持单行省略；摘要文本本身就是 tooltip trigger，hover / focus / long-press 时使用 UI 库 tooltip 在 trigger 下方优先展示完整错误，除非浮层系统因视口避让自动翻转；不得依赖浏览器原生 `title` 作为最终交互。
 - 宽屏上游账号双列 grid 必须使用可缩小 track；账号卡、recent 调用行与错误摘要 trigger 必须组成连续的 `min-w-0` / 最大宽度约束链，确保任意长度的错误载荷都不能扩大 grid track、账号卡或 recent 行。
 - 账号卡 recent 调用记录的主标识行必须改为“对话短 ID + 分隔符/图标 + 请求 ID”；其中对话短 ID 固定基于真实 `promptCacheKey` 走既有 working-conversation 哈希与格式化规则，展示值去掉 `WC-` 前缀；请求 ID 显示完整 `invokeId` 并允许单行截断。
@@ -209,6 +210,7 @@
 - Given 查看账号卡摘要区，When 卡片处于常驻态，Then 不出现解释性废话或状态说明条，请求数 / Token 分解只显示色点与数值，且不出现任何可见文字标签。
 - Given 查看账号卡 recent 区标题行，When 右侧存在 recent bridge 统计，Then 显示完整状态文字，并与左侧“最近 4 条调用”标题保持同一垂直对齐。
 - Given 查看账号卡内 recent 调用记录，When 与对话卡片调用记录对照，Then recent 行至少包含状态、模型、endpoint、Token 摘要与 `RQ / UP / ED / TT` 时序摘要，且 4 条记录完整留在卡内。
+- Given 查看 Dashboard 对话卡片的 `当前调用` 或 `上一条调用` 槽位，When 卡面处于常驻态，Then `用量` 行只显示 `Hit`、`Token` 与成本 3 项，不出现可见的 `IN / CW / C / O` 片段；hover/title 仍保留完整 token、成本与推理诊断明细。
 - Given 账号卡 recent 调用记录所在账号已由大卡标题表达，When 查看 recent 行辅助元信息，Then 不再重复渲染账号名。
 - Given 账号卡 recent 调用记录的 `requestModel` 与 `responseModel` 规范化后不一致，When recent 行渲染模型区域，Then 同时显示请求模型、模型切换图标与响应模型；若两者等价，则只显示单模型。
 - Given 点击账号卡 recent 调用记录打开详情，When 详情抽屉接收 selection，Then `selection.promptCacheKey` 必须等于真实 preview `promptCacheKey`，而不是 `invokeId`。
@@ -314,6 +316,22 @@ PR: include
   image:
   PR: include
   ![Dashboard 对话卡片运行态 inline 状态证据](./assets/dashboard-working-conversation-inline-status.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--current-and-previous`
+  scenario: `compact invocation usage line (light)`
+  evidence_note: 验证 Dashboard 对话卡片 `当前调用 / 上一条调用` 的可见 `用量` 行已收敛为 `Hit · Token · $` 三项；成本值使用项目金额主题色，旧的 `IN / CW / C / O` 缩写不再常驻显示。
+  image:
+  PR: include
+  ![Dashboard 对话卡片紧凑用量行浅色证据](./assets/dashboard-working-conversation-compact-usage-light.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--current-and-previous`
+  scenario: `compact invocation usage line (dark)`
+  evidence_note: 验证同一紧凑用量行合同在深色主题下保持一致：可见文本仍只有 `Hit · Token · $` 三项，成本片段继续使用金额语义 accent，不扩散到整行分隔符与其余文本。
+  image:
+  PR: include
+  ![Dashboard 对话卡片紧凑用量行深色证据](./assets/dashboard-working-conversation-compact-usage-dark.png)
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
