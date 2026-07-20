@@ -851,15 +851,20 @@ fn apply_dashboard_activity_live_overlay_to_payload(
             "spendRate".to_string(),
             json!(current_snapshot_summary.total_cost.max(0.0)),
         );
-        if let Some(value) = current_snapshot_summary.first_response_byte_total_avg_ms() {
-            summary.insert(
-                "currentFirstResponseByteTotalAvgMs".to_string(),
-                json!(value),
-            );
-        }
-        if let Some(value) = current_snapshot_summary.avg_total_ms() {
-            summary.insert("currentAvgTotalMs".to_string(), json!(value));
-        }
+        set_json_optional_field(
+            summary,
+            "currentFirstResponseByteTotalAvgMs",
+            current_snapshot_summary
+                .first_response_byte_total_avg_ms()
+                .map(|value| json!(value)),
+        );
+        set_json_optional_field(
+            summary,
+            "currentAvgTotalMs",
+            current_snapshot_summary
+                .avg_total_ms()
+                .map(|value| json!(value)),
+        );
     }
 
     let Some(accounts_value) = root.get_mut("accounts") else {
@@ -932,16 +937,18 @@ fn apply_dashboard_activity_live_overlay_to_payload(
             "spendRate",
             json!(current_snapshot.total_cost.max(0.0)),
         );
-        if let Some(value) = current_snapshot.first_response_byte_total_avg_ms() {
-            set_json_field(
-                account_object,
-                "currentFirstResponseByteTotalAvgMs",
-                json!(value),
-            );
-        }
-        if let Some(value) = current_snapshot.avg_total_ms() {
-            set_json_field(account_object, "currentAvgTotalMs", json!(value));
-        }
+        set_json_optional_field(
+            account_object,
+            "currentFirstResponseByteTotalAvgMs",
+            current_snapshot
+                .first_response_byte_total_avg_ms()
+                .map(|value| json!(value)),
+        );
+        set_json_optional_field(
+            account_object,
+            "currentAvgTotalMs",
+            current_snapshot.avg_total_ms().map(|value| json!(value)),
+        );
         if let Some(live_account) = live_account {
             let current_request_count = account_object
                 .get("requestCount")
@@ -2440,6 +2447,89 @@ mod tests {
                 cursor: 3,
                 miss_reason: Some("schema_epoch_mismatch"),
             }]
+        );
+    }
+
+    #[tokio::test]
+    async fn dashboard_activity_live_overlay_clears_stale_optional_latency_fields() {
+        let state =
+            crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap())
+                .await;
+        let now = Utc::now();
+        let mut payload = json!({
+            "rangeStart": now.to_rfc3339(),
+            "rangeEnd": (now + ChronoDuration::minutes(5)).to_rfc3339(),
+            "summary": {
+                "stats": {
+                    "inProgressConversationCount": 3,
+                    "inProgressRetryConversationCount": 2,
+                    "inProgressPhaseCounts": {}
+                },
+                "modelPerformance": {
+                    "available": false
+                },
+                "tokensPerMinute": 123.0,
+                "spendRate": 4.56,
+                "currentFirstResponseByteTotalAvgMs": 789.0,
+                "currentAvgTotalMs": 456.0
+            },
+            "accounts": [{
+                "accountKey": "upstream:42",
+                "upstreamAccountId": 42,
+                "requestCount": 9,
+                "tokensPerMinute": 33.0,
+                "spendRate": 1.23,
+                "currentFirstResponseByteTotalAvgMs": 654.0,
+                "currentAvgTotalMs": 321.0,
+                "recentInvocations": []
+            }]
+        });
+        let live = DashboardActivityLiveSnapshot {
+            revision: 7,
+            generated_at: now.to_rfc3339(),
+            in_progress_invocation_count: 0,
+            in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
+            retry_invocation_count: 0,
+            network_live_bucket: None,
+            network_realtime_rate: None,
+            accounts: Vec::new(),
+        };
+
+        let applied =
+            apply_dashboard_activity_live_overlay_to_payload(state.as_ref(), &mut payload, &live)
+                .expect("apply dashboard activity live overlay");
+
+        assert!(applied);
+        let summary = payload
+            .get("summary")
+            .and_then(Value::as_object)
+            .expect("summary object");
+        assert_eq!(
+            summary.get("currentFirstResponseByteTotalAvgMs"),
+            None,
+            "summary stale currentFirstResponseByteTotalAvgMs should be removed",
+        );
+        assert_eq!(
+            summary.get("currentAvgTotalMs"),
+            None,
+            "summary stale currentAvgTotalMs should be removed",
+        );
+
+        let account = payload
+            .get("accounts")
+            .and_then(Value::as_array)
+            .and_then(|accounts| accounts.first())
+            .and_then(Value::as_object)
+            .expect("account object");
+        assert_eq!(
+            account.get("currentFirstResponseByteTotalAvgMs"),
+            None,
+            "account stale currentFirstResponseByteTotalAvgMs should be removed",
+        );
+        assert_eq!(
+            account.get("currentAvgTotalMs"),
+            None,
+            "account stale currentAvgTotalMs should be removed",
         );
     }
 }
