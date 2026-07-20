@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.42.7",
+  "base_stable_version": "2.42.6",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-20T04:19:29Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.42.7",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "0e9bb512b61b0a4eda1f72df48bf5788122ce7c1",
+  "pr_number": 659,
+  "pr_title": "fix(web): correct bulk binding clear semantics",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.42.7",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.42.7",
+  "target_sha": "f9b52d5e3622d480ac058940fa4220b83405e17f",
+  "type_label": "type:patch"
+}
