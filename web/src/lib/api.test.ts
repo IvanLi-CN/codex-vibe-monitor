@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  bulkUpdatePromptCacheConversationBindings,
   createForwardProxyNodesLatencyTestEventSource,
   createOauthMailboxSession,
   DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS,
@@ -2880,5 +2881,58 @@ describe("account pool frontend API helpers", () => {
     expect(updated.upstreamAccountName).toBe("Pool Alpha");
     expect(updated.encryptedOwnerAccountName).toBe("Owner One");
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("submits bulk prompt-cache manual binding clears as bind-none", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe("/api/stats/prompt-cache-conversation-bindings/bulk-actions");
+      expect(init?.method).toBe("POST");
+      expect(JSON.parse(String(init?.body))).toEqual({
+        action: "bind",
+        bindingKind: "none",
+        promptCacheKeys: ["pck-one"],
+      });
+      return new Response(
+        JSON.stringify({
+          action: "bind",
+          totalRequested: 1,
+          totalSucceeded: 1,
+          totalFailed: 0,
+          items: [
+            {
+              promptCacheKey: "pck-one",
+              ok: true,
+              error: null,
+              binding: {
+                promptCacheKey: "pck-one",
+                bindingKind: "none",
+                groupName: null,
+                upstreamAccountId: null,
+                upstreamAccountName: null,
+                hasEncryptedSessionOwner: true,
+                encryptedOwnerAccountId: 21,
+                encryptedOwnerAccountName: "Owner One",
+                encryptedOwnerGroupName: "CIII",
+                updatedAt: null,
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    const response = await bulkUpdatePromptCacheConversationBindings({
+      action: "bind",
+      bindingKind: "none",
+      promptCacheKeys: ["pck-one"],
+    });
+
+    expect(response.action).toBe("bind");
+    expect(response.totalSucceeded).toBe(1);
+    expect(response.items[0]?.binding?.bindingKind).toBe("none");
+    expect(response.items[0]?.binding?.hasEncryptedSessionOwner).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

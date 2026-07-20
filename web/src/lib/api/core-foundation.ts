@@ -1657,6 +1657,11 @@ export type UpdatePromptCacheConversationBindingPayload =
 export type BulkPromptCacheConversationBindActionPayload =
   | {
       action: "bind";
+      bindingKind: "none";
+      promptCacheKeys: string[];
+    }
+  | {
+      action: "bind";
       bindingKind: "group";
       groupName: string;
       promptCacheKeys: string[];

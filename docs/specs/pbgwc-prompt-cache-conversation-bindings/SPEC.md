@@ -40,9 +40,9 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - The Dashboard conversations header exposes a conversations-only `选择模式` toggle in the existing action area.
 - When selection mode is on, conversation cards use `promptCacheKey` as the stable selection key, and card click, `Enter`, and `Space` toggle selection instead of opening drawers or following nested navigation affordances.
 - A `Cmd`/`Ctrl`-modified card click toggles only the clicked card's selection without switching the header into persistent selection mode.
-- Any non-zero selection shows a fixed bottom-center floating bulk action bar with selected count, route binding, clear-and-reset affinity, FAST mode, and cancel-selection actions.
-- Bulk route binding supports only `group` and `upstreamAccount` targets; clearing remains a separate destructive action.
-- Bulk clear-and-reset affinity removes the manual conversation binding, `pool_sticky_routes`, and `prompt_cache_encrypted_session_owners` rows for each selected key so the next request reselects an upstream account from normal routing.
+- Any non-zero selection shows a fixed bottom-center floating bulk action bar with selected count, route binding, manual binding clear, FAST mode, and cancel-selection actions.
+- Bulk route binding supports `none`, `group`, and `upstreamAccount` payloads; the Dashboard clear action remains a separate destructive manual-binding action that submits `bindingKind='none'`.
+- The separate `clearAndResetAffinity` API action removes the manual conversation binding, `pool_sticky_routes`, and `prompt_cache_encrypted_session_owners` rows for each selected key so the next request reselects an upstream account from normal routing.
 - Bulk FAST mode writes one of the four concrete rewrite modes per selected key and preserves the key's current binding kind.
 - Conversation timeout overrides reuse only the existing request-path timeout fields:
   - `responsesFirstByteTimeoutSecs`
@@ -130,11 +130,12 @@ The row is deleted only when there is no binding target, all four timeout overri
   - All variants may also include `timeouts`, `allowSwitchUpstream`, `fastModeRewriteMode`, `imageToolRewriteMode`, `availableModels`, `forwardProxyKey`, and `forwardProxyKeys`.
 - `POST /api/stats/prompt-cache-conversation-bindings/bulk-actions`
   - Accepts `{ promptCacheKeys, action }` where `action` is one of:
+    - `{ "action": "bind", "bindingKind": "none" }`
     - `{ "action": "bind", "bindingKind": "group", "groupName": "prod" }`
     - `{ "action": "bind", "bindingKind": "upstreamAccount", "upstreamAccountId": 123 }`
     - `{ "action": "clearAndResetAffinity" }`
     - `{ "action": "setFastModeRewriteMode", "fastModeRewriteMode": "fill_missing" }`
-  - `bind` rejects `bindingKind: "none"` and rejects invalid or missing targets before any per-key writes begin.
+  - `bind` accepts `bindingKind: "none"` to clear only the manual binding target; invalid, missing, or stale targets are rejected before any per-key writes begin.
   - Returns `{ action, totalRequested, totalSucceeded, totalFailed, items }`, and each `items[]` entry includes `promptCacheKey`, `ok`, `error`, and the post-write binding snapshot when that key succeeds.
 - `GET /api/stats/prompt-cache-conversation-binding-events/{encodedPromptCacheKey}?page=1&pageSize=20&infoType=routing|forwardProxy|requestRewrite`
   - Returns `{ items, total, page, pageSize }`.
@@ -182,7 +183,7 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Bulk clear-and-reset affinity removes the manual binding row, sticky route, and encrypted owner lock for each selected key, so later routing starts from an unconstrained conversation state.
 - Bulk FAST mode writes only the conversation-level FAST rewrite field for each selected key and leaves the current manual binding target, or `bindingKind='none'`, intact.
 - Single-conversation detail PATCH writes `origin='detailDrawer'`.
-- Dashboard bulk bind, clear/reset affinity, and FAST mode writes `origin='dashboardBulk'`.
+- Dashboard bulk bind, manual binding clear, clear/reset affinity, and FAST mode writes `origin='dashboardBulk'`.
 - Automatic group-to-account promotion after routing success writes `origin='systemAuto'`.
 - `manualBindingUpdated`, `bindingCleared`, `affinityReset`, `stickyTargetChanged`, `stickyTargetCleared`, and `groupBindingPromoted` always carry `infoTypes=['routing']`.
 - `conversationPolicyUpdated` derives `infoTypes[]` from the actual changed fields:
@@ -222,6 +223,7 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given `?promptCacheConversationTab=operations`, both the overlay drawer and compact detail page open directly to the operations tab without breaking the existing `overview / calls / settings` deep links.
 - Given the operations tab is open, the default filter shows all operation records; selecting one category shows only events whose `infoTypes[]` contain that category.
 - Given a manual bind changes from `none/group/account` to another target, a `manualBindingUpdated` event is recorded; if sticky target also changes, a separate `stickyTargetChanged` event is recorded.
+- Given bulk `{ "action": "bind", "bindingKind": "none" }` succeeds, a `bindingCleared` event is recorded with `origin='dashboardBulk'`; sticky route and encrypted owner lock rows are not removed.
 - Given bulk `clearAndResetAffinity` succeeds, an `affinityReset` event is recorded with `origin='dashboardBulk'`; if the conversation had a sticky target, a separate `stickyTargetCleared` event is recorded.
 - Given only `forwardProxyKey(s)` change, one `conversationPolicyUpdated` event is recorded with `infoTypes=['forwardProxy']`.
 - Given only FAST mode, image tool, or available models change, one `conversationPolicyUpdated` event is recorded with `infoTypes=['requestRewrite']`.
@@ -233,7 +235,8 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given the Dashboard conversations grid is not in persistent selection mode, when the operator `Cmd`/`Ctrl`-clicks a card, then only that card toggles selection and the header toggle remains in its default non-selection state.
 - Given Dashboard selection mode is on, when the operator clicks a card body or presses `Enter`/`Space` on it, then the card toggles selection instead of opening the conversation or invocation drawers.
 - Given selected Dashboard conversations and a bulk bind payload to an upstream account, when the request succeeds, then every successful item returns an `upstreamAccount` binding snapshot and the selected keys' sticky routes align to that account.
-- Given a selected conversation has a manual binding, sticky route, and encrypted owner lock, when the operator runs bulk clear-and-reset affinity, then all three affinity rows are removed and the next routing constraint resolves as unconstrained.
+- Given a selected conversation has a manual binding, sticky route, and encrypted owner lock, when the operator runs dashboard bulk clear binding, then only the manual binding is removed and sticky / owner affinity remains available to routing.
+- Given a selected conversation has a manual binding, sticky route, and encrypted owner lock, when a client calls bulk `clearAndResetAffinity`, then all three affinity rows are removed and the next routing constraint resolves as unconstrained.
 - Given selected conversations with mixed existing binding kinds, when the operator applies bulk FAST mode, then each selected key stores the requested FAST rewrite mode and keeps its previous binding kind.
 - Given a bulk bind request references an invalid group or account target, when the server rejects the shared target validation, then the response is `400` and no selected key is partially written.
 
@@ -268,6 +271,19 @@ Recommended PR subset for this Dashboard bulk-actions change: the two web-demo c
 - demo_route: `/dashboard?demoScene=attention&demoTheme=light`
 - state: route-bind kind selector opened with `分组` and `上游账号` options while the dialog still keeps the single-row `绑定到 / kind / target` layout
 - evidence_note: verifies the dialog no longer uses the earlier segmented switch, keeps the compact one-line binding row, and exposes the kind chooser as a dropdown instead of a persistent tabbed control.
+
+![Dashboard bulk clear binding confirmation](./assets/dashboard-bulk-clear-binding-confirm-storybook.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: page
+- requested_viewport: desktop1440
+- viewport_strategy: storybook-viewport
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: `Monitoring/DashboardWorkingConversationsSection/ConversationBulkClearConfirm`
+- state: selected Dashboard conversations with the destructive manual-binding clear confirmation dialog open
+- evidence_note: verifies the owner-facing copy says `清空绑定` / `确认清空绑定`, omits the prior `重选` wording, and states that sticky route plus encrypted owner lock rows are not cleared by this Dashboard action.
 
 ### Conversation Drawer Controls (Storybook)
 

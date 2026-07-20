@@ -2649,9 +2649,16 @@ pub(crate) async fn post_bulk_prompt_cache_conversation_bindings(
                         ensure_upstream_account_binding_target(&state.pool, upstream_account_id)
                             .await?;
                 }
+                "none" => {
+                    if trimmed_group_name.is_some() || upstream_account_id.is_some() {
+                        return Err(ApiError::bad_request(anyhow!(
+                            "groupName and upstreamAccountId must be omitted when clearing binding"
+                        )));
+                    }
+                }
                 _ => {
                     return Err(ApiError::bad_request(anyhow!(
-                        "bindingKind must be one of: group, upstreamAccount"
+                        "bindingKind must be one of: none, group, upstreamAccount"
                     )));
                 }
             }

@@ -5277,9 +5277,11 @@ function BulkSelectionStorySurface({
           binding: buildBulkSelectionStoryBindingResponse(promptCacheKey, {
             bindingKind:
               payload.action === "bind"
-                ? payload.bindingKind === "upstreamAccount"
-                  ? "upstreamAccount"
-                  : "group"
+                ? payload.bindingKind === "none"
+                  ? "none"
+                  : payload.bindingKind === "upstreamAccount"
+                    ? "upstreamAccount"
+                    : "group"
                 : "none",
             groupName: payload.bindingKind === "group" ? (payload.groupName ?? "CIII") : null,
             upstreamAccountId:
@@ -5443,19 +5445,20 @@ export const ConversationBulkClearConfirm: Story = {
   play: async ({ canvasElement }) => {
     await selectConversationForBulkActions(canvasElement);
     const clearButton = canvasElement.ownerDocument.body.querySelector(
-      '[data-testid="dashboard-working-conversations-clear-affinity-button"]',
+      '[data-testid="dashboard-working-conversations-clear-binding-button"]',
     );
     if (!(clearButton instanceof HTMLButtonElement)) {
-      throw new Error("missing clear affinity button");
+      throw new Error("missing clear binding button");
     }
 
     await userEvent.click(clearButton);
     await waitFor(() => {
-      expect(
-        canvasElement.ownerDocument.body.querySelector(
-          '[data-testid="dashboard-working-conversations-clear-affinity-dialog"]',
-        ),
-      ).not.toBeNull();
+      const dialog = canvasElement.ownerDocument.body.querySelector(
+        '[data-testid="dashboard-working-conversations-clear-binding-dialog"]',
+      );
+      expect(dialog).not.toBeNull();
+      expect(dialog?.textContent).toContain("清空绑定");
+      expect(dialog?.textContent).not.toContain("重选");
     });
   },
 };
