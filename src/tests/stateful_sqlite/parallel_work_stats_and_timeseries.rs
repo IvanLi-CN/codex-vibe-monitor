@@ -12250,7 +12250,7 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
     assert_eq!(account.sync_state, "idle");
     assert_eq!(account.last_error, None);
     assert_eq!(account.last_action_reason_message, None);
-    assert_eq!(account.request_count, 6);
+    assert_eq!(account.request_count, 3);
     assert_eq!(account.success_count, 2);
     assert_eq!(account.failure_count, 1);
     assert_eq!(account.non_success_count, 1);
@@ -12258,7 +12258,7 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
     assert_eq!(account.non_success_tokens, 200);
     assert_eq!(account.failure_tokens, 200);
     assert_f64_close(account.failure_cost, 0.20);
-    assert_f64_close(account.total_cost, 0.84);
+    assert_f64_close(account.total_cost, 0.62);
     assert_f64_close(
         account
             .first_byte_avg_ms
@@ -12393,6 +12393,156 @@ async fn upstream_account_activity_groups_active_accounts_and_hides_yesterday_li
             .accounts
             .iter()
             .all(|account| account.retry_invocation_count.is_none())
+    );
+}
+
+#[tokio::test]
+async fn upstream_account_activity_ignores_stale_persisted_in_progress_rows_for_totals() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, group_name, plan_type, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(42_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Pool Alpha")
+    .bind("Primary")
+    .bind("enterprise")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert upstream account for stale persisted running rows");
+
+    let base_local = Utc::now().with_timezone(&Shanghai).naive_local();
+    for id in 0..20_i64 {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(96_000_i64 + id)
+        .bind(format!("stale-upstream-running-{id}"))
+        .bind(format_naive(
+            base_local
+                .checked_sub_signed(ChronoDuration::days(6))
+                .and_then(|value| value.checked_add_signed(ChronoDuration::seconds(id)))
+                .expect("valid stale running time"),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("running")
+        .bind(0_i64)
+        .bind(0.0_f64)
+        .bind(
+            json!({
+                "promptCacheKey": format!("pck-stale-upstream-running-{id}"),
+                "upstreamAccountId": 42_i64,
+                "upstreamAccountName": "Pool Alpha"
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert stale persisted running invocation");
+    }
+    for (id, invoke_id, minutes_ago, total_tokens, cost) in [
+        (
+            97_001_i64,
+            "recent-upstream-success-old",
+            2_i64,
+            120_i64,
+            0.12_f64,
+        ),
+        (
+            97_002_i64,
+            "recent-upstream-success-new",
+            1_i64,
+            240_i64,
+            0.24_f64,
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(format_naive(
+            base_local
+                .checked_sub_signed(ChronoDuration::minutes(minutes_ago))
+                .expect("valid recent success time"),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(
+            json!({
+                "promptCacheKey": format!("pck-{invoke_id}"),
+                "upstreamAccountId": 42_i64,
+                "upstreamAccountName": "Pool Alpha"
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert recent terminal invocation");
+    }
+
+    let Json(activity) = fetch_upstream_account_activity(
+        State(state),
+        Query(UpstreamAccountActivityQuery {
+            range: "7d".to_string(),
+            recent_limit: Some(2),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch upstream activity with stale persisted running rows");
+
+    assert_eq!(activity.accounts.len(), 1);
+    let account = activity
+        .accounts
+        .first()
+        .expect("stale persisted running account");
+    assert_eq!(account.upstream_account_id, 42);
+    assert_eq!(account.request_count, 2);
+    assert_eq!(account.success_count, 2);
+    assert_eq!(account.failure_count, 0);
+    assert_eq!(account.recent_invocations.len(), 2);
+    assert_eq!(
+        account.recent_invocations[0].invoke_id,
+        "recent-upstream-success-new"
+    );
+    assert_eq!(
+        account.recent_invocations[1].invoke_id,
+        "recent-upstream-success-old"
+    );
+    assert!(
+        account
+            .recent_invocations
+            .iter()
+            .all(|row| !row.invoke_id.starts_with("stale-upstream-running-"))
     );
 }
 
@@ -12922,7 +13072,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             .map(|account| account.total_tokens)
             .sum::<i64>(),
     );
-    assert_eq!(activity.summary().stats.total_tokens, 16_899);
+    assert_eq!(activity.summary().stats.total_tokens, 1_900);
     assert_f64_close(
         activity.summary().stats.total_cost,
         accounts
@@ -13317,7 +13467,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     assert!(
         progressive_accounts
             .iter()
-            .any(|account| account.account_key == "upstream:88")
+            .all(|account| account.account_key != "upstream:88")
     );
     let Json(recent_response) = fetch_dashboard_activity_recent(
         State(state.clone()),
@@ -13734,18 +13884,12 @@ async fn dashboard_activity_cached_snapshot_overlays_new_live_accounts() {
     );
     {
         let cache = state.dashboard_activity_snapshot_cache.lock().await;
-        // The cached "today" selection rolls every 2 seconds, so a live-overlay refresh can
-        // legitimately leave both the previous and current fresh buckets resident.
         let selections = cache.entries.keys().cloned().collect::<Vec<_>>();
-        assert!(
-            (1..=2).contains(&selections.len()),
-            "expected one cached dashboard snapshot or a single rollover pair, got {}",
-            selections.len()
-        );
+        assert_eq!(selections.len(), 1);
         let baseline = selections.first().expect("dashboard cache selection");
         for selection in &selections {
             assert_eq!(selection.range, "today");
-            assert_eq!(selection.range_start, baseline.range_start);
+            assert_eq!(selection.range_anchor, baseline.range_anchor);
             assert_eq!(selection.time_zone, baseline.time_zone);
             assert_eq!(selection.source_scope, baseline.source_scope);
             assert_eq!(selection.recent_limit, baseline.recent_limit);
@@ -14063,7 +14207,7 @@ async fn dashboard_activity_summary_only_excludes_archived_rows_for_live_ids() {
 }
 
 #[tokio::test]
-async fn dashboard_activity_cache_key_uses_bucketed_rolling_window() {
+async fn dashboard_activity_cache_selection_reuses_today_snapshot_within_five_second_ttl() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -14084,10 +14228,7 @@ async fn dashboard_activity_cache_key_uses_bucketed_rolling_window() {
 
     let first_range_end =
         parse_to_utc_datetime(&first_response.range_end).expect("first range end should parse");
-    let next_bucket =
-        first_range_end + ChronoDuration::seconds(2) + ChronoDuration::milliseconds(50);
-    let sleep_ms = (next_bucket - Utc::now()).num_milliseconds().max(1) as u64;
-    tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(2_100)).await;
 
     let Json(second_response) = fetch_dashboard_activity(
         State(state.clone()),
@@ -14106,6 +14247,16 @@ async fn dashboard_activity_cache_key_uses_bucketed_rolling_window() {
         parse_to_utc_datetime(&second_response.range_end).expect("second range end should parse");
     assert!(second_range_end > first_range_end);
     assert!(second_response.snapshot_id > first_response.snapshot_id);
+    let cache = state.dashboard_activity_snapshot_cache.lock().await;
+    assert_eq!(cache.entries.len(), 1);
+    let selection = cache
+        .entries
+        .keys()
+        .next()
+        .expect("cached dashboard selection");
+    assert_eq!(selection.range, "today");
+    assert!(!selection.range_anchor.is_empty());
+    assert!(cache.in_flight.is_empty());
 }
 
 #[tokio::test]
@@ -15712,7 +15863,7 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
         .expect("fallback activity account");
     assert_eq!(account.upstream_account_id, 77);
     assert_eq!(account.display_name, "Pool Fallback");
-    assert_eq!(account.request_count, 2);
+    assert_eq!(account.request_count, 1);
     assert_eq!(account.failure_count, 1);
     assert_eq!(account.total_tokens, 0);
     assert_f64_close(account.total_cost, 0.0);
