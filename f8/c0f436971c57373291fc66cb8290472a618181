@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.44.0",
+  "base_stable_version": "2.43.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-20T16:27:00Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.44.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8fb407220ae1e618f59964503c84bbacf4107380",
+  "pr_number": 670,
+  "pr_title": "feat(dashboard): add recent network diagnostic popover",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.44.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.44.0",
+  "target_sha": "f8c0f436971c57373291fc66cb8290472a618181",
+  "type_label": "type:minor"
+}
