@@ -324,11 +324,11 @@
 - source_type: storybook_canvas
   story_id_or_title: Records/InvocationRecordsTable DetailLayoutMobileLongFields
   state: mobile records detail long-field wrapping
-  requested_viewport: 430x932
+  requested_viewport: 390x844
   viewport_strategy: storybook-viewport
   margin_policy: trim_only
   evidence_surface: page
-  evidence_note: verifies long invoke IDs, prompt cache keys, endpoint paths, and IPv6 values wrap inside the flattened mobile detail layout without clipping adjacent content or causing horizontal overflow.
+  evidence_note: verifies long invoke IDs, prompt cache keys, endpoint paths, and IPv6 values wrap inside the flattened mobile detail layout without clipping adjacent content or causing horizontal overflow at the tighter 390px viewport.
   PR: include
   target_program: mock-only
   capture_scope: element
@@ -352,6 +352,22 @@
   submission_gate: approved
   image:
   ![Workflow token cost audit response panel](./assets/workflow-token-cost-audit-success-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Invocations/InvocationWorkflowDetailPanel SuccessfulTokenCostAuditMobile
+  state: 390px compact workflow detail layout
+  requested_viewport: 390x844
+  viewport_strategy: browser-resize-fallback
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the compact workflow detail stops wasting horizontal space on narrow screens by flattening nested card padding and packing the four summary metrics into a single row at 390px.
+  PR: include
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only workflow data
+  submission_gate: approved
+  image:
+  ![Workflow mobile compact token cost audit layout](./assets/workflow-token-cost-audit-mobile-storybook.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Invocations/InvocationWorkflowDetailPanel SuccessfulTokenCostAudit
