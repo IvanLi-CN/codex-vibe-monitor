@@ -6126,7 +6126,75 @@ describe("DashboardWorkingConversationsSection", () => {
     }
   });
 
-  it("confirms manual binding clear before submitting the destructive bulk action", async () => {
+  it("confirms clear-and-reselect before submitting the standalone destructive bulk action", async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedPayload: Record<string, unknown> | null = null;
+    const fetchMock = createBulkConversationFetchMock({
+      onBulkPayload: (payload) => {
+        capturedPayload = payload;
+      },
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const onConversationsChanged = vi.fn();
+
+    try {
+      renderSection(
+        createResponse([
+          createConversation("pck-clear-affinity-1", [
+            createPreview({
+              id: 101,
+              invokeId: "invoke-clear-affinity-1",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+            }),
+          ]),
+        ]),
+        { onConversationsChanged },
+      );
+
+      const user = userEvent.setup();
+      await user.click(
+        host?.querySelector(
+          '[data-testid="dashboard-working-conversations-selection-mode-button"]',
+        ) as HTMLElement,
+      );
+      await user.click(
+        host?.querySelector('[data-testid="dashboard-working-conversation-card"]') as HTMLElement,
+      );
+      await user.click(
+        document.body.querySelector(
+          '[data-testid="dashboard-working-conversations-clear-affinity-button"]',
+        ) as HTMLElement,
+      );
+
+      const confirmDialog = document.body.querySelector(
+        '[data-testid="dashboard-working-conversations-clear-affinity-dialog"]',
+      );
+      expect(confirmDialog?.textContent).toContain("sticky route");
+      expect(confirmDialog?.textContent).toContain("owner lock");
+
+      const confirmButton = Array.from(confirmDialog?.querySelectorAll("button") ?? []).find(
+        (button) => button.textContent?.includes("确认清空"),
+      );
+      if (!(confirmButton instanceof HTMLButtonElement)) {
+        throw new Error("missing clear affinity confirm button");
+      }
+      await user.click(confirmButton);
+
+      await waitFor(() => expect(onConversationsChanged).toHaveBeenCalledTimes(1));
+      expect(capturedPayload).toMatchObject({
+        action: "clearAndResetAffinity",
+        promptCacheKeys: ["pck-clear-affinity-1"],
+      });
+      expect(
+        document.body.querySelector('[data-testid="dashboard-working-conversations-bulk-panel"]'),
+      ).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("confirms manual binding clear from the route bind dialog footer", async () => {
     const originalFetch = globalThis.fetch;
     let capturedPayload: Record<string, unknown> | null = null;
     const fetchMock = createBulkConversationFetchMock({
@@ -6142,7 +6210,7 @@ describe("DashboardWorkingConversationsSection", () => {
         createResponse([
           createConversation("pck-clear-binding-1", [
             createPreview({
-              id: 101,
+              id: 121,
               invokeId: "invoke-clear-binding-1",
               occurredAt: "2026-04-04T10:05:00Z",
               status: "running",
@@ -6163,7 +6231,21 @@ describe("DashboardWorkingConversationsSection", () => {
       );
       await user.click(
         document.body.querySelector(
-          '[data-testid="dashboard-working-conversations-clear-binding-button"]',
+          '[data-testid="dashboard-working-conversations-route-bind-button"]',
+        ) as HTMLElement,
+      );
+
+      await waitFor(() =>
+        expect(
+          document.body.querySelector(
+            '[data-testid="dashboard-working-conversations-route-bind-dialog"]',
+          ),
+        ).not.toBeNull(),
+      );
+
+      await user.click(
+        document.body.querySelector(
+          '[data-testid="dashboard-working-conversations-route-bind-clear-button"]',
         ) as HTMLElement,
       );
 

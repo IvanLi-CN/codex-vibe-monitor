@@ -35,7 +35,7 @@
 
 - Dashboard conversation cards now support two selection entry points: explicit `选择模式` and temporary `Cmd`/`Ctrl` modifier selection that does not flip the page into persistent selection mode.
 - The bottom bulk action bar is viewport-anchored, theme-aligned, and clears only successful items after each action so failed items remain selected for retry.
-- The bulk route-bind dialog now uses compact dropdowns on a single row (`绑定到 / kind / target`) instead of the previous segmented switch, while destructive manual binding clear remains a separate footer action that ignores the current target dropdowns.
+- The bulk route-bind dialog now uses compact dropdowns on a single row (`绑定到 / kind / target`); its destructive footer action clears only the manual binding and ignores the current target dropdowns, while the floating bulk action bar keeps the separate clear-and-reselect affinity shortcut.
 - `POST /api/stats/prompt-cache-conversation-bindings/bulk-actions` validates the shared action payload first, then executes each selected `promptCacheKey` through the same save/clear helpers as the single-conversation surface and returns a per-item binding snapshot for UI recovery.
 - The bulk clear confirmation dialog now consumes theme-scoped semantic surface tokens instead of `:root`-locked derived colors, so its header/footer chrome and destructive callout stay dark when Storybook or other nested theme hosts render the dialog under `data-theme='vibe-dark'`.
 - The Storybook-local theme override now routes through `ThemeProvider`, keeping `html` and `body` theme attributes aligned before the clear-confirm interaction assertions evaluate the dialog.
