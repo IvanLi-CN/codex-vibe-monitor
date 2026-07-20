@@ -16,8 +16,8 @@ import {
 
 function StorySurface({ children }: { children: ReactNode }) {
   return (
-    <div className="bg-[#f6f1e7] px-6 py-6 text-base-content sm:px-8">
-      <div className="mx-auto max-w-6xl rounded-[28px] border border-base-300/70 bg-base-200 px-6 py-6 shadow-sm">
+    <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content sm:px-8">
+      <div className="mx-auto max-w-6xl rounded-[28px] border border-base-300/70 bg-base-100/88 px-6 py-6 shadow-sm">
         {children}
       </div>
     </div>
@@ -728,6 +728,7 @@ const successfulWorkflowResponse: ApiInvocationWorkflowDetailResponse = {
 const meta = {
   title: "Invocations/InvocationWorkflowDetailPanel",
   component: InvocationWorkflowDetailPanel,
+  tags: ["autodocs"],
   decorators: [
     (Story, context) => (
       <I18nProvider>
@@ -795,6 +796,34 @@ export const BlockedPoolWorkflow: Story = {
       </>
     ),
   ],
+};
+
+export const FailedPoolWorkflowDark: Story = {
+  ...FailedPoolWorkflow,
+  globals: {
+    themeMode: "dark",
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(/Final Result|最终结果/)).toBeVisible();
+    await expect(canvas.getByText(/Final Account|最终账号/)).toBeVisible();
+    await expect(canvas.getAllByText(/pool-alpha@example\\.com/i)[0]).toBeVisible();
+    await expect(canvas.getByText(/Final adjudication/i)).toBeVisible();
+  },
+};
+
+export const BlockedPoolWorkflowDark: Story = {
+  ...BlockedPoolWorkflow,
+  globals: {
+    themeMode: "dark",
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(/Final Result|最终结果/)).toBeVisible();
+    await expect(canvas.getAllByText(/HTTP 503/i)[0]).toBeVisible();
+    await expect(canvas.getAllByText(/pool_assigned_account_blocked/i)[0]).toBeVisible();
+    await expect(canvas.getByText(/Final downstream response/i)).toBeVisible();
+  },
 };
 
 export const SuccessfulTokenCostAudit: Story = {

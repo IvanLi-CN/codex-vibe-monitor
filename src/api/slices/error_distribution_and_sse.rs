@@ -1846,6 +1846,37 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_activity_live_snapshot_serializes_network_realtime_rate() {
+        let snapshot = DashboardActivityLiveSnapshot {
+            revision: 11,
+            generated_at: "2026-07-19T18:04:00.000Z".to_string(),
+            in_progress_invocation_count: 0,
+            in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
+            retry_invocation_count: 0,
+            network_live_bucket: None,
+            network_realtime_rate: Some(DashboardNetworkRealtimeRateResponse {
+                sample_start: "2026-07-19T18:03:59.000Z".to_string(),
+                sample_end: "2026-07-19T18:04:00.000Z".to_string(),
+                sample_seconds: 1,
+                upload_bytes_per_second: 2048.0,
+                download_bytes_per_second: 4096.0,
+                upload_bytes: 2048,
+                download_bytes: 4096,
+            }),
+            accounts: Vec::new(),
+        };
+
+        let payload = serde_json::to_value(&snapshot).expect("serialize dashboard activity live");
+
+        assert_eq!(payload["networkRealtimeRate"]["sampleSeconds"], 1);
+        assert_eq!(payload["networkRealtimeRate"]["uploadBytes"], 2048);
+        assert_eq!(
+            payload["networkRealtimeRate"]["downloadBytesPerSecond"],
+            4096.0
+        );
+    }
+
+    #[test]
     fn build_invocation_filters_normalizes_request_id() {
         let params = ListQuery {
             request_id: Some(" invoke-123 ".to_string()),
@@ -2062,6 +2093,8 @@ pub(crate) struct DashboardActivityLiveSnapshot {
     pub(crate) retry_invocation_count: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) network_live_bucket: Option<DashboardNetworkTimeseriesPointResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) network_realtime_rate: Option<DashboardNetworkRealtimeRateResponse>,
     pub(crate) accounts: Vec<DashboardActivityLiveAccount>,
 }
 
@@ -2158,6 +2191,7 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
         in_progress_phase_counts: phase_counts,
         retry_invocation_count,
         network_live_bucket: None,
+        network_realtime_rate: None,
         accounts,
     }
 }

@@ -15,6 +15,7 @@
 - 已实现：Dashboard 工作区头部控制条重新对齐 spec 基线，桌面布局恢复为“左侧 tabs、右侧 当前对话 badge + 排序按钮”的紧凑顺序，不再出现 `badge -> tabs -> 排序` 的错误节奏；对应视觉证据已刷新为当前实现。
 - 已实现：Dashboard `上游账号` 视图的 background refresh 提示从占位 chip 收口为头部轻量状态表达；桌面端改为非 badge 的 spinner + `刷新中` 文本并固定放在“当前活动账号”计数 badge 左侧，移动端只保留 spinner 视觉表现，idle 时不再预留隐藏宽度空白，同时继续沿用既有 `300ms` show delay 与 `600ms` 最短可见时长。
 - 已实现：workspace sort 的 `createdAt / lastInvocation / cost / tokens` 4 种模式已全部统一为倒序；账号视图中的 `未分配上游账号` 聚合项无论当前排序模式为何，都会统一收在所有已分配账号之后，再在未分配项内部沿用当前倒序规则。
+- 已实现：Dashboard 对话卡片 `当前调用 / 上一条调用` 槽位的可见 `用量` 行已收敛为 `Hit · Token · $` 三项；`Hit` 固定按 `cacheInputTokens / totalTokens` 计算，可见成本值复用金额主题 accent，而完整 `输入 / Cache write / 缓存输入 / 输出 / 总 Tokens / 成本 / 推理 Tokens` 诊断明细继续保留在 hover/title。
 
 - 已实现：Dashboard 页面提升并共享顶部 range 状态，工作区 section 接入 `对话 / 上游账号` 双 tabs，并保留既有对话 working-set 行为。
 - 已实现：Dashboard 工作区 tabs 额外持久化用户上次主动选择的视图；重新打开 Dashboard 或切回总览页时，在当前 range 允许的前提下恢复该视图；`usage` 仅临时强制回退到 `对话`，不会覆盖已记住的 `上游账号` 偏好。
@@ -65,10 +66,10 @@
 - 已实现：via-pool 请求级 cleanup guard 在响应消费期间保留 `pool-via-*` synthetic runtime snapshot，并随最终 stream task 生命周期收口；成功、失败、所有重试耗尽、下游断开或任务取消后清除残留非终态 snapshot，单次 upstream attempt 终结不会提前移除；普通 invocation runtime 与短暂终态 overlay 仍由其原有终态持久化路径负责。
 - 已实现：timeseries 继续只服务趋势图与日均比较，不再作为 Dashboard 顶部当前速率类 KPI 的事实来源；`buildDashboardTodayRateSnapshot`、timeseries recent snapshot 与 `modelPerformance.total.*` 已退出顶部当前值驱动链。
 - 已实现：账号活动快照的终态 live 数据改为账号级窄聚合与按模型用量分组，避免为整个 range 传输完整 invocation preview 行；运行态 runtime overlay、归档折叠、四个时间范围和公开响应字段保持原有语义。
-- 已实现：账号卡 recent 调用改为每个候选账号按时间倒序的受限读取，数量仍严格受请求 `recentLimit` 限制。
+- 已实现：账号卡 recent 调用改为每个候选账号按时间倒序的受限读取，数量仍严格受请求 `recentLimit` 限制；`upstream-account-activity` 与 dashboard full path 不再为整个 `7d` range 读取 persisted `running/pending` preview 行，缺失于 runtime store 的旧运行态只允许在 bounded recent 中出现，不再计入 owner-facing totals。
 - 已实现：账号卡 recent 调用在 SQLite batch flush 前也会读取同一 runtime store；同键 runtime 行覆盖非终态 DB shell，短暂 terminal overlay 立即可见，落库后不会形成重复行。
-- 已实现：non-`yesterday` 的 `dashboard-activity` 基础快照缓存已收敛为“请求参数 + 2 秒 bucket”选择键，不再把 live runtime 状态或最新持久化行 ID 放进 cache key；fresh live overlay 与 `live_revision` 继续在响应阶段叠加，保证 owner-facing 实时语义不变。
-- 已实现：`/api/stats/upstream-account-activity` 改走独立账户活动 builder，不再借道 dashboard full snapshot 的 summary/model-performance 组装；后端新增 `route / builder / preview_read_mode / candidate_preview_id_count / hydrated_preview_row_count / cache_bypass_reason` 结构化 telemetry，用于复盘读侧放大与 DB 压力重合。
+- 已实现：non-`yesterday` 的 `dashboard-activity` 基础快照缓存已收敛为“稳定请求参数 + `today` 本地日期锚点 + 5 秒 TTL”选择键，不再把移动中的 exact `rangeStart/rangeEnd`、live runtime 状态或最新持久化行 ID 放进 cache key；fresh live overlay、exact 响应边界与 `live_revision` 继续在响应阶段叠加，允许 terminal totals 最多 `<=5s` 滞后，同时保持当前态与 recent 的 owner-facing 实时语义不变。
+- 已实现：`/api/stats/upstream-account-activity` 改走独立账户活动 builder，不再借道 dashboard full snapshot 的 summary/model-performance 组装；后端新增 `route / builder / purpose / in_progress_only / limit / preview_read_mode / candidate_preview_id_count / hydrated_preview_row_count / cache_bypass_reason / cache_ttl_ms / cache_entry_age_ms / cache_entry_count / in_flight_count` 结构化 telemetry，用于复盘读侧放大、缓存命中率与 DB 压力重合。
 
 ## Remaining Gaps
 

@@ -102,7 +102,7 @@ export function PwaInstallControl({
               {shellReady ? labels.shellReady : labels.shellPending}
             </span>
             {isOffline ? (
-              <span className="inline-flex items-center gap-2 rounded-full border border-warning/45 bg-warning/12 px-3 py-1 text-xs font-medium text-warning-content">
+              <span className="inline-flex items-center gap-2 rounded-full border border-warning/45 bg-warning/12 px-3 py-1 text-xs font-medium tone-ink-warning">
                 <AppIcon name="alert-circle-outline" className="h-4 w-4" aria-hidden />
                 {labels.offlineChip}
               </span>

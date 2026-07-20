@@ -135,4 +135,9 @@ export const InstalledSummaryDark: Story = {
       <PwaInstallControl {...args} />
     </ShellBackdrop>
   ),
+  play: async () => {
+    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+    await expect(within(document.body).getByText("Offline now")).toBeInTheDocument();
+    await expect(within(document.body).getByText("App already installed")).toBeInTheDocument();
+  },
 };

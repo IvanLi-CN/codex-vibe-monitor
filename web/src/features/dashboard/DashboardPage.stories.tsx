@@ -276,6 +276,15 @@ function buildDashboardActivityResponse({
       downloadBytes: 12_582_912 * 300,
       isLiveBucket: true,
     },
+    networkRealtimeRate: {
+      sampleStart: "2026-04-09T12:23:59.000Z",
+      sampleEnd: "2026-04-09T12:24:00.000Z",
+      sampleSeconds: 1,
+      uploadBytesPerSecond: 4_352,
+      downloadBytesPerSecond: 12_582_912,
+      uploadBytes: 4_352,
+      downloadBytes: 12_582_912,
+    },
     rateWindow: {
       start: "2026-04-09T12:23:00.000Z",
       end: "2026-04-09T12:24:00.000Z",
@@ -1721,6 +1730,15 @@ export const LiveRefreshDiagnostics: Story = {
           uploadBytes: 3_072 * 300,
           downloadBytes: 9_437_184 * 300,
           isLiveBucket: true,
+        },
+        networkRealtimeRate: {
+          sampleStart: "2026-04-06T12:00:20.000Z",
+          sampleEnd: "2026-04-06T12:00:21.000Z",
+          sampleSeconds: 1,
+          uploadBytesPerSecond: 3_072,
+          downloadBytesPerSecond: 9_437_184,
+          uploadBytes: 3_072,
+          downloadBytes: 9_437_184,
         },
         accounts: [
           {

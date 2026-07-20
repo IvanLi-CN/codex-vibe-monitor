@@ -46,6 +46,7 @@
 - 新增基础组件前，先确认能否通过现有 `web/src/components/ui/` 目录下的 primitive 组合完成；只有当模式被多处复用且现有组合已经开始重复时，才上升为基础组件。
 - 路由驱动的导航如果与 segmented control 共用视觉语言，必须复用 `segmentedControlItemVariants(...)` 这类共享 helper，而不是复制一套新的 active class。
 - 新增按钮、徽标、提示变体时，必须落在既有语义色集合里；不要为了单个页面新增特例 variant。
+- 新增低透明 semantic badge / chip / marker / summary metric 时，文本必须走 shared tone-ink contract；只有 filled button、filled badge、实底 icon-disc 这类实体容器才允许继续使用 `*-content`。
 - 新增输入控件时，必须复用 `field-surface`，并同时定义：默认态、focus 态、disabled 态、error 态、空数据或无匹配文案。
 - 新增可复用内容容器时，默认从 `Card` / `surface-card` 起步；内部行和配置组使用 `surface-subtle` 或 `surface-inset`，不要让页面承担 primitive 的底色和边框职责。
 - 所有可复用组件在进入多页面复用前，应至少具备一个 Storybook story 或可替代的独立验证入口。

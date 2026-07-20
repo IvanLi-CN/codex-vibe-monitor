@@ -4498,6 +4498,130 @@ async fn bulk_prompt_cache_conversation_bindings_bind_to_upstream_account_across
 }
 
 #[tokio::test]
+async fn bulk_prompt_cache_conversation_bindings_bind_none_clears_only_manual_binding() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
+    let group_name = "bulk-prompt-cache-bind-none-group";
+    ensure_test_group_binding(&state.pool, group_name, None).await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Bulk Prompt Cache Bind None",
+        "sk-bulk-prompt-cache-bind-none",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "bulk-bind-none-key";
+
+    let setup_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "upstreamAccount",
+            "upstreamAccountId": account_id,
+        }))
+        .expect("deserialize setup account binding payload");
+    let Json(setup_response) = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(setup_payload),
+    )
+    .await
+    .expect("setup account binding should succeed");
+    assert_eq!(setup_response.binding_kind, "upstreamAccount");
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, account_id)
+        .await
+        .expect("seed encrypted session owner");
+
+    let payload: BulkPromptCacheConversationBindingsRequest = serde_json::from_value(json!({
+        "promptCacheKeys": [prompt_cache_key],
+        "action": "bind",
+        "bindingKind": "none",
+    }))
+    .expect("deserialize bulk bind-none payload");
+    let Json(response) =
+        post_bulk_prompt_cache_conversation_bindings(State(state.clone()), Json(payload))
+            .await
+            .expect("bulk bind-none should succeed");
+    assert_eq!(response.action, "bind");
+    assert_eq!(response.total_requested, 1);
+    assert_eq!(response.total_succeeded, 1);
+    assert_eq!(response.total_failed, 0);
+
+    let item = response
+        .items
+        .first()
+        .expect("bulk bind-none should return one item");
+    assert!(item.ok);
+    let binding = item
+        .binding
+        .as_ref()
+        .expect("successful bind-none should include binding snapshot");
+    assert_eq!(binding.binding_kind, "none");
+    assert!(binding.has_encrypted_session_owner);
+    assert_eq!(binding.encrypted_owner_account_id, Some(account_id));
+    assert_eq!(binding.upstream_account_id, None);
+
+    let binding_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversation_bindings WHERE prompt_cache_key = ?1",
+    )
+    .bind(prompt_cache_key)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count binding rows after bulk bind-none");
+    assert_eq!(binding_count, 0);
+
+    let sticky_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_sticky_routes WHERE sticky_key = ?1")
+            .bind(prompt_cache_key)
+            .fetch_one(&state.pool)
+            .await
+            .expect("count sticky rows after bulk bind-none");
+    assert_eq!(sticky_count, 1);
+
+    let owner_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_encrypted_session_owners WHERE prompt_cache_key = ?1",
+    )
+    .bind(prompt_cache_key)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count encrypted owner rows after bulk bind-none");
+    assert_eq!(owner_count, 1);
+
+    let Json(event_response) = list_prompt_cache_conversation_operation_events(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        axum::extract::Query(ListPromptCacheConversationOperationEventsQuery {
+            page: Some(1),
+            page_size: Some(20),
+            info_type: None,
+        }),
+    )
+    .await
+    .expect("list bulk bind-none operation events");
+    assert!(
+        event_response
+            .items
+            .iter()
+            .any(|event| event.action == "bindingCleared" && event.origin == "dashboardBulk")
+    );
+    assert!(
+        !event_response
+            .items
+            .iter()
+            .any(|event| event.action == "affinityReset" && event.origin == "dashboardBulk")
+    );
+    assert!(
+        !event_response
+            .items
+            .iter()
+            .any(|event| event.action == "stickyTargetCleared" && event.origin == "dashboardBulk")
+    );
+}
+
+#[tokio::test]
 async fn bulk_prompt_cache_conversation_bindings_clear_and_reset_affinity_removes_all_affinity_rows()
  {
     let state = test_state_with_openai_base(

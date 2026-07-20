@@ -31,6 +31,41 @@ body,
   --color-warning-content: 29.8% 0.061 58;
   --color-error: 66.2% 0.218 26;
   --color-error-content: 96.4% 0.013 26;
+  --tone-ink-primary: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 34%,
+    oklch(var(--color-primary)) 66%
+  );
+  --tone-ink-secondary: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 38%,
+    oklch(var(--color-secondary)) 62%
+  );
+  --tone-ink-accent: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 62%,
+    oklch(var(--color-accent)) 38%
+  );
+  --tone-ink-info: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 38%,
+    oklch(var(--color-info)) 62%
+  );
+  --tone-ink-success: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 42%,
+    oklch(var(--color-success)) 58%
+  );
+  --tone-ink-warning: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 64%,
+    oklch(var(--color-warning)) 36%
+  );
+  --tone-ink-error: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 40%,
+    oklch(var(--color-error)) 60%
+  );
   --radius-selector: 1.9rem;
   --radius-field: 0.75rem;
   --radius-box: 1rem;
@@ -155,6 +190,41 @@ body,
   --color-warning-content: 26.4% 0.054 62;
   --color-error: 75.5% 0.176 24;
   --color-error-content: 23.4% 0.048 24;
+  --tone-ink-primary: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 56%,
+    oklch(var(--color-primary)) 44%
+  );
+  --tone-ink-secondary: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 58%,
+    oklch(var(--color-secondary)) 42%
+  );
+  --tone-ink-accent: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 62%,
+    oklch(var(--color-accent)) 38%
+  );
+  --tone-ink-info: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 56%,
+    oklch(var(--color-info)) 44%
+  );
+  --tone-ink-success: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 58%,
+    oklch(var(--color-success)) 42%
+  );
+  --tone-ink-warning: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 64%,
+    oklch(var(--color-warning)) 36%
+  );
+  --tone-ink-error: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 58%,
+    oklch(var(--color-error)) 42%
+  );
   --radius-selector: 1.9rem;
   --radius-field: 0.75rem;
   --radius-box: 1rem;
@@ -256,7 +326,9 @@ body,
   --working-conversation-placeholder-line: rgba(255, 255, 255, 0.1);
 }
 
-:root {
+:root,
+[data-theme="vibe-light"],
+[data-theme="vibe-dark"] {
   --surface-card-bg: color-mix(
     in oklab,
     oklch(var(--color-base-100) / 0.9) 82%,
@@ -912,6 +984,34 @@ body {
 
   .invocation-detail-fact-chip {
     background-color: var(--invocation-detail-fact-chip-bg);
+  }
+
+  .tone-ink-primary {
+    color: var(--tone-ink-primary);
+  }
+
+  .tone-ink-secondary {
+    color: var(--tone-ink-secondary);
+  }
+
+  .tone-ink-accent {
+    color: var(--tone-ink-accent);
+  }
+
+  .tone-ink-info {
+    color: var(--tone-ink-info);
+  }
+
+  .tone-ink-success {
+    color: var(--tone-ink-success);
+  }
+
+  .tone-ink-warning {
+    color: var(--tone-ink-warning);
+  }
+
+  .tone-ink-error {
+    color: var(--tone-ink-error);
   }
 
   .drawer-shell {

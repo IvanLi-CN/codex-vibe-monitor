@@ -66,7 +66,6 @@ vi.mock("../../i18n", () => ({
         "dashboard.activityOverview.network": "Network",
         "dashboard.activityOverview.networkUpload": "Upload",
         "dashboard.activityOverview.networkDownload": "Download",
-        "dashboard.activityOverview.networkLiveNote": "Live bucket",
         "dashboard.activityOverview.networkRefreshing": "Refreshing",
         "dashboard.activityOverview.snapshotBannerTitle": "Offline snapshot",
         "dashboard.activityOverview.snapshotBannerDescription":

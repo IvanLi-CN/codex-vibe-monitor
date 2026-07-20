@@ -12,6 +12,7 @@
 
 - `web/src/index.css` 中的 `:root` 与 `[data-theme='vibe-dark']` 定义了主题 token，项目统一使用语义 token，而不是直接在页面里硬编码品牌色。
 - 基础语义色由 `base-100 / base-200 / base-300 / base-content` 底色族，加上 `primary / secondary / accent / neutral / info / success / warning / error` 这一组强调语义组成。
+- `*-content` token 的职责是“filled semantic foreground”，只服务于实底或高填充语义容器；低透明语义底与 neutral surface 内的语义正文改走 shared `tone-ink-*` contract。
 - 页面背景不是纯色平铺，而是由渐变、orb 和细网格叠加构成；应用级 surface 再通过半透明面板与阴影抬起。
 - 通用表面层级优先复用这些类：`surface-panel`、`surface-card`、`surface-subtle`、`surface-inset`、`field-surface`、`menu-surface`、`dialog-surface`、`dialog-chrome-surface`、`drawer-shell`、`sbdocs .sbdocs-preview`。
 - `surface-card` 是普通 Card 的默认外观；`surface-subtle` 用于 card 内部的状态行、列表项和 chip 组；`surface-inset` 用于配置组、设置页内部区块和需要表现嵌入层级的低对比容器。
@@ -32,6 +33,7 @@
 
 - 新增主题只能在现有 light/dark 双主题框架内演进；不要引入第三套主题或页面私有主题开关。
 - 新增颜色 token 时必须先回答它属于语义层还是特定组件层；能落在语义层就不要创建 feature 私有色。
+- 新增 chip、badge、marker、metric、inline action 时，先判断它是 filled semantic surface 还是 tinted semantic surface：前者用 `*-content`，后者用 `tone-ink-*`，不要把两者混用。
 - 页面级容器优先复用已有 surface 语义；新增卡片、抽屉或浮层若只是视觉微差，优先通过现有类组合，不新增一组近似 token。
 - 新增普通 card、内部区块、输入控件、菜单和 dialog chrome 时，优先使用共享 surface class；只有业务状态、图表语义或 feature spec 明确要求时才允许页面私有 surface。
 - spacing 虽然还没有独立 token 文件，但新增界面必须沿用现有 Tailwind 尺度：同一组件内的控件间距优先使用 `gap-2` / `gap-3`，区块级内容优先使用 `gap-4` / `gap-6`，大段页面分区优先使用 `space-y-6` / `space-y-8`。
@@ -45,4 +47,5 @@
 
 - 当前 spacing 没有单独导出为命名 token，更多依赖 Tailwind 的 `gap-*`、`p-*`、`px-*`；文档只能约束常用层级，不能像完整 design token 系统一样提供一套命名尺度。
 - 某些表面层级同时依赖 CSS 变量和 utility class；新增实现应优先落到共享 surface token，避免继续扩大主题迁移成本。
+- 历史组件里仍有少量低透明语义底直接使用 `*-content` 的遗留；新增实现必须避免复制这些旧模式，并优先复用 shared tone-ink utility。
 - 全局没有单独的 motion/accessibility token；如果后续引入 reduced motion 适配，需要补一份跨组件策略。

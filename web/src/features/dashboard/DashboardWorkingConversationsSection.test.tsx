@@ -12,12 +12,14 @@ import type {
   PromptCacheConversationsResponse,
   UpstreamAccountActivityResponse,
 } from "../../lib/api";
+import { metricAccent } from "../../lib/chartTheme";
 import {
   type DashboardWorkingConversationCardModel,
   formatDashboardWorkingConversationSequenceId,
   hashDashboardWorkingConversationKey,
   mapPromptCacheConversationsToDashboardCards,
 } from "../../lib/dashboardWorkingConversations";
+import { ThemeProvider } from "../../theme";
 import {
   type DashboardOpenUpstreamAccountOptions,
   DashboardWorkingConversationsSection,
@@ -37,6 +39,12 @@ class MockPointerEvent extends MouseEvent {
     super(type, init);
     this.pointerType = init.pointerType ?? "mouse";
   }
+}
+
+function normalizeCssColor(value: string) {
+  const sample = document.createElement("div");
+  sample.style.color = value;
+  return sample.style.color;
 }
 
 const virtualizerMocks = vi.hoisted(() => ({
@@ -241,6 +249,15 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
       downloadBytes: 5 * 1024 * 1024 * 300,
       isLiveBucket: true,
     },
+    networkRealtimeRate: {
+      sampleStart: "2026-04-04T10:04:59Z",
+      sampleEnd: "2026-04-04T10:05:00Z",
+      sampleSeconds: 1,
+      uploadBytesPerSecond: 1_536,
+      downloadBytesPerSecond: 5 * 1024 * 1024,
+      uploadBytes: 1_536,
+      downloadBytes: 5 * 1024 * 1024,
+    },
     accounts: [
       {
         upstreamAccountId: 42,
@@ -423,19 +440,6 @@ const BULK_BINDING_ACCOUNTS = [
     enabled: true,
   },
 ] as const;
-
-function findSelectOption(label: string) {
-  return Array.from(document.querySelectorAll('[role="option"]')).find((option) =>
-    option.textContent?.includes(label),
-  );
-}
-
-async function flushInteractive() {
-  await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
-  });
-}
 
 function createBulkConversationFetchMock(options?: {
   failKeys?: string[];
@@ -749,31 +753,33 @@ function renderSectionWithCards(
   root = createRoot(host);
   act(() => {
     root?.render(
-      <I18nProvider>
-        <DashboardWorkingConversationsSection
-          activeRange={options?.activeRange ?? "today"}
-          recentPreviewLimit={options?.recentPreviewLimit}
-          cards={cards}
-          totalMatched={options?.totalMatched}
-          hasMore={options?.hasMore}
-          isLoading={options?.isLoading ?? false}
-          isLoadingMore={options?.isLoadingMore}
-          error={options?.error ?? null}
-          onLoadMore={options?.onLoadMore}
-          setRefreshTargetCount={options?.setRefreshTargetCount}
-          onOpenUpstreamAccount={options?.onOpenUpstreamAccount}
-          onOpenConversation={options?.onOpenConversation}
-          onOpenInvocation={options?.onOpenInvocation}
-          upstreamAccountActivity={options?.upstreamAccountActivity}
-          upstreamAccountActivityLoading={options?.upstreamAccountActivityLoading}
-          upstreamAccountActivityRefreshing={options?.upstreamAccountActivityRefreshing}
-          upstreamAccountActivityError={options?.upstreamAccountActivityError}
-          upstreamAccountRecentLoading={options?.upstreamAccountRecentLoading}
-          upstreamAccountRecentError={options?.upstreamAccountRecentError}
-          upstreamAccountRecentPreviewLimit={options?.upstreamAccountRecentPreviewLimit}
-          onConversationsChanged={options?.onConversationsChanged}
-        />
-      </I18nProvider>,
+      <ThemeProvider>
+        <I18nProvider>
+          <DashboardWorkingConversationsSection
+            activeRange={options?.activeRange ?? "today"}
+            recentPreviewLimit={options?.recentPreviewLimit}
+            cards={cards}
+            totalMatched={options?.totalMatched}
+            hasMore={options?.hasMore}
+            isLoading={options?.isLoading ?? false}
+            isLoadingMore={options?.isLoadingMore}
+            error={options?.error ?? null}
+            onLoadMore={options?.onLoadMore}
+            setRefreshTargetCount={options?.setRefreshTargetCount}
+            onOpenUpstreamAccount={options?.onOpenUpstreamAccount}
+            onOpenConversation={options?.onOpenConversation}
+            onOpenInvocation={options?.onOpenInvocation}
+            upstreamAccountActivity={options?.upstreamAccountActivity}
+            upstreamAccountActivityLoading={options?.upstreamAccountActivityLoading}
+            upstreamAccountActivityRefreshing={options?.upstreamAccountActivityRefreshing}
+            upstreamAccountActivityError={options?.upstreamAccountActivityError}
+            upstreamAccountRecentLoading={options?.upstreamAccountRecentLoading}
+            upstreamAccountRecentError={options?.upstreamAccountRecentError}
+            upstreamAccountRecentPreviewLimit={options?.upstreamAccountRecentPreviewLimit}
+            onConversationsChanged={options?.onConversationsChanged}
+          />
+        </I18nProvider>
+      </ThemeProvider>,
     );
   });
   return cards;
@@ -888,31 +894,33 @@ function rerenderSectionWithCards(
   }
   act(() => {
     root?.render(
-      <I18nProvider>
-        <DashboardWorkingConversationsSection
-          activeRange={options?.activeRange ?? "today"}
-          recentPreviewLimit={options?.recentPreviewLimit}
-          cards={cards}
-          totalMatched={options?.totalMatched}
-          hasMore={options?.hasMore}
-          isLoading={options?.isLoading ?? false}
-          isLoadingMore={options?.isLoadingMore}
-          error={options?.error ?? null}
-          onLoadMore={options?.onLoadMore}
-          setRefreshTargetCount={options?.setRefreshTargetCount}
-          onOpenUpstreamAccount={options?.onOpenUpstreamAccount}
-          onOpenConversation={options?.onOpenConversation}
-          onOpenInvocation={options?.onOpenInvocation}
-          upstreamAccountActivity={options?.upstreamAccountActivity}
-          upstreamAccountActivityLoading={options?.upstreamAccountActivityLoading}
-          upstreamAccountActivityRefreshing={options?.upstreamAccountActivityRefreshing}
-          upstreamAccountActivityError={options?.upstreamAccountActivityError}
-          upstreamAccountRecentLoading={options?.upstreamAccountRecentLoading}
-          upstreamAccountRecentError={options?.upstreamAccountRecentError}
-          upstreamAccountRecentPreviewLimit={options?.upstreamAccountRecentPreviewLimit}
-          onConversationsChanged={options?.onConversationsChanged}
-        />
-      </I18nProvider>,
+      <ThemeProvider>
+        <I18nProvider>
+          <DashboardWorkingConversationsSection
+            activeRange={options?.activeRange ?? "today"}
+            recentPreviewLimit={options?.recentPreviewLimit}
+            cards={cards}
+            totalMatched={options?.totalMatched}
+            hasMore={options?.hasMore}
+            isLoading={options?.isLoading ?? false}
+            isLoadingMore={options?.isLoadingMore}
+            error={options?.error ?? null}
+            onLoadMore={options?.onLoadMore}
+            setRefreshTargetCount={options?.setRefreshTargetCount}
+            onOpenUpstreamAccount={options?.onOpenUpstreamAccount}
+            onOpenConversation={options?.onOpenConversation}
+            onOpenInvocation={options?.onOpenInvocation}
+            upstreamAccountActivity={options?.upstreamAccountActivity}
+            upstreamAccountActivityLoading={options?.upstreamAccountActivityLoading}
+            upstreamAccountActivityRefreshing={options?.upstreamAccountActivityRefreshing}
+            upstreamAccountActivityError={options?.upstreamAccountActivityError}
+            upstreamAccountRecentLoading={options?.upstreamAccountRecentLoading}
+            upstreamAccountRecentError={options?.upstreamAccountRecentError}
+            upstreamAccountRecentPreviewLimit={options?.upstreamAccountRecentPreviewLimit}
+            onConversationsChanged={options?.onConversationsChanged}
+          />
+        </I18nProvider>
+      </ThemeProvider>,
     );
   });
   return cards;
@@ -1382,14 +1390,14 @@ describe("DashboardWorkingConversationsSection", () => {
       downloadBytesPerSecond: 1024 * 1024,
       recentInvocations: [],
     });
-    upstreamActivity.networkLiveBucket = {
-      bucketStart: "2026-04-04T10:00:00Z",
-      bucketEnd: "2026-04-04T10:05:00Z",
+    upstreamActivity.networkRealtimeRate = {
+      sampleStart: "2026-04-04T10:04:59Z",
+      sampleEnd: "2026-04-04T10:05:00Z",
+      sampleSeconds: 1,
       uploadBytesPerSecond: 2_048,
       downloadBytesPerSecond: 6 * 1024 * 1024,
-      uploadBytes: 2_048 * 300,
-      downloadBytes: 6 * 1024 * 1024 * 300,
-      isLiveBucket: true,
+      uploadBytes: 2_048,
+      downloadBytes: 6 * 1024 * 1024,
     };
 
     renderSection(
@@ -2735,6 +2743,87 @@ describe("DashboardWorkingConversationsSection", () => {
     }
 
     expect(badge.textContent).toMatch(/远程压缩V2|Remote compaction V2/);
+  });
+
+  it("compresses visible usage into hit token cost while keeping detailed hover metadata", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-compact-usage-line", [
+          createPreview({
+            id: 21,
+            invokeId: "invoke-compact-usage-current",
+            occurredAt: "2026-04-04T10:06:00Z",
+            status: "running",
+            totalTokens: 74_148,
+            inputTokens: 73_951,
+            outputTokens: 197,
+            cacheInputTokens: 5_632,
+            cost: 0.1752,
+            reasoningTokens: 62,
+          }),
+          createPreview({
+            id: 20,
+            invokeId: "invoke-compact-usage-previous",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "completed",
+            totalTokens: 13_184,
+            inputTokens: 13_184,
+            outputTokens: 0,
+            cacheInputTokens: 0,
+            cost: 0.052,
+            reasoningTokens: 0,
+          }),
+        ]),
+      ]),
+    );
+
+    const currentSlot = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    const previousSlot = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="previous"]',
+    );
+    if (!(currentSlot instanceof HTMLDivElement) || !(previousSlot instanceof HTMLDivElement)) {
+      throw new Error("missing current or previous invocation slot");
+    }
+
+    const currentUsageLine = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-line"]',
+    );
+    const previousUsageLine = previousSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-line"]',
+    );
+    const currentCostValue = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-cost"]',
+    );
+    const usageMetaLine = currentUsageLine?.parentElement;
+    if (
+      !(currentUsageLine instanceof HTMLDivElement) ||
+      !(previousUsageLine instanceof HTMLDivElement) ||
+      !(currentCostValue instanceof HTMLElement) ||
+      !(usageMetaLine instanceof HTMLElement)
+    ) {
+      throw new Error("missing compact usage line elements");
+    }
+
+    expect(currentUsageLine.textContent).toContain("Hit 7.6%");
+    expect(currentUsageLine.textContent).toContain("Token 74,148");
+    expect(currentUsageLine.textContent).toContain("$0.1752");
+    expect(currentUsageLine.textContent).not.toContain("IN ");
+    expect(currentUsageLine.textContent).not.toContain("CW ");
+    expect(currentUsageLine.textContent).not.toContain(" C ");
+    expect(currentUsageLine.textContent).not.toContain("O ");
+    expect(previousUsageLine.textContent).toContain("Hit 0%");
+    expect(previousUsageLine.textContent).toContain("Token 13,184");
+    expect(previousUsageLine.textContent).toContain("$0.0520");
+    expect(currentCostValue.style.color).toBe(
+      normalizeCssColor(metricAccent("totalCost", "light")),
+    );
+    expect(usageMetaLine.title).toContain("Cache write: 68,319");
+    expect(usageMetaLine.title).toContain("5,632");
+    expect(usageMetaLine.title).toContain("74,148");
+    expect(usageMetaLine.title).toContain("US$0.1752");
+    expect(host?.querySelector('[data-testid="dashboard-upstream-account-recent-row"]')).toBeNull();
   });
 
   it("shows the image-tool badge only for image-capable previews", () => {
@@ -5918,7 +6007,7 @@ describe("DashboardWorkingConversationsSection", () => {
     }
   });
 
-  it("confirms clear-and-reset affinity before submitting the destructive bulk action", async () => {
+  it("confirms manual binding clear before submitting the destructive bulk action", async () => {
     const originalFetch = globalThis.fetch;
     let capturedPayload: Record<string, unknown> | null = null;
     const fetchMock = createBulkConversationFetchMock({
@@ -5932,10 +6021,10 @@ describe("DashboardWorkingConversationsSection", () => {
     try {
       renderSection(
         createResponse([
-          createConversation("pck-clear-affinity-1", [
+          createConversation("pck-clear-binding-1", [
             createPreview({
               id: 101,
-              invokeId: "invoke-clear-affinity-1",
+              invokeId: "invoke-clear-binding-1",
               occurredAt: "2026-04-04T10:05:00Z",
               status: "running",
             }),
@@ -5955,28 +6044,31 @@ describe("DashboardWorkingConversationsSection", () => {
       );
       await user.click(
         document.body.querySelector(
-          '[data-testid="dashboard-working-conversations-clear-affinity-button"]',
+          '[data-testid="dashboard-working-conversations-clear-binding-button"]',
         ) as HTMLElement,
       );
 
       const confirmDialog = document.body.querySelector(
-        '[data-testid="dashboard-working-conversations-clear-affinity-dialog"]',
+        '[data-testid="dashboard-working-conversations-clear-binding-dialog"]',
       );
+      expect(confirmDialog?.textContent).toContain("手工绑定");
       expect(confirmDialog?.textContent).toContain("sticky route");
       expect(confirmDialog?.textContent).toContain("owner lock");
+      expect(confirmDialog?.textContent).not.toContain("重选");
 
       const confirmButton = Array.from(confirmDialog?.querySelectorAll("button") ?? []).find(
-        (button) => button.textContent?.includes("确认清空"),
+        (button) => button.textContent?.includes("确认清空绑定"),
       );
       if (!(confirmButton instanceof HTMLButtonElement)) {
-        throw new Error("missing clear affinity confirm button");
+        throw new Error("missing clear binding confirm button");
       }
       await user.click(confirmButton);
 
       await waitFor(() => expect(onConversationsChanged).toHaveBeenCalledTimes(1));
       expect(capturedPayload).toMatchObject({
-        action: "clearAndResetAffinity",
-        promptCacheKeys: ["pck-clear-affinity-1"],
+        action: "bind",
+        bindingKind: "none",
+        promptCacheKeys: ["pck-clear-binding-1"],
       });
       expect(
         document.body.querySelector('[data-testid="dashboard-working-conversations-bulk-panel"]'),
@@ -6045,7 +6137,7 @@ describe("DashboardWorkingConversationsSection", () => {
         ).toBeNull();
         expect(
           document.body.querySelector(
-            '[data-testid="dashboard-working-conversations-clear-affinity-dialog"]',
+            '[data-testid="dashboard-working-conversations-clear-binding-dialog"]',
           ),
         ).not.toBeNull();
       });
