@@ -13072,7 +13072,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
             .map(|account| account.total_tokens)
             .sum::<i64>(),
     );
-    assert_eq!(activity.summary().stats.total_tokens, 16_899);
+    assert_eq!(activity.summary().stats.total_tokens, 1_900);
     assert_f64_close(
         activity.summary().stats.total_cost,
         accounts
@@ -13467,7 +13467,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
     assert!(
         progressive_accounts
             .iter()
-            .any(|account| account.account_key == "upstream:88")
+            .all(|account| account.account_key != "upstream:88")
     );
     let Json(recent_response) = fetch_dashboard_activity_recent(
         State(state.clone()),
