@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.43.2",
+  "base_stable_version": "2.43.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-20T11:29:20Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.43.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "193bef1b9123d8d3539f913df318beeb40411623",
+  "pr_number": 666,
+  "pr_title": "fix(stats): debounce dashboard activity topic refresh",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.43.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.43.2",
+  "target_sha": "ac364f00c83a8190a2fad0832fff4404de7af878",
+  "type_label": "type:patch"
+}
