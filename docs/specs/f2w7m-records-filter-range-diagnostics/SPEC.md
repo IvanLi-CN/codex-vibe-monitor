@@ -122,13 +122,13 @@
 ## Visual Evidence
 
 - 最终 owner-facing 视觉证据以本 spec `./visual-evidence/` 中的 mock-only captures 为准。
-- `./visual-evidence/records-range-diagnostics-drawer.png`
-- `./visual-evidence/records-model-filter-nested-selector.png`
-- `./visual-evidence/date-time-range-field.png`
-- `./visual-evidence/numeric-range-field.png`
-- `./assets/invocation-model-filter-field-evidence-request-configured.png`
-- `./assets/invocation-model-filter-field-evidence-response-rerouted.png`
-- `./assets/invocation-model-filter-field-evidence-response-not-rerouted.png`
+- `./visual-evidence/records-range-diagnostics-drawer.png` - PR: include
+- `./visual-evidence/records-model-filter-nested-selector.png` - PR: include
+- `./visual-evidence/date-time-range-field.png` - PR: none
+- `./visual-evidence/numeric-range-field.png` - PR: none
+- `./assets/invocation-model-filter-field-evidence-request-configured.png` - PR: none
+- `./assets/invocation-model-filter-field-evidence-response-rerouted.png` - PR: include
+- `./assets/invocation-model-filter-field-evidence-response-not-rerouted.png` - PR: none
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
