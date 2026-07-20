@@ -92,6 +92,16 @@ async function waitFor(check: () => boolean, timeoutMs = 1000) {
   throw new Error("timed out waiting for workflow detail UI");
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function createRecord(overrides: Partial<ApiInvocation> = {}): ApiInvocation {
   return {
     id: 77,
@@ -655,6 +665,144 @@ describe("InvocationWorkflowDetailPanel", () => {
     });
     await flushAsyncWork();
     expect(host?.textContent ?? "").toContain("pool assigned account blocked");
+    expect(host?.textContent ?? "").not.toContain("missing_body");
+  });
+
+  it("replaces route request-body loading state after an async unavailable payload result", async () => {
+    const deferred =
+      createDeferred<Awaited<ReturnType<typeof apiMocks.fetchInvocationRequestBody>>>();
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(createBlockedPoolWorkflowResponse());
+    apiMocks.fetchInvocationRequestBody.mockReturnValue(deferred.promise);
+
+    render(
+      <InvocationWorkflowDetailPanel
+        record={createRecord({
+          status: "http_503",
+          tTotalMs: 810,
+          failureKind: "pool_assigned_account_blocked",
+          errorMessage: "pool assigned account blocked",
+          downstreamStatusCode: 503,
+          downstreamErrorMessage: "pool assigned account blocked",
+          totalTokens: null,
+          cost: null,
+          upstreamAccountId: null,
+          upstreamAccountName: null,
+          poolAttemptCount: 0,
+        })}
+      />,
+    );
+
+    await waitFor(() => (host?.textContent ?? "").includes("Final downstream response"));
+
+    const routeBodyButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement &&
+        candidate.textContent?.includes("请求体") &&
+        candidate.textContent?.includes(`${failedWorkflowRequestBodySize.toLocaleString("zh")} B`),
+    );
+    expect(routeBodyButton).not.toBeNull();
+
+    act(() => {
+      routeBodyButton?.click();
+    });
+    await waitFor(() => apiMocks.fetchInvocationRequestBody.mock.calls.length > 0);
+    expect(host?.textContent ?? "").toContain("加载请求体…");
+
+    await act(async () => {
+      deferred.resolve({
+        available: false,
+        unavailableReason: "missing_body",
+        detailLevel: "full",
+        captureSource: "raw_file",
+      });
+      await deferred.promise;
+    });
+
+    await waitFor(() => (host?.textContent ?? "").includes("该记录没有保留可展示的载荷。"));
+
+    expect(host?.textContent ?? "").not.toContain("加载请求体…");
+    expect(host?.textContent ?? "").not.toContain("missing_body");
+  });
+
+  it("replaces attempt request-body loading state after an async unavailable payload result", async () => {
+    const deferred =
+      createDeferred<Awaited<ReturnType<typeof apiMocks.fetchInvocationRequestBody>>>();
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(createWorkflowDetailResponse());
+    apiMocks.fetchInvocationRequestBody.mockReturnValue(deferred.promise);
+
+    render(<InvocationWorkflowDetailPanel record={createRecord()} />);
+
+    await waitFor(() => (host?.textContent ?? "").includes("Final adjudication"));
+
+    const requestBodyButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement &&
+        candidate.textContent?.includes("请求体") &&
+        candidate.textContent?.includes("gzip") &&
+        candidate.textContent?.includes(`${failedWorkflowRequestBodySize.toLocaleString("zh")} B`),
+    );
+    expect(requestBodyButton).not.toBeNull();
+
+    act(() => {
+      requestBodyButton?.click();
+    });
+    await waitFor(() => apiMocks.fetchInvocationRequestBody.mock.calls.length > 0);
+    expect(host?.textContent ?? "").toContain("加载请求体…");
+
+    await act(async () => {
+      deferred.resolve({
+        available: false,
+        unavailableReason: "missing_body",
+        detailLevel: "full",
+        captureSource: "raw_file",
+      });
+      await deferred.promise;
+    });
+
+    await waitFor(() => (host?.textContent ?? "").includes("该记录没有保留可展示的载荷。"));
+
+    expect(host?.textContent ?? "").not.toContain("加载请求体…");
+    expect(host?.textContent ?? "").not.toContain("missing_body");
+  });
+
+  it("replaces attempt response-body loading state after an async unavailable payload result", async () => {
+    const deferred =
+      createDeferred<Awaited<ReturnType<typeof apiMocks.fetchInvocationResponseBody>>>();
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(createWorkflowDetailResponse());
+    apiMocks.fetchInvocationResponseBody.mockReturnValue(deferred.promise);
+
+    render(<InvocationWorkflowDetailPanel record={createRecord()} />);
+
+    await waitFor(() => (host?.textContent ?? "").includes("Final adjudication"));
+
+    const responseBodyButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement &&
+        candidate.textContent?.includes("响应体") &&
+        candidate.textContent?.includes("gzip") &&
+        candidate.textContent?.includes(`${failedWorkflowResponseBodySize.toLocaleString("zh")} B`),
+    );
+    expect(responseBodyButton).not.toBeNull();
+
+    act(() => {
+      responseBodyButton?.click();
+    });
+    await waitFor(() => apiMocks.fetchInvocationResponseBody.mock.calls.length > 0);
+    expect(host?.textContent ?? "").toContain("加载响应体…");
+
+    await act(async () => {
+      deferred.resolve({
+        available: false,
+        unavailableReason: "missing_body",
+        detailLevel: "full",
+        captureSource: "raw_file",
+      });
+      await deferred.promise;
+    });
+
+    await waitFor(() => (host?.textContent ?? "").includes("该记录没有保留可展示的载荷。"));
+
+    expect(host?.textContent ?? "").not.toContain("加载响应体…");
     expect(host?.textContent ?? "").not.toContain("missing_body");
   });
 });
