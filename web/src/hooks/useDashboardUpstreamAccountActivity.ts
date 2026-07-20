@@ -102,6 +102,7 @@ export function mergeDashboardActivityLiveSnapshot(
     ...response,
     liveRevision: live.revision,
     networkLiveBucket: live.networkLiveBucket ?? response.networkLiveBucket,
+    networkRealtimeRate: live.networkRealtimeRate ?? response.networkRealtimeRate,
     summary: {
       ...response.summary,
       stats: {
@@ -256,6 +257,7 @@ export function useDashboardUpstreamAccountActivity(
         rangeStart: snapshot.data.rangeStart,
         rangeEnd: snapshot.data.rangeEnd,
         networkLiveBucket: snapshot.data.networkLiveBucket,
+        networkRealtimeRate: snapshot.data.networkRealtimeRate,
         accounts: snapshot.data.accounts ?? [],
       }
     : null;

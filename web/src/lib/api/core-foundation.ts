@@ -799,6 +799,7 @@ export interface UpstreamAccountActivityResponse {
   rangeStart: string;
   rangeEnd: string;
   networkLiveBucket?: DashboardNetworkTimeseriesPoint | null;
+  networkRealtimeRate?: DashboardNetworkRealtimeRate | null;
   accounts: UpstreamAccountActivityAccount[];
 }
 
@@ -836,6 +837,7 @@ export interface DashboardActivityLiveSnapshot {
   inProgressPhaseCounts: InvocationPhaseCounts;
   retryInvocationCount: number;
   networkLiveBucket?: DashboardNetworkTimeseriesPoint | null;
+  networkRealtimeRate?: DashboardNetworkRealtimeRate | null;
   accounts: DashboardActivityLiveAccount[];
 }
 
@@ -848,6 +850,7 @@ export interface DashboardActivityResponse {
   rateWindow: DashboardActivityRateWindow;
   summary: DashboardActivitySummary;
   networkLiveBucket?: DashboardNetworkTimeseriesPoint | null;
+  networkRealtimeRate?: DashboardNetworkRealtimeRate | null;
   accounts?: UpstreamAccountActivityAccount[];
 }
 
@@ -869,6 +872,16 @@ export interface DashboardNetworkTimeseriesPoint {
   uploadBytes: number;
   downloadBytes: number;
   isLiveBucket: boolean;
+}
+
+export interface DashboardNetworkRealtimeRate {
+  sampleStart: string;
+  sampleEnd: string;
+  sampleSeconds: number;
+  uploadBytesPerSecond: number;
+  downloadBytesPerSecond: number;
+  uploadBytes: number;
+  downloadBytes: number;
 }
 
 export interface DashboardNetworkTimeseriesResponse {
@@ -3260,6 +3273,7 @@ function normalizeUpstreamAccountActivityResponse(raw: unknown): UpstreamAccount
     rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
     rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
     networkLiveBucket: normalizeDashboardNetworkTimeseriesPoint(payload.networkLiveBucket),
+    networkRealtimeRate: normalizeDashboardNetworkRealtimeRate(payload.networkRealtimeRate),
     accounts: Array.isArray(payload.accounts)
       ? payload.accounts
           .map(normalizeUpstreamAccountActivityAccount)
@@ -3295,6 +3309,7 @@ function normalizeDashboardActivityResponse(raw: unknown): DashboardActivityResp
       modelPerformance: normalizeModelPerformance(summaryPayload.modelPerformance),
     },
     networkLiveBucket: normalizeDashboardNetworkTimeseriesPoint(payload.networkLiveBucket),
+    networkRealtimeRate: normalizeDashboardNetworkRealtimeRate(payload.networkRealtimeRate),
     accounts: Array.isArray(payload.accounts)
       ? payload.accounts
           .map(normalizeUpstreamAccountActivityAccount)
@@ -3340,6 +3355,27 @@ function normalizeDashboardNetworkTimeseriesPoint(
     uploadBytes: normalizeFiniteNumber(point.uploadBytes) ?? 0,
     downloadBytes: normalizeFiniteNumber(point.downloadBytes) ?? 0,
     isLiveBucket: point.isLiveBucket === true,
+  };
+}
+
+function normalizeDashboardNetworkRealtimeRate(raw: unknown): DashboardNetworkRealtimeRate | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const point = raw as Record<string, unknown>;
+  const sampleStart = typeof point.sampleStart === "string" ? point.sampleStart : null;
+  const sampleEnd = typeof point.sampleEnd === "string" ? point.sampleEnd : null;
+  if (sampleStart == null || sampleEnd == null) {
+    return null;
+  }
+  return {
+    sampleStart,
+    sampleEnd,
+    sampleSeconds: normalizeFiniteNumber(point.sampleSeconds) ?? 1,
+    uploadBytesPerSecond: normalizeFiniteNumber(point.uploadBytesPerSecond) ?? 0,
+    downloadBytesPerSecond: normalizeFiniteNumber(point.downloadBytesPerSecond) ?? 0,
+    uploadBytes: normalizeFiniteNumber(point.uploadBytes) ?? 0,
+    downloadBytes: normalizeFiniteNumber(point.downloadBytes) ?? 0,
   };
 }
 

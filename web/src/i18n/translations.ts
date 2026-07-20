@@ -1814,8 +1814,6 @@ const baseTranslations = {
     "dashboard.activityOverview.network": "Network",
     "dashboard.activityOverview.networkUpload": "Upload",
     "dashboard.activityOverview.networkDownload": "Download",
-    "dashboard.activityOverview.networkLiveNote":
-      "5-minute mean speed · current bucket updates live",
     "dashboard.activityOverview.networkRefreshing": "Refreshing",
     "dashboard.activityOverview.rangeToggleAria": "Switch activity range",
     "dashboard.activityOverview.snapshotBannerTitle": "Offline snapshot",
@@ -4308,7 +4306,6 @@ const baseTranslations = {
     "dashboard.activityOverview.network": "网速",
     "dashboard.activityOverview.networkUpload": "上行",
     "dashboard.activityOverview.networkDownload": "下行",
-    "dashboard.activityOverview.networkLiveNote": "5 分钟均值网速，当前桶实时更新",
     "dashboard.activityOverview.networkRefreshing": "刷新中",
     "dashboard.activityOverview.rangeToggleAria": "时间范围切换",
     "dashboard.activityOverview.snapshotBannerTitle": "离线快照",

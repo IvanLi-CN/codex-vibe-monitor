@@ -164,17 +164,14 @@ export function DashboardNetworkActivityChart({
       style={panelStyle}
       className="overflow-hidden rounded-2xl border border-base-300/60 px-2 py-3 sm:px-4"
     >
-      <div className="mb-3 flex items-center justify-between gap-3 px-1">
-        <div className="text-sm font-medium text-base-content/74">
-          {t("dashboard.activityOverview.networkLiveNote")}
-        </div>
-        {loading ? (
-          <div className="flex items-center gap-2 text-xs text-base-content/55">
+      {loading ? (
+        <div className="mb-3 flex items-center justify-end px-1 text-xs text-base-content/55">
+          <div className="flex items-center gap-2">
             <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
             <span>{t("dashboard.activityOverview.networkRefreshing")}</span>
           </div>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
       <div className="h-[22rem] w-full">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={chartData} margin={{ top: 12, right: 20, left: 0, bottom: 4 }}>

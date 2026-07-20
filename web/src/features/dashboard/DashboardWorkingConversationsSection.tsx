@@ -4112,14 +4112,14 @@ export function DashboardWorkingConversationsSection({
     () => ({
       uploadBytesPerSecond: Math.max(
         0,
-        upstreamAccountActivity?.networkLiveBucket?.uploadBytesPerSecond ?? 0,
+        upstreamAccountActivity?.networkRealtimeRate?.uploadBytesPerSecond ?? 0,
       ),
       downloadBytesPerSecond: Math.max(
         0,
-        upstreamAccountActivity?.networkLiveBucket?.downloadBytesPerSecond ?? 0,
+        upstreamAccountActivity?.networkRealtimeRate?.downloadBytesPerSecond ?? 0,
       ),
     }),
-    [upstreamAccountActivity?.networkLiveBucket],
+    [upstreamAccountActivity?.networkRealtimeRate],
   );
   useEffect(() => {
     persistDashboardWorkspaceView(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY, preferredView);
