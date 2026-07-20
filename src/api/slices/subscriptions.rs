@@ -629,6 +629,9 @@ impl SubscriptionHub {
         state: Arc<AppState>,
         topic: SubscriptionTopic,
     ) -> Result<(), ApiError> {
+        let selection = dashboard_activity_snapshot_selection_for_topic(state.as_ref(), &topic)
+            .await?
+            .expect("dashboard activity refresh selection should exist for open-range topics");
         let topic_key = topic.cache_key()?;
         let delay = {
             let mut guard = self.state.lock().await;
@@ -653,6 +656,7 @@ impl SubscriptionHub {
                 tokio::time::sleep(delay).await;
                 invalidate_dashboard_activity_snapshot_cache(
                     state.dashboard_activity_snapshot_cache.as_ref(),
+                    &selection,
                 )
                 .await;
                 if let Err(err) = hub.refresh_topic(state.clone(), topic.clone(), true).await {
@@ -670,6 +674,7 @@ impl SubscriptionHub {
 
         invalidate_dashboard_activity_snapshot_cache(
             state.dashboard_activity_snapshot_cache.as_ref(),
+            &selection,
         )
         .await;
         self.refresh_topic(state, topic, true).await?;
@@ -728,19 +733,6 @@ fn set_json_field(object: &mut serde_json::Map<String, Value>, key: &str, value:
     object.insert(key.to_string(), value);
 }
 
-async fn invalidate_dashboard_activity_snapshot_cache(
-    cache: &Mutex<DashboardActivitySnapshotCacheState>,
-) {
-    let in_flight = {
-        let mut guard = cache.lock().await;
-        guard.entries.clear();
-        std::mem::take(&mut guard.in_flight)
-    };
-    for flight in in_flight.into_values() {
-        let _ = flight.signal.send(true);
-    }
-}
-
 fn set_json_optional_field(
     object: &mut serde_json::Map<String, Value>,
     key: &str,
@@ -764,6 +756,45 @@ fn dashboard_activity_payload_exact_range(payload: &Value) -> Option<ExactUtcRan
         start: parse_to_utc_datetime(range_start)?,
         end: parse_to_utc_datetime(range_end)?,
     })
+}
+
+async fn dashboard_activity_snapshot_selection_for_topic(
+    state: &AppState,
+    topic: &SubscriptionTopic,
+) -> Result<Option<DashboardActivitySnapshotSelection>, ApiError> {
+    let SubscriptionTopic::DashboardActivityCurrent {
+        range,
+        time_zone,
+        recent_limit,
+        include_accounts,
+        include_recent,
+    } = topic
+    else {
+        return Ok(None);
+    };
+
+    if range == "yesterday" {
+        return Ok(None);
+    }
+
+    let recent_limit = validate_dashboard_activity_params(
+        "dashboard.activity.current",
+        range,
+        Some(*recent_limit),
+    )?;
+    let reporting_tz = parse_reporting_tz(Some(time_zone))?;
+    let exact_range = resolve_dashboard_activity_cached_range(range, reporting_tz)?;
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+
+    Ok(Some(build_dashboard_activity_snapshot_selection(
+        range,
+        exact_range,
+        reporting_tz,
+        source_scope,
+        recent_limit,
+        *include_accounts,
+        *include_recent,
+    )))
 }
 
 fn dashboard_activity_account_sort_tuple(value: &Value) -> (i64, Option<&str>, i64) {
@@ -2448,6 +2479,77 @@ mod tests {
                 miss_reason: Some("schema_epoch_mismatch"),
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn invalidate_dashboard_activity_snapshot_cache_only_removes_selected_entry() {
+        let cache = Arc::new(Mutex::new(DashboardActivitySnapshotCacheState::default()));
+        let selection_a = DashboardActivitySnapshotSelection {
+            range: "today".to_string(),
+            range_anchor: "2026-07-20".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            source_scope: "all".to_string(),
+            recent_limit: 4,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let selection_b = DashboardActivitySnapshotSelection {
+            range: "7d".to_string(),
+            range_anchor: "rolling".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            source_scope: "all".to_string(),
+            recent_limit: 8,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let (signal_a, mut rx_a) = watch::channel(false);
+        let (signal_b, rx_b) = watch::channel(false);
+
+        {
+            let mut guard = cache.lock().await;
+            guard.entries.insert(
+                selection_a.clone(),
+                DashboardActivitySnapshotCacheEntry {
+                    cached_at: Instant::now(),
+                    response: DashboardActivitySnapshot::test_stub("today"),
+                },
+            );
+            guard.entries.insert(
+                selection_b.clone(),
+                DashboardActivitySnapshotCacheEntry {
+                    cached_at: Instant::now(),
+                    response: DashboardActivitySnapshot::test_stub("7d"),
+                },
+            );
+            guard.in_flight.insert(
+                selection_a.clone(),
+                DashboardActivitySnapshotInFlight {
+                    signal: signal_a,
+                    waiter_count: 2,
+                },
+            );
+            guard.in_flight.insert(
+                selection_b.clone(),
+                DashboardActivitySnapshotInFlight {
+                    signal: signal_b,
+                    waiter_count: 3,
+                },
+            );
+        }
+
+        invalidate_dashboard_activity_snapshot_cache(cache.as_ref(), &selection_a).await;
+
+        rx_a.changed()
+            .await
+            .expect("selected in-flight should be signaled");
+        assert!(rx_a.borrow().to_owned());
+        assert!(!*rx_b.borrow());
+
+        let guard = cache.lock().await;
+        assert!(!guard.entries.contains_key(&selection_a));
+        assert!(guard.entries.contains_key(&selection_b));
+        assert!(!guard.in_flight.contains_key(&selection_a));
+        assert!(guard.in_flight.contains_key(&selection_b));
     }
 
     #[tokio::test]
