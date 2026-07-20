@@ -949,7 +949,7 @@ export const DetailLayoutMobileLongFields: Story = {
           "Mobile-width regression surface for long IDs, prompt cache keys, endpoint paths, and IPv6 values inside the reorganized detail sections.",
       },
     },
-    viewport: { defaultViewport: "mobile430" },
+    viewport: { defaultViewport: "mobile390" },
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);

@@ -1043,6 +1043,7 @@ function IdentityField({
 
 function SummaryRows({
   rows,
+  compact = false,
 }: {
   rows: Array<{
     label: string;
@@ -1053,6 +1054,7 @@ function SummaryRows({
       onClick: () => void;
     };
   }>;
+  compact?: boolean;
 }) {
   const toneClassFor = (variant?: "default" | "secondary" | "success" | "warning" | "error") => {
     if (variant === "success") return "tone-ink-success";
@@ -1065,9 +1067,22 @@ function SummaryRows({
   return (
     <dl className="divide-y divide-base-300/42">
       {rows.map((row) => (
-        <div key={row.label} className="flex items-start justify-between gap-4 py-3">
-          <dt className="text-[11px] font-medium text-base-content/58">{row.label}</dt>
-          <dd className={cn("min-w-0 text-right text-sm font-medium", toneClassFor(row.variant))}>
+        <div
+          key={row.label}
+          className={cn("flex items-start justify-between gap-4 py-3", compact && "gap-3 py-2.5")}
+        >
+          <dt
+            className={cn("text-[11px] font-medium text-base-content/58", compact && "text-[10px]")}
+          >
+            {row.label}
+          </dt>
+          <dd
+            className={cn(
+              "min-w-0 text-right text-sm font-medium",
+              compact && "text-[13px] leading-5",
+              toneClassFor(row.variant),
+            )}
+          >
             {row.action ? (
               <button
                 type="button"
@@ -1095,17 +1110,32 @@ function SnapshotMetric({
   label,
   value,
   variant = "secondary",
+  compact = false,
 }: {
   label: string;
   value: string;
   variant?: "default" | "secondary" | "success" | "warning" | "error";
+  compact?: boolean;
 }) {
   return (
-    <div className="invocation-detail-subsurface rounded-[0.95rem] px-2.5 py-2.5 sm:px-3 sm:py-3">
-      <div className="text-[11px] font-medium text-base-content/56">{label}</div>
+    <div
+      className={cn(
+        "invocation-detail-subsurface rounded-[0.95rem] px-2.5 py-2.5 sm:px-3 sm:py-3",
+        compact && "rounded-[0.8rem] px-2 py-2 sm:px-2.5 sm:py-2.5",
+      )}
+    >
+      <div
+        className={cn(
+          "text-[11px] font-medium text-base-content/56",
+          compact && "text-[10px] leading-4",
+        )}
+      >
+        {label}
+      </div>
       <div
         className={cn(
           "mt-1 break-all text-sm font-semibold text-base-content",
+          compact && "text-[13px] leading-[1.15]",
           variant === "success" && "tone-ink-success",
           variant === "warning" && "tone-ink-warning",
           variant === "error" && "tone-ink-error",
@@ -2867,12 +2897,16 @@ export function InvocationWorkflowDetailPanel({
     setGenericSection(section);
     setAttemptSection(null);
   };
+  const isCompact = size === "compact";
 
   return (
-    <div
-      className={cn("space-y-4", size === "compact" ? "invocation-detail-mobile-flat text-sm" : "")}
-    >
-      <section className="invocation-detail-hero-surface rounded-[1.2rem] px-4 py-4 sm:px-5 sm:py-5">
+    <div className={cn("space-y-4", isCompact ? "invocation-detail-mobile-flat text-sm" : "")}>
+      <section
+        className={cn(
+          "invocation-detail-hero-surface rounded-[1.2rem] px-4 py-4 sm:px-5 sm:py-5",
+          isCompact && "rounded-none px-0 py-0",
+        )}
+      >
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/72">
@@ -2902,13 +2936,23 @@ export function InvocationWorkflowDetailPanel({
         <div
           className={cn(
             "mt-4 grid gap-4",
-            size === "compact"
-              ? "xl:grid-cols-[minmax(0,1.4fr)_minmax(19rem,0.9fr)]"
+            isCompact
+              ? "gap-3 xl:grid-cols-[minmax(0,1.4fr)_minmax(19rem,0.9fr)]"
               : "xl:grid-cols-[minmax(0,1.45fr)_minmax(22rem,0.95fr)]",
           )}
         >
-          <div className="invocation-detail-card-surface rounded-[1rem] p-4">
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(14rem,0.9fr)]">
+          <div
+            className={cn(
+              "invocation-detail-card-surface rounded-[1rem] p-4",
+              isCompact && "rounded-none p-0",
+            )}
+          >
+            <div
+              className={cn(
+                "grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(14rem,0.9fr)]",
+                isCompact && "gap-3",
+              )}
+            >
               <div className="min-w-0">
                 <div className="text-[11px] font-medium text-base-content/56">
                   {isZh ? "调用 ID" : "Call ID"}
@@ -2931,18 +2975,32 @@ export function InvocationWorkflowDetailPanel({
               </div>
             </div>
 
-            <div className="mt-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4 sm:gap-3">
+            <div
+              className={cn(
+                "mt-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4 sm:gap-3",
+                isCompact &&
+                  (isZh
+                    ? "mt-3 grid-cols-4 gap-2 sm:gap-2.5"
+                    : "mt-3 gap-2 min-[496px]:grid-cols-4 sm:gap-2.5"),
+              )}
+            >
               {snapshotMetrics.map((metric) => (
                 <SnapshotMetric
                   key={metric.label}
                   label={metric.label}
                   value={metric.value}
                   variant={metric.variant}
+                  compact={isCompact}
                 />
               ))}
             </div>
 
-            <div className="mt-4 grid gap-4 border-t border-base-300/65 pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,0.95fr)]">
+            <div
+              className={cn(
+                "mt-4 grid gap-4 border-t border-base-300/65 pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,0.95fr)]",
+                isCompact && "mt-3 gap-3 pt-3",
+              )}
+            >
               <div className="min-w-0">
                 <div className="text-[11px] font-medium text-base-content/56">
                   {isZh ? "模型与端点" : "Models and Endpoint"}
@@ -2979,7 +3037,12 @@ export function InvocationWorkflowDetailPanel({
             </div>
           </div>
 
-          <div className="invocation-detail-card-surface rounded-[1rem] p-4">
+          <div
+            className={cn(
+              "invocation-detail-card-surface rounded-[1rem] p-4",
+              isCompact && "rounded-none p-0",
+            )}
+          >
             <div className="flex items-center justify-between gap-3">
               <div className="text-sm font-semibold text-base-content">
                 {isZh ? "关键指标" : "Key metrics"}
@@ -2990,8 +3053,8 @@ export function InvocationWorkflowDetailPanel({
                 </span>
               ) : null}
             </div>
-            <div className="mt-3">
-              <SummaryRows rows={summaryRows} />
+            <div className={cn("mt-3", isCompact && "mt-2.5")}>
+              <SummaryRows rows={summaryRows} compact={isCompact} />
             </div>
           </div>
         </div>

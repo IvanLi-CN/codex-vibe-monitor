@@ -883,6 +883,33 @@ export const SuccessfulTokenCostAudit: Story = {
   },
 };
 
+export const SuccessfulTokenCostAuditMobile: Story = {
+  args: {
+    record: successfulWorkflowRecord,
+    size: "compact",
+  },
+  decorators: SuccessfulTokenCostAudit.decorators,
+  parameters: {
+    layout: "fullscreen",
+    viewport: { defaultViewport: "mobile390" },
+    pageSurface: true,
+    docs: {
+      description: {
+        story:
+          "390px compact workflow detail surface for verifying the flattened mobile hierarchy and denser snapshot metric packing without horizontal waste.",
+      },
+    },
+  },
+  render: (args) => (
+    <WorkflowPageSurface>
+      <InvocationWorkflowDetailPanel
+        record={args.record ?? successfulWorkflowRecord}
+        size={args.size ?? "compact"}
+      />
+    </WorkflowPageSurface>
+  ),
+};
+
 export const TransientPending: Story = {
   args: {
     record: {
