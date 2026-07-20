@@ -5043,13 +5043,13 @@ export function DashboardWorkingConversationsSection({
                   size="sm"
                   variant="destructive"
                   disabled={bulkActionBusy != null}
-                  data-testid="dashboard-working-conversations-clear-binding-button"
+                  data-testid="dashboard-working-conversations-clear-affinity-button"
                   onClick={() => {
-                    setClearBindingDialogAction("bind");
+                    setClearBindingDialogAction("clearAndResetAffinity");
                     setClearBindingDialogOpen(true);
                   }}
                 >
-                  {locale === "zh" ? "清空绑定" : "Clear binding"}
+                  {locale === "zh" ? "清空绑定并重选" : "Clear and reselect"}
                 </Button>
                 <Button
                   type="button"

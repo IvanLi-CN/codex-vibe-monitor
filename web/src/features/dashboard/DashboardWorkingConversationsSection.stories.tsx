@@ -117,11 +117,27 @@ function readPerceptualChannel(color: string) {
 async function openBulkClearBindingDialog(canvasElement: HTMLElement) {
   await selectConversationForBulkActions(canvasElement);
 
+  const routeBindButton = canvasElement.ownerDocument.body.querySelector(
+    '[data-testid="dashboard-working-conversations-route-bind-button"]',
+  );
+  if (!(routeBindButton instanceof HTMLButtonElement)) {
+    throw new Error("missing route bind button");
+  }
+
+  await userEvent.click(routeBindButton);
+
+  await waitFor(() => {
+    const routeBindDialog = canvasElement.ownerDocument.body.querySelector(
+      '[data-testid="dashboard-working-conversations-route-bind-dialog"]',
+    );
+    expect(routeBindDialog).not.toBeNull();
+  });
+
   const clearButton = canvasElement.ownerDocument.body.querySelector(
-    '[data-testid="dashboard-working-conversations-clear-binding-button"]',
+    '[data-testid="dashboard-working-conversations-route-bind-clear-button"]',
   );
   if (!(clearButton instanceof HTMLButtonElement)) {
-    throw new Error("missing clear binding button");
+    throw new Error("missing route bind clear button");
   }
 
   await userEvent.click(clearButton);
