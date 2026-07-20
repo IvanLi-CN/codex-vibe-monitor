@@ -275,6 +275,19 @@ Recommended PR subset for this Dashboard bulk-actions change: the two web-demo c
 - state: route-bind kind selector opened with `分组` and `上游账号` options while the dialog still keeps the single-row `绑定到 / kind / target` layout
 - evidence_note: verifies the dialog no longer uses the earlier segmented switch, keeps the compact one-line binding row, and exposes the kind chooser as a dropdown instead of a persistent tabbed control.
 
+![Dashboard bulk clear-and-reselect button restored](./assets/dashboard-bulk-clear-affinity-button-restored-storybook.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: component
+- requested_viewport: desktop1660
+- viewport_strategy: storybook-viewport
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: `Monitoring/DashboardWorkingConversationsSection/ConversationBulkPanelOpen`
+- state: one Dashboard conversation selected while the floating bulk bar shows the restored standalone destructive `清空绑定并重选` action
+- evidence_note: verifies the bottom bulk bar keeps the independent clear-and-reselect entry point, rather than repurposing that red button into the pure manual-binding clear flow owned by the route-bind dialog footer.
+
 ![Dashboard bulk clear binding confirmation](./assets/dashboard-bulk-clear-binding-confirm-storybook.png)
 
 - source_type: storybook_canvas
