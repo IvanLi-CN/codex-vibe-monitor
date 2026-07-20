@@ -1,6 +1,56 @@
 use super::*;
 use serde_json::json;
 
+fn assert_encrypted_owner_blocked_proxy_error(
+    response: &ProxyErrorResponse,
+    owner_account_id: i64,
+    owner_label: impl Into<String>,
+    prompt_cache_key: &str,
+) {
+    let owner_label = owner_label.into();
+    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response.message,
+        format!(
+            "encrypted session owner routing is constrained to upstream account {owner_label} but that account is currently unavailable"
+        )
+    );
+    assert_eq!(
+        response.code.as_deref(),
+        Some(PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED)
+    );
+    assert_eq!(
+        response.blocked_binding,
+        Some(BlockedBindingDiagnostic {
+            constraint_source: BlockedBindingConstraintSource::EncryptedSessionOwner,
+            upstream_account_id: owner_account_id,
+            upstream_account_label: owner_label,
+            prompt_cache_key: Some(prompt_cache_key.to_string()),
+            recovery_action: BlockedBindingRecoveryAction::ClearAndResetAffinity,
+        })
+    );
+}
+
+fn run_future_with_large_stack<T, Fut>(future: Fut) -> T
+where
+    T: Send + 'static,
+    Fut: std::future::Future<Output = T> + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name("live-first-owner-guard-large-stack".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build large-stack test runtime")
+                .block_on(future)
+        })
+        .expect("spawn large-stack test worker")
+        .join()
+        .expect("join large-stack test worker")
+}
+
 #[tokio::test]
 async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_sending() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
@@ -141,7 +191,9 @@ async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
         elapsed_since_wait_start < Duration::from_millis(260),
         "body-only sticky streaming request should finish after one bounded wait window once waiting starts, elapsed_since_wait_start={elapsed_since_wait_start:?}"
     );
-    let (status, message) = response.expect_err("via-pool request should fail");
+    let err = response.expect_err("via-pool request should fail");
+    let status = err.status;
+    let message = err.message;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(
         message, POOL_NO_AVAILABLE_ACCOUNT_MESSAGE,
@@ -612,7 +664,7 @@ async fn proxy_openai_v1_responses_live_first_failover_preserves_prompt_cache_gr
     .await
     .expect_err("binding-constrained live-first failover should not use other groups");
 
-    assert_eq!(response.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
     let attempts = attempts.lock().expect("lock live-first binding attempts");
     assert!(matches!(
         attempts.get("Bearer upstream-primary").copied(),
@@ -698,8 +750,12 @@ async fn proxy_openai_v1_responses_waits_for_body_before_encrypted_owner_guard()
     .await
     .expect_err("live-first replay should stop at encrypted owner guard");
 
-    assert_eq!(response.0, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(response.1, ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE);
+    assert_encrypted_owner_blocked_proxy_error(
+        &response,
+        owner_account_id,
+        format!("#{owner_account_id}"),
+        prompt_cache_key,
+    );
 
     let attempts = attempts
         .lock()
@@ -1122,7 +1178,7 @@ async fn proxy_openai_v1_responses_header_prompt_cache_key_preserves_group_bindi
     .await
     .expect_err("header binding should not fail over outside its group");
 
-    assert_eq!(response.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
     let attempts = attempts.lock().expect("lock header binding attempts");
     assert!(matches!(
         attempts.get("Bearer upstream-primary").copied(),
@@ -1133,97 +1189,101 @@ async fn proxy_openai_v1_responses_header_prompt_cache_key_preserves_group_bindi
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_group_binding() {
-    let (upstream_base, attempts, upstream_handle) =
-        spawn_pool_retry_upstream(&[("Bearer upstream-primary", 99)]).await;
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(80),
-        Duration::from_millis(10),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let bound_group = "bodyless-header-bound-group";
-    let other_group = "bodyless-header-other-group";
-    ensure_test_group_binding(&state.pool, bound_group, None).await;
-    ensure_test_group_binding(&state.pool, other_group, None).await;
-    insert_test_pool_api_key_account_with_options(
-        &state,
-        "Primary",
-        "upstream-primary",
-        Some(bound_group),
-        None,
-        None,
-    )
-    .await;
-    insert_test_pool_api_key_account_with_options(
-        &state,
-        "Secondary",
-        "upstream-secondary",
-        Some(other_group),
-        None,
-        None,
-    )
-    .await;
-    let prompt_cache_key = "pck-bodyless-header-bound-group";
-    let now_iso = format_utc_iso(Utc::now());
-    sqlx::query(
-        r#"
-        INSERT INTO prompt_cache_conversation_bindings (
-            prompt_cache_key,
-            binding_kind,
-            group_name,
-            upstream_account_id,
-            created_at,
-            updated_at
+#[test]
+fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_group_binding() {
+    run_future_with_large_stack(async move {
+        let (upstream_base, attempts, upstream_handle) =
+            spawn_pool_retry_upstream(&[("Bearer upstream-primary", 99)]).await;
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(10),
         )
-        VALUES (?1, 'group', ?2, NULL, ?3, ?3)
-        "#,
-    )
-    .bind(prompt_cache_key)
-    .bind(bound_group)
-    .bind(&now_iso)
-    .execute(&state.pool)
-    .await
-    .expect("insert bodyless header prompt cache group binding");
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let bound_group = "bodyless-header-bound-group";
+        let other_group = "bodyless-header-other-group";
+        ensure_test_group_binding(&state.pool, bound_group, None).await;
+        ensure_test_group_binding(&state.pool, other_group, None).await;
+        insert_test_pool_api_key_account_with_options(
+            &state,
+            "Primary",
+            "upstream-primary",
+            Some(bound_group),
+            None,
+            None,
+        )
+        .await;
+        insert_test_pool_api_key_account_with_options(
+            &state,
+            "Secondary",
+            "upstream-secondary",
+            Some(other_group),
+            None,
+            None,
+        )
+        .await;
+        let prompt_cache_key = "pck-bodyless-header-bound-group";
+        let now_iso = format_utc_iso(Utc::now());
+        sqlx::query(
+            r#"
+            INSERT INTO prompt_cache_conversation_bindings (
+                prompt_cache_key,
+                binding_kind,
+                group_name,
+                upstream_account_id,
+                created_at,
+                updated_at
+            )
+            VALUES (?1, 'group', ?2, NULL, ?3, ?3)
+            "#,
+        )
+        .bind(prompt_cache_key)
+        .bind(bound_group)
+        .bind(&now_iso)
+        .execute(&state.pool)
         .await
-        .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        5346,
-        &"/v1/models".parse().expect("valid uri"),
-        Method::GET,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                HeaderName::from_static("x-prompt-cache-key"),
-                HeaderValue::from_static(prompt_cache_key),
-            ),
-        ]),
-        Body::empty(),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect_err("bodyless header binding should not fail over outside its group");
+        .expect("insert bodyless header prompt cache group binding");
 
-    assert_eq!(response.0, StatusCode::SERVICE_UNAVAILABLE);
-    let attempts = attempts
-        .lock()
-        .expect("lock bodyless header binding attempts");
-    assert!(matches!(
-        attempts.get("Bearer upstream-primary").copied(),
-        Some(count) if count > 0
-    ));
-    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            5346,
+            &"/v1/models".parse().expect("valid uri"),
+            Method::GET,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    HeaderName::from_static("x-prompt-cache-key"),
+                    HeaderValue::from_static(prompt_cache_key),
+                ),
+            ]),
+            Body::empty(),
+            runtime_timeouts,
+            None,
+        )
+        .await;
+        let Err(response) = response else {
+            panic!("bodyless header binding should not fail over outside its group");
+        };
 
-    upstream_handle.abort();
+        assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+        let attempts = attempts
+            .lock()
+            .expect("lock bodyless header binding attempts");
+        assert!(matches!(
+            attempts.get("Bearer upstream-primary").copied(),
+            Some(count) if count > 0
+        ));
+        assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+
+        upstream_handle.abort();
+    });
 }
 
 #[tokio::test]
@@ -1264,30 +1324,39 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_encrypted_ow
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
         .await
         .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        5347,
-        &"/v1/models".parse().expect("valid uri"),
-        Method::GET,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                HeaderName::from_static("x-prompt-cache-key"),
-                HeaderValue::from_static(prompt_cache_key),
-            ),
-        ]),
-        Body::empty(),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect_err("bodyless encrypted owner lock should not reroute to another account");
+    let response = run_future_with_large_stack({
+        let state = state.clone();
+        async move {
+            proxy_openai_v1_via_pool(
+                state,
+                5347,
+                &"/v1/models".parse().expect("valid uri"),
+                Method::GET,
+                HeaderMap::from_iter([
+                    (
+                        http_header::AUTHORIZATION,
+                        HeaderValue::from_static("Bearer pool-live-key"),
+                    ),
+                    (
+                        HeaderName::from_static("x-prompt-cache-key"),
+                        HeaderValue::from_static(prompt_cache_key),
+                    ),
+                ]),
+                Body::empty(),
+                runtime_timeouts,
+                None,
+            )
+            .await
+            .expect_err("bodyless encrypted owner lock should not reroute to another account")
+        }
+    });
 
-    assert_eq!(response.0, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(response.1, ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE);
+    assert_encrypted_owner_blocked_proxy_error(
+        &response,
+        owner_account_id,
+        format!("#{owner_account_id}"),
+        prompt_cache_key,
+    );
 
     let attempts = attempts
         .lock()
@@ -1353,30 +1422,39 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_ret
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
         .await
         .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        5348,
-        &"/v1/models".parse().expect("valid uri"),
-        Method::GET,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                HeaderName::from_static("x-prompt-cache-key"),
-                HeaderValue::from_static(prompt_cache_key),
-            ),
-        ]),
-        Body::empty(),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect_err("rate-limited encrypted owner lock should not reroute to another account");
+    let response = run_future_with_large_stack({
+        let state = state.clone();
+        async move {
+            proxy_openai_v1_via_pool(
+                state,
+                5348,
+                &"/v1/models".parse().expect("valid uri"),
+                Method::GET,
+                HeaderMap::from_iter([
+                    (
+                        http_header::AUTHORIZATION,
+                        HeaderValue::from_static("Bearer pool-live-key"),
+                    ),
+                    (
+                        HeaderName::from_static("x-prompt-cache-key"),
+                        HeaderValue::from_static(prompt_cache_key),
+                    ),
+                ]),
+                Body::empty(),
+                runtime_timeouts,
+                None,
+            )
+            .await
+            .expect_err("rate-limited encrypted owner lock should not reroute to another account")
+        }
+    });
 
-    assert_eq!(response.0, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(response.1, ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE);
+    assert_encrypted_owner_blocked_proxy_error(
+        &response,
+        owner_account_id,
+        format!("#{owner_account_id}"),
+        prompt_cache_key,
+    );
 
     let attempts = attempts
         .lock()
@@ -1465,30 +1543,39 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_same_account_binding_n
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
         .await
         .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        5349,
-        &"/v1/models".parse().expect("valid uri"),
-        Method::GET,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                HeaderName::from_static("x-prompt-cache-key"),
-                HeaderValue::from_static(prompt_cache_key),
-            ),
-        ]),
-        Body::empty(),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect_err("same-account newer binding should still keep encrypted owner guard");
+    let response = run_future_with_large_stack({
+        let state = state.clone();
+        async move {
+            proxy_openai_v1_via_pool(
+                state,
+                5349,
+                &"/v1/models".parse().expect("valid uri"),
+                Method::GET,
+                HeaderMap::from_iter([
+                    (
+                        http_header::AUTHORIZATION,
+                        HeaderValue::from_static("Bearer pool-live-key"),
+                    ),
+                    (
+                        HeaderName::from_static("x-prompt-cache-key"),
+                        HeaderValue::from_static(prompt_cache_key),
+                    ),
+                ]),
+                Body::empty(),
+                runtime_timeouts,
+                None,
+            )
+            .await
+            .expect_err("same-account newer binding should still keep encrypted owner guard")
+        }
+    });
 
-    assert_eq!(response.0, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(response.1, ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE);
+    assert_encrypted_owner_blocked_proxy_error(
+        &response,
+        owner_account_id,
+        format!("#{owner_account_id}"),
+        prompt_cache_key,
+    );
 
     let attempts = attempts
         .lock()
@@ -3438,7 +3525,9 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_w
         elapsed < Duration::from_millis(180),
         "request body timeout should win before pool wait timeout, elapsed={elapsed:?}"
     );
-    let (status, message) = response.expect_err("via-pool request should fail");
+    let err = response.expect_err("via-pool request should fail");
+    let status = err.status;
+    let message = err.message;
     assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
     assert_eq!(
         message, "request body read timed out after 80ms",
@@ -3517,7 +3606,9 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_body_timeout_over_rate_l
         wait_started_rx.try_recv().is_err(),
         "header sticky request should time out on body read before entering bounded pool wait"
     );
-    let (status, message) = response.expect_err("via-pool request should fail");
+    let err = response.expect_err("via-pool request should fail");
+    let status = err.status;
+    let message = err.message;
     assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
     assert_eq!(
         message, "request body read timed out after 80ms",
@@ -3632,7 +3723,9 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_blocked_policy_header_er
         elapsed >= Duration::from_millis(140),
         "blocked policy should wait for the streamed body before failing, elapsed={elapsed:?}"
     );
-    let (status, message) = response.expect_err("via-pool request should fail");
+    let err = response.expect_err("via-pool request should fail");
+    let status = err.status;
+    let message = err.message;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(
         message.contains("upstream account is not assigned to a group"),
@@ -3753,7 +3846,9 @@ async fn proxy_openai_v1_header_sticky_stream_same_value_short_circuits_blocked_
         elapsed < Duration::from_millis(400),
         "same sticky value should fail before the rest of the streamed body finishes, elapsed={elapsed:?}"
     );
-    let (status, message) = response.expect_err("via-pool request should fail");
+    let err = response.expect_err("via-pool request should fail");
+    let status = err.status;
+    let message = err.message;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(
         message.contains("upstream account is not assigned to a group"),
@@ -3927,7 +4022,9 @@ async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_tim
         elapsed < Duration::from_millis(180),
         "responses total timeout should short-circuit even while the body is still buffering, elapsed={elapsed:?}"
     );
-    let (status, message) = response.expect_err("via-pool request should fail");
+    let err = response.expect_err("via-pool request should fail");
+    let status = err.status;
+    let message = err.message;
     assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
     assert_eq!(
         message,
@@ -4082,7 +4179,9 @@ async fn proxy_openai_v1_header_sticky_responses_total_timeout_short_circuits_bo
         elapsed < Duration::from_millis(180),
         "responses total timeout should short-circuit before body buffering completes, elapsed={elapsed:?}"
     );
-    let (status, message) = response.expect_err("via-pool request should fail");
+    let err = response.expect_err("via-pool request should fail");
+    let status = err.status;
+    let message = err.message;
     assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
     assert_eq!(
         message,
@@ -4143,7 +4242,9 @@ async fn proxy_openai_v1_responses_prebuffer_body_counts_total_timeout_from_requ
     .await;
     let elapsed = started.elapsed();
 
-    let (status, message) = response.expect_err("via-pool request should fail");
+    let err = response.expect_err("via-pool request should fail");
+    let status = err.status;
+    let message = err.message;
     assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
     assert!(
         elapsed >= Duration::from_millis(160),
@@ -4222,7 +4323,9 @@ async fn proxy_openai_v1_responses_prebuffer_body_wait_counts_total_timeout_from
     .await;
     let elapsed = started.elapsed();
 
-    let (status, message) = response.expect_err("via-pool request should fail");
+    let err = response.expect_err("via-pool request should fail");
+    let status = err.status;
+    let message = err.message;
     assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
     assert!(
         elapsed >= Duration::from_millis(70),
@@ -4288,7 +4391,9 @@ async fn proxy_openai_v1_responses_streamed_body_counts_total_timeout_from_reque
     .await;
     let elapsed = started.elapsed();
 
-    let (status, message) = response.expect_err("via-pool request should fail");
+    let err = response.expect_err("via-pool request should fail");
+    let status = err.status;
+    let message = err.message;
     assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
     assert!(
         elapsed >= Duration::from_millis(70),
@@ -5811,8 +5916,11 @@ async fn proxy_openai_v1_direct_image_timeout_returns_504_without_retry() {
     .await
     .expect_err("slow direct image request should time out");
 
-    assert_eq!(err.0, StatusCode::GATEWAY_TIMEOUT);
-    assert!(err.1.contains(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT));
+    assert_eq!(err.status, StatusCode::GATEWAY_TIMEOUT);
+    assert!(
+        err.message
+            .contains(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT)
+    );
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
     let persisted_attempts: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pool_upstream_request_attempts WHERE invoke_id = 'pool-via-7044'",
@@ -6386,7 +6494,9 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_too_large_before_pool
     )
     .await;
 
-    let (status, message) = response.expect_err("via-pool request should fail");
+    let err = response.expect_err("via-pool request should fail");
+    let status = err.status;
+    let message = err.message;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(
         message, "request body exceeds 24 bytes",
@@ -6579,7 +6689,9 @@ async fn proxy_openai_v1_header_sticky_stream_reroute_preserves_original_wait_wi
         elapsed < Duration::from_millis(600),
         "rerouted sticky requests should finish without waiting through another full bounded window, elapsed={elapsed:?}"
     );
-    let (status, message) = response.expect_err("via-pool request should fail");
+    let err = response.expect_err("via-pool request should fail");
+    let status = err.status;
+    let message = err.message;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(message, POOL_NO_AVAILABLE_ACCOUNT_MESSAGE);
     assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
@@ -6875,7 +6987,9 @@ async fn pool_route_oauth_responses_replay_body_keeps_request_started_total_time
     .await;
     let elapsed = started.elapsed();
 
-    let (status, message) = response.expect_err("oauth replay request should hit total timeout");
+    let err = response.expect_err("oauth replay request should hit total timeout");
+    let status = err.status;
+    let message = err.message;
     assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
     assert_eq!(
         message,

@@ -1743,6 +1743,8 @@ mod tests {
             error_message: None,
             downstream_status_code: None,
             failure_kind: None,
+            blocked_binding: None,
+            blocked_binding_json: None,
             stream_terminal_event: None,
             upstream_error_code: None,
             upstream_error_message: None,
@@ -2356,6 +2358,12 @@ pub(crate) struct ApiInvocation {
     pub(crate) downstream_status_code: Option<i64>,
     #[sqlx(default)]
     pub(crate) failure_kind: Option<String>,
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) blocked_binding: Option<BlockedBindingDiagnostic>,
+    #[sqlx(default)]
+    #[serde(skip)]
+    pub(crate) blocked_binding_json: Option<String>,
     #[sqlx(default)]
     pub(crate) stream_terminal_event: Option<String>,
     #[sqlx(default)]

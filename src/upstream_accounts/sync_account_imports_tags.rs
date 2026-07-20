@@ -3116,10 +3116,16 @@ pub(crate) async fn load_upstream_account_detail_with_options(
                 event.invoke_id,
                 attempts.attempt_public_id,
                 event.sticky_key,
+                CASE
+                    WHEN json_valid(invocation.payload)
+                     AND json_type(invocation.payload, '$.blockedBinding') = 'object'
+                        THEN json_extract(invocation.payload, '$.blockedBinding')
+                END AS blocked_binding_json,
                 event.created_at
             FROM pool_upstream_account_events event
             INNER JOIN pool_upstream_accounts account ON account.id = event.account_id
             LEFT JOIN pool_upstream_request_attempts attempts ON attempts.id = event.attempt_id
+            LEFT JOIN codex_invocations invocation ON invocation.invoke_id = event.invoke_id
             WHERE event.account_id = ?1
             ORDER BY event.occurred_at DESC, event.id DESC
             LIMIT 20

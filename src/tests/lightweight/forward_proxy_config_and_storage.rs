@@ -697,6 +697,8 @@ async fn proxy_error_response_exposes_image_timeout_code_only_for_504() {
             ),
             cvm_id: Some("image-timeout-id".to_string()),
             retry_after_secs: None,
+            code: None,
+            blocked_binding: None,
         },
         "image-timeout-id",
     );
@@ -716,6 +718,8 @@ async fn proxy_error_response_exposes_image_timeout_code_only_for_504() {
             message: POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
             cvm_id: None,
             retry_after_secs: None,
+            code: None,
+            blocked_binding: None,
         },
         "unavailable-id",
     );

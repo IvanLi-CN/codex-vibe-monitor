@@ -52,6 +52,7 @@ type PromptCacheConversationPreviewExtras = Partial<
     | "serviceTier"
     | "billingServiceTier"
     | "upstreamAccountPlanType"
+    | "blockedBinding"
     | "tReqReadMs"
     | "tReqParseMs"
     | "tUpstreamConnectMs"
@@ -260,6 +261,7 @@ export function buildInvocationFromPromptCachePreview(
     requestedServiceTier: extras.requestedServiceTier,
     serviceTier: extras.serviceTier,
     billingServiceTier: extras.billingServiceTier,
+    blockedBinding: extras.blockedBinding,
     tReqReadMs: extras.tReqReadMs,
     tReqParseMs: extras.tReqParseMs,
     tUpstreamConnectMs: extras.tUpstreamConnectMs,
@@ -318,6 +320,7 @@ export function buildPromptCachePreviewFromInvocation(
     requestedServiceTier: record.requestedServiceTier,
     serviceTier: record.serviceTier,
     billingServiceTier: record.billingServiceTier,
+    blockedBinding: record.blockedBinding ?? null,
     tReqReadMs: record.tReqReadMs,
     tReqParseMs: record.tReqParseMs,
     tUpstreamConnectMs: record.tUpstreamConnectMs,

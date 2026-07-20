@@ -201,6 +201,8 @@ enum SubscriptionTopic {
     DashboardWorkingConversationsCurrent {
         page_size: i64,
         recent_invocation_limit: i64,
+        blocked_binding_upstream_account_id: Option<i64>,
+        blocked_binding_constraint_source: Option<BlockedBindingConstraintSource>,
     },
     InvocationWindow {
         limit: i64,
@@ -686,6 +688,15 @@ impl SubscriptionTopic {
                         "recentInvocationLimit",
                         Some(SUBSCRIPTION_DEFAULT_PROMPT_CACHE_RECENT_LIMIT),
                     )?,
+                    blocked_binding_upstream_account_id: parse_optional_i64_param(
+                        params,
+                        "blockedBindingUpstreamAccountId",
+                    )?,
+                    blocked_binding_constraint_source:
+                        parse_optional_blocked_binding_constraint_source_param(
+                            params,
+                            "blockedBindingConstraintSource",
+                        )?,
                 })
             }
             "invocations.window" => Ok(Self::InvocationWindow {
@@ -792,13 +803,35 @@ impl SubscriptionTopic {
             Self::DashboardWorkingConversationsCurrent {
                 page_size,
                 recent_invocation_limit,
-            } => SubscriptionTopicDescriptor {
-                topic: self.name().to_string(),
-                params: btree_map_from_pairs([
+                blocked_binding_upstream_account_id,
+                blocked_binding_constraint_source,
+            } => {
+                let mut params = btree_map_from_pairs([
                     ("pageSize", page_size.to_string()),
                     ("recentInvocationLimit", recent_invocation_limit.to_string()),
-                ]),
-            },
+                ]);
+                insert_optional_param(
+                    &mut params,
+                    "blockedBindingUpstreamAccountId",
+                    blocked_binding_upstream_account_id.map(|value| value.to_string()),
+                );
+                insert_optional_param(
+                    &mut params,
+                    "blockedBindingConstraintSource",
+                    blocked_binding_constraint_source.map(|value| match value {
+                        BlockedBindingConstraintSource::UpstreamAccountBinding => {
+                            "upstreamAccountBinding".to_string()
+                        }
+                        BlockedBindingConstraintSource::EncryptedSessionOwner => {
+                            "encryptedSessionOwner".to_string()
+                        }
+                    }),
+                );
+                SubscriptionTopicDescriptor {
+                    topic: self.name().to_string(),
+                    params,
+                }
+            }
             Self::InvocationWindow {
                 limit,
                 model,
@@ -1059,6 +1092,8 @@ impl SubscriptionTopic {
             Self::DashboardWorkingConversationsCurrent {
                 page_size,
                 recent_invocation_limit,
+                blocked_binding_upstream_account_id,
+                blocked_binding_constraint_source,
             } => {
                 let Json(response) = fetch_prompt_cache_conversations(
                     State(state),
@@ -1073,6 +1108,17 @@ impl SubscriptionTopic {
                         snapshot_at: None,
                         detail: Some("full".to_string()),
                         recent_invocation_limit: Some(*recent_invocation_limit),
+                        blocked_binding_upstream_account_id: *blocked_binding_upstream_account_id,
+                        blocked_binding_constraint_source: blocked_binding_constraint_source.map(
+                            |value| match value {
+                                BlockedBindingConstraintSource::UpstreamAccountBinding => {
+                                    "upstreamAccountBinding".to_string()
+                                }
+                                BlockedBindingConstraintSource::EncryptedSessionOwner => {
+                                    "encryptedSessionOwner".to_string()
+                                }
+                            },
+                        ),
                     }),
                 )
                 .await?;
@@ -1148,6 +1194,8 @@ impl SubscriptionTopic {
                             PromptCacheConversationDetailLevel::Compact => "compact".to_string(),
                         }),
                         recent_invocation_limit: *recent_invocation_limit,
+                        blocked_binding_upstream_account_id: None,
+                        blocked_binding_constraint_source: None,
                     }),
                 )
                 .await?;
@@ -1375,6 +1423,22 @@ fn parse_optional_i64_param(
         .map_err(|err| ApiError::bad_request(anyhow!("invalid integer for `{key}`: {err}")))
 }
 
+fn parse_optional_blocked_binding_constraint_source_param(
+    params: &BTreeMap<String, String>,
+    key: &str,
+) -> Result<Option<BlockedBindingConstraintSource>, ApiError> {
+    let Some(value) = parse_optional_text_param(params, key) else {
+        return Ok(None);
+    };
+    BlockedBindingConstraintSource::from_query_param(&value)
+        .ok_or_else(|| {
+            ApiError::bad_request(anyhow!(
+                "{key} must be one of: upstreamAccountBinding, encryptedSessionOwner"
+            ))
+        })
+        .map(Some)
+}
+
 fn parse_optional_u8_param(
     params: &BTreeMap<String, String>,
     key: &str,
@@ -1422,6 +1486,8 @@ fn parse_prompt_cache_selection(
         snapshot_at: None,
         detail: None,
         recent_invocation_limit: None,
+        blocked_binding_upstream_account_id: None,
+        blocked_binding_constraint_source: None,
     })
 }
 

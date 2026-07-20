@@ -161,9 +161,9 @@ function createResponse(): PromptCacheConversationsResponse {
   };
 }
 
-function Probe() {
+function Probe({ filter }: { filter?: Parameters<typeof useDashboardWorkingConversations>[0] }) {
   const { cards, totalMatched, hasMore, recentPreviewLimit, loadMore, setRefreshTargetCount } =
-    useDashboardWorkingConversations();
+    useDashboardWorkingConversations(filter);
 
   return (
     <div>
@@ -196,6 +196,29 @@ describe("useDashboardWorkingConversations", () => {
     expect(text("total")).toBe("7");
     expect(text("has-more")).toBe("true");
     expect(text("recent-limit")).toBe("6");
+  });
+
+  it("includes blocked-binding filters in the dashboard working conversations topic", () => {
+    topicMocks.state.data = createResponse();
+
+    render(
+      <Probe
+        filter={{
+          upstreamAccountId: 2890,
+          constraintSource: "encryptedSessionOwner",
+        }}
+      />,
+    );
+
+    expect(topicMocks.lastDescriptor).toEqual({
+      topic: "dashboard.working-conversations.current",
+      params: {
+        pageSize: String(DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE),
+        recentInvocationLimit: "16",
+        blockedBindingUpstreamAccountId: "2890",
+        blockedBindingConstraintSource: "encryptedSessionOwner",
+      },
+    });
   });
 
   it("grows the requested topic window when loadMore is triggered", () => {

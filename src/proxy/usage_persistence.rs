@@ -57,6 +57,28 @@ pub(crate) fn payload_f64(payload: Option<&str>, key: &str) -> Option<f64> {
     value.get(key).and_then(Value::as_f64)
 }
 
+pub(crate) fn blocked_binding_json_from_payload(payload: Option<&str>) -> Option<String> {
+    let payload = payload?;
+    let value = serde_json::from_str::<Value>(payload).ok()?;
+    let blocked_binding = value.get("blockedBinding")?;
+    if !blocked_binding.is_object() {
+        return None;
+    }
+    serde_json::to_string(blocked_binding).ok()
+}
+
+pub(crate) fn blocked_binding_from_payload(
+    payload: Option<&str>,
+) -> Option<BlockedBindingDiagnostic> {
+    parse_blocked_binding_json(blocked_binding_json_from_payload(payload).as_deref())
+}
+
+pub(crate) fn hydrate_api_invocation_blocked_binding(record: &mut ApiInvocation) {
+    if record.blocked_binding.is_none() {
+        record.blocked_binding = parse_blocked_binding_json(record.blocked_binding_json.as_deref());
+    }
+}
+
 pub(crate) fn shanghai_now_string() -> String {
     format_naive(Utc::now().with_timezone(&Shanghai).naive_local())
 }
@@ -2153,6 +2175,7 @@ pub(crate) struct ProxyPayloadSummary<'a> {
     pub(crate) pool_attempt_count: Option<usize>,
     pub(crate) pool_distinct_account_count: Option<usize>,
     pub(crate) pool_attempt_terminal_reason: Option<&'a str>,
+    pub(crate) blocked_binding: Option<&'a BlockedBindingDiagnostic>,
 }
 
 pub(crate) fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
@@ -2230,6 +2253,7 @@ pub(crate) fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> S
         pool_attempt_count,
         pool_distinct_account_count,
         pool_attempt_terminal_reason,
+        blocked_binding,
     } = summary;
     let payload = json!({
         "endpoint": target.endpoint(),
@@ -2305,6 +2329,7 @@ pub(crate) fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> S
         "poolAttemptCount": pool_attempt_count,
         "poolDistinctAccountCount": pool_distinct_account_count,
         "poolAttemptTerminalReason": pool_attempt_terminal_reason,
+        "blockedBinding": blocked_binding,
     });
     serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
 }
@@ -2527,6 +2552,8 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
             .failure_kind
             .clone()
             .or_else(|| record.failure_kind.clone()),
+        blocked_binding: blocked_binding_from_payload(payload),
+        blocked_binding_json: blocked_binding_json_from_payload(payload),
         stream_terminal_event: payload_text(payload, "streamTerminalEvent"),
         upstream_error_code: payload_text(payload, "upstreamErrorCode"),
         upstream_error_message: payload_text(payload, "upstreamErrorMessage"),
@@ -2596,7 +2623,7 @@ pub(crate) async fn load_persisted_api_invocation_tx(
     invoke_id: &str,
     occurred_at: &str,
 ) -> Result<ApiInvocation> {
-    sqlx::query_as::<_, ApiInvocation>(
+    let mut record = sqlx::query_as::<_, ApiInvocation>(
         r#"
         SELECT
             id,
@@ -2627,6 +2654,10 @@ pub(crate) async fn load_persisted_api_invocation_tx(
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.compactionRequestKind') END AS compaction_request_kind,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.compactionResponseKind') END AS compaction_response_kind,
             COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.failureKind') END, failure_kind) AS failure_kind,
+            CASE
+              WHEN json_valid(payload) AND json_type(payload, '$.blockedBinding') = 'object'
+                THEN json_extract(payload, '$.blockedBinding')
+            END AS blocked_binding_json,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.streamTerminalEvent') END AS stream_terminal_event,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamErrorCode') END AS upstream_error_code,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamErrorMessage') END AS upstream_error_message,
@@ -2702,8 +2733,9 @@ pub(crate) async fn load_persisted_api_invocation_tx(
     .bind(invoke_id)
     .bind(occurred_at)
     .fetch_one(&mut *tx)
-    .await
-    .map_err(Into::into)
+    .await?;
+    hydrate_api_invocation_blocked_binding(&mut record);
+    Ok(record)
 }
 
 pub(crate) async fn touch_invocation_upstream_account_last_activity_tx(
@@ -3496,6 +3528,7 @@ pub(crate) fn build_running_proxy_capture_record(
             pool_attempt_count,
             pool_distinct_account_count,
             pool_attempt_terminal_reason,
+            blocked_binding: None,
         })),
         raw_response: "{}".to_string(),
         response_body_preview_enabled: false,

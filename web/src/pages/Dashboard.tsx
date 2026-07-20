@@ -47,8 +47,10 @@ export default function DashboardPage() {
   const {
     promptCacheConversationKey,
     promptCacheConversationTab,
+    blockedBindingFilter,
     openPromptCacheConversation,
     closePromptCacheConversation,
+    clearBlockedBindingFilter,
   } = usePromptCacheConversationRoute();
   const {
     cards,
@@ -61,7 +63,7 @@ export default function DashboardPage() {
     recentPreviewLimit,
     setRefreshTargetCount,
     refresh: refreshWorkingConversations,
-  } = useDashboardWorkingConversations();
+  } = useDashboardWorkingConversations(blockedBindingFilter);
   const dashboardActivityEnabled = activeRange !== "usage";
   const overviewSnapshotRuntime = useDashboardOverviewSnapshotRuntime(activeRange);
   const {
@@ -261,6 +263,10 @@ export default function DashboardPage() {
         }}
         onConversationsChanged={() => {
           refreshWorkingConversations();
+        }}
+        activeBlockedBindingFilter={blockedBindingFilter}
+        onClearBlockedBindingFilter={() => {
+          clearBlockedBindingFilter();
         }}
       />
       <DashboardInvocationDetailDrawer

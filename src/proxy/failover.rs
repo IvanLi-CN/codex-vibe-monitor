@@ -307,6 +307,48 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
     }
 }
 
+async fn maybe_build_and_record_single_account_binding_terminal_error(
+    state: &AppState,
+    trace_context: Option<&PoolUpstreamAttemptTraceContext>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    owner_auto_guard_active: bool,
+    prompt_cache_key: Option<&str>,
+    account: Option<PoolResolvedAccount>,
+    message: Option<String>,
+    attempt_count: usize,
+    distinct_account_count: usize,
+) -> Option<PoolUpstreamError> {
+    let err = build_single_account_binding_blocked_error(
+        state,
+        binding_constraint,
+        owner_auto_guard_active,
+        account,
+        prompt_cache_key,
+        message,
+        attempt_count,
+        distinct_account_count,
+    )
+    .await?;
+    if let Some(trace) = trace_context
+        && let Err(record_err) = insert_and_broadcast_pool_upstream_terminal_attempt(
+            state,
+            trace,
+            &err,
+            (attempt_count + 1) as i64,
+            distinct_account_count as i64,
+            err.failure_kind,
+        )
+        .await
+    {
+        warn!(
+            invoke_id = trace.invoke_id,
+            error = %record_err,
+            "failed to persist single-account binding terminal attempt"
+        );
+    }
+    Some(err)
+}
+
 pub(crate) async fn send_pool_request_with_failover(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -445,6 +487,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
             message: format!("failed to load pool routing runtime cache: {err}"),
             canonical_error_message: None,
             failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+            blocked_binding: None,
             connect_latency_ms: 0.0,
             upstream_error_code: None,
             upstream_error_message: None,
@@ -529,6 +572,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 message: terminal_message.clone(),
                 canonical_error_message: None,
                 failure_kind: terminal_failure_kind,
+                blocked_binding: None,
                 connect_latency_ms: 0.0,
                 upstream_error_code: None,
                 upstream_error_message: None,
@@ -664,23 +708,19 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::RateLimited,
                 )) => {
-                    if encrypted_session_owner_guard_active {
-                        let err = build_encrypted_session_owner_unavailable_error(
-                            None,
-                            attempt_count,
-                            distinct_account_count,
-                        );
-                        if let Some(trace) = trace_context.as_ref() {
-                            let _ = insert_and_broadcast_pool_upstream_terminal_attempt(
-                                state.as_ref(),
-                                trace,
-                                &err,
-                                (attempt_count + 1) as i64,
-                                distinct_account_count as i64,
-                                PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
-                            )
-                            .await;
-                        }
+                    if let Some(err) = maybe_build_and_record_single_account_binding_terminal_error(
+                        state.as_ref(),
+                        trace_context.as_ref(),
+                        binding_constraint.as_ref(),
+                        encrypted_session_owner_guard_active,
+                        prompt_cache_key,
+                        None,
+                        None,
+                        attempt_count,
+                        distinct_account_count,
+                    )
+                    .await
+                    {
                         return Err(err);
                     }
                     if let Some(err) = take_and_record_sticky_owner_terminal_error(
@@ -704,23 +744,19 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::DegradedOnly,
                 )) => {
-                    if encrypted_session_owner_guard_active {
-                        let err = build_encrypted_session_owner_unavailable_error(
-                            None,
-                            attempt_count,
-                            distinct_account_count,
-                        );
-                        if let Some(trace) = trace_context.as_ref() {
-                            let _ = insert_and_broadcast_pool_upstream_terminal_attempt(
-                                state.as_ref(),
-                                trace,
-                                &err,
-                                (attempt_count + 1) as i64,
-                                distinct_account_count as i64,
-                                PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
-                            )
-                            .await;
-                        }
+                    if let Some(err) = maybe_build_and_record_single_account_binding_terminal_error(
+                        state.as_ref(),
+                        trace_context.as_ref(),
+                        binding_constraint.as_ref(),
+                        encrypted_session_owner_guard_active,
+                        prompt_cache_key,
+                        None,
+                        None,
+                        attempt_count,
+                        distinct_account_count,
+                    )
+                    .await
+                    {
                         return Err(err);
                     }
                     if let Some(err) = take_and_record_sticky_owner_terminal_error(
@@ -743,23 +779,19 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::Unavailable,
                 )) => {
-                    if encrypted_session_owner_guard_active {
-                        let err = build_encrypted_session_owner_unavailable_error(
-                            None,
-                            attempt_count,
-                            distinct_account_count,
-                        );
-                        if let Some(trace) = trace_context.as_ref() {
-                            let _ = insert_and_broadcast_pool_upstream_terminal_attempt(
-                                state.as_ref(),
-                                trace,
-                                &err,
-                                (attempt_count + 1) as i64,
-                                distinct_account_count as i64,
-                                PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
-                            )
-                            .await;
-                        }
+                    if let Some(err) = maybe_build_and_record_single_account_binding_terminal_error(
+                        state.as_ref(),
+                        trace_context.as_ref(),
+                        binding_constraint.as_ref(),
+                        encrypted_session_owner_guard_active,
+                        prompt_cache_key,
+                        None,
+                        None,
+                        attempt_count,
+                        distinct_account_count,
+                    )
+                    .await
+                    {
                         return Err(err);
                     }
                     let terminal_failure_kind =
@@ -791,6 +823,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 .to_string(),
                             canonical_error_message: None,
                             failure_kind: terminal_failure_kind,
+                            blocked_binding: None,
                             connect_latency_ms: 0.0,
                             upstream_error_code: None,
                             upstream_error_message: None,
@@ -850,23 +883,19 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::NoCandidate,
                 )) => {
-                    if encrypted_session_owner_guard_active {
-                        let err = build_encrypted_session_owner_unavailable_error(
-                            None,
-                            attempt_count,
-                            distinct_account_count,
-                        );
-                        if let Some(trace) = trace_context.as_ref() {
-                            let _ = insert_and_broadcast_pool_upstream_terminal_attempt(
-                                state.as_ref(),
-                                trace,
-                                &err,
-                                (attempt_count + 1) as i64,
-                                distinct_account_count as i64,
-                                PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
-                            )
-                            .await;
-                        }
+                    if let Some(err) = maybe_build_and_record_single_account_binding_terminal_error(
+                        state.as_ref(),
+                        trace_context.as_ref(),
+                        binding_constraint.as_ref(),
+                        encrypted_session_owner_guard_active,
+                        prompt_cache_key,
+                        None,
+                        None,
+                        attempt_count,
+                        distinct_account_count,
+                    )
+                    .await
+                    {
                         return Err(err);
                     }
                     if uses_timeout_route_failover && timeout_route_failover_pending {
@@ -877,6 +906,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 .to_string(),
                             canonical_error_message: None,
                             failure_kind: PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT,
+                            blocked_binding: None,
                             connect_latency_ms: 0.0,
                             upstream_error_code: None,
                             upstream_error_message: None,
@@ -963,23 +993,19 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::AssignedBlocked(blocked),
                 )) => {
-                    if encrypted_session_owner_guard_active {
-                        let err = build_encrypted_session_owner_unavailable_error(
-                            None,
-                            attempt_count,
-                            distinct_account_count,
-                        );
-                        if let Some(trace) = trace_context.as_ref() {
-                            let _ = insert_and_broadcast_pool_upstream_terminal_attempt(
-                                state.as_ref(),
-                                trace,
-                                &err,
-                                (attempt_count + 1) as i64,
-                                distinct_account_count as i64,
-                                PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
-                            )
-                            .await;
-                        }
+                    if let Some(err) = maybe_build_and_record_single_account_binding_terminal_error(
+                        state.as_ref(),
+                        trace_context.as_ref(),
+                        binding_constraint.as_ref(),
+                        encrypted_session_owner_guard_active,
+                        prompt_cache_key,
+                        Some(blocked.account.clone()),
+                        Some(blocked.message.clone()),
+                        attempt_count,
+                        distinct_account_count,
+                    )
+                    .await
+                    {
                         return Err(err);
                     }
                     if let Some(err) = take_and_record_sticky_owner_terminal_error(
@@ -1025,23 +1051,19 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::BlockedByPolicy(message),
                 )) => {
-                    if encrypted_session_owner_guard_active {
-                        let err = build_encrypted_session_owner_unavailable_error(
-                            None,
-                            attempt_count,
-                            distinct_account_count,
-                        );
-                        if let Some(trace) = trace_context.as_ref() {
-                            let _ = insert_and_broadcast_pool_upstream_terminal_attempt(
-                                state.as_ref(),
-                                trace,
-                                &err,
-                                (attempt_count + 1) as i64,
-                                distinct_account_count as i64,
-                                PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
-                            )
-                            .await;
-                        }
+                    if let Some(err) = maybe_build_and_record_single_account_binding_terminal_error(
+                        state.as_ref(),
+                        trace_context.as_ref(),
+                        binding_constraint.as_ref(),
+                        encrypted_session_owner_guard_active,
+                        prompt_cache_key,
+                        None,
+                        Some(message.clone()),
+                        attempt_count,
+                        distinct_account_count,
+                    )
+                    .await
+                    {
                         return Err(err);
                     }
                     if let Some(err) = take_and_record_sticky_owner_terminal_error(
@@ -1062,6 +1084,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         status: StatusCode::SERVICE_UNAVAILABLE,
                         message,
                         failure_kind: terminal_failure_kind,
+                        blocked_binding: None,
                         connect_latency_ms: 0.0,
                         upstream_error_code: None,
                         upstream_error_message: None,
@@ -1106,6 +1129,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         message: format!("failed to resolve pool account: {err}"),
                         canonical_error_message: None,
                         failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
+                        blocked_binding: None,
                         connect_latency_ms: 0.0,
                         upstream_error_code: None,
                         upstream_error_message: None,
@@ -1143,6 +1167,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
             message: format!("failed to resolve effective request-path timeouts: {err}"),
             canonical_error_message: None,
             failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+            blocked_binding: None,
             connect_latency_ms: 0.0,
             upstream_error_code: None,
             upstream_error_message: None,
@@ -1185,6 +1210,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             message: format!("failed to build pool upstream url: {err}"),
                             canonical_error_message: None,
                             failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                            blocked_binding: None,
                             connect_latency_ms: 0.0,
                             upstream_error_code: None,
                             upstream_error_message: None,
@@ -1336,6 +1362,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         status: err.status,
                         message: err.message,
                         failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                        blocked_binding: None,
                         connect_latency_ms: 0.0,
                         upstream_error_code: None,
                         upstream_error_message: None,
@@ -1388,6 +1415,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                         message: message.clone(),
                                         canonical_error_message: None,
                                         failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                                        blocked_binding: None,
                                         connect_latency_ms: 0.0,
                                         upstream_error_code: None,
                                         upstream_error_message: None,
@@ -1427,6 +1455,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             message: err.message,
                             canonical_error_message: None,
                             failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                            blocked_binding: None,
                             connect_latency_ms: 0.0,
                             upstream_error_code: None,
                             upstream_error_message: None,
@@ -1802,6 +1831,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     message: message.clone(),
                                     canonical_error_message: None,
                                     failure_kind,
+                                    blocked_binding: None,
                                     connect_latency_ms: elapsed_ms(connect_started),
                                     upstream_error_code: direct_image_handshake_timeout.then(
                                         || PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT.to_string(),
@@ -1954,6 +1984,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                         message: message.clone(),
                                         canonical_error_message: None,
                                         failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+                                        blocked_binding: None,
                                         connect_latency_ms: elapsed_ms(connect_started),
                                         upstream_error_code: None,
                                         upstream_error_message: None,
@@ -2043,6 +2074,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     },
                                     canonical_error_message: None,
                                     failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+                                    blocked_binding: None,
                                     connect_latency_ms: elapsed_ms(connect_started),
                                     upstream_error_code: direct_image_request.then(|| {
                                         PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT.to_string()
@@ -2114,6 +2146,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                         message: message.clone(),
                                         canonical_error_message: None,
                                         failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                                        blocked_binding: None,
                                         connect_latency_ms: 0.0,
                                         upstream_error_code: None,
                                         upstream_error_message: None,
@@ -2150,6 +2183,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     message: format!("failed to replay oauth request body: {err}"),
                                     canonical_error_message: None,
                                     failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                                    blocked_binding: None,
                                     connect_latency_ms: 0.0,
                                     upstream_error_code: None,
                                     upstream_error_message: None,
@@ -2187,6 +2221,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     message: format!("failed to replay oauth request body: {err}"),
                                     canonical_error_message: None,
                                     failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                                    blocked_binding: None,
                                     connect_latency_ms: 0.0,
                                     upstream_error_code: None,
                                     upstream_error_message: None,
@@ -2221,6 +2256,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                         ),
                                         canonical_error_message: None,
                                         failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                                        blocked_binding: None,
                                         connect_latency_ms: 0.0,
                                         upstream_error_code: None,
                                         upstream_error_message: None,
@@ -2490,6 +2526,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 message: format!("failed to build proxy response: {err}"),
                                 canonical_error_message: None,
                                 failure_kind: PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+                                blocked_binding: None,
                                 connect_latency_ms,
                                 upstream_error_code: None,
                                 upstream_error_message: None,
@@ -2885,6 +2922,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         message: message.clone(),
                         canonical_error_message: canonical_override,
                         failure_kind,
+                        blocked_binding: None,
                         connect_latency_ms,
                         upstream_error_code,
                         upstream_error_message,
@@ -3040,6 +3078,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 message: message.clone(),
                                 canonical_error_message: None,
                                 failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                                blocked_binding: None,
                                 connect_latency_ms,
                                 upstream_error_code: None,
                                 upstream_error_message: None,
@@ -3123,6 +3162,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             message: message.clone(),
                             canonical_error_message: None,
                             failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                            blocked_binding: None,
                             connect_latency_ms,
                             upstream_error_code: None,
                             upstream_error_message: None,
@@ -3285,6 +3325,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             message: message.clone(),
                             canonical_error_message: None,
                             failure_kind: PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+                            blocked_binding: None,
                             connect_latency_ms,
                             upstream_error_code,
                             upstream_error_message,
@@ -3377,6 +3418,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             message: message.clone(),
                             canonical_error_message: None,
                             failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                            blocked_binding: None,
                             connect_latency_ms,
                             upstream_error_code: None,
                             upstream_error_message: None,
