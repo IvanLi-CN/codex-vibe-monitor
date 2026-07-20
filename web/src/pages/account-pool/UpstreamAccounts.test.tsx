@@ -686,11 +686,12 @@ function clickDrawerBackdrop() {
 
 function clickDrawerGutter() {
   const gutter = document.body.querySelector(".drawer-shell")?.parentElement;
-  if (!(gutter instanceof HTMLElement)) {
+  const overlay = gutter?.previousElementSibling;
+  if (!(gutter instanceof HTMLElement) || !(overlay instanceof HTMLElement)) {
     throw new Error("missing drawer gutter");
   }
   act(() => {
-    gutter.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    overlay.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
   return gutter;
 }
