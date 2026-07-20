@@ -13,9 +13,9 @@
 ### Goals
 
 - 把 Dashboard 无 scope 网速统一成“系统对所有上游的真实 socket 带宽”，口径固定为代理与上游之间 TCP 连接的实际读写字节。
-- 在 `今日 / 昨日 / 24 小时` 的活动总览 metric toggle 中继续提供 `网速`，并让闭合历史桶读取按 host 聚合的分钟 rollup，live 末桶读取全局 live bucket。
+- 在 `今日 / 昨日 / 24 小时` 的活动总览 metric toggle 中继续提供 `网速`，并让闭合历史桶读取按 host 聚合的分钟 rollup，live 末桶继续显示当前开放 5 分钟桶。
 - 保留账号 scoped activity overview 的既有语义，不让这次全局真值切源改坏账号详情页。
-- 在工作台上游账号区顶部保留总上传/总下载速率胶囊，但它必须直接显示全局 live 速率，而不是由各账号卡速率求和得到。
+- 在工作台上游账号区顶部保留总上传/总下载速率胶囊，但它必须直接显示“上一完整 1 秒”的全局真实 socket 速率，而不是由各账号卡速率求和得到。
 
 ### Non-goals
 
@@ -31,7 +31,7 @@
 
 - `src/dashboard_network_speed.rs` 及代理热路径：global + host + account 三维实时秒桶与开放 5 分钟桶、连接级读写字节写入点与终态清理。
 - `pool_upstream_request_attempts.upstream_base_url_host` 与新的 `upstream_socket_network_minute` 分钟表。
-- `GET /api/stats/dashboard-activity` 与 `dashboardActivityLive`：追加全局 `networkLiveBucket`，保留账号级实时字段兼容对外合同。
+- `GET /api/stats/dashboard-activity` 与 `dashboardActivityLive`：追加全局 `networkLiveBucket` 与 `networkRealtimeRate`，并把账号级实时字段统一成上一完整 1 秒语义。
 - `GET /api/stats/dashboard-network-timeseries`：无 scope 时切到 host minute rollup + 全局 live bucket；账号 scoped 时保留既有路径。
 - `web/src/features/dashboard/DashboardActivityOverview.tsx`、`DashboardNetworkActivityChart.tsx`、`DashboardWorkingConversationsSection.tsx`、相关 hook、测试与视觉证据。
 
@@ -46,15 +46,15 @@
 ### MUST
 
 - 无 `upstreamAccountId` 的 Dashboard 网速必须展示“系统对所有上游的真实 socket 带宽”，不能再依赖账号级求和。
-- 实时速率必须包含进行中的流式请求，并以 15 秒滚动均值每秒更新一次。
+- 顶部实时速率必须包含进行中的流式请求，并固定显示上一完整 1 秒的原始速率；不得对当前秒 partial bytes 做外推，也不得再做 15 秒滚动均值。
 - `今日 / 昨日 / 24 小时` 的 metric toggle 必须出现 `网速`；`7 日 / 历史` 不得出现。
 - `网速` 图必须使用固定 5 分钟桶，同图展示上传/下载两条平滑半透明面积，保留 tooltip、图例与单位格式化。
 - `今日 / 24 小时` 必须显示当前未收口 5 分钟桶，且末桶由内存 current-bucket cache 驱动；`昨日` 只展示闭合历史桶。
 - pool invocation 跨 host 重试时，每个 attempt 的上传/下载都必须累计到全局与对应 host；不能按 invocation 去重。
 - HTTP 与 WebSocket 都必须走同一套连接级字节计数；OAuth 路径不能退回 reqwest body 近似值。
 - host 归一化固定为 lowercase；缺失 host 写入 `__unknown__`，仍参与全局汇总。
-- 工作台顶部总速率胶囊必须直接读取 `networkLiveBucket`；账号卡不得继续显示上传/下载速率。
-- 当前 5 分钟桶与实时 15 秒窗口必须以内存缓存为主；socket minute rollup 不做历史回填，初次 materialize 时只从当前 live table 尾部开始累计。
+- 工作台顶部总速率胶囊必须直接读取 `networkRealtimeRate`；`networkLiveBucket` 继续表示当前开放 5 分钟桶；账号卡不得继续显示上传/下载速率。
+- 当前 5 分钟桶与上一完整 1 秒实时快照必须以内存缓存为主；socket minute rollup 不做历史回填，初次 materialize 时只从当前 live table 尾部开始累计。
 - 连接在握手前失败、等待首包超时或流式途中提前 drop 时，已实际发生的 socket 字节仍必须冲刷到 live bucket 与 minute rollup，不能因为 future 被取消而丢样本。
 
 ### SHOULD
@@ -88,9 +88,10 @@
 | 接口（Name）                                       | 类型（Kind）        | 范围（Scope） | 变更（Change） | 负责人（Owner） | 使用方（Consumers）         | 备注（Notes）                               |
 | -------------------------------------------------- | ------------------- | ------------- | -------------- | --------------- | --------------------------- | ------------------------------------------- |
 | `GET /api/stats/dashboard-network-timeseries`      | http-endpoint       | external      | Add            | backend/stats   | Dashboard activity overview | dashboard-only；无 scope 时读 host minute   |
-| `DashboardActivityAccountResponse.*BytesPerSecond` | http-response-field | external      | Add            | backend/stats   | Dashboard upstream cards    | 账号级 15 秒滚动均值                        |
-| `DashboardActivityLiveAccount.*BytesPerSecond`     | sse/http-live-field | external      | Add            | backend/stats   | Dashboard live merge        | 与 in-progress live snapshot 同步更新       |
-| `DashboardActivityResponse.networkLiveBucket`      | http-response-field | external      | Add            | backend/stats   | Dashboard upstream summary  | 全局实时总速率                              |
+| `DashboardActivityAccountResponse.*BytesPerSecond` | http-response-field | external      | Add            | backend/stats   | Dashboard upstream cards    | 账号级上一完整 1 秒原始速率                 |
+| `DashboardActivityLiveAccount.*BytesPerSecond`     | sse/http-live-field | external      | Add            | backend/stats   | Dashboard live merge        | 与账号级上一完整 1 秒快照保持同语义         |
+| `DashboardActivityResponse.networkLiveBucket`      | http-response-field | external      | Add            | backend/stats   | Dashboard network chart     | 当前开放 5 分钟桶，用于历史图末桶           |
+| `DashboardActivityResponse.networkRealtimeRate`    | http-response-field | external      | Add            | backend/stats   | Dashboard upstream summary  | 全局上一完整 1 秒实时总速率                 |
 | `DashboardNetworkSpeedCache`                       | runtime-cache       | internal      | Update         | backend/proxy   | proxy dispatch / stats read | 维护 global + host + account 秒桶与开放桶   |
 | `upstream_socket_network_minute`                   | sqlite-table        | internal      | Add            | backend/stats   | Dashboard network history   | host + account 维度分钟累计，不存 global 行 |
 | `useDashboardNetworkTimeseries`                    | ui-hook             | internal      | Update         | web/dashboard   | Dashboard activity overview | 初次 hydrate + SSE 合并当前开放桶           |
@@ -99,7 +100,7 @@
 
 - Given 任意一个 Dashboard 无 scope 总览，When `网速` tab 激活，Then 图表展示的是系统对所有上游的真实 socket 带宽，而不是账号卡求和或单 invocation 近似值。
 - Given 任意一张上游账号卡，When 页面渲染，Then 顶部仍保留总速率胶囊，但账号卡自身不显示上传/下载速率行。
-- Given 流式响应仍在进行中，When 观察顶部总速率胶囊，Then 下载速率会每秒更新，而不是等调用结束后才变化。
+- Given 流式响应仍在进行中，When 观察顶部总速率胶囊，Then 下载速率按上一完整秒逐秒更新，而不是等调用结束后才变化，也不会把当前秒 partial bytes 外推成虚高峰值。
 - Given 活动总览处于 `今日 / 昨日 / 24 小时`，When 打开 metric toggle，Then 可以看到 `网速`；切到 `7 日 / 历史` 时看不到它。
 - Given `今日` 或 `24 小时` 选择 `网速`，When 当前开放 5 分钟桶仍在接收流量，Then 图表末桶会持续更新。
 - Given `昨日` 选择 `网速`，When 图表渲染完成，Then 不包含实时开放桶，只显示闭合历史 5 分钟桶。

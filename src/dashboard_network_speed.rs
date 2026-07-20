@@ -1,11 +1,12 @@
 use super::*;
 
-pub(crate) const DASHBOARD_NETWORK_REALTIME_WINDOW_SECONDS: i64 = 15;
 pub(crate) const DASHBOARD_NETWORK_BUCKET_SECONDS: i64 = 300;
 const DASHBOARD_NETWORK_SECOND_BUCKET_RETENTION_SECONDS: i64 = 45;
 pub(crate) const DASHBOARD_ACTIVITY_REALTIME_WINDOW_SECONDS: i64 = 60;
 const DASHBOARD_ACTIVITY_SECOND_BUCKET_RETENTION_SECONDS: i64 = 180;
 pub(crate) const DASHBOARD_NETWORK_UNKNOWN_UPSTREAM_HOST: &str = "__unknown__";
+pub(crate) const DASHBOARD_NETWORK_REALTIME_SAMPLE_SECONDS: i64 = 1;
+const DASHBOARD_NETWORK_LIVE_STREAM_KEEPALIVE_SECONDS: i64 = 15;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct DashboardNetworkRateSnapshot {
@@ -13,10 +14,28 @@ pub(crate) struct DashboardNetworkRateSnapshot {
     pub(crate) download_bytes_per_second: f64,
 }
 
+impl DashboardNetworkRateSnapshot {
+    fn from_totals(totals: DashboardNetworkByteTotals, sample_seconds: i64) -> Self {
+        let divisor = sample_seconds.max(1) as f64;
+        Self {
+            upload_bytes_per_second: totals.upload_bytes.max(0) as f64 / divisor,
+            download_bytes_per_second: totals.download_bytes.max(0) as f64 / divisor,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct DashboardNetworkByteTotals {
     pub(crate) upload_bytes: i64,
     pub(crate) download_bytes: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DashboardNetworkRealtimeByteSnapshot {
+    pub(crate) sample_start_epoch_second: i64,
+    pub(crate) sample_end_epoch_second: i64,
+    pub(crate) sample_seconds: i64,
+    pub(crate) totals: DashboardNetworkByteTotals,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -604,30 +623,28 @@ impl DashboardNetworkSpeedCache {
             let Some(upstream_account_id) = scope.upstream_account_id() else {
                 continue;
             };
-            let mut totals = DashboardNetworkByteTotals::default();
-            for bucket in buckets {
-                if bucket.epoch_second
-                    < now_epoch_second
-                        .saturating_sub(DASHBOARD_NETWORK_REALTIME_WINDOW_SECONDS.saturating_sub(1))
-                {
-                    continue;
-                }
-                if bucket.epoch_second > now_epoch_second {
-                    continue;
-                }
-                totals.add_assign(bucket.totals);
-            }
+            let snapshot = snapshot_complete_second_rate_from_buckets(buckets, now_epoch_second);
             rates.insert(
                 upstream_account_id,
-                DashboardNetworkRateSnapshot {
-                    upload_bytes_per_second: totals.upload_bytes.max(0) as f64
-                        / DASHBOARD_NETWORK_REALTIME_WINDOW_SECONDS as f64,
-                    download_bytes_per_second: totals.download_bytes.max(0) as f64
-                        / DASHBOARD_NETWORK_REALTIME_WINDOW_SECONDS as f64,
-                },
+                DashboardNetworkRateSnapshot::from_totals(snapshot.totals, snapshot.sample_seconds),
             );
         }
         rates
+    }
+
+    pub(crate) fn snapshot_scope_realtime_bytes(
+        &self,
+        scope: DashboardNetworkScopeKey,
+        now: DateTime<Utc>,
+    ) -> DashboardNetworkRealtimeByteSnapshot {
+        let now_epoch_second = now.timestamp();
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("dashboard network speed cache should not be poisoned");
+        prune_second_buckets_locked(&mut inner, now_epoch_second);
+        let buckets = inner.second_buckets.get(&scope);
+        snapshot_complete_second_rate_from_optional_buckets(buckets, now_epoch_second)
     }
 
     pub(crate) fn should_keep_dashboard_activity_live_stream(&self, now: DateTime<Utc>) -> bool {
@@ -637,7 +654,8 @@ impl DashboardNetworkSpeedCache {
             .lock()
             .expect("dashboard network speed cache should not be poisoned");
         if inner.latest_speed_epoch_second.is_some_and(|latest| {
-            now_epoch_second.saturating_sub(latest) < DASHBOARD_NETWORK_REALTIME_WINDOW_SECONDS
+            now_epoch_second.saturating_sub(latest)
+                < DASHBOARD_NETWORK_LIVE_STREAM_KEEPALIVE_SECONDS
         }) {
             return true;
         }
@@ -994,6 +1012,36 @@ fn record_activity_scope_delta_locked(
     }
 }
 
+fn snapshot_complete_second_rate_from_buckets(
+    buckets: &VecDeque<DashboardNetworkSecondBucket>,
+    now_epoch_second: i64,
+) -> DashboardNetworkRealtimeByteSnapshot {
+    snapshot_complete_second_rate_from_optional_buckets(Some(buckets), now_epoch_second)
+}
+
+fn snapshot_complete_second_rate_from_optional_buckets(
+    buckets: Option<&VecDeque<DashboardNetworkSecondBucket>>,
+    now_epoch_second: i64,
+) -> DashboardNetworkRealtimeByteSnapshot {
+    let sample_end_epoch_second = now_epoch_second;
+    let sample_start_epoch_second =
+        sample_end_epoch_second.saturating_sub(DASHBOARD_NETWORK_REALTIME_SAMPLE_SECONDS);
+    let target_epoch_second = sample_start_epoch_second;
+    let totals = buckets
+        .and_then(|rows| {
+            rows.iter()
+                .find(|bucket| bucket.epoch_second == target_epoch_second)
+                .map(|bucket| bucket.totals)
+        })
+        .unwrap_or_default();
+    DashboardNetworkRealtimeByteSnapshot {
+        sample_start_epoch_second,
+        sample_end_epoch_second,
+        sample_seconds: DASHBOARD_NETWORK_REALTIME_SAMPLE_SECONDS,
+        totals,
+    }
+}
+
 fn record_activity_bucket_delta_locked(
     inner: &mut DashboardNetworkSpeedCacheInner,
     scope: DashboardNetworkScopeKey,
@@ -1272,7 +1320,7 @@ mod tests {
     }
 
     #[test]
-    fn realtime_rates_use_last_fifteen_seconds_only() {
+    fn realtime_rates_use_previous_complete_second_only() {
         let cache = DashboardNetworkSpeedCache::new(fixed_utc(0));
         cache.record_request_bytes(
             "invoke-1",
@@ -1299,10 +1347,10 @@ mod tests {
             fixed_utc(24),
         );
 
-        let rates = cache.snapshot_account_rates(fixed_utc(24));
+        let rates = cache.snapshot_account_rates(fixed_utc(25));
         let account = rates.get(&Some(7)).copied().unwrap_or_default();
-        assert!((account.upload_bytes_per_second - 5.0).abs() < f64::EPSILON);
-        assert!((account.download_bytes_per_second - 4.0).abs() < f64::EPSILON);
+        assert!((account.upload_bytes_per_second - 45.0).abs() < f64::EPSILON);
+        assert!((account.download_bytes_per_second - 60.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -1334,9 +1382,66 @@ mod tests {
         );
         cache.finish_invocation("invoke-1", "2026-07-15 12:00:00");
 
-        let rates = cache.snapshot_account_rates(fixed_utc(100));
+        let rates = cache.snapshot_account_rates(fixed_utc(101));
         let account = rates.get(&None).copied().unwrap_or_default();
-        assert!((account.upload_bytes_per_second - 26.0).abs() < f64::EPSILON);
+        assert!((account.upload_bytes_per_second - 390.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn realtime_rates_ignore_current_second_partial_bytes() {
+        let cache = DashboardNetworkSpeedCache::new(fixed_utc(0));
+        cache.record_request_bytes(
+            "invoke-1",
+            "2026-07-15 12:00:00",
+            Some(7),
+            Some("api.openai.com"),
+            90,
+            fixed_utc(200),
+        );
+        cache.record_request_bytes(
+            "invoke-1",
+            "2026-07-15 12:00:00",
+            Some(7),
+            Some("api.openai.com"),
+            120,
+            fixed_utc(201),
+        );
+
+        let rates = cache.snapshot_account_rates(fixed_utc(201));
+        let account = rates.get(&Some(7)).copied().unwrap_or_default();
+        assert!((account.upload_bytes_per_second - 90.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn global_realtime_rate_reads_previous_complete_second() {
+        let cache = DashboardNetworkSpeedCache::new(fixed_utc(0));
+        cache.record_request_bytes(
+            "invoke-1",
+            "2026-07-15 12:00:00",
+            Some(7),
+            Some("api.openai.com"),
+            8240,
+            fixed_utc(320),
+        );
+        cache.record_response_chunk_bytes(
+            "invoke-2",
+            "2026-07-15 12:00:01",
+            Some(8),
+            Some("api.openai.com"),
+            4096,
+            fixed_utc(320),
+        );
+
+        let snapshot =
+            cache.snapshot_scope_realtime_bytes(DashboardNetworkScopeKey::Global, fixed_utc(321));
+        let rate =
+            DashboardNetworkRateSnapshot::from_totals(snapshot.totals, snapshot.sample_seconds);
+        assert_eq!(snapshot.sample_start_epoch_second, 320);
+        assert_eq!(snapshot.sample_end_epoch_second, 321);
+        assert_eq!(snapshot.totals.upload_bytes, 8240);
+        assert_eq!(snapshot.totals.download_bytes, 4096);
+        assert!((rate.upload_bytes_per_second - 8240.0).abs() < f64::EPSILON);
+        assert!((rate.download_bytes_per_second - 4096.0).abs() < f64::EPSILON);
     }
 
     #[test]

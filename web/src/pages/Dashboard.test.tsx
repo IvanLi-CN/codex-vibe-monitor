@@ -158,7 +158,7 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
       invocation: { record: { invokeId: string } };
     }) => void;
     upstreamAccountActivity?: {
-      networkLiveBucket?: {
+      networkRealtimeRate?: {
         uploadBytesPerSecond?: number;
         downloadBytesPerSecond?: number;
       } | null;
@@ -170,8 +170,8 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
         {cards.map((card) => card.currentInvocation.preview.endpoint ?? "").join(",")}
       </span>
       <span data-testid="dashboard-working-conversations-network-live-bucket">
-        {upstreamAccountActivity?.networkLiveBucket
-          ? `${upstreamAccountActivity.networkLiveBucket.uploadBytesPerSecond ?? 0}/${upstreamAccountActivity.networkLiveBucket.downloadBytesPerSecond ?? 0}`
+        {upstreamAccountActivity?.networkRealtimeRate
+          ? `${upstreamAccountActivity.networkRealtimeRate.uploadBytesPerSecond ?? 0}/${upstreamAccountActivity.networkRealtimeRate.downloadBytesPerSecond ?? 0}`
           : "missing"}
       </span>
       {cards[0] ? (
@@ -485,14 +485,14 @@ function installSummaryMocks() {
           models: [],
         },
       },
-      networkLiveBucket: {
-        bucketStart: "2026-04-08T00:00:00.000Z",
-        bucketEnd: "2026-04-08T00:05:00.000Z",
+      networkRealtimeRate: {
+        sampleStart: "2026-04-08T00:04:59.000Z",
+        sampleEnd: "2026-04-08T00:05:00.000Z",
+        sampleSeconds: 1,
         uploadBytesPerSecond: 2048,
         downloadBytesPerSecond: 4096,
-        uploadBytes: 2048 * 300,
-        downloadBytes: 4096 * 300,
-        isLiveBucket: true,
+        uploadBytes: 2048,
+        downloadBytes: 4096,
       },
       accounts: [
         {

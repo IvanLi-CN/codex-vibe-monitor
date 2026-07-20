@@ -1828,6 +1828,8 @@ pub(crate) struct DashboardActivityResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) network_live_bucket: Option<DashboardNetworkTimeseriesPointResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) network_realtime_rate: Option<DashboardNetworkRealtimeRateResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) accounts: Option<Vec<DashboardActivityAccountResponse>>,
 }
 
@@ -1857,6 +1859,18 @@ pub(crate) struct DashboardNetworkTimeseriesPointResponse {
     pub(crate) upload_bytes: i64,
     pub(crate) download_bytes: i64,
     pub(crate) is_live_bucket: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DashboardNetworkRealtimeRateResponse {
+    pub(crate) sample_start: String,
+    pub(crate) sample_end: String,
+    pub(crate) sample_seconds: i64,
+    pub(crate) upload_bytes_per_second: f64,
+    pub(crate) download_bytes_per_second: f64,
+    pub(crate) upload_bytes: i64,
+    pub(crate) download_bytes: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]

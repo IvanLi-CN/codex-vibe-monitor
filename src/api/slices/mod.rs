@@ -2,7 +2,6 @@ use super::*;
 
 #[expect(
     clippy::too_many_arguments,
-    clippy::large_enum_variant,
     reason = "Existing internal response adapters preserve established call-site and payload contracts."
 )]
 mod error_distribution_and_sse;

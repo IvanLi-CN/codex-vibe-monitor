@@ -7864,6 +7864,10 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
     )
     .await?;
     let account_rates = dashboard_network_speed_cache.snapshot_account_rates(now);
+    let global_realtime_rate = build_dashboard_network_realtime_rate_response(
+        dashboard_network_speed_cache
+            .snapshot_scope_realtime_bytes(DashboardNetworkScopeKey::Global, now),
+    );
     let mut live_bucket_account_ids = counts.keys().copied().collect::<Vec<_>>();
     for upstream_account_id in account_rates.keys() {
         if !live_bucket_account_ids.contains(upstream_account_id) {
@@ -7959,6 +7963,7 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
             )
             .await?,
         ),
+        network_realtime_rate: Some(global_realtime_rate),
         accounts,
     })
 }
@@ -10654,6 +10659,9 @@ pub(crate) async fn fetch_dashboard_activity(
     let network_live_bucket = live
         .as_ref()
         .and_then(|snapshot| snapshot.network_live_bucket.clone());
+    let network_realtime_rate = live
+        .as_ref()
+        .and_then(|snapshot| snapshot.network_realtime_rate.clone());
     let include_recent = params.include_recent.unwrap_or(true);
     let request_range =
         resolve_dashboard_activity_exact_range(params.range.as_str(), reporting_tz)?;
@@ -10720,6 +10728,7 @@ pub(crate) async fn fetch_dashboard_activity(
         },
         summary: snapshot.summary,
         network_live_bucket,
+        network_realtime_rate,
         accounts,
     };
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
@@ -11135,6 +11144,30 @@ fn dashboard_network_bucket_rate(
         .num_milliseconds()
         .max(1);
     total_bytes.max(0) as f64 / (effective_millis as f64 / 1000.0)
+}
+
+fn build_dashboard_network_realtime_rate_response(
+    snapshot: DashboardNetworkRealtimeByteSnapshot,
+) -> DashboardNetworkRealtimeRateResponse {
+    DashboardNetworkRealtimeRateResponse {
+        sample_start: format_utc_iso_precise(
+            Utc.timestamp_opt(snapshot.sample_start_epoch_second, 0)
+                .single()
+                .expect("valid realtime sample start"),
+        ),
+        sample_end: format_utc_iso_precise(
+            Utc.timestamp_opt(snapshot.sample_end_epoch_second, 0)
+                .single()
+                .expect("valid realtime sample end"),
+        ),
+        sample_seconds: snapshot.sample_seconds,
+        upload_bytes_per_second: snapshot.totals.upload_bytes.max(0) as f64
+            / snapshot.sample_seconds.max(1) as f64,
+        download_bytes_per_second: snapshot.totals.download_bytes.max(0) as f64
+            / snapshot.sample_seconds.max(1) as f64,
+        upload_bytes: snapshot.totals.upload_bytes.max(0),
+        download_bytes: snapshot.totals.download_bytes.max(0),
+    }
 }
 
 fn build_dashboard_network_timeseries_point_response(
@@ -11557,6 +11590,7 @@ mod upstream_account_activity_rate_tests {
 #[cfg(test)]
 mod dashboard_network_timeseries_tests {
     use super::*;
+    use serde_json::json;
     use sqlx::sqlite::SqlitePoolOptions;
 
     async fn network_pool() -> Pool<Sqlite> {
@@ -11753,6 +11787,49 @@ mod dashboard_network_timeseries_tests {
         assert_eq!(rows[0].bucket_start_epoch_second, bucket_start_epoch);
         assert_eq!(rows[0].upload_bytes, 140);
         assert_eq!(rows[0].download_bytes, 280);
+    }
+
+    #[test]
+    fn dashboard_network_realtime_rate_response_serializes_complete_second_snapshot() {
+        let response =
+            build_dashboard_network_realtime_rate_response(DashboardNetworkRealtimeByteSnapshot {
+                sample_start_epoch_second: Utc
+                    .with_ymd_and_hms(2026, 7, 19, 18, 3, 59)
+                    .single()
+                    .expect("valid sample start")
+                    .timestamp(),
+                sample_end_epoch_second: Utc
+                    .with_ymd_and_hms(2026, 7, 19, 18, 4, 0)
+                    .single()
+                    .expect("valid sample end")
+                    .timestamp(),
+                sample_seconds: 1,
+                totals: DashboardNetworkByteTotals {
+                    upload_bytes: 2048,
+                    download_bytes: 4096,
+                },
+            });
+
+        assert_eq!(response.sample_start, "2026-07-19T18:03:59Z");
+        assert_eq!(response.sample_end, "2026-07-19T18:04:00Z");
+        assert_eq!(response.sample_seconds, 1);
+        assert_eq!(response.upload_bytes_per_second, 2048.0);
+        assert_eq!(response.download_bytes_per_second, 4096.0);
+
+        let payload =
+            serde_json::to_value(&response).expect("serialize dashboard network realtime rate");
+        assert_eq!(
+            payload,
+            json!({
+                "sampleStart": "2026-07-19T18:03:59Z",
+                "sampleEnd": "2026-07-19T18:04:00Z",
+                "sampleSeconds": 1,
+                "uploadBytesPerSecond": 2048.0,
+                "downloadBytesPerSecond": 4096.0,
+                "uploadBytes": 2048,
+                "downloadBytes": 4096
+            })
+        );
     }
 }
 

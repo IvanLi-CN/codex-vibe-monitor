@@ -127,6 +127,15 @@ function createResponse(inProgressCount: number): DashboardActivityResponse {
       downloadBytes: 38_400,
       isLiveBucket: true,
     },
+    networkRealtimeRate: {
+      sampleStart: "2026-07-16T10:04:59Z",
+      sampleEnd: "2026-07-16T10:05:00Z",
+      sampleSeconds: 1,
+      uploadBytesPerSecond: 64,
+      downloadBytesPerSecond: 128,
+      uploadBytes: 64,
+      downloadBytes: 128,
+    },
     accounts: [
       {
         accountKey: "upstream:7",
@@ -234,6 +243,15 @@ describe("mergeDashboardActivityLiveSnapshot", () => {
         downloadBytes: 307_200,
         isLiveBucket: true,
       },
+      networkRealtimeRate: {
+        sampleStart: "2026-07-16T10:05:29Z",
+        sampleEnd: "2026-07-16T10:05:30Z",
+        sampleSeconds: 1,
+        uploadBytesPerSecond: 77,
+        downloadBytesPerSecond: 155,
+        uploadBytes: 77,
+        downloadBytes: 155,
+      },
       accounts: [
         {
           accountKey: "upstream:7",
@@ -256,6 +274,8 @@ describe("mergeDashboardActivityLiveSnapshot", () => {
     expect(merged.summary.stats.inProgressConversationCount).toBe(3);
     expect(merged.networkLiveBucket?.uploadBytesPerSecond).toBe(512);
     expect(merged.networkLiveBucket?.downloadBytesPerSecond).toBe(1024);
+    expect(merged.networkRealtimeRate?.uploadBytesPerSecond).toBe(77);
+    expect(merged.networkRealtimeRate?.downloadBytesPerSecond).toBe(155);
     expect(merged.accounts?.[0]).toEqual(
       expect.objectContaining({
         inProgressInvocationCount: 3,
