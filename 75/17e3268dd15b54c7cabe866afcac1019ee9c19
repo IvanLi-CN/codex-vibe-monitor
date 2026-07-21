@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.46.0",
+  "base_stable_version": "2.45.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-21T12:31:41Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.46.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "f91ce4c18cb9cef48d946a0bffa5c9cca9b032c6",
+  "pr_number": 677,
+  "pr_title": "feat(web): remember bulk route bind recent targets",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.46.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.46.0",
+  "target_sha": "7517e3268dd15b54c7cabe866afcac1019ee9c19",
+  "type_label": "type:minor"
+}
