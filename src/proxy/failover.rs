@@ -39,6 +39,8 @@ pub(crate) fn notify_pool_no_available_wait_hook(state: &AppState) {
 #[cfg(not(test))]
 pub(crate) fn notify_pool_no_available_wait_hook(_state: &AppState) {}
 
+const POOL_ACCOUNT_RESOLUTION_SQLITE_LOCK_RETRY_ATTEMPTS: usize = 5;
+
 pub(crate) fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
     let text = value.to_str().ok()?.trim();
     if text.is_empty() {
@@ -242,14 +244,14 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolutionWithWait> {
     let poll_interval = state.pool_no_available_wait.normalized_poll_interval();
+    let mut sqlite_lock_retries = 0;
 
     loop {
         let now = Instant::now();
         if total_timeout_deadline.is_some_and(|deadline| now >= deadline) {
             return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
         }
-        let resolution =
-            resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override(
+        let resolution = match resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override(
                 state,
                 sticky_key,
                 requested_model,
@@ -261,7 +263,31 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
                 endpoint,
                 image_intent,
             )
-            .await?;
+            .await
+        {
+            Ok(resolution) => {
+                sqlite_lock_retries = 0;
+                resolution
+            }
+            Err(err)
+                if sqlite_lock_retries < POOL_ACCOUNT_RESOLUTION_SQLITE_LOCK_RETRY_ATTEMPTS
+                    && is_sqlite_lock_error(&err) =>
+            {
+                sqlite_lock_retries += 1;
+                let now = Instant::now();
+                if total_timeout_deadline.is_some_and(|deadline| now >= deadline) {
+                    return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
+                }
+                let retry_delay = total_timeout_deadline
+                    .map(|deadline| {
+                        poll_interval.min(deadline.saturating_duration_since(now))
+                    })
+                    .unwrap_or(poll_interval);
+                tokio::time::sleep(retry_delay).await;
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
         if wait_for_no_available
             && matches!(
                 resolution,

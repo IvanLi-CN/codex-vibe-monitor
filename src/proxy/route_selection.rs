@@ -5,6 +5,9 @@ use super::*;
 type ViaPoolResponseFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Response, ProxyErrorResponse>> + Send + 'a>>;
 
+const PROMPT_CACHE_ROUTING_SQLITE_LOCK_RETRY_ATTEMPTS: usize = 5;
+const PROMPT_CACHE_ROUTING_SQLITE_LOCK_RETRY_DELAY: Duration = Duration::from_millis(10);
+
 fn plain_proxy_error(status: StatusCode, message: impl Into<String>) -> ProxyErrorResponse {
     let message = message.into();
     ProxyErrorResponse {
@@ -240,19 +243,32 @@ pub(crate) async fn load_via_pool_effective_routing_constraint(
     request_contains_encrypted_content: bool,
 ) -> Result<(Option<PromptCacheConversationBindingConstraint>, bool), (StatusCode, String)> {
     let encrypted_owner_routing_enabled = encrypted_session_owner_routing_enabled(state).await;
-    resolve_prompt_cache_effective_routing_constraint(
-        &state.pool,
-        prompt_cache_key,
-        request_contains_encrypted_content,
-        encrypted_owner_routing_enabled,
-    )
-    .await
-    .map_err(|err| {
-        (
-            StatusCode::BAD_GATEWAY,
-            format!("failed to resolve prompt cache conversation binding: {err}"),
+    let mut sqlite_lock_retries = 0;
+    loop {
+        match resolve_prompt_cache_effective_routing_constraint(
+            &state.pool,
+            prompt_cache_key,
+            request_contains_encrypted_content,
+            encrypted_owner_routing_enabled,
         )
-    })
+        .await
+        {
+            Ok(value) => return Ok(value),
+            Err(err)
+                if sqlite_lock_retries < PROMPT_CACHE_ROUTING_SQLITE_LOCK_RETRY_ATTEMPTS
+                    && is_sqlite_lock_error(&err) =>
+            {
+                sqlite_lock_retries += 1;
+                tokio::time::sleep(PROMPT_CACHE_ROUTING_SQLITE_LOCK_RETRY_DELAY).await;
+            }
+            Err(err) => {
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    format!("failed to resolve prompt cache conversation binding: {err}"),
+                ));
+            }
+        }
+    }
 }
 
 pub(crate) async fn load_via_pool_effective_routing(
