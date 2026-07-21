@@ -515,13 +515,13 @@
   state: expanded pool attempt detail with synthetic terminal record
   evidence_note: verifies seven real pool attempts render as attempt cards while the `budget_exhausted_final` row renders as a separate terminal state with no retry index or timing labels.
   image:
-  ![号池终态记录拆分效果](visual-evidence/pool-terminal-state.png)
+  ![号池终态记录拆分效果](docs/specs/z9h7v-invocation-log-observability/visual-evidence/pool-terminal-state.png)
 - source_type: storybook_canvas
   story_id_or_title: Dashboard/WorkingConversationsSection/ConversationHistoryDrawerOpen
   state: dashboard conversation history drawer
   evidence_note: verifies the dashboard conversation detail opens to the full retained call history drawer with no time-range selector, paginates the 316-record retained history snapshot, renders the zoomable and pannable activity chart, keeps records newest-first, and uses the dark floating tooltip surface.
   image:
-  ![Dashboard conversation history drawer](visual-evidence/dashboard-conversation-history-drawer.png)
+  ![Dashboard conversation history drawer](docs/specs/z9h7v-invocation-log-observability/visual-evidence/dashboard-conversation-history-drawer.png)
 - source_type: storybook_canvas
   story_id_or_title: Monitoring/PromptCacheConversationTable/ShortSameDayDrawerOpen
   state: short same-day conversation history drawer
