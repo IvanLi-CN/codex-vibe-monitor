@@ -5985,7 +5985,7 @@ export function DashboardWorkingConversationsSection({
                       data-testid="dashboard-working-conversations-route-bind-recent-chip"
                       data-kind={item.target.kind}
                       className={cn(
-                        "dashboard-route-bind-recent-chip inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border px-2.5 text-left text-[11px] font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100",
+                        "dashboard-route-bind-recent-chip inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 text-left text-[10px] font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100",
                         item.target.kind === "group"
                           ? item.active
                             ? "border-info/45 bg-info/12 tone-ink-info font-semibold ring-1 ring-inset ring-info/18"
@@ -5996,10 +5996,10 @@ export function DashboardWorkingConversationsSection({
                       )}
                       onClick={() => applyRouteBindRecentTargetSelection(item.target)}
                     >
-                      <span className="shrink-0 text-[9px] font-semibold uppercase tracking-[0.1em] opacity-80">
+                      <span className="shrink-0 text-[8px] font-semibold uppercase tracking-[0.08em] opacity-80">
                         {item.typeLabel}
                       </span>
-                      <span className="min-w-0 max-w-[15rem] truncate whitespace-nowrap sm:max-w-[16rem]">
+                      <span className="min-w-0 max-w-[14rem] truncate whitespace-nowrap sm:max-w-[15rem]">
                         {item.displayLabel}
                       </span>
                     </button>
@@ -6022,12 +6022,12 @@ export function DashboardWorkingConversationsSection({
                       }}
                       type="button"
                       tabIndex={-1}
-                      className="dashboard-route-bind-recent-chip inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border px-2.5 text-left text-[11px] font-medium"
+                      className="dashboard-route-bind-recent-chip inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 text-left text-[10px] font-medium"
                     >
-                      <span className="shrink-0 text-[9px] font-semibold uppercase tracking-[0.1em] opacity-80">
+                      <span className="shrink-0 text-[8px] font-semibold uppercase tracking-[0.08em] opacity-80">
                         {item.typeLabel}
                       </span>
-                      <span className="min-w-0 max-w-[15rem] truncate whitespace-nowrap sm:max-w-[16rem]">
+                      <span className="min-w-0 max-w-[14rem] truncate whitespace-nowrap sm:max-w-[15rem]">
                         {item.displayLabel}
                       </span>
                     </button>
