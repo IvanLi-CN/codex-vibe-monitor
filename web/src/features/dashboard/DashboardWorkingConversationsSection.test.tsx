@@ -28,6 +28,7 @@ import {
   DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY,
   readPersistedDashboardWorkspaceView,
 } from "./dashboardActivityRange";
+import { DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_STORAGE_KEY } from "./dashboardBulkRouteBindPreferences";
 
 const LONG_ERROR_SUMMARY =
   '[upstream_http_5xx] pool upstream responded with 502: {"error":{"message":"Upstream request failed","type":"upstream_error"}} event: response.failed data: {"type":"response.failed","response":{"id":"resp_test_error_summary","model":"gpt-5.4","status":"failed"}}';
@@ -6022,6 +6023,549 @@ describe("DashboardWorkingConversationsSection", () => {
       ).toContain("已选 2 个对话"),
     );
     expect(onOpenConversation).not.toHaveBeenCalled();
+  });
+
+  it("restores the most recent valid route-bind target and prunes stale recent entries", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = createBulkConversationFetchMock();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    window.localStorage.setItem(
+      DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_STORAGE_KEY,
+      JSON.stringify([
+        { kind: "group", groupName: "Missing", usedAt: 300 },
+        { kind: "upstreamAccount", upstreamAccountId: 21, usedAt: 200 },
+        { kind: "group", groupName: "Tokyo", usedAt: 100 },
+      ]),
+    );
+
+    try {
+      renderSection(
+        createResponse([
+          createConversation("pck-recent-restore", [
+            createPreview({
+              id: 85,
+              invokeId: "invoke-recent-restore",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+            }),
+          ]),
+        ]),
+      );
+
+      const user = userEvent.setup();
+      await user.click(
+        host?.querySelector(
+          '[data-testid="dashboard-working-conversations-selection-mode-button"]',
+        ) as HTMLElement,
+      );
+      await user.click(
+        host?.querySelector('[data-testid="dashboard-working-conversation-card"]') as HTMLElement,
+      );
+      await user.click(
+        document.body.querySelector(
+          '[data-testid="dashboard-working-conversations-route-bind-button"]',
+        ) as HTMLElement,
+      );
+
+      await waitFor(() =>
+        expect(
+          document.body.querySelector('[role="combobox"][aria-label="批量账号绑定目标"]'),
+        ).not.toBeNull(),
+      );
+
+      const kindCombobox = document.body.querySelector(
+        '[role="combobox"][aria-label="批量绑定目标类型"]',
+      );
+      const accountCombobox = document.body.querySelector(
+        '[role="combobox"][aria-label="批量账号绑定目标"]',
+      );
+      expect(kindCombobox?.textContent).toContain("上游账号");
+      expect(accountCombobox?.textContent).toContain("growth.6vv4@relay.example · CIII");
+
+      expect(
+        JSON.parse(
+          window.localStorage.getItem(DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_STORAGE_KEY) ?? "[]",
+        ),
+      ).toEqual([
+        { kind: "upstreamAccount", upstreamAccountId: 21, usedAt: 200 },
+        { kind: "group", groupName: "Tokyo", usedAt: 100 },
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("switches route-bind kind and target from recent chips without submitting immediately", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = createBulkConversationFetchMock();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    window.localStorage.setItem(
+      DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_STORAGE_KEY,
+      JSON.stringify([
+        { kind: "upstreamAccount", upstreamAccountId: 21, usedAt: 200 },
+        { kind: "group", groupName: "Tokyo", usedAt: 100 },
+      ]),
+    );
+
+    try {
+      renderSection(
+        createResponse([
+          createConversation("pck-recent-chip-switch", [
+            createPreview({
+              id: 86,
+              invokeId: "invoke-recent-chip-switch",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+            }),
+          ]),
+        ]),
+      );
+
+      const user = userEvent.setup();
+      await user.click(
+        host?.querySelector(
+          '[data-testid="dashboard-working-conversations-selection-mode-button"]',
+        ) as HTMLElement,
+      );
+      await user.click(
+        host?.querySelector('[data-testid="dashboard-working-conversation-card"]') as HTMLElement,
+      );
+      await user.click(
+        document.body.querySelector(
+          '[data-testid="dashboard-working-conversations-route-bind-button"]',
+        ) as HTMLElement,
+      );
+
+      await waitFor(() =>
+        expect(
+          document.body.querySelectorAll(
+            '[data-testid="dashboard-working-conversations-route-bind-recent-chip"]',
+          ).length,
+        ).toBe(2),
+      );
+
+      const groupRecentChip = Array.from(
+        document.body.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversations-route-bind-recent-chip"]',
+        ),
+      ).find((chip) => chip.textContent?.includes("Tokyo"));
+      if (!(groupRecentChip instanceof HTMLButtonElement)) {
+        throw new Error("missing route bind group recent chip");
+      }
+
+      await user.click(groupRecentChip);
+
+      const kindCombobox = document.body.querySelector(
+        '[role="combobox"][aria-label="批量绑定目标类型"]',
+      );
+      const groupCombobox = document.body.querySelector(
+        '[role="combobox"][aria-label="批量分组绑定目标"]',
+      );
+      expect(kindCombobox?.textContent).toContain("分组");
+      expect(groupCombobox?.textContent).toContain("Tokyo");
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).includes("/api/stats/prompt-cache-conversation-bindings/bulk-actions"),
+        ),
+      ).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("keeps compact recent targets in chip form without submitting immediately", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = createBulkConversationFetchMock();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    window.localStorage.setItem(
+      DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_STORAGE_KEY,
+      JSON.stringify([
+        { kind: "upstreamAccount", upstreamAccountId: 21, usedAt: 200 },
+        { kind: "group", groupName: "Tokyo", usedAt: 100 },
+      ]),
+    );
+
+    try {
+      renderSection(
+        createResponse([
+          createConversation("pck-recent-compact-chip", [
+            createPreview({
+              id: 89,
+              invokeId: "invoke-recent-compact-chip",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+            }),
+          ]),
+        ]),
+      );
+
+      const user = userEvent.setup();
+      await user.click(
+        host?.querySelector(
+          '[data-testid="dashboard-working-conversations-selection-mode-button"]',
+        ) as HTMLElement,
+      );
+      await user.click(
+        host?.querySelector('[data-testid="dashboard-working-conversation-card"]') as HTMLElement,
+      );
+      await user.click(
+        document.body.querySelector(
+          '[data-testid="dashboard-working-conversations-route-bind-button"]',
+        ) as HTMLElement,
+      );
+
+      await waitFor(() =>
+        expect(
+          document.body.querySelector(
+            '[data-testid="dashboard-working-conversations-route-bind-recents-grid"]',
+          ),
+        ).not.toBeNull(),
+      );
+
+      expect(
+        document.body.querySelector(
+          '[data-testid="dashboard-working-conversations-route-bind-recent-select"]',
+        ),
+      ).toBeNull();
+
+      const groupRecentChip = Array.from(
+        document.body.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversations-route-bind-recent-chip"]',
+        ),
+      ).find((chip) => chip.dataset.kind === "group" && chip.textContent?.includes("Tokyo"));
+      if (!(groupRecentChip instanceof HTMLButtonElement)) {
+        throw new Error("missing compact recent Tokyo chip");
+      }
+      await user.click(groupRecentChip);
+
+      const kindCombobox = document.body.querySelector(
+        '[role="combobox"][aria-label="批量绑定目标类型"]',
+      );
+      const groupCombobox = document.body.querySelector(
+        '[role="combobox"][aria-label="批量分组绑定目标"]',
+      );
+      expect(kindCombobox?.textContent).toContain("分组");
+      expect(groupCombobox?.textContent).toContain("Tokyo");
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).includes("/api/stats/prompt-cache-conversation-bindings/bulk-actions"),
+        ),
+      ).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("hides overflowing recent chips on compact widths without rendering overflow placeholders", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = createBulkConversationFetchMock();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    window.localStorage.setItem(
+      DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_STORAGE_KEY,
+      JSON.stringify([
+        { kind: "upstreamAccount", upstreamAccountId: 21, usedAt: 500 },
+        { kind: "group", groupName: "Tokyo", usedAt: 400 },
+        { kind: "group", groupName: "CIII", usedAt: 300 },
+        { kind: "upstreamAccount", upstreamAccountId: 101, usedAt: 200 },
+        { kind: "group", groupName: "Relay-Blue", usedAt: 100 },
+      ]),
+    );
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function () {
+      const element = this as HTMLElement;
+      if (
+        element.getAttribute("aria-hidden") === "true" &&
+        element.className.includes("pointer-events-none")
+      ) {
+        return 260;
+      }
+      return 1700;
+    });
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function () {
+      const text = (this as HTMLElement).textContent ?? "";
+      if (text.includes("growth.6vv4@relay.example")) return 214;
+      if (text.includes("Codex Pro - Tokyo")) return 182;
+      if (text.includes("Relay-Blue")) return 132;
+      if (text.includes("Tokyo")) return 110;
+      if (text.includes("CIII")) return 94;
+      return 96;
+    });
+
+    try {
+      renderSection(
+        createResponse([
+          createConversation("pck-recent-compact-overflow", [
+            createPreview({
+              id: 90,
+              invokeId: "invoke-recent-compact-overflow",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+            }),
+          ]),
+        ]),
+      );
+
+      const user = userEvent.setup();
+      await user.click(
+        host?.querySelector(
+          '[data-testid="dashboard-working-conversations-selection-mode-button"]',
+        ) as HTMLElement,
+      );
+      await user.click(
+        host?.querySelector('[data-testid="dashboard-working-conversation-card"]') as HTMLElement,
+      );
+      await user.click(
+        document.body.querySelector(
+          '[data-testid="dashboard-working-conversations-route-bind-button"]',
+        ) as HTMLElement,
+      );
+
+      await waitFor(() =>
+        expect(
+          document.body.querySelectorAll(
+            '[data-testid="dashboard-working-conversations-route-bind-recent-chip"]',
+          ).length,
+        ).toBe(3),
+      );
+
+      expect(
+        document.body.querySelector(
+          '[data-testid="dashboard-working-conversations-route-bind-recent-overflow-chip"]',
+        ),
+      ).toBeNull();
+      const recentGrid = document.body.querySelector(
+        '[data-testid="dashboard-working-conversations-route-bind-recents-grid"]',
+      );
+      expect(recentGrid?.textContent).not.toContain("Codex Pro - Tokyo");
+      expect(recentGrid?.textContent).not.toContain("Relay-Blue");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("persists successful route-bind targets as a unified MRU list without duplicates", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = createBulkConversationFetchMock();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const onConversationsChanged = vi.fn();
+
+    try {
+      renderSection(
+        createResponse([
+          createConversation("pck-route-bind-mru", [
+            createPreview({
+              id: 87,
+              invokeId: "invoke-route-bind-mru",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+            }),
+          ]),
+        ]),
+        { onConversationsChanged },
+      );
+
+      const user = userEvent.setup();
+      await user.click(
+        host?.querySelector(
+          '[data-testid="dashboard-working-conversations-selection-mode-button"]',
+        ) as HTMLElement,
+      );
+      await user.click(
+        host?.querySelector('[data-testid="dashboard-working-conversation-card"]') as HTMLElement,
+      );
+      await user.click(
+        document.body.querySelector(
+          '[data-testid="dashboard-working-conversations-route-bind-button"]',
+        ) as HTMLElement,
+      );
+
+      const applyButton = () =>
+        Array.from(
+          document.body.querySelectorAll(
+            '[data-testid="dashboard-working-conversations-route-bind-dialog"] button',
+          ) ?? [],
+        ).find((button) => button.textContent?.includes("应用绑定"));
+
+      await waitFor(() => expect(applyButton()).toBeInstanceOf(HTMLButtonElement));
+      await user.click(applyButton() as HTMLButtonElement);
+
+      await waitFor(() => expect(onConversationsChanged).toHaveBeenCalledTimes(1));
+      expect(
+        JSON.parse(
+          window.localStorage.getItem(DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_STORAGE_KEY) ?? "[]",
+        ),
+      ).toEqual([{ kind: "group", groupName: "CIII", usedAt: expect.any(Number) }]);
+
+      await user.click(
+        host?.querySelector('[data-testid="dashboard-working-conversation-card"]') as HTMLElement,
+      );
+      await user.click(
+        document.body.querySelector(
+          '[data-testid="dashboard-working-conversations-route-bind-button"]',
+        ) as HTMLElement,
+      );
+
+      const kindCombobox = document.body.querySelector(
+        '[role="combobox"][aria-label="批量绑定目标类型"]',
+      );
+      if (!(kindCombobox instanceof HTMLButtonElement)) {
+        throw new Error("missing route bind kind combobox");
+      }
+      await user.click(kindCombobox);
+
+      const upstreamAccountOption = Array.from(
+        document.body.querySelectorAll('[role="option"]'),
+      ).find((option) => option.textContent?.includes("上游账号"));
+      if (!(upstreamAccountOption instanceof HTMLElement)) {
+        throw new Error("missing upstream account option");
+      }
+      await user.click(upstreamAccountOption);
+
+      await waitFor(() =>
+        expect(
+          document.body.querySelector('[role="combobox"][aria-label="批量账号绑定目标"]'),
+        ).not.toBeNull(),
+      );
+      await user.click(applyButton() as HTMLButtonElement);
+
+      await waitFor(() => expect(onConversationsChanged).toHaveBeenCalledTimes(2));
+      const afterAccountBind = JSON.parse(
+        window.localStorage.getItem(DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_STORAGE_KEY) ?? "[]",
+      );
+      expect(afterAccountBind).toHaveLength(2);
+      expect(afterAccountBind[0]).toMatchObject({
+        kind: "upstreamAccount",
+        upstreamAccountId: 21,
+      });
+      expect(afterAccountBind[1]).toMatchObject({
+        kind: "group",
+        groupName: "CIII",
+      });
+
+      await user.click(
+        host?.querySelector('[data-testid="dashboard-working-conversation-card"]') as HTMLElement,
+      );
+      await user.click(
+        document.body.querySelector(
+          '[data-testid="dashboard-working-conversations-route-bind-button"]',
+        ) as HTMLElement,
+      );
+
+      const groupRecentChip = Array.from(
+        document.body.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversations-route-bind-recent-chip"]',
+        ),
+      ).find((chip) => chip.dataset.kind === "group" && chip.textContent?.includes("CIII"));
+      if (!(groupRecentChip instanceof HTMLButtonElement)) {
+        throw new Error("missing route bind CIII recent chip");
+      }
+      await user.click(groupRecentChip);
+      await user.click(applyButton() as HTMLButtonElement);
+
+      await waitFor(() => expect(onConversationsChanged).toHaveBeenCalledTimes(3));
+      const afterRebindingGroup = JSON.parse(
+        window.localStorage.getItem(DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_STORAGE_KEY) ?? "[]",
+      );
+      expect(afterRebindingGroup).toHaveLength(2);
+      expect(afterRebindingGroup[0]).toMatchObject({
+        kind: "group",
+        groupName: "CIII",
+      });
+      expect(afterRebindingGroup[1]).toMatchObject({
+        kind: "upstreamAccount",
+        upstreamAccountId: 21,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("degrades gracefully when route-bind recent storage is unavailable", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = createBulkConversationFetchMock();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const originalGetItem = window.localStorage.getItem;
+    const originalSetItem = window.localStorage.setItem;
+    const originalRemoveItem = window.localStorage.removeItem;
+
+    Object.defineProperty(window.localStorage, "getItem", {
+      configurable: true,
+      value: (key: string) => {
+        if (key === DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_STORAGE_KEY) {
+          throw new Error("storage blocked");
+        }
+        return originalGetItem.call(window.localStorage, key);
+      },
+    });
+    Object.defineProperty(window.localStorage, "setItem", {
+      configurable: true,
+      value: (key: string, value: string) => {
+        if (key === DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_STORAGE_KEY) {
+          throw new Error("storage blocked");
+        }
+        return originalSetItem.call(window.localStorage, key, value);
+      },
+    });
+    Object.defineProperty(window.localStorage, "removeItem", {
+      configurable: true,
+      value: (key: string) => {
+        if (key === DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_STORAGE_KEY) {
+          throw new Error("storage blocked");
+        }
+        return originalRemoveItem.call(window.localStorage, key);
+      },
+    });
+
+    try {
+      renderSection(
+        createResponse([
+          createConversation("pck-recent-storage-blocked", [
+            createPreview({
+              id: 88,
+              invokeId: "invoke-recent-storage-blocked",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+            }),
+          ]),
+        ]),
+      );
+
+      const user = userEvent.setup();
+      await user.click(
+        host?.querySelector(
+          '[data-testid="dashboard-working-conversations-selection-mode-button"]',
+        ) as HTMLElement,
+      );
+      await user.click(
+        host?.querySelector('[data-testid="dashboard-working-conversation-card"]') as HTMLElement,
+      );
+      await user.click(
+        document.body.querySelector(
+          '[data-testid="dashboard-working-conversations-route-bind-button"]',
+        ) as HTMLElement,
+      );
+
+      await waitFor(() =>
+        expect(
+          document.body.querySelector(
+            '[data-testid="dashboard-working-conversations-route-bind-dialog"]',
+          ),
+        ).not.toBeNull(),
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      Object.defineProperty(window.localStorage, "getItem", {
+        configurable: true,
+        value: originalGetItem,
+      });
+      Object.defineProperty(window.localStorage, "setItem", {
+        configurable: true,
+        value: originalSetItem,
+      });
+      Object.defineProperty(window.localStorage, "removeItem", {
+        configurable: true,
+        value: originalRemoveItem,
+      });
+    }
   });
 
   it("keeps failed bulk route-binding selections while clearing succeeded ones", async () => {
