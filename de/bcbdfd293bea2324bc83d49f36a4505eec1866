@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.45.0",
+  "base_stable_version": "2.44.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-21T06:34:56Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.45.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "20f3ddcf68c02171b1c5c2bf833c8c0d7c5edb9f",
+  "pr_number": 671,
+  "pr_title": "feat(records): expand filter diagnostics",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.45.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.45.0",
+  "target_sha": "debcbdfd293bea2324bc83d49f36a4505eec1866",
+  "type_label": "type:minor"
+}
