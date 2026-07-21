@@ -56,6 +56,7 @@
   - 桌面端复用现有 popover chrome，实现 `hover 打开 + click 固定 + 再次点击/外点/Esc 关闭`。
   - 窄屏端改用 dialog/sheet 承载同一 panel 内容。
   - 图表层将 `isAvailable=false` 样本渲染成空档，并用 warming callout / tooltip 明确“历史积累中”而不是零流量。
+  - `DashboardNetworkRecentPanel` 的秒级图表 tick 计算改成普通派生值，避免组件从 loading 切到有数据时因条件分支后的额外 hook 触发 React hook order 崩溃。
 
 ## 测试与 Storybook
 
@@ -66,6 +67,7 @@
 - 前端新增 recent 面板单测覆盖：
   - `useDashboardRecentNetworkWindow` 的 topic descriptor、打开期间 1 秒 refresh cadence 与关闭停表。
   - `DashboardNetworkRecentPopover` 的桌面 hover/click 固定、`Esc` 关闭、窄屏 dialog 打开与 warming banner 渲染。
+  - `DashboardNetworkRecentPanel` 从 loading 切到真实数据时的 hook order 回归，防止线上打开 recent 面板直接触发 React 310。
 - 后端定向单测覆盖：
   - global/host/account runtime bucket 记账。
   - socket minute rollup 的 direct 写入、cursor seed 与 pool retry host split。

@@ -295,6 +295,20 @@ describe("DashboardNetworkRecentPopover", () => {
 });
 
 describe("DashboardNetworkRecentPanel", () => {
+  it("does not change hook order when loading resolves into chart data", () => {
+    render(<DashboardNetworkRecentPanel response={null} loading={true} error={null} />);
+
+    expect(() => {
+      act(() => {
+        root?.render(
+          <DashboardNetworkRecentPanel response={createResponse()} loading={false} error={null} />,
+        );
+      });
+    }).not.toThrow();
+
+    expect(host?.querySelector('[data-testid="dashboard-network-recent-chart"]')).not.toBeNull();
+  });
+
   it("shows the warming banner for unavailable leading history", () => {
     render(
       <DashboardNetworkRecentPanel

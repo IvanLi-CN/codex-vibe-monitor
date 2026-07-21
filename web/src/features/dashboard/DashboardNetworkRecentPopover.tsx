@@ -98,7 +98,7 @@ function buildRecentTooltipRows(
   for (const seriesKey of ["uploadChartValue", "downloadChartValue"] as const) {
     const entry = payload?.find((candidate) => candidate.dataKey === seriesKey);
     const point = entry?.payload;
-    if (!point || !point.isAvailable) {
+    if (!point?.isAvailable) {
       continue;
     }
     const isUploadSeries = seriesKey === "uploadChartValue";
@@ -214,17 +214,17 @@ export function DashboardNetworkRecentPanel({
     };
   });
   const rangeStartTimestamp = new Date(response.rangeStart).getTime();
-  const chartTickValues = useMemo(() => {
-    const lastPointTimestamp = chartData.at(-1)?.chartTimestamp ?? rangeStartTimestamp;
-    const ticks: number[] = [];
-    for (let offsetSeconds = 0; offsetSeconds < response.windowSeconds; offsetSeconds += 60) {
-      ticks.push(rangeStartTimestamp + offsetSeconds * 1000);
-    }
-    if (ticks.at(-1) !== lastPointTimestamp) {
-      ticks.push(lastPointTimestamp);
-    }
-    return ticks.filter((tick, index, all) => (index === 0 ? true : tick > all[index - 1]!));
-  }, [chartData, rangeStartTimestamp, response.windowSeconds]);
+  const lastPointTimestamp = chartData.at(-1)?.chartTimestamp ?? rangeStartTimestamp;
+  const chartTickValues: number[] = [];
+  for (let offsetSeconds = 0; offsetSeconds < response.windowSeconds; offsetSeconds += 60) {
+    chartTickValues.push(rangeStartTimestamp + offsetSeconds * 1000);
+  }
+  if (chartTickValues.at(-1) !== lastPointTimestamp) {
+    chartTickValues.push(lastPointTimestamp);
+  }
+  const uniqueChartTickValues = chartTickValues.filter(
+    (tick, index, all) => index === 0 || tick > (all[index - 1] ?? Number.NEGATIVE_INFINITY),
+  );
 
   return (
     <div
@@ -307,7 +307,7 @@ export function DashboardNetworkRecentPanel({
                 dataKey="chartTimestamp"
                 scale="time"
                 domain={["dataMin", "dataMax"]}
-                ticks={chartTickValues}
+                ticks={uniqueChartTickValues}
                 axisLine={{ stroke: chartColors.gridLine }}
                 tickLine={{ stroke: chartColors.gridLine }}
                 tick={{ fill: chartColors.axisText, fontSize: 12 }}
