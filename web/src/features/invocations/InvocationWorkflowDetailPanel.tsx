@@ -1382,8 +1382,10 @@ function DetailFrame({
   children: React.ReactNode;
 }) {
   return (
-    <div className="invocation-detail-subsurface space-y-2.5 rounded-b-[1rem] border-t-0 px-3.5 pb-3.5 pt-2.5">
-      {controls ? <div className="flex items-center justify-between gap-3">{controls}</div> : null}
+    <div className="invocation-detail-subsurface min-w-0 max-w-full overflow-hidden space-y-2.5 rounded-b-[1rem] border-t-0 px-3.5 pb-3.5 pt-2.5">
+      {controls ? (
+        <div className="flex min-w-0 items-center justify-between gap-3">{controls}</div>
+      ) : null}
       {children}
     </div>
   );
@@ -2441,7 +2443,7 @@ function TimelineSummary({
       data-testid={testId}
       data-open={isOpen ? "true" : "false"}
       className={cn(
-        "invocation-detail-block w-full rounded-[1rem] px-4 py-3 text-left transition-[background-color,border-color] duration-200",
+        "invocation-detail-block w-full min-w-0 max-w-full overflow-hidden rounded-[1rem] px-4 py-3 text-left transition-[background-color,border-color] duration-200",
         !isOpen && "hover:border-[var(--invocation-detail-subsurface-border-active)]",
       )}
     >
@@ -2650,7 +2652,7 @@ export function InvocationWorkflowAttemptRecord({
   if (!entry.attempt) return null;
 
   return (
-    <div className={className} data-testid={testId}>
+    <div className={cn("min-w-0 max-w-full", className)} data-testid={testId}>
       <TimelineSummary
         entry={entry}
         localeTag={localeTag}
@@ -2934,10 +2936,15 @@ export function InvocationWorkflowDetailPanel({
   const isCompact = size === "compact";
 
   return (
-    <div className={cn("space-y-4", isCompact ? "invocation-detail-mobile-flat text-sm" : "")}>
+    <div
+      className={cn(
+        "min-w-0 max-w-full overflow-hidden space-y-4",
+        isCompact ? "invocation-detail-mobile-flat text-sm" : "",
+      )}
+    >
       <section
         className={cn(
-          "invocation-detail-hero-surface rounded-[1.2rem] px-4 py-4 sm:px-5 sm:py-5",
+          "invocation-detail-hero-surface min-w-0 max-w-full overflow-hidden rounded-[1.2rem] px-4 py-4 sm:px-5 sm:py-5",
           isCompact && "rounded-none px-0 py-0",
         )}
       >
@@ -3094,7 +3101,7 @@ export function InvocationWorkflowDetailPanel({
         </div>
       </section>
 
-      <section className="invocation-detail-timeline-surface rounded-[1.15rem] px-4 py-4 sm:px-5 sm:py-5">
+      <section className="invocation-detail-timeline-surface min-w-0 max-w-full overflow-hidden rounded-[1.15rem] px-4 py-4 sm:px-5 sm:py-5">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <h3 className="text-sm font-semibold text-base-content">
@@ -3108,7 +3115,7 @@ export function InvocationWorkflowDetailPanel({
           </div>
         </div>
 
-        <div className={cn("relative", size === "compact" ? "pl-4" : "pl-5")}>
+        <div className={cn("relative min-w-0", size === "compact" ? "pl-4" : "pl-5")}>
           <div
             className={cn(
               "absolute top-3 bottom-3 w-px bg-base-300/72",
@@ -3121,14 +3128,14 @@ export function InvocationWorkflowDetailPanel({
               const kindMeta = resolveKindMeta(entry.kind, isZh);
 
               return (
-                <div key={entry.blockId} className="relative">
+                <div key={entry.blockId} className="relative min-w-0">
                   <span
                     className={cn(
                       "invocation-detail-marker absolute left-0 top-5 h-[1.05rem] w-[1.05rem] rounded-full border-2",
                       kindMeta.markerClass,
                     )}
                   />
-                  <div className={cn(size === "compact" ? "ml-4" : "ml-5")}>
+                  <div className={cn("min-w-0", size === "compact" ? "ml-4" : "ml-5")}>
                     {entry.attempt ? (
                       <InvocationWorkflowAttemptRecord
                         record={record}

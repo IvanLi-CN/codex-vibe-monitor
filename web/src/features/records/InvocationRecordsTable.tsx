@@ -918,7 +918,7 @@ export function InvocationRecordsTable({
   };
 
   return (
-    <div className="space-y-3">
+    <div className="min-w-0 max-w-full space-y-3">
       {showInlineError ? (
         <Alert variant="error">{t("records.table.loadError", { error: error ?? "" })}</Alert>
       ) : null}
@@ -931,7 +931,7 @@ export function InvocationRecordsTable({
           return (
             <article
               key={row.rowKey}
-              className="rounded-xl border border-base-300/70 bg-base-100/45 px-3.5 py-3.5"
+              className="min-w-0 overflow-hidden rounded-xl border border-base-300/70 bg-base-100/45 px-3.5 py-3.5"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -1014,7 +1014,10 @@ export function InvocationRecordsTable({
 
               {isExpanded ? (
                 <div className="mt-4 border-t border-base-300/60 pt-4" id={detailId}>
-                  <div className="space-y-4" data-testid="records-expanded-detail-panel">
+                  <div
+                    className="min-w-0 max-w-full overflow-hidden space-y-4"
+                    data-testid="records-expanded-detail-panel"
+                  >
                     {renderDetailSummaryStrip(
                       row,
                       focus,
@@ -1052,8 +1055,8 @@ export function InvocationRecordsTable({
         })}
       </div>
 
-      <div className="hidden overflow-x-auto rounded-xl border border-base-300/70 bg-base-100/50 md:block">
-        <table className="min-w-full table-fixed border-separate border-spacing-0 text-sm">
+      <div className="hidden w-full min-w-0 max-w-full overflow-x-auto rounded-xl border border-base-300/70 bg-base-100/50 md:block">
+        <table className="w-full table-fixed border-separate border-spacing-0 text-sm">
           <thead className="bg-base-200/65 text-[11px] uppercase tracking-[0.08em] text-base-content/70">
             <tr>
               <th className="px-3 py-3 text-left font-semibold">{t("table.column.time")}</th>
@@ -1147,9 +1150,9 @@ export function InvocationRecordsTable({
                   </tr>
                   {isExpanded ? (
                     <tr className="bg-base-200/55">
-                      <td colSpan={detailColSpan} className="px-4 py-4">
+                      <td colSpan={detailColSpan} className="max-w-0 px-4 py-4">
                         <div
-                          className="space-y-3 rounded-xl border border-base-300/70 bg-base-200/45 p-3"
+                          className="min-w-0 max-w-full overflow-hidden space-y-3 rounded-xl border border-base-300/70 bg-base-200/45 p-3"
                           data-testid="records-expanded-detail-panel"
                         >
                           {renderDetailSummaryStrip(
@@ -1175,7 +1178,7 @@ export function InvocationRecordsTable({
                               </button>
                             </div>
                           ) : null}
-                          <div id={detailId}>
+                          <div id={detailId} className="min-w-0 max-w-full overflow-hidden">
                             <InvocationWorkflowDetailPanel
                               record={row.record}
                               focusedAttemptId={isExpanded ? focusedAttemptId : null}

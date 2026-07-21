@@ -62,6 +62,18 @@ function parsedViewer() {
 }
 
 describe("StructuredPayloadViewer", () => {
+  it("wraps parsed payloads in an overflow boundary", () => {
+    render(
+      JSON.stringify({
+        status: "completed",
+        trace: `trace-${"0123456789abcdef".repeat(32)}`,
+      }),
+    );
+
+    expect(parsedViewer()?.className).toContain("overflow-hidden");
+    expect(host?.querySelector(".structured-payload-scroll")).not.toBeNull();
+  });
+
   it("resets large payload parse consent when the payload value changes", async () => {
     const parseSpy = vi.spyOn(structuredPayloadModule, "parseStructuredPayload");
     const firstPayload = JSON.stringify({ payload: "x".repeat(1024 * 1024) });

@@ -105,7 +105,7 @@ export function StructuredPayloadViewer({
 
   if (parsed == null) {
     return (
-      <div className={cn("min-w-0 max-w-full space-y-2", className)}>
+      <div className={cn("min-w-0 max-w-full overflow-hidden space-y-2", className)}>
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning/25 bg-warning/8 px-3 py-2">
           <span className="text-xs leading-5 text-base-content/72">{labels.largePayload}</span>
           <Button
@@ -124,7 +124,7 @@ export function StructuredPayloadViewer({
 
   if (parsed.kind === "text") {
     return (
-      <div className={cn("min-w-0 max-w-full", className)} data-payload-kind="text">
+      <div className={cn("min-w-0 max-w-full overflow-hidden", className)} data-payload-kind="text">
         <RawText value={value} />
       </div>
     );
@@ -132,7 +132,7 @@ export function StructuredPayloadViewer({
 
   return (
     <div
-      className={cn("min-w-0 max-w-full space-y-2", className)}
+      className={cn("min-w-0 max-w-full overflow-hidden space-y-2", className)}
       data-testid="structured-payload-viewer"
       data-payload-kind={parsed.kind}
     >

@@ -14,6 +14,7 @@
 - Records 页面现已将首屏模型摘要收口为“响应模型主值 + reroute 信号 + reasoningEffort badge + imageIntent badge”，缺值统一降级为 `—`，不再把推理或图片工具状态藏在次级明细里。
 - `/api/invocations` 现会复用当前 pricing catalog 为每条记录生成 advisory `costAudit`，比较持久化 `cost` 与本地重算成本；mismatch 使用 `0.000001 USD` 容差，warning 文案、图标与红色差异态在 Records 列表、展开摘要与详情卡复用同一套实现。
 - invocation workflow detail 现仅为最终成功 attempt 注入 `responseSummary.usage` Token/成本审计对象，补齐 `未命中缓存输入 Token / 命中缓存输入 Token / 输出 Token / 金额` 四项指标，并保持 `reasoningTokens` 的 `null` 与真实 `0` 语义分离。
+- Records 展开详情、workflow detail 与结构化 payload viewer 现统一补上 `min-w-0 / max-w-full / overflow-hidden` 宽度约束；打开响应体时，长且不可断行的 SSE/JSON 字段只会在 payload scroller 内横向滚动，不再把整条 Records 布局顶宽。
 - 共享 invocation preview 现已继续透出真实 `promptCacheKey`；Dashboard 上游账号活动 recent 行据此恢复稳定的对话短 ID 生成与详情抽屉 selection 关联，不再误用 `invokeId` 充当对话键。
 - 新 HTTP proxy invocation 的 `invokeId` 由 `nanoid` 使用固定 10 位大写可读 alphabet 生成，格式为 `^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{10}$`；历史 `proxy-...` ID 不迁移，旧 reservation recovery 解析只对历史格式生效。
 - 调用详情现在固定展示“请求模型 / 响应模型”两个 badge；旧记录仅有历史 `model` 时，响应模型回填旧值，请求模型显示 `—`。
@@ -67,6 +68,7 @@
 - `cd web && bun run test -- --run InvocationTable.test.tsx InvocationRecordsTable.test.tsx DashboardWorkingConversationsSection.test.tsx DashboardInvocationDetailDrawer.test.tsx promptCacheLive.test.ts invocationLiveMerge.test.ts`
 - `cd web && bun run test -- InvocationTable.test.tsx InvocationRecordsTable.test.tsx DashboardInvocationDetailDrawer.test.tsx`
 - `cd web && bun run test -- InvocationTable.test.tsx InvocationRecordsTable.test.tsx DashboardWorkingConversationsSection.test.tsx`
+- `cd web && bun run test -- --run StructuredPayloadViewer.test.tsx InvocationRecordsTable.test.tsx`
 - `cd web && bun run test`
 - `cd web && bun run test-storybook`
 - `cd web && bun run build`

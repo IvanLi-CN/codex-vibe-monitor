@@ -249,6 +249,7 @@
 - Given Dashboard 上游账号 recent 行来源于共享 invocation preview，When 用户点击调用打开详情，Then selection 使用真实 `promptCacheKey` 建立对话关联，而不是退化成 `invokeId`。
 - Given Live 表格展开详情或 Dashboard 调用详情抽屉打开，When 记录包含调用 ID、账号、端点、请求/响应模型、请求方 IP、重试和失败字段，Then 首屏按请求身份、路由与模型、失败信号、细节保留、阶段耗时分组展示，不再以无差别双列字段平铺呈现。
 - Given 调用详情包含长 `invokeId`、`promptCacheKey`、endpoint、IPv6 或错误消息，When 页面在桌面和窄屏渲染，Then 文本在容器内换行或截断，不造成横向滚动或相邻内容遮挡。
+- Given Records 展开详情已打开且 owner 切到某次尝试的“响应体”面板，When 响应体包含长且不可断行的 SSE/JSON 字段，Then 页面外层宽度保持稳定、不出现新的文档级横向滚动，额外宽度只允许由 payload scroller 自身承担。
 - Given 新 HTTP proxy invocation 被创建，When 查询 `/api/invocations`、接收 SSE `records` 或打开 Live/Dashboard 详情，Then `invokeId` 为 10 位短 ID，且不含 `proxy`、连字符、时间戳或内部 counter。
 - Given 历史 `proxy-9061-1783013997090` 记录存在，When 用户过滤、查询、展示或打开详情，Then 仍按完整历史 `invokeId` 兼容处理，不迁移、不回填。
 - Given 健康与事件带有当前账号的 `attemptId`，When 用户点击上游尝试 ID，Then 账号详情立即进入“请求”tab，后端只返回该尝试所在页，目标记录展开诊断并短暂高亮。
@@ -336,6 +337,22 @@
   submission_gate: approved
   image:
   ![Records mobile long-field detail layout](./assets/records-detail-layout-mobile-long-fields-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Records/InvocationRecordsTable ResponseBodyWidthGuard
+  state: desktop records response-body width containment
+  requested_viewport: 1280x900
+  viewport_strategy: browser-resize-fallback
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies opening the desktop Records response-body panel keeps document width stable while the structured payload viewer owns horizontal scrolling for long unbroken SSE fields.
+  PR: include
+  target_program: mock-only
+  capture_scope: page
+  sensitive_exclusion: fixture-only invocation data
+  submission_gate: approved
+  image:
+  ![Records response-body width guard](./assets/records-response-body-width-guard-storybook.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Invocations/InvocationWorkflowDetailPanel SuccessfulTokenCostAudit

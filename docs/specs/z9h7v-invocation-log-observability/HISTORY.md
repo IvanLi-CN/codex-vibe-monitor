@@ -56,3 +56,4 @@
 - 2026-07-20: Records 首屏模型摘要收口为响应模型主值 + reroute / reasoningEffort / imageIntent 信号；`聚焦摘要` 统一更名为 `Token 与成本`，并在列表成本列、展开摘要与详情卡之间复用同一套 mismatch warning 语义。
 - 2026-07-20: `/api/invocations` 记录对象新增 advisory `costAudit`，以持久化 `cost` 为真值、按当前 catalog 本地重算为对照，采用 `0.000001 USD` 容差并区分 `price_version_changed`、`total_mismatch` 与不可比较原因。
 - 2026-07-20: workflow detail 只为最终成功 attempt 注入 `responseSummary.usage` Token/成本审计对象，补齐未命中缓存输入、命中缓存输入、输出与金额四项指标，并修正 `reasoningTokens` 缺失不得伪造成 `0`。
+- 2026-07-21: 修复 Records 响应体面板打开后把整条详情布局顶宽的问题；展开详情、workflow detail 与结构化 payload viewer 统一改为由 payload scroller 承担超宽 SSE/JSON 内容，并补充对应 Storybook 回归证据。

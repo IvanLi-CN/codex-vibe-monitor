@@ -143,6 +143,70 @@ const TOKEN_COST_AUDIT_WARNING_RECORDS: ApiInvocation[] = [
   },
 ];
 
+const RESPONSE_BODY_WIDTH_GUARD_RECORD_ID = 6701;
+const RESPONSE_BODY_WIDTH_GUARD_RECORDS: ApiInvocation[] = [
+  {
+    ...STORYBOOK_INVOCATION_RECORDS[0]!,
+    id: RESPONSE_BODY_WIDTH_GUARD_RECORD_ID,
+    invokeId: "inv_story_response_body_width_guard",
+    status: "failed",
+    failureClass: "service_failure",
+    failureKind: "upstream_stream_error",
+    responseContentEncoding: "zstd",
+    upstreamAccountId: 77,
+    upstreamAccountName: "Pool Width Guard",
+  },
+];
+const RESPONSE_BODY_WIDTH_GUARD_BODY = [
+  {
+    type: "response.created",
+    response: {
+      id: `resp_${"width_guard_".repeat(36)}`,
+      status: "in_progress",
+      model: "gpt-5.4",
+    },
+    sequence_number: 0,
+  },
+  {
+    type: "response.output_item.added",
+    widthGuardProbe: `visible_unbroken_response_body_probe_${"0123456789abcdef".repeat(144)}`,
+    output_index: 0,
+    item: {
+      id: `msg_${"unbroken_payload_segment_".repeat(42)}`,
+      type: "message",
+      content: [
+        {
+          type: "output_text",
+          text: `This unbroken response body field must stay inside the payload scroller: ${"0123456789abcdef".repeat(96)}`,
+        },
+      ],
+    },
+    sequence_number: 1,
+  },
+  {
+    type: "response.completed",
+    response: {
+      status: "completed",
+      service_tier: "default",
+    },
+    sequence_number: 2,
+  },
+]
+  .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}`)
+  .join("\n\n");
+const RESPONSE_BODY_WIDTH_GUARD_RESPONSE_BODIES_BY_ID: InvocationResponseBodiesById = {
+  [RESPONSE_BODY_WIDTH_GUARD_RECORD_ID]: {
+    available: true,
+    bodyText: RESPONSE_BODY_WIDTH_GUARD_BODY,
+    captureSource: "raw_file",
+    bodySize: RESPONSE_BODY_WIDTH_GUARD_BODY.length,
+    bodyTruncated: false,
+    detailLevel: "full",
+    headers: { contentEncoding: "zstd" },
+    routing: { forwardedChunkCount: 83, usageObserved: true },
+  },
+};
+
 function buildStoryWorkflowUsage(record: ApiInvocation) {
   if (!record.costAudit) return null;
   return {
@@ -268,6 +332,26 @@ function createStoryWorkflowDetailsById(
       .filter((record) => Number.isFinite(record.id) && record.id > 0)
       .map((record) => [record.id, buildStoryWorkflowDetailResponse(record)]),
   );
+}
+
+function buildResponseBodyWidthGuardWorkflowDetails(): InvocationWorkflowDetailsById {
+  const record = RESPONSE_BODY_WIDTH_GUARD_RECORDS[0]!;
+  const detail = buildStoryWorkflowDetailResponse(record);
+  const attempt = detail.timeline.find((entry) => entry.attempt)?.attempt;
+
+  if (attempt) {
+    attempt.responseSummary = {
+      ...(attempt.responseSummary ?? {}),
+      responseBodyCapture: {
+        availableAtInvocationLevel: true,
+        size: RESPONSE_BODY_WIDTH_GUARD_BODY.length,
+        truncated: false,
+        detailLevel: "full",
+      },
+    };
+  }
+
+  return { [RESPONSE_BODY_WIDTH_GUARD_RECORD_ID]: detail };
 }
 
 type StorybookPoolAttemptsRegistry = {
@@ -405,9 +489,13 @@ function ensureStorybookPoolAttemptsRegistry() {
 function StorybookPoolAttemptsMock({
   children,
   records,
+  responseBodiesByIdOverrides,
+  workflowDetailsByIdOverrides,
 }: {
   children: ReactNode;
   records: typeof STORYBOOK_INVOCATION_RECORDS;
+  responseBodiesByIdOverrides?: InvocationResponseBodiesById;
+  workflowDetailsByIdOverrides?: InvocationWorkflowDetailsById;
 }) {
   const poolAttemptsByInvokeId = useMemo(
     () => createStoryPoolAttemptsByInvokeId(records),
@@ -415,10 +503,19 @@ function StorybookPoolAttemptsMock({
   );
   const detailsById = useMemo(() => createStoryInvocationRecordDetailsById(records), [records]);
   const responseBodiesById = useMemo(
-    () => createStoryInvocationResponseBodiesById(records),
-    [records],
+    () => ({
+      ...createStoryInvocationResponseBodiesById(records),
+      ...(responseBodiesByIdOverrides ?? {}),
+    }),
+    [records, responseBodiesByIdOverrides],
   );
-  const workflowDetailsById = useMemo(() => createStoryWorkflowDetailsById(records), [records]);
+  const workflowDetailsById = useMemo(
+    () => ({
+      ...createStoryWorkflowDetailsById(records),
+      ...(workflowDetailsByIdOverrides ?? {}),
+    }),
+    [records, workflowDetailsByIdOverrides],
+  );
   const poolAttemptsByInvokeIdRef = useRef(poolAttemptsByInvokeId);
   const detailsByIdRef = useRef(detailsById);
   const responseBodiesByIdRef = useRef(responseBodiesById);
@@ -472,6 +569,16 @@ const meta = {
           records={
             (context.args.records as typeof STORYBOOK_INVOCATION_RECORDS | undefined) ??
             STORYBOOK_INVOCATION_RECORDS
+          }
+          responseBodiesByIdOverrides={
+            context.parameters.invocationResponseBodiesById as
+              | InvocationResponseBodiesById
+              | undefined
+          }
+          workflowDetailsByIdOverrides={
+            context.parameters.invocationWorkflowDetailsById as
+              | InvocationWorkflowDetailsById
+              | undefined
           }
         >
           <StorySurface>
@@ -608,6 +715,68 @@ export const TokenCostAuditWarningDesktop: Story = {
       ).not.toBeNull();
       expect(document.body.textContent ?? "").toContain("Token 与成本");
       expect(document.body.textContent ?? "").toContain("本地");
+    });
+  },
+};
+
+export const ResponseBodyWidthGuard: Story = {
+  args: {
+    focus: "exception",
+    records: RESPONSE_BODY_WIDTH_GUARD_RECORDS,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    invocationResponseBodiesById: RESPONSE_BODY_WIDTH_GUARD_RESPONSE_BODIES_BY_ID,
+    invocationWorkflowDetailsById: buildResponseBodyWidthGuardWorkflowDetails(),
+    viewport: { defaultViewport: "desktop1280" },
+    docs: {
+      description: {
+        story:
+          "Desktop regression surface for long SSE response bodies. Opening the response-body panel must keep page width stable while the payload inspector owns any horizontal scrolling.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const initialRootOverflow =
+      document.documentElement.scrollWidth - document.documentElement.clientWidth;
+    expect(initialRootOverflow).toBeLessThanOrEqual(1);
+
+    await userEvent.click(canvas.getByRole("button", { name: /展开详情|show details/i }));
+    await waitFor(() => {
+      expect(
+        canvasElement.querySelector('[data-testid="records-expanded-detail-panel"]'),
+      ).not.toBeNull();
+      expect(document.body.textContent ?? "").toContain("响应体");
+    });
+
+    const responseBodyButton = Array.from(canvasElement.querySelectorAll("button")).find(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement &&
+        candidate.getClientRects().length > 0 &&
+        (candidate.textContent ?? "").includes("响应体"),
+    );
+    if (!responseBodyButton) {
+      throw new Error("missing response body metric button");
+    }
+
+    await userEvent.click(responseBodyButton);
+
+    await waitFor(() => {
+      const payloadScroll = Array.from(
+        document.querySelectorAll(".structured-payload-scroll"),
+      ).find(
+        (candidate): candidate is HTMLElement =>
+          candidate instanceof HTMLElement &&
+          candidate.offsetWidth > 0 &&
+          candidate.offsetHeight > 0,
+      );
+      expect(payloadScroll).not.toBeNull();
+      expect(payloadScroll?.scrollWidth ?? 0).toBeGreaterThan(payloadScroll?.clientWidth ?? 0);
+      expect(
+        document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      ).toBeLessThanOrEqual(1);
     });
   },
 };
