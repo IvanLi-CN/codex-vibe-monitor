@@ -40,6 +40,7 @@ pub(crate) fn notify_pool_no_available_wait_hook(state: &AppState) {
 pub(crate) fn notify_pool_no_available_wait_hook(_state: &AppState) {}
 
 const POOL_ACCOUNT_RESOLUTION_SQLITE_LOCK_RETRY_ATTEMPTS: usize = 5;
+const POOL_ACCOUNT_RESOLUTION_SQLITE_LOCK_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 pub(crate) fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
     let text = value.to_str().ok()?.trim();
@@ -280,9 +281,10 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
                 }
                 let retry_delay = total_timeout_deadline
                     .map(|deadline| {
-                        poll_interval.min(deadline.saturating_duration_since(now))
+                        POOL_ACCOUNT_RESOLUTION_SQLITE_LOCK_RETRY_DELAY
+                            .min(deadline.saturating_duration_since(now))
                     })
-                    .unwrap_or(poll_interval);
+                    .unwrap_or(POOL_ACCOUNT_RESOLUTION_SQLITE_LOCK_RETRY_DELAY);
                 tokio::time::sleep(retry_delay).await;
                 continue;
             }

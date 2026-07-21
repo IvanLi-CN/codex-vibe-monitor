@@ -221,8 +221,8 @@ pub(crate) async fn load_via_pool_prompt_cache_binding_constraint(
     prompt_cache_key: Option<&str>,
 ) -> Result<Option<PromptCacheConversationBindingConstraint>, (StatusCode, String)> {
     let encrypted_owner_routing_enabled = encrypted_session_owner_routing_enabled(state).await;
-    resolve_prompt_cache_effective_routing_constraint(
-        &state.pool,
+    resolve_prompt_cache_effective_routing_constraint_with_retry(
+        state,
         prompt_cache_key,
         false,
         encrypted_owner_routing_enabled,
@@ -237,12 +237,12 @@ pub(crate) async fn load_via_pool_prompt_cache_binding_constraint(
     })
 }
 
-pub(crate) async fn load_via_pool_effective_routing_constraint(
+async fn resolve_prompt_cache_effective_routing_constraint_with_retry(
     state: &AppState,
     prompt_cache_key: Option<&str>,
     request_contains_encrypted_content: bool,
-) -> Result<(Option<PromptCacheConversationBindingConstraint>, bool), (StatusCode, String)> {
-    let encrypted_owner_routing_enabled = encrypted_session_owner_routing_enabled(state).await;
+    encrypted_owner_routing_enabled: bool,
+) -> Result<(Option<PromptCacheConversationBindingConstraint>, bool)> {
     let mut sqlite_lock_retries = 0;
     loop {
         match resolve_prompt_cache_effective_routing_constraint(
@@ -261,12 +261,48 @@ pub(crate) async fn load_via_pool_effective_routing_constraint(
                 sqlite_lock_retries += 1;
                 tokio::time::sleep(PROMPT_CACHE_ROUTING_SQLITE_LOCK_RETRY_DELAY).await;
             }
-            Err(err) => {
-                return Err((
-                    StatusCode::BAD_GATEWAY,
-                    format!("failed to resolve prompt cache conversation binding: {err}"),
-                ));
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+pub(crate) async fn load_via_pool_effective_routing_constraint(
+    state: &AppState,
+    prompt_cache_key: Option<&str>,
+    request_contains_encrypted_content: bool,
+) -> Result<(Option<PromptCacheConversationBindingConstraint>, bool), (StatusCode, String)> {
+    let encrypted_owner_routing_enabled = encrypted_session_owner_routing_enabled(state).await;
+    resolve_prompt_cache_effective_routing_constraint_with_retry(
+        state,
+        prompt_cache_key,
+        request_contains_encrypted_content,
+        encrypted_owner_routing_enabled,
+    )
+    .await
+    .map_err(|err| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("failed to resolve prompt cache conversation binding: {err}"),
+        )
+    })
+}
+
+async fn load_prompt_cache_conversation_routing_override_with_retry(
+    state: &AppState,
+    prompt_cache_key: Option<&str>,
+) -> Result<Option<ConversationRoutingOverride>> {
+    let mut sqlite_lock_retries = 0;
+    loop {
+        match load_prompt_cache_conversation_routing_override(&state.pool, prompt_cache_key).await {
+            Ok(value) => return Ok(value),
+            Err(err)
+                if sqlite_lock_retries < PROMPT_CACHE_ROUTING_SQLITE_LOCK_RETRY_ATTEMPTS
+                    && is_sqlite_lock_error(&err) =>
+            {
+                sqlite_lock_retries += 1;
+                tokio::time::sleep(PROMPT_CACHE_ROUTING_SQLITE_LOCK_RETRY_DELAY).await;
             }
+            Err(err) => return Err(err),
         }
     }
 }
@@ -290,7 +326,7 @@ pub(crate) async fn load_via_pool_effective_routing(
     )
     .await?;
     let conversation_override =
-        load_prompt_cache_conversation_routing_override(&state.pool, prompt_cache_key)
+        load_prompt_cache_conversation_routing_override_with_retry(state, prompt_cache_key)
             .await
             .map_err(|err| {
                 (
