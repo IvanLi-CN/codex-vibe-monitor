@@ -70,9 +70,9 @@ describe("InvocationPhaseSegments", () => {
     );
 
     expect(html).toContain('data-phase-label-visible="false"');
-    expect(html).toContain('<span class="sr-only">排队中 2</span>');
-    expect(html).toContain('<span class="sr-only">请求中 3</span>');
-    expect(html).toContain('<span class="sr-only">响应中 4</span>');
+    expect(html).toContain('aria-label="排队中 2"');
+    expect(html).toContain('aria-label="请求中 3"');
+    expect(html).toContain('aria-label="响应中 4"');
     expect(html).not.toContain(">排队中<");
     expect(html).not.toContain(">请求中<");
     expect(html).not.toContain(">响应中<");
