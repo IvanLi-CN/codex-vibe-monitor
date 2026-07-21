@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.44.2",
+  "base_stable_version": "2.44.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-21T06:05:57Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.44.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8e1d8f0afed71dd6e14a9c7b73428ca70c14820d",
+  "pr_number": 674,
+  "pr_title": "fix(web): restore upstream attempt focus feedback",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.44.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.44.2",
+  "target_sha": "d89045d826ad2de7c7d47b40fa7e715d245b616d",
+  "type_label": "type:patch"
+}
