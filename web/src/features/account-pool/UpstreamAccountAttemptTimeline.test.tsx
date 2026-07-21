@@ -20,11 +20,24 @@ vi.mock("../../lib/api", async (importOriginal) => ({
 
 const fetchAttemptsMock = vi.mocked(fetchUpstreamAccountAttempts);
 const fetchBindingNodesMock = vi.mocked(fetchForwardProxyBindingNodes);
+const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
+let interactionBoundary: HTMLDivElement | null = null;
+let scrollIntoViewMock = vi.fn();
 
-function renderTimeline(focusedAttemptId: string | null = null) {
+function renderTimeline({
+  focusedAttemptId = null,
+  focusVersion = 0,
+  onFocusRequestHandled,
+  boundary = null,
+}: {
+  focusedAttemptId?: string | null;
+  focusVersion?: number;
+  onFocusRequestHandled?: (version: number) => void;
+  boundary?: HTMLElement | null;
+} = {}) {
   if (!host) {
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -34,7 +47,13 @@ function renderTimeline(focusedAttemptId: string | null = null) {
     root?.render(
       <MemoryRouter>
         <I18nProvider>
-          <UpstreamAccountAttemptTimeline accountId={101} focusedAttemptId={focusedAttemptId} />
+          <UpstreamAccountAttemptTimeline
+            accountId={101}
+            focusedAttemptId={focusedAttemptId}
+            focusVersion={focusVersion}
+            interactionBoundary={boundary}
+            onFocusRequestHandled={onFocusRequestHandled}
+          />
         </I18nProvider>
       </MemoryRouter>,
     );
@@ -52,6 +71,12 @@ async function flushAsync() {
 describe("UpstreamAccountAttemptTimeline", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useRealTimers();
+    scrollIntoViewMock = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoViewMock,
+    });
     vi.mocked(locateUpstreamAccountAttempt).mockResolvedValue({
       items: [],
       total: 0,
@@ -77,12 +102,19 @@ describe("UpstreamAccountAttemptTimeline", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     act(() => {
       root?.unmount();
     });
     host?.remove();
+    interactionBoundary?.remove();
+    interactionBoundary = null;
     root = null;
     host = null;
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: originalScrollIntoView,
+    });
   });
 
   it("keeps the primary row focused on upstream evidence and reveals complete failure context on demand", async () => {
@@ -213,7 +245,8 @@ describe("UpstreamAccountAttemptTimeline", () => {
     expect(card?.textContent).not.toMatch(/阶段|phase/i);
   });
 
-  it("opens the exact attempt diagnostics when event navigation focuses it", async () => {
+  it("scrolls, highlights, and fades the focused attempt after the next drawer interaction", async () => {
+    vi.useFakeTimers();
     const focusedAttempt = {
       attemptId: "YG7P25XG",
       invokeId: "YG7P25XG9K",
@@ -243,17 +276,79 @@ describe("UpstreamAccountAttemptTimeline", () => {
       page: 1,
       pageSize: 50,
     });
+    const onFocusRequestHandled = vi.fn();
+    interactionBoundary = document.createElement("div");
+    document.body.appendChild(interactionBoundary);
 
     renderTimeline();
     await flushAsync();
-    renderTimeline("YG7P25XG");
+    renderTimeline({
+      focusedAttemptId: "YG7P25XG",
+      focusVersion: 1,
+      boundary: interactionBoundary,
+      onFocusRequestHandled,
+    });
     await flushAsync();
 
     const record = host?.querySelector<HTMLElement>(
       '[data-testid="account-attempt-record-YG7P25XG"]',
     );
     expect(record).not.toBeNull();
+    expect(locateUpstreamAccountAttempt).toHaveBeenCalledWith(
+      101,
+      "YG7P25XG",
+      expect.objectContaining({
+        pageSize: 50,
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    expect(onFocusRequestHandled).toHaveBeenCalledWith(1);
+    expect(scrollIntoViewMock).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "nearest",
+    });
+    expect(record?.dataset.focusVisible).toBe("true");
+    expect(record?.getAttribute("aria-current")).toBe("true");
     expect(record?.textContent).toMatch(/关键诊断|key diagnostics/i);
     expect(record?.textContent).toMatch(/上游 HTTP 状态|upstream http/i);
+
+    act(() => {
+      interactionBoundary?.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    });
+    expect(record?.dataset.focusVisible).toBe("true");
+
+    act(() => {
+      vi.advanceTimersByTime(1_499);
+    });
+    expect(record?.dataset.focusVisible).toBe("true");
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(record?.dataset.focusVisible).toBe("false");
+
+    renderTimeline({
+      focusedAttemptId: "YG7P25XG",
+      focusVersion: 2,
+      boundary: interactionBoundary,
+    });
+    await flushAsync();
+    const refocusedRecord = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-YG7P25XG"]',
+    );
+    expect(refocusedRecord?.dataset.focusVisible).toBe("true");
+    expect(scrollIntoViewMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows locate unavailable feedback when the focused attempt is outside the locate window", async () => {
+    vi.mocked(locateUpstreamAccountAttempt).mockRejectedValue(new Error("404 not found"));
+
+    renderTimeline({
+      focusedAttemptId: "MISS1234",
+      focusVersion: 1,
+    });
+    await flushAsync();
+
+    expect(host?.textContent).toMatch(/7-day retention window|7 天保留范围|7 天窗口/i);
   });
 });

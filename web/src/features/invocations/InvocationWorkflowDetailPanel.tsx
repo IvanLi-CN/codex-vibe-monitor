@@ -2535,11 +2535,13 @@ interface InvocationWorkflowAttemptRecordProps {
   isZh: boolean;
   summaryIdentity?: string | null;
   focused?: boolean;
+  focusVersion?: number;
   defaultSection?: AttemptSection | null;
   isOpen?: boolean;
   activeSection?: AttemptSection | null;
   onSelectSection?: (section: AttemptSection) => void;
   className?: string;
+  containerRef?: (node: HTMLDivElement | null) => void;
   testId?: string;
 }
 
@@ -2550,11 +2552,13 @@ export function InvocationWorkflowAttemptRecord({
   isZh,
   summaryIdentity,
   focused = false,
+  focusVersion = 0,
   defaultSection = null,
   isOpen,
   activeSection,
   onSelectSection,
   className,
+  containerRef,
   testId,
 }: InvocationWorkflowAttemptRecordProps) {
   const isControlled = isOpen !== undefined && activeSection !== undefined && !!onSelectSection;
@@ -2581,7 +2585,7 @@ export function InvocationWorkflowAttemptRecord({
   useEffect(() => {
     if (isControlled || !focused || !defaultSection) return;
     setInternalSection(defaultSection);
-  }, [defaultSection, focused, isControlled]);
+  }, [defaultSection, focusVersion, focused, isControlled]);
 
   useEffect(() => {
     if (!(record.id > 0)) return;
@@ -2650,7 +2654,17 @@ export function InvocationWorkflowAttemptRecord({
   if (!entry.attempt) return null;
 
   return (
-    <div className={className} data-testid={testId}>
+    <div
+      ref={containerRef}
+      className={cn(
+        "scroll-mt-4 rounded-[1.125rem] border border-transparent transition-[background-color,border-color,box-shadow] duration-200",
+        focused && "border-primary/45 bg-primary/8 ring-1 ring-inset ring-primary/35",
+        className,
+      )}
+      data-focus-visible={focused ? "true" : "false"}
+      data-testid={testId}
+      aria-current={focused ? "true" : undefined}
+    >
       <TimelineSummary
         entry={entry}
         localeTag={localeTag}
