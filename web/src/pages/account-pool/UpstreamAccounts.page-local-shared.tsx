@@ -1,14 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import {
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
@@ -49,12 +40,10 @@ import { UpstreamAccountUsageCard } from "../../features/account-pool/UpstreamAc
 import { DashboardActivityOverview } from "../../features/dashboard/DashboardActivityOverview";
 import { ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX } from "../../features/dashboard/dashboardActivityRange";
 import { ForwardProxyBindingSelector } from "../../features/forward-proxy/ForwardProxyBindingSelector";
-import { InvocationTable } from "../../features/invocations/InvocationTable";
 import { StickyKeyConversationTable } from "../../features/prompt-cache/StickyKeyConversationTable";
 import { AppIcon } from "../../features/shared/AppIcon";
 import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
 import { useCompactViewport } from "../../hooks/useCompactViewport";
-import { useInvocationRecordsRealtime } from "../../hooks/useInvocationRecordsRealtime";
 import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
 import {
   type UpstreamAccountDetailRouteTab,
@@ -64,7 +53,6 @@ import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
 import { useUpstreamStickyConversations } from "../../hooks/useUpstreamStickyConversations";
 import { useTranslation } from "../../i18n";
 import type {
-  ApiInvocation,
   CapabilityOverride,
   ForwardProxyBindingNode,
   StickyKeyConversationSelection,
@@ -74,12 +62,6 @@ import type {
   UpstreamAccountSummary,
   UpstreamCapabilityState,
 } from "../../lib/api";
-import {
-  ApiRequestError,
-  fetchInvocationRecordLocation,
-  fetchInvocationRecords,
-} from "../../lib/api";
-import { invocationStableKey } from "../../lib/invocation";
 import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
 import {
   type AccountDraft,
@@ -166,8 +148,6 @@ export {
   withBulkSyncSnapshotStatus,
 };
 
-const ACCOUNT_RECORD_PAGE_SIZE = 50;
-const LEGACY_ACCOUNT_RECORDS_ENABLED = false;
 const DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE = "count:50";
 const DIRECT_PROXY_KEY = "__direct__";
 const STICKY_CONVERSATION_SELECTION_OPTIONS = [
@@ -237,12 +217,9 @@ type OauthRecoveryHint = {
 };
 
 type AccountDetailTab = UpstreamAccountDetailRouteTab;
-
-type AccountRecordsMode = "latest" | "anchored";
-type AccountRecordsLocateError = {
-  invokeId: string;
-  attemptId?: string | null;
-  kind: "notFound" | "request";
+type AttemptFocusRequest = {
+  attemptId: string;
+  version: number;
 };
 
 const ACCOUNT_DETAIL_TABS_REQUIRING_ROSTER_CONTEXT = new Set<AccountDetailTab>(["edit", "routing"]);
@@ -1035,23 +1012,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE,
   );
   const [expandedStickyKeys, setExpandedStickyKeys] = useState<string[]>([]);
-  const [focusedAttemptId, setFocusedAttemptId] = useState<string | null>(null);
-  const [accountRecords, setAccountRecords] = useState<ApiInvocation[]>([]);
-  const [accountRecordsMode, setAccountRecordsMode] = useState<AccountRecordsMode>("latest");
-  const [accountRecordsFirstPage, setAccountRecordsFirstPage] = useState(0);
-  const [accountRecordsPage, setAccountRecordsPage] = useState(0);
-  const [accountRecordsTotal, setAccountRecordsTotal] = useState(0);
-  const [accountRecordsHasNewer, setAccountRecordsHasNewer] = useState(false);
-  const [accountRecordsHasMore, setAccountRecordsHasMore] = useState(false);
-  const [accountRecordsLoading, setAccountRecordsLoading] = useState(false);
-  const [accountRecordsError, setAccountRecordsError] = useState<string | null>(null);
-  const [accountRecordsLocateError, setAccountRecordsLocateError] =
-    useState<AccountRecordsLocateError | null>(null);
-  const [accountRecordsScrollTarget, setAccountRecordsScrollTarget] = useState<{
-    invokeId: string;
-    attemptId?: string | null;
-    version: number;
-  } | null>(null);
+  const [attemptFocusRequest, setAttemptFocusRequest] = useState<AttemptFocusRequest | null>(null);
   const [detailDrawerBodyElement, setDetailDrawerBodyElement] = useState<HTMLDivElement | null>(
     null,
   );
@@ -1075,11 +1036,6 @@ function SharedUpstreamAccountDetailDrawerInner({
   >({});
   const [detailDrawerPortalContainer, setDetailDrawerPortalContainer] =
     useState<HTMLElement | null>(null);
-  const previousAccountRecordsContextRef = useRef<{
-    open: boolean;
-    accountId: number | null;
-    detailTab: AccountDetailTab;
-  } | null>(null);
   const deleteConfirmCancelRef = useRef<HTMLButtonElement | null>(null);
   const detailDrawerTitleId = "upstream-account-detail-title";
   const detailDrawerTabsBaseId = useId();
@@ -1087,22 +1043,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   const selectedIdRef = useRef<number | null>(selectedId);
   const routeAccountIdRef = useRef<number | null>(accountId);
   const drawerOpenRef = useRef(open);
-  const accountRecordsRequestSeqRef = useRef(0);
-  const accountRecordsModeRef = useRef<AccountRecordsMode>("latest");
-  const accountRecordsSnapshotIdRef = useRef<number | null>(null);
-  const accountRecordsAnchorIdRef = useRef<string | null>(null);
-  const accountRecordsRef = useRef<ApiInvocation[]>([]);
-  const accountRecordsPrependScrollRef = useRef<{
-    requestSeq: number;
-    scrollHeight: number;
-    scrollTop: number;
-  } | null>(null);
-  const detailDrawerBodyElementRef = useRef<HTMLDivElement | null>(null);
-  const accountRecordsLocateAlertRef = useRef<HTMLDivElement | null>(null);
-  const accountRecordsAnchorScrollGuardUntilRef = useRef(0);
-  useEffect(() => {
-    setFocusedAttemptId(null);
-  }, []);
+  const nextAttemptFocusVersionRef = useRef(0);
   const draftSessionKeyRef = useRef<string | null>(null);
   const activeDraftSessionKeyRef = useRef<string | null>(null);
   const draftBaselineRef = useRef<AccountDraft>(buildDraft(null));
@@ -1142,10 +1083,6 @@ function SharedUpstreamAccountDetailDrawerInner({
   routeAccountIdRef.current = accountId;
   drawerOpenRef.current = open;
   activeDraftSessionKeyRef.current = activeDraftSessionKey;
-
-  accountRecordsRef.current = accountRecords;
-  accountRecordsModeRef.current = accountRecordsMode;
-  detailDrawerBodyElementRef.current = detailDrawerBodyElement;
 
   useEffect(() => {
     if (open && accountId != null) {
@@ -1697,358 +1634,6 @@ function SharedUpstreamAccountDetailDrawerInner({
     });
   }, [stickyConversationStats]);
 
-  const loadAccountRecordsPage = useCallback(
-    (
-      page: number,
-      mode: "replace" | "append" | "prepend",
-      pageSize = ACCOUNT_RECORD_PAGE_SIZE,
-    ): void => {
-      const requestSeq = accountRecordsRequestSeqRef.current + 1;
-      accountRecordsRequestSeqRef.current = requestSeq;
-      if (
-        !LEGACY_ACCOUNT_RECORDS_ENABLED ||
-        !open ||
-        accountId == null ||
-        detailTab !== "records"
-      ) {
-        return;
-      }
-
-      const recordsScrollElement = detailDrawerBodyElementRef.current;
-      if (mode === "prepend" && recordsScrollElement) {
-        accountRecordsPrependScrollRef.current = {
-          requestSeq,
-          scrollHeight: recordsScrollElement.scrollHeight,
-          scrollTop: recordsScrollElement.scrollTop,
-        };
-      }
-      setAccountRecordsLoading(true);
-      setAccountRecordsError(null);
-      void fetchInvocationRecords({
-        upstreamAccountId: accountId,
-        page,
-        pageSize,
-        snapshotId:
-          mode === "replace" ? undefined : (accountRecordsSnapshotIdRef.current ?? undefined),
-        anchorId: mode === "replace" ? undefined : (accountRecordsAnchorIdRef.current ?? undefined),
-        sortBy: "occurredAt",
-        sortOrder: "desc",
-      })
-        .then((response) => {
-          if (requestSeq !== accountRecordsRequestSeqRef.current) {
-            if (accountRecordsPrependScrollRef.current?.requestSeq === requestSeq) {
-              accountRecordsPrependScrollRef.current = null;
-            }
-            return;
-          }
-          const responseSnapshotId =
-            typeof response.snapshotId === "number" && Number.isFinite(response.snapshotId)
-              ? response.snapshotId
-              : null;
-          const responsePage =
-            typeof response.page === "number" && Number.isFinite(response.page)
-              ? response.page
-              : page;
-          const responsePageSize =
-            typeof response.pageSize === "number" && Number.isFinite(response.pageSize)
-              ? response.pageSize
-              : pageSize;
-          const responseTotal =
-            typeof response.total === "number" && Number.isFinite(response.total)
-              ? response.total
-              : response.records.length;
-          if (mode === "replace" && responseSnapshotId != null) {
-            accountRecordsSnapshotIdRef.current = responseSnapshotId;
-          }
-          setAccountRecords((current) => {
-            if (mode === "replace") return response.records;
-            const seen = new Set(current.map((record) => invocationStableKey(record)));
-            const incoming = response.records.filter((record) => {
-              const key = invocationStableKey(record);
-              if (seen.has(key)) return false;
-              seen.add(key);
-              return true;
-            });
-            if (mode === "prepend") return [...incoming, ...current];
-            return [...current, ...incoming];
-          });
-          if (mode !== "prepend") setAccountRecordsPage(responsePage);
-          if (mode !== "append") setAccountRecordsFirstPage(responsePage);
-          setAccountRecordsTotal(responseTotal);
-          setAccountRecordsHasNewer(responsePage > 1 || mode === "append");
-          if (mode !== "prepend") {
-            setAccountRecordsHasMore(responsePage * responsePageSize < responseTotal);
-          }
-        })
-        .catch((error) => {
-          if (accountRecordsPrependScrollRef.current?.requestSeq === requestSeq) {
-            accountRecordsPrependScrollRef.current = null;
-          }
-          if (requestSeq !== accountRecordsRequestSeqRef.current) return;
-          setAccountRecordsError(error instanceof Error ? error.message : String(error));
-        })
-        .finally(() => {
-          if (requestSeq === accountRecordsRequestSeqRef.current) {
-            setAccountRecordsLoading(false);
-          }
-        });
-    },
-    [accountId, detailTab, open],
-  );
-
-  const reloadAccountRecords = useCallback((): void => {
-    setAccountRecordsMode("latest");
-    setAccountRecordsLocateError(null);
-    setAccountRecordsScrollTarget(null);
-    accountRecordsAnchorScrollGuardUntilRef.current = 0;
-    accountRecordsPrependScrollRef.current = null;
-    accountRecordsSnapshotIdRef.current = null;
-    accountRecordsAnchorIdRef.current = null;
-    loadAccountRecordsPage(1, "replace");
-  }, [loadAccountRecordsPage]);
-
-  const resyncAccountRecords = useCallback((): void => {
-    const loadedPageWindow =
-      Math.ceil(accountRecordsRef.current.length / ACCOUNT_RECORD_PAGE_SIZE) *
-      ACCOUNT_RECORD_PAGE_SIZE;
-    loadAccountRecordsPage(1, "replace", Math.max(ACCOUNT_RECORD_PAGE_SIZE, loadedPageWindow));
-  }, [loadAccountRecordsPage]);
-
-  const loadMoreAccountRecords = useCallback((): void => {
-    if (accountRecordsLoading || !accountRecordsHasMore) return;
-    loadAccountRecordsPage(accountRecordsPage + 1, "append");
-  }, [accountRecordsHasMore, accountRecordsLoading, accountRecordsPage, loadAccountRecordsPage]);
-
-  const loadNewerAccountRecords = useCallback((): void => {
-    if (
-      accountRecordsMode !== "anchored" ||
-      accountRecordsLoading ||
-      !accountRecordsHasNewer ||
-      accountRecordsFirstPage <= 1
-    ) {
-      return;
-    }
-    loadAccountRecordsPage(accountRecordsFirstPage - 1, "prepend");
-  }, [
-    accountRecordsFirstPage,
-    accountRecordsHasNewer,
-    accountRecordsLoading,
-    accountRecordsMode,
-    loadAccountRecordsPage,
-  ]);
-
-  const locateAccountRecord = useCallback(
-    (invokeId: string): void => {
-      const normalizedInvokeId = invokeId.trim();
-      if (!normalizedInvokeId || accountId == null) return;
-      const requestSeq = accountRecordsRequestSeqRef.current + 1;
-      accountRecordsRequestSeqRef.current = requestSeq;
-      setDetailTab("records");
-      setAccountRecordsMode("anchored");
-      setAccountRecordsLoading(true);
-      setAccountRecords([]);
-      setAccountRecordsFirstPage(0);
-      setAccountRecordsPage(0);
-      setAccountRecordsTotal(0);
-      setAccountRecordsHasNewer(false);
-      setAccountRecordsHasMore(false);
-      accountRecordsSnapshotIdRef.current = null;
-      accountRecordsAnchorIdRef.current = null;
-      accountRecordsPrependScrollRef.current = null;
-      setAccountRecordsError(null);
-      setAccountRecordsLocateError(null);
-      setAccountRecordsScrollTarget(null);
-
-      void fetchInvocationRecordLocation({
-        requestId: normalizedInvokeId,
-        upstreamAccountId: accountId,
-        pageSize: ACCOUNT_RECORD_PAGE_SIZE,
-      })
-        .then((response) => {
-          if (requestSeq !== accountRecordsRequestSeqRef.current) return;
-          accountRecordsSnapshotIdRef.current = response.snapshotId;
-          accountRecordsAnchorIdRef.current = response.anchorId;
-          setAccountRecords(response.records);
-          setAccountRecordsFirstPage(response.page);
-          setAccountRecordsPage(response.page);
-          setAccountRecordsTotal(response.total);
-          setAccountRecordsHasNewer(response.page > 1);
-          setAccountRecordsHasMore(response.page * response.pageSize < response.total);
-          setAccountRecordsScrollTarget({
-            invokeId: normalizedInvokeId,
-            version: requestSeq,
-          });
-          accountRecordsAnchorScrollGuardUntilRef.current = Date.now() + 1_000;
-        })
-        .catch((error) => {
-          if (requestSeq !== accountRecordsRequestSeqRef.current) return;
-          setAccountRecords([]);
-          setAccountRecordsFirstPage(0);
-          setAccountRecordsPage(0);
-          setAccountRecordsTotal(0);
-          setAccountRecordsHasNewer(false);
-          setAccountRecordsHasMore(false);
-          setAccountRecordsLocateError({
-            invokeId: normalizedInvokeId,
-            kind: error instanceof ApiRequestError && error.status === 404 ? "notFound" : "request",
-          });
-        })
-        .finally(() => {
-          if (requestSeq === accountRecordsRequestSeqRef.current) {
-            setAccountRecordsLoading(false);
-          }
-        });
-    },
-    [accountId],
-  );
-
-  useLayoutEffect(() => {
-    const pending = accountRecordsPrependScrollRef.current;
-    if (!pending || !detailDrawerBodyElement) return;
-    accountRecordsPrependScrollRef.current = null;
-    detailDrawerBodyElement.scrollTop =
-      pending.scrollTop + (detailDrawerBodyElement.scrollHeight - pending.scrollHeight);
-  }, [detailDrawerBodyElement]);
-
-  useLayoutEffect(() => {
-    if (!accountRecordsLocateError) return;
-    accountRecordsLocateAlertRef.current?.focus();
-    const timeout = window.setTimeout(() => {
-      accountRecordsLocateAlertRef.current?.focus();
-    }, 0);
-    return () => window.clearTimeout(timeout);
-  }, [accountRecordsLocateError]);
-
-  useEffect(() => {
-    if (!LEGACY_ACCOUNT_RECORDS_ENABLED) return;
-    const previous = previousAccountRecordsContextRef.current;
-    const next = {
-      open,
-      accountId,
-      detailTab,
-    };
-    previousAccountRecordsContextRef.current = next;
-
-    const leftRecordsSurface =
-      previous?.open &&
-      previous.accountId != null &&
-      previous.detailTab === "records" &&
-      (!open || accountId == null || detailTab !== "records");
-    const switchedAccounts =
-      open &&
-      detailTab === "records" &&
-      previous?.open &&
-      previous.detailTab === "records" &&
-      previous.accountId != null &&
-      accountId != null &&
-      previous.accountId !== accountId;
-    const enteredRecordsTab =
-      open &&
-      accountId != null &&
-      detailTab === "records" &&
-      previous?.open &&
-      previous.accountId === accountId &&
-      previous.detailTab !== "records";
-    if (
-      leftRecordsSurface ||
-      switchedAccounts ||
-      (enteredRecordsTab && accountRecordsModeRef.current === "latest")
-    ) {
-      accountRecordsRequestSeqRef.current += 1;
-    }
-    const shouldResetRecords =
-      leftRecordsSurface ||
-      switchedAccounts ||
-      (enteredRecordsTab && accountRecordsModeRef.current === "latest");
-    if (shouldResetRecords) {
-      setAccountRecords([]);
-      setAccountRecordsFirstPage(0);
-      setAccountRecordsPage(0);
-      setAccountRecordsTotal(0);
-      setAccountRecordsHasNewer(false);
-      setAccountRecordsHasMore(false);
-      accountRecordsSnapshotIdRef.current = null;
-      accountRecordsAnchorIdRef.current = null;
-      accountRecordsPrependScrollRef.current = null;
-      setAccountRecordsError(null);
-      setAccountRecordsLocateError(null);
-      setAccountRecordsScrollTarget(null);
-      if (leftRecordsSurface || switchedAccounts) {
-        setAccountRecordsMode("latest");
-      }
-      setAccountRecordsLoading(!leftRecordsSurface);
-    }
-
-    if (!open || accountId == null || detailTab !== "records") {
-      return;
-    }
-
-    if (accountRecordsModeRef.current === "latest") {
-      void reloadAccountRecords();
-    }
-  }, [accountId, detailTab, open, reloadAccountRecords]);
-
-  useEffect(() => {
-    if (!LEGACY_ACCOUNT_RECORDS_ENABLED) return;
-    if (!open || accountId == null || detailTab !== "records") return;
-    const scrollTarget = detailDrawerBodyElement;
-    if (!scrollTarget) return;
-    const handleScroll = () => {
-      if (scrollTarget.scrollHeight <= scrollTarget.clientHeight) return;
-      if (
-        scrollTarget.scrollTop < 260 &&
-        Date.now() >= accountRecordsAnchorScrollGuardUntilRef.current
-      ) {
-        loadNewerAccountRecords();
-      }
-      const remaining =
-        scrollTarget.scrollHeight - scrollTarget.scrollTop - scrollTarget.clientHeight;
-      if (remaining < 520) {
-        loadMoreAccountRecords();
-      }
-    };
-    handleScroll();
-    scrollTarget.addEventListener("scroll", handleScroll, { passive: true });
-    return () => {
-      scrollTarget.removeEventListener("scroll", handleScroll);
-    };
-  }, [
-    accountId,
-    detailDrawerBodyElement,
-    detailTab,
-    loadMoreAccountRecords,
-    loadNewerAccountRecords,
-    open,
-  ]);
-
-  useInvocationRecordsRealtime({
-    enabled: Boolean(
-      LEGACY_ACCOUNT_RECORDS_ENABLED &&
-        open &&
-        accountId != null &&
-        detailTab === "records" &&
-        accountRecordsMode === "latest",
-    ),
-    isHydrated:
-      Boolean(
-        LEGACY_ACCOUNT_RECORDS_ENABLED &&
-          open &&
-          accountId != null &&
-          detailTab === "records" &&
-          accountRecordsMode === "latest",
-      ) && !accountRecordsLoading,
-    filters: accountId == null ? undefined : { upstreamAccountId: accountId },
-    sortBy: "occurredAt",
-    sortOrder: "desc",
-    limit: Math.max(ACCOUNT_RECORD_PAGE_SIZE, accountRecords.length + ACCOUNT_RECORD_PAGE_SIZE),
-    getRecords: () => accountRecordsRef.current,
-    onRecordsChange: (next) => {
-      setAccountRecords(next);
-      setAccountRecordsError(null);
-    },
-    onOpenResync: resyncAccountRecords,
-  });
-
   const selectedDetail = detail?.id === selectedId ? detail : null;
   const selected = selectedDetail ?? selectedSummary;
   const selectedAccountProxyKeys = normalizeProxyKeys(selectedDetail?.boundProxyKeys);
@@ -2092,6 +1677,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   }, [onClose]);
   const handleSelectDetailTab = useCallback(
     (nextTab: AccountDetailTab) => {
+      setAttemptFocusRequest(null);
       setDetailTab(nextTab);
       if (accountId != null) {
         openUpstreamAccount(accountId, {
@@ -2106,10 +1692,20 @@ function SharedUpstreamAccountDetailDrawerInner({
     (attemptId: string | null | undefined) => {
       const normalizedAttemptId = attemptId?.trim() ?? "";
       if (!normalizedAttemptId) return;
-      setFocusedAttemptId(normalizedAttemptId);
-      handleSelectDetailTab("records");
+      nextAttemptFocusVersionRef.current += 1;
+      setAttemptFocusRequest({
+        attemptId: normalizedAttemptId,
+        version: nextAttemptFocusVersionRef.current,
+      });
+      setDetailTab("records");
+      if (accountId != null) {
+        openUpstreamAccount(accountId, {
+          replace: true,
+          tab: "records",
+        });
+      }
     },
-    [handleSelectDetailTab],
+    [accountId, openUpstreamAccount],
   );
   const selectedPlanBadge = upstreamPlanBadgeRecipe(selected?.planType);
   const selectedRecoveryHint = resolveOauthRecoveryHint(
@@ -3027,10 +2623,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   role="tab"
                   aria-selected={detailTab === "records"}
                   aria-controls={detailTabIds.records.panel}
-                  onClick={() => {
-                    setFocusedAttemptId(null);
-                    handleSelectDetailTab("records");
-                  }}
+                  onClick={() => handleSelectDetailTab("records")}
                 >
                   {t("accountPool.upstreamAccounts.detailTabs.records")}
                 </SegmentedControlItem>
@@ -3289,104 +2882,16 @@ function SharedUpstreamAccountDetailDrawerInner({
                   {accountId != null ? (
                     <UpstreamAccountAttemptTimeline
                       accountId={accountId}
-                      focusedAttemptId={focusedAttemptId}
+                      focusedAttemptId={attemptFocusRequest?.attemptId ?? null}
+                      focusVersion={attemptFocusRequest?.version ?? 0}
+                      interactionBoundary={detailDrawerBodyElement}
+                      onFocusRequestHandled={(version) => {
+                        setAttemptFocusRequest((current) =>
+                          current?.version === version ? null : current,
+                        );
+                      }}
                     />
                   ) : null}
-                  <div className="hidden" aria-hidden="true">
-                    {accountRecordsMode === "anchored" ? (
-                      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-info/35 bg-info/8 px-3 py-2 text-sm">
-                        <span className="text-base-content/72">
-                          {accountRecordsLocateError
-                            ? t("accountPool.upstreamAccounts.records.locateUnavailable")
-                            : accountRecordsScrollTarget
-                              ? t("accountPool.upstreamAccounts.records.located", {
-                                  invokeId: accountRecordsScrollTarget.invokeId,
-                                })
-                              : t("accountPool.upstreamAccounts.records.locating")}
-                        </span>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={reloadAccountRecords}
-                        >
-                          <AppIcon name="refresh" className="mr-2 h-4 w-4" aria-hidden />
-                          {t("accountPool.upstreamAccounts.records.returnLatest")}
-                        </Button>
-                      </div>
-                    ) : null}
-                    {accountRecordsLocateError ? (
-                      <Alert
-                        ref={accountRecordsLocateAlertRef}
-                        role="alert"
-                        tabIndex={-1}
-                        variant="warning"
-                        className="justify-between gap-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-warning"
-                      >
-                        <span className="min-w-0 break-words">
-                          {t(
-                            accountRecordsLocateError.kind === "notFound"
-                              ? "accountPool.upstreamAccounts.records.locateNotFound"
-                              : "accountPool.upstreamAccounts.records.locateFailed",
-                            { invokeId: accountRecordsLocateError.invokeId },
-                          )}
-                        </span>
-                        {accountRecordsLocateError.kind === "request" ? (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => locateAccountRecord(accountRecordsLocateError.invokeId)}
-                          >
-                            {t("accountPool.upstreamAccounts.records.retryLocate")}
-                          </Button>
-                        ) : null}
-                      </Alert>
-                    ) : null}
-                    <InvocationTable
-                      records={accountRecords}
-                      isLoading={accountRecordsLoading && accountRecords.length === 0}
-                      error={accountRecordsError}
-                      emptyLabel={t("accountPool.upstreamAccounts.records.empty")}
-                      onOpenUpstreamAccount={handleOpenRelatedUpstreamAccount}
-                      scrollElement={detailDrawerBodyElement}
-                      showInvokeId
-                      scrollTarget={accountRecordsScrollTarget}
-                    />
-                    {accountRecords.length > 0 ? (
-                      <div
-                        className="flex justify-center py-2 text-xs text-base-content/62"
-                        data-testid="upstream-account-records-infinite-status"
-                      >
-                        {accountRecordsLoading ? (
-                          <span className="inline-flex items-center gap-2">
-                            <Spinner size="sm" />
-                            {t("accountPool.upstreamAccounts.records.loadingMore")}
-                          </span>
-                        ) : accountRecordsMode === "anchored" ? (
-                          <span>
-                            {t("accountPool.upstreamAccounts.records.anchoredLoaded", {
-                              loaded: accountRecords.length,
-                              total: accountRecordsTotal,
-                            })}
-                          </span>
-                        ) : accountRecordsHasMore ? (
-                          <span>
-                            {t("accountPool.upstreamAccounts.records.loaded", {
-                              loaded: accountRecords.length,
-                              total: accountRecordsTotal,
-                            })}
-                          </span>
-                        ) : (
-                          <span>
-                            {t("accountPool.upstreamAccounts.records.allLoaded", {
-                              count: accountRecords.length,
-                            })}
-                          </span>
-                        )}
-                      </div>
-                    ) : null}
-                  </div>
                 </div>
               ) : null}
 
