@@ -22,7 +22,6 @@ import type {
   PromptCacheConversationsResponse,
   UpstreamAccountActivityResponse,
 } from "../../lib/api";
-import { metricAccent } from "../../lib/chartTheme";
 import {
   type DashboardWorkingConversationInvocationSelection,
   formatDashboardWorkingConversationSequenceId,
@@ -165,12 +164,6 @@ async function openBulkClearBindingDialog(canvasElement: HTMLElement) {
   }
 
   return { dialog, footer, callout };
-}
-
-function normalizeCssColor(value: string) {
-  const sample = document.createElement("div");
-  sample.style.color = value;
-  return sample.style.color;
 }
 
 function jsonResponse(payload: unknown, status = 200) {
@@ -944,6 +937,79 @@ function createUpstreamAccountActivityStoryResponse(
   };
 }
 
+function createInvocationUsageToneThresholdsUpstreamAccountActivityResponse() {
+  const response = createUpstreamAccountActivityStoryResponse();
+  const account = response.accounts[0];
+  if (!account) return response;
+
+  account.recentInvocations = [
+    createPreview({
+      id: 9_701,
+      invokeId: "tone-neutral-boundary",
+      promptCacheKey: "pck-tone-neutral-boundary",
+      occurredAt: createRelativeStoryIso(-30_000),
+      status: "success",
+      totalTokens: 10_000,
+      inputTokens: 10_000,
+      cacheInputTokens: 9_000,
+      outputTokens: 0,
+      cost: 0.1,
+      upstreamAccountId: 42,
+      upstreamAccountName: "Pool Alpha",
+    }),
+    createPreview({
+      id: 9_702,
+      invokeId: "tone-warning-boundary",
+      promptCacheKey: "pck-tone-warning-boundary",
+      occurredAt: createRelativeStoryIso(-60_000),
+      status: "success",
+      totalTokens: 10_000,
+      inputTokens: 10_000,
+      cacheInputTokens: 5_000,
+      outputTokens: 0,
+      cost: 0.5,
+      upstreamAccountId: 42,
+      upstreamAccountName: "Pool Alpha",
+    }),
+    createPreview({
+      id: 9_703,
+      invokeId: "tone-warning",
+      promptCacheKey: "pck-tone-warning",
+      occurredAt: createRelativeStoryIso(-90_000),
+      status: "running",
+      totalTokens: 10_000,
+      inputTokens: 10_000,
+      cacheInputTokens: 8_990,
+      outputTokens: 0,
+      cost: 0.1001,
+      upstreamAccountId: 42,
+      upstreamAccountName: "Pool Alpha",
+    }),
+    createPreview({
+      id: 9_704,
+      invokeId: "tone-error",
+      promptCacheKey: "pck-tone-error",
+      occurredAt: createRelativeStoryIso(-120_000),
+      status: "failed",
+      failureClass: "service_failure",
+      errorMessage: "[downstream_closed] downstream closed while streaming upstream response",
+      totalTokens: 10_000,
+      inputTokens: 10_000,
+      cacheInputTokens: 4_990,
+      outputTokens: 0,
+      cost: 0.5001,
+      upstreamAccountId: 42,
+      upstreamAccountName: "Pool Alpha",
+    }),
+  ];
+  account.inProgressInvocationCount = 1;
+  account.inProgressPhaseCounts = { queued: 0, requesting: 1, responding: 0 };
+  account.failureCount = Math.max(account.failureCount, 1);
+  account.nonSuccessCount = Math.max(account.nonSuccessCount, 1);
+
+  return response;
+}
+
 function createUpstreamAccountAdaptiveMetricsStoryResponse() {
   const response = createUpstreamAccountActivityStoryResponse();
   const account = response.accounts[0];
@@ -1018,6 +1084,53 @@ const currentOnlyResponse = createResponse([
       occurredAt: "2026-04-04T10:04:42Z",
       status: "completed",
       upstreamAccountName: "warmup-alpha@example.com",
+    }),
+  ]),
+]);
+
+const invocationUsageToneThresholdsResponse = createResponse([
+  createConversation("pck-usage-tone-neutral", [
+    createPreview({
+      id: 9_711,
+      invokeId: "conversation-tone-neutral",
+      occurredAt: "2026-04-04T10:05:00Z",
+      status: "success",
+      totalTokens: 10_000,
+      inputTokens: 10_000,
+      cacheInputTokens: 9_550,
+      outputTokens: 0,
+      cost: 0.0586,
+      upstreamAccountName: "Pool Alpha",
+    }),
+  ]),
+  createConversation("pck-usage-tone-warning", [
+    createPreview({
+      id: 9_712,
+      invokeId: "conversation-tone-warning",
+      occurredAt: "2026-04-04T10:04:00Z",
+      status: "running",
+      totalTokens: 10_000,
+      inputTokens: 10_000,
+      cacheInputTokens: 8_990,
+      outputTokens: 0,
+      cost: 0.1001,
+      upstreamAccountName: "Pool Alpha",
+    }),
+  ]),
+  createConversation("pck-usage-tone-error", [
+    createPreview({
+      id: 9_713,
+      invokeId: "conversation-tone-error",
+      occurredAt: "2026-04-04T10:03:00Z",
+      status: "failed",
+      failureClass: "service_failure",
+      errorMessage: "[downstream_closed] downstream closed while streaming upstream response",
+      totalTokens: 10_000,
+      inputTokens: 10_000,
+      cacheInputTokens: 4_990,
+      outputTokens: 0,
+      cost: 0.5001,
+      upstreamAccountName: "Pool Alpha",
     }),
   ]),
 ]);
@@ -3272,12 +3385,22 @@ export const CurrentAndPrevious: Story = {
     const usageCost = currentSlot.querySelector(
       '[data-testid="dashboard-working-conversation-usage-cost"]',
     );
-    if (!(usageLine instanceof HTMLElement) || !(usageCost instanceof HTMLElement)) {
+    const usageHit = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-hit"]',
+    );
+    if (
+      !(usageLine instanceof HTMLElement) ||
+      !(usageCost instanceof HTMLElement) ||
+      !(usageHit instanceof HTMLElement)
+    ) {
       throw new Error("missing compact usage line");
     }
     await expect(usageLine).toHaveTextContent(/Hit .*Token .*\$/);
     await expect(usageLine.textContent ?? "").not.toMatch(/\bIN\b|\bCW\b|\bO\b/);
-    await expect(usageCost.style.color).toBe(normalizeCssColor(metricAccent("totalCost", "light")));
+    await expect(usageHit).toHaveAttribute("data-tone", "error");
+    await expect(usageHit.className).toContain("tone-ink-error");
+    await expect(usageCost).toHaveAttribute("data-tone", "neutral");
+    await expect(usageCost.getAttribute("style")).toBeNull();
     await expect(currentSlot).not.toHaveTextContent(/RQ |UP |ED |TT /);
   },
 };
@@ -4091,6 +4214,28 @@ export const UpstreamAccountTab: Story = {
     );
     await expect(imageBadge.className).toMatch(/rounded-full/);
     await expect(imageBadge.className).toMatch(/border/);
+    const recentUsageLine = firstRecentRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-usage-line"]',
+    );
+    const recentUsageHit = firstRecentRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-usage-hit"]',
+    );
+    const recentUsageCost = firstRecentRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-usage-cost"]',
+    );
+    if (
+      !(recentUsageLine instanceof HTMLElement) ||
+      !(recentUsageHit instanceof HTMLElement) ||
+      !(recentUsageCost instanceof HTMLElement)
+    ) {
+      throw new Error("missing upstream recent usage summary");
+    }
+    await expect(recentUsageLine).toHaveTextContent(/Hit .*Token .*\$/);
+    await expect(recentUsageLine.title).toContain("Cache write:");
+    await expect(recentUsageLine.title).toContain("US$");
+    await expect(recentUsageHit).toHaveAttribute("data-tone");
+    await expect(recentUsageCost).toHaveAttribute("data-tone");
+    await expect(firstRecentRow).not.toHaveTextContent(/\bIN\b|\bCW\b|\b C\b|\bO\b|\bT\b/);
     await expect(firstRecentRow).not.toHaveTextContent(/RQ |UP |ED |TT /);
     await expect(
       canvas.getAllByTestId("dashboard-upstream-account-recent-identity-chip"),
@@ -4119,6 +4264,60 @@ export const UpstreamAccountTab: Story = {
       description: {
         story:
           "Dashboard workspace section switched to the upstream-account tab, showing one enlarged active-account card with account-level KPIs and the dynamic recent invocation window in the selected range, including lightweight short conversation identity chips and request/response model mismatch rows.",
+      },
+    },
+  },
+};
+
+export const InvocationUsageToneThresholds: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <ForcedWorkspaceViewStory view="upstreamAccounts">
+      <DrawerPreviewStory
+        response={invocationUsageToneThresholdsResponse}
+        upstreamAccountActivity={createInvocationUsageToneThresholdsUpstreamAccountActivityResponse()}
+      />
+    </ForcedWorkspaceViewStory>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("最近 4 条调用")).toBeInTheDocument();
+
+    const usageLines = await canvas.findAllByTestId("dashboard-upstream-account-recent-usage-line");
+    expect(usageLines).toHaveLength(4);
+
+    const assertTone = async (
+      line: HTMLElement,
+      text: RegExp,
+      expectedHitTone: "neutral" | "warning" | "error",
+      expectedCostTone: "neutral" | "warning" | "error",
+    ) => {
+      const hit = line.querySelector('[data-testid="dashboard-upstream-account-recent-usage-hit"]');
+      const cost = line.querySelector(
+        '[data-testid="dashboard-upstream-account-recent-usage-cost"]',
+      );
+      if (!(hit instanceof HTMLElement) || !(cost instanceof HTMLElement)) {
+        throw new Error(`missing usage tone values for ${text.source}`);
+      }
+
+      await expect(line).toHaveTextContent(text);
+      await expect(hit).toHaveAttribute("data-tone", expectedHitTone);
+      await expect(cost).toHaveAttribute("data-tone", expectedCostTone);
+    };
+
+    await assertTone(usageLines[0]!, /Hit 90%.*Token 10,000.*\$0\.1000/, "neutral", "neutral");
+    await assertTone(usageLines[1]!, /Hit 50%.*Token 10,000.*\$0\.5000/, "warning", "warning");
+    await assertTone(usageLines[2]!, /Hit 89\.9%.*Token 10,000.*\$0\.1001/, "warning", "warning");
+    await assertTone(usageLines[3]!, /Hit 49\.9%.*Token 10,000.*\$0\.5001/, "error", "error");
+    await expect(usageLines[3]!.title).toContain("Cache write:");
+    await expect(usageLines[3]!.title).toContain("US$0.5001");
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Regression matrix for single-invocation usage summary tones. The recent invocation rows show strict hit-rate and cost boundaries: neutral at 90% and $0.1000, warning at 50% and $0.5000, and error below/above those thresholds.",
       },
     },
   },

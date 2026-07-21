@@ -52,7 +52,6 @@ import {
   fetchUpstreamAccounts,
   updateUpstreamAccount,
 } from "../../lib/api";
-import { metricAccent } from "../../lib/chartTheme";
 import type {
   DashboardWorkingConversationCardModel,
   DashboardWorkingConversationInvocationModel,
@@ -78,7 +77,6 @@ import {
 } from "../../lib/upstreamAccountBadges";
 import { emitUpstreamAccountsChanged } from "../../lib/upstreamAccountsEvents";
 import { cn } from "../../lib/utils";
-import { useTheme } from "../../theme";
 import { InvocationPhaseBadge, InvocationPhaseSegments } from "../invocations/InvocationPhaseBadge";
 import {
   buildInvocationDetailViewModel,
@@ -838,6 +836,105 @@ function invocationCacheHitRate({
   if (resolvedCacheInputTokens == null || resolvedTotalTokens == null) return null;
   if (resolvedTotalTokens <= 0) return resolvedCacheInputTokens <= 0 ? 0 : null;
   return Math.max(0, resolvedCacheInputTokens) / resolvedTotalTokens;
+}
+
+type InvocationUsageSummaryTone = "neutral" | "warning" | "error";
+
+const INVOCATION_USAGE_SUMMARY_TONE_CLASSNAMES: Record<InvocationUsageSummaryTone, string> = {
+  neutral: "",
+  warning: "tone-ink-warning",
+  error: "tone-ink-error",
+};
+
+function resolveInvocationUsageHitTone(
+  value: number | null | undefined,
+): InvocationUsageSummaryTone {
+  if (value == null || !Number.isFinite(value)) return "neutral";
+  if (value < 0.5) return "error";
+  if (value < 0.9) return "warning";
+  return "neutral";
+}
+
+function resolveInvocationUsageCostTone(
+  value: number | null | undefined,
+): InvocationUsageSummaryTone {
+  if (value == null || !Number.isFinite(value)) return "neutral";
+  if (value > 0.5) return "error";
+  if (value > 0.1) return "warning";
+  return "neutral";
+}
+
+function invocationUsageSummaryToneClassName(tone: InvocationUsageSummaryTone) {
+  return INVOCATION_USAGE_SUMMARY_TONE_CLASSNAMES[tone] || undefined;
+}
+
+function compactInvocationCostValue(value: string) {
+  return value.startsWith("US$") ? `$${value.slice(3)}` : value;
+}
+
+function buildInvocationUsageDetailsTitle({
+  t,
+  viewModel,
+}: {
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string;
+  viewModel: ReturnType<typeof buildInvocationDetailViewModel>;
+}) {
+  return `${t("table.column.inputTokens")}: ${viewModel.inputTokensValue} · Cache write: ${viewModel.cacheWriteTokensValue} · ${t("table.column.cacheInputTokens")}: ${viewModel.cacheInputTokensValue} · ${t("table.column.outputTokens")}: ${viewModel.outputTokensValue} · ${t("table.column.totalTokens")}: ${viewModel.totalTokensValue} · ${t("table.column.costUsd")}: ${viewModel.costValue} · ${t("table.details.reasoningTokens")}: ${viewModel.reasoningTokensValue}`;
+}
+
+function InvocationUsageSummary({
+  hitRate,
+  hitValue,
+  tokenValue,
+  cost,
+  costValue,
+  className,
+  detailsTitle,
+  testId,
+  hitTestId,
+  tokenTestId,
+  costTestId,
+}: {
+  hitRate: number | null | undefined;
+  hitValue: string;
+  tokenValue: string;
+  cost: number | null | undefined;
+  costValue: string;
+  className?: string;
+  detailsTitle?: string;
+  testId: string;
+  hitTestId: string;
+  tokenTestId: string;
+  costTestId: string;
+}) {
+  const hitTone = resolveInvocationUsageHitTone(hitRate);
+  const costTone = resolveInvocationUsageCostTone(cost);
+
+  return (
+    <div
+      data-testid={testId}
+      className={cn("flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5", className)}
+      title={detailsTitle}
+    >
+      <span
+        data-testid={hitTestId}
+        className={invocationUsageSummaryToneClassName(hitTone)}
+        data-tone={hitTone}
+      >
+        Hit {hitValue}
+      </span>
+      <span className="text-base-content/28">·</span>
+      <span data-testid={tokenTestId}>Token {tokenValue}</span>
+      <span className="text-base-content/28">·</span>
+      <span
+        data-testid={costTestId}
+        className={invocationUsageSummaryToneClassName(costTone)}
+        data-tone={costTone}
+      >
+        {costValue}
+      </span>
+    </div>
+  );
 }
 
 function SummaryMetric({ label, value }: { label: string; value: ReactNode }) {
@@ -1971,9 +2068,10 @@ function AccountRecentInvocationRow({
     invocation.occurredAtEpoch != null
       ? timestampFormatter.format(new Date(invocation.occurredAtEpoch))
       : occurredAtLabel;
-  const compactCostValue = viewModel.costValue.startsWith("US$")
-    ? `$${viewModel.costValue.slice(3)}`
-    : viewModel.costValue;
+  const compactCostValue = compactInvocationCostValue(viewModel.costValue);
+  const usageHitRate = invocationCacheHitRate(invocation.record);
+  const compactHitRateValue = formatAccountPercentValue(usageHitRate, localeTag);
+  const usageDetailsTitle = buildInvocationUsageDetailsTitle({ t, viewModel });
   const displayPromptCacheKey = invocation.preview.promptCacheKey?.trim() ?? "";
   const displayConversationSequenceId = displayPromptCacheKey
     ? formatDashboardWorkingConversationSequenceId(
@@ -2166,27 +2264,19 @@ function AccountRecentInvocationRow({
           <div className="text-[10.5px] text-base-content/62">{compactCostValue}</div>
         </div>
       </div>
-      <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] leading-[1.45] text-base-content/74">
-        <span>IN {viewModel.inputTokensValue}</span>
-        <span className="text-base-content/28">·</span>
-        <span
-          title="Cache write tokens"
-          aria-label={`Cache write tokens: ${viewModel.cacheWriteTokensValue}`}
-        >
-          CW {viewModel.cacheWriteTokensValue}
-        </span>
-        <span className="text-base-content/28">·</span>
-        <span
-          title="Cache read tokens"
-          aria-label={`Cache read tokens: ${viewModel.cacheInputTokensValue}`}
-        >
-          C {viewModel.cacheInputTokensValue}
-        </span>
-        <span className="text-base-content/28">·</span>
-        <span>O {viewModel.outputTokensValue}</span>
-        <span className="text-base-content/28">·</span>
-        <span>T {viewModel.totalTokensValue}</span>
-      </div>
+      <InvocationUsageSummary
+        hitRate={usageHitRate}
+        hitValue={compactHitRateValue}
+        tokenValue={viewModel.totalTokensValue}
+        cost={invocation.record.cost}
+        costValue={compactCostValue}
+        className="mt-1.5 font-mono text-[10.5px] font-semibold leading-[1.45] text-base-content/74"
+        detailsTitle={usageDetailsTitle}
+        testId="dashboard-upstream-account-recent-usage-line"
+        hitTestId="dashboard-upstream-account-recent-usage-hit"
+        tokenTestId="dashboard-upstream-account-recent-usage-token"
+        costTestId="dashboard-upstream-account-recent-usage-cost"
+      />
       {viewModel.collapsedErrorSummary ? (
         <InvocationErrorSummary
           className="mt-1 max-w-full"
@@ -2304,7 +2394,6 @@ function InvocationSlot({
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   onOpenInvocation?: (selection: DashboardWorkingConversationInvocationSelection) => void;
 }) {
-  const { themeMode } = useTheme();
   const { t } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
@@ -2422,14 +2511,10 @@ function InvocationSlot({
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
   const displayConversationSequenceId =
     formatDashboardWorkingConversationSequenceId(conversationSequenceId);
-  const compactCostValue = viewModel.costValue.startsWith("US$")
-    ? `$${viewModel.costValue.slice(3)}`
-    : viewModel.costValue;
-  const compactHitRateValue = formatAccountPercentValue(
-    invocationCacheHitRate(invocation.record),
-    localeTag,
-  );
-  const costAccentColor = metricAccent("totalCost", themeMode);
+  const compactCostValue = compactInvocationCostValue(viewModel.costValue);
+  const usageHitRate = invocationCacheHitRate(invocation.record);
+  const compactHitRateValue = formatAccountPercentValue(usageHitRate, localeTag);
+  const usageDetailsTitle = buildInvocationUsageDetailsTitle({ t, viewModel });
   const compactLatencyValues = useMemo(() => {
     const normalizedStatus = invocation.displayStatus.trim().toLowerCase();
     return {
@@ -2659,27 +2744,19 @@ function InvocationSlot({
 
         <InvocationMetaLine
           label={lineLabels.usage}
-          title={`${t("table.column.inputTokens")}: ${viewModel.inputTokensValue} · Cache write: ${viewModel.cacheWriteTokensValue} · ${t("table.column.cacheInputTokens")}: ${viewModel.cacheInputTokensValue} · ${t("table.column.outputTokens")}: ${viewModel.outputTokensValue} · ${t("table.column.totalTokens")}: ${viewModel.totalTokensValue} · ${t("table.column.costUsd")}: ${viewModel.costValue} · ${t("table.details.reasoningTokens")}: ${viewModel.reasoningTokensValue}`}
+          title={usageDetailsTitle}
           value={
-            <div
-              data-testid="dashboard-working-conversation-usage-line"
-              className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5"
-            >
-              <span data-testid="dashboard-working-conversation-usage-hit">
-                Hit {compactHitRateValue}
-              </span>
-              <span className="text-base-content/28">·</span>
-              <span data-testid="dashboard-working-conversation-usage-token">
-                Token {viewModel.totalTokensValue}
-              </span>
-              <span className="text-base-content/28">·</span>
-              <span
-                data-testid="dashboard-working-conversation-usage-cost"
-                style={{ color: costAccentColor }}
-              >
-                {compactCostValue}
-              </span>
-            </div>
+            <InvocationUsageSummary
+              hitRate={usageHitRate}
+              hitValue={compactHitRateValue}
+              tokenValue={viewModel.totalTokensValue}
+              cost={invocation.record.cost}
+              costValue={compactCostValue}
+              testId="dashboard-working-conversation-usage-line"
+              hitTestId="dashboard-working-conversation-usage-hit"
+              tokenTestId="dashboard-working-conversation-usage-token"
+              costTestId="dashboard-working-conversation-usage-cost"
+            />
           }
         />
 

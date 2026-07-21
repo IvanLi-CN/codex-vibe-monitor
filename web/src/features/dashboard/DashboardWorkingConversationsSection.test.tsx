@@ -12,7 +12,6 @@ import type {
   PromptCacheConversationsResponse,
   UpstreamAccountActivityResponse,
 } from "../../lib/api";
-import { metricAccent } from "../../lib/chartTheme";
 import {
   type DashboardWorkingConversationCardModel,
   formatDashboardWorkingConversationSequenceId,
@@ -39,12 +38,6 @@ class MockPointerEvent extends MouseEvent {
     super(type, init);
     this.pointerType = init.pointerType ?? "mouse";
   }
-}
-
-function normalizeCssColor(value: string) {
-  const sample = document.createElement("div");
-  sample.style.color = value;
-  return sample.style.color;
 }
 
 const virtualizerMocks = vi.hoisted(() => ({
@@ -1268,10 +1261,27 @@ describe("DashboardWorkingConversationsSection", () => {
       '[data-testid="dashboard-upstream-account-recent-row"]',
     );
     expect(firstRecentRow?.textContent).toContain("Responses");
-    expect(firstRecentRow?.textContent).toContain("T 200");
+    expect(firstRecentRow?.textContent).toContain("Hit 15%");
+    expect(firstRecentRow?.textContent).toContain("Token 200");
+    expect(firstRecentRow?.textContent).toContain("$0.0200");
+    expect(firstRecentRow?.textContent).not.toContain("IN ");
+    expect(firstRecentRow?.textContent).not.toContain("CW ");
+    expect(firstRecentRow?.textContent).not.toContain(" C ");
+    expect(firstRecentRow?.textContent).not.toContain("O ");
+    expect(firstRecentRow?.textContent).not.toContain("T 200");
     expect(firstRecentRow?.textContent).not.toContain("RQ ");
     expect(firstRecentRow?.textContent).not.toContain("UP ");
     expect(firstRecentRow?.textContent).not.toContain("ED ");
+    const firstRecentUsage = firstRecentRow?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-usage-line"]',
+    );
+    if (!(firstRecentUsage instanceof HTMLElement)) {
+      throw new Error("missing upstream recent usage line");
+    }
+    expect(firstRecentUsage.title).toContain("Cache write: 90");
+    expect(firstRecentUsage.title).toContain("30");
+    expect(firstRecentUsage.title).toContain("200");
+    expect(firstRecentUsage.title).toContain("US$0.0200");
     expect(
       firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]'),
     ).not.toBeNull();
@@ -2822,11 +2832,19 @@ describe("DashboardWorkingConversationsSection", () => {
     const currentCostValue = currentSlot.querySelector(
       '[data-testid="dashboard-working-conversation-usage-cost"]',
     );
+    const currentHitValue = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-hit"]',
+    );
+    const previousCostValue = previousSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-cost"]',
+    );
     const usageMetaLine = currentUsageLine?.parentElement;
     if (
       !(currentUsageLine instanceof HTMLDivElement) ||
       !(previousUsageLine instanceof HTMLDivElement) ||
       !(currentCostValue instanceof HTMLElement) ||
+      !(currentHitValue instanceof HTMLElement) ||
+      !(previousCostValue instanceof HTMLElement) ||
       !(usageMetaLine instanceof HTMLElement)
     ) {
       throw new Error("missing compact usage line elements");
@@ -2842,14 +2860,153 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(previousUsageLine.textContent).toContain("Hit 0%");
     expect(previousUsageLine.textContent).toContain("Token 13,184");
     expect(previousUsageLine.textContent).toContain("$0.0520");
-    expect(currentCostValue.style.color).toBe(
-      normalizeCssColor(metricAccent("totalCost", "light")),
-    );
+    expect(currentHitValue.getAttribute("data-tone")).toBe("error");
+    expect(currentHitValue.className).toContain("tone-ink-error");
+    expect(currentCostValue.getAttribute("data-tone")).toBe("warning");
+    expect(currentCostValue.className).toContain("tone-ink-warning");
+    expect(currentCostValue.getAttribute("style")).toBeNull();
+    expect(previousCostValue.getAttribute("data-tone")).toBe("neutral");
+    expect(previousCostValue.className).not.toContain("tone-ink-warning");
+    expect(previousCostValue.className).not.toContain("tone-ink-error");
     expect(usageMetaLine.title).toContain("Cache write: 68,319");
     expect(usageMetaLine.title).toContain("5,632");
     expect(usageMetaLine.title).toContain("74,148");
     expect(usageMetaLine.title).toContain("US$0.1752");
     expect(host?.querySelector('[data-testid="dashboard-upstream-account-recent-row"]')).toBeNull();
+  });
+
+  it("tones invocation usage summaries with strict hit-rate and cost thresholds", () => {
+    const baseActivity = createUpstreamAccountActivityResponse();
+    upstreamAccountActivityMock.data = {
+      ...baseActivity,
+      accounts: [
+        {
+          ...baseActivity.accounts[0]!,
+          recentInvocations: [
+            createPreview({
+              id: 9301,
+              invokeId: "acct-threshold-neutral",
+              promptCacheKey: "pck-threshold-neutral",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "success",
+              totalTokens: 10_000,
+              inputTokens: 10_000,
+              cacheInputTokens: 9_000,
+              outputTokens: 0,
+              cost: 0.1,
+            }),
+            createPreview({
+              id: 9302,
+              invokeId: "acct-threshold-boundary-warning",
+              promptCacheKey: "pck-threshold-boundary-warning",
+              occurredAt: "2026-04-04T10:04:00Z",
+              status: "success",
+              totalTokens: 10_000,
+              inputTokens: 10_000,
+              cacheInputTokens: 5_000,
+              outputTokens: 0,
+              cost: 0.5,
+            }),
+            createPreview({
+              id: 9303,
+              invokeId: "acct-threshold-warning",
+              promptCacheKey: "pck-threshold-warning",
+              occurredAt: "2026-04-04T10:03:00Z",
+              status: "success",
+              totalTokens: 10_000,
+              inputTokens: 10_000,
+              cacheInputTokens: 8_990,
+              outputTokens: 0,
+              cost: 0.1001,
+            }),
+            createPreview({
+              id: 9304,
+              invokeId: "acct-threshold-error",
+              promptCacheKey: "pck-threshold-error",
+              occurredAt: "2026-04-04T10:02:00Z",
+              status: "failed",
+              totalTokens: 10_000,
+              inputTokens: 10_000,
+              cacheInputTokens: 4_990,
+              outputTokens: 0,
+              cost: 0.5001,
+            }),
+          ],
+        },
+      ],
+    };
+
+    renderSection(
+      createResponse([
+        createConversation("pck-threshold-host", [
+          createPreview({
+            id: 9300,
+            invokeId: "invoke-threshold-host",
+            occurredAt: "2026-04-04T10:06:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const usageLines = Array.from(
+      host?.querySelectorAll('[data-testid="dashboard-upstream-account-recent-usage-line"]') ?? [],
+    );
+    expect(usageLines).toHaveLength(4);
+
+    const assertUsageTone = (
+      line: Element | undefined,
+      expectedText: string,
+      expectedHitTone: "neutral" | "warning" | "error",
+      expectedCostTone: "neutral" | "warning" | "error",
+    ) => {
+      if (!(line instanceof HTMLElement)) {
+        throw new Error(`missing usage line for ${expectedText}`);
+      }
+      const hit = line.querySelector('[data-testid="dashboard-upstream-account-recent-usage-hit"]');
+      const cost = line.querySelector(
+        '[data-testid="dashboard-upstream-account-recent-usage-cost"]',
+      );
+      if (!(hit instanceof HTMLElement) || !(cost instanceof HTMLElement)) {
+        throw new Error(`missing usage values for ${expectedText}`);
+      }
+
+      expect(line.textContent).toContain(expectedText);
+      expect(hit.getAttribute("data-tone")).toBe(expectedHitTone);
+      expect(cost.getAttribute("data-tone")).toBe(expectedCostTone);
+      if (expectedHitTone === "neutral") {
+        expect(hit.className).not.toContain("tone-ink-warning");
+        expect(hit.className).not.toContain("tone-ink-error");
+      } else {
+        expect(hit.className).toContain(`tone-ink-${expectedHitTone}`);
+      }
+      if (expectedCostTone === "neutral") {
+        expect(cost.className).not.toContain("tone-ink-warning");
+        expect(cost.className).not.toContain("tone-ink-error");
+      } else {
+        expect(cost.className).toContain(`tone-ink-${expectedCostTone}`);
+      }
+    };
+
+    assertUsageTone(usageLines[0], "Hit 90%", "neutral", "neutral");
+    expect(usageLines[0]?.textContent).toContain("$0.1000");
+    assertUsageTone(usageLines[1], "Hit 50%", "warning", "warning");
+    expect(usageLines[1]?.textContent).toContain("$0.5000");
+    assertUsageTone(usageLines[2], "Hit 89.9%", "warning", "warning");
+    expect(usageLines[2]?.textContent).toContain("$0.1001");
+    assertUsageTone(usageLines[3], "Hit 49.9%", "error", "error");
+    expect(usageLines[3]?.textContent).toContain("$0.5001");
   });
 
   it("shows the image-tool badge only for image-capable previews", () => {
