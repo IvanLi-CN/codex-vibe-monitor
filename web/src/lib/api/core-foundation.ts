@@ -525,12 +525,21 @@ export type InvocationSortBy =
   | "status";
 export type InvocationSortOrder = "asc" | "desc";
 export type InvocationRangePreset = "today" | "1d" | "7d" | "30d" | "custom";
+export type InvocationModelTarget = "request" | "response";
+export type InvocationModelRerouteFilter = "all" | "rerouted" | "notRerouted";
 export type InvocationSuggestionField =
   | "model"
+  | "requestModel"
+  | "responseModel"
   | "endpoint"
   | "failureKind"
+  | "stickyKey"
   | "promptCacheKey"
-  | "requesterIp";
+  | "requesterIp"
+  | "proxyDisplayName"
+  | "upstreamAccount"
+  | "serviceTier"
+  | "reasoningEffort";
 
 export interface InvocationRecordsQuery {
   page?: number;
@@ -543,13 +552,25 @@ export interface InvocationRecordsQuery {
   from?: string;
   to?: string;
   model?: string;
+  models?: string[];
+  modelTarget?: InvocationModelTarget;
+  modelRerouted?: boolean;
   status?: string;
   endpoint?: string;
+  invokeId?: string;
+  attemptId?: string;
+  // Kept for compatibility with older call sites and stale deep links.
   requestId?: string;
   failureClass?: string;
   failureKind?: string;
   promptCacheKey?: string;
   stickyKey?: string;
+  upstreamScope?: string;
+  proxyDisplayName?: string;
+  transport?: string;
+  serviceTier?: string;
+  reasoningEffort?: string;
+  reasoningEfforts?: string[];
   requesterIp?: string;
   upstreamAccountId?: number;
   keyword?: string;
@@ -570,6 +591,7 @@ export interface InvocationTokenSummary {
   cacheInputTokens: number;
   outputTokens: number;
   totalCost: number;
+  maxTokensPerRequest?: number | null;
 }
 
 export interface InvocationNetworkSummary {
@@ -577,6 +599,7 @@ export interface InvocationNetworkSummary {
   p95TtfbMs?: number | null;
   avgTotalMs?: number | null;
   p95TotalMs?: number | null;
+  maxTotalMs?: number | null;
 }
 
 export interface InvocationExceptionSummary {
@@ -596,6 +619,8 @@ export interface InvocationRecordsResponse extends ListResponse {
 
 export interface InvocationRecordLocationResponse extends InvocationRecordsResponse {
   anchorId: string;
+  invokeId?: string;
+  // Kept for compatibility with older mocks and stale clients.
   requestId?: string;
   attemptId?: string | null;
   targetIndex: number;
@@ -603,6 +628,8 @@ export interface InvocationRecordLocationResponse extends InvocationRecordsRespo
 }
 
 export interface InvocationRecordLocationQuery {
+  invokeId?: string;
+  // Kept for compatibility with older call sites and stale deep links.
   requestId?: string;
   attemptId?: string;
   upstreamAccountId?: number;
@@ -625,6 +652,7 @@ export interface InvocationRecordsNewCountResponse {
 
 export interface InvocationSuggestionItem {
   value: string;
+  label?: string;
   count: number;
 }
 
@@ -635,10 +663,17 @@ export interface InvocationSuggestionBucket {
 
 export interface InvocationSuggestionsResponse {
   model: InvocationSuggestionBucket;
+  requestModel: InvocationSuggestionBucket;
+  responseModel: InvocationSuggestionBucket;
   endpoint: InvocationSuggestionBucket;
   failureKind: InvocationSuggestionBucket;
+  stickyKey: InvocationSuggestionBucket;
   promptCacheKey: InvocationSuggestionBucket;
   requesterIp: InvocationSuggestionBucket;
+  proxyDisplayName: InvocationSuggestionBucket;
+  upstreamAccount: InvocationSuggestionBucket;
+  serviceTier: InvocationSuggestionBucket;
+  reasoningEffort: InvocationSuggestionBucket;
 }
 
 export interface ApiInvocationAbnormalResponseBodyPreview {
@@ -1179,15 +1214,30 @@ function appendInvocationRecordsQuery(search: URLSearchParams, query: Invocation
   if (query.from) search.set("from", query.from);
   if (query.to) search.set("to", query.to);
   if (query.model) search.set("model", query.model);
+  if (query.models && query.models.length > 0) search.set("models", query.models.join(","));
+  if (query.modelTarget) search.set("modelTarget", query.modelTarget);
+  if (query.modelRerouted != null) {
+    search.set("modelRerouted", query.modelRerouted ? "true" : "false");
+  }
   if (query.status) search.set("status", query.status);
   if (query.endpoint) search.set("endpoint", query.endpoint);
-  if (query.requestId) search.set("requestId", query.requestId);
+  const invokeId = query.invokeId ?? query.requestId;
+  if (invokeId) search.set("invokeId", invokeId);
+  if (query.attemptId) search.set("attemptId", query.attemptId);
   if (query.failureClass) search.set("failureClass", query.failureClass);
   if (query.failureKind) search.set("failureKind", query.failureKind);
   if (query.promptCacheKey) search.set("promptCacheKey", query.promptCacheKey);
   if (query.stickyKey) search.set("stickyKey", query.stickyKey);
+  if (query.upstreamScope) search.set("upstreamScope", query.upstreamScope);
   if (query.upstreamAccountId != null)
     search.set("upstreamAccountId", String(query.upstreamAccountId));
+  if (query.proxyDisplayName) search.set("proxyDisplayName", query.proxyDisplayName);
+  if (query.transport) search.set("transport", query.transport);
+  if (query.serviceTier) search.set("serviceTier", query.serviceTier);
+  if (query.reasoningEffort) search.set("reasoningEffort", query.reasoningEffort);
+  if (query.reasoningEfforts && query.reasoningEfforts.length > 0) {
+    search.set("reasoningEfforts", query.reasoningEfforts.join(","));
+  }
   if (query.requesterIp) search.set("requesterIp", query.requesterIp);
   if (query.keyword) search.set("keyword", query.keyword);
   if (query.minTotalTokens != null) search.set("minTotalTokens", String(query.minTotalTokens));
@@ -1222,7 +1272,8 @@ export async function fetchInvocationRecordLocation(query: InvocationRecordLocat
   const search = new URLSearchParams({
     pageSize: String(query.pageSize ?? 50),
   });
-  if (query.requestId) search.set("requestId", query.requestId);
+  const invokeId = query.invokeId ?? query.requestId;
+  if (invokeId) search.set("invokeId", invokeId);
   if (query.attemptId) search.set("attemptId", query.attemptId);
   if (query.upstreamAccountId != null) {
     search.set("upstreamAccountId", String(query.upstreamAccountId));
@@ -3996,7 +4047,9 @@ export async function fetchPromptCacheConversationBinding(
 
 export async function fetchPromptCacheConversationOperationEvents(
   promptCacheKey: string,
-  query?: FetchPromptCacheConversationOperationEventsQuery & { signal?: AbortSignal },
+  query?: FetchPromptCacheConversationOperationEventsQuery & {
+    signal?: AbortSignal;
+  },
 ): Promise<PromptCacheConversationOperationEventListResponse> {
   const search = new URLSearchParams();
   if (query?.page != null) {

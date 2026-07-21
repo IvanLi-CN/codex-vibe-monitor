@@ -482,7 +482,7 @@ describe("DashboardInvocationDetailDrawer", () => {
     );
 
     expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
-      requestId: "invoke-dashboard-drawer",
+      invokeId: "invoke-dashboard-drawer",
       pageSize: 1,
       sortBy: "occurredAt",
       sortOrder: "desc",

@@ -71,6 +71,7 @@ interface InvocationWorkflowDetailPanelProps {
   focusedAttemptId?: string | null;
   size?: DetailPanelSize;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+  hideNonShortIds?: boolean;
 }
 
 const FALLBACK_CELL = "—";
@@ -1536,6 +1537,7 @@ function AttemptDetail({
   activeSection,
   requestBodyState,
   responseBodyState,
+  hideNonShortIds = false,
 }: {
   record: ApiInvocation;
   entry: ApiInvocationWorkflowTimelineEntry;
@@ -1544,6 +1546,7 @@ function AttemptDetail({
   activeSection: AttemptSection;
   requestBodyState: PayloadFetchState<ApiInvocationRequestBodyResponse>;
   responseBodyState: PayloadFetchState<ApiInvocationResponseBodyResponse>;
+  hideNonShortIds?: boolean;
 }) {
   const attempt = entry.attempt;
   if (!attempt) return null;
@@ -1608,10 +1611,14 @@ function AttemptDetail({
       value: formatOptionalText(attempt.failureKind),
       monospace: false,
     },
-    {
-      label: isZh ? "上游请求 ID" : "Upstream Request ID",
-      value: formatOptionalText(attempt.upstreamRequestId),
-    },
+    ...(!hideNonShortIds
+      ? [
+          {
+            label: isZh ? "上游请求 ID" : "Upstream Request ID",
+            value: formatOptionalText(attempt.upstreamRequestId),
+          },
+        ]
+      : []),
   ].filter((item) => item.value !== FALLBACK_CELL);
 
   const timingItems = [
@@ -1921,7 +1928,9 @@ function AttemptDetail({
   const responseHeaderItems = buildStructuredItems(responseHeaderSource, localeTag, isZh, [
     { key: "contentEncoding", label: "Content-Encoding", monospace: false },
     { key: "contentEncodingChain", label: isZh ? "编码链" : "Encoding Chain", monospace: false },
-    { key: "upstreamRequestId", label: "X-Request-ID", monospace: false },
+    ...(!hideNonShortIds
+      ? [{ key: "upstreamRequestId", label: "X-Request-ID", monospace: false }]
+      : []),
     { key: "cvmInvokeId", label: isZh ? "CVM 调用 ID" : "CVM Invoke ID" },
   ]);
 
@@ -2540,6 +2549,7 @@ interface InvocationWorkflowAttemptRecordProps {
   isOpen?: boolean;
   activeSection?: AttemptSection | null;
   onSelectSection?: (section: AttemptSection) => void;
+  hideNonShortIds?: boolean;
   className?: string;
   containerRef?: (node: HTMLDivElement | null) => void;
   testId?: string;
@@ -2557,6 +2567,7 @@ export function InvocationWorkflowAttemptRecord({
   isOpen,
   activeSection,
   onSelectSection,
+  hideNonShortIds = false,
   className,
   containerRef,
   testId,
@@ -2683,6 +2694,7 @@ export function InvocationWorkflowAttemptRecord({
           activeSection={currentSection}
           requestBodyState={requestBodyState}
           responseBodyState={responseBodyState}
+          hideNonShortIds={hideNonShortIds}
         />
       ) : null}
     </div>
@@ -2694,6 +2706,7 @@ export function InvocationWorkflowDetailPanel({
   focusedAttemptId = null,
   size = "default",
   onOpenUpstreamAccount,
+  hideNonShortIds = false,
 }: InvocationWorkflowDetailPanelProps) {
   const { locale } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
@@ -3152,6 +3165,7 @@ export function InvocationWorkflowDetailPanel({
                         isOpen={isOpen}
                         activeSection={isOpen ? attemptSection : null}
                         onSelectSection={(section) => toggleAttemptSection(entry, section)}
+                        hideNonShortIds={hideNonShortIds}
                       />
                     ) : (
                       <>

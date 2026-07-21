@@ -1652,14 +1652,7 @@ impl SubscriptionTopic {
                         sticky_key: None,
                         upstream_scope: None,
                         upstream_account_id: None,
-                        requester_ip: None,
-                        keyword: None,
-                        min_total_tokens: None,
-                        max_total_tokens: None,
-                        min_total_ms: None,
-                        max_total_ms: None,
-                        suggest_field: None,
-                        suggest_query: None,
+                        ..Default::default()
                     }),
                 )
                 .await?;

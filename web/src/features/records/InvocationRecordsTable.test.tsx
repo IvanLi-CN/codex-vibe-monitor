@@ -607,6 +607,8 @@ describe("InvocationRecordsTable", () => {
 
     expect(document.body.textContent ?? "").toContain(record.invokeId);
     expect(document.body.textContent ?? "").toContain("工作流时间线");
+    expect(document.body.textContent ?? "").not.toContain("上游请求 ID");
+    expect(document.body.textContent ?? "").not.toContain("X-Request-ID");
   });
 
   it("does not fetch workflow detail for transient live records", async () => {

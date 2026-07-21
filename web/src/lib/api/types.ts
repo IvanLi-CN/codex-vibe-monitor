@@ -105,6 +105,8 @@ export type {
   InvocationExceptionSummary,
   InvocationFocus,
   InvocationLivePhase,
+  InvocationModelRerouteFilter,
+  InvocationModelTarget,
   InvocationNetworkSummary,
   InvocationPhaseCounts,
   InvocationRangePreset,

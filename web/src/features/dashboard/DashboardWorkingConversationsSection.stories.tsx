@@ -2943,9 +2943,9 @@ function DrawerPreviewStory({
       }
 
       if (url.pathname === "/api/invocations") {
-        const requestId = url.searchParams.get("requestId");
-        if (requestId) {
-          const record = storyMocks.recordsByInvokeId.get(requestId);
+        const invokeId = url.searchParams.get("invokeId") ?? url.searchParams.get("requestId");
+        if (invokeId) {
+          const record = storyMocks.recordsByInvokeId.get(invokeId);
           return jsonResponse({
             snapshotId: 1,
             total: record ? 1 : 0,

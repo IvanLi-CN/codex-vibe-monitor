@@ -60,9 +60,39 @@ function normalizeText(value: string | null) {
 }
 
 function matchesText(value: string | undefined, query: string | null) {
-  const normalizedQuery = normalizeText(query);
+  const normalizedQuery = normalizeText(query ?? null);
   if (!normalizedQuery) return true;
-  return (value ?? "").toLowerCase().includes(normalizedQuery);
+  return normalizeText(value ?? null) === normalizedQuery;
+}
+
+function parseListParam(value: string | null) {
+  const deduped = new Set<string>();
+  for (const item of (value ?? "").split(",")) {
+    const normalized = normalizeText(item);
+    if (!normalized) continue;
+    deduped.add(normalized);
+  }
+  return Array.from(deduped);
+}
+
+function resolveModelValue(record: ApiInvocation, target: "request" | "response") {
+  if (target === "response") {
+    return normalizeText(record.responseModel ?? record.model ?? null);
+  }
+  return normalizeText(record.requestModel ?? record.model ?? null);
+}
+
+function hasModelReroute(record: ApiInvocation) {
+  const requestModel = normalizeText(record.requestModel ?? null);
+  const responseModel = normalizeText(record.responseModel ?? null);
+  return !!requestModel && !!responseModel && requestModel !== responseModel;
+}
+
+function parseModelReroutedFilter(value: string | null) {
+  const normalized = normalizeText(value);
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  return null;
 }
 
 function matchesNumberRange(
@@ -78,22 +108,76 @@ function matchesNumberRange(
   return true;
 }
 
-function filterRecords(records: ApiInvocation[], params: URLSearchParams) {
+function resolveAttemptInvokeId(
+  attemptsByInvokeId: Record<string, Array<{ attemptId: string }>>,
+  attemptIdRaw: string | null,
+) {
+  const attemptId = normalizeText(attemptIdRaw);
+  if (!attemptId) return null;
+  for (const [invokeId, attempts] of Object.entries(attemptsByInvokeId)) {
+    if (attempts.some((attempt) => normalizeText(attempt.attemptId) === attemptId)) {
+      return invokeId;
+    }
+  }
+  return "__missing_attempt__";
+}
+
+function filterRecords(
+  records: ApiInvocation[],
+  params: URLSearchParams,
+  attemptsByInvokeId: Record<string, Array<{ attemptId: string }>> = {},
+) {
   const from = params.get("from");
   const to = params.get("to");
   const keyword = normalizeText(params.get("keyword"));
-  const requestId = normalizeText(params.get("requestId"));
+  const invokeId = normalizeText(params.get("invokeId") ?? params.get("requestId"));
+  const attemptInvokeId = resolveAttemptInvokeId(attemptsByInvokeId, params.get("attemptId"));
+  const modelValues = parseListParam(params.get("models"));
+  const reasoningEffortValues = parseListParam(params.get("reasoningEfforts"));
+  const modelTarget =
+    normalizeText(params.get("modelTarget")) === "response" ? "response" : "request";
+  const modelRerouted = parseModelReroutedFilter(params.get("modelRerouted"));
 
   return records.filter((record) => {
     const occurredAt = Date.parse(record.occurredAt);
     if (from && occurredAt < Date.parse(from)) return false;
-    if (to && occurredAt > Date.parse(to)) return false;
+    if (to && occurredAt >= Date.parse(to)) return false;
     if (!matchesText(record.status, params.get("status"))) return false;
-    if (!matchesText(record.model, params.get("model"))) return false;
+    if (modelValues.length > 0) {
+      const modelValue = resolveModelValue(record, modelTarget);
+      if (!modelValue || !modelValues.includes(modelValue)) return false;
+    } else if (!matchesText(record.model, params.get("model"))) {
+      return false;
+    }
+    if (modelRerouted === true && !hasModelReroute(record)) return false;
+    if (modelRerouted === false && hasModelReroute(record)) return false;
     if (!matchesText(record.endpoint, params.get("endpoint"))) return false;
     if (!matchesText(record.failureClass ?? undefined, params.get("failureClass"))) return false;
     if (!matchesText(record.failureKind, params.get("failureKind"))) return false;
     if (!matchesText(record.promptCacheKey, params.get("promptCacheKey"))) return false;
+    const upstreamScope = normalizeText(record.upstreamScope ?? null)
+      ? record.upstreamScope
+      : record.routeMode === "pool"
+        ? "internal"
+        : "external";
+    if (!matchesText(upstreamScope ?? undefined, params.get("upstreamScope"))) return false;
+    const upstreamAccountId = params.get("upstreamAccountId");
+    if (
+      upstreamAccountId &&
+      (!Number.isFinite(Number(upstreamAccountId)) ||
+        record.upstreamAccountId !== Number(upstreamAccountId))
+    ) {
+      return false;
+    }
+    if (!matchesText(record.proxyDisplayName, params.get("proxyDisplayName"))) return false;
+    if (!matchesText(record.transport ?? undefined, params.get("transport"))) return false;
+    if (!matchesText(record.serviceTier, params.get("serviceTier"))) return false;
+    if (reasoningEffortValues.length > 0) {
+      const reasoningEffort = normalizeText(record.reasoningEffort ?? null);
+      if (!reasoningEffort || !reasoningEffortValues.includes(reasoningEffort)) return false;
+    } else if (!matchesText(record.reasoningEffort, params.get("reasoningEffort"))) {
+      return false;
+    }
     if (!matchesText(record.requesterIp, params.get("requesterIp"))) return false;
     if (
       !matchesNumberRange(
@@ -105,7 +189,10 @@ function filterRecords(records: ApiInvocation[], params: URLSearchParams) {
       return false;
     if (!matchesNumberRange(record.tTotalMs, params.get("minTotalMs"), params.get("maxTotalMs")))
       return false;
-    if (requestId && normalizeText(record.invokeId) !== requestId) return false;
+    if (invokeId && normalizeText(record.invokeId) !== invokeId) return false;
+    if (attemptInvokeId && normalizeText(record.invokeId) !== normalizeText(attemptInvokeId)) {
+      return false;
+    }
 
     if (!keyword) return true;
     const haystack = [
@@ -175,12 +262,15 @@ function paginateRecords(records: ApiInvocation[], query: InvocationRecordsQuery
 function buildSuggestionBucket(
   records: ApiInvocation[],
   extract: (record: ApiInvocation) => string | null | undefined,
+  query?: string | null,
 ) {
   const counts = new Map<string, number>();
+  const normalizedQuery = normalizeText(query ?? null);
   for (const record of records) {
     const rawValue = extract(record);
     const value = rawValue?.trim() ?? "";
     if (!value) continue;
+    if (normalizedQuery && !value.toLowerCase().includes(normalizedQuery)) continue;
     counts.set(value, (counts.get(value) ?? 0) + 1);
   }
 
@@ -198,14 +288,150 @@ function buildSuggestionBucket(
   };
 }
 
-function buildSuggestions(records: ApiInvocation[]) {
+function buildUpstreamAccountBucket(records: ApiInvocation[], query?: string | null) {
+  const normalizedQuery = normalizeText(query ?? null);
+  const counts = new Map<number, { count: number; label: string }>();
+  for (const record of records) {
+    const accountId = record.upstreamAccountId;
+    if (typeof accountId !== "number" || !Number.isFinite(accountId)) continue;
+    const label = `${record.upstreamAccountName?.trim() || `#${accountId}`} (#${accountId})`;
+    const searchText = `${record.upstreamAccountName ?? ""} ${accountId}`.toLowerCase();
+    if (normalizedQuery && !searchText.includes(normalizedQuery)) continue;
+    const current = counts.get(accountId);
+    counts.set(accountId, {
+      count: (current?.count ?? 0) + 1,
+      label,
+    });
+  }
+
+  const items = Array.from(counts.entries())
+    .map(([value, item]) => ({
+      value: String(value),
+      label: item.label,
+      count: item.count,
+    }))
+    .sort((left, right) => {
+      if (right.count !== left.count) return right.count - left.count;
+      return left.label.localeCompare(right.label);
+    });
+  const limit = 30;
   return {
-    model: buildSuggestionBucket(records, (record) => record.model),
-    endpoint: buildSuggestionBucket(records, (record) => record.endpoint),
-    failureKind: buildSuggestionBucket(records, (record) => record.failureKind),
-    promptCacheKey: buildSuggestionBucket(records, (record) => record.promptCacheKey),
-    requesterIp: buildSuggestionBucket(records, (record) => record.requesterIp),
+    items: items.slice(0, limit),
+    hasMore: items.length > limit,
   };
+}
+
+function suggestionFieldQuery(params: URLSearchParams, field: string) {
+  return params.get("suggestField") === field ? params.get("suggestQuery") : null;
+}
+
+function buildSuggestions(records: ApiInvocation[], params: URLSearchParams) {
+  return {
+    model: buildSuggestionBucket(
+      records,
+      (record) => record.model,
+      suggestionFieldQuery(params, "model"),
+    ),
+    requestModel: buildSuggestionBucket(
+      records,
+      (record) => record.requestModel ?? record.model,
+      suggestionFieldQuery(params, "requestModel"),
+    ),
+    responseModel: buildSuggestionBucket(
+      records,
+      (record) => record.responseModel ?? record.model,
+      suggestionFieldQuery(params, "responseModel"),
+    ),
+    endpoint: buildSuggestionBucket(
+      records,
+      (record) => record.endpoint,
+      suggestionFieldQuery(params, "endpoint"),
+    ),
+    failureKind: buildSuggestionBucket(
+      records,
+      (record) => record.failureKind,
+      suggestionFieldQuery(params, "failureKind"),
+    ),
+    stickyKey: { items: [], hasMore: false },
+    promptCacheKey: buildSuggestionBucket(
+      records,
+      (record) => record.promptCacheKey,
+      suggestionFieldQuery(params, "promptCacheKey"),
+    ),
+    requesterIp: buildSuggestionBucket(
+      records,
+      (record) => record.requesterIp,
+      suggestionFieldQuery(params, "requesterIp"),
+    ),
+    proxyDisplayName: buildSuggestionBucket(
+      records,
+      (record) => record.proxyDisplayName,
+      suggestionFieldQuery(params, "proxyDisplayName"),
+    ),
+    upstreamAccount: buildUpstreamAccountBucket(
+      records,
+      suggestionFieldQuery(params, "upstreamAccount"),
+    ),
+    serviceTier: buildSuggestionBucket(
+      records,
+      (record) => record.serviceTier,
+      suggestionFieldQuery(params, "serviceTier"),
+    ),
+    reasoningEffort: buildSuggestionBucket(
+      records,
+      (record) => record.reasoningEffort,
+      suggestionFieldQuery(params, "reasoningEffort"),
+    ),
+  };
+}
+
+function filterSuggestionSourceRecords(
+  records: ApiInvocation[],
+  params: URLSearchParams,
+  attemptsByInvokeId: Record<string, Array<{ attemptId: string }>> = {},
+) {
+  const nextParams = new URLSearchParams(params);
+  const field = params.get("suggestField");
+  switch (field) {
+    case "model":
+      nextParams.delete("model");
+      break;
+    case "requestModel":
+    case "responseModel":
+      nextParams.delete("models");
+      nextParams.delete("modelTarget");
+      break;
+    case "endpoint":
+      nextParams.delete("endpoint");
+      break;
+    case "failureKind":
+      nextParams.delete("failureKind");
+      break;
+    case "promptCacheKey":
+      nextParams.delete("promptCacheKey");
+      break;
+    case "requesterIp":
+      nextParams.delete("requesterIp");
+      break;
+    case "proxyDisplayName":
+      nextParams.delete("proxyDisplayName");
+      break;
+    case "upstreamAccount":
+      nextParams.delete("upstreamAccountId");
+      break;
+    case "serviceTier":
+      nextParams.delete("serviceTier");
+      break;
+    case "reasoningEffort":
+      nextParams.delete("reasoningEffort");
+      nextParams.delete("reasoningEfforts");
+      break;
+    default:
+      break;
+  }
+  nextParams.delete("suggestQuery");
+  nextParams.delete("suggestField");
+  return filterRecords(records, nextParams, attemptsByInvokeId);
 }
 
 function jsonResponse(payload: unknown) {
@@ -290,7 +516,7 @@ function StorybookRecordsPageMock({
       const params = url.searchParams;
       const sortBy = (params.get("sortBy") as InvocationSortBy | null) ?? "occurredAt";
       const sortOrder = (params.get("sortOrder") as InvocationSortOrder | null) ?? "desc";
-      const filtered = filterRecords(recordsRef.current, params);
+      const filtered = filterRecords(recordsRef.current, params, poolAttemptsByInvokeIdRef.current);
       const sorted = sortRecords(filtered, sortBy, sortOrder);
 
       if (path === "/api/invocations") {
@@ -330,7 +556,16 @@ function StorybookRecordsPageMock({
       }
 
       if (path === "/api/invocations/suggestions") {
-        return jsonResponse(buildSuggestions(filtered));
+        return jsonResponse(
+          buildSuggestions(
+            filterSuggestionSourceRecords(
+              recordsRef.current,
+              params,
+              poolAttemptsByInvokeIdRef.current,
+            ),
+            params,
+          ),
+        );
       }
 
       if (path === "/api/invocations/new-count") {
@@ -350,7 +585,10 @@ function StorybookRecordsPageMock({
       if (detailMatch) {
         const recordId = Number(detailMatch[1] ?? "0");
         return jsonResponse(
-          detailsByIdRef.current[recordId] ?? { id: recordId, abnormalResponseBody: null },
+          detailsByIdRef.current[recordId] ?? {
+            id: recordId,
+            abnormalResponseBody: null,
+          },
         );
       }
 
@@ -483,10 +721,18 @@ export const AutocompleteSuppressedFilters: Story = {
   play: async ({ canvasElement }) => {
     const doc = canvasElement.ownerDocument;
     await userEvent.click(within(canvasElement).getByTestId("records-open-filters"));
+    await userEvent.click(within(doc.body).getByTestId("records-filter-model-selection-trigger"));
+    await userEvent.click(
+      within(doc.body).getByRole("combobox", {
+        name: /模型|model/i,
+      }),
+    );
 
-    const modelInput = doc.querySelector("#records-filter-model");
+    const modelInput = doc.querySelector("#records-filter-model-input");
     const keywordInput = doc.querySelector('input[name="keyword"]');
-    const statusSelect = within(canvasElement).getByRole("button", { name: /状态|status/i });
+    const statusSelect = within(canvasElement).getByRole("button", {
+      name: /状态|status/i,
+    });
 
     if (!(modelInput instanceof HTMLInputElement)) {
       throw new Error("missing records model combobox input");
@@ -518,7 +764,7 @@ export const AutocompleteSuppressedFilters: Story = {
     }
 
     await expect(listbox).toBeVisible();
-    await expect(listbox.textContent ?? "").toContain("gpt-5.3-codex");
+    await expect(listbox.textContent ?? "").toContain("gpt-5.4");
   },
 };
 
@@ -538,6 +784,124 @@ export const MobileFiltersDrawer: Story = {
       expect(doc.querySelector('[data-testid="records-filters-drawer"]')).not.toBeNull();
       expect(doc.querySelector('[role="dialog"]')).not.toBeNull();
     });
+  },
+};
+
+export const RangeDiagnosticsDrawer: Story = {
+  parameters: {
+    newRecordsCount: 0,
+  },
+  render: () => <RecordsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const doc = canvasElement.ownerDocument;
+
+    await userEvent.click(canvas.getByTestId("records-open-filters"));
+
+    const timeRangeField = doc.querySelector('[data-testid="records-filter-time-range"]');
+    if (!(timeRangeField instanceof HTMLElement)) {
+      throw new Error("missing time range field");
+    }
+    const timeRangeTrigger = timeRangeField.querySelector("button");
+    if (!(timeRangeTrigger instanceof HTMLButtonElement)) {
+      throw new Error("missing time range trigger");
+    }
+
+    await userEvent.click(timeRangeTrigger);
+
+    await waitFor(() => {
+      expect(doc.querySelector('input[name="customFrom"]')).not.toBeNull();
+      expect(doc.querySelector('[data-testid="records-filter-total-tokens-range"]')).not.toBeNull();
+      expect(doc.querySelector('[data-testid="records-filter-total-ms-range"]')).not.toBeNull();
+    });
+  },
+};
+
+export const ModelFilterDrawer: Story = {
+  parameters: {
+    newRecordsCount: 0,
+  },
+  render: () => <RecordsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const doc = canvasElement.ownerDocument;
+
+    await userEvent.click(canvas.getByTestId("records-open-filters"));
+    await userEvent.click(within(doc.body).getByTestId("records-filter-model-selection-trigger"));
+
+    const responseButton = within(doc.body).getByRole("button", {
+      name: /响应|response/i,
+    });
+    const reroutedButton = within(doc.body).getByRole("button", {
+      name: /重路由:\s*(已重路由|rerouted)/i,
+    });
+
+    await userEvent.click(responseButton);
+    await userEvent.click(reroutedButton);
+
+    const modelTrigger = within(doc.body).getByRole("combobox", {
+      name: /模型|model/i,
+    });
+    await userEvent.click(modelTrigger);
+
+    const modelInput = doc.body.querySelector(
+      '[cmdk-input][aria-label="模型"], [cmdk-input][aria-label="Model"]',
+    );
+
+    if (!(modelInput instanceof HTMLInputElement)) {
+      throw new Error("missing records model input");
+    }
+    await userEvent.type(modelInput, "gpt-5.4");
+
+    await waitFor(() => {
+      const option = Array.from(doc.body.querySelectorAll("[cmdk-item]")).find((candidate) =>
+        (candidate.textContent || "").includes("gpt-5.4"),
+      );
+      expect(option).toBeTruthy();
+    });
+
+    const modelOption = Array.from(doc.body.querySelectorAll("[cmdk-item]")).find((candidate) =>
+      (candidate.textContent || "").includes("gpt-5.4"),
+    );
+    if (!(modelOption instanceof HTMLElement)) {
+      throw new Error("missing model option");
+    }
+    await userEvent.click(modelOption);
+
+    const reasoningTrigger = within(doc.body).getByRole("combobox", {
+      name: /推理强度|reasoning effort/i,
+    });
+    await userEvent.click(reasoningTrigger);
+
+    const reasoningInput = doc.body.querySelector(
+      '[cmdk-input][aria-label="推理强度"], [cmdk-input][aria-label="Reasoning effort"]',
+    );
+    if (!(reasoningInput instanceof HTMLInputElement)) {
+      throw new Error("missing records reasoning effort input");
+    }
+
+    await userEvent.type(reasoningInput, "high");
+
+    await waitFor(() => {
+      const option = Array.from(doc.body.querySelectorAll("[cmdk-item]")).find((candidate) =>
+        (candidate.textContent || "").includes("high"),
+      );
+      expect(option).toBeTruthy();
+    });
+
+    const reasoningOption = Array.from(doc.body.querySelectorAll("[cmdk-item]")).find((candidate) =>
+      (candidate.textContent || "").includes("high"),
+    );
+    if (!(reasoningOption instanceof HTMLElement)) {
+      throw new Error("missing reasoning effort option");
+    }
+    await userEvent.click(reasoningOption);
+
+    await waitFor(() => {
+      expect(doc.body.textContent ?? "").toContain("gpt-5.4");
+      expect(doc.body.textContent ?? "").toContain("high");
+    });
+    await expect(reroutedButton).toHaveAttribute("data-active", "true");
   },
 };
 

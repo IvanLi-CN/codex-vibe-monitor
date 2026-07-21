@@ -195,12 +195,14 @@ function createSummaryResponse(
       avgTokensPerRequest: 500,
       cacheInputTokens: 200,
       totalCost: 0.25,
+      maxTokensPerRequest: 640,
     },
     network: {
       avgTtfbMs: 120,
       p95TtfbMs: 180,
       avgTotalMs: 450,
       p95TotalMs: 600,
+      maxTotalMs: 800,
     },
     exception: {
       failureCount: 0,
