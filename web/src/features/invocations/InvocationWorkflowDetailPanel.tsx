@@ -71,6 +71,7 @@ interface InvocationWorkflowDetailPanelProps {
   focusedAttemptId?: string | null;
   size?: DetailPanelSize;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+  hideNonShortIds?: boolean;
 }
 
 const FALLBACK_CELL = "—";
@@ -1536,6 +1537,7 @@ function AttemptDetail({
   activeSection,
   requestBodyState,
   responseBodyState,
+  hideNonShortIds = false,
 }: {
   record: ApiInvocation;
   entry: ApiInvocationWorkflowTimelineEntry;
@@ -1544,6 +1546,7 @@ function AttemptDetail({
   activeSection: AttemptSection;
   requestBodyState: PayloadFetchState<ApiInvocationRequestBodyResponse>;
   responseBodyState: PayloadFetchState<ApiInvocationResponseBodyResponse>;
+  hideNonShortIds?: boolean;
 }) {
   const attempt = entry.attempt;
   if (!attempt) return null;
@@ -1608,10 +1611,14 @@ function AttemptDetail({
       value: formatOptionalText(attempt.failureKind),
       monospace: false,
     },
-    {
-      label: isZh ? "上游请求 ID" : "Upstream Request ID",
-      value: formatOptionalText(attempt.upstreamRequestId),
-    },
+    ...(!hideNonShortIds
+      ? [
+          {
+            label: isZh ? "上游请求 ID" : "Upstream Request ID",
+            value: formatOptionalText(attempt.upstreamRequestId),
+          },
+        ]
+      : []),
   ].filter((item) => item.value !== FALLBACK_CELL);
 
   const timingItems = [
@@ -1921,7 +1928,9 @@ function AttemptDetail({
   const responseHeaderItems = buildStructuredItems(responseHeaderSource, localeTag, isZh, [
     { key: "contentEncoding", label: "Content-Encoding", monospace: false },
     { key: "contentEncodingChain", label: isZh ? "编码链" : "Encoding Chain", monospace: false },
-    { key: "upstreamRequestId", label: "X-Request-ID", monospace: false },
+    ...(!hideNonShortIds
+      ? [{ key: "upstreamRequestId", label: "X-Request-ID", monospace: false }]
+      : []),
     { key: "cvmInvokeId", label: isZh ? "CVM 调用 ID" : "CVM Invoke ID" },
   ]);
 
@@ -2535,11 +2544,14 @@ interface InvocationWorkflowAttemptRecordProps {
   isZh: boolean;
   summaryIdentity?: string | null;
   focused?: boolean;
+  focusVersion?: number;
   defaultSection?: AttemptSection | null;
   isOpen?: boolean;
   activeSection?: AttemptSection | null;
   onSelectSection?: (section: AttemptSection) => void;
+  hideNonShortIds?: boolean;
   className?: string;
+  containerRef?: (node: HTMLDivElement | null) => void;
   testId?: string;
 }
 
@@ -2550,11 +2562,14 @@ export function InvocationWorkflowAttemptRecord({
   isZh,
   summaryIdentity,
   focused = false,
+  focusVersion = 0,
   defaultSection = null,
   isOpen,
   activeSection,
   onSelectSection,
+  hideNonShortIds = false,
   className,
+  containerRef,
   testId,
 }: InvocationWorkflowAttemptRecordProps) {
   const isControlled = isOpen !== undefined && activeSection !== undefined && !!onSelectSection;
@@ -2581,7 +2596,7 @@ export function InvocationWorkflowAttemptRecord({
   useEffect(() => {
     if (isControlled || !focused || !defaultSection) return;
     setInternalSection(defaultSection);
-  }, [defaultSection, focused, isControlled]);
+  }, [defaultSection, focusVersion, focused, isControlled]);
 
   useEffect(() => {
     if (!(record.id > 0)) return;
@@ -2650,7 +2665,17 @@ export function InvocationWorkflowAttemptRecord({
   if (!entry.attempt) return null;
 
   return (
-    <div className={className} data-testid={testId}>
+    <div
+      ref={containerRef}
+      className={cn(
+        "scroll-mt-4 rounded-[1.125rem] border border-transparent transition-[background-color,border-color,box-shadow] duration-200",
+        focused && "border-primary/45 bg-primary/8 ring-1 ring-inset ring-primary/35",
+        className,
+      )}
+      data-focus-visible={focused ? "true" : "false"}
+      data-testid={testId}
+      aria-current={focused ? "true" : undefined}
+    >
       <TimelineSummary
         entry={entry}
         localeTag={localeTag}
@@ -2669,6 +2694,7 @@ export function InvocationWorkflowAttemptRecord({
           activeSection={currentSection}
           requestBodyState={requestBodyState}
           responseBodyState={responseBodyState}
+          hideNonShortIds={hideNonShortIds}
         />
       ) : null}
     </div>
@@ -2680,6 +2706,7 @@ export function InvocationWorkflowDetailPanel({
   focusedAttemptId = null,
   size = "default",
   onOpenUpstreamAccount,
+  hideNonShortIds = false,
 }: InvocationWorkflowDetailPanelProps) {
   const { locale } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
@@ -3138,6 +3165,7 @@ export function InvocationWorkflowDetailPanel({
                         isOpen={isOpen}
                         activeSection={isOpen ? attemptSection : null}
                         onSelectSection={(section) => toggleAttemptSection(entry, section)}
+                        hideNonShortIds={hideNonShortIds}
                       />
                     ) : (
                       <>

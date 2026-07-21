@@ -799,6 +799,8 @@ export function summarizeInvocationRecords(records: ApiInvocation[]) {
     cacheInputTokens: sum(records.map((record) => record.cacheInputTokens ?? 0)),
     outputTokens: sum(records.map((record) => record.outputTokens ?? 0)),
     totalCost: Number(totalCost.toFixed(4)),
+    maxTokensPerRequest:
+      records.length > 0 ? Math.max(...records.map((record) => record.totalTokens ?? 0)) : null,
   };
 
   const network: InvocationNetworkSummary = {
@@ -810,6 +812,7 @@ export function summarizeInvocationRecords(records: ApiInvocation[]) {
         ? Number((sum(totalMsValues) / totalMsValues.length).toFixed(2))
         : null,
     p95TotalMs: percentile(totalMsValues, 0.95),
+    maxTotalMs: totalMsValues.length > 0 ? Math.max(...totalMsValues) : null,
   };
 
   const exception: InvocationExceptionSummary = {

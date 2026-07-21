@@ -10,6 +10,7 @@ use futures_util::TryStreamExt;
 use serde::Serialize;
 use serde_json::{Value, json};
 use sqlx::FromRow;
+use std::collections::HashSet;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 use tracing::debug;
@@ -41,6 +42,7 @@ pub(crate) const INVOCATION_RESPONSE_CONTENT_ENCODING_SQL: &str = "CASE WHEN jso
 pub(crate) const INVOCATION_DOWNSTREAM_STATUS_CODE_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamStatusCode') AS INTEGER) END";
 pub(crate) const INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END";
 pub(crate) const INVOCATION_TRANSPORT_SQL: &str = "CASE WHEN json_valid(payload) AND json_type(payload, '$.transport') = 'text' THEN json_extract(payload, '$.transport') END";
+pub(crate) const INVOCATION_SERVICE_TIER_SQL: &str = "CASE   WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text'     THEN json_extract(payload, '$.serviceTier')   WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text'     THEN json_extract(payload, '$.service_tier') END";
 pub(crate) const INVOCATION_BILLING_SERVICE_TIER_SQL: &str = "CASE   WHEN json_valid(payload) AND json_type(payload, '$.billingServiceTier') = 'text'     THEN json_extract(payload, '$.billingServiceTier')   WHEN json_valid(payload) AND json_type(payload, '$.billing_service_tier') = 'text'     THEN json_extract(payload, '$.billing_service_tier') END";
 pub(crate) const INVOCATION_POOL_ATTEMPT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolAttemptCount') AS INTEGER) END";
 pub(crate) const INVOCATION_POOL_DISTINCT_ACCOUNT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolDistinctAccountCount') AS INTEGER) END";
@@ -486,12 +488,57 @@ pub(crate) enum SnapshotConstraint {
     After(i64),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InvocationModelTarget {
+    Request,
+    Response,
+}
+
+impl InvocationModelTarget {
+    fn parse(raw: Option<&str>) -> Result<Option<Self>, ApiError> {
+        let Some(value) = normalize_query_text(raw) else {
+            return Ok(None);
+        };
+        match value.to_ascii_lowercase().as_str() {
+            "request" => Ok(Some(Self::Request)),
+            "response" => Ok(Some(Self::Response)),
+            _ => Err(ApiError::bad_request(anyhow!(
+                "unsupported modelTarget: {value}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InvocationModelRerouteFilter {
+    Rerouted,
+    NotRerouted,
+}
+
+impl InvocationModelRerouteFilter {
+    fn parse(raw: Option<&str>) -> Result<Option<Self>, ApiError> {
+        let Some(value) = normalize_query_text(raw) else {
+            return Ok(None);
+        };
+        match value.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" => Ok(Some(Self::Rerouted)),
+            "0" | "false" | "no" => Ok(Some(Self::NotRerouted)),
+            _ => Err(ApiError::bad_request(anyhow!(
+                "invalid modelRerouted: {value}"
+            ))),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct InvocationRecordsFilters {
     pub(crate) occurred_from: Option<String>,
     pub(crate) occurred_to: Option<String>,
     pub(crate) status: Option<String>,
     pub(crate) model: Option<String>,
+    pub(crate) model_values: Vec<String>,
+    pub(crate) model_target: Option<InvocationModelTarget>,
+    pub(crate) model_rerouted: Option<InvocationModelRerouteFilter>,
     pub(crate) endpoint: Option<String>,
     pub(crate) request_id: Option<String>,
     pub(crate) failure_class: Option<String>,
@@ -500,6 +547,11 @@ pub(crate) struct InvocationRecordsFilters {
     pub(crate) sticky_key: Option<String>,
     pub(crate) upstream_scope: Option<String>,
     pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) proxy_display_name: Option<String>,
+    pub(crate) transport: Option<String>,
+    pub(crate) service_tier: Option<String>,
+    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) reasoning_effort_values: Vec<String>,
     pub(crate) requester_ip: Option<String>,
     pub(crate) keyword: Option<String>,
     pub(crate) min_total_tokens: Option<i64>,
@@ -528,6 +580,7 @@ pub(crate) struct InvocationSummaryAggRow {
     cache_write_tokens: i64,
     cache_input_tokens: i64,
     output_tokens: i64,
+    max_total_tokens: Option<i64>,
 }
 
 #[derive(Debug, FromRow)]
@@ -536,6 +589,7 @@ pub(crate) struct InvocationNetworkAggRow {
     ttfb_count: i64,
     avg_total_ms: Option<f64>,
     total_count: i64,
+    max_total_ms: Option<f64>,
 }
 
 #[derive(Debug, FromRow)]
@@ -557,6 +611,7 @@ pub(crate) struct InvocationTokenSummary {
     pub(crate) cache_input_tokens: i64,
     pub(crate) output_tokens: i64,
     pub(crate) total_cost: f64,
+    pub(crate) max_tokens_per_request: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -566,6 +621,7 @@ pub(crate) struct InvocationNetworkSummary {
     pub(crate) p95_ttfb_ms: Option<f64>,
     pub(crate) avg_total_ms: Option<f64>,
     pub(crate) p95_total_ms: Option<f64>,
+    pub(crate) max_total_ms: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -604,6 +660,8 @@ pub(crate) struct InvocationNewRecordsCountResponse {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct InvocationSuggestionItem {
     pub(crate) value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) label: Option<String>,
     pub(crate) count: i64,
 }
 
@@ -618,10 +676,17 @@ pub(crate) struct InvocationSuggestionBucket {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct InvocationSuggestionsResponse {
     pub(crate) model: InvocationSuggestionBucket,
+    pub(crate) request_model: InvocationSuggestionBucket,
+    pub(crate) response_model: InvocationSuggestionBucket,
     pub(crate) endpoint: InvocationSuggestionBucket,
     pub(crate) failure_kind: InvocationSuggestionBucket,
+    pub(crate) sticky_key: InvocationSuggestionBucket,
     pub(crate) prompt_cache_key: InvocationSuggestionBucket,
     pub(crate) requester_ip: InvocationSuggestionBucket,
+    pub(crate) proxy_display_name: InvocationSuggestionBucket,
+    pub(crate) upstream_account: InvocationSuggestionBucket,
+    pub(crate) service_tier: InvocationSuggestionBucket,
+    pub(crate) reasoning_effort: InvocationSuggestionBucket,
 }
 
 #[derive(Debug, Serialize)]
@@ -673,6 +738,21 @@ pub(crate) fn normalize_query_text(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+pub(crate) fn parse_query_text_list(raw: Option<&str>) -> Vec<String> {
+    let mut deduped = Vec::new();
+    let mut seen = HashSet::new();
+    for value in raw.into_iter().flat_map(|value| value.split(',')) {
+        let Some(normalized) = normalize_query_text(Some(value)) else {
+            continue;
+        };
+        let key = normalized.to_ascii_lowercase();
+        if seen.insert(key) {
+            deduped.push(normalized);
+        }
+    }
+    deduped
 }
 
 pub(crate) fn escape_sql_like(raw: &str) -> String {
@@ -744,13 +824,22 @@ pub(crate) fn build_invocation_filters(
         )));
     }
 
+    let model_values = parse_query_text_list(params.models.as_deref());
+    let model_target = InvocationModelTarget::parse(params.model_target.as_deref())?;
+    let model_rerouted = InvocationModelRerouteFilter::parse(params.model_rerouted.as_deref())?;
+    let reasoning_effort_values = parse_query_text_list(params.reasoning_efforts.as_deref());
+
     Ok(InvocationRecordsFilters {
         occurred_from,
         occurred_to,
         status: normalize_query_text(params.status.as_deref()),
         model: normalize_query_text(params.model.as_deref()),
+        model_values,
+        model_target,
+        model_rerouted,
         endpoint: normalize_query_text(params.endpoint.as_deref()),
-        request_id: normalize_query_text(params.request_id.as_deref()),
+        request_id: normalize_query_text(params.invoke_id.as_deref())
+            .or_else(|| normalize_query_text(params.request_id.as_deref())),
         failure_class: normalize_query_text(params.failure_class.as_deref()),
         failure_kind: normalize_query_text(params.failure_kind.as_deref()),
         prompt_cache_key: normalize_query_text(params.prompt_cache_key.as_deref()),
@@ -760,6 +849,14 @@ pub(crate) fn build_invocation_filters(
             other => other,
         },
         upstream_account_id: params.upstream_account_id,
+        proxy_display_name: normalize_query_text(params.proxy_display_name.as_deref()),
+        transport: match normalize_query_text(params.transport.as_deref()) {
+            Some(value) if value.eq_ignore_ascii_case("all") => None,
+            other => other,
+        },
+        service_tier: normalize_query_text(params.service_tier.as_deref()),
+        reasoning_effort: normalize_query_text(params.reasoning_effort.as_deref()),
+        reasoning_effort_values,
         requester_ip: normalize_query_text(params.requester_ip.as_deref()),
         keyword: normalize_query_text(params.keyword.as_deref()),
         min_total_tokens: params.min_total_tokens,
@@ -791,6 +888,61 @@ pub(crate) fn build_invocation_list_request(
     })
 }
 
+async fn resolve_attempt_public_id_to_invoke_id(
+    pool: &Pool<Sqlite>,
+    attempt_public_id: &str,
+) -> Result<Option<String>, ApiError> {
+    #[derive(Debug, FromRow)]
+    struct AttemptLookupRow {
+        invoke_id: String,
+    }
+
+    sqlx::query_as::<_, AttemptLookupRow>(
+        r#"
+        SELECT invoke_id
+        FROM pool_upstream_request_attempts
+        WHERE attempt_public_id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(attempt_public_id)
+    .fetch_optional(pool)
+    .await
+    .map(|row| row.map(|value| value.invoke_id))
+    .map_err(ApiError::from)
+}
+
+async fn build_resolved_invocation_list_request(
+    pool: &Pool<Sqlite>,
+    params: &ListQuery,
+    list_limit_max: i64,
+) -> Result<InvocationListRequest, ApiError> {
+    let mut request = build_invocation_list_request(params, list_limit_max)?;
+    let Some(attempt_id) = normalize_query_text(params.attempt_id.as_deref()) else {
+        return Ok(request);
+    };
+
+    let Some(resolved_invoke_id) =
+        resolve_attempt_public_id_to_invoke_id(pool, &attempt_id).await?
+    else {
+        request.filters.request_id = Some(format!("__missing_attempt__:{attempt_id}"));
+        return Ok(request);
+    };
+
+    if request
+        .filters
+        .request_id
+        .as_deref()
+        .is_some_and(|invoke_id| !invoke_id.eq_ignore_ascii_case(&resolved_invoke_id))
+    {
+        request.filters.request_id = Some(format!("__invoke_attempt_mismatch__:{attempt_id}"));
+        return Ok(request);
+    }
+
+    request.filters.request_id = Some(resolved_invoke_id);
+    Ok(request)
+}
+
 pub(crate) fn push_exact_text_filter(
     query: &mut QueryBuilder<Sqlite>,
     sql_expr: &str,
@@ -800,6 +952,45 @@ pub(crate) fn push_exact_text_filter(
     query.push(sql_expr);
     query.push(", ''))) = ");
     query.push_bind(value.to_lowercase());
+}
+
+pub(crate) fn push_exact_text_any_filter(
+    query: &mut QueryBuilder<Sqlite>,
+    sql_expr: &str,
+    values: &[String],
+) {
+    if values.is_empty() {
+        return;
+    }
+    query.push(" AND (");
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            query.push(" OR ");
+        }
+        query.push("LOWER(TRIM(COALESCE(");
+        query.push(sql_expr);
+        query.push(", ''))) = ");
+        query.push_bind(value.to_lowercase());
+    }
+    query.push(")");
+}
+
+pub(crate) fn invocation_model_sql_expr(target: InvocationModelTarget) -> String {
+    let target_sql = match target {
+        InvocationModelTarget::Request => INVOCATION_REQUEST_MODEL_SQL,
+        InvocationModelTarget::Response => INVOCATION_RESPONSE_MODEL_SQL,
+    };
+    format!("COALESCE(NULLIF(TRIM({target_sql}), ''), NULLIF(TRIM(model), ''))")
+}
+
+pub(crate) fn invocation_model_rerouted_sql() -> String {
+    let request_sql = invocation_model_sql_expr(InvocationModelTarget::Request);
+    let response_sql = invocation_model_sql_expr(InvocationModelTarget::Response);
+    format!(
+        "NULLIF(TRIM(COALESCE({request_sql}, '')), '') IS NOT NULL \
+         AND NULLIF(TRIM(COALESCE({response_sql}, '')), '') IS NOT NULL \
+         AND LOWER(TRIM(COALESCE({request_sql}, ''))) != LOWER(TRIM(COALESCE({response_sql}, '')))"
+    )
 }
 
 pub(crate) fn push_keyword_filter(query: &mut QueryBuilder<Sqlite>, keyword: &str) {
@@ -877,8 +1068,28 @@ pub(crate) fn apply_invocation_records_filters(
             .push_bind(to_bound.clone());
     }
 
-    if let Some(model) = filters.model.as_deref() {
+    if !filters.model_values.is_empty() {
+        let target = filters
+            .model_target
+            .unwrap_or(InvocationModelTarget::Request);
+        let model_sql = invocation_model_sql_expr(target);
+        push_exact_text_any_filter(query, &model_sql, &filters.model_values);
+    } else if let Some(model) = filters.model.as_deref() {
         push_exact_text_filter(query, "model", model);
+    }
+
+    if let Some(model_rerouted) = filters.model_rerouted {
+        query.push(" AND ");
+        match model_rerouted {
+            InvocationModelRerouteFilter::Rerouted => {
+                query.push(invocation_model_rerouted_sql());
+            }
+            InvocationModelRerouteFilter::NotRerouted => {
+                query.push("NOT (");
+                query.push(invocation_model_rerouted_sql());
+                query.push(")");
+            }
+        }
     }
 
     if let Some(status) = filters.status.as_deref() {
@@ -940,6 +1151,28 @@ pub(crate) fn apply_invocation_records_filters(
     if let Some(upstream_account_id) = filters.upstream_account_id {
         query.push(" AND ").push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL);
         query.push(" = ").push_bind(upstream_account_id);
+    }
+
+    if let Some(proxy_display_name) = filters.proxy_display_name.as_deref() {
+        push_exact_text_filter(query, INVOCATION_PROXY_DISPLAY_SQL, proxy_display_name);
+    }
+
+    if let Some(transport) = filters.transport.as_deref() {
+        push_exact_text_filter(query, INVOCATION_TRANSPORT_SQL, transport);
+    }
+
+    if let Some(service_tier) = filters.service_tier.as_deref() {
+        push_exact_text_filter(query, INVOCATION_SERVICE_TIER_SQL, service_tier);
+    }
+
+    if !filters.reasoning_effort_values.is_empty() {
+        push_exact_text_any_filter(
+            query,
+            INVOCATION_REASONING_EFFORT_SQL,
+            &filters.reasoning_effort_values,
+        );
+    } else if let Some(reasoning_effort) = filters.reasoning_effort.as_deref() {
+        push_exact_text_filter(query, INVOCATION_REASONING_EFFORT_SQL, reasoning_effort);
     }
 
     if let Some(requester_ip) = filters.requester_ip.as_deref() {
@@ -1040,6 +1273,14 @@ pub(crate) fn runtime_text_equals(value: Option<&str>, expected: &str) -> bool {
     normalized_runtime_text(value) == expected.trim().to_lowercase()
 }
 
+pub(crate) fn runtime_text_list_contains(values: &[String], candidate: Option<&str>) -> bool {
+    let normalized_candidate = normalized_runtime_text(candidate);
+    !normalized_candidate.is_empty()
+        && values
+            .iter()
+            .any(|value| normalized_runtime_text(Some(value.as_str())) == normalized_candidate)
+}
+
 pub(crate) fn runtime_keyword_matches(record: &ApiInvocation, keyword: &str) -> bool {
     let keyword = keyword.trim().to_lowercase();
     if keyword.is_empty() {
@@ -1048,6 +1289,8 @@ pub(crate) fn runtime_keyword_matches(record: &ApiInvocation, keyword: &str) -> 
     [
         Some(record.invoke_id.as_str()),
         record.model.as_deref(),
+        record.request_model.as_deref(),
+        record.response_model.as_deref(),
         record.proxy_display_name.as_deref(),
         record.endpoint.as_deref(),
         record.failure_kind.as_deref(),
@@ -1074,6 +1317,26 @@ pub(crate) fn runtime_upstream_scope(record: &ApiInvocation) -> &'static str {
     } else {
         "external"
     }
+}
+
+pub(crate) fn runtime_model_value(
+    record: &ApiInvocation,
+    target: InvocationModelTarget,
+) -> Option<&str> {
+    match target {
+        InvocationModelTarget::Request => {
+            record.request_model.as_deref().or(record.model.as_deref())
+        }
+        InvocationModelTarget::Response => {
+            record.response_model.as_deref().or(record.model.as_deref())
+        }
+    }
+}
+
+pub(crate) fn runtime_model_rerouted(record: &ApiInvocation) -> bool {
+    let request_model = normalized_runtime_text(record.request_model.as_deref());
+    let response_model = normalized_runtime_text(record.response_model.as_deref());
+    !request_model.is_empty() && !response_model.is_empty() && request_model != response_model
 }
 
 pub(crate) fn runtime_record_is_retry(record: &ApiInvocation) -> bool {
@@ -1105,10 +1368,25 @@ pub(crate) fn runtime_record_matches_filters(
     {
         return false;
     }
-    if let Some(model) = filters.model.as_deref()
+    if !filters.model_values.is_empty() {
+        let target = filters
+            .model_target
+            .unwrap_or(InvocationModelTarget::Request);
+        if !runtime_text_list_contains(&filters.model_values, runtime_model_value(record, target)) {
+            return false;
+        }
+    } else if let Some(model) = filters.model.as_deref()
         && !runtime_text_equals(record.model.as_deref(), model)
     {
         return false;
+    }
+    if let Some(model_rerouted) = filters.model_rerouted {
+        let rerouted = runtime_model_rerouted(record);
+        match model_rerouted {
+            InvocationModelRerouteFilter::Rerouted if !rerouted => return false,
+            InvocationModelRerouteFilter::NotRerouted if rerouted => return false,
+            _ => {}
+        }
     }
     if let Some(status) = filters.status.as_deref() {
         let normalized_status = status.trim();
@@ -1192,8 +1470,35 @@ pub(crate) fn runtime_record_matches_filters(
     {
         return false;
     }
+    if let Some(proxy_display_name) = filters.proxy_display_name.as_deref()
+        && !runtime_text_equals(record.proxy_display_name.as_deref(), proxy_display_name)
+    {
+        return false;
+    }
     if let Some(upstream_account_id) = filters.upstream_account_id
         && record.upstream_account_id != Some(upstream_account_id)
+    {
+        return false;
+    }
+    if let Some(transport) = filters.transport.as_deref()
+        && !runtime_text_equals(record.transport.as_deref(), transport)
+    {
+        return false;
+    }
+    if let Some(service_tier) = filters.service_tier.as_deref()
+        && !runtime_text_equals(record.service_tier.as_deref(), service_tier)
+    {
+        return false;
+    }
+    if !filters.reasoning_effort_values.is_empty() {
+        if !runtime_text_list_contains(
+            &filters.reasoning_effort_values,
+            record.reasoning_effort.as_deref(),
+        ) {
+            return false;
+        }
+    } else if let Some(reasoning_effort) = filters.reasoning_effort.as_deref()
+        && !runtime_text_equals(record.reasoning_effort.as_deref(), reasoning_effort)
     {
         return false;
     }
@@ -1689,6 +1994,8 @@ pub(crate) struct RuntimeSummaryOverlayDelta {
     service_failure_count: i64,
     client_failure_count: i64,
     client_abort_count: i64,
+    max_total_tokens: Option<i64>,
+    max_total_ms: Option<f64>,
 }
 
 impl RuntimeSummaryOverlayDelta {
@@ -1718,6 +2025,23 @@ impl RuntimeSummaryOverlayDelta {
             }
             _ => {}
         }
+
+        if let Some(total_tokens) = record.total_tokens.filter(|value| *value >= 0) {
+            self.max_total_tokens = match self.max_total_tokens {
+                Some(current) => Some(current.max(total_tokens)),
+                None => Some(total_tokens),
+            };
+        }
+
+        if let Some(total_ms) = record
+            .t_total_ms
+            .filter(|value| value.is_finite() && *value >= 0.0)
+        {
+            self.max_total_ms = match self.max_total_ms {
+                Some(current) => Some(current.max(total_ms)),
+                None => Some(total_ms),
+            };
+        }
     }
 }
 
@@ -1746,7 +2070,8 @@ pub(crate) async fn query_invocation_network_summary(
          AVG(CASE WHEN t_upstream_ttfb_ms IS NOT NULL AND t_upstream_ttfb_ms >= 0 THEN t_upstream_ttfb_ms END) AS avg_ttfb_ms, \
          COALESCE(SUM(CASE WHEN t_upstream_ttfb_ms IS NOT NULL AND t_upstream_ttfb_ms >= 0 THEN 1 ELSE 0 END), 0) AS ttfb_count, \
          AVG(CASE WHEN t_total_ms IS NOT NULL AND t_total_ms >= 0 THEN t_total_ms END) AS avg_total_ms, \
-         COALESCE(SUM(CASE WHEN t_total_ms IS NOT NULL AND t_total_ms >= 0 THEN 1 ELSE 0 END), 0) AS total_count \
+         COALESCE(SUM(CASE WHEN t_total_ms IS NOT NULL AND t_total_ms >= 0 THEN 1 ELSE 0 END), 0) AS total_count, \
+         MAX(CASE WHEN t_total_ms IS NOT NULL AND t_total_ms >= 0 THEN t_total_ms END) AS max_total_ms \
          FROM codex_invocations WHERE 1 = 1",
     );
     apply_invocation_records_filters(
@@ -1861,6 +2186,7 @@ pub(crate) async fn query_invocation_network_summary(
             agg.total_count,
         )
         .await?,
+        max_total_ms: agg.max_total_ms,
     })
 }
 
@@ -1894,10 +2220,17 @@ pub(crate) async fn query_invocation_new_records_count(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InvocationSuggestionField {
     Model,
+    RequestModel,
+    ResponseModel,
     Endpoint,
     FailureKind,
+    StickyKey,
     PromptCacheKey,
     RequesterIp,
+    ProxyDisplayName,
+    UpstreamAccount,
+    ServiceTier,
+    ReasoningEffort,
 }
 
 impl InvocationSuggestionField {
@@ -1909,34 +2242,59 @@ impl InvocationSuggestionField {
 
         match normalized.as_str() {
             "model" => Ok(Some(Self::Model)),
+            "requestmodel" => Ok(Some(Self::RequestModel)),
+            "responsemodel" => Ok(Some(Self::ResponseModel)),
             "endpoint" => Ok(Some(Self::Endpoint)),
             "failurekind" => Ok(Some(Self::FailureKind)),
+            "stickykey" => Ok(Some(Self::StickyKey)),
             "promptcachekey" => Ok(Some(Self::PromptCacheKey)),
             "requesterip" => Ok(Some(Self::RequesterIp)),
+            "proxydisplayname" => Ok(Some(Self::ProxyDisplayName)),
+            "upstreamaccount" => Ok(Some(Self::UpstreamAccount)),
+            "servicetier" => Ok(Some(Self::ServiceTier)),
+            "reasoningeffort" => Ok(Some(Self::ReasoningEffort)),
             _ => Err(ApiError::bad_request(anyhow!(
                 "unsupported suggestField: {value}"
             ))),
         }
     }
 
-    fn sql_expr(self) -> &'static str {
+    fn sql_expr(self) -> String {
         match self {
-            Self::Model => "model",
-            Self::Endpoint => INVOCATION_ENDPOINT_SQL,
-            Self::FailureKind => INVOCATION_FAILURE_KIND_SQL,
-            Self::PromptCacheKey => INVOCATION_PROMPT_CACHE_KEY_SQL,
-            Self::RequesterIp => INVOCATION_REQUESTER_IP_SQL,
+            Self::Model => "model".to_string(),
+            Self::RequestModel => invocation_model_sql_expr(InvocationModelTarget::Request),
+            Self::ResponseModel => invocation_model_sql_expr(InvocationModelTarget::Response),
+            Self::Endpoint => INVOCATION_ENDPOINT_SQL.to_string(),
+            Self::FailureKind => INVOCATION_FAILURE_KIND_SQL.to_string(),
+            Self::StickyKey => INVOCATION_STICKY_KEY_SQL.to_string(),
+            Self::PromptCacheKey => INVOCATION_PROMPT_CACHE_KEY_SQL.to_string(),
+            Self::RequesterIp => INVOCATION_REQUESTER_IP_SQL.to_string(),
+            Self::ProxyDisplayName => INVOCATION_PROXY_DISPLAY_SQL.to_string(),
+            Self::UpstreamAccount => INVOCATION_UPSTREAM_ACCOUNT_ID_SQL.to_string(),
+            Self::ServiceTier => INVOCATION_SERVICE_TIER_SQL.to_string(),
+            Self::ReasoningEffort => INVOCATION_REASONING_EFFORT_SQL.to_string(),
         }
     }
 
     fn clear_field_filter(self, filters: &InvocationRecordsFilters) -> InvocationRecordsFilters {
         let mut next = filters.clone();
         match self {
-            Self::Model => next.model = None,
+            Self::Model | Self::RequestModel | Self::ResponseModel => {
+                next.model = None;
+                next.model_values.clear();
+            }
             Self::Endpoint => next.endpoint = None,
             Self::FailureKind => next.failure_kind = None,
+            Self::StickyKey => next.sticky_key = None,
             Self::PromptCacheKey => next.prompt_cache_key = None,
             Self::RequesterIp => next.requester_ip = None,
+            Self::ProxyDisplayName => next.proxy_display_name = None,
+            Self::UpstreamAccount => next.upstream_account_id = None,
+            Self::ServiceTier => next.service_tier = None,
+            Self::ReasoningEffort => {
+                next.reasoning_effort = None;
+                next.reasoning_effort_values.clear();
+            }
         }
         next
     }
@@ -1954,43 +2312,35 @@ pub(crate) fn suggestion_response_for_field(
     bucket: InvocationSuggestionBucket,
 ) -> InvocationSuggestionsResponse {
     let empty = || empty_invocation_suggestion_bucket();
+    let mut response = InvocationSuggestionsResponse {
+        model: empty(),
+        request_model: empty(),
+        response_model: empty(),
+        endpoint: empty(),
+        failure_kind: empty(),
+        sticky_key: empty(),
+        prompt_cache_key: empty(),
+        requester_ip: empty(),
+        proxy_display_name: empty(),
+        upstream_account: empty(),
+        service_tier: empty(),
+        reasoning_effort: empty(),
+    };
     match field {
-        InvocationSuggestionField::Model => InvocationSuggestionsResponse {
-            model: bucket,
-            endpoint: empty(),
-            failure_kind: empty(),
-            prompt_cache_key: empty(),
-            requester_ip: empty(),
-        },
-        InvocationSuggestionField::Endpoint => InvocationSuggestionsResponse {
-            model: empty(),
-            endpoint: bucket,
-            failure_kind: empty(),
-            prompt_cache_key: empty(),
-            requester_ip: empty(),
-        },
-        InvocationSuggestionField::FailureKind => InvocationSuggestionsResponse {
-            model: empty(),
-            endpoint: empty(),
-            failure_kind: bucket,
-            prompt_cache_key: empty(),
-            requester_ip: empty(),
-        },
-        InvocationSuggestionField::PromptCacheKey => InvocationSuggestionsResponse {
-            model: empty(),
-            endpoint: empty(),
-            failure_kind: empty(),
-            prompt_cache_key: bucket,
-            requester_ip: empty(),
-        },
-        InvocationSuggestionField::RequesterIp => InvocationSuggestionsResponse {
-            model: empty(),
-            endpoint: empty(),
-            failure_kind: empty(),
-            prompt_cache_key: empty(),
-            requester_ip: bucket,
-        },
+        InvocationSuggestionField::Model => response.model = bucket,
+        InvocationSuggestionField::RequestModel => response.request_model = bucket,
+        InvocationSuggestionField::ResponseModel => response.response_model = bucket,
+        InvocationSuggestionField::Endpoint => response.endpoint = bucket,
+        InvocationSuggestionField::FailureKind => response.failure_kind = bucket,
+        InvocationSuggestionField::StickyKey => response.sticky_key = bucket,
+        InvocationSuggestionField::PromptCacheKey => response.prompt_cache_key = bucket,
+        InvocationSuggestionField::RequesterIp => response.requester_ip = bucket,
+        InvocationSuggestionField::ProxyDisplayName => response.proxy_display_name = bucket,
+        InvocationSuggestionField::UpstreamAccount => response.upstream_account = bucket,
+        InvocationSuggestionField::ServiceTier => response.service_tier = bucket,
+        InvocationSuggestionField::ReasoningEffort => response.reasoning_effort = bucket,
     }
+    response
 }
 
 pub(crate) async fn query_invocation_suggestion_bucket(
@@ -2044,9 +2394,90 @@ pub(crate) async fn query_invocation_suggestion_bucket(
             } else {
                 Some(InvocationSuggestionItem {
                     value,
+                    label: None,
                     count: row.count,
                 })
             }
+        })
+        .collect::<Vec<_>>();
+
+    Ok(InvocationSuggestionBucket { items, has_more })
+}
+
+pub(crate) async fn query_invocation_upstream_account_suggestion_bucket(
+    pool: &Pool<Sqlite>,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot: Option<SnapshotConstraint>,
+    match_query: Option<&str>,
+    limit: i64,
+) -> Result<InvocationSuggestionBucket> {
+    #[derive(Debug, FromRow)]
+    struct SuggestionRow {
+        value: Option<i64>,
+        label: Option<String>,
+        count: i64,
+    }
+
+    let mut query = QueryBuilder::new(
+        "SELECT \
+            upstream_account_id AS value, \
+            COALESCE( \
+                MIN(NULLIF(TRIM(COALESCE(upstream_account_name, '')), '')), \
+                CAST(upstream_account_id AS TEXT) \
+            ) AS label, \
+            COUNT(*) AS count \
+         FROM ( \
+            SELECT \
+                ",
+    );
+    query.push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL);
+    query.push(" AS upstream_account_id, ");
+    query.push(INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL);
+    query.push(" AS upstream_account_name FROM codex_invocations WHERE 1 = 1");
+    apply_invocation_records_filters(&mut query, filters, source_scope, snapshot);
+    query.push(") scoped WHERE upstream_account_id IS NOT NULL");
+    if let Some(match_query) = match_query {
+        let normalized_query = match_query.trim().to_lowercase();
+        let like_pattern = format!("%{}%", escape_sql_like(&normalized_query));
+        query.push(" AND (LOWER(TRIM(COALESCE(upstream_account_name, ''))) LIKE ");
+        query.push_bind(like_pattern.clone()).push(" ESCAPE '\\'");
+        query.push(" OR CAST(upstream_account_id AS TEXT) LIKE ");
+        query.push_bind(like_pattern).push(" ESCAPE '\\')");
+    }
+    query.push(
+        " GROUP BY upstream_account_id \
+          ORDER BY count DESC, label ASC, value ASC \
+          LIMIT ",
+    );
+    query.push_bind(limit.saturating_add(1));
+
+    let rows = query
+        .build_query_as::<SuggestionRow>()
+        .fetch_all(pool)
+        .await?;
+
+    let has_more = rows.len() as i64 > limit;
+    let items = rows
+        .into_iter()
+        .take(limit.max(0) as usize)
+        .filter_map(|row| {
+            let value = row.value?;
+            let name = row
+                .label
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty());
+            let label = match name {
+                Some(name) if name == value.to_string() => format!("#{value}"),
+                Some(name) => format!("{name} (#{value})"),
+                None => format!("#{value}"),
+            };
+            Some(InvocationSuggestionItem {
+                value: value.to_string(),
+                label: Some(label),
+                count: row.count,
+            })
         })
         .collect::<Vec<_>>();
 
@@ -2063,12 +2494,24 @@ pub(crate) fn is_legacy_invocation_stream_query(params: &ListQuery) -> bool {
         && params.range_preset.is_none()
         && params.from.is_none()
         && params.to.is_none()
+        && params.models.is_none()
+        && params.model_target.is_none()
+        && params.model_rerouted.is_none()
         && params.endpoint.is_none()
+        && params.invoke_id.is_none()
+        && params.attempt_id.is_none()
         && params.request_id.is_none()
         && params.failure_class.is_none()
         && params.failure_kind.is_none()
         && params.prompt_cache_key.is_none()
+        && params.sticky_key.is_none()
         && params.upstream_scope.is_none()
+        && params.upstream_account_id.is_none()
+        && params.proxy_display_name.is_none()
+        && params.transport.is_none()
+        && params.service_tier.is_none()
+        && params.reasoning_effort.is_none()
+        && params.reasoning_efforts.is_none()
         && params.requester_ip.is_none()
         && params.keyword.is_none()
         && params.min_total_tokens.is_none()
@@ -2133,7 +2576,12 @@ async fn list_invocations_with_runtime_overlay(
     params: ListQuery,
     runtime_overlay_override: Option<Vec<ApiInvocation>>,
 ) -> Result<Json<ListResponse>, ApiError> {
-    let request = build_invocation_list_request(&params, state.config.list_limit_max as i64)?;
+    let request = build_resolved_invocation_list_request(
+        &state.pool,
+        &params,
+        state.config.list_limit_max as i64,
+    )
+    .await?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let runtime_overlay_records = match runtime_overlay_override {
         Some(records) => records,
@@ -2352,7 +2800,7 @@ async fn list_invocations_with_runtime_overlay(
 pub(crate) struct LocateInvocationResponse {
     pub(crate) anchor_id: String,
     pub(crate) snapshot_id: i64,
-    pub(crate) request_id: String,
+    pub(crate) invoke_id: String,
     pub(crate) attempt_id: Option<String>,
     pub(crate) total: i64,
     pub(crate) page: i64,
@@ -2378,11 +2826,12 @@ pub(crate) async fn locate_invocation_page(
     state: Arc<AppState>,
     params: &LocateInvocationQuery,
 ) -> Result<Option<LocateInvocationResponse>, ApiError> {
-    let request_id = normalize_query_text(params.request_id.as_deref());
+    let request_id = normalize_query_text(params.invoke_id.as_deref())
+        .or_else(|| normalize_query_text(params.request_id.as_deref()));
     let attempt_id = normalize_query_text(params.attempt_id.as_deref());
     if request_id.is_none() && attempt_id.is_none() {
         return Err(ApiError::bad_request(anyhow!(
-            "requestId or attemptId is required"
+            "invokeId or attemptId is required"
         )));
     }
     let upstream_account_id = match params.upstream_account_id {
@@ -2595,7 +3044,7 @@ pub(crate) async fn locate_invocation_page(
             return Ok(Some(LocateInvocationResponse {
                 anchor_id,
                 snapshot_id: response.snapshot_id,
-                request_id: request_id.clone(),
+                invoke_id: request_id.clone(),
                 attempt_id: resolved_attempt_id.clone(),
                 total: response.total,
                 page: response.page,
@@ -2622,7 +3071,8 @@ pub(crate) async fn locate_invocation(
             Json(json!({
                 "code": "invocation_not_found",
                 "message": "invocation record not found",
-                "requestId": normalize_query_text(params.request_id.as_deref()),
+                "invokeId": normalize_query_text(params.invoke_id.as_deref())
+                    .or_else(|| normalize_query_text(params.request_id.as_deref())),
                 "attemptId": normalize_query_text(params.attempt_id.as_deref()),
             })),
         )
@@ -4519,7 +4969,12 @@ pub(crate) async fn fetch_invocation_summary(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<InvocationSummaryResponse>, ApiError> {
-    let request = build_invocation_list_request(&params, state.config.list_limit_max as i64)?;
+    let request = build_resolved_invocation_list_request(
+        &state.pool,
+        &params,
+        state.config.list_limit_max as i64,
+    )
+    .await?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let snapshot_id = request
         .snapshot_id
@@ -4534,7 +4989,8 @@ pub(crate) async fn fetch_invocation_summary(
          COALESCE(SUM(cost), 0.0) AS total_cost, \
          COALESCE(SUM(MAX(COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0), 0)), 0) AS cache_write_tokens, \
          COALESCE(SUM(cache_input_tokens), 0) AS cache_input_tokens, \
-         COALESCE(SUM(output_tokens), 0) AS output_tokens \
+         COALESCE(SUM(output_tokens), 0) AS output_tokens, \
+         MAX(CASE WHEN total_tokens >= 0 THEN total_tokens END) AS max_total_tokens \
          FROM codex_invocations WHERE 1 = 1",
         status_norm = INVOCATION_STATUS_NORMALIZED_SQL,
         resolved_failure = INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
@@ -4616,6 +5072,21 @@ pub(crate) async fn fetch_invocation_summary(
     let cache_input_tokens =
         (totals.cache_input_tokens + runtime_overlay_delta.cache_input_tokens).max(0);
     let output_tokens = (totals.output_tokens + runtime_overlay_delta.output_tokens).max(0);
+    let max_tokens_per_request = match (
+        totals.max_total_tokens,
+        runtime_overlay_delta.max_total_tokens,
+    ) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    };
+    let max_total_ms = match (network.max_total_ms, runtime_overlay_delta.max_total_ms) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    };
     let avg_tokens_per_request = if total_count <= 0 {
         0.0
     } else {
@@ -4653,8 +5124,12 @@ pub(crate) async fn fetch_invocation_summary(
             cache_input_tokens,
             output_tokens,
             total_cost,
+            max_tokens_per_request,
         },
-        network,
+        network: InvocationNetworkSummary {
+            max_total_ms,
+            ..network
+        },
         exception: exception_summary,
     }))
 }
@@ -4663,7 +5138,12 @@ pub(crate) async fn fetch_invocation_new_records_count(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<InvocationNewRecordsCountResponse>, ApiError> {
-    let request = build_invocation_list_request(&params, state.config.list_limit_max as i64)?;
+    let request = build_resolved_invocation_list_request(
+        &state.pool,
+        &params,
+        state.config.list_limit_max as i64,
+    )
+    .await?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let snapshot_id = request
         .snapshot_id
@@ -4687,7 +5167,12 @@ pub(crate) async fn fetch_invocation_suggestions(
     Query(params): Query<ListQuery>,
 ) -> Result<Json<InvocationSuggestionsResponse>, ApiError> {
     const SUGGESTION_LIMIT: i64 = 30;
-    let request = build_invocation_list_request(&params, state.config.list_limit_max as i64)?;
+    let request = build_resolved_invocation_list_request(
+        &state.pool,
+        &params,
+        state.config.list_limit_max as i64,
+    )
+    .await?;
     let filters = request.filters;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let snapshot = request.snapshot_id.map(SnapshotConstraint::UpTo);
@@ -4695,16 +5180,33 @@ pub(crate) async fn fetch_invocation_suggestions(
     let suggest_query = normalize_query_text(params.suggest_query.as_deref());
 
     if let Some(field) = suggest_field {
-        let bucket = query_invocation_suggestion_bucket(
-            &state.pool,
-            &field.clear_field_filter(&filters),
-            source_scope,
-            snapshot,
-            field.sql_expr(),
-            suggest_query.as_deref(),
-            SUGGESTION_LIMIT,
-        )
-        .await?;
+        let scoped_filters = field.clear_field_filter(&filters);
+        let bucket = match field {
+            InvocationSuggestionField::UpstreamAccount => {
+                query_invocation_upstream_account_suggestion_bucket(
+                    &state.pool,
+                    &scoped_filters,
+                    source_scope,
+                    snapshot,
+                    suggest_query.as_deref(),
+                    SUGGESTION_LIMIT,
+                )
+                .await?
+            }
+            _ => {
+                let sql_expr = field.sql_expr();
+                query_invocation_suggestion_bucket(
+                    &state.pool,
+                    &scoped_filters,
+                    source_scope,
+                    snapshot,
+                    &sql_expr,
+                    suggest_query.as_deref(),
+                    SUGGESTION_LIMIT,
+                )
+                .await?
+            }
+        };
         return Ok(Json(suggestion_response_for_field(field, bucket)));
     }
 
@@ -4717,6 +5219,34 @@ pub(crate) async fn fetch_invocation_suggestions(
         source_scope,
         snapshot,
         "model",
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let request_model = query_invocation_suggestion_bucket(
+        &state.pool,
+        &InvocationRecordsFilters {
+            model: None,
+            model_values: Vec::new(),
+            ..filters.clone()
+        },
+        source_scope,
+        snapshot,
+        &invocation_model_sql_expr(InvocationModelTarget::Request),
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let response_model = query_invocation_suggestion_bucket(
+        &state.pool,
+        &InvocationRecordsFilters {
+            model: None,
+            model_values: Vec::new(),
+            ..filters.clone()
+        },
+        source_scope,
+        snapshot,
+        &invocation_model_sql_expr(InvocationModelTarget::Response),
         None,
         SUGGESTION_LIMIT,
     )
@@ -4747,6 +5277,19 @@ pub(crate) async fn fetch_invocation_suggestions(
         SUGGESTION_LIMIT,
     )
     .await?;
+    let sticky_key = query_invocation_suggestion_bucket(
+        &state.pool,
+        &InvocationRecordsFilters {
+            sticky_key: None,
+            ..filters.clone()
+        },
+        source_scope,
+        snapshot,
+        INVOCATION_STICKY_KEY_SQL,
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
     let prompt_cache_key = query_invocation_suggestion_bucket(
         &state.pool,
         &InvocationRecordsFilters {
@@ -4773,13 +5316,71 @@ pub(crate) async fn fetch_invocation_suggestions(
         SUGGESTION_LIMIT,
     )
     .await?;
+    let proxy_display_name = query_invocation_suggestion_bucket(
+        &state.pool,
+        &InvocationRecordsFilters {
+            proxy_display_name: None,
+            ..filters.clone()
+        },
+        source_scope,
+        snapshot,
+        INVOCATION_PROXY_DISPLAY_SQL,
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let upstream_account = query_invocation_upstream_account_suggestion_bucket(
+        &state.pool,
+        &InvocationRecordsFilters {
+            upstream_account_id: None,
+            ..filters.clone()
+        },
+        source_scope,
+        snapshot,
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let service_tier = query_invocation_suggestion_bucket(
+        &state.pool,
+        &InvocationRecordsFilters {
+            service_tier: None,
+            ..filters.clone()
+        },
+        source_scope,
+        snapshot,
+        INVOCATION_SERVICE_TIER_SQL,
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let reasoning_effort = query_invocation_suggestion_bucket(
+        &state.pool,
+        &InvocationRecordsFilters {
+            reasoning_effort: None,
+            ..filters.clone()
+        },
+        source_scope,
+        snapshot,
+        INVOCATION_REASONING_EFFORT_SQL,
+        None,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
 
     Ok(Json(InvocationSuggestionsResponse {
         model,
+        request_model,
+        response_model,
         endpoint,
         failure_kind,
+        sticky_key,
         prompt_cache_key,
         requester_ip,
+        proxy_display_name,
+        upstream_account,
+        service_tier,
+        reasoning_effort,
     }))
 }
 

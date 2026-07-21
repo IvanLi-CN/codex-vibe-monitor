@@ -19,6 +19,7 @@ const CORNER_ARROW_WIDTH = 14;
 const CORNER_ARROW_HEIGHT = 8;
 
 interface FloatingFieldBubbleProps {
+  id?: string;
   message: string;
   variant?: BubbleVariant;
   className?: string;
@@ -32,6 +33,7 @@ function statusRole(variant: BubbleVariant) {
 }
 
 export function FloatingFieldBubble({
+  id,
   message,
   variant = "error",
   className,
@@ -61,6 +63,7 @@ export function FloatingFieldBubble({
           </span>
         </PopoverAnchor>
         <PopoverContent
+          id={id}
           data-theme={portalTheme}
           style={bubbleSurfaceStyle(variant, portalTheme)}
           role={role}
@@ -107,6 +110,7 @@ export function FloatingFieldBubble({
         />
       </PopoverAnchor>
       <PopoverContent
+        id={id}
         data-theme={portalTheme}
         style={bubbleSurfaceStyle(variant, portalTheme)}
         role={role}

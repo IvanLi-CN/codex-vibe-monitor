@@ -87,6 +87,12 @@ function apiPathname(pathname: string) {
   return apiIndex === -1 ? pathname : pathname.slice(apiIndex);
 }
 
+function formatDemoAttemptId(seed: number) {
+  const compact = Math.abs(Math.trunc(seed)).toString(36).toUpperCase().slice(-8).padStart(8, "0");
+  if (/[A-Z]/.test(compact)) return compact;
+  return `${compact.slice(0, 4)}A${compact.slice(5)}`;
+}
+
 const DEMO_USAGE_BREAKDOWN = {
   cacheWriteTokens: 250_000_000,
   cacheReadTokens: 982_000_000,
@@ -1628,6 +1634,7 @@ function poolAttempts(invokeId: string) {
   const first = {
     ...base,
     id: record.id * 10 + 1,
+    attemptId: formatDemoAttemptId(record.id * 100 + 1),
     upstreamAccountId: accountId,
     upstreamAccountName: record.upstreamAccountName ?? null,
     upstreamRouteKey: "pool",
@@ -1663,6 +1670,7 @@ function poolAttempts(invokeId: string) {
     {
       ...first,
       id: record.id * 10 + 2,
+      attemptId: formatDemoAttemptId(record.id * 100 + 2),
       upstreamAccountId: fallback,
       upstreamAccountName:
         demoAccounts().find((account) => account.id === fallback)?.displayName ?? null,
@@ -2092,13 +2100,19 @@ export async function handleDemoRequest(request: Request) {
     const model = url.searchParams.get("model");
     const status = url.searchParams.get("status");
     const endpoint = url.searchParams.get("endpoint");
-    const requestId = url.searchParams.get("requestId");
+    const invokeId = url.searchParams.get("invokeId") ?? url.searchParams.get("requestId");
+    const attemptId = url.searchParams.get("attemptId");
     const upstreamAccountId = Number(url.searchParams.get("upstreamAccountId"));
     const keyword = url.searchParams.get("keyword")?.toLowerCase();
     if (model) records = records.filter((record) => record.model === model);
     if (status) records = records.filter((record) => record.status === status);
     if (endpoint) records = records.filter((record) => record.endpoint === endpoint);
-    if (requestId) records = records.filter((record) => record.invokeId === requestId);
+    if (invokeId) records = records.filter((record) => record.invokeId === invokeId);
+    if (attemptId) {
+      records = records.filter((record) =>
+        poolAttempts(record.invokeId).some((attempt) => attempt.attemptId === attemptId),
+      );
+    }
     if (Number.isFinite(upstreamAccountId) && upstreamAccountId > 0)
       records = records.filter((record) => record.upstreamAccountId === upstreamAccountId);
     if (keyword)

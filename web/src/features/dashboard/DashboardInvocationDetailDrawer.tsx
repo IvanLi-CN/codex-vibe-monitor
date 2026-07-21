@@ -140,7 +140,7 @@ export function DashboardInvocationDetailDrawer({
     setLoadError(null);
 
     void fetchInvocationRecords({
-      requestId: effectiveInvocationId,
+      invokeId: effectiveInvocationId,
       pageSize: 1,
       sortBy: "occurredAt",
       sortOrder: "desc",

@@ -27,11 +27,13 @@
 - `/api/invocations/locate` 现接受显式 `attemptId`，先解析父 `invokeId` 再返回目标分页窗口与精确 attempt 高亮所需上下文；旧 `requestId` 入口继续兼容读取，但新 UI 不再生成它作为 attempt 跳转参数。
 - 账号活动聚合、按模型用量分组、受限 recent 读取与路由 sticky escape 检测现在会在超过 1 秒时输出结构化 warn；日志只含 endpoint/operation、范围、候选或返回行数、阶段与耗时，不含 SQL、payload 或账号敏感内容。
 - 账号详情已将最终调用记录表替换为真实上游尝试请求列表：按账号从 `pool_upstream_request_attempts` 读取最近 7 天主库数据，按 `occurred_at DESC, id DESC` 分页。请求 tab 直接复用调用详情里的 pool attempt 摘要卡，并在摘要卡内补充时间、调用短 ID 与模型映射；点击摘要卡后展开对应详情面板。列表以 `(invoke_id, occurred_at)` 关联 invocation payload 的 `requestModel` / `responseModel`，请求模型缺失时回退 `model`，避免依赖旧数据库不存在的列。
+- 账号详情请求 tab 现将共享 attempt 卡收口为唯一 focus 真相源：事件定位时通过 `call-attempts/locate` 只加载目标页，`focusedAttemptId + focusVersion` 触发目标卡片滚动入视区、展开诊断并显示 focused 高亮；只有在账号详情抽屉内发生下一次 pointer/keyboard 交互后，才会延迟 1.5 秒清除高亮。
+- 账号详情 records tab 中曾被 `hidden` 包裹的 `InvocationTable` / anchored locate dead path 已删除，不再保留 `invokeId` 锚点定位状态、隐藏 fallback alert 或同路径局部状态；健康与事件入口只保留“请求 tab -> target attempt focus”的单一路径。
 - Dashboard 活动快照现额外返回全局与账号级的模型性能分组。仅状态成功、失败分类为 `none` 且 `cost` 非空的调用参与 TPM、流式响应速率、响应时长、首字用时、墙钟时长、累计时长和并行数；零费用成功调用保留。模型按响应模型归属，空思考程度在前端显示“未指定”。后端在单次 retained live interval 扫描里同时生成全局、账号、模型与账号+模型四级墙钟并集，并继续累加各 scope 的 `t_total_ms`，统一对外返回 `wallClockUsageDurationMs`、`cumulativeUsageDurationMs` 与 `parallelism`。
 - `modelPerformance` 继续服务 Dashboard 完整范围性能明细入口，不再回流为顶部实时 KPI 当前值；顶部 `TPM / 消费速率 / 首字用时 / 响应时间` 已改由 `z6ysw` 的后端 `last_complete_1m_sma` 合同驱动。
 - `ModelPerformanceTrigger` 在桌面通过可点击、可聚焦的 Tooltip 展示总计及按累计时长排序的模型行，在窄屏通过详情抽屉展示无横向滚动的指标网格；入口仍挂在总览与账号区域，但展示的是完整范围性能明细而非实时 1 分钟值。owner-facing 明细显式拆成 `墙钟时长 / 累计时长 / 并行数` 三列，并补充说明“跨模型重叠时模型行墙钟和可能大于总计”。
 - 调用结果中的 HTTP 现在明确为上游 HTTP；下游 HTTP、完整错误、上游请求 ID、路由键、压缩与近似传输字节仅在当前尝试对应的详情面板中展示。代理绑定优先解析为当前节点显示名，历史或未知绑定键降级为截短值并保留完整提示。
-- 桌面与窄屏请求 tab 现统一使用同一套摘要卡与详情面板交互；`focusedAttemptId` 会自动展开目标摘要卡，不再维护单独的桌面/移动表格布局。
+- 桌面与窄屏请求 tab 现统一使用同一套摘要卡与详情面板交互；目标 attempt 的 scroll/highlight/fade 反馈由共享卡片组件统一实现，不再维护单独的桌面/移动定位逻辑。
 - `pool_upstream_account_events` 新增可空 `attempt_id`。failover 路径在已获得 pending attempt ID 时，将新生成的 call 事件直接绑定到同一账号、同一请求尝试；历史事件不回填，前端不会再用 `invokeId` 猜测其对应尝试。带关联的健康事件明确显示并点击“上游尝试 ID”，不将为空的最终 `invokeId` 渲染为入口。
 - direct invocation payload 与 `pool_upstream_request_attempts` 现在都持久化上游请求压缩与 HTTP 近似真值所需字节事实：请求逻辑体、实际发送体、可见请求头近似字节、响应体字节和可见响应头近似字节；`savedBytes` / `ratioPct` 继续在 API 层派生，避免双写漂移。
 - 调用详情与账号上游尝试详情现在统一显示 `压缩比 + 前/后字节` 以及 `近似上传 / 近似下载`。调用详情桌面端固定为单行五列；账号尝试诊断区改为宽屏稳定网格，避免压缩证据横向溢出。
@@ -67,6 +69,7 @@
 - `cd web && bun run test -- --run InvocationTable.test.tsx InvocationRecordsTable.test.tsx DashboardWorkingConversationsSection.test.tsx DashboardInvocationDetailDrawer.test.tsx promptCacheLive.test.ts invocationLiveMerge.test.ts`
 - `cd web && bun run test -- InvocationTable.test.tsx InvocationRecordsTable.test.tsx DashboardInvocationDetailDrawer.test.tsx`
 - `cd web && bun run test -- InvocationTable.test.tsx InvocationRecordsTable.test.tsx DashboardWorkingConversationsSection.test.tsx`
+- `cd web && bun run test -- UpstreamAccountAttemptTimeline.test.tsx`
 - `cd web && bun run test`
 - `cd web && bun run test-storybook`
 - `cd web && bun run build`

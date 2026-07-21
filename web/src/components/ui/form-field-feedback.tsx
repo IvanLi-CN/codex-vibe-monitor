@@ -6,7 +6,9 @@ import { FloatingFieldError } from "./floating-field-error";
 
 interface FormFieldFeedbackProps {
   label: ReactNode;
+  labelId?: string;
   message?: string | null;
+  messageId?: string;
   variant?: BubbleVariant;
   className?: string;
   labelClassName?: string;
@@ -15,16 +17,24 @@ interface FormFieldFeedbackProps {
 
 export function FormFieldFeedback({
   label,
+  labelId,
   message,
+  messageId,
   variant = "error",
   className,
   labelClassName,
   messageClassName,
 }: FormFieldFeedbackProps) {
   const feedback = !message ? null : variant === "error" ? (
-    <FloatingFieldError placement="label-inline" message={message} className={messageClassName} />
+    <FloatingFieldError
+      id={messageId}
+      placement="label-inline"
+      message={message}
+      className={messageClassName}
+    />
   ) : (
     <FloatingFieldBubble
+      id={messageId}
       placement="label-inline"
       message={message}
       variant={variant}
@@ -39,7 +49,9 @@ export function FormFieldFeedback({
         className,
       )}
     >
-      <span className={cn("field-label", labelClassName)}>{label}</span>
+      <span id={labelId} className={cn("field-label", labelClassName)}>
+        {label}
+      </span>
       {feedback}
     </div>
   );

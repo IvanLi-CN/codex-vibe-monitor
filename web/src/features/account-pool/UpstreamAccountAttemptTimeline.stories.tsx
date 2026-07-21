@@ -167,6 +167,7 @@ export const FocusedFailureAttempt: Story = {
   args: {
     accountId: 101,
     focusedAttemptId: "4V7MYPJG",
+    focusVersion: 1,
   },
   decorators: [
     (Story) => (
@@ -190,6 +191,7 @@ export const FocusedFailureAttemptPage: Story = {
       <UpstreamAccountAttemptTimeline
         accountId={args.accountId ?? 101}
         focusedAttemptId={args.focusedAttemptId ?? "4V7MYPJG"}
+        focusVersion={args.focusVersion ?? 1}
       />
     </AttemptTimelinePageSurface>
   ),

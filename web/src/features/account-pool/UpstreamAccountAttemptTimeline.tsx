@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
@@ -174,15 +174,28 @@ function buildSyntheticWorkflowAttemptEntry(
 export function UpstreamAccountAttemptTimeline({
   accountId,
   focusedAttemptId,
+  focusVersion = 0,
+  interactionBoundary = null,
+  onFocusRequestHandled,
 }: {
   accountId: number;
   focusedAttemptId: string | null;
+  focusVersion?: number;
+  interactionBoundary?: HTMLElement | null;
+  onFocusRequestHandled?: (version: number) => void;
 }) {
   const { t, locale } = useTranslation();
   const [response, setResponse] = useState<UpstreamAccountAttemptListResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [activeFocus, setActiveFocus] = useState<{
+    attemptId: string;
+    version: number;
+  } | null>(null);
   const requestSeqRef = useRef(0);
+  const resolvedAccountIdRef = useRef<number | null>(null);
+  const focusDismissTimerRef = useRef<number | null>(null);
+  const attemptElementMapRef = useRef(new Map<string, HTMLDivElement>());
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const isZh = locale === "zh";
   const proxyDirectLabel = t("accountPool.upstreamAttempts.proxyDirect");
@@ -198,35 +211,88 @@ export function UpstreamAccountAttemptTimeline({
     [proxyBindingNodes],
   );
 
+  const clearFocusDismissTimer = useCallback(() => {
+    if (focusDismissTimerRef.current == null) return;
+    window.clearTimeout(focusDismissTimerRef.current);
+    focusDismissTimerRef.current = null;
+  }, []);
+
+  const setAttemptElement = useCallback((attemptId: string, node: HTMLDivElement | null) => {
+    if (node) {
+      attemptElementMapRef.current.set(attemptId, node);
+      return;
+    }
+    attemptElementMapRef.current.delete(attemptId);
+  }, []);
+
   useEffect(() => {
+    return () => {
+      clearFocusDismissTimer();
+    };
+  }, [clearFocusDismissTimer]);
+
+  useEffect(() => {
+    setActiveFocus(null);
+    clearFocusDismissTimer();
+    if (focusedAttemptId != null || resolvedAccountIdRef.current === accountId) return;
     const controller = new AbortController();
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
     setLoading(true);
     setError(null);
-    const request =
-      focusedAttemptId == null
-        ? fetchUpstreamAccountAttempts(accountId, {
-            page: 1,
-            pageSize: PAGE_SIZE,
-            signal: controller.signal,
-          })
-        : locateUpstreamAccountAttempt(accountId, focusedAttemptId, {
-            pageSize: PAGE_SIZE,
-            signal: controller.signal,
-          });
-    void request
+    setResponse(null);
+    void fetchUpstreamAccountAttempts(accountId, {
+      page: 1,
+      pageSize: PAGE_SIZE,
+      signal: controller.signal,
+    })
       .then((next) => {
         if (controller.signal.aborted || requestSeq !== requestSeqRef.current) return;
+        resolvedAccountIdRef.current = accountId;
         setResponse(next);
       })
       .catch((requestError) => {
         if (controller.signal.aborted || requestSeq !== requestSeqRef.current) return;
+        resolvedAccountIdRef.current = accountId;
         setResponse(null);
+        setError(requestError instanceof Error ? requestError.message : String(requestError));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted && requestSeq === requestSeqRef.current) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [accountId, clearFocusDismissTimer, focusedAttemptId]);
+
+  useEffect(() => {
+    if (focusedAttemptId == null) return;
+    const controller = new AbortController();
+    const requestSeq = requestSeqRef.current + 1;
+    requestSeqRef.current = requestSeq;
+    clearFocusDismissTimer();
+    setLoading(true);
+    setError(null);
+    setResponse(null);
+    setActiveFocus(null);
+    void locateUpstreamAccountAttempt(accountId, focusedAttemptId, {
+      pageSize: PAGE_SIZE,
+      signal: controller.signal,
+    })
+      .then((next) => {
+        if (controller.signal.aborted || requestSeq !== requestSeqRef.current) return;
+        resolvedAccountIdRef.current = accountId;
+        setResponse(next);
+        setActiveFocus({
+          attemptId: focusedAttemptId,
+          version: focusVersion,
+        });
+      })
+      .catch((requestError) => {
+        if (controller.signal.aborted || requestSeq !== requestSeqRef.current) return;
+        resolvedAccountIdRef.current = accountId;
+        setResponse(null);
+        setActiveFocus(null);
         setError(
-          focusedAttemptId != null &&
-            requestError instanceof Error &&
-            requestError.message.includes("404")
+          requestError instanceof Error && requestError.message.includes("404")
             ? t("accountPool.upstreamAttempts.locateUnavailable")
             : requestError instanceof Error
               ? requestError.message
@@ -234,22 +300,68 @@ export function UpstreamAccountAttemptTimeline({
         );
       })
       .finally(() => {
-        if (!controller.signal.aborted && requestSeq === requestSeqRef.current) setLoading(false);
+        if (controller.signal.aborted || requestSeq !== requestSeqRef.current) return;
+        onFocusRequestHandled?.(focusVersion);
+        setLoading(false);
       });
     return () => controller.abort();
-  }, [accountId, focusedAttemptId, t]);
+  }, [accountId, clearFocusDismissTimer, focusVersion, focusedAttemptId, onFocusRequestHandled, t]);
+
+  useLayoutEffect(() => {
+    if (!activeFocus) return;
+    const target = attemptElementMapRef.current.get(activeFocus.attemptId);
+    if (!target) return;
+    target.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+    });
+  }, [activeFocus, response]);
+
+  useEffect(() => {
+    if (!activeFocus || !interactionBoundary) return;
+    clearFocusDismissTimer();
+    const dismissFocusedAttempt = () => {
+      if (focusDismissTimerRef.current != null) return;
+      focusDismissTimerRef.current = window.setTimeout(() => {
+        focusDismissTimerRef.current = null;
+        setActiveFocus((current) =>
+          current?.attemptId === activeFocus.attemptId && current.version === activeFocus.version
+            ? null
+            : current,
+        );
+      }, 1_500);
+    };
+    interactionBoundary.addEventListener("pointerdown", dismissFocusedAttempt, {
+      once: true,
+      passive: true,
+    });
+    interactionBoundary.addEventListener("keydown", dismissFocusedAttempt, {
+      once: true,
+    });
+    return () => {
+      interactionBoundary.removeEventListener("pointerdown", dismissFocusedAttempt);
+      interactionBoundary.removeEventListener("keydown", dismissFocusedAttempt);
+      clearFocusDismissTimer();
+    };
+  }, [activeFocus, clearFocusDismissTimer, interactionBoundary]);
 
   const loadPage = (page: number) => {
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
+    clearFocusDismissTimer();
     setLoading(true);
     setError(null);
+    setActiveFocus(null);
     void fetchUpstreamAccountAttempts(accountId, { page, pageSize: PAGE_SIZE })
       .then((next) => {
-        if (requestSeq === requestSeqRef.current) setResponse(next);
+        if (requestSeq === requestSeqRef.current) {
+          resolvedAccountIdRef.current = accountId;
+          setResponse(next);
+        }
       })
       .catch((requestError) => {
         if (requestSeq === requestSeqRef.current) {
+          resolvedAccountIdRef.current = accountId;
           setError(requestError instanceof Error ? requestError.message : String(requestError));
         }
       })
@@ -292,17 +404,19 @@ export function UpstreamAccountAttemptTimeline({
           const callShortId = displayCallShortId(attempt.invokeId);
           const syntheticEntry = buildSyntheticWorkflowAttemptEntry(attempt, proxyDisplay);
           const syntheticRecord = buildSyntheticInvocationRecord(attempt);
-          const isFocused = attempt.attemptId === focusedAttemptId;
+          const isFocused = attempt.attemptId === activeFocus?.attemptId;
 
           return (
             <InvocationWorkflowAttemptRecord
               key={attempt.attemptId}
+              containerRef={(node) => setAttemptElement(attempt.attemptId, node)}
               record={syntheticRecord}
               entry={syntheticEntry}
               localeTag={localeTag}
               isZh={isZh}
               summaryIdentity={callShortId ?? attempt.attemptId}
               focused={isFocused}
+              focusVersion={isFocused ? (activeFocus?.version ?? 0) : 0}
               defaultSection={isFocused ? "timing" : null}
               testId={`account-attempt-record-${attempt.attemptId}`}
             />

@@ -84,4 +84,47 @@ describe("FilterableCombobox", () => {
     expect(input.getAttribute("autocapitalize")).toBe("sentences");
     expect(input.getAttribute("spellcheck")).toBe("true");
   });
+
+  it("uses option labels for display and returns the selected option", () => {
+    const onValueChange = vi.fn();
+    const onOptionSelect = vi.fn();
+
+    render(
+      <FilterableCombobox
+        label="Account"
+        name="account"
+        value=""
+        onValueChange={onValueChange}
+        onOptionSelect={onOptionSelect}
+        options={[
+          { value: "42", label: "Pool Alpha (#42)", searchText: "Pool Alpha 42" },
+          { value: "77", label: "Pool Beta (#77)", searchText: "Pool Beta 77" },
+        ]}
+      />,
+    );
+
+    const input = getComboboxInput();
+    act(() => {
+      input.focus();
+      input.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const option = Array.from(document.querySelectorAll('button[role="option"]')).find(
+      (candidate) => candidate.textContent?.includes("Pool Alpha (#42)"),
+    );
+    if (!(option instanceof HTMLButtonElement)) {
+      throw new Error("missing labeled option");
+    }
+
+    act(() => {
+      option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+
+    expect(onValueChange).toHaveBeenCalledWith("Pool Alpha (#42)");
+    expect(onOptionSelect).toHaveBeenCalledWith({
+      value: "42",
+      label: "Pool Alpha (#42)",
+      searchText: "Pool Alpha 42",
+    });
+  });
 });
