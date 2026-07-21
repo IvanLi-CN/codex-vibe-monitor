@@ -12,7 +12,6 @@ import type {
   PromptCacheConversationsResponse,
   UpstreamAccountActivityResponse,
 } from "../../lib/api";
-import { metricAccent } from "../../lib/chartTheme";
 import {
   type DashboardWorkingConversationCardModel,
   formatDashboardWorkingConversationSequenceId,
@@ -39,12 +38,6 @@ class MockPointerEvent extends MouseEvent {
     super(type, init);
     this.pointerType = init.pointerType ?? "mouse";
   }
-}
-
-function normalizeCssColor(value: string) {
-  const sample = document.createElement("div");
-  sample.style.color = value;
-  return sample.style.color;
 }
 
 const virtualizerMocks = vi.hoisted(() => ({
@@ -1268,7 +1261,7 @@ describe("DashboardWorkingConversationsSection", () => {
       '[data-testid="dashboard-upstream-account-recent-row"]',
     );
     expect(firstRecentRow?.textContent).toContain("Responses");
-    expect(firstRecentRow?.textContent).toContain("T 200");
+    expect(firstRecentRow?.textContent).toContain("Token 200");
     expect(firstRecentRow?.textContent).not.toContain("RQ ");
     expect(firstRecentRow?.textContent).not.toContain("UP ");
     expect(firstRecentRow?.textContent).not.toContain("ED ");
@@ -2822,11 +2815,19 @@ describe("DashboardWorkingConversationsSection", () => {
     const currentCostValue = currentSlot.querySelector(
       '[data-testid="dashboard-working-conversation-usage-cost"]',
     );
+    const currentHitValue = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-hit"]',
+    );
+    const previousHitValue = previousSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-hit"]',
+    );
     const usageMetaLine = currentUsageLine?.parentElement;
     if (
       !(currentUsageLine instanceof HTMLDivElement) ||
       !(previousUsageLine instanceof HTMLDivElement) ||
       !(currentCostValue instanceof HTMLElement) ||
+      !(currentHitValue instanceof HTMLElement) ||
+      !(previousHitValue instanceof HTMLElement) ||
       !(usageMetaLine instanceof HTMLElement)
     ) {
       throw new Error("missing compact usage line elements");
@@ -2842,14 +2843,279 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(previousUsageLine.textContent).toContain("Hit 0%");
     expect(previousUsageLine.textContent).toContain("Token 13,184");
     expect(previousUsageLine.textContent).toContain("$0.0520");
-    expect(currentCostValue.style.color).toBe(
-      normalizeCssColor(metricAccent("totalCost", "light")),
-    );
+    expect(currentHitValue.dataset.summaryTone).toBe("error");
+    expect(previousHitValue.dataset.summaryTone).toBe("error");
+    expect(currentCostValue.dataset.summaryTone).toBe("warning");
     expect(usageMetaLine.title).toContain("Cache write: 68,319");
     expect(usageMetaLine.title).toContain("5,632");
     expect(usageMetaLine.title).toContain("74,148");
     expect(usageMetaLine.title).toContain("US$0.1752");
     expect(host?.querySelector('[data-testid="dashboard-upstream-account-recent-row"]')).toBeNull();
+  });
+
+  it("applies strict hit and cost threshold tones to conversation and upstream recent summaries", () => {
+    upstreamAccountActivityMock.data = {
+      ...createUpstreamAccountActivityResponse(),
+      accounts: [
+        {
+          ...createUpstreamAccountActivityResponse().accounts[0],
+          recentInvocations: [
+            createPreview({
+              id: 9101,
+              invokeId: "acct-threshold-warning",
+              promptCacheKey: "pck-upstream-threshold-warning",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "success",
+              totalTokens: 1_000,
+              inputTokens: 700,
+              outputTokens: 200,
+              cacheInputTokens: 899,
+              cost: 0.1001,
+              reasoningTokens: 20,
+            }),
+            createPreview({
+              id: 9102,
+              invokeId: "acct-threshold-error",
+              promptCacheKey: "pck-upstream-threshold-error",
+              occurredAt: "2026-04-04T10:04:00Z",
+              status: "failed",
+              totalTokens: 1_000,
+              inputTokens: 700,
+              outputTokens: 200,
+              cacheInputTokens: 499,
+              cost: 0.5001,
+              reasoningTokens: 20,
+            }),
+            createPreview({
+              id: 9103,
+              invokeId: "acct-threshold-default",
+              promptCacheKey: "pck-upstream-threshold-default",
+              occurredAt: "2026-04-04T10:03:00Z",
+              status: "success",
+              totalTokens: 1_000,
+              inputTokens: 700,
+              outputTokens: 200,
+              cacheInputTokens: 900,
+              cost: 0.1,
+              reasoningTokens: 20,
+            }),
+            createPreview({
+              id: 9104,
+              invokeId: "acct-threshold-boundary",
+              promptCacheKey: "pck-upstream-threshold-boundary",
+              occurredAt: "2026-04-04T10:02:00Z",
+              status: "success",
+              totalTokens: 1_000,
+              inputTokens: 700,
+              outputTokens: 200,
+              cacheInputTokens: 500,
+              cost: 0.5,
+              reasoningTokens: 20,
+            }),
+          ],
+        },
+      ],
+    };
+
+    renderSection(
+      createResponse([
+        createConversation("pck-threshold-default", [
+          createPreview({
+            id: 31,
+            invokeId: "invoke-threshold-default-current",
+            occurredAt: "2026-04-04T10:06:00Z",
+            status: "running",
+            totalTokens: 1_000,
+            inputTokens: 700,
+            outputTokens: 200,
+            cacheInputTokens: 955,
+            cost: 0.0586,
+            reasoningTokens: 20,
+          }),
+          createPreview({
+            id: 30,
+            invokeId: "invoke-threshold-warning-previous",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "completed",
+            totalTokens: 1_000,
+            inputTokens: 700,
+            outputTokens: 200,
+            cacheInputTokens: 899,
+            cost: 0.1001,
+            reasoningTokens: 20,
+          }),
+        ]),
+        createConversation("pck-threshold-error", [
+          createPreview({
+            id: 41,
+            invokeId: "invoke-threshold-error-current",
+            occurredAt: "2026-04-04T10:04:30Z",
+            status: "completed",
+            totalTokens: 1_000,
+            inputTokens: 700,
+            outputTokens: 200,
+            cacheInputTokens: 499,
+            cost: 0.5001,
+            reasoningTokens: 20,
+          }),
+        ]),
+      ]),
+    );
+
+    const firstCardCurrentSlot = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    const firstCardPreviousSlot = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="previous"]',
+    );
+    const secondCard = host?.querySelectorAll(
+      '[data-testid="dashboard-working-conversation-card"]',
+    )[1];
+    const secondCardCurrentSlot = secondCard?.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    if (
+      !(firstCardCurrentSlot instanceof HTMLElement) ||
+      !(firstCardPreviousSlot instanceof HTMLElement) ||
+      !(secondCardCurrentSlot instanceof HTMLElement)
+    ) {
+      throw new Error("missing threshold summary slots");
+    }
+
+    const currentHit = firstCardCurrentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-hit"]',
+    );
+    const currentCost = firstCardCurrentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-cost"]',
+    );
+    const previousHit = firstCardPreviousSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-hit"]',
+    );
+    const previousCost = firstCardPreviousSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-cost"]',
+    );
+    const errorHit = secondCardCurrentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-hit"]',
+    );
+    const errorCost = secondCardCurrentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-cost"]',
+    );
+    if (
+      !(currentHit instanceof HTMLElement) ||
+      !(currentCost instanceof HTMLElement) ||
+      !(previousHit instanceof HTMLElement) ||
+      !(previousCost instanceof HTMLElement) ||
+      !(errorHit instanceof HTMLElement) ||
+      !(errorCost instanceof HTMLElement)
+    ) {
+      throw new Error("missing conversation threshold summary fields");
+    }
+
+    expect(currentHit.textContent).toContain("Hit 95.5%");
+    expect(currentHit.dataset.summaryTone).toBe("default");
+    expect(currentCost.textContent).toContain("$0.0586");
+    expect(currentCost.dataset.summaryTone).toBe("default");
+    expect(previousHit.textContent).toContain("Hit 89.9%");
+    expect(previousHit.dataset.summaryTone).toBe("warning");
+    expect(previousCost.textContent).toContain("$0.1001");
+    expect(previousCost.dataset.summaryTone).toBe("warning");
+    expect(errorHit.textContent).toContain("Hit 49.9%");
+    expect(errorHit.dataset.summaryTone).toBe("error");
+    expect(errorCost.textContent).toContain("$0.5001");
+    expect(errorCost.dataset.summaryTone).toBe("error");
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const recentRows = Array.from(
+      host?.querySelectorAll('[data-testid="dashboard-upstream-account-recent-row"]') ?? [],
+    );
+    expect(recentRows).toHaveLength(4);
+    const warningRow = recentRows[0];
+    const errorRow = recentRows[1];
+    const defaultRow = recentRows[2];
+    const boundaryRow = recentRows[3];
+    if (
+      !(warningRow instanceof HTMLElement) ||
+      !(errorRow instanceof HTMLElement) ||
+      !(defaultRow instanceof HTMLElement) ||
+      !(boundaryRow instanceof HTMLElement)
+    ) {
+      throw new Error("missing upstream threshold rows");
+    }
+
+    const warningSummary = warningRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-summary-line"]',
+    );
+    const warningHit = warningRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-summary-hit"]',
+    );
+    const warningCost = warningRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-summary-cost"]',
+    );
+    const errorHitRow = errorRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-summary-hit"]',
+    );
+    const errorCostRow = errorRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-summary-cost"]',
+    );
+    const defaultHitRow = defaultRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-summary-hit"]',
+    );
+    const defaultCostRow = defaultRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-summary-cost"]',
+    );
+    const boundaryHitRow = boundaryRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-summary-hit"]',
+    );
+    const boundaryCostRow = boundaryRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-summary-cost"]',
+    );
+    if (
+      !(warningSummary instanceof HTMLElement) ||
+      !(warningHit instanceof HTMLElement) ||
+      !(warningCost instanceof HTMLElement) ||
+      !(errorHitRow instanceof HTMLElement) ||
+      !(errorCostRow instanceof HTMLElement) ||
+      !(defaultHitRow instanceof HTMLElement) ||
+      !(defaultCostRow instanceof HTMLElement) ||
+      !(boundaryHitRow instanceof HTMLElement) ||
+      !(boundaryCostRow instanceof HTMLElement)
+    ) {
+      throw new Error("missing upstream threshold summary fields");
+    }
+
+    expect(warningRow.textContent).not.toContain("IN ");
+    expect(warningRow.textContent).not.toContain("CW ");
+    expect(warningRow.textContent).not.toContain(" C ");
+    expect(warningRow.textContent).not.toContain("O ");
+    expect(warningRow.textContent).not.toContain("T ");
+    expect(warningHit.textContent).toContain("Hit 89.9%");
+    expect(warningHit.dataset.summaryTone).toBe("warning");
+    expect(warningCost.textContent).toContain("$0.1001");
+    expect(warningCost.dataset.summaryTone).toBe("warning");
+    expect(errorHitRow.textContent).toContain("Hit 49.9%");
+    expect(errorHitRow.dataset.summaryTone).toBe("error");
+    expect(errorCostRow.textContent).toContain("$0.5001");
+    expect(errorCostRow.dataset.summaryTone).toBe("error");
+    expect(defaultHitRow.textContent).toContain("Hit 90%");
+    expect(defaultHitRow.dataset.summaryTone).toBe("default");
+    expect(defaultCostRow.textContent).toContain("$0.1000");
+    expect(defaultCostRow.dataset.summaryTone).toBe("default");
+    expect(boundaryHitRow.textContent).toContain("Hit 50%");
+    expect(boundaryHitRow.dataset.summaryTone).toBe("warning");
+    expect(boundaryCostRow.textContent).toContain("$0.5000");
+    expect(boundaryCostRow.dataset.summaryTone).toBe("warning");
+    expect(warningSummary.title).toContain("Cache write:");
+    expect(warningSummary.title).toContain("缓存输入");
+    expect(warningSummary.title).toContain("推理 Tokens");
   });
 
   it("shows the image-tool badge only for image-capable previews", () => {
@@ -3843,6 +4109,9 @@ describe("DashboardWorkingConversationsSection", () => {
     if (!(attentionBadges instanceof HTMLButtonElement)) {
       throw new Error("missing upstream account attention badges");
     }
+    expect(attentionBadges.className).not.toContain("rounded-full");
+    expect(attentionBadges.className).not.toContain("border-base-300/70");
+    expect(attentionBadges.className).not.toContain("bg-base-100/86");
 
     act(() => {
       attentionBadges.click();

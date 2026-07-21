@@ -171,13 +171,11 @@ export function InvocationPhaseSegments({
               data-phase={item.phase}
               data-phase-motion={motion}
               data-phase-label-visible={showLabel ? "true" : "false"}
-              role={showLabel ? undefined : "img"}
               className={cn(
                 "inline-flex items-center whitespace-nowrap text-[11px] font-semibold leading-none tabular-nums text-base-content/68",
                 showLabel ? "gap-1.5" : "gap-1",
                 itemClassName,
               )}
-              aria-label={showLabel ? undefined : `${label} ${item.value}`}
               title={showLabel ? undefined : `${label} ${item.value}`}
             >
               <AppIcon
@@ -191,6 +189,7 @@ export function InvocationPhaseSegments({
                 )}
                 aria-hidden="true"
               />
+              {showLabel ? null : <span className="sr-only">{`${label} ${item.value}`}</span>}
               {showLabel ? <span>{label}</span> : null}
               <span className="font-mono text-base-content/86">{item.value}</span>
             </span>

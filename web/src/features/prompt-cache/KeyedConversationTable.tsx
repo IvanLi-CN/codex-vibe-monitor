@@ -247,6 +247,7 @@ export function ConversationSparkline<TConversation extends KeyedConversationRec
             className="h-11 w-full rounded-md border border-base-300/55 bg-base-100/35"
             data-chart-kind="keyed-conversation-sparkline"
           >
+            <title>{ariaLabel}</title>
             <line
               x1={0}
               y1={geometry.height}

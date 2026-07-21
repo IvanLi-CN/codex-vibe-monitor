@@ -52,7 +52,6 @@ import {
   fetchUpstreamAccounts,
   updateUpstreamAccount,
 } from "../../lib/api";
-import { metricAccent } from "../../lib/chartTheme";
 import type {
   DashboardWorkingConversationCardModel,
   DashboardWorkingConversationInvocationModel,
@@ -78,7 +77,6 @@ import {
 } from "../../lib/upstreamAccountBadges";
 import { emitUpstreamAccountsChanged } from "../../lib/upstreamAccountsEvents";
 import { cn } from "../../lib/utils";
-import { useTheme } from "../../theme";
 import { InvocationPhaseBadge, InvocationPhaseSegments } from "../invocations/InvocationPhaseBadge";
 import {
   buildInvocationDetailViewModel,
@@ -486,6 +484,7 @@ function CompactLatencyPills({
   return (
     <div
       data-testid="dashboard-compact-latency-pills"
+      role="group"
       className={cn(
         "inline-flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-2 font-mono text-[11px] font-semibold leading-none text-base-content/86",
         className,
@@ -741,6 +740,104 @@ function formatAccountPercentValue(value: number | null | undefined, localeTag: 
     style: "percent",
     maximumFractionDigits: 1,
   }).format(value);
+}
+
+type InvocationSummaryTone = "default" | "warning" | "error";
+
+type InvocationSummaryField = {
+  label: "Hit" | "Token" | "$";
+  text: string;
+  tone: InvocationSummaryTone;
+  testId: string;
+};
+
+const INVOCATION_SUMMARY_TONE_CLASSNAMES: Record<InvocationSummaryTone, string> = {
+  default: "text-base-content/74",
+  warning: "text-warning",
+  error: "text-error",
+};
+
+function resolveInvocationHitTone(hitRate: number | null | undefined): InvocationSummaryTone {
+  if (hitRate == null || !Number.isFinite(hitRate)) return "default";
+  if (hitRate < 0.5) return "error";
+  if (hitRate < 0.9) return "warning";
+  return "default";
+}
+
+function resolveInvocationCostTone(cost: number | null | undefined): InvocationSummaryTone {
+  if (cost == null || !Number.isFinite(cost)) return "default";
+  if (cost > 0.5) return "error";
+  if (cost > 0.1) return "warning";
+  return "default";
+}
+
+function formatCompactInvocationCostValue(costValue: string) {
+  return costValue.startsWith("US$") ? `$${costValue.slice(3)}` : costValue;
+}
+
+function buildInvocationSummaryFields({
+  cacheHitRate,
+  totalTokensValue,
+  cost,
+  costValue,
+  localeTag,
+  testIdPrefix,
+}: {
+  cacheHitRate: number | null | undefined;
+  totalTokensValue: string;
+  cost: number | null | undefined;
+  costValue: string;
+  localeTag: string;
+  testIdPrefix: string;
+}): InvocationSummaryField[] {
+  return [
+    {
+      label: "Hit",
+      text: `Hit ${formatAccountPercentValue(cacheHitRate, localeTag)}`,
+      tone: resolveInvocationHitTone(cacheHitRate),
+      testId: `${testIdPrefix}-hit`,
+    },
+    {
+      label: "Token",
+      text: `Token ${totalTokensValue}`,
+      tone: "default",
+      testId: `${testIdPrefix}-token`,
+    },
+    {
+      label: "$",
+      text: formatCompactInvocationCostValue(costValue),
+      tone: resolveInvocationCostTone(cost),
+      testId: `${testIdPrefix}-cost`,
+    },
+  ];
+}
+
+function renderInvocationSummaryFields(
+  fields: InvocationSummaryField[],
+  separatorClassName = "text-base-content/28",
+) {
+  return fields.flatMap((field, index) => {
+    const content = (
+      <span
+        key={field.testId}
+        data-testid={field.testId}
+        data-summary-label={field.label}
+        data-summary-tone={field.tone}
+        className={INVOCATION_SUMMARY_TONE_CLASSNAMES[field.tone]}
+      >
+        {field.text}
+      </span>
+    );
+
+    if (index === 0) return [content];
+
+    return [
+      <span key={`${field.testId}-separator`} className={separatorClassName}>
+        ·
+      </span>,
+      content,
+    ];
+  });
 }
 
 function formatAccountNumberValue(
@@ -1235,7 +1332,7 @@ function AccountAttentionBadges({
       data-testid="dashboard-upstream-account-attention-badges"
       disabled={!clickable}
       className={cn(
-        "inline-flex min-h-6 max-w-full flex-wrap items-center gap-1.5 rounded-full border border-base-300/70 bg-base-100/86 px-1.5 py-0.5 text-[11px] font-semibold transition-opacity duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+        "inline-flex min-h-6 max-w-full flex-wrap items-center gap-1.5 rounded-none border-0 bg-transparent p-0 text-[11px] font-semibold shadow-none transition-opacity duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
         clickable ? "cursor-pointer hover:opacity-80" : "cursor-default",
       )}
       title={title}
@@ -1820,6 +1917,7 @@ function AccountSegmentList({
   return (
     <div
       data-testid={testId}
+      role="group"
       aria-label={segments
         .map((segment) => `${segment.label} ${segment.value.ariaText}`)
         .join(" · ")}
@@ -1998,6 +2096,19 @@ function AccountRecentInvocationRow({
           : formatCompactLatencySecondsValue(invocation.record.tTotalMs, localeTag),
     };
   }, [invocation.displayStatus, invocation.record, localeTag, nowMs]);
+  const recentSummaryFields = useMemo(
+    () =>
+      buildInvocationSummaryFields({
+        cacheHitRate: invocationCacheHitRate(invocation.record),
+        totalTokensValue: viewModel.totalTokensValue,
+        cost: invocation.record.cost,
+        costValue: viewModel.costValue,
+        localeTag,
+        testIdPrefix: "dashboard-upstream-account-recent-summary",
+      }),
+    [invocation.record, localeTag, viewModel.costValue, viewModel.totalTokensValue],
+  );
+  const recentSummaryTitle = `${t("table.column.inputTokens")}: ${viewModel.inputTokensValue} · Cache write: ${viewModel.cacheWriteTokensValue} · ${t("table.column.cacheInputTokens")}: ${viewModel.cacheInputTokensValue} · ${t("table.column.outputTokens")}: ${viewModel.outputTokensValue} · ${t("table.column.totalTokens")}: ${viewModel.totalTokensValue} · ${t("table.column.costUsd")}: ${viewModel.costValue} · ${t("table.details.reasoningTokens")}: ${viewModel.reasoningTokensValue}`;
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${invocation.record.invokeId}`;
   const conversationActionLabel = displayPromptCacheKey
     ? `${t("dashboard.workingConversations.openConversation")} · ${displayConversationSequenceId} · ${displayPromptCacheKey}`
@@ -2166,26 +2277,13 @@ function AccountRecentInvocationRow({
           <div className="text-[10.5px] text-base-content/62">{compactCostValue}</div>
         </div>
       </div>
-      <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] leading-[1.45] text-base-content/74">
-        <span>IN {viewModel.inputTokensValue}</span>
-        <span className="text-base-content/28">·</span>
-        <span
-          title="Cache write tokens"
-          aria-label={`Cache write tokens: ${viewModel.cacheWriteTokensValue}`}
-        >
-          CW {viewModel.cacheWriteTokensValue}
-        </span>
-        <span className="text-base-content/28">·</span>
-        <span
-          title="Cache read tokens"
-          aria-label={`Cache read tokens: ${viewModel.cacheInputTokensValue}`}
-        >
-          C {viewModel.cacheInputTokensValue}
-        </span>
-        <span className="text-base-content/28">·</span>
-        <span>O {viewModel.outputTokensValue}</span>
-        <span className="text-base-content/28">·</span>
-        <span>T {viewModel.totalTokensValue}</span>
+      <div
+        data-testid="dashboard-upstream-account-recent-summary-line"
+        className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] leading-[1.45] text-base-content/74"
+        title={recentSummaryTitle}
+        aria-label={recentSummaryTitle}
+      >
+        {renderInvocationSummaryFields(recentSummaryFields)}
       </div>
       {viewModel.collapsedErrorSummary ? (
         <InvocationErrorSummary
@@ -2304,7 +2402,6 @@ function InvocationSlot({
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   onOpenInvocation?: (selection: DashboardWorkingConversationInvocationSelection) => void;
 }) {
-  const { themeMode } = useTheme();
   const { t } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
@@ -2422,14 +2519,18 @@ function InvocationSlot({
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
   const displayConversationSequenceId =
     formatDashboardWorkingConversationSequenceId(conversationSequenceId);
-  const compactCostValue = viewModel.costValue.startsWith("US$")
-    ? `$${viewModel.costValue.slice(3)}`
-    : viewModel.costValue;
-  const compactHitRateValue = formatAccountPercentValue(
-    invocationCacheHitRate(invocation.record),
-    localeTag,
+  const usageSummaryFields = useMemo(
+    () =>
+      buildInvocationSummaryFields({
+        cacheHitRate: invocationCacheHitRate(invocation.record),
+        totalTokensValue: viewModel.totalTokensValue,
+        cost: invocation.record.cost,
+        costValue: viewModel.costValue,
+        localeTag,
+        testIdPrefix: "dashboard-working-conversation-usage",
+      }),
+    [invocation.record, localeTag, viewModel.costValue, viewModel.totalTokensValue],
   );
-  const costAccentColor = metricAccent("totalCost", themeMode);
   const compactLatencyValues = useMemo(() => {
     const normalizedStatus = invocation.displayStatus.trim().toLowerCase();
     return {
@@ -2665,20 +2766,7 @@ function InvocationSlot({
               data-testid="dashboard-working-conversation-usage-line"
               className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5"
             >
-              <span data-testid="dashboard-working-conversation-usage-hit">
-                Hit {compactHitRateValue}
-              </span>
-              <span className="text-base-content/28">·</span>
-              <span data-testid="dashboard-working-conversation-usage-token">
-                Token {viewModel.totalTokensValue}
-              </span>
-              <span className="text-base-content/28">·</span>
-              <span
-                data-testid="dashboard-working-conversation-usage-cost"
-                style={{ color: costAccentColor }}
-              >
-                {compactCostValue}
-              </span>
+              {renderInvocationSummaryFields(usageSummaryFields)}
             </div>
           }
         />
