@@ -114,6 +114,15 @@ import {
   readPersistedDashboardWorkspaceView,
 } from "./dashboardActivityRange";
 import {
+  DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_MAX,
+  type DashboardBulkRouteBindRecentTarget,
+  filterAvailableDashboardBulkRouteBindRecentTargets,
+  isDashboardBulkRouteBindRecentTargetSelected,
+  persistDashboardBulkRouteBindRecentTargets,
+  readDashboardBulkRouteBindRecentTargets,
+  rememberDashboardBulkRouteBindRecentTarget,
+} from "./dashboardBulkRouteBindPreferences";
+import {
   compareDashboardConversationCards,
   compareDashboardUpstreamAccounts,
   DASHBOARD_CONVERSATION_SORT_STORAGE_KEY,
@@ -203,6 +212,8 @@ const MANUAL_BINDING_BADGE_BUTTON_CLASS_NAME =
   "inline-flex min-w-0 max-w-[20rem] shrink appearance-none rounded-full border-0 bg-transparent p-0 text-left transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary";
 const MANUAL_BINDING_BADGE_TEXT_CLASS_NAME =
   "block min-w-0 max-w-[20rem] truncate whitespace-nowrap";
+const ROUTE_BIND_RECENT_TARGET_GAP_PX = 8;
+const ROUTE_BIND_RECENT_TARGET_MAX_ROWS = 2;
 
 type DashboardManualBindingBadgeMeta = {
   displayValue: string;
@@ -225,6 +236,24 @@ type DashboardConversationBulkBindingTargetsState = {
   loaded: boolean;
   error: string | null;
 };
+
+function dashboardBulkRouteBindRecentTargetsEqual(
+  left: DashboardBulkRouteBindRecentTarget[],
+  right: DashboardBulkRouteBindRecentTarget[],
+) {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((target, index) => {
+    const other = right[index];
+    if (!other || target.kind !== other.kind || target.usedAt !== other.usedAt) {
+      return false;
+    }
+    return target.kind === "group"
+      ? other.kind === "group" && target.groupName === other.groupName
+      : other.kind === "upstreamAccount" && target.upstreamAccountId === other.upstreamAccountId;
+  });
+}
 
 function hasMultiSelectModifier(
   event: Pick<ReactMouseEvent<HTMLElement>, "metaKey" | "ctrlKey" | "button">,
@@ -3952,6 +3981,7 @@ export function DashboardWorkingConversationsSection({
   const [selectionModeEnabled, setSelectionModeEnabled] = useState(false);
   const [selectedPromptCacheKeys, setSelectedPromptCacheKeys] = useState<string[]>([]);
   const [routeBindDialogOpen, setRouteBindDialogOpen] = useState(false);
+  const [routeBindSelectionRestorePending, setRouteBindSelectionRestorePending] = useState(false);
   const [clearBindingDialogOpen, setClearBindingDialogOpen] = useState(false);
   const [clearBindingDialogAction, setClearBindingDialogAction] =
     useState<DashboardConversationClearDialogAction>("bind");
@@ -3960,6 +3990,14 @@ export function DashboardWorkingConversationsSection({
     useState<DashboardConversationBulkBindTargetKind>("group");
   const [routeBindGroupName, setRouteBindGroupName] = useState("");
   const [routeBindAccountId, setRouteBindAccountId] = useState("");
+  const [routeBindRecentTargets, setRouteBindRecentTargets] = useState<
+    DashboardBulkRouteBindRecentTarget[]
+  >(() => readDashboardBulkRouteBindRecentTargets());
+  const routeBindRecentTargetsMeasureRef = useRef<HTMLDivElement | null>(null);
+  const routeBindRecentChipMeasureRefs = useRef(new Map<string, HTMLButtonElement>());
+  const [routeBindRecentVisibleCount, setRouteBindRecentVisibleCount] = useState(
+    DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_MAX,
+  );
   const [bulkFastModeRewriteMode, setBulkFastModeRewriteMode] =
     useState<PromptCacheConversationRewriteMode>("keep_original");
   const [bulkActionBusy, setBulkActionBusy] = useState<
@@ -3974,6 +4012,16 @@ export function DashboardWorkingConversationsSection({
       loaded: false,
       error: null,
     });
+  const availableRouteBindRecentTargets = useMemo(
+    () =>
+      bindingTargets.loaded
+        ? filterAvailableDashboardBulkRouteBindRecentTargets(routeBindRecentTargets, {
+            groups: bindingTargets.groups,
+            accounts: bindingTargets.accounts,
+          })
+        : [],
+    [bindingTargets.accounts, bindingTargets.groups, bindingTargets.loaded, routeBindRecentTargets],
+  );
   const setGridContainerRef = useCallback((node: HTMLDivElement | null) => {
     setGridElement(node);
   }, []);
@@ -4226,6 +4274,48 @@ export function DashboardWorkingConversationsSection({
   ]);
 
   useEffect(() => {
+    if (!routeBindDialogOpen) {
+      setRouteBindSelectionRestorePending(false);
+    }
+  }, [routeBindDialogOpen]);
+
+  useEffect(() => {
+    if (
+      !routeBindDialogOpen ||
+      !routeBindSelectionRestorePending ||
+      bindingTargets.loading ||
+      !bindingTargets.loaded
+    ) {
+      return;
+    }
+    if (
+      !dashboardBulkRouteBindRecentTargetsEqual(
+        routeBindRecentTargets,
+        availableRouteBindRecentTargets,
+      )
+    ) {
+      setRouteBindRecentTargets(availableRouteBindRecentTargets);
+      persistDashboardBulkRouteBindRecentTargets(availableRouteBindRecentTargets);
+    }
+    const mostRecentTarget = availableRouteBindRecentTargets[0];
+    if (mostRecentTarget?.kind === "group") {
+      setRouteBindTargetKind("group");
+      setRouteBindGroupName(mostRecentTarget.groupName);
+    } else if (mostRecentTarget?.kind === "upstreamAccount") {
+      setRouteBindTargetKind("upstreamAccount");
+      setRouteBindAccountId(String(mostRecentTarget.upstreamAccountId));
+    }
+    setRouteBindSelectionRestorePending(false);
+  }, [
+    availableRouteBindRecentTargets,
+    bindingTargets.loaded,
+    bindingTargets.loading,
+    routeBindDialogOpen,
+    routeBindRecentTargets,
+    routeBindSelectionRestorePending,
+  ]);
+
+  useEffect(() => {
     if (bindingTargets.groups.length > 0 && !bindingTargets.groups.includes(routeBindGroupName)) {
       setRouteBindGroupName(bindingTargets.groups[0] ?? "");
     }
@@ -4282,6 +4372,22 @@ export function DashboardWorkingConversationsSection({
             current.filter((promptCacheKey) => !succeededKeys.has(promptCacheKey)),
           );
           onConversationsChanged?.();
+          if (payload.action === "bind" && payload.bindingKind !== "none") {
+            setRouteBindRecentTargets((current) => {
+              const next =
+                payload.bindingKind === "group"
+                  ? rememberDashboardBulkRouteBindRecentTarget(current, {
+                      kind: "group",
+                      groupName: payload.groupName,
+                    })
+                  : rememberDashboardBulkRouteBindRecentTarget(current, {
+                      kind: "upstreamAccount",
+                      upstreamAccountId: payload.upstreamAccountId,
+                    });
+              persistDashboardBulkRouteBindRecentTargets(next);
+              return next;
+            });
+          }
         }
         const failureMessage = formatDashboardConversationBulkFailureMessage(failedItems, locale);
         if (failedItems.length === 0) {
@@ -4692,6 +4798,144 @@ export function DashboardWorkingConversationsSection({
     locale === "zh"
       ? "支持批量绑定到分组或上游账号；如果要清空手工绑定，可在此弹窗底部直接进入确认。"
       : "Bind the selected conversations to a group or upstream account. If you need to clear manual bindings instead, use the destructive action shortcut in this dialog footer.";
+  const applyRouteBindRecentTargetSelection = useCallback(
+    (target: DashboardBulkRouteBindRecentTarget) => {
+      if (target.kind === "group") {
+        setRouteBindTargetKind("group");
+        setRouteBindGroupName(target.groupName);
+        return;
+      }
+      setRouteBindTargetKind("upstreamAccount");
+      setRouteBindAccountId(String(target.upstreamAccountId));
+    },
+    [],
+  );
+  const routeBindRecentChipItems = useMemo(() => {
+    if (!bindingTargets.loaded) {
+      return [];
+    }
+    return availableRouteBindRecentTargets.map((target) => {
+      const matchedAccount =
+        target.kind === "upstreamAccount"
+          ? bindingTargets.accounts.find((account) => account.id === target.upstreamAccountId)
+          : null;
+      const typeLabel =
+        target.kind === "group"
+          ? locale === "zh"
+            ? "分组"
+            : "Group"
+          : locale === "zh"
+            ? "账号"
+            : "Account";
+      const displayLabel =
+        target.kind === "group"
+          ? target.groupName
+          : matchedAccount
+            ? conversationBindingAccountLabel(matchedAccount)
+            : `#${target.upstreamAccountId}`;
+      const active = isDashboardBulkRouteBindRecentTargetSelected(target, {
+        kind: routeBindTargetKind,
+        groupName: routeBindGroupName,
+        upstreamAccountId: routeBindAccountId,
+      });
+      return {
+        key:
+          target.kind === "group"
+            ? `group:${target.groupName}`
+            : `upstreamAccount:${target.upstreamAccountId}`,
+        target,
+        active,
+        typeLabel,
+        displayLabel,
+        title:
+          locale === "zh"
+            ? `最近使用的${typeLabel}：${displayLabel}`
+            : `Recent ${typeLabel.toLowerCase()}: ${displayLabel}`,
+      };
+    });
+  }, [
+    availableRouteBindRecentTargets,
+    bindingTargets.accounts,
+    bindingTargets.loaded,
+    locale,
+    routeBindAccountId,
+    routeBindGroupName,
+    routeBindTargetKind,
+  ]);
+  useLayoutEffect(() => {
+    const measureContainer = routeBindRecentTargetsMeasureRef.current;
+    if (!measureContainer) {
+      setRouteBindRecentVisibleCount(routeBindRecentChipItems.length);
+      return undefined;
+    }
+
+    const computeVisibleCount = () => {
+      const containerWidth = measureContainer.clientWidth;
+      if (containerWidth <= 0 || routeBindRecentChipItems.length === 0) {
+        setRouteBindRecentVisibleCount(routeBindRecentChipItems.length);
+        return;
+      }
+
+      const chipWidths = routeBindRecentChipItems.map(
+        (item) => routeBindRecentChipMeasureRefs.current.get(item.key)?.offsetWidth ?? 0,
+      );
+
+      const countRows = (widths: number[]) => {
+        let rows = 1;
+        let currentRowWidth = 0;
+        for (const width of widths) {
+          if (width <= 0) {
+            return Number.POSITIVE_INFINITY;
+          }
+          const nextWidth =
+            currentRowWidth === 0
+              ? width
+              : currentRowWidth + ROUTE_BIND_RECENT_TARGET_GAP_PX + width;
+          if (currentRowWidth > 0 && nextWidth > containerWidth + 0.5) {
+            rows += 1;
+            currentRowWidth = width;
+          } else {
+            currentRowWidth = nextWidth;
+          }
+        }
+        return rows;
+      };
+
+      let nextVisibleCount = routeBindRecentChipItems.length;
+      for (
+        let visibleCount = routeBindRecentChipItems.length;
+        visibleCount >= 0;
+        visibleCount -= 1
+      ) {
+        if (countRows(chipWidths.slice(0, visibleCount)) <= ROUTE_BIND_RECENT_TARGET_MAX_ROWS) {
+          nextVisibleCount = visibleCount;
+          break;
+        }
+      }
+      setRouteBindRecentVisibleCount((current: number) =>
+        current === nextVisibleCount ? current : nextVisibleCount,
+      );
+    };
+
+    computeVisibleCount();
+    window.addEventListener("resize", computeVisibleCount);
+    if (typeof ResizeObserver === "undefined") {
+      return () => {
+        window.removeEventListener("resize", computeVisibleCount);
+      };
+    }
+
+    const observer = new ResizeObserver(computeVisibleCount);
+    observer.observe(measureContainer);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", computeVisibleCount);
+    };
+  }, [routeBindRecentChipItems]);
+  const visibleRouteBindRecentChipItems = routeBindRecentChipItems.slice(
+    0,
+    Math.max(0, Math.min(routeBindRecentVisibleCount, routeBindRecentChipItems.length)),
+  );
   const clearBindingDialogTitle =
     clearBindingDialogAction === "clearAndResetAffinity"
       ? locale === "zh"
@@ -4871,6 +5115,7 @@ export function DashboardWorkingConversationsSection({
                         error: null,
                       }));
                     }
+                    setRouteBindSelectionRestorePending(true);
                     setRouteBindDialogOpen(true);
                   }}
                 >
@@ -5719,6 +5964,77 @@ export function DashboardWorkingConversationsSection({
                 />
               )}
             </div>
+            {visibleRouteBindRecentChipItems.length > 0 ? (
+              <div
+                className="relative space-y-2"
+                data-testid="dashboard-working-conversations-route-bind-recents"
+              >
+                <p className="text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-base-content/52">
+                  {locale === "zh" ? "最近使用" : "Recent targets"}
+                </p>
+                <div
+                  className="flex flex-wrap gap-2"
+                  data-testid="dashboard-working-conversations-route-bind-recents-grid"
+                >
+                  {visibleRouteBindRecentChipItems.map((item) => (
+                    <button
+                      key={item.key}
+                      type="button"
+                      title={item.title}
+                      aria-pressed={item.active}
+                      data-testid="dashboard-working-conversations-route-bind-recent-chip"
+                      data-kind={item.target.kind}
+                      className={cn(
+                        "dashboard-route-bind-recent-chip inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 text-left text-[10px] font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100",
+                        item.target.kind === "group"
+                          ? item.active
+                            ? "border-info/45 bg-info/12 tone-ink-info font-semibold ring-1 ring-inset ring-info/18"
+                            : "border-info/30 bg-info/8 tone-ink-info hover:border-info/42 hover:bg-info/12"
+                          : item.active
+                            ? "border-secondary/45 bg-secondary/12 tone-ink-secondary font-semibold ring-1 ring-inset ring-secondary/18"
+                            : "border-secondary/30 bg-secondary/8 tone-ink-secondary hover:border-secondary/42 hover:bg-secondary/12",
+                      )}
+                      onClick={() => applyRouteBindRecentTargetSelection(item.target)}
+                    >
+                      <span className="shrink-0 text-[8px] font-semibold uppercase tracking-[0.08em] opacity-80">
+                        {item.typeLabel}
+                      </span>
+                      <span className="min-w-0 max-w-[14rem] truncate whitespace-nowrap sm:max-w-[15rem]">
+                        {item.displayLabel}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                <div
+                  ref={routeBindRecentTargetsMeasureRef}
+                  aria-hidden="true"
+                  className="pointer-events-none invisible absolute left-0 top-0 -z-10 flex w-full flex-wrap gap-2"
+                >
+                  {routeBindRecentChipItems.map((item) => (
+                    <button
+                      key={`measure:${item.key}`}
+                      ref={(node) => {
+                        if (node) {
+                          routeBindRecentChipMeasureRefs.current.set(item.key, node);
+                        } else {
+                          routeBindRecentChipMeasureRefs.current.delete(item.key);
+                        }
+                      }}
+                      type="button"
+                      tabIndex={-1}
+                      className="dashboard-route-bind-recent-chip inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 text-left text-[10px] font-medium"
+                    >
+                      <span className="shrink-0 text-[8px] font-semibold uppercase tracking-[0.08em] opacity-80">
+                        {item.typeLabel}
+                      </span>
+                      <span className="min-w-0 max-w-[14rem] truncate whitespace-nowrap sm:max-w-[15rem]">
+                        {item.displayLabel}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             {bindingTargets.loading ? (
               <div className="flex items-center gap-2 rounded-xl border border-base-300/70 bg-base-200/45 px-3 py-3 text-sm text-base-content/72">
                 <Spinner size="sm" aria-label={locale === "zh" ? "加载绑定目标" : "Loading"} />
