@@ -30,8 +30,9 @@
 - 账号详情“请求”tab 必须按真实 `pool_upstream_request_attempts` 行展示尝试请求、重试、失败与成功；概览统计继续采用最终调用口径。
 - 账号详情请求 tab 中的尝试请求列表必须复用调用详情里的 pool attempt 摘要卡；每张摘要卡仅表达一次真实上游尝试请求，主入口显示 owner-facing `attemptId`，并在摘要区展示时间、调用短 ID、请求/响应模型与尝试摘要。不得显示 endpoint、重试序号、最终 invocation 的 tokens/费用或其他非本次调用字段。
 - 摘要卡内的 HTTP 值必须明确标记为上游 HTTP；点击摘要卡后在对应详情面板显示下游 HTTP、完整错误、上游请求 ID、路由键、压缩与近似传输字节等诊断证据。代理优先显示解析后的节点名，不能解析时显示截短绑定键并保留完整值提示。
-- 桌面与窄屏统一采用同一套摘要卡 + 详情面板交互；目标尝试被事件定位时，相关摘要卡必须自动高亮并展开对应详情面板。
+- 桌面与窄屏统一采用同一套摘要卡 + 详情面板交互；目标尝试被事件定位时，相关摘要卡必须滚动进入可视区、自动展开对应诊断面板并显示 focused 高亮。该高亮只在账号详情抽屉内发生下一次 pointer/keyboard 交互后延迟 1.5s 清除。
 - 新产生的路由调用事件必须携带精确 `attemptId`，健康与事件只能用该 ID 定位同账号的尝试；缺少 `attemptId` 的历史事件必须明确不可定位，不做 `invokeId` 模糊跳转。
+- 健康与事件中的 `attemptId` 入口只允许落到账号详情“请求”tab 中的尝试摘要卡；不得回退到隐藏的账号调用记录表，也不得改跳全局 `/records`。
 - owner-facing attempt 标识统一使用持久化 8 位短 `attemptId`。该 ID 存于 `pool_upstream_request_attempts.attempt_public_id`，live 与 archive 都要求非空；内部数值主键仅保留给 DB join / FK / 维护逻辑，不得直接暴露。
 - 尝试列表与定位只查询主库最近 7 天，按 `occurredAt DESC, id DESC` 稳定分页，不读取 archive。
 - 尝试详情必须提供到 `/records?attemptId=...` 的全局调用总览入口，并自动展开该最终调用的完整尝试链；旧 `requestId` 型入口只保留兼容读取，不再作为新 UI 的 attempt 跳转合同。
@@ -252,7 +253,8 @@
 - Given Records 展开详情已打开且 owner 切到某次尝试的“响应体”面板，When 响应体包含长且不可断行的 SSE/JSON 字段，Then 页面外层宽度保持稳定、不出现新的文档级横向滚动，额外宽度只允许由 payload scroller 自身承担。
 - Given 新 HTTP proxy invocation 被创建，When 查询 `/api/invocations`、接收 SSE `records` 或打开 Live/Dashboard 详情，Then `invokeId` 为 10 位短 ID，且不含 `proxy`、连字符、时间戳或内部 counter。
 - Given 历史 `proxy-9061-1783013997090` 记录存在，When 用户过滤、查询、展示或打开详情，Then 仍按完整历史 `invokeId` 兼容处理，不迁移、不回填。
-- Given 健康与事件带有当前账号的 `attemptId`，When 用户点击上游尝试 ID，Then 账号详情立即进入“请求”tab，后端只返回该尝试所在页，目标记录展开诊断并短暂高亮。
+- Given 健康与事件带有当前账号的 `attemptId`，When 用户点击上游尝试 ID，Then 账号详情立即进入“请求”tab，后端只返回该尝试所在页，目标记录自动滚动进可视区、展开诊断并显示 focused 高亮。
+- Given 目标尝试已经被事件定位并处于 focused 状态，When 用户在账号详情抽屉内发生下一次 pointer 或 keyboard 交互，Then focused 高亮在 1.5 秒后消退；若未发生下一次交互，则高亮保持可见。
 - Given 账号详情展示尝试请求，When 摘要卡列表渲染，Then 每张卡直接显示 `attemptId`、调用短 ID、时间、请求/响应模型，以及与调用详情 pool attempt 一致的尝试摘要；不得显示 endpoint、重试序号、tokens、费用或最终调用汇总。
 - Given 上游 HTTP 为 500 且下游 HTTP 为 502，When 用户展开对应摘要卡，Then 详情面板显示下游 HTTP 502、上游请求 ID、路由键与完整可复制错误。
 - Given 账号尝试请求列表在 `mobile390` 渲染，When 用户查看失败项，Then 移动端仍使用同一套摘要卡与详情面板交互，并可在展开后看到代理、压缩与完整错误信息。
@@ -273,6 +275,22 @@
 - 启动 backend/frontend 后打开 `/dashboard` 与 `/#/live`，验证新增列与详情展开可用。
 
 ## Visual Evidence
+
+- source_type: storybook_canvas
+  story_id_or_title: Account Pool/Components/Upstream Account Attempt Timeline / Focused Failure Attempt
+  state: event-located upstream attempt focus feedback
+  requested_viewport: desktop1280
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  evidence_note: verifies the focused attempt component state with real outer margin: the event-located request card is visible, expanded, and highlighted inside the shared account-attempt timeline surface.
+  PR: include
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only upstream attempt data
+  submission_gate: approved
+  image:
+  ![Focused upstream attempt storybook evidence](./assets/upstream-attempt-focus-storybook.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Records/InvocationRecordsTable TokenCostAuditWarningMobile390
@@ -514,13 +532,13 @@
   state: expanded pool attempt detail with synthetic terminal record
   evidence_note: verifies seven real pool attempts render as attempt cards while the `budget_exhausted_final` row renders as a separate terminal state with no retry index or timing labels.
   image:
-  ![号池终态记录拆分效果](visual-evidence/pool-terminal-state.png)
+  ![号池终态记录拆分效果](docs/specs/z9h7v-invocation-log-observability/visual-evidence/pool-terminal-state.png)
 - source_type: storybook_canvas
   story_id_or_title: Dashboard/WorkingConversationsSection/ConversationHistoryDrawerOpen
   state: dashboard conversation history drawer
   evidence_note: verifies the dashboard conversation detail opens to the full retained call history drawer with no time-range selector, paginates the 316-record retained history snapshot, renders the zoomable and pannable activity chart, keeps records newest-first, and uses the dark floating tooltip surface.
   image:
-  ![Dashboard conversation history drawer](visual-evidence/dashboard-conversation-history-drawer.png)
+  ![Dashboard conversation history drawer](docs/specs/z9h7v-invocation-log-observability/visual-evidence/dashboard-conversation-history-drawer.png)
 - source_type: storybook_canvas
   story_id_or_title: Monitoring/PromptCacheConversationTable/ShortSameDayDrawerOpen
   state: short same-day conversation history drawer
