@@ -612,10 +612,13 @@ pub(crate) async fn load_sticky_account_id(
     .map_err(Into::into)
 }
 
-pub(crate) async fn load_prompt_cache_conversation_sticky_snapshot(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn load_prompt_cache_conversation_sticky_snapshot_executor<'e, E>(
+    executor: E,
     prompt_cache_key: &str,
-) -> Result<Option<PromptCacheConversationOperationStickySnapshot>> {
+) -> Result<Option<PromptCacheConversationOperationStickySnapshot>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     #[derive(Debug, FromRow)]
     struct StickySnapshotRow {
         account_id: i64,
@@ -635,7 +638,7 @@ pub(crate) async fn load_prompt_cache_conversation_sticky_snapshot(
         "#,
     )
     .bind(prompt_cache_key)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await?;
     Ok(
         row.map(|value| PromptCacheConversationOperationStickySnapshot {
@@ -643,6 +646,13 @@ pub(crate) async fn load_prompt_cache_conversation_sticky_snapshot(
             upstream_account_name: value.account_name,
         }),
     )
+}
+
+pub(crate) async fn load_prompt_cache_conversation_sticky_snapshot(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: &str,
+) -> Result<Option<PromptCacheConversationOperationStickySnapshot>> {
+    load_prompt_cache_conversation_sticky_snapshot_executor(pool, prompt_cache_key).await
 }
 
 fn prompt_cache_conversation_operation_binding_snapshot_from_row(
@@ -862,10 +872,13 @@ fn normalize_prompt_cache_conversation_operation_info_type(
     }
 }
 
-async fn append_prompt_cache_conversation_operation_event(
-    pool: &Pool<Sqlite>,
+async fn append_prompt_cache_conversation_operation_event_executor<'e, E>(
+    executor: E,
     input: AppendPromptCacheConversationOperationEventInput,
-) -> Result<()> {
+) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     sqlx::query(
         r#"
         INSERT INTO prompt_cache_conversation_operation_events (
@@ -921,9 +934,16 @@ async fn append_prompt_cache_conversation_operation_event(
             .transpose()?,
     )
     .bind(input.invoke_id)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
+}
+
+async fn append_prompt_cache_conversation_operation_event(
+    pool: &Pool<Sqlite>,
+    input: AppendPromptCacheConversationOperationEventInput,
+) -> Result<()> {
+    append_prompt_cache_conversation_operation_event_executor(pool, input).await
 }
 
 pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
@@ -1933,9 +1953,19 @@ async fn delete_prompt_cache_encrypted_session_owner(
     pool: &Pool<Sqlite>,
     prompt_cache_key: &str,
 ) -> Result<()> {
+    delete_prompt_cache_encrypted_session_owner_executor(pool, prompt_cache_key).await
+}
+
+async fn delete_prompt_cache_encrypted_session_owner_executor<'e, E>(
+    executor: E,
+    prompt_cache_key: &str,
+) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     sqlx::query("DELETE FROM prompt_cache_encrypted_session_owners WHERE prompt_cache_key = ?1")
         .bind(prompt_cache_key)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(())
 }
@@ -1945,62 +1975,93 @@ async fn clear_prompt_cache_conversation_affinity(
     prompt_cache_key: &str,
     origin: &str,
 ) -> Result<PromptCacheConversationBindingResponse, ApiError> {
-    let existing_row =
-        load_prompt_cache_conversation_binding_row(&state.pool, prompt_cache_key).await?;
-    let sticky_before =
-        load_prompt_cache_conversation_sticky_snapshot(&state.pool, prompt_cache_key).await?;
-    let now_iso = format_utc_iso(Utc::now());
-    bump_sticky_affinity_generation(&state.pool, prompt_cache_key, &now_iso).await?;
-    sqlx::query("DELETE FROM prompt_cache_conversation_bindings WHERE prompt_cache_key = ?1")
-        .bind(prompt_cache_key)
-        .execute(&state.pool)
+    let mut conn = state.pool.acquire().await?;
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(conn.as_mut())
+        .await
+        .context("failed to acquire prompt cache affinity reset write lock")?;
+
+    let reset_outcome: Result<(), ApiError> = async {
+        let existing_row =
+            load_prompt_cache_conversation_binding_row_executor(conn.as_mut(), prompt_cache_key)
+                .await?;
+        let sticky_before = load_prompt_cache_conversation_sticky_snapshot_executor(
+            conn.as_mut(),
+            prompt_cache_key,
+        )
         .await?;
-    delete_sticky_route(&state.pool, prompt_cache_key).await?;
-    delete_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key).await?;
-    append_prompt_cache_conversation_operation_event(
-        &state.pool,
-        AppendPromptCacheConversationOperationEventInput {
-            prompt_cache_key: prompt_cache_key.to_string(),
-            action: "affinityReset".to_string(),
-            origin: origin.to_string(),
-            info_types: vec![PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING.to_string()],
-            occurred_at: now_iso.clone(),
-            headline: prompt_cache_conversation_operation_headline("affinityReset"),
-            changed_fields: vec!["bindingKind".to_string()],
-            binding_before: Some(
-                prompt_cache_conversation_operation_binding_snapshot_from_row(
-                    existing_row.as_ref(),
-                ),
-            ),
-            binding_after: Some(
-                prompt_cache_conversation_operation_binding_snapshot_from_row(None),
-            ),
-            sticky_before: sticky_before.clone(),
-            sticky_after: None,
-            invoke_id: None,
-        },
-    )
-    .await?;
-    if sticky_before.is_some() {
-        append_prompt_cache_conversation_operation_event(
-            &state.pool,
+        let now_iso = format_utc_iso(Utc::now());
+        bump_sticky_affinity_generation_executor(conn.as_mut(), prompt_cache_key, &now_iso).await?;
+        sqlx::query("DELETE FROM prompt_cache_conversation_bindings WHERE prompt_cache_key = ?1")
+            .bind(prompt_cache_key)
+            .execute(conn.as_mut())
+            .await?;
+        delete_sticky_route_executor(conn.as_mut(), prompt_cache_key).await?;
+        delete_prompt_cache_encrypted_session_owner_executor(conn.as_mut(), prompt_cache_key)
+            .await?;
+        append_prompt_cache_conversation_operation_event_executor(
+            conn.as_mut(),
             AppendPromptCacheConversationOperationEventInput {
                 prompt_cache_key: prompt_cache_key.to_string(),
-                action: "stickyTargetCleared".to_string(),
+                action: "affinityReset".to_string(),
                 origin: origin.to_string(),
                 info_types: vec![PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING.to_string()],
-                occurred_at: now_iso,
-                headline: prompt_cache_conversation_operation_headline("stickyTargetCleared"),
-                changed_fields: vec!["stickyTarget".to_string()],
-                binding_before: None,
-                binding_after: None,
-                sticky_before,
+                occurred_at: now_iso.clone(),
+                headline: prompt_cache_conversation_operation_headline("affinityReset"),
+                changed_fields: vec!["bindingKind".to_string()],
+                binding_before: Some(
+                    prompt_cache_conversation_operation_binding_snapshot_from_row(
+                        existing_row.as_ref(),
+                    ),
+                ),
+                binding_after: Some(
+                    prompt_cache_conversation_operation_binding_snapshot_from_row(None),
+                ),
+                sticky_before: sticky_before.clone(),
                 sticky_after: None,
                 invoke_id: None,
             },
         )
         .await?;
+        if sticky_before.is_some() {
+            append_prompt_cache_conversation_operation_event_executor(
+                conn.as_mut(),
+                AppendPromptCacheConversationOperationEventInput {
+                    prompt_cache_key: prompt_cache_key.to_string(),
+                    action: "stickyTargetCleared".to_string(),
+                    origin: origin.to_string(),
+                    info_types: vec![
+                        PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING.to_string(),
+                    ],
+                    occurred_at: now_iso,
+                    headline: prompt_cache_conversation_operation_headline("stickyTargetCleared"),
+                    changed_fields: vec!["stickyTarget".to_string()],
+                    binding_before: None,
+                    binding_after: None,
+                    sticky_before,
+                    sticky_after: None,
+                    invoke_id: None,
+                },
+            )
+            .await?;
+        }
+        Ok(())
     }
+    .await;
+
+    match reset_outcome {
+        Ok(()) => {
+            sqlx::query("COMMIT")
+                .execute(conn.as_mut())
+                .await
+                .context("failed to commit prompt cache affinity reset transaction")?;
+        }
+        Err(error) => {
+            let _ = sqlx::query("ROLLBACK").execute(conn.as_mut()).await;
+            return Err(error);
+        }
+    }
+    drop(conn);
     load_prompt_cache_conversation_binding_response_for_key(state, prompt_cache_key.to_string())
         .await
 }

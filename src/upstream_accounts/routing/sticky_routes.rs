@@ -450,11 +450,14 @@ pub(crate) async fn load_sticky_affinity_generation(
     .map_err(Into::into)
 }
 
-pub(crate) async fn bump_sticky_affinity_generation(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn bump_sticky_affinity_generation_executor<'e, E>(
+    executor: E,
     sticky_key: &str,
     now_iso: &str,
-) -> Result<i64> {
+) -> Result<i64>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     sqlx::query_scalar::<_, i64>(
         r#"
         INSERT INTO pool_sticky_route_generations (
@@ -468,9 +471,17 @@ pub(crate) async fn bump_sticky_affinity_generation(
     )
     .bind(sticky_key)
     .bind(now_iso)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
     .map_err(Into::into)
+}
+
+pub(crate) async fn bump_sticky_affinity_generation(
+    pool: &Pool<Sqlite>,
+    sticky_key: &str,
+    now_iso: &str,
+) -> Result<i64> {
+    bump_sticky_affinity_generation_executor(pool, sticky_key, now_iso).await
 }
 
 pub(crate) async fn sticky_affinity_generation_matches(
@@ -510,10 +521,17 @@ pub(crate) async fn upsert_sticky_route(
     Ok(())
 }
 
-pub(crate) async fn delete_sticky_route(pool: &Pool<Sqlite>, sticky_key: &str) -> Result<()> {
+pub(crate) async fn delete_sticky_route_executor<'e, E>(executor: E, sticky_key: &str) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     sqlx::query("DELETE FROM pool_sticky_routes WHERE sticky_key = ?1")
         .bind(sticky_key)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(())
+}
+
+pub(crate) async fn delete_sticky_route(pool: &Pool<Sqlite>, sticky_key: &str) -> Result<()> {
+    delete_sticky_route_executor(pool, sticky_key).await
 }
