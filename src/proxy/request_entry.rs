@@ -1178,6 +1178,7 @@ pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) occurred_at: String,
     pub(crate) endpoint: String,
     pub(crate) sticky_key: Option<String>,
+    pub(crate) routing_source: Option<String>,
     pub(crate) requester_ip: Option<String>,
     pub(crate) upstream_base_url_host: Option<String>,
     pub(crate) group_name_snapshot: Option<String>,

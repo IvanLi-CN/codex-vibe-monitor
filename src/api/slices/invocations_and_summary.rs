@@ -3104,6 +3104,7 @@ struct InvocationWorkflowAttemptRow {
     occurred_at: String,
     endpoint: String,
     sticky_key: Option<String>,
+    routing_source: Option<String>,
     upstream_account_id: Option<i64>,
     upstream_account_name: Option<String>,
     upstream_route_key: Option<String>,
@@ -3197,6 +3198,8 @@ pub(crate) struct InvocationWorkflowAttempt {
     pub(crate) endpoint: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) sticky_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) routing_source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) upstream_account_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3895,6 +3898,7 @@ fn build_workflow_attempt_from_row(
         occurred_at: attempt.occurred_at.clone(),
         endpoint: attempt.endpoint.clone(),
         sticky_key: attempt.sticky_key.clone(),
+        routing_source: attempt.routing_source.clone(),
         upstream_account_id: attempt.upstream_account_id,
         upstream_account_name: attempt.upstream_account_name.clone(),
         request_model: record.request_model.clone(),
@@ -4035,6 +4039,7 @@ fn build_synthetic_workflow_attempt(
         occurred_at: record.occurred_at.clone(),
         endpoint: record.endpoint.clone().unwrap_or_default(),
         sticky_key: record.sticky_key.clone(),
+        routing_source: None,
         upstream_account_id: record.upstream_account_id,
         upstream_account_name: record.upstream_account_name.clone(),
         request_model: record.request_model.clone(),
@@ -4362,6 +4367,7 @@ async fn query_invocation_workflow_attempt_rows(
             attempts.occurred_at,
             attempts.endpoint,
             attempts.sticky_key,
+            attempts.routing_source,
             attempts.upstream_account_id,
             accounts.display_name AS upstream_account_name,
             attempts.upstream_route_key,
@@ -13405,6 +13411,7 @@ mod invocation_cost_audit_tests {
             occurred_at: "2026-07-20 10:25:09".to_string(),
             endpoint: "/v1/responses".to_string(),
             sticky_key: None,
+            routing_source: None,
             upstream_account_id: Some(17),
             upstream_account_name: Some("Pool 17".to_string()),
             upstream_route_key: Some("route-17".to_string()),

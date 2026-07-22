@@ -246,6 +246,7 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
     trace: &PoolUpstreamAttemptTraceContext,
     group_name_snapshot: Option<&str>,
     proxy_binding_key_snapshot: Option<&str>,
+    routing_source: Option<&str>,
     upstream_account_id: Option<i64>,
     upstream_route_key: Option<&str>,
     attempt_index: i64,
@@ -285,6 +286,7 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
                 endpoint,
                 route_mode,
                 sticky_key,
+                routing_source,
                 upstream_base_url_host,
                 group_name_snapshot,
                 proxy_binding_key_snapshot,
@@ -318,7 +320,7 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
                 compact_support_reason
             )
             VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38
             )
             "#,
         )
@@ -328,6 +330,7 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
         .bind(&trace.endpoint)
         .bind(INVOCATION_ROUTE_MODE_POOL)
         .bind(trace.sticky_key.as_deref())
+        .bind(routing_source)
         .bind(trace.upstream_base_url_host.as_deref())
         .bind(group_name_snapshot)
         .bind(proxy_binding_key_snapshot)
@@ -400,6 +403,7 @@ pub(crate) async fn insert_pool_upstream_request_attempt(
         trace,
         None,
         None,
+        None,
         upstream_account_id,
         upstream_route_key,
         attempt_index,
@@ -468,11 +472,42 @@ pub(crate) async fn begin_pool_upstream_request_attempt_with_scope(
     same_account_retry_index: i64,
     started_at: &str,
 ) -> PendingPoolAttemptRecord {
+    begin_pool_upstream_request_attempt_with_scope_and_routing_source(
+        pool,
+        trace,
+        group_name_snapshot,
+        proxy_binding_key_snapshot,
+        None,
+        upstream_account_id,
+        upstream_route_key,
+        attempt_index,
+        distinct_account_index,
+        same_account_retry_index,
+        started_at,
+    )
+    .await
+}
+
+pub(crate) async fn begin_pool_upstream_request_attempt_with_scope_and_routing_source(
+    pool: &Pool<Sqlite>,
+    trace: &PoolUpstreamAttemptTraceContext,
+    group_name_snapshot: Option<&str>,
+    proxy_binding_key_snapshot: Option<&str>,
+    routing_source: Option<PoolRoutingSelectionSource>,
+    upstream_account_id: i64,
+    upstream_route_key: &str,
+    attempt_index: i64,
+    distinct_account_index: i64,
+    same_account_retry_index: i64,
+    started_at: &str,
+) -> PendingPoolAttemptRecord {
+    let routing_source_value = routing_source.map(PoolRoutingSelectionSource::as_persisted_str);
     let attempt_id = match insert_pool_upstream_request_attempt_with_scope(
         pool,
         trace,
         group_name_snapshot,
         proxy_binding_key_snapshot,
+        routing_source_value,
         Some(upstream_account_id),
         Some(upstream_route_key),
         attempt_index,
@@ -520,6 +555,7 @@ pub(crate) async fn begin_pool_upstream_request_attempt_with_scope(
         occurred_at: trace.occurred_at.clone(),
         endpoint: trace.endpoint.clone(),
         sticky_key: trace.sticky_key.clone(),
+        routing_source: routing_source_value.map(ToOwned::to_owned),
         requester_ip: trace.requester_ip.clone(),
         upstream_base_url_host: trace.upstream_base_url_host.clone(),
         group_name_snapshot: group_name_snapshot.map(ToOwned::to_owned),
@@ -1865,6 +1901,7 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
         &trace,
         pending.group_name_snapshot.as_deref(),
         pending.proxy_binding_key_snapshot.as_deref(),
+        pending.routing_source.as_deref(),
         Some(pending.upstream_account_id),
         Some(pending.upstream_route_key.as_str()),
         pending.attempt_index,

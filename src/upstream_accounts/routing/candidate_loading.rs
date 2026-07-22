@@ -383,6 +383,7 @@ pub(crate) fn build_pool_resolved_account(
         ),
         upstream_base_url,
         routing_source,
+        sticky_affinity_generation: None,
     }
 }
 

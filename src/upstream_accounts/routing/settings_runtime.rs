@@ -973,6 +973,7 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) response_image_tool_capability: CapabilitySupport,
     pub(crate) upstream_base_url: Url,
     pub(crate) routing_source: PoolRoutingSelectionSource,
+    pub(crate) sticky_affinity_generation: Option<i64>,
 }
 
 impl PoolResolvedAccount {
@@ -986,12 +987,26 @@ impl PoolResolvedAccount {
             self.upstream_429_max_retries,
         )
     }
+
+    pub(crate) fn with_sticky_affinity_generation(mut self, generation: Option<i64>) -> Self {
+        self.sticky_affinity_generation = generation;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PoolRoutingSelectionSource {
     StickyReuse,
     FreshAssignment,
+}
+
+impl PoolRoutingSelectionSource {
+    pub(crate) fn as_persisted_str(self) -> &'static str {
+        match self {
+            Self::StickyReuse => "stickyReuse",
+            Self::FreshAssignment => "freshAssignment",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

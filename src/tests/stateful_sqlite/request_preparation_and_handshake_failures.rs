@@ -780,6 +780,7 @@ async fn query_pool_attempt_records_from_live_includes_request_compression_obser
         None,
         None,
         None,
+        None,
         Some("https://api.openai.com"),
         1,
         1,

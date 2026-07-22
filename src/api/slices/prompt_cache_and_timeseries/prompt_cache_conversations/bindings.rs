@@ -926,6 +926,45 @@ async fn append_prompt_cache_conversation_operation_event(
     Ok(())
 }
 
+pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: &str,
+    upstream_account_id: i64,
+    now_iso: &str,
+    invoke_id: Option<&str>,
+) -> Result<()> {
+    let sticky_before =
+        load_prompt_cache_conversation_sticky_snapshot(pool, prompt_cache_key).await?;
+    upsert_sticky_route(pool, prompt_cache_key, upstream_account_id, now_iso).await?;
+    let sticky_after =
+        load_prompt_cache_conversation_sticky_snapshot(pool, prompt_cache_key).await?;
+
+    if sticky_before != sticky_after
+        && let Some(sticky_after) = sticky_after
+    {
+        append_prompt_cache_conversation_operation_event(
+            pool,
+            AppendPromptCacheConversationOperationEventInput {
+                prompt_cache_key: prompt_cache_key.to_string(),
+                action: "stickyTargetChanged".to_string(),
+                origin: PROMPT_CACHE_CONVERSATION_OPERATION_ORIGIN_SYSTEM_AUTO.to_string(),
+                info_types: vec![PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING.to_string()],
+                occurred_at: now_iso.to_string(),
+                headline: prompt_cache_conversation_operation_headline("stickyTargetChanged"),
+                changed_fields: vec!["stickyTarget".to_string()],
+                binding_before: None,
+                binding_after: None,
+                sticky_before,
+                sticky_after: Some(sticky_after),
+                invoke_id: invoke_id.map(ToOwned::to_owned),
+            },
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
 fn prompt_cache_conversation_operation_event_response_from_row(
     row: PromptCacheConversationOperationEventRow,
 ) -> PromptCacheConversationOperationEventResponse {
@@ -1917,6 +1956,7 @@ async fn clear_prompt_cache_conversation_affinity(
     delete_sticky_route(&state.pool, prompt_cache_key).await?;
     delete_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key).await?;
     let now_iso = format_utc_iso(Utc::now());
+    bump_sticky_affinity_generation(&state.pool, prompt_cache_key, &now_iso).await?;
     append_prompt_cache_conversation_operation_event(
         &state.pool,
         AppendPromptCacheConversationOperationEventInput {

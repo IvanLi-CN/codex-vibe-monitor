@@ -110,6 +110,7 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_direct(
         ("compact_support_reason", "TEXT"),
         ("group_name_snapshot", "TEXT"),
         ("proxy_binding_key_snapshot", "TEXT"),
+        ("routing_source", "TEXT"),
         ("request_summary_json", "TEXT"),
         ("response_summary_json", "TEXT"),
     ] {

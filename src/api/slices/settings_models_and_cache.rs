@@ -76,6 +76,8 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     #[sqlx(default)]
     pub(crate) sticky_key: Option<String>,
     #[sqlx(default)]
+    pub(crate) routing_source: Option<String>,
+    #[sqlx(default)]
     pub(crate) upstream_account_id: Option<i64>,
     #[sqlx(default)]
     pub(crate) upstream_account_name: Option<String>,

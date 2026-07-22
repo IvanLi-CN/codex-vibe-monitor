@@ -22,7 +22,7 @@
 - [x] Upstream account binding writes the corresponding sticky route immediately.
 - [x] Prompt Cache conversation detail drawer controls.
 - [x] Prompt Cache conversation detail drawer title and Settings tab policy controls with effective-value rows, source badges, and field-level edit/clear behavior.
-- [x] Prompt Cache conversation detail drawer sibling `操作记录` tab with categorized badges, lightweight filters, and paged per-conversation event loading.
+- [x] Prompt Cache conversation detail drawer sibling `事件记录` tab with categorized badges, lightweight filters, and paged per-conversation event loading.
 - [x] Prompt Cache conversation detail drawer reuses the account-detail wide shell width class and the shared effective-routing form skeleton, while hiding account-only routing rows on the conversation surface.
 - [x] FAST mode and image tool editors expose only concrete rewrite choices and remain expanded after a successful choice save.
 - [x] Prompt Cache conversation timeout editor with source badges, collapsed inherited rows, and field-level expand/clear behavior aligned with the effective routing rule card.
@@ -113,7 +113,7 @@
 - Storybook `DrawerBindingAndTimeouts` mock evidence: one drawer shows the “对话详情” title, conversation-level policy override rows with source badges, binding controls, and the timeout subpanel in the Settings tab.
 - Storybook `DrawerBindingAndTimeouts` mock evidence now also shows a multi-node conversation proxy list and the visual evidence at `./assets/conversation-settings-multi-proxy-story.png`.
 - Storybook `DrawerBindingAndTimeouts` mock evidence now also captures the widened detail drawer and account-style conversation routing form at `./assets/conversation-settings-wide-drawer-story.png`, including hidden account-only rows, expanded conversation-owned policy/timeouts, and the separate route-binding block.
-- Storybook `DrawerOperations` mock evidence shows the categorized operations tab with routing / forward-proxy / request-rewrite badges plus lightweight filter buttons on the same drawer shell.
+- Storybook `DrawerOperations` mock evidence shows the categorized events tab with routing / forward-proxy / request-rewrite badges plus lightweight filter buttons on the same drawer shell.
 - Storybook `build-storybook` now succeeds after the Storybook-local Vite plugin merge deduplicates repeated React plugins, so the `DrawerOperations` evidence path remains usable for future UI reviews.
 
 ## 101 Read-only Follow-up

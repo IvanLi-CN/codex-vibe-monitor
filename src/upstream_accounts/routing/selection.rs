@@ -721,6 +721,10 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     let route_binding_failure_penalties =
         load_recent_route_binding_failure_penalties(&state.pool).await?;
     let mut resolved_candidates = Vec::new();
+    let sticky_affinity_generation = match sticky_key {
+        Some(sticky_key) => Some(load_sticky_affinity_generation(&state.pool, sticky_key).await?),
+        None => None,
+    };
 
     let sticky_route = if let Some(sticky_key) = sticky_key {
         load_sticky_route(&state.pool, sticky_key).await?
@@ -929,7 +933,11 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                         .await;
                                     if route_binding_failure_penalty > 0 {
                                         if sticky_source_cut_out_guard_applies {
-                                            return Ok(PoolAccountResolution::Resolved(account));
+                                            return Ok(PoolAccountResolution::Resolved(
+                                                account.with_sticky_affinity_generation(
+                                                    sticky_affinity_generation,
+                                                ),
+                                            ));
                                         }
                                         evaluation.score.route_binding_failure_penalty =
                                             route_binding_failure_penalty;
@@ -938,7 +946,11 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                         sticky_route_was_excluded = true;
                                         saw_other_non_rate_limited_routing_candidate = true;
                                     } else {
-                                        return Ok(PoolAccountResolution::Resolved(account));
+                                        return Ok(PoolAccountResolution::Resolved(
+                                            account.with_sticky_affinity_generation(
+                                                sticky_affinity_generation,
+                                            ),
+                                        ));
                                     }
                                 } else {
                                     sticky_route_excluded_by_route_key = true;
@@ -1261,7 +1273,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         .sort_by(|lhs, rhs| compare_pool_routing_candidate_scores(&lhs.score, &rhs.score));
     for evaluation in resolved_candidates {
         if let Some(account) = evaluation.resolved_account {
-            return Ok(PoolAccountResolution::Resolved(account));
+            return Ok(PoolAccountResolution::Resolved(
+                account.with_sticky_affinity_generation(sticky_affinity_generation),
+            ));
         }
     }
 

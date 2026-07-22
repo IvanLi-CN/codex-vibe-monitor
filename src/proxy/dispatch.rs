@@ -2613,7 +2613,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         state_for_task.as_ref(),
                         &reservation_key_for_task,
                     );
-                    record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
+                    record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt(
                         &state_for_task.pool,
                         account.account_id,
                         upstream_attempt_started_at_utc_for_task.unwrap_or_else(Utc::now),
@@ -2624,6 +2624,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         pending_pool_attempt_record_for_task
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
+                        account.sticky_affinity_generation,
                     )
                     .await
                 } else if had_stream_error {

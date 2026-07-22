@@ -2246,7 +2246,7 @@ export const DrawerOperations: Story = {
     docs: {
       description: {
         story:
-          "Prompt Cache drawer showing the new operations tab with lightweight routing/proxy/rewrite filters and categorized event badges.",
+          "Prompt Cache drawer showing the new events tab with lightweight routing/proxy/rewrite filters and categorized event badges.",
       },
     },
   },
@@ -2257,10 +2257,10 @@ export const DrawerOperations: Story = {
     })[0];
 
     await userEvent.click(historyButton);
-    await userEvent.click(await documentScope.findByRole("tab", { name: /操作记录|Operations/i }));
+    await userEvent.click(await documentScope.findByRole("tab", { name: /事件记录|Events/i }));
     await expect(
       await documentScope.findByText(
-        /查看当前对话的路由、正向代理与请求改写变更记录。|Review routing, forward-proxy, and request-rewrite changes for this conversation\./i,
+        /查看当前对话的路由、正向代理与请求改写事件。|Review routing, forward-proxy, and request-rewrite events for this conversation\./i,
       ),
     ).toBeInTheDocument();
     await expect(documentScope.getAllByText(/路由相关|Routing/i).length).toBeGreaterThan(0);
@@ -2272,10 +2272,7 @@ export const DrawerOperations: Story = {
         /绑定目标：无手工绑定 -> 账号|Binding: No manual binding -> Account/i,
       ),
     ).toBeInTheDocument();
-    await userEvent.click(documentScope.getByRole("button", { name: /路由相关|Routing/i }));
-    await waitFor(() => {
-      expect(documentScope.queryByText(/策略更新|Policy updated/i)).not.toBeInTheDocument();
-    });
+    await expect(documentScope.getByText(/策略更新|Policy updated/i)).toBeInTheDocument();
   },
 };
 

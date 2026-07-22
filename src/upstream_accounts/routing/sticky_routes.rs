@@ -431,6 +431,60 @@ pub(crate) async fn load_sticky_route(
     .map_err(Into::into)
 }
 
+pub(crate) async fn load_sticky_affinity_generation(
+    pool: &Pool<Sqlite>,
+    sticky_key: &str,
+) -> Result<i64> {
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT generation
+        FROM pool_sticky_route_generations
+        WHERE sticky_key = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(sticky_key)
+    .fetch_optional(pool)
+    .await
+    .map(|generation| generation.unwrap_or_default())
+    .map_err(Into::into)
+}
+
+pub(crate) async fn bump_sticky_affinity_generation(
+    pool: &Pool<Sqlite>,
+    sticky_key: &str,
+    now_iso: &str,
+) -> Result<i64> {
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        INSERT INTO pool_sticky_route_generations (
+            sticky_key, generation, updated_at
+        ) VALUES (?1, 1, ?2)
+        ON CONFLICT(sticky_key) DO UPDATE SET
+            generation = pool_sticky_route_generations.generation + 1,
+            updated_at = excluded.updated_at
+        RETURNING generation
+        "#,
+    )
+    .bind(sticky_key)
+    .bind(now_iso)
+    .fetch_one(pool)
+    .await
+    .map_err(Into::into)
+}
+
+pub(crate) async fn sticky_affinity_generation_matches(
+    pool: &Pool<Sqlite>,
+    sticky_key: &str,
+    expected_generation: Option<i64>,
+) -> Result<bool> {
+    let Some(expected_generation) = expected_generation else {
+        return Ok(true);
+    };
+    let current_generation = load_sticky_affinity_generation(pool, sticky_key).await?;
+    Ok(current_generation == expected_generation)
+}
+
 pub(crate) async fn upsert_sticky_route(
     pool: &Pool<Sqlite>,
     sticky_key: &str,
