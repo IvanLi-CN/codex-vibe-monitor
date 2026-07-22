@@ -377,9 +377,10 @@ fn push_upstream_account_attempt_remote_v2_condition(query: &mut QueryBuilder<'_
         .push("(attempts.endpoint = ")
         .push_bind(ACCOUNT_ATTEMPT_RESPONSES_ENDPOINT)
         .push(" AND (")
+        .push("(")
         .push("COALESCE(")
         .push(ACCOUNT_ATTEMPT_COMPACTION_REQUEST_KIND_SQL)
-        .push(", '') = 'remote_v2' OR COALESCE(")
+        .push(", '') = 'remote_v2' AND LOWER(TRIM(COALESCE(inv.status, attempts.status, ''))) IN ('running', 'pending')) OR COALESCE(")
         .push(ACCOUNT_ATTEMPT_COMPACTION_RESPONSE_KIND_SQL)
         .push(", '') = 'remote_v2'))");
 }

@@ -564,6 +564,20 @@ async fn account_attempt_list_supports_type_model_and_sticky_key_filters_with_im
             image_intent: Some("no"),
         },
         AttemptFixture {
+            attempt_id: "AFILT_REQUEST_ONLY_REMOTE",
+            invoke_id: "afilt_request_only_remote",
+            account_id,
+            occurred_at: format_utc_iso(now - ChronoDuration::seconds(90)),
+            endpoint: "/v1/responses",
+            sticky_key: None,
+            model: "gpt-5.7",
+            request_model: Some("gpt-5.7"),
+            response_model: Some("gpt-5.7"),
+            compaction_request_kind: Some("remote_v2"),
+            compaction_response_kind: None,
+            image_intent: Some("no"),
+        },
+        AttemptFixture {
             attempt_id: "AFILT_NORMAL",
             invoke_id: "afilt_normal",
             account_id,
@@ -736,7 +750,7 @@ async fn account_attempt_list_supports_type_model_and_sticky_key_filters_with_im
     )
     .await
     .expect("list first page");
-    assert_eq!(first_page.total, 21);
+    assert_eq!(first_page.total, 22);
     assert_eq!(first_page.items.len(), 20);
     assert_eq!(first_page.items[0].attempt_id, "AFILT_REMOTE");
     assert!(
@@ -759,7 +773,7 @@ async fn account_attempt_list_supports_type_model_and_sticky_key_filters_with_im
     )
     .await
     .expect("list all attempts");
-    assert_eq!(all_attempts.total, 21);
+    assert_eq!(all_attempts.total, 22);
     assert!(
         all_attempts
             .items
@@ -858,7 +872,13 @@ async fn account_attempt_list_supports_type_model_and_sticky_key_filters_with_im
         remote_only
             .items
             .iter()
-            .all(|item| item.compaction_request_kind.as_deref() == Some("remote_v2"))
+            .all(|item| item.compaction_response_kind.as_deref() == Some("remote_v2"))
+    );
+    assert!(
+        !remote_only
+            .items
+            .iter()
+            .any(|item| item.attempt_id == "AFILT_REQUEST_ONLY_REMOTE")
     );
 
     let Json(normal_only) = list_upstream_account_attempts(
@@ -874,8 +894,19 @@ async fn account_attempt_list_supports_type_model_and_sticky_key_filters_with_im
     )
     .await
     .expect("filter normal attempts");
-    assert_eq!(normal_only.total, 1);
-    assert_eq!(normal_only.items[0].attempt_id, "AFILT_NORMAL");
+    assert_eq!(normal_only.total, 2);
+    assert!(
+        normal_only
+            .items
+            .iter()
+            .any(|item| item.attempt_id == "AFILT_NORMAL")
+    );
+    assert!(
+        normal_only
+            .items
+            .iter()
+            .any(|item| item.attempt_id == "AFILT_REQUEST_ONLY_REMOTE")
+    );
 
     let Json(compact_only) = list_upstream_account_attempts(
         State(state.clone()),
@@ -938,8 +969,19 @@ async fn account_attempt_list_supports_type_model_and_sticky_key_filters_with_im
     )
     .await
     .expect("filter by unbound sticky key");
-    assert_eq!(unbound_only.total, 1);
-    assert_eq!(unbound_only.items[0].attempt_id, "AFILT_NORMAL");
+    assert_eq!(unbound_only.total, 2);
+    assert!(
+        unbound_only
+            .items
+            .iter()
+            .any(|item| item.attempt_id == "AFILT_NORMAL")
+    );
+    assert!(
+        unbound_only
+            .items
+            .iter()
+            .any(|item| item.attempt_id == "AFILT_REQUEST_ONLY_REMOTE")
+    );
 }
 
 #[tokio::test]
