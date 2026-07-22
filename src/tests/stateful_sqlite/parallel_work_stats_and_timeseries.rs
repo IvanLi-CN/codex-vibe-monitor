@@ -11863,12 +11863,12 @@ async fn usage_breakdown_avoids_double_counting_partially_materialized_archive_r
         VALUES (?1, ?2, ?3, datetime('now'))
         "#,
     )
-    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(INVOCATION_USAGE_BREAKDOWN_ARCHIVE_PROGRESS_DATASET)
     .bind(archive_path.to_string_lossy().to_string())
     .bind(701_i64)
     .execute(&state.pool)
     .await
-    .expect("insert partial archive replay progress");
+    .expect("insert partial usage breakdown archive replay progress");
 
     let Json(summary) = fetch_summary(
         State(state),
@@ -11899,6 +11899,112 @@ async fn usage_breakdown_avoids_double_counting_partially_materialized_archive_r
         .costs
         .as_ref()
         .expect("partially materialized model costs should remain visible");
+    assert_f64_close(model_costs.unknown, 0.30);
+}
+
+#[tokio::test]
+async fn usage_breakdown_ignores_shared_archive_progress_without_breakdown_cursor() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 6;
+    let state = test_state_from_config(config, true).await;
+
+    let first_archived_at = format_naive(
+        (Utc::now() - ChronoDuration::days(7) + ChronoDuration::hours(2))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let second_archived_at = format_naive(
+        (Utc::now() - ChronoDuration::days(7)
+            + ChronoDuration::hours(2)
+            + ChronoDuration::minutes(10))
+        .with_timezone(&Shanghai)
+        .naive_local(),
+    );
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "summary-7d-shared-progress-without-breakdown-cursor",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 901_i64,
+                invoke_id: "summary-7d-shared-progress-without-breakdown-cursor-a",
+                occurred_at: first_archived_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 10_i64,
+                cost: 0.10_f64,
+                ttfb_ms: Some(100.0_f64),
+                payload: Some(r#"{"responseModel":"gpt-5","reasoningEffort":"high"}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0_i64),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 902_i64,
+                invoke_id: "summary-7d-shared-progress-without-breakdown-cursor-b",
+                occurred_at: second_archived_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 20_i64,
+                cost: 0.20_f64,
+                ttfb_ms: Some(120.0_f64),
+                payload: Some(r#"{"responseModel":"gpt-5","reasoningEffort":"high"}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0_i64),
+            },
+        ],
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_progress (dataset, file_path, cursor_id, updated_at)
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(902_i64)
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy shared archive replay progress");
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("7d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch 7d summary with shared-only archive replay progress");
+
+    let breakdown = summary
+        .usage_breakdown
+        .expect("7d summary should include usage breakdown");
+    let costs = breakdown
+        .costs
+        .expect("shared-only progress should not skip archived breakdown costs");
+    assert_f64_close(costs.unknown, 0.30);
+
+    let model = breakdown
+        .models
+        .iter()
+        .find(|model| model.model == "gpt-5" && model.reasoning_effort.as_deref() == Some("high"))
+        .expect("shared-only progress should not skip archived breakdown model group");
+    let model_costs = model
+        .costs
+        .as_ref()
+        .expect("shared-only progress model costs should remain visible");
     assert_f64_close(model_costs.unknown, 0.30);
 }
 

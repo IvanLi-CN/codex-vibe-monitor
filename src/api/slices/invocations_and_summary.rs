@@ -8920,22 +8920,12 @@ async fn load_usage_breakdown_archive_progress_by_file_path(
     pool: &Pool<Sqlite>,
     file_paths: &[String],
 ) -> Result<HashMap<String, i64>, ApiError> {
-    let mut progress_by_file_path = load_hourly_rollup_archive_progress_by_file_path(
-        pool,
-        HOURLY_ROLLUP_DATASET_INVOCATIONS,
-        file_paths,
-    )
-    .await?;
-    for (file_path, cursor_id) in load_hourly_rollup_archive_progress_by_file_path(
+    load_hourly_rollup_archive_progress_by_file_path(
         pool,
         INVOCATION_USAGE_BREAKDOWN_ARCHIVE_PROGRESS_DATASET,
         file_paths,
     )
-    .await?
-    {
-        progress_by_file_path.insert(file_path, cursor_id);
-    }
-    Ok(progress_by_file_path)
+    .await
 }
 
 async fn query_unmaterialized_archive_usage_breakdown_rows(
