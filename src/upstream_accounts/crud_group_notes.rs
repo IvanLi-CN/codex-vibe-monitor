@@ -25,6 +25,9 @@ COALESCE(
 )
 "#;
 const ACCOUNT_ATTEMPT_RESPONSE_MODEL_SQL: &str = r#"CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.responseModel') AS TEXT) END"#;
+const ACCOUNT_ATTEMPT_COMPACTION_REQUEST_KIND_SQL: &str = r#"CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.compactionRequestKind') AS TEXT) END"#;
+const ACCOUNT_ATTEMPT_COMPACTION_RESPONSE_KIND_SQL: &str = r#"CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.compactionResponseKind') AS TEXT) END"#;
+const ACCOUNT_ATTEMPT_IMAGE_INTENT_SQL: &str = r#"CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.imageIntent') AS TEXT) END"#;
 
 #[derive(Debug, Clone, Default)]
 struct UpstreamAccountAttemptFilters {
@@ -216,9 +219,9 @@ async fn load_upstream_account_attempt_page(
         model_sql = ACCOUNT_ATTEMPT_MODEL_SQL,
         request_model_sql = ACCOUNT_ATTEMPT_REQUEST_MODEL_SQL,
         response_model_sql = ACCOUNT_ATTEMPT_RESPONSE_MODEL_SQL,
-        compaction_request_kind_sql = crate::api::INVOCATION_COMPACTION_REQUEST_KIND_SQL,
-        compaction_response_kind_sql = crate::api::INVOCATION_COMPACTION_RESPONSE_KIND_SQL,
-        image_intent_sql = crate::api::INVOCATION_IMAGE_INTENT_SQL,
+        compaction_request_kind_sql = ACCOUNT_ATTEMPT_COMPACTION_REQUEST_KIND_SQL,
+        compaction_response_kind_sql = ACCOUNT_ATTEMPT_COMPACTION_RESPONSE_KIND_SQL,
+        image_intent_sql = ACCOUNT_ATTEMPT_IMAGE_INTENT_SQL,
     ));
     push_upstream_account_attempt_scope(&mut query, account_id, &cutoff);
     push_upstream_account_attempt_filters(&mut query, filters, true);
@@ -365,7 +368,7 @@ fn push_upstream_account_attempt_image_condition(query: &mut QueryBuilder<'_, Sq
         .push_bind(ACCOUNT_ATTEMPT_IMAGE_ENDPOINT_PREFIX)
         .push(" OR ")
         .push("COALESCE(")
-        .push(crate::api::INVOCATION_IMAGE_INTENT_SQL)
+        .push(ACCOUNT_ATTEMPT_IMAGE_INTENT_SQL)
         .push(", '') IN ('yes', 'direct_image'))");
 }
 
@@ -375,9 +378,9 @@ fn push_upstream_account_attempt_remote_v2_condition(query: &mut QueryBuilder<'_
         .push_bind(ACCOUNT_ATTEMPT_RESPONSES_ENDPOINT)
         .push(" AND (")
         .push("COALESCE(")
-        .push(crate::api::INVOCATION_COMPACTION_REQUEST_KIND_SQL)
+        .push(ACCOUNT_ATTEMPT_COMPACTION_REQUEST_KIND_SQL)
         .push(", '') = 'remote_v2' OR COALESCE(")
-        .push(crate::api::INVOCATION_COMPACTION_RESPONSE_KIND_SQL)
+        .push(ACCOUNT_ATTEMPT_COMPACTION_RESPONSE_KIND_SQL)
         .push(", '') = 'remote_v2'))");
 }
 
@@ -387,9 +390,9 @@ fn push_upstream_account_attempt_compact_condition(query: &mut QueryBuilder<'_, 
         .push_bind(ACCOUNT_ATTEMPT_COMPACT_ENDPOINT)
         .push(" OR ")
         .push("COALESCE(")
-        .push(crate::api::INVOCATION_COMPACTION_REQUEST_KIND_SQL)
+        .push(ACCOUNT_ATTEMPT_COMPACTION_REQUEST_KIND_SQL)
         .push(", '') = 'compact' OR COALESCE(")
-        .push(crate::api::INVOCATION_COMPACTION_RESPONSE_KIND_SQL)
+        .push(ACCOUNT_ATTEMPT_COMPACTION_RESPONSE_KIND_SQL)
         .push(", '') = 'compact')");
 }
 
