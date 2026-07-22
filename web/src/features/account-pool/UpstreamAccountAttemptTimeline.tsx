@@ -474,7 +474,7 @@ export function UpstreamAccountAttemptTimeline({
     const controller = new AbortController();
     loadAttemptsPage(1, filters, controller.signal);
     return () => controller.abort();
-  }, [filters, focusedAttemptId, loadAttemptsPage]);
+  }, [accountId, filters, focusedAttemptId, loadAttemptsPage]);
 
   useEffect(() => {
     if (focusedAttemptId == null) return;
