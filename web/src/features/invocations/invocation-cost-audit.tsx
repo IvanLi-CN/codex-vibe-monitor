@@ -112,6 +112,7 @@ export function renderInvocationCostAuditWarning(
       contentClassName="isolate z-[90] w-[22rem] max-w-[min(22rem,calc(100vw-1rem))] border-warning/45 bg-base-100"
       content={<CostAuditTooltipContent audit={audit} t={t} formatCurrency={formatCurrency} />}
       triggerProps={{
+        role: "button",
         tabIndex: 0,
         "aria-label": options?.triggerLabel ?? t("records.costAudit.warningAria"),
       }}

@@ -63,6 +63,30 @@ pub(crate) fn derive_request_compression_fields(
     }
 }
 
+pub(crate) fn hydrate_pool_attempt_request_compression_fields(
+    records: &mut [ApiPoolUpstreamRequestAttempt],
+) {
+    for record in records {
+        let derived = derive_request_compression_fields(
+            record.upstream_request_logical_body_bytes,
+            record.upstream_request_transmitted_body_bytes,
+            record.upstream_request_header_bytes_approx,
+            record.upstream_response_body_bytes,
+            record.upstream_response_header_bytes_approx,
+            record.http_status.is_some()
+                || record
+                    .status
+                    .eq_ignore_ascii_case(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS),
+        );
+        record.logical_body_bytes = derived.logical_body_bytes;
+        record.transmitted_body_bytes = derived.transmitted_body_bytes;
+        record.saved_bytes = derived.saved_bytes;
+        record.ratio_pct = derived.ratio_pct;
+        record.approx_upload_bytes = derived.approx_upload_bytes;
+        record.approx_download_bytes = derived.approx_download_bytes;
+    }
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ApiPoolUpstreamRequestAttempt {
@@ -161,6 +185,12 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     pub(crate) compact_support_reason: Option<String>,
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
     pub(crate) created_at: String,
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) invocation_record: Option<ApiInvocation>,
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) workflow_entry: Option<InvocationWorkflowTimelineEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

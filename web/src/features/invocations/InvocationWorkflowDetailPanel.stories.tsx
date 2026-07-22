@@ -868,6 +868,7 @@ export const BlockedPoolWorkflowMissingArchivedRequestBody: Story = {
 };
 
 export const SuccessfulTokenCostAudit: Story = {
+  tags: ["test"],
   args: {
     record: successfulWorkflowRecord,
     size: "default",

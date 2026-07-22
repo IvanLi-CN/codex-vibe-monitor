@@ -4,6 +4,7 @@
 
 - 账号详情从最终调用记录切换为 7 天主库尝试请求表，修复失败账号事件链接到最终成功账号调用而无法定位的问题；每行只显示本次尝试请求的请求/响应模型、结果、代理、三段延迟和错误，不显示 endpoint，也不混入重试序号或最终调用 usage。
 - 账号尝试请求列表将 HTTP 明确为上游结果，代理优先显示可读节点名，并将完整错误、上游请求 ID、路由键及不一致的下游 HTTP 收入对应摘要卡的详情面板；桌面与移动端统一为同一套卡片交互。
+- 账号尝试请求列表的旧“不得显示最终 invocation tokens/费用”限制已被 workflow parity 合同取代：账号 attempts API 返回 `workflowEntry` / `invocationRecord`，前端复用调用详情 attempt 卡；Token/成本只显示在最终成功 attempt，不复制到失败重试。
 - 诊断证据改为当前尝试摘要卡下方的详情面板，避免将关键排障信息压缩在局部入口中。
 - 路由调用事件新增可空 `attempt_id` 精确关联；旧事件保持可见但不可跳转。
 - 尝试列表的模型投影保持从 invocation payload 读取，兼容未包含独立 request/response model 列的既有 SQLite 数据库；健康事件以 `attempt_id` 作为可见定位标识，不再显示空的最终请求 ID。
@@ -58,3 +59,4 @@
 - 2026-07-20: workflow detail 只为最终成功 attempt 注入 `responseSummary.usage` Token/成本审计对象，补齐未命中缓存输入、命中缓存输入、输出与金额四项指标，并修正 `reasoningTokens` 缺失不得伪造成 `0`。
 - 2026-07-21: 修复健康与事件 `attemptId` 定位回归：账号详情只保留“请求 tab -> target attempt”路径，删除 records tab 中隐藏的 `InvocationTable` / anchored locate dead path，并将 owner-facing 焦点反馈收口为滚动入视区、展开诊断、下一次抽屉内交互后 1.5 秒延迟消退的高亮合同。
 - 2026-07-21: 修复 Records 响应体面板打开后把整条详情布局顶宽的问题；展开详情、workflow detail 与结构化 payload viewer 统一限制外层宽度，并将 SSE/NDJSON 超宽内容的横向滚动下沉到单个事件/行卡片内部，补充对应 Storybook 回归证据。
+- 2026-07-22: 账号详情 attempts API 改为返回 workflow-compatible `workflowEntry` 与 `invocationRecord`，前端直接复用调用详情 attempt 卡；旧账号详情不显示 Token/成本的限制被“仅最终成功 attempt 显示 usage”规则 supersede。
