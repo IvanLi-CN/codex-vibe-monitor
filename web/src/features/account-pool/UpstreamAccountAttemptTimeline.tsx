@@ -48,6 +48,14 @@ function normalizeFilterValue(value: string | null | undefined) {
   return value?.trim() ?? "";
 }
 
+function buildAttemptFilterKey(filters: AttemptFilterState) {
+  return JSON.stringify([
+    filters.type,
+    normalizeFilterValue(filters.model),
+    normalizeFilterValue(filters.stickyKey),
+  ]);
+}
+
 function buildAttemptTypeOptions(t: (key: string) => string): SelectFieldOption[] {
   return [
     {
@@ -346,6 +354,7 @@ export function UpstreamAccountAttemptTimeline({
   } | null>(null);
   const requestSeqRef = useRef(0);
   const resolvedAccountIdRef = useRef<number | null>(null);
+  const resolvedFilterKeyRef = useRef<string | null>(null);
   const focusDismissTimerRef = useRef<number | null>(null);
   const attemptElementMapRef = useRef(new Map<string, HTMLDivElement>());
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
@@ -423,11 +432,13 @@ export function UpstreamAccountAttemptTimeline({
         .then((next) => {
           if (signal?.aborted || requestSeq !== requestSeqRef.current) return;
           resolvedAccountIdRef.current = accountId;
+          resolvedFilterKeyRef.current = buildAttemptFilterKey(nextFilters);
           setResponse(next);
         })
         .catch((requestError) => {
           if (signal?.aborted || requestSeq !== requestSeqRef.current) return;
           resolvedAccountIdRef.current = accountId;
+          resolvedFilterKeyRef.current = buildAttemptFilterKey(nextFilters);
           setResponse(null);
           setError(requestError instanceof Error ? requestError.message : String(requestError));
         })
@@ -456,6 +467,10 @@ export function UpstreamAccountAttemptTimeline({
 
   useEffect(() => {
     if (focusedAttemptId != null) return;
+    const filterKey = buildAttemptFilterKey(filters);
+    if (resolvedAccountIdRef.current === accountId && resolvedFilterKeyRef.current === filterKey) {
+      return;
+    }
     const controller = new AbortController();
     loadAttemptsPage(1, filters, controller.signal);
     return () => controller.abort();
@@ -464,9 +479,13 @@ export function UpstreamAccountAttemptTimeline({
   useEffect(() => {
     if (focusedAttemptId == null) return;
     const controller = new AbortController();
+    const defaultFilters = createDefaultFilters();
+    const defaultFilterKey = buildAttemptFilterKey(defaultFilters);
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
-    setFilters(createDefaultFilters());
+    setFilters((current) =>
+      buildAttemptFilterKey(current) === defaultFilterKey ? current : defaultFilters,
+    );
     setLoading(true);
     setError(null);
     setResponse(null);
@@ -479,6 +498,7 @@ export function UpstreamAccountAttemptTimeline({
       .then((next) => {
         if (controller.signal.aborted || requestSeq !== requestSeqRef.current) return;
         resolvedAccountIdRef.current = accountId;
+        resolvedFilterKeyRef.current = defaultFilterKey;
         setResponse(next);
         setActiveFocus({
           attemptId: focusedAttemptId,

@@ -963,6 +963,16 @@ describe("UpstreamAccountAttemptTimeline", () => {
     );
     expect(onFocusRequestHandled).toHaveBeenCalledWith(1);
     expect(host?.textContent).toMatch(/All types|全部类型/);
+    const fetchCallsAfterLocate = fetchAttemptsMock.mock.calls.length;
+    renderTimeline({
+      boundary: interactionBoundary,
+      onFocusRequestHandled,
+    });
+    await flushAsync();
+    expect(fetchAttemptsMock).toHaveBeenCalledTimes(fetchCallsAfterLocate);
+    expect(
+      host?.querySelector<HTMLElement>('[data-testid="account-attempt-record-YG7P25XG"]'),
+    ).not.toBeNull();
     expect(scrollIntoViewMock).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "nearest",
