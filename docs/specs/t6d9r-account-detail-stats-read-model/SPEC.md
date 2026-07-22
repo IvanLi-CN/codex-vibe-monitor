@@ -17,7 +17,7 @@
 
 ### Non-goals
 
-- 不改请求 tab 中尝试请求表正文的分页、排序与筛选语义。
+- 不改账号详情统计 read-model、概览统计 SLA、roster 刷新机制或其他 tab 的数据编排；请求 tab 的尝试列表可按 `z9h7v` 合同补充诊断筛选，但不纳入本 read-model 的统计口径。
 - 不使用 stale cache、近似值或“先展示旧值再纠正”的首屏兜底。
 - 不把全站 dashboard 统计统一重构为同一套 read-model，只修账号详情链路。
 - 不变更 upstream account roster、分组、标签、路由与限流语义。
@@ -98,6 +98,8 @@
 - 请求 ID 历史定位必须由后端返回目标所在固定页窗口；前端以该页为锚点向新、旧两个方向按需加载，不得逐页扫描目标或预取无关页。
 - 锚点窗口必须冻结到定位响应的 `snapshotId + anchorId` 并暂停 records SSE；`anchorId` 负责让双向分页复现定位时的 runtime overlay，用户返回最新请求后才恢复第一页与实时订阅。
 - 账号详情请求 tab 中的请求摘要卡必须复用调用详情里的 pool attempt 摘要样式；`attemptId` 作为主请求 ID 保留醒目入口，次级调用短 ID 与模型映射在摘要卡内清晰可见，点击摘要卡即可展开对应详情面板。
+- 账号详情请求 tab 顶部必须提供类型、模型与对话筛选控件；这些筛选只影响尝试列表正文，不改变概览统计、账号活动总览或其他 tab 的读模型。
+- 外部传入 `focusedAttemptId` 时，前端必须先回到“全部类型 / 全部模型 / 全部对话”再调用定位接口，避免用户当前筛选把目标尝试隐藏。
 - 程序化定位目标行必须使用不改变布局的单层短暂高亮，并抑制浏览器默认 outline，避免边框、阴影与焦点轮廓叠加。
 - 桌面 overlay 模式的共享账号详情抽屉必须使用 `min(90rem, calc(100vw - 2rem))` 的确定宽度；加载状态、数据结算与 tab 切换不得改变抽屉宽度。紧凑视口页面化模式继续占满可用宽度。
 
@@ -111,6 +113,7 @@
 - 后端必须覆盖：增量维护、历史补齐幂等、boundary + live tail 精确性、cursor 恢复、接口只读 read-model 行为。
 - 前端必须覆盖：锚点页虚拟定位、向上 prepend 保持视口、向下 append、稳定去重、返回最新恢复 SSE，以及定位 `404`/请求失败提示。
 - 前端必须覆盖：桌面与移动布局均正确渲染请求摘要卡、点击摘要展开详情面板、目标项聚焦后自动展开且只出现一层清晰高亮。
+- 前端必须覆盖：请求 tab 筛选控件常驻、筛选后空结果仍显示在列表 body 内、筛选后分页保留当前筛选、外部定位会清空筛选并定位目标。
 - 前端必须通过真实浏览器布局覆盖：详情加载态、数据结算态及概览、请求、编辑、路由、健康与事件 tab 的抽屉宽度保持一致。
 - 后端必须覆盖：账号作用域首/中/末页定位、runtime overlay、固定快照、账号不匹配和 retention 后未找到语义，且定位响应不得包含全量历史。
 
@@ -118,22 +121,18 @@
 
 - 账号详情抽屉固定桌面宽度（mock Storybook；`1920px` viewport 下抽屉保持 `1440px`，五个 tab 切换前后宽度一致）
 
-PR: include
 ![账号详情抽屉固定桌面宽度](./assets/detail-drawer-fixed-width-health-events.png)
 
 - 账号详情请求 ID 锚点定位成功态（mock Storybook；冻结历史窗口、返回最新入口、目标行居中聚焦与非布局型高亮）
 
-PR: include
 ![账号详情请求 ID 锚点定位成功态](./assets/detail-drawer-invocation-locate-success.png)
 
 - 账号详情请求 ID 未找到态（mock Storybook；停留请求 tab，警告包含目标 ID 且获得焦点）
 
-PR: include
 ![账号详情请求 ID 未找到态](./assets/detail-drawer-invocation-locate-not-found.png)
 
 - 账号详情请求 ID 移动端定位态（mock Storybook；ID 保持单行完整显示，抽屉无横向溢出）
 
-PR: include
 ![账号详情请求 ID 移动端定位态](./assets/detail-drawer-invocation-locate-mobile.png)
 
 - 详情抽屉概览页活动总览（mock Storybook；账号活动总览已归属概览页，记录页不再承载统计图表）
@@ -159,6 +158,14 @@ PR: include
 - 详情抽屉请求 tab 稳定态（mock Storybook；记录列表已进入 settled state，请求 tab 只保留尝试请求摘要卡列表，不再承载账号活动总览）
 
 ![账号详情记录页实时推送稳定态](./assets/detail-drawer-records-live-sync-stable.png)
+
+- 详情抽屉请求 tab 诊断筛选态（Storybook state gallery；默认态、图片类型筛选、模型筛选、对话筛选与筛选后空结果均保持筛选条常驻并复用同一 attempts API）
+
+PR: include
+![详情抽屉请求 tab 诊断筛选默认态](./assets/detail-drawer-records-filter-gallery-default.png)
+
+PR: include
+![详情抽屉请求 tab 图片类型筛选态](./assets/detail-drawer-records-filter-gallery-image.png)
 
 - 详情抽屉请求 tab 宽屏放宽态（mock Storybook；共享抽屉桌面宽度提升到 `90rem` 后，请求摘要卡列表有更稳定的阅读空间，不再被旧的 `60rem` 壳层过早压缩）
 

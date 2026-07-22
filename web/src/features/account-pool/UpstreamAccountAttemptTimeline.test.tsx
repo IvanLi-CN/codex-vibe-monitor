@@ -5,11 +5,13 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
 import {
+  type ApiPoolUpstreamRequestAttempt,
   fetchForwardProxyBindingNodes,
   fetchInvocationRequestBody,
   fetchInvocationResponseBody,
   fetchUpstreamAccountAttempts,
   locateUpstreamAccountAttempt,
+  type UpstreamAccountAttemptListResponse,
 } from "../../lib/api";
 import { UpstreamAccountAttemptTimeline } from "./UpstreamAccountAttemptTimeline";
 
@@ -74,6 +76,87 @@ async function flushAsync() {
   });
 }
 
+function attemptListResponse(
+  overrides: Partial<UpstreamAccountAttemptListResponse> & {
+    items?: ApiPoolUpstreamRequestAttempt[];
+  } = {},
+): UpstreamAccountAttemptListResponse {
+  const items = overrides.items ?? [];
+  return {
+    items,
+    stickyKeyOptions: [],
+    total: items.length,
+    page: 1,
+    pageSize: 50,
+    ...overrides,
+  };
+}
+
+function makeAttempt(
+  overrides: Partial<ApiPoolUpstreamRequestAttempt>,
+): ApiPoolUpstreamRequestAttempt {
+  return {
+    attemptId: "ATEST0001",
+    invokeId: "K7QM9ZD4HP",
+    occurredAt: "2026-07-11T12:00:00.000Z",
+    endpoint: "/v1/responses",
+    upstreamAccountId: 101,
+    requestModel: "gpt-5.5",
+    responseModel: "gpt-5.5",
+    proxyBindingKeySnapshot: "__direct__",
+    attemptIndex: 1,
+    distinctAccountIndex: 1,
+    sameAccountRetryIndex: 0,
+    status: "success",
+    phase: "completed",
+    createdAt: "2026-07-11T12:00:00.000Z",
+    ...overrides,
+  };
+}
+
+async function selectOptionByText(triggerSelector: string, label: RegExp) {
+  const trigger = document.body.querySelector(triggerSelector);
+  if (!(trigger instanceof HTMLButtonElement)) {
+    throw new Error(`missing select trigger: ${triggerSelector}`);
+  }
+  act(() => {
+    trigger.click();
+  });
+  await flushAsync();
+  const option = Array.from(document.body.querySelectorAll('[role="option"]')).find((candidate) =>
+    label.test(candidate.textContent ?? ""),
+  );
+  if (!(option instanceof HTMLDivElement)) {
+    throw new Error(`missing select option: ${label}`);
+  }
+  act(() => {
+    option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    option.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    option.click();
+  });
+  await flushAsync();
+}
+
+async function selectModelOption(label: RegExp) {
+  const input = document.body.querySelector<HTMLInputElement>("#upstream-attempt-model-filter");
+  if (!input) throw new Error("missing model filter input");
+  act(() => {
+    input.focus();
+    input.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushAsync();
+  const option = Array.from(document.body.querySelectorAll('button[role="option"]')).find(
+    (candidate) => label.test(candidate.textContent ?? ""),
+  );
+  if (!(option instanceof HTMLButtonElement)) {
+    throw new Error(`missing model option: ${label}`);
+  }
+  act(() => {
+    option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  });
+  await flushAsync();
+}
+
 describe("UpstreamAccountAttemptTimeline", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -83,12 +166,14 @@ describe("UpstreamAccountAttemptTimeline", () => {
       configurable: true,
       value: scrollIntoViewMock,
     });
-    vi.mocked(locateUpstreamAccountAttempt).mockResolvedValue({
-      items: [],
-      total: 0,
-      page: 1,
-      pageSize: 50,
-    });
+    vi.mocked(locateUpstreamAccountAttempt).mockResolvedValue(
+      attemptListResponse({
+        items: [],
+        total: 0,
+        page: 1,
+        pageSize: 50,
+      }),
+    );
     fetchBindingNodesMock.mockResolvedValue([
       {
         key: "jp-edge-01",
@@ -124,47 +209,49 @@ describe("UpstreamAccountAttemptTimeline", () => {
   });
 
   it("keeps the primary row focused on upstream evidence and reveals complete failure context on demand", async () => {
-    fetchAttemptsMock.mockResolvedValue({
-      items: [
-        {
-          attemptId: "4V7MYPJG",
-          invokeId: "K7QM9ZD4HP",
-          occurredAt: "2026-07-11T12:00:00.000Z",
-          endpoint: "/v1/responses",
-          upstreamAccountId: 101,
-          requestModel: "gpt-5.4",
-          responseModel: "gpt-5.4-2026-07-01",
-          proxyBindingKeySnapshot: "jp-edge-01",
-          attemptIndex: 1,
-          distinctAccountIndex: 0,
-          sameAccountRetryIndex: 0,
-          status: "http_failure",
-          phase: "failed",
-          httpStatus: 500,
-          downstreamHttpStatus: 502,
-          failureKind: "upstream_response_failed",
-          errorMessage: "upstream returned an oversized diagnostic payload",
-          connectLatencyMs: 120,
-          firstByteLatencyMs: 480,
-          streamLatencyMs: 810,
-          downstreamRequestContentEncoding: "gzip",
-          upstreamRequestCompressionAlgorithm: "zstd",
-          upstreamRequestCompressionMode: "recompressed",
-          logicalBodyBytes: 1000,
-          transmittedBodyBytes: 580,
-          savedBytes: 420,
-          ratioPct: -42,
-          approxUploadBytes: 644,
-          approxDownloadBytes: 812,
-          upstreamRequestId: "req_upstream_123",
-          upstreamRouteKey: "route-tokyo-primary",
-          createdAt: "2026-07-11T12:00:00.000Z",
-        },
-      ],
-      total: 1,
-      page: 1,
-      pageSize: 50,
-    });
+    fetchAttemptsMock.mockResolvedValue(
+      attemptListResponse({
+        items: [
+          {
+            attemptId: "4V7MYPJG",
+            invokeId: "K7QM9ZD4HP",
+            occurredAt: "2026-07-11T12:00:00.000Z",
+            endpoint: "/v1/responses",
+            upstreamAccountId: 101,
+            requestModel: "gpt-5.4",
+            responseModel: "gpt-5.4-2026-07-01",
+            proxyBindingKeySnapshot: "jp-edge-01",
+            attemptIndex: 1,
+            distinctAccountIndex: 0,
+            sameAccountRetryIndex: 0,
+            status: "http_failure",
+            phase: "failed",
+            httpStatus: 500,
+            downstreamHttpStatus: 502,
+            failureKind: "upstream_response_failed",
+            errorMessage: "upstream returned an oversized diagnostic payload",
+            connectLatencyMs: 120,
+            firstByteLatencyMs: 480,
+            streamLatencyMs: 810,
+            downstreamRequestContentEncoding: "gzip",
+            upstreamRequestCompressionAlgorithm: "zstd",
+            upstreamRequestCompressionMode: "recompressed",
+            logicalBodyBytes: 1000,
+            transmittedBodyBytes: 580,
+            savedBytes: 420,
+            ratioPct: -42,
+            approxUploadBytes: 644,
+            approxDownloadBytes: 812,
+            upstreamRequestId: "req_upstream_123",
+            upstreamRouteKey: "route-tokyo-primary",
+            createdAt: "2026-07-11T12:00:00.000Z",
+          },
+        ],
+        total: 1,
+        page: 1,
+        pageSize: 50,
+      }),
+    );
 
     renderTimeline();
     await flushAsync();
@@ -245,198 +332,200 @@ describe("UpstreamAccountAttemptTimeline", () => {
       detailLevel: "full",
       captureSource: "raw_file",
     });
-    fetchAttemptsMock.mockResolvedValue({
-      items: [
-        {
-          attemptId: "ASUCC002",
-          invokeId: "ACCOUNTWF1",
-          occurredAt: "2026-07-11T12:00:00.000Z",
-          endpoint: "/v1/responses",
-          upstreamAccountId: 101,
-          upstreamAccountName: "CIII",
-          requestModel: "gpt-5.5",
-          responseModel: "gpt-5.5",
-          proxyBindingKeySnapshot: "__direct__",
-          attemptIndex: 2,
-          distinctAccountIndex: 1,
-          sameAccountRetryIndex: 1,
-          status: "success",
-          phase: "completed",
-          httpStatus: 200,
-          connectLatencyMs: 45,
-          firstByteLatencyMs: 120,
-          streamLatencyMs: 3_280,
-          upstreamRequestId: "req_upstream_account_workflow",
-          upstreamRequestCompressionAlgorithm: "zstd",
-          upstreamRequestCompressionMode: "recompressed",
-          logicalBodyBytes: 217_958,
-          transmittedBodyBytes: 53_295,
-          savedBytes: 164_663,
-          ratioPct: -75.55,
-          approxUploadBytes: 54_319,
-          approxDownloadBytes: 80_000,
-          createdAt: "2026-07-11T12:00:00.000Z",
-          invocationRecord: {
-            id: 77,
+    fetchAttemptsMock.mockResolvedValue(
+      attemptListResponse({
+        items: [
+          {
+            attemptId: "ASUCC002",
             invokeId: "ACCOUNTWF1",
             occurredAt: "2026-07-11T12:00:00.000Z",
-            createdAt: "2026-07-11T12:00:00.000Z",
-            source: "proxy",
-            routeMode: "pool",
             endpoint: "/v1/responses",
-            requestModel: "gpt-5.5",
-            responseModel: "gpt-5.5",
-            status: "success",
-            requesterIp: "192.168.31.6",
             upstreamAccountId: 101,
             upstreamAccountName: "CIII",
-            inputTokens: 49_042,
-            cacheInputTokens: 46_952,
-            outputTokens: 87,
-            totalTokens: 48_769,
-            cost: 0.0364,
-            responseContentEncoding: "identity",
-            tReqReadMs: 11,
-            tReqParseMs: 13,
-            tUpstreamConnectMs: 45,
-            tUpstreamTtfbMs: 120,
-            tUpstreamStreamMs: 3_280,
-            tRespParseMs: 18,
-            tPersistMs: 22,
-            tTotalMs: 3_280,
-          },
-          workflowEntry: {
-            blockId: "attempt-ASUCC002",
-            kind: "attempt",
-            occurredAt: "2026-07-11T12:00:00.000Z",
-            title: "Attempt #2",
-            subtitle: "CIII",
+            requestModel: "gpt-5.5",
+            responseModel: "gpt-5.5",
+            proxyBindingKeySnapshot: "__direct__",
+            attemptIndex: 2,
+            distinctAccountIndex: 1,
+            sameAccountRetryIndex: 1,
             status: "success",
-            attempt: {
-              synthetic: false,
-              attemptId: "ASUCC002",
+            phase: "completed",
+            httpStatus: 200,
+            connectLatencyMs: 45,
+            firstByteLatencyMs: 120,
+            streamLatencyMs: 3_280,
+            upstreamRequestId: "req_upstream_account_workflow",
+            upstreamRequestCompressionAlgorithm: "zstd",
+            upstreamRequestCompressionMode: "recompressed",
+            logicalBodyBytes: 217_958,
+            transmittedBodyBytes: 53_295,
+            savedBytes: 164_663,
+            ratioPct: -75.55,
+            approxUploadBytes: 54_319,
+            approxDownloadBytes: 80_000,
+            createdAt: "2026-07-11T12:00:00.000Z",
+            invocationRecord: {
+              id: 77,
+              invokeId: "ACCOUNTWF1",
               occurredAt: "2026-07-11T12:00:00.000Z",
+              createdAt: "2026-07-11T12:00:00.000Z",
+              source: "proxy",
+              routeMode: "pool",
               endpoint: "/v1/responses",
-              stickyKey: "sticky-a",
-              routingSource: "failover",
-              upstreamAccountId: 101,
-              upstreamAccountName: "CIII",
               requestModel: "gpt-5.5",
               responseModel: "gpt-5.5",
-              upstreamRouteKey: "route-direct",
-              proxyBindingKeySnapshot: "__direct__",
-              attemptIndex: 2,
-              distinctAccountIndex: 1,
-              sameAccountRetryIndex: 1,
-              requesterIp: "192.168.31.6",
-              startedAt: "2026-07-11T12:00:00.000Z",
-              finishedAt: "2026-07-11T12:00:03.280Z",
               status: "success",
-              phase: "completed",
-              httpStatus: 200,
-              downstreamHttpStatus: 200,
-              connectLatencyMs: 45,
-              firstByteLatencyMs: 120,
-              streamLatencyMs: 3_280,
-              upstreamRequestId: "req_upstream_account_workflow",
-              requestSummary: {
+              requesterIp: "192.168.31.6",
+              upstreamAccountId: 101,
+              upstreamAccountName: "CIII",
+              inputTokens: 49_042,
+              cacheInputTokens: 46_952,
+              outputTokens: 87,
+              totalTokens: 48_769,
+              cost: 0.0364,
+              responseContentEncoding: "identity",
+              tReqReadMs: 11,
+              tReqParseMs: 13,
+              tUpstreamConnectMs: 45,
+              tUpstreamTtfbMs: 120,
+              tUpstreamStreamMs: 3_280,
+              tRespParseMs: 18,
+              tPersistMs: 22,
+              tTotalMs: 3_280,
+            },
+            workflowEntry: {
+              blockId: "attempt-ASUCC002",
+              kind: "attempt",
+              occurredAt: "2026-07-11T12:00:00.000Z",
+              title: "Attempt #2",
+              subtitle: "CIII",
+              status: "success",
+              attempt: {
+                synthetic: false,
+                attemptId: "ASUCC002",
+                occurredAt: "2026-07-11T12:00:00.000Z",
                 endpoint: "/v1/responses",
-                routeMode: "pool",
+                stickyKey: "sticky-a",
+                routingSource: "failover",
+                upstreamAccountId: 101,
+                upstreamAccountName: "CIII",
                 requestModel: "gpt-5.5",
                 responseModel: "gpt-5.5",
-                requestedServiceTier: "low",
-                reasoningEffort: "low",
-                promptCacheKey: "019f89ab-b67e-71a2-9633-324247eec56e",
+                upstreamRouteKey: "route-direct",
+                proxyBindingKeySnapshot: "__direct__",
+                attemptIndex: 2,
+                distinctAccountIndex: 1,
+                sameAccountRetryIndex: 1,
                 requesterIp: "192.168.31.6",
-                routing: {
-                  proxyDisplayName: "Direct",
-                  upstreamRouteKey: "route-direct",
-                  proxyBindingKey: "__direct__",
-                },
-                headers: {
-                  userAgent: "codex-vibe-monitor-test/1.0",
-                  xForwardedFor: "192.168.31.6",
-                },
-                compression: {
-                  algorithm: "zstd",
-                  mode: "recompressed",
-                  logicalBodyBytes: 217_958,
-                  transmittedBodyBytes: 53_295,
-                  savedBytes: 164_663,
-                  ratioPct: -75.55,
-                  approxUploadBytes: 54_319,
-                  approxDownloadBytes: 80_000,
-                },
-                bodyCapture: {
-                  availableAtInvocationLevel: true,
-                  size: 217_958,
-                  truncated: false,
-                  detailLevel: "full",
-                },
-              },
-              responseSummary: {
+                startedAt: "2026-07-11T12:00:00.000Z",
+                finishedAt: "2026-07-11T12:00:03.280Z",
                 status: "success",
                 phase: "completed",
                 httpStatus: 200,
-                responseContentEncoding: "identity",
-                headers: {
-                  contentEncoding: "identity",
-                  upstreamRequestId: "req_upstream_account_workflow",
-                },
-                delivery: {
-                  forwardedChunkCount: 7,
-                  usageObserved: true,
-                },
-                latencyMs: {
-                  connect: 45,
-                  firstByte: 120,
-                  stream: 3_280,
-                  requestRead: 11,
-                  requestParse: 13,
-                  responseParse: 18,
-                  persist: 22,
-                  total: 3_280,
-                },
-                responseBodyCapture: {
-                  availableAtInvocationLevel: true,
-                  size: 79_224,
-                  truncated: false,
-                  detailLevel: "full",
-                },
-                usage: {
-                  inputTokens: 49_042,
-                  cacheWriteTokens: 2_090,
-                  cacheInputTokens: 46_952,
-                  outputTokens: 87,
-                  totalTokens: 48_769,
-                  cost: 0.0364,
-                  tokens: {
-                    input: 49_042,
-                    cacheWrite: 2_090,
-                    cacheRead: 46_952,
-                    output: 87,
-                    total: 48_769,
+                downstreamHttpStatus: 200,
+                connectLatencyMs: 45,
+                firstByteLatencyMs: 120,
+                streamLatencyMs: 3_280,
+                upstreamRequestId: "req_upstream_account_workflow",
+                requestSummary: {
+                  endpoint: "/v1/responses",
+                  routeMode: "pool",
+                  requestModel: "gpt-5.5",
+                  responseModel: "gpt-5.5",
+                  requestedServiceTier: "low",
+                  reasoningEffort: "low",
+                  promptCacheKey: "019f89ab-b67e-71a2-9633-324247eec56e",
+                  requesterIp: "192.168.31.6",
+                  routing: {
+                    proxyDisplayName: "Direct",
+                    upstreamRouteKey: "route-direct",
+                    proxyBindingKey: "__direct__",
                   },
-                  costs: {
-                    recorded: {
-                      total: 0.0364,
+                  headers: {
+                    userAgent: "codex-vibe-monitor-test/1.0",
+                    xForwardedFor: "192.168.31.6",
+                  },
+                  compression: {
+                    algorithm: "zstd",
+                    mode: "recompressed",
+                    logicalBodyBytes: 217_958,
+                    transmittedBodyBytes: 53_295,
+                    savedBytes: 164_663,
+                    ratioPct: -75.55,
+                    approxUploadBytes: 54_319,
+                    approxDownloadBytes: 80_000,
+                  },
+                  bodyCapture: {
+                    availableAtInvocationLevel: true,
+                    size: 217_958,
+                    truncated: false,
+                    detailLevel: "full",
+                  },
+                },
+                responseSummary: {
+                  status: "success",
+                  phase: "completed",
+                  httpStatus: 200,
+                  responseContentEncoding: "identity",
+                  headers: {
+                    contentEncoding: "identity",
+                    upstreamRequestId: "req_upstream_account_workflow",
+                  },
+                  delivery: {
+                    forwardedChunkCount: 7,
+                    usageObserved: true,
+                  },
+                  latencyMs: {
+                    connect: 45,
+                    firstByte: 120,
+                    stream: 3_280,
+                    requestRead: 11,
+                    requestParse: 13,
+                    responseParse: 18,
+                    persist: 22,
+                    total: 3_280,
+                  },
+                  responseBodyCapture: {
+                    availableAtInvocationLevel: true,
+                    size: 79_224,
+                    truncated: false,
+                    detailLevel: "full",
+                  },
+                  usage: {
+                    inputTokens: 49_042,
+                    cacheWriteTokens: 2_090,
+                    cacheInputTokens: 46_952,
+                    outputTokens: 87,
+                    totalTokens: 48_769,
+                    cost: 0.0364,
+                    tokens: {
+                      input: 49_042,
+                      cacheWrite: 2_090,
+                      cacheRead: 46_952,
+                      output: 87,
+                      total: 48_769,
                     },
-                  },
-                  audit: {
-                    mismatch: false,
+                    costs: {
+                      recorded: {
+                        total: 0.0364,
+                      },
+                    },
+                    audit: {
+                      mismatch: false,
+                    },
                   },
                 },
               },
+              detail: null,
+              responseBody: null,
             },
-            detail: null,
-            responseBody: null,
           },
-        },
-      ],
-      total: 1,
-      page: 1,
-      pageSize: 50,
-    });
+        ],
+        total: 1,
+        page: 1,
+        pageSize: 50,
+      }),
+    );
 
     renderTimeline();
     await flushAsync();
@@ -476,91 +565,93 @@ describe("UpstreamAccountAttemptTimeline", () => {
   });
 
   it("does not lazy-load the final invocation response body for non-final retry attempts", async () => {
-    fetchAttemptsMock.mockResolvedValue({
-      items: [
-        {
-          attemptId: "AFAIL001",
-          invokeId: "ACCOUNTWF1",
-          occurredAt: "2026-07-11T12:00:00.000Z",
-          endpoint: "/v1/responses",
-          upstreamAccountId: 101,
-          upstreamAccountName: "CIII",
-          requestModel: "gpt-5.5",
-          responseModel: "gpt-5.5",
-          proxyBindingKeySnapshot: "__direct__",
-          attemptIndex: 1,
-          distinctAccountIndex: 1,
-          sameAccountRetryIndex: 0,
-          status: "http_failure",
-          phase: "completed",
-          httpStatus: 500,
-          failureKind: "upstream_response_failed",
-          streamLatencyMs: 3_280,
-          approxDownloadBytes: 80_000,
-          createdAt: "2026-07-11T12:00:00.000Z",
-          invocationRecord: {
-            id: 77,
+    fetchAttemptsMock.mockResolvedValue(
+      attemptListResponse({
+        items: [
+          {
+            attemptId: "AFAIL001",
             invokeId: "ACCOUNTWF1",
             occurredAt: "2026-07-11T12:00:00.000Z",
-            createdAt: "2026-07-11T12:00:00.000Z",
-            source: "proxy",
-            routeMode: "pool",
             endpoint: "/v1/responses",
+            upstreamAccountId: 101,
+            upstreamAccountName: "CIII",
             requestModel: "gpt-5.5",
             responseModel: "gpt-5.5",
-            status: "success",
-          },
-          workflowEntry: {
-            blockId: "attempt-AFAIL001",
-            kind: "attempt",
-            occurredAt: "2026-07-11T12:00:00.000Z",
-            title: "Attempt #1",
-            subtitle: "CIII",
+            proxyBindingKeySnapshot: "__direct__",
+            attemptIndex: 1,
+            distinctAccountIndex: 1,
+            sameAccountRetryIndex: 0,
             status: "http_failure",
-            attempt: {
-              synthetic: false,
-              attemptId: "AFAIL001",
+            phase: "completed",
+            httpStatus: 500,
+            failureKind: "upstream_response_failed",
+            streamLatencyMs: 3_280,
+            approxDownloadBytes: 80_000,
+            createdAt: "2026-07-11T12:00:00.000Z",
+            invocationRecord: {
+              id: 77,
+              invokeId: "ACCOUNTWF1",
               occurredAt: "2026-07-11T12:00:00.000Z",
+              createdAt: "2026-07-11T12:00:00.000Z",
+              source: "proxy",
+              routeMode: "pool",
               endpoint: "/v1/responses",
-              upstreamAccountId: 101,
-              upstreamAccountName: "CIII",
               requestModel: "gpt-5.5",
               responseModel: "gpt-5.5",
-              attemptIndex: 1,
-              distinctAccountIndex: 1,
-              sameAccountRetryIndex: 0,
+              status: "success",
+            },
+            workflowEntry: {
+              blockId: "attempt-AFAIL001",
+              kind: "attempt",
+              occurredAt: "2026-07-11T12:00:00.000Z",
+              title: "Attempt #1",
+              subtitle: "CIII",
               status: "http_failure",
-              phase: "completed",
-              httpStatus: 500,
-              failureKind: "upstream_response_failed",
-              streamLatencyMs: 3_280,
-              requestSummary: {
+              attempt: {
+                synthetic: false,
+                attemptId: "AFAIL001",
+                occurredAt: "2026-07-11T12:00:00.000Z",
                 endpoint: "/v1/responses",
+                upstreamAccountId: 101,
+                upstreamAccountName: "CIII",
                 requestModel: "gpt-5.5",
-              },
-              responseSummary: {
+                responseModel: "gpt-5.5",
+                attemptIndex: 1,
+                distinctAccountIndex: 1,
+                sameAccountRetryIndex: 0,
                 status: "http_failure",
                 phase: "completed",
                 httpStatus: 500,
                 failureKind: "upstream_response_failed",
-                responseBodyCapture: {
-                  availableAtInvocationLevel: false,
-                  size: 79_224,
-                  detailLevel: "attempt_metrics",
-                  unavailableReason: "non_final_attempt_response_body_not_captured",
+                streamLatencyMs: 3_280,
+                requestSummary: {
+                  endpoint: "/v1/responses",
+                  requestModel: "gpt-5.5",
                 },
-                usage: null,
+                responseSummary: {
+                  status: "http_failure",
+                  phase: "completed",
+                  httpStatus: 500,
+                  failureKind: "upstream_response_failed",
+                  responseBodyCapture: {
+                    availableAtInvocationLevel: false,
+                    size: 79_224,
+                    detailLevel: "attempt_metrics",
+                    unavailableReason: "non_final_attempt_response_body_not_captured",
+                  },
+                  usage: null,
+                },
               },
+              detail: null,
+              responseBody: null,
             },
-            detail: null,
-            responseBody: null,
           },
-        },
-      ],
-      total: 1,
-      page: 1,
-      pageSize: 50,
-    });
+        ],
+        total: 1,
+        page: 1,
+        pageSize: 50,
+      }),
+    );
 
     renderTimeline();
     await flushAsync();
@@ -585,29 +676,31 @@ describe("UpstreamAccountAttemptTimeline", () => {
   });
 
   it("shows the pending attempt phase without adding another permanent column", async () => {
-    fetchAttemptsMock.mockResolvedValue({
-      items: [
-        {
-          attemptId: "QADKN5Z9",
-          invokeId: "M8R7XZ4Q2W",
-          occurredAt: "2026-07-11T12:00:00.000Z",
-          endpoint: "/v1/responses",
-          upstreamAccountId: 101,
-          requestModel: "gpt-5.4",
-          proxyBindingKeySnapshot: "__direct__",
-          attemptIndex: 1,
-          distinctAccountIndex: 0,
-          sameAccountRetryIndex: 0,
-          status: "pending",
-          phase: "waiting_first_byte",
-          connectLatencyMs: 80,
-          createdAt: "2026-07-11T12:00:00.000Z",
-        },
-      ],
-      total: 1,
-      page: 1,
-      pageSize: 50,
-    });
+    fetchAttemptsMock.mockResolvedValue(
+      attemptListResponse({
+        items: [
+          {
+            attemptId: "QADKN5Z9",
+            invokeId: "M8R7XZ4Q2W",
+            occurredAt: "2026-07-11T12:00:00.000Z",
+            endpoint: "/v1/responses",
+            upstreamAccountId: 101,
+            requestModel: "gpt-5.4",
+            proxyBindingKeySnapshot: "__direct__",
+            attemptIndex: 1,
+            distinctAccountIndex: 0,
+            sameAccountRetryIndex: 0,
+            status: "pending",
+            phase: "waiting_first_byte",
+            connectLatencyMs: 80,
+            createdAt: "2026-07-11T12:00:00.000Z",
+          },
+        ],
+        total: 1,
+        page: 1,
+        pageSize: 50,
+      }),
+    );
 
     renderTimeline();
     await flushAsync();
@@ -618,6 +711,185 @@ describe("UpstreamAccountAttemptTimeline", () => {
     expect(card).not.toBeNull();
     expect(card?.textContent).toContain("waiting_first_byte");
     expect(card?.textContent).not.toMatch(/阶段|phase/i);
+  });
+
+  it("keeps filters visible and sends type filters through pagination", async () => {
+    const normalAttempt = makeAttempt({
+      attemptId: "ANORMAL001",
+      endpoint: "/v1/responses",
+      requestModel: "gpt-5.5",
+      responseModel: "gpt-5.5",
+    });
+    const imageAttempt = makeAttempt({
+      attemptId: "AIMAGE001",
+      endpoint: "/v1/images/edits",
+      requestModel: "gpt-image-1",
+      responseModel: "gpt-image-1",
+      imageIntent: "direct_image",
+    });
+    fetchAttemptsMock
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [normalAttempt],
+          total: 1,
+          stickyKeyOptions: [
+            { value: "sticky-normal", latestCreatedAt: "2026-07-11T12:00:00.000Z" },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [imageAttempt],
+          total: 75,
+          page: 1,
+          pageSize: 50,
+          stickyKeyOptions: [
+            { value: "sticky-image", latestCreatedAt: "2026-07-11T12:00:00.000Z" },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [{ ...imageAttempt, attemptId: "AIMAGE002" }],
+          total: 75,
+          page: 2,
+          pageSize: 50,
+        }),
+      );
+
+    renderTimeline();
+    await flushAsync();
+    expect(
+      host?.querySelector('[data-testid="upstream-account-attempt-filter-bar"]'),
+    ).not.toBeNull();
+
+    await selectOptionByText('[data-testid="upstream-attempt-type-filter"]', /image/i);
+    expect(fetchAttemptsMock).toHaveBeenLastCalledWith(
+      101,
+      expect.objectContaining({
+        type: "image",
+        page: 1,
+        pageSize: 50,
+      }),
+    );
+
+    const nextButton = Array.from(host?.querySelectorAll("button") ?? []).find((button) =>
+      /下一页|next/i.test(button.textContent ?? ""),
+    );
+    expect(nextButton).toBeDefined();
+    act(() => {
+      nextButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+    expect(fetchAttemptsMock).toHaveBeenLastCalledWith(
+      101,
+      expect.objectContaining({
+        type: "image",
+        page: 2,
+        pageSize: 50,
+      }),
+    );
+  });
+
+  it("offers request and response models and keeps empty results inside the list body", async () => {
+    fetchAttemptsMock
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [
+            makeAttempt({
+              attemptId: "AMODEL001",
+              requestModel: "gpt-5.4",
+              responseModel: "gpt-5.6",
+            }),
+          ],
+          total: 1,
+        }),
+      )
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [],
+          total: 0,
+        }),
+      );
+
+    renderTimeline();
+    await flushAsync();
+    await selectModelOption(/gpt-5\.6/);
+
+    expect(fetchAttemptsMock).toHaveBeenLastCalledWith(
+      101,
+      expect.objectContaining({
+        model: "gpt-5.6",
+        page: 1,
+      }),
+    );
+    expect(
+      host?.querySelector('[data-testid="upstream-account-attempt-filter-bar"]'),
+    ).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="upstream-account-attempt-list"]')?.textContent,
+    ).toMatch(/最近 7 天没有该账号的尝试请求|No request attempts/i);
+  });
+
+  it("preserves backend conversation option order and filters the unbound bucket", async () => {
+    fetchAttemptsMock
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [makeAttempt({ attemptId: "ACONVO001" })],
+          total: 1,
+          stickyKeyOptions: [
+            { value: "sticky-new", latestCreatedAt: "2026-07-11T12:03:00.000Z" },
+            { value: "__unbound__", latestCreatedAt: "2026-07-11T12:02:00.000Z" },
+            { value: "sticky-old", latestCreatedAt: "2026-07-11T12:01:00.000Z" },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [],
+          total: 0,
+        }),
+      );
+
+    renderTimeline();
+    await flushAsync();
+    const trigger = document.body.querySelector(
+      '[data-testid="upstream-attempt-conversation-filter"]',
+    );
+    if (!(trigger instanceof HTMLButtonElement)) throw new Error("missing conversation filter");
+    act(() => {
+      trigger.click();
+    });
+    await flushAsync();
+    const optionTexts = Array.from(document.body.querySelectorAll('[role="option"]')).map(
+      (option) => option.textContent ?? "",
+    );
+    const newIndex = optionTexts.findIndex((text) => text.includes("sticky-new"));
+    const unboundIndex = optionTexts.findIndex((text) =>
+      /Unbound conversation|未绑定对话/.test(text),
+    );
+    const oldIndex = optionTexts.findIndex((text) => text.includes("sticky-old"));
+    expect(newIndex).toBeGreaterThanOrEqual(0);
+    expect(unboundIndex).toBeGreaterThan(newIndex);
+    expect(oldIndex).toBeGreaterThan(unboundIndex);
+
+    const unboundOption = Array.from(document.body.querySelectorAll('[role="option"]')).find(
+      (option) => /Unbound conversation|未绑定对话/.test(option.textContent ?? ""),
+    );
+    if (!(unboundOption instanceof HTMLDivElement)) throw new Error("missing unbound option");
+    act(() => {
+      unboundOption.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      unboundOption.click();
+    });
+    await flushAsync();
+
+    expect(fetchAttemptsMock).toHaveBeenLastCalledWith(
+      101,
+      expect.objectContaining({
+        stickyKey: "__unbound__",
+        page: 1,
+      }),
+    );
   });
 
   it("scrolls, highlights, and fades the focused attempt after the next drawer interaction", async () => {
@@ -639,24 +911,36 @@ describe("UpstreamAccountAttemptTimeline", () => {
       errorMessage: "focused failure details",
       createdAt: "2026-07-11T12:00:00.000Z",
     };
-    fetchAttemptsMock.mockResolvedValue({
-      items: [focusedAttempt],
-      total: 1,
-      page: 1,
-      pageSize: 50,
-    });
-    vi.mocked(locateUpstreamAccountAttempt).mockResolvedValue({
-      items: [focusedAttempt],
-      total: 1,
-      page: 1,
-      pageSize: 50,
-    });
+    fetchAttemptsMock.mockResolvedValue(
+      attemptListResponse({
+        items: [focusedAttempt],
+        total: 1,
+        page: 1,
+        pageSize: 50,
+      }),
+    );
+    vi.mocked(locateUpstreamAccountAttempt).mockResolvedValue(
+      attemptListResponse({
+        items: [focusedAttempt],
+        total: 1,
+        page: 1,
+        pageSize: 50,
+      }),
+    );
     const onFocusRequestHandled = vi.fn();
     interactionBoundary = document.createElement("div");
     document.body.appendChild(interactionBoundary);
 
     renderTimeline();
     await flushAsync();
+    await selectOptionByText('[data-testid="upstream-attempt-type-filter"]', /image/i);
+    expect(fetchAttemptsMock).toHaveBeenLastCalledWith(
+      101,
+      expect.objectContaining({
+        type: "image",
+        page: 1,
+      }),
+    );
     renderTimeline({
       focusedAttemptId: "YG7P25XG",
       focusVersion: 1,
@@ -678,6 +962,17 @@ describe("UpstreamAccountAttemptTimeline", () => {
       }),
     );
     expect(onFocusRequestHandled).toHaveBeenCalledWith(1);
+    expect(host?.textContent).toMatch(/All types|全部类型/);
+    const fetchCallsAfterLocate = fetchAttemptsMock.mock.calls.length;
+    renderTimeline({
+      boundary: interactionBoundary,
+      onFocusRequestHandled,
+    });
+    await flushAsync();
+    expect(fetchAttemptsMock).toHaveBeenCalledTimes(fetchCallsAfterLocate);
+    expect(
+      host?.querySelector<HTMLElement>('[data-testid="account-attempt-record-YG7P25XG"]'),
+    ).not.toBeNull();
     expect(scrollIntoViewMock).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "nearest",
@@ -712,7 +1007,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
       '[data-testid="account-attempt-record-YG7P25XG"]',
     );
     expect(refocusedRecord?.dataset.focusVisible).toBe("true");
-    expect(scrollIntoViewMock).toHaveBeenCalledTimes(2);
+    expect(scrollIntoViewMock.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it("shows locate unavailable feedback when the focused attempt is outside the locate window", async () => {

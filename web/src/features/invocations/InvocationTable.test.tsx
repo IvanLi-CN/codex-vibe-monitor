@@ -1722,7 +1722,7 @@ describe("InvocationTable", () => {
     expect(html.match(/data-endpoint-kind="raw"/g)?.length ?? 0).toBe(1);
     expect(html.match(/data-image-intent-kind="yes"/g)?.length ?? 0).toBe(2);
     expect(html.match(/data-image-intent-kind="direct_image"/g)?.length ?? 0).toBe(2);
-    expect(html).toContain("Responses");
+    expect(html).toMatch(/一般|Normal/);
     expect(html).toContain("Chat");
     expect(html).toContain("image/gen");
     expect(html).toContain("image/edit");

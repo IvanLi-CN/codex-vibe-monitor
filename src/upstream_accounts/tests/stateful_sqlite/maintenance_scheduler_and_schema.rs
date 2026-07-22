@@ -510,6 +510,9 @@ async fn account_attempt_list_reads_models_from_invocation_payload_without_schem
         State(state),
         AxumPath(account_id),
         Query(ListUpstreamAccountAttemptsQuery {
+            attempt_type: None,
+            model: None,
+            sticky_key: None,
             page: Some(1),
             page_size: Some(20),
         }),
@@ -521,6 +524,464 @@ async fn account_attempt_list_reads_models_from_invocation_payload_without_schem
     assert_eq!(item.model.as_deref(), Some("gpt-5.3"));
     assert_eq!(item.request_model.as_deref(), Some("gpt-5.3"));
     assert_eq!(item.response_model.as_deref(), Some("gpt-5.4"));
+}
+
+#[tokio::test]
+async fn account_attempt_list_supports_type_model_and_sticky_key_filters_with_image_attempts() {
+    #[derive(Clone)]
+    struct AttemptFixture<'a> {
+        attempt_id: &'a str,
+        invoke_id: &'a str,
+        account_id: i64,
+        occurred_at: String,
+        endpoint: &'a str,
+        sticky_key: Option<&'a str>,
+        model: &'a str,
+        request_model: Option<&'a str>,
+        response_model: Option<&'a str>,
+        compaction_request_kind: Option<&'a str>,
+        compaction_response_kind: Option<&'a str>,
+        image_intent: Option<&'a str>,
+    }
+
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_api_key_account(&state.pool, "Attempt filter coverage").await;
+    let other_account_id = insert_api_key_account(&state.pool, "Other account scope").await;
+    let now = Utc::now();
+    let fixtures = vec![
+        AttemptFixture {
+            attempt_id: "AFILT_REMOTE",
+            invoke_id: "afilt_remote",
+            account_id,
+            occurred_at: format_utc_iso(now - ChronoDuration::minutes(1)),
+            endpoint: "/v1/responses",
+            sticky_key: Some("sticky-remote"),
+            model: "gpt-5.5",
+            request_model: Some("gpt-5.5"),
+            response_model: Some("gpt-5.5-2026-07-01"),
+            compaction_request_kind: Some("remote_v2"),
+            compaction_response_kind: Some("remote_v2"),
+            image_intent: Some("no"),
+        },
+        AttemptFixture {
+            attempt_id: "AFILT_REQUEST_ONLY_REMOTE",
+            invoke_id: "afilt_request_only_remote",
+            account_id,
+            occurred_at: format_utc_iso(now - ChronoDuration::seconds(90)),
+            endpoint: "/v1/responses",
+            sticky_key: None,
+            model: "gpt-5.7",
+            request_model: Some("gpt-5.7"),
+            response_model: Some("gpt-5.7"),
+            compaction_request_kind: Some("remote_v2"),
+            compaction_response_kind: None,
+            image_intent: Some("no"),
+        },
+        AttemptFixture {
+            attempt_id: "AFILT_NORMAL",
+            invoke_id: "afilt_normal",
+            account_id,
+            occurred_at: format_utc_iso(now - ChronoDuration::minutes(2)),
+            endpoint: "/v1/responses",
+            sticky_key: None,
+            model: "gpt-5.4",
+            request_model: Some("gpt-5.4"),
+            response_model: Some("gpt-5.6"),
+            compaction_request_kind: None,
+            compaction_response_kind: None,
+            image_intent: Some("no"),
+        },
+        AttemptFixture {
+            attempt_id: "AFILT_COMPACT",
+            invoke_id: "afilt_compact",
+            account_id,
+            occurred_at: format_utc_iso(now - ChronoDuration::minutes(3)),
+            endpoint: "/v1/responses/compact",
+            sticky_key: Some("sticky-compact"),
+            model: "gpt-5-compact",
+            request_model: Some("gpt-5-compact-request"),
+            response_model: None,
+            compaction_request_kind: Some("compact"),
+            compaction_response_kind: Some("compact"),
+            image_intent: Some("no"),
+        },
+        AttemptFixture {
+            attempt_id: "AFILT_IMAGE",
+            invoke_id: "afilt_image",
+            account_id,
+            occurred_at: format_utc_iso(now - ChronoDuration::minutes(4)),
+            endpoint: "/v1/images/edits",
+            sticky_key: Some("sticky-image"),
+            model: "gpt-image-1",
+            request_model: Some("gpt-image-1"),
+            response_model: Some("gpt-image-1"),
+            compaction_request_kind: None,
+            compaction_response_kind: None,
+            image_intent: Some("direct_image"),
+        },
+        AttemptFixture {
+            attempt_id: "AFILT_OTHER_IMAGE",
+            invoke_id: "afilt_other_image",
+            account_id: other_account_id,
+            occurred_at: format_utc_iso(now - ChronoDuration::seconds(30)),
+            endpoint: "/v1/images/generations",
+            sticky_key: Some("sticky-other"),
+            model: "gpt-image-1",
+            request_model: Some("gpt-image-1"),
+            response_model: Some("gpt-image-1"),
+            compaction_request_kind: None,
+            compaction_response_kind: None,
+            image_intent: Some("yes"),
+        },
+    ];
+
+    for fixture in &fixtures {
+        let payload = json!({
+            "requestModel": fixture.request_model,
+            "responseModel": fixture.response_model,
+            "compactionRequestKind": fixture.compaction_request_kind,
+            "compactionResponseKind": fixture.compaction_response_kind,
+            "imageIntent": fixture.image_intent,
+        })
+        .to_string();
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (invoke_id, occurred_at, source, model, payload, raw_response)
+            VALUES (?1, ?2, 'proxy', ?3, ?4, '')
+            "#,
+        )
+        .bind(fixture.invoke_id)
+        .bind(&fixture.occurred_at)
+        .bind(fixture.model)
+        .bind(&payload)
+        .execute(&state.pool)
+        .await
+        .expect("insert invocation");
+
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_request_attempts (
+                attempt_public_id, invoke_id, occurred_at, endpoint, route_mode,
+                sticky_key, upstream_account_id, attempt_index, distinct_account_index,
+                same_account_retry_index, started_at, finished_at, status, phase,
+                http_status, created_at
+            )
+            VALUES (
+                ?1, ?2, ?3, ?4, 'pool',
+                ?5, ?6, 1, 1,
+                0, ?3, ?3, 'success', 'completed',
+                200, ?3
+            )
+            "#,
+        )
+        .bind(fixture.attempt_id)
+        .bind(fixture.invoke_id)
+        .bind(&fixture.occurred_at)
+        .bind(fixture.endpoint)
+        .bind(fixture.sticky_key)
+        .bind(fixture.account_id)
+        .execute(&state.pool)
+        .await
+        .expect("insert account attempt");
+    }
+
+    for index in 0..17 {
+        let invoke_id = format!("afilt_remote_noise_{index:02}");
+        let attempt_id = format!("AFILTNOISE{index:02}");
+        let occurred_at = format_utc_iso(now - ChronoDuration::seconds(70 + index as i64));
+        let payload = json!({
+            "requestModel": "gpt-5.5",
+            "responseModel": "gpt-5.5-2026-07-01",
+            "compactionRequestKind": "remote_v2",
+            "compactionResponseKind": "remote_v2",
+            "imageIntent": "no",
+        })
+        .to_string();
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (invoke_id, occurred_at, source, model, payload, raw_response)
+            VALUES (?1, ?2, 'proxy', 'gpt-5.5', ?3, '')
+            "#,
+        )
+        .bind(&invoke_id)
+        .bind(&occurred_at)
+        .bind(&payload)
+        .execute(&state.pool)
+        .await
+        .expect("insert remote_v2 noise invocation");
+
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_request_attempts (
+                attempt_public_id, invoke_id, occurred_at, endpoint, route_mode,
+                sticky_key, upstream_account_id, attempt_index, distinct_account_index,
+                same_account_retry_index, started_at, finished_at, status, phase,
+                http_status, created_at
+            )
+            VALUES (
+                ?1, ?2, ?3, '/v1/responses', 'pool',
+                'sticky-remote', ?4, 1, 1,
+                0, ?3, ?3, 'success', 'completed',
+                200, ?3
+            )
+            "#,
+        )
+        .bind(&attempt_id)
+        .bind(&invoke_id)
+        .bind(&occurred_at)
+        .bind(account_id)
+        .execute(&state.pool)
+        .await
+        .expect("insert remote_v2 noise attempt");
+    }
+
+    let Json(first_page) = list_upstream_account_attempts(
+        State(state.clone()),
+        AxumPath(account_id),
+        Query(ListUpstreamAccountAttemptsQuery {
+            attempt_type: None,
+            model: None,
+            sticky_key: None,
+            page: Some(1),
+            page_size: Some(20),
+        }),
+    )
+    .await
+    .expect("list first page");
+    assert_eq!(first_page.total, 22);
+    assert_eq!(first_page.items.len(), 20);
+    assert_eq!(first_page.items[0].attempt_id, "AFILT_REMOTE");
+    assert!(
+        !first_page
+            .items
+            .iter()
+            .any(|item| item.attempt_id == "AFILT_IMAGE")
+    );
+
+    let Json(all_attempts) = list_upstream_account_attempts(
+        State(state.clone()),
+        AxumPath(account_id),
+        Query(ListUpstreamAccountAttemptsQuery {
+            attempt_type: None,
+            model: None,
+            sticky_key: None,
+            page: Some(1),
+            page_size: Some(100),
+        }),
+    )
+    .await
+    .expect("list all attempts");
+    assert_eq!(all_attempts.total, 22);
+    assert!(
+        all_attempts
+            .items
+            .iter()
+            .any(|item| item.attempt_id == "AFILT_REMOTE")
+    );
+    assert!(
+        all_attempts
+            .items
+            .iter()
+            .any(|item| item.attempt_id == "AFILT_NORMAL")
+    );
+    assert!(
+        all_attempts
+            .items
+            .iter()
+            .any(|item| item.attempt_id == "AFILT_COMPACT")
+    );
+    assert!(
+        all_attempts
+            .items
+            .iter()
+            .any(|item| item.attempt_id == "AFILT_IMAGE")
+    );
+    assert!(
+        !all_attempts
+            .items
+            .iter()
+            .any(|item| item.attempt_id == "AFILT_OTHER_IMAGE")
+    );
+    assert_eq!(
+        all_attempts
+            .sticky_key_options
+            .iter()
+            .map(|option| option.value.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "sticky-remote",
+            "__unbound__",
+            "sticky-compact",
+            "sticky-image"
+        ]
+    );
+
+    let image_item = all_attempts
+        .items
+        .iter()
+        .find(|item| item.attempt_id == "AFILT_IMAGE")
+        .expect("image attempt");
+    assert_eq!(image_item.image_intent.as_deref(), Some("direct_image"));
+    let remote_item = all_attempts
+        .items
+        .iter()
+        .find(|item| item.attempt_id == "AFILT_REMOTE")
+        .expect("remote_v2 attempt");
+    assert_eq!(
+        remote_item.compaction_request_kind.as_deref(),
+        Some("remote_v2")
+    );
+    assert_eq!(
+        remote_item.compaction_response_kind.as_deref(),
+        Some("remote_v2")
+    );
+
+    let Json(image_only) = list_upstream_account_attempts(
+        State(state.clone()),
+        AxumPath(account_id),
+        Query(ListUpstreamAccountAttemptsQuery {
+            attempt_type: Some("image".to_string()),
+            model: None,
+            sticky_key: None,
+            page: Some(1),
+            page_size: Some(20),
+        }),
+    )
+    .await
+    .expect("filter image attempts");
+    assert_eq!(image_only.total, 1);
+    assert_eq!(image_only.items[0].attempt_id, "AFILT_IMAGE");
+
+    let Json(remote_only) = list_upstream_account_attempts(
+        State(state.clone()),
+        AxumPath(account_id),
+        Query(ListUpstreamAccountAttemptsQuery {
+            attempt_type: Some("remote_v2".to_string()),
+            model: None,
+            sticky_key: None,
+            page: Some(1),
+            page_size: Some(20),
+        }),
+    )
+    .await
+    .expect("filter remote_v2 attempts");
+    assert_eq!(remote_only.total, 18);
+    assert!(
+        remote_only
+            .items
+            .iter()
+            .all(|item| item.compaction_response_kind.as_deref() == Some("remote_v2"))
+    );
+    assert!(
+        !remote_only
+            .items
+            .iter()
+            .any(|item| item.attempt_id == "AFILT_REQUEST_ONLY_REMOTE")
+    );
+
+    let Json(normal_only) = list_upstream_account_attempts(
+        State(state.clone()),
+        AxumPath(account_id),
+        Query(ListUpstreamAccountAttemptsQuery {
+            attempt_type: Some("normal".to_string()),
+            model: None,
+            sticky_key: None,
+            page: Some(1),
+            page_size: Some(20),
+        }),
+    )
+    .await
+    .expect("filter normal attempts");
+    assert_eq!(normal_only.total, 2);
+    assert!(
+        normal_only
+            .items
+            .iter()
+            .any(|item| item.attempt_id == "AFILT_NORMAL")
+    );
+    assert!(
+        normal_only
+            .items
+            .iter()
+            .any(|item| item.attempt_id == "AFILT_REQUEST_ONLY_REMOTE")
+    );
+
+    let Json(compact_only) = list_upstream_account_attempts(
+        State(state.clone()),
+        AxumPath(account_id),
+        Query(ListUpstreamAccountAttemptsQuery {
+            attempt_type: Some("compact".to_string()),
+            model: None,
+            sticky_key: None,
+            page: Some(1),
+            page_size: Some(20),
+        }),
+    )
+    .await
+    .expect("filter compact attempts");
+    assert_eq!(compact_only.total, 1);
+    assert_eq!(compact_only.items[0].attempt_id, "AFILT_COMPACT");
+
+    let Json(response_model_match) = list_upstream_account_attempts(
+        State(state.clone()),
+        AxumPath(account_id),
+        Query(ListUpstreamAccountAttemptsQuery {
+            attempt_type: None,
+            model: Some("gpt-5.6".to_string()),
+            sticky_key: None,
+            page: Some(1),
+            page_size: Some(20),
+        }),
+    )
+    .await
+    .expect("filter by response model");
+    assert_eq!(response_model_match.total, 1);
+    assert_eq!(response_model_match.items[0].attempt_id, "AFILT_NORMAL");
+
+    let Json(legacy_model_match) = list_upstream_account_attempts(
+        State(state.clone()),
+        AxumPath(account_id),
+        Query(ListUpstreamAccountAttemptsQuery {
+            attempt_type: None,
+            model: Some("gpt-5-compact".to_string()),
+            sticky_key: None,
+            page: Some(1),
+            page_size: Some(20),
+        }),
+    )
+    .await
+    .expect("filter by legacy model");
+    assert_eq!(legacy_model_match.total, 1);
+    assert_eq!(legacy_model_match.items[0].attempt_id, "AFILT_COMPACT");
+
+    let Json(unbound_only) = list_upstream_account_attempts(
+        State(state),
+        AxumPath(account_id),
+        Query(ListUpstreamAccountAttemptsQuery {
+            attempt_type: None,
+            model: None,
+            sticky_key: Some("__unbound__".to_string()),
+            page: Some(1),
+            page_size: Some(20),
+        }),
+    )
+    .await
+    .expect("filter by unbound sticky key");
+    assert_eq!(unbound_only.total, 2);
+    assert!(
+        unbound_only
+            .items
+            .iter()
+            .any(|item| item.attempt_id == "AFILT_NORMAL")
+    );
+    assert!(
+        unbound_only
+            .items
+            .iter()
+            .any(|item| item.attempt_id == "AFILT_REQUEST_ONLY_REMOTE")
+    );
 }
 
 #[tokio::test]
@@ -639,6 +1100,9 @@ async fn account_attempt_list_returns_workflow_entries_and_final_success_usage_o
         State(state),
         AxumPath(account_id),
         Query(ListUpstreamAccountAttemptsQuery {
+            attempt_type: None,
+            model: None,
+            sticky_key: None,
             page: Some(1),
             page_size: Some(20),
         }),

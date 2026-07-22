@@ -237,6 +237,135 @@ const workflowFailureAttemptItem: ApiPoolUpstreamRequestAttempt = {
   },
 };
 
+const imageAttemptItem: ApiPoolUpstreamRequestAttempt = {
+  ...workflowSuccessAttemptItem,
+  attemptId: "AIMAGE001",
+  invokeId: "IMG7Y2QK",
+  occurredAt: "2026-07-11T12:03:00.000Z",
+  endpoint: "/v1/images/edits",
+  stickyKey: "sticky-image",
+  requestModel: "gpt-image-1",
+  responseModel: "gpt-image-1",
+  imageIntent: "direct_image",
+  createdAt: "2026-07-11T12:03:00.000Z",
+  invocationRecord: undefined,
+  workflowEntry: undefined,
+};
+
+const remoteV2AttemptItem: ApiPoolUpstreamRequestAttempt = {
+  ...workflowSuccessAttemptItem,
+  attemptId: "AREMOTEV2",
+  invokeId: "REMOTE2QK",
+  occurredAt: "2026-07-11T12:02:00.000Z",
+  endpoint: "/v1/responses",
+  stickyKey: "sticky-remote",
+  requestModel: "gpt-5.5",
+  responseModel: "gpt-5.5-2026-07-01",
+  compactionRequestKind: "remote_v2",
+  compactionResponseKind: "remote_v2",
+  imageIntent: "no",
+  createdAt: "2026-07-11T12:02:00.000Z",
+  invocationRecord: undefined,
+  workflowEntry: undefined,
+};
+
+const compactAttemptItem: ApiPoolUpstreamRequestAttempt = {
+  ...workflowSuccessAttemptItem,
+  attemptId: "ACOMPACT1",
+  invokeId: "COMPACT1QK",
+  occurredAt: "2026-07-11T12:01:00.000Z",
+  endpoint: "/v1/responses/compact",
+  stickyKey: null,
+  requestModel: "gpt-5-compact",
+  responseModel: "gpt-5-compact",
+  compactionRequestKind: "compact",
+  compactionResponseKind: "compact",
+  imageIntent: "no",
+  createdAt: "2026-07-11T12:01:00.000Z",
+  invocationRecord: undefined,
+  workflowEntry: undefined,
+};
+
+const attemptItems = [
+  imageAttemptItem,
+  remoteV2AttemptItem,
+  compactAttemptItem,
+  workflowSuccessAttemptItem,
+  workflowFailureAttemptItem,
+];
+
+function isAttemptTypeMatch(item: ApiPoolUpstreamRequestAttempt, type: string | null) {
+  if (!type) return true;
+  const isImage =
+    item.endpoint.startsWith("/v1/images/") ||
+    item.imageIntent === "yes" ||
+    item.imageIntent === "direct_image";
+  const isRemoteV2 =
+    item.endpoint === "/v1/responses" &&
+    (item.compactionRequestKind === "remote_v2" || item.compactionResponseKind === "remote_v2");
+  const isCompact =
+    item.endpoint === "/v1/responses/compact" ||
+    item.compactionRequestKind === "compact" ||
+    item.compactionResponseKind === "compact";
+  if (type === "image") return isImage;
+  if (type === "remote_v2") return isRemoteV2;
+  if (type === "compact") return isCompact;
+  if (type === "normal") return !isImage && !isRemoteV2 && !isCompact;
+  return true;
+}
+
+function filterAttemptItems(searchParams: URLSearchParams) {
+  const type = searchParams.get("type");
+  const model = searchParams.get("model")?.trim().toLowerCase() ?? "";
+  const stickyKey = searchParams.get("stickyKey")?.trim() ?? "";
+  return attemptItems.filter((item) => {
+    if (!isAttemptTypeMatch(item, type)) return false;
+    if (
+      model &&
+      ![item.requestModel, item.responseModel, item.model].some(
+        (candidate) => candidate?.trim().toLowerCase() === model,
+      )
+    ) {
+      return false;
+    }
+    if (stickyKey === "__unbound__") {
+      return item.stickyKey == null || item.stickyKey.trim() === "";
+    }
+    if (stickyKey && item.stickyKey !== stickyKey) return false;
+    return true;
+  });
+}
+
+function buildStickyKeyOptions(items: ApiPoolUpstreamRequestAttempt[]) {
+  const latestByKey = new Map<string, string>();
+  for (const item of items) {
+    const value = item.stickyKey?.trim() || "__unbound__";
+    const current = latestByKey.get(value);
+    if (!current || item.createdAt > current) latestByKey.set(value, item.createdAt);
+  }
+  return Array.from(latestByKey.entries())
+    .sort((left, right) => right[1].localeCompare(left[1]) || left[0].localeCompare(right[0]))
+    .map(([value, latestCreatedAt]) => ({ value, latestCreatedAt }));
+}
+
+function withAccountId(item: ApiPoolUpstreamRequestAttempt, accountId: number) {
+  return {
+    ...item,
+    upstreamAccountId: accountId,
+    invocationRecord: item.invocationRecord
+      ? { ...item.invocationRecord, upstreamAccountId: accountId }
+      : item.invocationRecord,
+    workflowEntry: item.workflowEntry
+      ? {
+          ...item.workflowEntry,
+          attempt: item.workflowEntry.attempt
+            ? { ...item.workflowEntry.attempt, upstreamAccountId: accountId }
+            : item.workflowEntry.attempt,
+        }
+      : item.workflowEntry,
+  };
+}
+
 function StorySurface({ children }: { children: ReactNode }) {
   return (
     <div className="bg-[#f6f1e7] px-6 py-6 text-base-content sm:px-8">
@@ -308,24 +437,19 @@ function AttemptTimelineFetchMock({ accountId }: { accountId: number }) {
         url.includes(`/api/pool/upstream-accounts/${accountId}/call-attempts/locate`) ||
         url.includes(`/api/pool/upstream-accounts/${accountId}/call-attempts?`)
       ) {
+        const parsedUrl = new URL(url, "http://storybook.local");
+        const locatedAttemptId = parsedUrl.searchParams.get("attemptId")?.trim();
+        const filteredItems = locatedAttemptId
+          ? attemptItems.filter(
+              (item) => item.attemptId === locatedAttemptId || item.attemptId === "AFAIL001",
+            )
+          : filterAttemptItems(parsedUrl.searchParams);
+        const items = filteredItems.map((item) => withAccountId(item, accountId));
         return new Response(
           JSON.stringify({
-            items: [workflowSuccessAttemptItem, workflowFailureAttemptItem].map((item) => ({
-              ...item,
-              upstreamAccountId: accountId,
-              invocationRecord: item.invocationRecord
-                ? { ...item.invocationRecord, upstreamAccountId: accountId }
-                : item.invocationRecord,
-              workflowEntry: item.workflowEntry
-                ? {
-                    ...item.workflowEntry,
-                    attempt: item.workflowEntry.attempt
-                      ? { ...item.workflowEntry.attempt, upstreamAccountId: accountId }
-                      : item.workflowEntry.attempt,
-                  }
-                : item.workflowEntry,
-            })),
-            total: 2,
+            items,
+            stickyKeyOptions: buildStickyKeyOptions(filteredItems),
+            total: items.length,
             page: 1,
             pageSize: 50,
           }),
@@ -447,20 +571,104 @@ async function verifyWorkflowParitySurface(canvasElement: HTMLElement) {
   });
 }
 
+function withAttemptTimelineFetchMock(Story: () => ReactNode) {
+  return (
+    <>
+      <AttemptTimelineFetchMock accountId={101} />
+      <Story />
+    </>
+  );
+}
+
+async function selectStoryOption(canvasElement: HTMLElement, testId: string, optionName: RegExp) {
+  const canvas = within(canvasElement);
+  await userEvent.click(await canvas.findByTestId(testId));
+  await userEvent.click(await within(document.body).findByRole("option", { name: optionName }));
+}
+
+async function selectStoryModel(canvasElement: HTMLElement, optionName: RegExp) {
+  const input = canvasElement.querySelector<HTMLInputElement>("#upstream-attempt-model-filter");
+  if (!input) throw new Error("missing model filter input");
+  await userEvent.click(input);
+  await userEvent.click(await within(canvasElement).findByRole("option", { name: optionName }));
+}
+
+async function typeStoryModel(canvasElement: HTMLElement, value: string) {
+  const input = canvasElement.querySelector<HTMLInputElement>("#upstream-attempt-model-filter");
+  if (!input) throw new Error("missing model filter input");
+  await userEvent.clear(input);
+  await userEvent.type(input, value);
+}
+
+export const DefaultRequestAttempts: Story = {
+  tags: ["test"],
+  args: {
+    accountId: 101,
+    focusedAttemptId: null,
+  },
+  decorators: [withAttemptTimelineFetchMock],
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      expect(canvasElement.textContent ?? "").toMatch(/一般|Normal/);
+      expect(canvasElement.textContent ?? "").toContain("image/edit");
+      expect(canvasElement.textContent ?? "").toMatch(/远程压缩V2|Remote compaction V2/);
+    });
+  },
+};
+
+export const TypeFilteredImageAttempts: Story = {
+  ...DefaultRequestAttempts,
+  play: async ({ canvasElement }) => {
+    await selectStoryOption(canvasElement, "upstream-attempt-type-filter", /image/i);
+    await waitFor(() => {
+      expect(canvasElement.textContent ?? "").toContain("AIMAGE001");
+      expect(canvasElement.textContent ?? "").not.toContain("AREMOTEV2");
+    });
+  },
+};
+
+export const ModelFilteredAttempts: Story = {
+  ...DefaultRequestAttempts,
+  play: async ({ canvasElement }) => {
+    await selectStoryModel(canvasElement, /gpt-image-1/i);
+    await waitFor(() => {
+      expect(canvasElement.textContent ?? "").toContain("AIMAGE001");
+      expect(canvasElement.textContent ?? "").not.toContain("ACOMPACT1");
+    });
+  },
+};
+
+export const ConversationFilteredAttempts: Story = {
+  ...DefaultRequestAttempts,
+  play: async ({ canvasElement }) => {
+    await selectStoryOption(canvasElement, "upstream-attempt-conversation-filter", /sticky-image/i);
+    await waitFor(() => {
+      expect(canvasElement.textContent ?? "").toContain("AIMAGE001");
+      expect(canvasElement.textContent ?? "").not.toContain("AREMOTEV2");
+    });
+  },
+};
+
+export const EmptyFilteredAttempts: Story = {
+  ...DefaultRequestAttempts,
+  play: async ({ canvasElement }) => {
+    await typeStoryModel(canvasElement, "missing-model");
+    await waitFor(() => {
+      expect(canvasElement.textContent ?? "").toMatch(/没有该账号的尝试请求|No request attempts/);
+      expect(
+        canvasElement.querySelector('[data-testid="upstream-account-attempt-filter-bar"]'),
+      ).not.toBeNull();
+    });
+  },
+};
+
 export const FullWorkflowSuccessAttempt: Story = {
   args: {
     accountId: 101,
     focusedAttemptId: "ASUCC002",
     focusVersion: 1,
   },
-  decorators: [
-    (Story) => (
-      <>
-        <AttemptTimelineFetchMock accountId={101} />
-        <Story />
-      </>
-    ),
-  ],
+  decorators: [withAttemptTimelineFetchMock],
   play: async ({ canvasElement }) => {
     await verifyWorkflowParitySurface(canvasElement);
   },

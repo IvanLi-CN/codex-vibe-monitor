@@ -330,11 +330,17 @@ describe("upstream account attempts", () => {
       }) as typeof fetch,
     );
 
-    await fetchUpstreamAccountAttempts(42, { page: 3, pageSize: 25 });
+    await fetchUpstreamAccountAttempts(42, {
+      type: "image",
+      model: "gpt-image-1",
+      stickyKey: "__unbound__",
+      page: 3,
+      pageSize: 25,
+    });
     await locateUpstreamAccountAttempt(42, "4V7MYPJG", { pageSize: 25 });
 
     expect(requestedUrls).toEqual([
-      "/api/pool/upstream-accounts/42/call-attempts?page=3&pageSize=25",
+      "/api/pool/upstream-accounts/42/call-attempts?page=3&pageSize=25&type=image&model=gpt-image-1&stickyKey=__unbound__",
       "/api/pool/upstream-accounts/42/call-attempts/locate?attemptId=4V7MYPJG&pageSize=25",
     ]);
   });
