@@ -496,12 +496,15 @@ pub(crate) async fn sticky_affinity_generation_matches(
     Ok(current_generation == expected_generation)
 }
 
-pub(crate) async fn upsert_sticky_route(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn upsert_sticky_route_executor<'e, E>(
+    executor: E,
     sticky_key: &str,
     account_id: i64,
     now_iso: &str,
-) -> Result<()> {
+) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     sqlx::query(
         r#"
         INSERT INTO pool_sticky_routes (
@@ -516,9 +519,18 @@ pub(crate) async fn upsert_sticky_route(
     .bind(sticky_key)
     .bind(account_id)
     .bind(now_iso)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
+}
+
+pub(crate) async fn upsert_sticky_route(
+    pool: &Pool<Sqlite>,
+    sticky_key: &str,
+    account_id: i64,
+    now_iso: &str,
+) -> Result<()> {
+    upsert_sticky_route_executor(pool, sticky_key, account_id, now_iso).await
 }
 
 pub(crate) async fn delete_sticky_route_executor<'e, E>(executor: E, sticky_key: &str) -> Result<()>
