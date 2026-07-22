@@ -22,7 +22,6 @@ import type {
   PromptCacheConversationsResponse,
   UpstreamAccountActivityResponse,
 } from "../../lib/api";
-import { metricAccent } from "../../lib/chartTheme";
 import {
   type DashboardWorkingConversationInvocationSelection,
   formatDashboardWorkingConversationSequenceId,
@@ -179,12 +178,6 @@ async function openBulkClearBindingDialog(canvasElement: HTMLElement) {
   }
 
   return { dialog, footer, callout };
-}
-
-function normalizeCssColor(value: string) {
-  const sample = document.createElement("div");
-  sample.style.color = value;
-  return sample.style.color;
 }
 
 function jsonResponse(payload: unknown, status = 200) {
@@ -2095,6 +2088,112 @@ const wideDesktopResponse = createResponse([
   ]),
 ]);
 
+const summaryThresholdResponse = createResponse([
+  createConversation("pck-story-threshold-default", [
+    createPreview({
+      id: 301,
+      invokeId: "story-threshold-default-current",
+      occurredAt: "2026-04-04T10:06:00Z",
+      status: "running",
+      totalTokens: 1_000,
+      inputTokens: 700,
+      outputTokens: 200,
+      cacheInputTokens: 955,
+      cost: 0.0586,
+      reasoningTokens: 20,
+    }),
+    createPreview({
+      id: 300,
+      invokeId: "story-threshold-warning-previous",
+      occurredAt: "2026-04-04T10:05:00Z",
+      status: "completed",
+      totalTokens: 1_000,
+      inputTokens: 700,
+      outputTokens: 200,
+      cacheInputTokens: 899,
+      cost: 0.1001,
+      reasoningTokens: 20,
+    }),
+  ]),
+  createConversation("pck-story-threshold-error", [
+    createPreview({
+      id: 311,
+      invokeId: "story-threshold-error-current",
+      occurredAt: "2026-04-04T10:04:30Z",
+      status: "completed",
+      totalTokens: 1_000,
+      inputTokens: 700,
+      outputTokens: 200,
+      cacheInputTokens: 499,
+      cost: 0.5001,
+      reasoningTokens: 20,
+    }),
+  ]),
+]);
+
+const summaryThresholdUpstreamActivity = {
+  ...createUpstreamAccountActivityStoryResponse(4),
+  accounts: [
+    {
+      ...createUpstreamAccountActivityStoryResponse(4).accounts[0],
+      recentInvocations: [
+        createPreview({
+          id: 320,
+          invokeId: "story-upstream-threshold-warning",
+          promptCacheKey: "story-upstream-threshold-warning",
+          occurredAt: "2026-04-04T10:05:00Z",
+          status: "success",
+          totalTokens: 1_000,
+          inputTokens: 700,
+          outputTokens: 200,
+          cacheInputTokens: 899,
+          cost: 0.1001,
+          reasoningTokens: 20,
+        }),
+        createPreview({
+          id: 321,
+          invokeId: "story-upstream-threshold-error",
+          promptCacheKey: "story-upstream-threshold-error",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "failed",
+          totalTokens: 1_000,
+          inputTokens: 700,
+          outputTokens: 200,
+          cacheInputTokens: 499,
+          cost: 0.5001,
+          reasoningTokens: 20,
+        }),
+        createPreview({
+          id: 322,
+          invokeId: "story-upstream-threshold-default",
+          promptCacheKey: "story-upstream-threshold-default",
+          occurredAt: "2026-04-04T10:03:00Z",
+          status: "success",
+          totalTokens: 1_000,
+          inputTokens: 700,
+          outputTokens: 200,
+          cacheInputTokens: 900,
+          cost: 0.1,
+          reasoningTokens: 20,
+        }),
+        createPreview({
+          id: 323,
+          invokeId: "story-upstream-threshold-boundary",
+          promptCacheKey: "story-upstream-threshold-boundary",
+          occurredAt: "2026-04-04T10:02:00Z",
+          status: "success",
+          totalTokens: 1_000,
+          inputTokens: 700,
+          outputTokens: 200,
+          cacheInputTokens: 500,
+          cost: 0.5,
+          reasoningTokens: 20,
+        }),
+      ],
+    },
+  ],
+} satisfies UpstreamAccountActivityResponse;
+
 function buildVirtualizedLargeResponse(
   prefix: string,
   total: number,
@@ -3283,15 +3382,23 @@ export const CurrentAndPrevious: Story = {
     const usageLine = currentSlot.querySelector(
       '[data-testid="dashboard-working-conversation-usage-line"]',
     );
+    const usageHit = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-hit"]',
+    );
     const usageCost = currentSlot.querySelector(
       '[data-testid="dashboard-working-conversation-usage-cost"]',
     );
-    if (!(usageLine instanceof HTMLElement) || !(usageCost instanceof HTMLElement)) {
+    if (
+      !(usageLine instanceof HTMLElement) ||
+      !(usageHit instanceof HTMLElement) ||
+      !(usageCost instanceof HTMLElement)
+    ) {
       throw new Error("missing compact usage line");
     }
     await expect(usageLine).toHaveTextContent(/Hit .*Token .*\$/);
     await expect(usageLine.textContent ?? "").not.toMatch(/\bIN\b|\bCW\b|\bO\b/);
-    await expect(usageCost.style.color).toBe(normalizeCssColor(metricAccent("totalCost", "light")));
+    await expect(usageHit).toHaveAttribute("data-summary-tone", "warning");
+    await expect(usageCost).toHaveAttribute("data-summary-tone", "warning");
     await expect(currentSlot).not.toHaveTextContent(/RQ |UP |ED |TT /);
   },
 };
@@ -4045,6 +4152,15 @@ export const UpstreamAccountTab: Story = {
     await expect(canvas.getByTestId("dashboard-upstream-account-network-speed")).toHaveTextContent(
       "46",
     );
+    const attentionBadges = canvas.getByTestId("dashboard-upstream-account-attention-badges");
+    await expect(attentionBadges).not.toHaveClass("rounded-full");
+    await expect(attentionBadges).not.toHaveClass("border-base-300/70");
+    await expect(attentionBadges).not.toHaveClass("bg-base-100/86");
+    const attentionBadgeButtons = await canvas.findAllByTestId(
+      "dashboard-upstream-account-attention-badge",
+    );
+    await expect(attentionBadgeButtons).toHaveLength(2);
+    expect(attentionBadges.querySelector("button")).toBe(attentionBadgeButtons[0]);
     await expect(canvas.queryByTestId("dashboard-upstream-account-routing-settings")).toBeNull();
     await expect(
       canvasElement.querySelector('[data-testid="dashboard-upstream-account-status"]'),
@@ -4106,6 +4222,37 @@ export const UpstreamAccountTab: Story = {
     await expect(imageBadge.className).toMatch(/rounded-full/);
     await expect(imageBadge.className).toMatch(/border/);
     await expect(firstRecentRow).not.toHaveTextContent(/RQ |UP |ED |TT /);
+    await expect(firstRecentRow).not.toHaveTextContent(/\bIN\b|\bCW\b|\bO\b|\bT\b/);
+    const recentSummaryLine = firstRecentRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-summary-line"]',
+    );
+    const recentMetaLine = firstRecentRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-meta-line"]',
+    );
+    const recentSummaryHit = firstRecentRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-summary-hit"]',
+    );
+    const recentSummaryCost = firstRecentRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-summary-cost"]',
+    );
+    if (
+      !(recentSummaryLine instanceof HTMLElement) ||
+      !(recentMetaLine instanceof HTMLElement) ||
+      !(recentSummaryHit instanceof HTMLElement) ||
+      !(recentSummaryCost instanceof HTMLElement)
+    ) {
+      throw new Error("missing upstream account summary line");
+    }
+    await expect(recentSummaryLine).toHaveTextContent(/Hit .*Token .*\$/);
+    expect(
+      recentSummaryLine.compareDocumentPosition(recentMetaLine) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    await expect(recentSummaryHit).toHaveAttribute("data-summary-tone", "warning");
+    await expect(recentSummaryCost).toHaveAttribute("data-summary-tone", "warning");
+    await expect(recentSummaryLine).toHaveAttribute(
+      "title",
+      expect.stringContaining("Cache write:"),
+    );
     await expect(
       canvas.getAllByTestId("dashboard-upstream-account-recent-identity-chip"),
     ).toHaveLength(4);
@@ -4133,6 +4280,104 @@ export const UpstreamAccountTab: Story = {
       description: {
         story:
           "Dashboard workspace section switched to the upstream-account tab, showing one enlarged active-account card with account-level KPIs and the dynamic recent invocation window in the selected range, including lightweight short conversation identity chips and request/response model mismatch rows.",
+      },
+    },
+  },
+};
+
+export const SummaryThresholdTones: Story = {
+  args: {
+    activeRange: "today",
+    cards: [],
+    isLoading: false,
+    error: null,
+  },
+  render: () => (
+    <DrawerPreviewStory
+      response={summaryThresholdResponse}
+      upstreamAccountActivity={summaryThresholdUpstreamActivity}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const currentSlot = await canvas.findByTestId("dashboard-working-conversation-slot");
+    const currentHit = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-hit"]',
+    );
+    const currentCost = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-usage-cost"]',
+    );
+    if (!(currentHit instanceof HTMLElement) || !(currentCost instanceof HTMLElement)) {
+      throw new Error("missing threshold conversation summary fields");
+    }
+    await expect(currentHit).toHaveTextContent("Hit 95.5%");
+    await expect(currentHit).toHaveAttribute("data-summary-tone", "default");
+    await expect(currentCost).toHaveTextContent("$0.0586");
+    await expect(currentCost).toHaveAttribute("data-summary-tone", "default");
+
+    const slots = canvasElement.querySelectorAll(
+      '[data-testid="dashboard-working-conversation-slot"]',
+    );
+    const warningSlot = slots[1];
+    const errorSlot = slots[2];
+    if (!(warningSlot instanceof HTMLElement) || !(errorSlot instanceof HTMLElement)) {
+      throw new Error("missing threshold comparison slots");
+    }
+    await expect(
+      warningSlot.querySelector('[data-testid="dashboard-working-conversation-usage-hit"]'),
+    ).toHaveAttribute("data-summary-tone", "warning");
+    await expect(
+      warningSlot.querySelector('[data-testid="dashboard-working-conversation-usage-cost"]'),
+    ).toHaveAttribute("data-summary-tone", "warning");
+    await expect(
+      errorSlot.querySelector('[data-testid="dashboard-working-conversation-usage-hit"]'),
+    ).toHaveAttribute("data-summary-tone", "error");
+    await expect(
+      errorSlot.querySelector('[data-testid="dashboard-working-conversation-usage-cost"]'),
+    ).toHaveAttribute("data-summary-tone", "error");
+
+    const accountTab = await canvas.findByRole("tab", { name: "上游账号" });
+    await userEvent.click(accountTab);
+    const recentRows = await canvas.findAllByTestId("dashboard-upstream-account-recent-row");
+    await expect(
+      recentRows[0]?.querySelector('[data-testid="dashboard-upstream-account-recent-summary-hit"]'),
+    ).toHaveAttribute("data-summary-tone", "warning");
+    await expect(
+      recentRows[0]?.querySelector(
+        '[data-testid="dashboard-upstream-account-recent-summary-cost"]',
+      ),
+    ).toHaveAttribute("data-summary-tone", "warning");
+    await expect(
+      recentRows[1]?.querySelector('[data-testid="dashboard-upstream-account-recent-summary-hit"]'),
+    ).toHaveAttribute("data-summary-tone", "error");
+    await expect(
+      recentRows[1]?.querySelector(
+        '[data-testid="dashboard-upstream-account-recent-summary-cost"]',
+      ),
+    ).toHaveAttribute("data-summary-tone", "error");
+    await expect(
+      recentRows[2]?.querySelector('[data-testid="dashboard-upstream-account-recent-summary-hit"]'),
+    ).toHaveTextContent("Hit 90%");
+    await expect(
+      recentRows[2]?.querySelector(
+        '[data-testid="dashboard-upstream-account-recent-summary-cost"]',
+      ),
+    ).toHaveTextContent("$0.1000");
+    await expect(
+      recentRows[3]?.querySelector('[data-testid="dashboard-upstream-account-recent-summary-hit"]'),
+    ).toHaveTextContent("Hit 50%");
+    await expect(
+      recentRows[3]?.querySelector(
+        '[data-testid="dashboard-upstream-account-recent-summary-cost"]',
+      ),
+    ).toHaveTextContent("$0.5000");
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Threshold gallery for conversation slots and upstream-account recent rows, showing default, warning, error, and strict boundary states with the unified Hit / Token / cost summary contract.",
       },
     },
   },
@@ -4466,7 +4711,11 @@ export const UpstreamAccountHeaderActions: Story = {
     const attentionBadges = await canvas.findByTestId(
       "dashboard-upstream-account-attention-badges",
     );
-    await userEvent.click(attentionBadges);
+    const [firstAttentionBadge] = await canvas.findAllByTestId(
+      "dashboard-upstream-account-attention-badge",
+    );
+    expect(attentionBadges.querySelector("button")).toBe(firstAttentionBadge);
+    await userEvent.click(firstAttentionBadge);
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
       "account:42:healthEvents",
     );

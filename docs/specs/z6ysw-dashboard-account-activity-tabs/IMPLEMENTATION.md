@@ -15,7 +15,7 @@
 - 已实现：Dashboard 工作区头部控制条重新对齐 spec 基线，桌面布局恢复为“左侧 tabs、右侧 当前对话 badge + 排序按钮”的紧凑顺序，不再出现 `badge -> tabs -> 排序` 的错误节奏；对应视觉证据已刷新为当前实现。
 - 已实现：Dashboard `上游账号` 视图的 background refresh 提示从占位 chip 收口为头部轻量状态表达；桌面端改为非 badge 的 spinner + `刷新中` 文本并固定放在“当前活动账号”计数 badge 左侧，移动端只保留 spinner 视觉表现，idle 时不再预留隐藏宽度空白，同时继续沿用既有 `300ms` show delay 与 `600ms` 最短可见时长。
 - 已实现：workspace sort 的 `createdAt / lastInvocation / cost / tokens` 4 种模式已全部统一为倒序；账号视图中的 `未分配上游账号` 聚合项无论当前排序模式为何，都会统一收在所有已分配账号之后，再在未分配项内部沿用当前倒序规则。
-- 已实现：Dashboard 对话卡片 `当前调用 / 上一条调用` 槽位的可见 `用量` 行已收敛为 `Hit · Token · $` 三项；`Hit` 固定按 `cacheInputTokens / totalTokens` 计算，可见成本值复用金额主题 accent，而完整 `输入 / Cache write / 缓存输入 / 输出 / 总 Tokens / 成本 / 推理 Tokens` 诊断明细继续保留在 hover/title。
+- 已实现：Dashboard 对话卡片 `当前调用 / 上一条调用` 槽位与上游账号 recent 行的可见调用摘要已统一收敛为 `Hit · Token · $` 三项；`Hit` 固定按 `cacheInputTokens / totalTokens` 计算，完整 `输入 / Cache write / 缓存输入 / 输出 / 总 Tokens / 成本 / 推理 Tokens` 诊断明细继续保留在 hover/title/aria。
 
 - 已实现：Dashboard 页面提升并共享顶部 range 状态，工作区 section 接入 `对话 / 上游账号` 双 tabs，并保留既有对话 working-set 行为。
 - 已实现：Dashboard 工作区 tabs 额外持久化用户上次主动选择的视图；重新打开 Dashboard 或切回总览页时，在当前 range 允许的前提下恢复该视图；`usage` 仅临时强制回退到 `对话`，不会覆盖已记住的 `上游账号` 偏好。
@@ -24,7 +24,8 @@
 - 已实现：账号 tab 懒加载、`usage` disabled + 自动回退、独立账号卡布局、Storybook 交互场景、视觉证据与 targeted validation。
 - 已实现：账号卡收敛为紧凑信息卡，移除状态说明条和解释性废话；请求数 / Token 分解仅保留色点与数值，连单字 / 缩写短标签也不常驻显示，完整标签通过 hover 暴露；recent 区标题行右侧统计保留完整状态文字并与标题垂直对齐。
 - 已实现：账号卡内部结构描边统一压回低对比中性边框，外框、摘要格子、recent 行与分隔线不再复用主题蓝或其他语义色作为结构边界；颜色仅保留在状态点、数值和 badge 上。
-- 已实现：账号卡底部 4 条 recent 调用记录全部留在卡内可见，单条 recent 行补齐 endpoint、Token 摘要与 `RQ / UP / ED / TT` 时序摘要，使信息密度不低于对话卡片中的调用记录。
+- 已实现：账号卡底部 4 条 recent 调用记录全部留在卡内可见，单条 recent 行复用对话卡片同一套 `Hit · Token · $` 摘要 contract；旧的 `IN / CW / C / O / T` 与 `RQ / UP / ED / TT` 正文已退出常驻卡面，明细改保留在 hover/title/aria。
+- 已实现：单次调用摘要的 `Hit` 与成本着色已统一走共享阈值 helper：`Hit < 90%` 为 warning、`Hit < 50%` 为 error；`cost > 0.1` 为 warning、`cost > 0.5` 为 error；四个边界值按严格比较停留在较低一档。
 - 已实现：桌面宽屏账号卡固定高度收敛到更紧凑值，避免整页面板观感，同时保持 4 条 recent 记录完整可见。
 - 已实现：上游账号 recent 行改为“对话短 ID + 请求 ID”主标识布局，短 ID 基于真实 `promptCacheKey` 计算并去掉 `WC-` 前缀；点击详情时传递的 `selection.promptCacheKey` 也已修正为真实对话键。
 - 已实现：上游账号 recent 行的对话短 ID 从“连续色圆点 + 短码”收口为轻量 identity chip；chip 以短码文本为主识别，颜色降为离散辅助槽位，不再与状态徽标混淆语义。
@@ -37,6 +38,7 @@
 - 已实现：运行中调用统一拆为 `queued / requesting / responding` 三阶段；`StatsResponse`、账号活动接口与 invocation preview 暴露 `inProgressPhaseCounts` / `livePhase`，Dashboard 上游账号卡标题区与 recent bridge 均读取账号级 live 统计，不再从卡内 recent 列表推导运行态数量。
 - 已实现：上游账号卡片四组周期统计改为整张统计卡触发结构化 tooltip；浮层按主值、当前字段、相关数据分层展示字段名和值，并关闭卡内分解段落的逐段 tooltip，避免嵌套触发区域。
 - 已实现：账号活动接口返回每个账号的 `effectiveRoutingRule` 与最小账号状态字段；Dashboard 账号卡标题区固定展示优先级、Fast 模式、`禁出`、`禁入` 快捷策略 chip，并只把异常/注意态状态渲染为可点击 badge 集合。
+- 已实现：账号卡标题区的异常/注意状态 badge 集合已移除额外外层胶囊；`上游拒绝 / 限流` 等状态现在直接作为独立 chip 并排显示，外层容器只负责排版，每个 chip 自身继续作为 `healthEvents` 入口。
 - 已实现：Dashboard 账号卡快捷策略入口使用乐观 UI + 1 秒 debounce 写入账号级 `routingRule` 覆盖；优先级入口按 `普通 → 兜底 → 主力 → 禁新 → 普通` 轮换并写 `priorityTier=normal|fallback|primary|no_new`，Fast 模式按 `不改Fast → 补Fast → 强制Fast → 禁Fast → 不改Fast` 轮换，`禁出 / 禁入` 分别写账号级 `allowCutOut / allowCutIn`，该入口不提供恢复继承。
 - 已实现：Dashboard 账号卡快捷策略 chip 使用独立语义 tone helper；`普通 / 不改Fast` 为 neutral，`兜底 / 补Fast` 为 success，`主力 / 强制Fast` 为 primary，`禁新 / 禁Fast / 激活禁出 / 激活禁入` 为 warning，并通过 `data-policy-tone` 固化回归检查。
 - 已覆盖：Dashboard 上游账号快捷策略语义色在浅色与深色 Storybook 场景中同屏展示 success / primary / warning / neutral 四个色槽，并写入 `SPEC.md` 视觉证据。

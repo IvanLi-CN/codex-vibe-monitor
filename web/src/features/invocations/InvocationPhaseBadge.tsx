@@ -164,34 +164,55 @@ export function InvocationPhaseSegments({
         {items.map((item) => {
           const display = getInvocationPhaseDisplay(item.phase);
           const label = t(display.labelKey);
+          const sharedClassName = cn(
+            "inline-flex items-center whitespace-nowrap text-[11px] font-semibold leading-none tabular-nums text-base-content/68",
+            showLabel ? "gap-1.5" : "gap-1",
+            itemClassName,
+          );
+          const icon = (
+            <AppIcon
+              name={phaseIconName(item.phase, motion)}
+              data-testid="invocation-phase-icon"
+              data-phase-icon-name={phaseIconName(item.phase, motion)}
+              className={cn(
+                "h-3.5 w-3.5 shrink-0",
+                PHASE_TEXT_CLASSNAMES[item.phase],
+                phaseMotionClassName(item.phase, motion),
+              )}
+              aria-hidden="true"
+            />
+          );
+
+          if (!showLabel) {
+            return (
+              <span
+                key={item.phase}
+                data-testid="invocation-phase-segment"
+                data-phase={item.phase}
+                data-phase-motion={motion}
+                data-phase-label-visible="false"
+                role="img"
+                aria-label={`${label} ${item.value}`}
+                title={`${label} ${item.value}`}
+                className={sharedClassName}
+              >
+                {icon}
+                <span className="font-mono text-base-content/86">{item.value}</span>
+              </span>
+            );
+          }
+
           return (
             <span
               key={item.phase}
               data-testid="invocation-phase-segment"
               data-phase={item.phase}
               data-phase-motion={motion}
-              data-phase-label-visible={showLabel ? "true" : "false"}
-              role={showLabel ? undefined : "img"}
-              className={cn(
-                "inline-flex items-center whitespace-nowrap text-[11px] font-semibold leading-none tabular-nums text-base-content/68",
-                showLabel ? "gap-1.5" : "gap-1",
-                itemClassName,
-              )}
-              aria-label={showLabel ? undefined : `${label} ${item.value}`}
-              title={showLabel ? undefined : `${label} ${item.value}`}
+              data-phase-label-visible="true"
+              className={sharedClassName}
             >
-              <AppIcon
-                name={phaseIconName(item.phase, motion)}
-                data-testid="invocation-phase-icon"
-                data-phase-icon-name={phaseIconName(item.phase, motion)}
-                className={cn(
-                  "h-3.5 w-3.5 shrink-0",
-                  PHASE_TEXT_CLASSNAMES[item.phase],
-                  phaseMotionClassName(item.phase, motion),
-                )}
-                aria-hidden="true"
-              />
-              {showLabel ? <span>{label}</span> : null}
+              {icon}
+              <span>{label}</span>
               <span className="font-mono text-base-content/86">{item.value}</span>
             </span>
           );

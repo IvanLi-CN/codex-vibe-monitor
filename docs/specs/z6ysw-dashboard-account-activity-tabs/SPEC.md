@@ -64,6 +64,7 @@
 - 账号卡必须保持紧凑信息卡定位；在桌面宽屏下允许按放大卡呈现，但不得因为固定高度或装饰性留白把视觉效果拉成整页面板。
 - 单账号卡标题行必须展示账号名、异常/注意状态 badge 集合、计划/活动状态、固定快捷策略 chip、账号 ID 与路由设置按钮，并把实时主指标 `进行中调用`、`TPM`、`消费速率` 作为文本型行内指标放在同一顶部区域；`进行中调用` 必须来自账号活动接口的 `inProgressInvocationCount`，当值为 `null` 时显示 `—`；标题区还必须用紧凑 chips 拆分展示 `排队中 / 请求中 / 响应中`，数值只取账号活动接口的 `inProgressPhaseCounts`，不得从卡内 `recentInvocations` 推导；不得用卡片型容器展示这些实时指标，且账号卡内不得再渲染 `渠道 xxx / 分组` 或顶部 `调用` 指标。
 - 账号卡标题行的状态 badge 集合只显示异常/注意态，不为正常/空闲状态保留占位；集合至少覆盖 `禁用`、`同步中`、`上游拒绝`、`上游不可达`、`需重登`、`限流`、`降级`、`其它异常` 等状态，点击集合必须打开当前账号详情的 `healthEvents` 标签页。
+- 状态 badge 集合里的每个状态都必须作为独立 chip 并排显示；不得再额外渲染包裹这些状态 chip 的外层胶囊、group badge 或二次描边。
 - 账号卡标题行的快捷策略 chip 必须固定展示账号级快速操作入口：优先级、Fast 模式、`禁出`、`禁入`；优先级入口按 `普通 → 兜底 → 主力 → 禁新 → 普通` 轮换，并分别写账号级 `priorityTier=normal|fallback|primary|no_new`；Fast 模式按 `不改Fast → 补Fast → 强制Fast → 禁Fast → 不改Fast` 轮换，并写账号级 `fastModeRewriteMode=keep_original|fill_missing|force_add|force_remove`；`禁出 / 禁入` 分别切换账号级 `allowCutOut / allowCutIn`。Dashboard 快捷入口不得清除账号覆盖或恢复继承。
 - Dashboard 快捷策略保存必须使用乐观 UI 与 1 秒 debounce；debounce 窗口内只提交最终值，失败时回滚到最近已提交状态，并在账号卡内暴露可见错误。保存复用 `PATCH /api/pool/upstream-accounts/:id` 的 `routingRule` payload，不新增 mutation endpoint。
 - 账号卡右侧必须提供齿轮 icon button；点击后打开当前账号详情的 `routing` 标签页。
@@ -84,8 +85,8 @@
 - 账号卡内部所有结构性描边（外框、摘要格子、recent 行、分隔线）必须统一使用低对比中性边框，不得把主题主色、语义色或任意彩色边框用于结构分割；颜色只保留给状态点、数值与徽章等语义元素。
 - recent bridge 作为 recent 区标题行右侧统计例外，必须显示完整状态文字；运行态必须拆成 `排队中 / 请求中 / 响应中`，数值来自账号级 `inProgressPhaseCounts`，终态继续使用账号级 `successCount / failureCount / nonSuccessCount`，并与左侧“最近 4 条调用”标题保持同一垂直对齐节奏。
 - 单账号卡下半部分必须展示当前范围内最近 4 条调用记录，复用现有紧凑调用行语言，而不是再做卡中卡；4 条记录必须在卡内完整可见，不得依赖展开、滚动或裁切。
-- 账号卡内每条 recent 调用记录的信息密度不得低于 Dashboard 对话卡片中的调用记录：至少需要覆盖状态、模型、endpoint、Token 用量摘要，以及 `RQ / UP / ED / TT` 时序摘要。
-- Dashboard 对话卡片 `当前调用 / 上一条调用` 槽位中的可见用量行必须收敛为 `Hit <percent> · Token <total> · <cost>` 三项；`Hit` 口径固定为 `cacheInputTokens / totalTokens`，可见成本值复用项目金额主题色，完整 `输入 / Cache write / 缓存输入 / 输出 / 总 Tokens / 成本 / 推理 Tokens` 诊断明细继续只通过 hover / title 暴露。
+- 账号卡内每条 recent 调用记录的信息密度不得低于 Dashboard 对话卡片中的调用记录：至少需要覆盖状态、模型、endpoint，以及与对话卡片一致的 `Hit <percent> · Token <total> · <cost>` 三字段摘要。完整 token / cost / reasoning 诊断明细继续只通过 hover、focus、long-press、title 或等价可访问说明暴露，不再把 `IN / CW / C / O / T` 或 `RQ / UP / ED / TT` 作为 recent 行常驻正文。
+- Dashboard 对话卡片 `当前调用 / 上一条调用` 槽位中的可见用量行必须收敛为 `Hit <percent> · Token <total> · <cost>` 三项；`Hit` 口径固定为 `cacheInputTokens / totalTokens`。`Hit` 默认普通正文色，`< 90%` 升级为 warning，`< 50%` 升级为 error；成本默认普通正文色，`> 0.1` 升级为 warning，`> 0.5` 升级为 error，边界值按字面严格比较且停留在较低一档。完整 `输入 / Cache write / 缓存输入 / 输出 / 总 Tokens / 成本 / 推理 Tokens` 诊断明细继续只通过 hover / title 暴露。
 - Dashboard 工作区 `对话` tab 的 recent/current 调用错误摘要，以及 `上游账号` tab recent 行错误摘要，必须统一保持单行省略；摘要文本本身就是 tooltip trigger，hover / focus / long-press 时使用 UI 库 tooltip 在 trigger 下方优先展示完整错误，除非浮层系统因视口避让自动翻转；不得依赖浏览器原生 `title` 作为最终交互。
 - 宽屏上游账号双列 grid 必须使用可缩小 track；账号卡、recent 调用行与错误摘要 trigger 必须组成连续的 `min-w-0` / 最大宽度约束链，确保任意长度的错误载荷都不能扩大 grid track、账号卡或 recent 行。
 - 账号卡 recent 调用记录的主标识行必须改为“对话短 ID + 分隔符/图标 + 请求 ID”；其中对话短 ID 固定基于真实 `promptCacheKey` 走既有 working-conversation 哈希与格式化规则，展示值去掉 `WC-` 前缀；请求 ID 显示完整 `invokeId` 并允许单行截断。
@@ -195,6 +196,7 @@
 - Given 用户连续点击 Fast 模式入口，When 状态轮换，Then 顺序必须为 `不改Fast → 补Fast → 强制Fast → 禁Fast → 不改Fast`，且 1 秒 debounce 内只提交最终账号级 `fastModeRewriteMode`。
 - Given 用户点击 `禁出 / 禁入`，When 状态切换，Then UI 立即乐观更新，并在 1 秒后保存账号级 `allowCutOut / allowCutIn` 覆盖；失败时回滚并显示卡内错误。
 - Given 账号状态为异常/注意态，When 账号卡渲染，Then 状态 badge 集合只显示异常/注意态；点击该集合打开账号详情 `healthEvents` 标签页。
+- Given 账号卡标题区同时存在多个异常/注意状态，When 渲染 `上游拒绝 / 限流` 等 badge，Then 每个 badge 直接并排显示，不再出现把它们整体包起来的外层 chip。
 - Given 用户点击账号卡齿轮按钮，When 打开账号详情，Then 必须进入 `routing` 标签页。
 - Given 查看账号卡周期统计，When 卡片渲染完成，Then 可见四组统计：`首字用时 + 响应时间`、`请求数 + 成功 / 失败 / 其他`、`成本 + 失败 / 失败成本比率(%)`、`Token + 缓存命中率 / 失败`，且所有数值使用滚动数字效果；当 `failureCost=0` 时，成本组失败成本比率显示为 `0%`。
 - Given 查看账号卡四组周期统计，When 对任一统计卡 hover、focus、点击或移动端长按，Then 整张统计卡打开结构化浮层，浮层明确展示主字段名和值、卡面已有分解字段名和值，以及 0 到 3 个相关补充数据。
@@ -209,8 +211,9 @@
 - Given 用户点击某账号 recent 行里的对话短 ID identity chip，When 交互发生，Then 只打开对应 `promptCacheKey` 的对话详情抽屉，不会误打开调用详情抽屉。
 - Given 查看账号卡摘要区，When 卡片处于常驻态，Then 不出现解释性废话或状态说明条，请求数 / Token 分解只显示色点与数值，且不出现任何可见文字标签。
 - Given 查看账号卡 recent 区标题行，When 右侧存在 recent bridge 统计，Then 显示完整状态文字，并与左侧“最近 4 条调用”标题保持同一垂直对齐。
-- Given 查看账号卡内 recent 调用记录，When 与对话卡片调用记录对照，Then recent 行至少包含状态、模型、endpoint、Token 摘要与 `RQ / UP / ED / TT` 时序摘要，且 4 条记录完整留在卡内。
+- Given 查看账号卡内 recent 调用记录，When 与对话卡片调用记录对照，Then recent 行显示同一套 `Hit`、`Token` 与成本三字段摘要，不出现可见的 `IN / CW / C / O / T` 或 `RQ / UP / ED / TT` 正文片段，且 4 条记录完整留在卡内。
 - Given 查看 Dashboard 对话卡片的 `当前调用` 或 `上一条调用` 槽位，When 卡面处于常驻态，Then `用量` 行只显示 `Hit`、`Token` 与成本 3 项，不出现可见的 `IN / CW / C / O` 片段；hover/title 仍保留完整 token、成本与推理诊断明细。
+- Given `Hit` 或成本位于阈值边界，When `Hit=90% / 50%` 或 `cost=0.1 / 0.5`，Then 显示仍停留在较低一档；When `Hit=89.9% / 49.9%` 或 `cost=0.1001 / 0.5001`，Then 分别升级为 warning / error。
 - Given 账号卡 recent 调用记录所在账号已由大卡标题表达，When 查看 recent 行辅助元信息，Then 不再重复渲染账号名。
 - Given 账号卡 recent 调用记录的 `requestModel` 与 `responseModel` 规范化后不一致，When recent 行渲染模型区域，Then 同时显示请求模型、模型切换图标与响应模型；若两者等价，则只显示单模型。
 - Given 点击账号卡 recent 调用记录打开详情，When 详情抽屉接收 selection，Then `selection.promptCacheKey` 必须等于真实 preview `promptCacheKey`，而不是 `invokeId`。
@@ -320,15 +323,31 @@ PR: include
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--current-and-previous`
   scenario: `compact invocation usage line (light)`
-  evidence_note: 验证 Dashboard 对话卡片 `当前调用 / 上一条调用` 的可见 `用量` 行已收敛为 `Hit · Token · $` 三项；成本值使用项目金额主题色，旧的 `IN / CW / C / O` 缩写不再常驻显示。
+  evidence_note: 验证 Dashboard 对话卡片 `当前调用 / 上一条调用` 的可见 `用量` 行已收敛为 `Hit · Token · $` 三项；默认 / warning / error 阈值状态由共享摘要 helper 决定，旧的 `IN / CW / C / O` 缩写不再常驻显示。
   image:
   PR: include
   ![Dashboard 对话卡片紧凑用量行浅色证据](./assets/dashboard-working-conversation-compact-usage-light.png)
 
 - source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--summary-threshold-tones`
+  scenario: `conversation summary default warning error threshold tones`
+  evidence_note: 验证 Dashboard 对话卡片在同一 Storybook fixture 中展示 `Hit 95.5% / 89.9% / 49.9%` 与 `$0.0586 / $0.1001 / $0.5001` 的默认、warning、error 三档；成本默认态不再使用金额 accent 色。
+  image:
+  PR: include
+  ![Dashboard 对话卡片调用摘要阈值证据](./assets/dashboard-working-conversation-summary-thresholds-light.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--summary-threshold-tones`
+  scenario: `upstream account recent summary threshold tones`
+  evidence_note: 验证 Dashboard `上游账号` tab recent 行复用同一 `Hit · Token · $` 三字段摘要，旧 `IN / CW / C / O / T` 正文已退出常驻显示，并覆盖 `90% / 50% / 0.1 / 0.5` 严格边界态。
+  image:
+  PR: include
+  ![Dashboard 上游账号 recent 调用摘要阈值证据](./assets/dashboard-upstream-account-summary-thresholds-light.png)
+
+- source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--current-and-previous`
   scenario: `compact invocation usage line (dark)`
-  evidence_note: 验证同一紧凑用量行合同在深色主题下保持一致：可见文本仍只有 `Hit · Token · $` 三项，成本片段继续使用金额语义 accent，不扩散到整行分隔符与其余文本。
+  evidence_note: 验证同一紧凑用量行合同在深色主题下保持一致：可见文本仍只有 `Hit · Token · $` 三项，成本片段默认普通正文色，只在越过单次调用阈值后升级为 warning / error。
   image:
   PR: include
   ![Dashboard 对话卡片紧凑用量行深色证据](./assets/dashboard-working-conversation-compact-usage-dark.png)
@@ -380,6 +399,14 @@ PR: include
   image:
   PR: include
   ![Dashboard 上游账号快捷策略与状态入口证据](./assets/dashboard-upstream-account-quick-policy-status.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
+  scenario: `account attention badges without outer capsule`
+  evidence_note: 验证 Dashboard 上游账号卡标题区的 `上游拒绝 / 限流` 状态 badge 已改为两个独立 chip，并排显示且不再套额外外层胶囊。
+  image:
+  PR: include
+  ![Dashboard 上游账号状态 badge 移除外层胶囊证据](./assets/dashboard-upstream-account-attention-badges-header-light.png)
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-quick-policy-tone-palette`

@@ -52,7 +52,6 @@ import {
   fetchUpstreamAccounts,
   updateUpstreamAccount,
 } from "../../lib/api";
-import { metricAccent } from "../../lib/chartTheme";
 import type {
   DashboardWorkingConversationCardModel,
   DashboardWorkingConversationInvocationModel,
@@ -78,7 +77,6 @@ import {
 } from "../../lib/upstreamAccountBadges";
 import { emitUpstreamAccountsChanged } from "../../lib/upstreamAccountsEvents";
 import { cn } from "../../lib/utils";
-import { useTheme } from "../../theme";
 import { InvocationPhaseBadge, InvocationPhaseSegments } from "../invocations/InvocationPhaseBadge";
 import {
   buildInvocationDetailViewModel,
@@ -515,6 +513,7 @@ function CompactLatencyPills({
   return (
     <div
       data-testid="dashboard-compact-latency-pills"
+      role="group"
       className={cn(
         "inline-flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-2 font-mono text-[11px] font-semibold leading-none text-base-content/86",
         className,
@@ -770,6 +769,104 @@ function formatAccountPercentValue(value: number | null | undefined, localeTag: 
     style: "percent",
     maximumFractionDigits: 1,
   }).format(value);
+}
+
+type InvocationSummaryTone = "default" | "warning" | "error";
+
+type InvocationSummaryField = {
+  label: "Hit" | "Token" | "$";
+  text: string;
+  tone: InvocationSummaryTone;
+  testId: string;
+};
+
+const INVOCATION_SUMMARY_TONE_CLASSNAMES: Record<InvocationSummaryTone, string> = {
+  default: "text-base-content/74",
+  warning: "text-warning",
+  error: "text-error",
+};
+
+function resolveInvocationHitTone(hitRate: number | null | undefined): InvocationSummaryTone {
+  if (hitRate == null || !Number.isFinite(hitRate)) return "default";
+  if (hitRate < 0.5) return "error";
+  if (hitRate < 0.9) return "warning";
+  return "default";
+}
+
+function resolveInvocationCostTone(cost: number | null | undefined): InvocationSummaryTone {
+  if (cost == null || !Number.isFinite(cost)) return "default";
+  if (cost > 0.5) return "error";
+  if (cost > 0.1) return "warning";
+  return "default";
+}
+
+function formatCompactInvocationCostValue(costValue: string) {
+  return costValue.startsWith("US$") ? `$${costValue.slice(3)}` : costValue;
+}
+
+function buildInvocationSummaryFields({
+  cacheHitRate,
+  totalTokensValue,
+  cost,
+  costValue,
+  localeTag,
+  testIdPrefix,
+}: {
+  cacheHitRate: number | null | undefined;
+  totalTokensValue: string;
+  cost: number | null | undefined;
+  costValue: string;
+  localeTag: string;
+  testIdPrefix: string;
+}): InvocationSummaryField[] {
+  return [
+    {
+      label: "Hit",
+      text: `Hit ${formatAccountPercentValue(cacheHitRate, localeTag)}`,
+      tone: resolveInvocationHitTone(cacheHitRate),
+      testId: `${testIdPrefix}-hit`,
+    },
+    {
+      label: "Token",
+      text: `Token ${totalTokensValue}`,
+      tone: "default",
+      testId: `${testIdPrefix}-token`,
+    },
+    {
+      label: "$",
+      text: formatCompactInvocationCostValue(costValue),
+      tone: resolveInvocationCostTone(cost),
+      testId: `${testIdPrefix}-cost`,
+    },
+  ];
+}
+
+function renderInvocationSummaryFields(
+  fields: InvocationSummaryField[],
+  separatorClassName = "text-base-content/28",
+) {
+  return fields.flatMap((field, index) => {
+    const content = (
+      <span
+        key={field.testId}
+        data-testid={field.testId}
+        data-summary-label={field.label}
+        data-summary-tone={field.tone}
+        className={INVOCATION_SUMMARY_TONE_CLASSNAMES[field.tone]}
+      >
+        {field.text}
+      </span>
+    );
+
+    if (index === 0) return [content];
+
+    return [
+      <span key={`${field.testId}-separator`} className={separatorClassName}>
+        ·
+      </span>,
+      content,
+    ];
+  });
 }
 
 function formatAccountNumberValue(
@@ -1258,43 +1355,56 @@ function AccountAttentionBadges({
   const badges = resolveAccountAttentionBadges(account, locale);
   if (badges.length === 0) return null;
   const title = badges.map((badge) => badge.label).join(" · ");
+  const openLabel = locale === "zh" ? "打开账号健康事件" : "Open health events";
+  const badgeToneClassName = (tone: AccountAttentionBadge["tone"]) =>
+    tone === "error"
+      ? "border-error/38 bg-error/10 text-error"
+      : tone === "warning"
+        ? "border-warning/45 bg-warning/12 text-base-content"
+        : "border-info/35 bg-info/12 text-info";
   return (
-    <button
-      type="button"
+    <div
       data-testid="dashboard-upstream-account-attention-badges"
-      disabled={!clickable}
-      className={cn(
-        "inline-flex min-h-6 max-w-full flex-wrap items-center gap-1.5 rounded-full border border-base-300/70 bg-base-100/86 px-1.5 py-0.5 text-[11px] font-semibold transition-opacity duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-        clickable ? "cursor-pointer hover:opacity-80" : "cursor-default",
-      )}
+      role="group"
+      className="inline-flex min-h-6 max-w-full flex-wrap items-center gap-1.5"
       title={title}
-      aria-label={`${title} · ${locale === "zh" ? "打开账号健康事件" : "Open health events"}`}
-      onClick={(event) => {
-        event.stopPropagation();
-        onClick?.();
-      }}
-      onKeyDown={(event) => {
-        event.stopPropagation();
-      }}
+      aria-label={title}
     >
-      {badges.map((badge) => (
-        <span
-          key={badge.key}
-          data-testid="dashboard-upstream-account-attention-badge"
-          title={badge.title ?? badge.label}
-          className={cn(
-            ACCOUNT_HEADER_BADGE_CLASS_NAME,
-            badge.tone === "error"
-              ? "border-error/38 bg-error/10 text-error"
-              : badge.tone === "warning"
-                ? "border-warning/45 bg-warning/12 text-base-content"
-                : "border-info/35 bg-info/12 text-info",
-          )}
-        >
-          {badge.label}
-        </span>
-      ))}
-    </button>
+      {badges.map((badge) =>
+        clickable ? (
+          <button
+            key={badge.key}
+            type="button"
+            data-testid="dashboard-upstream-account-attention-badge"
+            title={badge.title ?? badge.label}
+            aria-label={`${badge.label} · ${openLabel}`}
+            className={cn(
+              ACCOUNT_HEADER_BADGE_CLASS_NAME,
+              "appearance-none px-2.5 transition-opacity duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary hover:opacity-80",
+              badgeToneClassName(badge.tone),
+            )}
+            onClick={(event) => {
+              event.stopPropagation();
+              onClick?.();
+            }}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+            }}
+          >
+            {badge.label}
+          </button>
+        ) : (
+          <span
+            key={badge.key}
+            data-testid="dashboard-upstream-account-attention-badge"
+            title={badge.title ?? badge.label}
+            className={cn(ACCOUNT_HEADER_BADGE_CLASS_NAME, badgeToneClassName(badge.tone))}
+          >
+            {badge.label}
+          </span>
+        ),
+      )}
+    </div>
   );
 }
 
@@ -1849,6 +1959,7 @@ function AccountSegmentList({
   return (
     <div
       data-testid={testId}
+      role="group"
       aria-label={segments
         .map((segment) => `${segment.label} ${segment.value.ariaText}`)
         .join(" · ")}
@@ -2000,9 +2111,6 @@ function AccountRecentInvocationRow({
     invocation.occurredAtEpoch != null
       ? timestampFormatter.format(new Date(invocation.occurredAtEpoch))
       : occurredAtLabel;
-  const compactCostValue = viewModel.costValue.startsWith("US$")
-    ? `$${viewModel.costValue.slice(3)}`
-    : viewModel.costValue;
   const displayPromptCacheKey = invocation.preview.promptCacheKey?.trim() ?? "";
   const displayConversationSequenceId = displayPromptCacheKey
     ? formatDashboardWorkingConversationSequenceId(
@@ -2027,6 +2135,19 @@ function AccountRecentInvocationRow({
           : formatCompactLatencySecondsValue(invocation.record.tTotalMs, localeTag),
     };
   }, [invocation.displayStatus, invocation.record, localeTag, nowMs]);
+  const recentSummaryFields = useMemo(
+    () =>
+      buildInvocationSummaryFields({
+        cacheHitRate: invocationCacheHitRate(invocation.record),
+        totalTokensValue: viewModel.totalTokensValue,
+        cost: invocation.record.cost,
+        costValue: viewModel.costValue,
+        localeTag,
+        testIdPrefix: "dashboard-upstream-account-recent-summary",
+      }),
+    [invocation.record, localeTag, viewModel.costValue, viewModel.totalTokensValue],
+  );
+  const recentSummaryTitle = `${t("table.column.inputTokens")}: ${viewModel.inputTokensValue} · Cache write: ${viewModel.cacheWriteTokensValue} · ${t("table.column.cacheInputTokens")}: ${viewModel.cacheInputTokensValue} · ${t("table.column.outputTokens")}: ${viewModel.outputTokensValue} · ${t("table.column.totalTokens")}: ${viewModel.totalTokensValue} · ${t("table.column.costUsd")}: ${viewModel.costValue} · ${t("table.details.reasoningTokens")}: ${viewModel.reasoningTokensValue}`;
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${invocation.record.invokeId}`;
   const conversationActionLabel = displayPromptCacheKey
     ? `${t("dashboard.workingConversations.openConversation")} · ${displayConversationSequenceId} · ${displayPromptCacheKey}`
@@ -2052,7 +2173,7 @@ function AccountRecentInvocationRow({
   }, [displayPromptCacheKey, onOpenConversation]);
 
   const handleRowKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
       if (event.target !== event.currentTarget) return;
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
@@ -2080,8 +2201,9 @@ function AccountRecentInvocationRow({
   );
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       aria-label={invocationActionLabel}
       data-testid="dashboard-upstream-account-recent-row"
       data-motion-surface
@@ -2092,129 +2214,110 @@ function AccountRecentInvocationRow({
       onClick={handleOpenInvocation}
       onKeyDown={handleRowKeyDown}
     >
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <div
-              className="flex min-w-0 items-center gap-1.5"
-              data-testid="dashboard-upstream-account-recent-identity"
-            >
-              {displayConversationSequenceId ? (
-                <>
-                  <button
-                    type="button"
-                    data-testid="dashboard-upstream-account-recent-identity-chip"
-                    className={cn(
-                      UPSTREAM_ACCOUNT_RECENT_IDENTITY_CHIP_CLASS_NAME,
-                      "cursor-pointer transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-                      conversationIdentityToneClassName,
-                    )}
-                    aria-label={conversationActionLabel ?? undefined}
-                    title={conversationActionLabel ?? displayConversationSequenceId}
-                    onClick={handleIdentityChipClick}
-                    onKeyDown={handleIdentityChipKeyDown}
-                  >
-                    <span className="truncate whitespace-nowrap">
-                      {displayConversationSequenceId}
-                    </span>
-                  </button>
-                  <AppIcon
-                    name="chevron-right"
-                    className="h-3 w-3 shrink-0 text-base-content/45"
-                    aria-hidden
-                  />
-                </>
-              ) : null}
-              <span
-                className="truncate font-mono text-[12px] font-semibold text-base-content/88"
-                title={invocation.record.invokeId}
-              >
-                {invocation.record.invokeId}
-              </span>
-            </div>
-            {invocation.livePhase ? (
-              <InvocationPhaseBadge
-                phase={invocation.livePhase}
-                appearance="inline"
-                motion="dynamic"
-                showLabel={false}
-              />
-            ) : (
-              <InlineInvocationStatus
-                meta={statusMeta}
-                label={statusLabel}
-                showLabel={false}
-                detail={viewModel.collapsedErrorSummary}
-              />
-            )}
-            {renderInvocationTransportBadge(
-              invocation.record,
-              "min-h-5 border-[rgba(148,163,184,0.24)] bg-primary/8 px-2 py-0.5 text-[9.5px]",
-            )}
-            {renderEndpointSummary(
-              viewModel.endpointDisplay,
-              t,
-              UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME,
-            )}
-            <DashboardImageToolIconBadge
-              endpointDisplay={viewModel.endpointDisplay}
-              imageIntentDisplay={viewModel.imageIntentDisplay}
-              t={t}
-            />
-            {fastIndicator}
-            <CompactLatencyPills
-              firstResponseByteTotalValue={compactLatencyValues.firstResponseByteTotalValue}
-              responseTimeValue={compactLatencyValues.responseTimeValue}
-              t={t}
-            />
-          </div>
-          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-[1.45] text-base-content/72">
-            <span>{occurredAtShortLabel}</span>
-            <span className="text-base-content/28">·</span>
-            <span className="min-w-0">
-              {renderUpstreamAccountRecentModelDisplay(
-                viewModel.modelHasMismatch,
-                viewModel.modelValue,
-                requestModelValue,
-                responseModelValue,
-                t,
-              )}
-            </span>
-            {viewModel.reasoningEffortValue !== FALLBACK_CELL ? (
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <div
+            className="flex min-w-0 items-center gap-1.5"
+            data-testid="dashboard-upstream-account-recent-identity"
+          >
+            {displayConversationSequenceId ? (
               <>
-                <span className="text-base-content/28">·</span>
-                <CompactReasoningEffortBadge value={viewModel.reasoningEffortValue} />
+                <button
+                  type="button"
+                  data-testid="dashboard-upstream-account-recent-identity-chip"
+                  className={cn(
+                    UPSTREAM_ACCOUNT_RECENT_IDENTITY_CHIP_CLASS_NAME,
+                    "cursor-pointer transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                    conversationIdentityToneClassName,
+                  )}
+                  aria-label={conversationActionLabel ?? undefined}
+                  title={conversationActionLabel ?? displayConversationSequenceId}
+                  onClick={handleIdentityChipClick}
+                  onKeyDown={handleIdentityChipKeyDown}
+                >
+                  <span className="truncate whitespace-nowrap">
+                    {displayConversationSequenceId}
+                  </span>
+                </button>
+                <AppIcon
+                  name="chevron-right"
+                  className="h-3 w-3 shrink-0 text-base-content/45"
+                  aria-hidden
+                />
               </>
             ) : null}
+            <span
+              className="truncate font-mono text-[12px] font-semibold text-base-content/88"
+              title={invocation.record.invokeId}
+            >
+              {invocation.record.invokeId}
+            </span>
           </div>
+          {invocation.livePhase ? (
+            <InvocationPhaseBadge
+              phase={invocation.livePhase}
+              appearance="inline"
+              motion="dynamic"
+              showLabel={false}
+            />
+          ) : (
+            <InlineInvocationStatus
+              meta={statusMeta}
+              label={statusLabel}
+              showLabel={false}
+              detail={viewModel.collapsedErrorSummary}
+            />
+          )}
+          {renderInvocationTransportBadge(
+            invocation.record,
+            "min-h-5 border-[rgba(148,163,184,0.24)] bg-primary/8 px-2 py-0.5 text-[9.5px]",
+          )}
+          {renderEndpointSummary(
+            viewModel.endpointDisplay,
+            t,
+            UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME,
+          )}
+          <DashboardImageToolIconBadge
+            endpointDisplay={viewModel.endpointDisplay}
+            imageIntentDisplay={viewModel.imageIntentDisplay}
+            t={t}
+          />
+          {fastIndicator}
+          <CompactLatencyPills
+            firstResponseByteTotalValue={compactLatencyValues.firstResponseByteTotalValue}
+            responseTimeValue={compactLatencyValues.responseTimeValue}
+            t={t}
+          />
         </div>
-        <div className="text-right">
-          <div className="font-mono text-[12px] font-semibold text-base-content/88">
-            {viewModel.totalTokensValue}
-          </div>
-          <div className="text-[10.5px] text-base-content/62">{compactCostValue}</div>
+        <div
+          data-testid="dashboard-upstream-account-recent-summary-line"
+          className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] leading-[1.45] text-base-content/74"
+          title={recentSummaryTitle}
+        >
+          {renderInvocationSummaryFields(recentSummaryFields)}
         </div>
-      </div>
-      <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] leading-[1.45] text-base-content/74">
-        <span>IN {viewModel.inputTokensValue}</span>
-        <span className="text-base-content/28">·</span>
-        <span
-          title="Cache write tokens"
-          aria-label={`Cache write tokens: ${viewModel.cacheWriteTokensValue}`}
+        <div
+          data-testid="dashboard-upstream-account-recent-meta-line"
+          className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-[1.45] text-base-content/72"
         >
-          CW {viewModel.cacheWriteTokensValue}
-        </span>
-        <span className="text-base-content/28">·</span>
-        <span
-          title="Cache read tokens"
-          aria-label={`Cache read tokens: ${viewModel.cacheInputTokensValue}`}
-        >
-          C {viewModel.cacheInputTokensValue}
-        </span>
-        <span className="text-base-content/28">·</span>
-        <span>O {viewModel.outputTokensValue}</span>
-        <span className="text-base-content/28">·</span>
-        <span>T {viewModel.totalTokensValue}</span>
+          <span>{occurredAtShortLabel}</span>
+          <span className="text-base-content/28">·</span>
+          <span className="min-w-0">
+            {renderUpstreamAccountRecentModelDisplay(
+              viewModel.modelHasMismatch,
+              viewModel.modelValue,
+              requestModelValue,
+              responseModelValue,
+              t,
+            )}
+          </span>
+          {viewModel.reasoningEffortValue !== FALLBACK_CELL ? (
+            <>
+              <span className="text-base-content/28">·</span>
+              <CompactReasoningEffortBadge value={viewModel.reasoningEffortValue} />
+            </>
+          ) : null}
+        </div>
       </div>
       {viewModel.collapsedErrorSummary ? (
         <InvocationErrorSummary
@@ -2223,7 +2326,7 @@ function AccountRecentInvocationRow({
           message={viewModel.collapsedErrorSummary}
         />
       ) : null}
-    </button>
+    </div>
   );
 }
 
@@ -2333,7 +2436,6 @@ function InvocationSlot({
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   onOpenInvocation?: (selection: DashboardWorkingConversationInvocationSelection) => void;
 }) {
-  const { themeMode } = useTheme();
   const { t } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
@@ -2451,14 +2553,18 @@ function InvocationSlot({
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
   const displayConversationSequenceId =
     formatDashboardWorkingConversationSequenceId(conversationSequenceId);
-  const compactCostValue = viewModel.costValue.startsWith("US$")
-    ? `$${viewModel.costValue.slice(3)}`
-    : viewModel.costValue;
-  const compactHitRateValue = formatAccountPercentValue(
-    invocationCacheHitRate(invocation.record),
-    localeTag,
+  const usageSummaryFields = useMemo(
+    () =>
+      buildInvocationSummaryFields({
+        cacheHitRate: invocationCacheHitRate(invocation.record),
+        totalTokensValue: viewModel.totalTokensValue,
+        cost: invocation.record.cost,
+        costValue: viewModel.costValue,
+        localeTag,
+        testIdPrefix: "dashboard-working-conversation-usage",
+      }),
+    [invocation.record, localeTag, viewModel.costValue, viewModel.totalTokensValue],
   );
-  const costAccentColor = metricAccent("totalCost", themeMode);
   const compactLatencyValues = useMemo(() => {
     const normalizedStatus = invocation.displayStatus.trim().toLowerCase();
     return {
@@ -2694,20 +2800,7 @@ function InvocationSlot({
               data-testid="dashboard-working-conversation-usage-line"
               className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5"
             >
-              <span data-testid="dashboard-working-conversation-usage-hit">
-                Hit {compactHitRateValue}
-              </span>
-              <span className="text-base-content/28">·</span>
-              <span data-testid="dashboard-working-conversation-usage-token">
-                Token {viewModel.totalTokensValue}
-              </span>
-              <span className="text-base-content/28">·</span>
-              <span
-                data-testid="dashboard-working-conversation-usage-cost"
-                style={{ color: costAccentColor }}
-              >
-                {compactCostValue}
-              </span>
+              {renderInvocationSummaryFields(usageSummaryFields)}
             </div>
           }
         />
@@ -3709,6 +3802,7 @@ function DashboardUpstreamAccountActivityCard({
       </div>
 
       <div
+        data-testid="dashboard-upstream-account-recent-section"
         className={cn(
           "mt-3.5 flex flex-1 flex-col border-t pt-2.5",
           ACCOUNT_CARD_INNER_BORDER_CLASS_NAME,
