@@ -400,7 +400,11 @@ fn archived_start_partial_hour_at() -> String {
         .expect("valid first full hour");
     let latest_partial_second = first_full_hour - ChronoDuration::seconds(1);
     let preferred = range_start + ChronoDuration::minutes(5);
-    let occurred_at = preferred.min(latest_partial_second);
+    let occurred_at = if latest_partial_second < range_start {
+        preferred
+    } else {
+        preferred.min(latest_partial_second)
+    };
     format_naive(occurred_at.with_timezone(&Shanghai).naive_local())
 }
 
