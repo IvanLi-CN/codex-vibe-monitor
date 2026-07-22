@@ -4142,6 +4142,11 @@ export const UpstreamAccountTab: Story = {
     await expect(attentionBadges).not.toHaveClass("rounded-full");
     await expect(attentionBadges).not.toHaveClass("border-base-300/70");
     await expect(attentionBadges).not.toHaveClass("bg-base-100/86");
+    const attentionBadgeButtons = await canvas.findAllByTestId(
+      "dashboard-upstream-account-attention-badge",
+    );
+    await expect(attentionBadgeButtons).toHaveLength(2);
+    expect(attentionBadges.querySelector("button")).toBe(attentionBadgeButtons[0]);
     await expect(canvas.queryByTestId("dashboard-upstream-account-routing-settings")).toBeNull();
     await expect(
       canvasElement.querySelector('[data-testid="dashboard-upstream-account-status"]'),
@@ -4207,6 +4212,9 @@ export const UpstreamAccountTab: Story = {
     const recentSummaryLine = firstRecentRow.querySelector(
       '[data-testid="dashboard-upstream-account-recent-summary-line"]',
     );
+    const recentMetaLine = firstRecentRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-meta-line"]',
+    );
     const recentSummaryHit = firstRecentRow.querySelector(
       '[data-testid="dashboard-upstream-account-recent-summary-hit"]',
     );
@@ -4215,12 +4223,16 @@ export const UpstreamAccountTab: Story = {
     );
     if (
       !(recentSummaryLine instanceof HTMLElement) ||
+      !(recentMetaLine instanceof HTMLElement) ||
       !(recentSummaryHit instanceof HTMLElement) ||
       !(recentSummaryCost instanceof HTMLElement)
     ) {
       throw new Error("missing upstream account summary line");
     }
     await expect(recentSummaryLine).toHaveTextContent(/Hit .*Token .*\$/);
+    expect(
+      recentSummaryLine.compareDocumentPosition(recentMetaLine) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
     await expect(recentSummaryHit).toHaveAttribute("data-summary-tone", "warning");
     await expect(recentSummaryCost).toHaveAttribute("data-summary-tone", "warning");
     await expect(recentSummaryLine).toHaveAttribute(
@@ -4685,7 +4697,11 @@ export const UpstreamAccountHeaderActions: Story = {
     const attentionBadges = await canvas.findByTestId(
       "dashboard-upstream-account-attention-badges",
     );
-    await userEvent.click(attentionBadges);
+    const [firstAttentionBadge] = await canvas.findAllByTestId(
+      "dashboard-upstream-account-attention-badge",
+    );
+    expect(attentionBadges.querySelector("button")).toBe(firstAttentionBadge);
+    await userEvent.click(firstAttentionBadge);
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
       "account:42:healthEvents",
     );

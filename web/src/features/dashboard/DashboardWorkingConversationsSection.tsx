@@ -1326,43 +1326,56 @@ function AccountAttentionBadges({
   const badges = resolveAccountAttentionBadges(account, locale);
   if (badges.length === 0) return null;
   const title = badges.map((badge) => badge.label).join(" · ");
+  const openLabel = locale === "zh" ? "打开账号健康事件" : "Open health events";
+  const badgeToneClassName = (tone: AccountAttentionBadge["tone"]) =>
+    tone === "error"
+      ? "border-error/38 bg-error/10 text-error"
+      : tone === "warning"
+        ? "border-warning/45 bg-warning/12 text-base-content"
+        : "border-info/35 bg-info/12 text-info";
   return (
-    <button
-      type="button"
+    <div
       data-testid="dashboard-upstream-account-attention-badges"
-      disabled={!clickable}
-      className={cn(
-        "inline-flex min-h-6 max-w-full flex-wrap items-center gap-1.5 rounded-none border-0 bg-transparent p-0 text-[11px] font-semibold shadow-none transition-opacity duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-        clickable ? "cursor-pointer hover:opacity-80" : "cursor-default",
-      )}
+      role="group"
+      className="inline-flex min-h-6 max-w-full flex-wrap items-center gap-1.5"
       title={title}
-      aria-label={`${title} · ${locale === "zh" ? "打开账号健康事件" : "Open health events"}`}
-      onClick={(event) => {
-        event.stopPropagation();
-        onClick?.();
-      }}
-      onKeyDown={(event) => {
-        event.stopPropagation();
-      }}
+      aria-label={title}
     >
-      {badges.map((badge) => (
-        <span
-          key={badge.key}
-          data-testid="dashboard-upstream-account-attention-badge"
-          title={badge.title ?? badge.label}
-          className={cn(
-            ACCOUNT_HEADER_BADGE_CLASS_NAME,
-            badge.tone === "error"
-              ? "border-error/38 bg-error/10 text-error"
-              : badge.tone === "warning"
-                ? "border-warning/45 bg-warning/12 text-base-content"
-                : "border-info/35 bg-info/12 text-info",
-          )}
-        >
-          {badge.label}
-        </span>
-      ))}
-    </button>
+      {badges.map((badge) =>
+        clickable ? (
+          <button
+            key={badge.key}
+            type="button"
+            data-testid="dashboard-upstream-account-attention-badge"
+            title={badge.title ?? badge.label}
+            aria-label={`${badge.label} · ${openLabel}`}
+            className={cn(
+              ACCOUNT_HEADER_BADGE_CLASS_NAME,
+              "appearance-none px-2.5 transition-opacity duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary hover:opacity-80",
+              badgeToneClassName(badge.tone),
+            )}
+            onClick={(event) => {
+              event.stopPropagation();
+              onClick?.();
+            }}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+            }}
+          >
+            {badge.label}
+          </button>
+        ) : (
+          <span
+            key={badge.key}
+            data-testid="dashboard-upstream-account-attention-badge"
+            title={badge.title ?? badge.label}
+            className={cn(ACCOUNT_HEADER_BADGE_CLASS_NAME, badgeToneClassName(badge.tone))}
+          >
+            {badge.label}
+          </span>
+        ),
+      )}
+    </div>
   );
 }
 
@@ -2069,9 +2082,6 @@ function AccountRecentInvocationRow({
     invocation.occurredAtEpoch != null
       ? timestampFormatter.format(new Date(invocation.occurredAtEpoch))
       : occurredAtLabel;
-  const compactCostValue = viewModel.costValue.startsWith("US$")
-    ? `$${viewModel.costValue.slice(3)}`
-    : viewModel.costValue;
   const displayPromptCacheKey = invocation.preview.promptCacheKey?.trim() ?? "";
   const displayConversationSequenceId = displayPromptCacheKey
     ? formatDashboardWorkingConversationSequenceId(
@@ -2174,116 +2184,110 @@ function AccountRecentInvocationRow({
       onClick={handleOpenInvocation}
       onKeyDown={handleRowKeyDown}
     >
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <div
-              className="flex min-w-0 items-center gap-1.5"
-              data-testid="dashboard-upstream-account-recent-identity"
-            >
-              {displayConversationSequenceId ? (
-                <>
-                  <button
-                    type="button"
-                    data-testid="dashboard-upstream-account-recent-identity-chip"
-                    className={cn(
-                      UPSTREAM_ACCOUNT_RECENT_IDENTITY_CHIP_CLASS_NAME,
-                      "cursor-pointer transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-                      conversationIdentityToneClassName,
-                    )}
-                    aria-label={conversationActionLabel ?? undefined}
-                    title={conversationActionLabel ?? displayConversationSequenceId}
-                    onClick={handleIdentityChipClick}
-                    onKeyDown={handleIdentityChipKeyDown}
-                  >
-                    <span className="truncate whitespace-nowrap">
-                      {displayConversationSequenceId}
-                    </span>
-                  </button>
-                  <AppIcon
-                    name="chevron-right"
-                    className="h-3 w-3 shrink-0 text-base-content/45"
-                    aria-hidden
-                  />
-                </>
-              ) : null}
-              <span
-                className="truncate font-mono text-[12px] font-semibold text-base-content/88"
-                title={invocation.record.invokeId}
-              >
-                {invocation.record.invokeId}
-              </span>
-            </div>
-            {invocation.livePhase ? (
-              <InvocationPhaseBadge
-                phase={invocation.livePhase}
-                appearance="inline"
-                motion="dynamic"
-                showLabel={false}
-              />
-            ) : (
-              <InlineInvocationStatus
-                meta={statusMeta}
-                label={statusLabel}
-                showLabel={false}
-                detail={viewModel.collapsedErrorSummary}
-              />
-            )}
-            {renderInvocationTransportBadge(
-              invocation.record,
-              "min-h-5 border-[rgba(148,163,184,0.24)] bg-primary/8 px-2 py-0.5 text-[9.5px]",
-            )}
-            {renderEndpointSummary(
-              viewModel.endpointDisplay,
-              t,
-              UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME,
-            )}
-            <DashboardImageToolIconBadge
-              endpointDisplay={viewModel.endpointDisplay}
-              imageIntentDisplay={viewModel.imageIntentDisplay}
-              t={t}
-            />
-            {fastIndicator}
-            <CompactLatencyPills
-              firstResponseByteTotalValue={compactLatencyValues.firstResponseByteTotalValue}
-              responseTimeValue={compactLatencyValues.responseTimeValue}
-              t={t}
-            />
-          </div>
-          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-[1.45] text-base-content/72">
-            <span>{occurredAtShortLabel}</span>
-            <span className="text-base-content/28">·</span>
-            <span className="min-w-0">
-              {renderUpstreamAccountRecentModelDisplay(
-                viewModel.modelHasMismatch,
-                viewModel.modelValue,
-                requestModelValue,
-                responseModelValue,
-                t,
-              )}
-            </span>
-            {viewModel.reasoningEffortValue !== FALLBACK_CELL ? (
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <div
+            className="flex min-w-0 items-center gap-1.5"
+            data-testid="dashboard-upstream-account-recent-identity"
+          >
+            {displayConversationSequenceId ? (
               <>
-                <span className="text-base-content/28">·</span>
-                <CompactReasoningEffortBadge value={viewModel.reasoningEffortValue} />
+                <button
+                  type="button"
+                  data-testid="dashboard-upstream-account-recent-identity-chip"
+                  className={cn(
+                    UPSTREAM_ACCOUNT_RECENT_IDENTITY_CHIP_CLASS_NAME,
+                    "cursor-pointer transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                    conversationIdentityToneClassName,
+                  )}
+                  aria-label={conversationActionLabel ?? undefined}
+                  title={conversationActionLabel ?? displayConversationSequenceId}
+                  onClick={handleIdentityChipClick}
+                  onKeyDown={handleIdentityChipKeyDown}
+                >
+                  <span className="truncate whitespace-nowrap">
+                    {displayConversationSequenceId}
+                  </span>
+                </button>
+                <AppIcon
+                  name="chevron-right"
+                  className="h-3 w-3 shrink-0 text-base-content/45"
+                  aria-hidden
+                />
               </>
             ) : null}
+            <span
+              className="truncate font-mono text-[12px] font-semibold text-base-content/88"
+              title={invocation.record.invokeId}
+            >
+              {invocation.record.invokeId}
+            </span>
           </div>
+          {invocation.livePhase ? (
+            <InvocationPhaseBadge
+              phase={invocation.livePhase}
+              appearance="inline"
+              motion="dynamic"
+              showLabel={false}
+            />
+          ) : (
+            <InlineInvocationStatus
+              meta={statusMeta}
+              label={statusLabel}
+              showLabel={false}
+              detail={viewModel.collapsedErrorSummary}
+            />
+          )}
+          {renderInvocationTransportBadge(
+            invocation.record,
+            "min-h-5 border-[rgba(148,163,184,0.24)] bg-primary/8 px-2 py-0.5 text-[9.5px]",
+          )}
+          {renderEndpointSummary(
+            viewModel.endpointDisplay,
+            t,
+            UPSTREAM_ACCOUNT_RECENT_COMPACT_BADGE_CLASS_NAME,
+          )}
+          <DashboardImageToolIconBadge
+            endpointDisplay={viewModel.endpointDisplay}
+            imageIntentDisplay={viewModel.imageIntentDisplay}
+            t={t}
+          />
+          {fastIndicator}
+          <CompactLatencyPills
+            firstResponseByteTotalValue={compactLatencyValues.firstResponseByteTotalValue}
+            responseTimeValue={compactLatencyValues.responseTimeValue}
+            t={t}
+          />
         </div>
-        <div className="text-right">
-          <div className="font-mono text-[12px] font-semibold text-base-content/88">
-            {viewModel.totalTokensValue}
-          </div>
-          <div className="text-[10.5px] text-base-content/62">{compactCostValue}</div>
+        <div
+          data-testid="dashboard-upstream-account-recent-summary-line"
+          className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] leading-[1.45] text-base-content/74"
+          title={recentSummaryTitle}
+        >
+          {renderInvocationSummaryFields(recentSummaryFields)}
         </div>
-      </div>
-      <div
-        data-testid="dashboard-upstream-account-recent-summary-line"
-        className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] leading-[1.45] text-base-content/74"
-        title={recentSummaryTitle}
-        aria-label={recentSummaryTitle}
-      >
-        {renderInvocationSummaryFields(recentSummaryFields)}
+        <div
+          data-testid="dashboard-upstream-account-recent-meta-line"
+          className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-[1.45] text-base-content/72"
+        >
+          <span>{occurredAtShortLabel}</span>
+          <span className="text-base-content/28">·</span>
+          <span className="min-w-0">
+            {renderUpstreamAccountRecentModelDisplay(
+              viewModel.modelHasMismatch,
+              viewModel.modelValue,
+              requestModelValue,
+              responseModelValue,
+              t,
+            )}
+          </span>
+          {viewModel.reasoningEffortValue !== FALLBACK_CELL ? (
+            <>
+              <span className="text-base-content/28">·</span>
+              <CompactReasoningEffortBadge value={viewModel.reasoningEffortValue} />
+            </>
+          ) : null}
+        </div>
       </div>
       {viewModel.collapsedErrorSummary ? (
         <InvocationErrorSummary
@@ -3768,6 +3772,7 @@ function DashboardUpstreamAccountActivityCard({
       </div>
 
       <div
+        data-testid="dashboard-upstream-account-recent-section"
         className={cn(
           "mt-3.5 flex flex-1 flex-col border-t pt-2.5",
           ACCOUNT_CARD_INNER_BORDER_CLASS_NAME,

@@ -3054,6 +3054,9 @@ describe("DashboardWorkingConversationsSection", () => {
     const warningSummary = warningRow.querySelector(
       '[data-testid="dashboard-upstream-account-recent-summary-line"]',
     );
+    const warningMetaLine = warningRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-meta-line"]',
+    );
     const warningHit = warningRow.querySelector(
       '[data-testid="dashboard-upstream-account-recent-summary-hit"]',
     );
@@ -3080,6 +3083,7 @@ describe("DashboardWorkingConversationsSection", () => {
     );
     if (
       !(warningSummary instanceof HTMLElement) ||
+      !(warningMetaLine instanceof HTMLElement) ||
       !(warningHit instanceof HTMLElement) ||
       !(warningCost instanceof HTMLElement) ||
       !(errorHitRow instanceof HTMLElement) ||
@@ -3097,6 +3101,9 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(warningRow.textContent).not.toContain(" C ");
     expect(warningRow.textContent).not.toContain("O ");
     expect(warningRow.textContent).not.toContain("T ");
+    expect(
+      warningSummary.compareDocumentPosition(warningMetaLine) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
     expect(warningHit.textContent).toContain("Hit 89.9%");
     expect(warningHit.dataset.summaryTone).toBe("warning");
     expect(warningCost.textContent).toContain("$0.1001");
@@ -4106,15 +4113,20 @@ describe("DashboardWorkingConversationsSection", () => {
     const attentionBadges = host?.querySelector(
       '[data-testid="dashboard-upstream-account-attention-badges"]',
     );
-    if (!(attentionBadges instanceof HTMLButtonElement)) {
+    if (!(attentionBadges instanceof HTMLDivElement)) {
       throw new Error("missing upstream account attention badges");
     }
     expect(attentionBadges.className).not.toContain("rounded-full");
     expect(attentionBadges.className).not.toContain("border-base-300/70");
     expect(attentionBadges.className).not.toContain("bg-base-100/86");
+    const attentionBadgeButtons = attentionBadges.querySelectorAll(
+      '[data-testid="dashboard-upstream-account-attention-badge"]',
+    );
+    expect(attentionBadgeButtons).toHaveLength(2);
+    expect(attentionBadges.querySelector("button")).toBe(attentionBadgeButtons[0]);
 
     act(() => {
-      attentionBadges.click();
+      (attentionBadgeButtons[0] as HTMLButtonElement).click();
     });
 
     expect(onOpenUpstreamAccount).toHaveBeenCalledWith(42, "Pool Alpha", {

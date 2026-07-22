@@ -38,7 +38,7 @@
 - 已实现：运行中调用统一拆为 `queued / requesting / responding` 三阶段；`StatsResponse`、账号活动接口与 invocation preview 暴露 `inProgressPhaseCounts` / `livePhase`，Dashboard 上游账号卡标题区与 recent bridge 均读取账号级 live 统计，不再从卡内 recent 列表推导运行态数量。
 - 已实现：上游账号卡片四组周期统计改为整张统计卡触发结构化 tooltip；浮层按主值、当前字段、相关数据分层展示字段名和值，并关闭卡内分解段落的逐段 tooltip，避免嵌套触发区域。
 - 已实现：账号活动接口返回每个账号的 `effectiveRoutingRule` 与最小账号状态字段；Dashboard 账号卡标题区固定展示优先级、Fast 模式、`禁出`、`禁入` 快捷策略 chip，并只把异常/注意态状态渲染为可点击 badge 集合。
-- 已实现：账号卡标题区的异常/注意状态 badge 集合已移除额外外层胶囊；`上游拒绝 / 限流` 等状态现在直接作为独立 chip 并排显示，同时保留整组点击进入 `healthEvents` 的交互。
+- 已实现：账号卡标题区的异常/注意状态 badge 集合已移除额外外层胶囊；`上游拒绝 / 限流` 等状态现在直接作为独立 chip 并排显示，外层容器只负责排版，每个 chip 自身继续作为 `healthEvents` 入口。
 - 已实现：Dashboard 账号卡快捷策略入口使用乐观 UI + 1 秒 debounce 写入账号级 `routingRule` 覆盖；优先级入口按 `普通 → 兜底 → 主力 → 禁新 → 普通` 轮换并写 `priorityTier=normal|fallback|primary|no_new`，Fast 模式按 `不改Fast → 补Fast → 强制Fast → 禁Fast → 不改Fast` 轮换，`禁出 / 禁入` 分别写账号级 `allowCutOut / allowCutIn`，该入口不提供恢复继承。
 - 已实现：Dashboard 账号卡快捷策略 chip 使用独立语义 tone helper；`普通 / 不改Fast` 为 neutral，`兜底 / 补Fast` 为 success，`主力 / 强制Fast` 为 primary，`禁新 / 禁Fast / 激活禁出 / 激活禁入` 为 warning，并通过 `data-policy-tone` 固化回归检查。
 - 已覆盖：Dashboard 上游账号快捷策略语义色在浅色与深色 Storybook 场景中同屏展示 success / primary / warning / neutral 四个色槽，并写入 `SPEC.md` 视觉证据。
