@@ -1949,14 +1949,14 @@ async fn clear_prompt_cache_conversation_affinity(
         load_prompt_cache_conversation_binding_row(&state.pool, prompt_cache_key).await?;
     let sticky_before =
         load_prompt_cache_conversation_sticky_snapshot(&state.pool, prompt_cache_key).await?;
+    let now_iso = format_utc_iso(Utc::now());
+    bump_sticky_affinity_generation(&state.pool, prompt_cache_key, &now_iso).await?;
     sqlx::query("DELETE FROM prompt_cache_conversation_bindings WHERE prompt_cache_key = ?1")
         .bind(prompt_cache_key)
         .execute(&state.pool)
         .await?;
     delete_sticky_route(&state.pool, prompt_cache_key).await?;
     delete_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key).await?;
-    let now_iso = format_utc_iso(Utc::now());
-    bump_sticky_affinity_generation(&state.pool, prompt_cache_key, &now_iso).await?;
     append_prompt_cache_conversation_operation_event(
         &state.pool,
         AppendPromptCacheConversationOperationEventInput {

@@ -3984,7 +3984,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
             if pool_route_success {
                 consume_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
                 if let Err(route_err) =
-                    record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
+                    record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt(
                         &state.pool,
                         account.account_id,
                         upstream_attempt_started_at_utc,
@@ -3995,6 +3995,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         pending_pool_attempt_record
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
+                        account.sticky_affinity_generation,
                     )
                     .await
                 {
@@ -4214,7 +4215,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     &reservation_key_for_record,
                 );
                 if let Err(route_err) =
-                    record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
+                    record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt(
                         &state_for_record.pool,
                         account.account_id,
                         upstream_attempt_started_at_utc_for_record,
@@ -4225,6 +4226,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         pending_pool_attempt_record_for_task
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
+                        account.sticky_affinity_generation,
                     )
                     .await
                 {
