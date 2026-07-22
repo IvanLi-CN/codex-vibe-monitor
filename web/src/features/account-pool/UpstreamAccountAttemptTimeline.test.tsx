@@ -475,6 +475,115 @@ describe("UpstreamAccountAttemptTimeline", () => {
     expect(card?.textContent).toContain("large response");
   });
 
+  it("does not lazy-load the final invocation response body for non-final retry attempts", async () => {
+    fetchAttemptsMock.mockResolvedValue({
+      items: [
+        {
+          attemptId: "AFAIL001",
+          invokeId: "ACCOUNTWF1",
+          occurredAt: "2026-07-11T12:00:00.000Z",
+          endpoint: "/v1/responses",
+          upstreamAccountId: 101,
+          upstreamAccountName: "CIII",
+          requestModel: "gpt-5.5",
+          responseModel: "gpt-5.5",
+          proxyBindingKeySnapshot: "__direct__",
+          attemptIndex: 1,
+          distinctAccountIndex: 1,
+          sameAccountRetryIndex: 0,
+          status: "http_failure",
+          phase: "completed",
+          httpStatus: 500,
+          failureKind: "upstream_response_failed",
+          streamLatencyMs: 3_280,
+          approxDownloadBytes: 80_000,
+          createdAt: "2026-07-11T12:00:00.000Z",
+          invocationRecord: {
+            id: 77,
+            invokeId: "ACCOUNTWF1",
+            occurredAt: "2026-07-11T12:00:00.000Z",
+            createdAt: "2026-07-11T12:00:00.000Z",
+            source: "proxy",
+            routeMode: "pool",
+            endpoint: "/v1/responses",
+            requestModel: "gpt-5.5",
+            responseModel: "gpt-5.5",
+            status: "success",
+          },
+          workflowEntry: {
+            blockId: "attempt-AFAIL001",
+            kind: "attempt",
+            occurredAt: "2026-07-11T12:00:00.000Z",
+            title: "Attempt #1",
+            subtitle: "CIII",
+            status: "http_failure",
+            attempt: {
+              synthetic: false,
+              attemptId: "AFAIL001",
+              occurredAt: "2026-07-11T12:00:00.000Z",
+              endpoint: "/v1/responses",
+              upstreamAccountId: 101,
+              upstreamAccountName: "CIII",
+              requestModel: "gpt-5.5",
+              responseModel: "gpt-5.5",
+              attemptIndex: 1,
+              distinctAccountIndex: 1,
+              sameAccountRetryIndex: 0,
+              status: "http_failure",
+              phase: "completed",
+              httpStatus: 500,
+              failureKind: "upstream_response_failed",
+              streamLatencyMs: 3_280,
+              requestSummary: {
+                endpoint: "/v1/responses",
+                requestModel: "gpt-5.5",
+              },
+              responseSummary: {
+                status: "http_failure",
+                phase: "completed",
+                httpStatus: 500,
+                failureKind: "upstream_response_failed",
+                responseBodyCapture: {
+                  availableAtInvocationLevel: false,
+                  size: 79_224,
+                  detailLevel: "attempt_metrics",
+                  unavailableReason: "non_final_attempt_response_body_not_captured",
+                },
+                usage: null,
+              },
+            },
+            detail: null,
+            responseBody: null,
+          },
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 50,
+    });
+
+    renderTimeline();
+    await flushAsync();
+
+    const card = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-AFAIL001"]',
+    );
+    expect(card).not.toBeNull();
+    expect(card?.textContent).toContain("79,224 B");
+
+    const responseBodyButton = Array.from(card?.querySelectorAll("button") ?? []).find((button) =>
+      /响应体|response body/i.test(button.textContent ?? ""),
+    );
+    expect(responseBodyButton).toBeDefined();
+    act(() => {
+      responseBodyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(fetchResponseBodyMock).not.toHaveBeenCalled();
+    expect(card?.textContent).toContain("未绑定调用级响应体");
+  });
+
   it("shows the pending attempt phase without adding another permanent column", async () => {
     fetchAttemptsMock.mockResolvedValue({
       items: [

@@ -4386,6 +4386,27 @@ fn build_workflow_attempt_timeline_entry(
     }
 }
 
+fn suppress_invocation_level_response_body_for_account_retry(
+    attempt: &mut InvocationWorkflowAttempt,
+    attempt_row: &InvocationWorkflowAttemptRow,
+) {
+    let Some(Value::Object(response_summary)) = attempt.response_summary.as_mut() else {
+        return;
+    };
+
+    let mut capture = serde_json::Map::new();
+    capture.insert("availableAtInvocationLevel".to_string(), Value::Bool(false));
+    if let Some(size) = attempt_row.upstream_response_body_bytes {
+        capture.insert("size".to_string(), json!(size));
+    }
+    capture.insert("detailLevel".to_string(), json!("attempt_metrics"));
+    capture.insert(
+        "unavailableReason".to_string(),
+        json!("non_final_attempt_response_body_not_captured"),
+    );
+    response_summary.insert("responseBodyCapture".to_string(), Value::Object(capture));
+}
+
 pub(crate) async fn hydrate_upstream_account_attempt_workflow_entries(
     state: &AppState,
     records: &mut [ApiPoolUpstreamRequestAttempt],
@@ -4437,6 +4458,10 @@ pub(crate) async fn hydrate_upstream_account_attempt_workflow_entries(
             .iter()
             .filter(|attempt| !invocation_workflow_attempt_row_is_pseudo_terminal(attempt))
             .collect::<Vec<_>>();
+        let final_attempt_index = real_attempt_rows
+            .iter()
+            .map(|attempt| attempt.attempt_index)
+            .max();
         let last_success_attempt_index = last_success_like_attempt_index(&real_attempt_rows);
         let usage_cost_audit = (invocation_status_is_success_like(&record)
             && invocation_has_usage_evidence(&record))
@@ -4445,7 +4470,7 @@ pub(crate) async fn hydrate_upstream_account_attempt_workflow_entries(
         let workflow_entries = real_attempt_rows
             .into_iter()
             .filter_map(|attempt_row| {
-                let attempt = build_workflow_attempt_from_row(
+                let mut attempt = build_workflow_attempt_from_row(
                     &record,
                     attempt_row,
                     payload_value.as_ref(),
@@ -4453,6 +4478,18 @@ pub(crate) async fn hydrate_upstream_account_attempt_workflow_entries(
                         .then_some(usage_cost_audit.as_ref())
                         .flatten(),
                 );
+                if final_attempt_index != Some(attempt_row.attempt_index)
+                    && attempt_row
+                        .response_summary_json
+                        .as_deref()
+                        .map(str::trim)
+                        .is_none_or(str::is_empty)
+                {
+                    suppress_invocation_level_response_body_for_account_retry(
+                        &mut attempt,
+                        attempt_row,
+                    );
+                }
                 let attempt_id = attempt.attempt_id.clone()?;
                 Some((attempt_id, build_workflow_attempt_timeline_entry(attempt)))
             })

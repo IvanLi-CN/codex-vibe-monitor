@@ -30,6 +30,7 @@
 - 账号详情已将最终调用记录表替换为真实上游尝试请求列表：按账号从 `pool_upstream_request_attempts` 读取最近 7 天主库数据，按 `occurred_at DESC, id DESC` 分页。请求 tab 直接复用调用详情里的 pool attempt 摘要卡，并在摘要卡内补充时间、调用短 ID 与模型映射；点击摘要卡后展开对应详情面板。列表以 `(invoke_id, occurred_at)` 关联 invocation payload 的 `requestModel` / `responseModel`，请求模型缺失时回退 `model`，避免依赖旧数据库不存在的列。
 - 账号详情 attempts API 现为可关联主库 invocation 的每条真实 attempt 返回 `invocationRecord` 与 `workflowEntry`；`workflowEntry` 复用调用详情 workflow attempt 构造逻辑，前端 `UpstreamAccountAttemptTimeline` 直接渲染 `InvocationWorkflowAttemptRecord`，旧稀疏数据只保留最小 fallback。
 - 账号详情与调用详情的 Token/成本规则已统一：只有最终成功 attempt 获得 `responseSummary.usage`，失败重试与非最终 attempt 保持 usage 为空，不再复制 invocation 级 usage。
+- 账号详情 workflow hydration 对非最终真实 attempt 增加 response body 归属保护：缺少 per-attempt `responseSummary` 时只暴露 attempt 行响应字节指标，并禁止前端通过 invocation id lazy-load 最终响应体。
 - 账号详情请求 tab 现将共享 attempt 卡收口为唯一 focus 真相源：事件定位时通过 `call-attempts/locate` 只加载目标页，`focusedAttemptId + focusVersion` 触发目标卡片滚动入视区、展开诊断并显示 focused 高亮；只有在账号详情抽屉内发生下一次 pointer/keyboard 交互后，才会延迟 1.5 秒清除高亮。
 - 账号详情 records tab 中曾被 `hidden` 包裹的 `InvocationTable` / anchored locate dead path 已删除，不再保留 `invokeId` 锚点定位状态、隐藏 fallback alert 或同路径局部状态；健康与事件入口只保留“请求 tab -> target attempt focus”的单一路径。
 - Dashboard 活动快照现额外返回全局与账号级的模型性能分组。仅状态成功、失败分类为 `none` 且 `cost` 非空的调用参与 TPM、流式响应速率、响应时长、首字用时、墙钟时长、累计时长和并行数；零费用成功调用保留。模型按响应模型归属，空思考程度在前端显示“未指定”。后端在单次 retained live interval 扫描里同时生成全局、账号、模型与账号+模型四级墙钟并集，并继续累加各 scope 的 `t_total_ms`，统一对外返回 `wallClockUsageDurationMs`、`cumulativeUsageDurationMs` 与 `parallelism`。

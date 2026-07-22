@@ -136,6 +136,7 @@
 - workflow detail 仅为最终成功 attempt 注入 `responseSummary.usage` 审计对象；该对象复用 invocation 级 recorded/local 成本对账结果，并补齐 `未命中缓存输入 Token / 命中缓存输入 Token / 输出 Token / 金额` 这四项 owner-facing 关键指标。
 - `GET /api/pool/upstream-accounts/{accountId}/call-attempts` 返回该账号最近 7 天主库尝试的分页列表；`GET .../call-attempts/locate?attemptId=...` 返回目标尝试所在页，未命中返回 `404`。
 - 账号 attempts API 返回的每个 item 可选携带 `invocationRecord` 与 `workflowEntry`：当同一主库 `(invokeId, occurredAt)` 能加载 invocation 与真实 attempt 行时，`workflowEntry` 使用 `GET /api/invocations/:id/workflow-detail` 的 attempt 构造规则生成；缺失关联数据时仍返回基本 attempt 行并允许前端最小 fallback。该接口不读取 archive，仍只覆盖最近 7 天主库窗口。
+- 当账号 attempts API 为非最终真实 attempt 回填 workflow entry 且该 attempt 缺少 per-attempt `responseSummary` 时，响应体 capture 只能使用 attempt 行的响应字节指标，必须标记为不可从 invocation 级 body lazy-load；只有最终真实 attempt 可绑定 invocation 级响应体。
 - 号池详情中，真实上游尝试与合成终态记录分开展示。`budget_exhausted_final` 或 `sameAccountRetryIndex <= 0` 仅作为号池终态说明，不作为普通尝试卡片展示，不显示同账号重试序号或阶段耗时。
 - 启动阶段执行历史回填：读取 `request_raw_path` 指向的原始请求 JSON，提取 `prompt_cache_key` 后写回 payload。
 - Settings 页面在现有 proxy card 内新增两个独立开关，文案明确区分“请求 body 记录”与“响应 body 记录”，并说明关闭仅影响新记录，旧记录继续走 retention。
@@ -260,6 +261,7 @@
 - Given 健康与事件带有当前账号的 `attemptId`，When 用户点击上游尝试 ID，Then 账号详情立即进入“请求”tab，后端只返回该尝试所在页，目标记录自动滚动进可视区、展开诊断并显示 focused 高亮。
 - Given 目标尝试已经被事件定位并处于 focused 状态，When 用户在账号详情抽屉内发生下一次 pointer 或 keyboard 交互，Then focused 高亮在 1.5 秒后消退；若未发生下一次交互，则高亮保持可见。
 - Given 账号详情展示尝试请求，When 摘要卡列表渲染，Then 每张卡直接复用调用详情 workflow attempt 卡，显示 `attemptId`、调用短 ID、时间、请求、请求头、请求体、响应、响应头、响应体、压缩与 lazy body 展开入口；tokens 与费用只按调用详情规则挂到最终成功 attempt，不复制到失败或非最终 attempt。
+- Given 某个失败重试不是最终真实 attempt 且缺少 per-attempt 响应体 capture，When 用户展开该 attempt 的响应体，Then 界面只显示该 attempt 的响应字节指标与不可用原因，不得请求或展示最终 invocation 的响应体。
 - Given 上游 HTTP 为 500 且下游 HTTP 为 502，When 用户展开对应摘要卡，Then 详情面板显示下游 HTTP 502、上游请求 ID、路由键与完整可复制错误。
 - Given 账号尝试请求列表在 `mobile390` 渲染，When 用户查看失败项，Then 移动端仍使用同一套摘要卡与详情面板交互，并可在展开后看到代理、压缩与完整错误信息。
 - Given 历史事件缺少 `attemptId` 或目标尝试已被 7 天 retention 清理，When 用户查看事件，Then 界面明确不可定位或显示结构化未找到提示，且不以 `invokeId` 模糊匹配。

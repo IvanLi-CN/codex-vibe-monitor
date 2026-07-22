@@ -225,6 +225,12 @@ const workflowFailureAttemptItem: ApiPoolUpstreamRequestAttempt = {
         httpStatus: 500,
         failureKind: "upstream_response_failed",
         errorMessage: "upstream returned an oversized diagnostic payload",
+        responseBodyCapture: {
+          availableAtInvocationLevel: false,
+          size: 79_224,
+          detailLevel: "attempt_metrics",
+          unavailableReason: "non_final_attempt_response_body_not_captured",
+        },
         usage: null,
       },
     },

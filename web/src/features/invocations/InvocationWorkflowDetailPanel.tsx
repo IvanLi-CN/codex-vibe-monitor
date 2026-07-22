@@ -569,6 +569,11 @@ function formatPayloadUnavailableReason(reason: string | null | undefined, isZh:
       ? "该记录没有保留可展示的载荷。"
       : "No displayable payload was retained for this record.";
   }
+  if (normalized === "non_final_attempt_response_body_not_captured") {
+    return isZh
+      ? "该重试不是最终响应，未绑定调用级响应体。"
+      : "This retry is not the final response, so invocation-level response body is not attached.";
+  }
   return isZh ? "载荷当前不可用。" : "The payload is currently unavailable.";
 }
 
@@ -1575,9 +1580,16 @@ function AttemptDetail({
   const responseDeliverySource =
     readRecord(responseSummary?.delivery) ?? readRecord(responseBodyState.data?.routing);
   const requestBodyCaptureSource = readRecord(requestSummary?.bodyCapture);
+  const responseBodyCaptureSource = readRecord(responseSummary?.responseBodyCapture);
   const requestArchiveAtInvocation = readBoolean(
     requestBodyCaptureSource?.availableAtInvocationLevel,
   );
+  const responseArchiveAtInvocation = readBoolean(
+    responseBodyCaptureSource?.availableAtInvocationLevel,
+  );
+  const responseBodyUnavailableReason =
+    responseBodyState.data?.unavailableReason ??
+    readString(responseBodyCaptureSource?.unavailableReason);
 
   const keyDiagnosticsItems = [
     {
@@ -1975,7 +1987,14 @@ function AttemptDetail({
   const responseCaptureSummaryItems = [
     {
       label: isZh ? "归档" : "Archive",
-      value: isZh ? "调用级" : "Invocation",
+      value:
+        responseArchiveAtInvocation == null || responseArchiveAtInvocation
+          ? isZh
+            ? "调用级"
+            : "Invocation"
+          : isZh
+            ? "尝试指标"
+            : "Attempt metrics",
       monospace: false,
     },
     {
@@ -1985,12 +2004,17 @@ function AttemptDetail({
     },
     {
       label: isZh ? "大小" : "Size",
-      value: formatByteSize(responseBodyState.data?.bodySize, localeTag),
+      value: formatByteSize(
+        responseBodyState.data?.bodySize ?? readNumber(responseBodyCaptureSource?.size),
+        localeTag,
+      ),
       monospace: false,
     },
     {
       label: isZh ? "详情" : "Detail",
-      value: formatOptionalText(responseBodyState.data?.detailLevel),
+      value: formatOptionalText(
+        responseBodyState.data?.detailLevel ?? readString(responseBodyCaptureSource?.detailLevel),
+      ),
       monospace: false,
     },
     {
@@ -2142,7 +2166,7 @@ function AttemptDetail({
           ) : (
             <PayloadNotice tone="warning">
               {isZh ? "响应体不可用：" : "Response body unavailable: "}
-              {formatPayloadUnavailableReason(responseBodyState.data?.unavailableReason, isZh)}
+              {formatPayloadUnavailableReason(responseBodyUnavailableReason, isZh)}
             </PayloadNotice>
           )}
         </>
@@ -2587,6 +2611,10 @@ export function InvocationWorkflowAttemptRecord({
 
   const currentSection = isControlled ? activeSection : internalSection;
   const currentOpen = isControlled ? isOpen : currentSection != null;
+  const responseBodyCapture = readRecord(entry.attempt?.responseSummary?.responseBodyCapture);
+  const responseBodyAvailableAtInvocationLevel = readBoolean(
+    responseBodyCapture?.availableAtInvocationLevel,
+  );
 
   useEffect(() => {
     requestBodyFetchSeqRef.current += 1;
@@ -2630,6 +2658,7 @@ export function InvocationWorkflowAttemptRecord({
 
   useEffect(() => {
     if (!(record.id > 0)) return;
+    if (responseBodyAvailableAtInvocationLevel === false) return;
     if (
       !currentSection ||
       !isResponseSection(currentSection) ||
@@ -2654,7 +2683,7 @@ export function InvocationWorkflowAttemptRecord({
           error: error instanceof Error ? error.message : String(error),
         });
       });
-  }, [currentSection, record.id, responseBodyState.status]);
+  }, [currentSection, record.id, responseBodyAvailableAtInvocationLevel, responseBodyState.status]);
 
   const handleSelectSection = (section: AttemptSection) => {
     if (isControlled) {
