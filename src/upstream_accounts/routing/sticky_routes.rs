@@ -431,10 +431,13 @@ pub(crate) async fn load_sticky_route(
     .map_err(Into::into)
 }
 
-pub(crate) async fn load_sticky_affinity_generation(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn load_sticky_affinity_generation_executor<'e, E>(
+    executor: E,
     sticky_key: &str,
-) -> Result<i64> {
+) -> Result<i64>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     sqlx::query_scalar::<_, i64>(
         r#"
         SELECT generation
@@ -444,10 +447,17 @@ pub(crate) async fn load_sticky_affinity_generation(
         "#,
     )
     .bind(sticky_key)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
     .map(|generation| generation.unwrap_or_default())
     .map_err(Into::into)
+}
+
+pub(crate) async fn load_sticky_affinity_generation(
+    pool: &Pool<Sqlite>,
+    sticky_key: &str,
+) -> Result<i64> {
+    load_sticky_affinity_generation_executor(pool, sticky_key).await
 }
 
 pub(crate) async fn bump_sticky_affinity_generation_executor<'e, E>(
@@ -482,18 +492,6 @@ pub(crate) async fn bump_sticky_affinity_generation(
     now_iso: &str,
 ) -> Result<i64> {
     bump_sticky_affinity_generation_executor(pool, sticky_key, now_iso).await
-}
-
-pub(crate) async fn sticky_affinity_generation_matches(
-    pool: &Pool<Sqlite>,
-    sticky_key: &str,
-    expected_generation: Option<i64>,
-) -> Result<bool> {
-    let Some(expected_generation) = expected_generation else {
-        return Ok(true);
-    };
-    let current_generation = load_sticky_affinity_generation(pool, sticky_key).await?;
-    Ok(current_generation == expected_generation)
 }
 
 pub(crate) async fn upsert_sticky_route_executor<'e, E>(

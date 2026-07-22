@@ -953,71 +953,82 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
     upstream_account_id: i64,
     now_iso: &str,
     invoke_id: Option<&str>,
-) -> Result<()> {
+    sticky_affinity_generation: Option<i64>,
+) -> Result<bool> {
     let event_prompt_cache_key = prompt_cache_key.filter(|key| *key == sticky_key);
-    let Some(prompt_cache_key) = event_prompt_cache_key else {
-        upsert_sticky_route(pool, sticky_key, upstream_account_id, now_iso).await?;
-        return Ok(());
-    };
-
     let mut conn = pool.acquire().await?;
     sqlx::query("BEGIN IMMEDIATE")
         .execute(conn.as_mut())
         .await
         .context("failed to acquire runtime sticky event write lock")?;
 
-    let write_outcome: Result<()> = async {
-        let sticky_before =
+    let write_outcome: Result<bool> = async {
+        let current_generation =
+            load_sticky_affinity_generation_executor(conn.as_mut(), sticky_key).await?;
+        if let Some(expected_generation) = sticky_affinity_generation
+            && current_generation != expected_generation
+        {
+            return Ok(false);
+        }
+
+        let sticky_before = if event_prompt_cache_key.is_some() {
             load_prompt_cache_conversation_sticky_snapshot_executor(conn.as_mut(), sticky_key)
-                .await?;
+                .await?
+        } else {
+            None
+        };
         upsert_sticky_route_executor(conn.as_mut(), sticky_key, upstream_account_id, now_iso)
             .await?;
-        let sticky_after =
-            load_prompt_cache_conversation_sticky_snapshot_executor(conn.as_mut(), sticky_key)
-                .await?;
 
-        if sticky_before != sticky_after
-            && let Some(sticky_after) = sticky_after
-        {
-            append_prompt_cache_conversation_operation_event_executor(
-                conn.as_mut(),
-                AppendPromptCacheConversationOperationEventInput {
-                    prompt_cache_key: prompt_cache_key.to_string(),
-                    action: "stickyTargetChanged".to_string(),
-                    origin: PROMPT_CACHE_CONVERSATION_OPERATION_ORIGIN_SYSTEM_AUTO.to_string(),
-                    info_types: vec![
-                        PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING.to_string(),
-                    ],
-                    occurred_at: now_iso.to_string(),
-                    headline: prompt_cache_conversation_operation_headline("stickyTargetChanged"),
-                    changed_fields: vec!["stickyTarget".to_string()],
-                    binding_before: None,
-                    binding_after: None,
-                    sticky_before,
-                    sticky_after: Some(sticky_after),
-                    invoke_id: invoke_id.map(ToOwned::to_owned),
-                },
-            )
-            .await?;
+        if let Some(prompt_cache_key) = event_prompt_cache_key {
+            let sticky_after =
+                load_prompt_cache_conversation_sticky_snapshot_executor(conn.as_mut(), sticky_key)
+                    .await?;
+
+            if sticky_before != sticky_after
+                && let Some(sticky_after) = sticky_after
+            {
+                append_prompt_cache_conversation_operation_event_executor(
+                    conn.as_mut(),
+                    AppendPromptCacheConversationOperationEventInput {
+                        prompt_cache_key: prompt_cache_key.to_string(),
+                        action: "stickyTargetChanged".to_string(),
+                        origin: PROMPT_CACHE_CONVERSATION_OPERATION_ORIGIN_SYSTEM_AUTO.to_string(),
+                        info_types: vec![
+                            PROMPT_CACHE_CONVERSATION_OPERATION_INFO_TYPE_ROUTING.to_string(),
+                        ],
+                        occurred_at: now_iso.to_string(),
+                        headline: prompt_cache_conversation_operation_headline(
+                            "stickyTargetChanged",
+                        ),
+                        changed_fields: vec!["stickyTarget".to_string()],
+                        binding_before: None,
+                        binding_after: None,
+                        sticky_before,
+                        sticky_after: Some(sticky_after),
+                        invoke_id: invoke_id.map(ToOwned::to_owned),
+                    },
+                )
+                .await?;
+            }
         }
-        Ok(())
+        Ok(true)
     }
     .await;
 
     match write_outcome {
-        Ok(()) => {
+        Ok(applied) => {
             sqlx::query("COMMIT")
                 .execute(conn.as_mut())
                 .await
                 .context("failed to commit runtime sticky event transaction")?;
+            Ok(applied)
         }
         Err(error) => {
             let _ = sqlx::query("ROLLBACK").execute(conn.as_mut()).await;
-            return Err(error);
+            Err(error)
         }
     }
-    drop(conn);
-    Ok(())
 }
 
 fn prompt_cache_conversation_operation_event_response_from_row(

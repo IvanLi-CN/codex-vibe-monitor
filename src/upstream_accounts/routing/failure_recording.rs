@@ -131,17 +131,17 @@ async fn record_pool_route_success_inner(
         return Ok(());
     }
     if let Some(sticky_key) = sticky_key {
-        if sticky_affinity_generation_matches(pool, sticky_key, sticky_affinity_generation).await? {
-            upsert_runtime_prompt_cache_conversation_sticky_route(
-                pool,
-                sticky_key,
-                prompt_cache_key,
-                account_id,
-                &now_iso,
-                invoke_id,
-            )
-            .await?;
-        } else {
+        let sticky_updated = upsert_runtime_prompt_cache_conversation_sticky_route(
+            pool,
+            sticky_key,
+            prompt_cache_key,
+            account_id,
+            &now_iso,
+            invoke_id,
+            sticky_affinity_generation,
+        )
+        .await?;
+        if !sticky_updated {
             debug!(
                 sticky_key,
                 account_id,

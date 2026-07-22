@@ -1,9 +1,12 @@
 use super::*;
+use crate::api::upsert_runtime_prompt_cache_conversation_sticky_route;
 use crate::upstream_accounts::{
+    bump_sticky_affinity_generation_executor, delete_sticky_route_executor,
     load_sticky_affinity_generation, load_sticky_route,
     record_pool_route_success_with_affinity_generation, upsert_sticky_route,
 };
 use serde_json::json;
+use tokio::time::{Duration, sleep};
 
 #[tokio::test]
 #[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
@@ -5460,6 +5463,82 @@ async fn prompt_cache_clear_and_reset_affinity_fences_stale_sticky_revival_and_e
                 && event.invoke_id.as_deref() == Some(keepalive_invoke_id)
         }),
         "same-account keepalive should not emit extra sticky change noise"
+    );
+}
+
+#[tokio::test]
+async fn runtime_sticky_upsert_rechecks_generation_after_waiting_for_write_lock() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let stale_account_id =
+        insert_test_pool_api_key_account(&state, "Prompt Cache Locked Stale", "upstream-locked")
+            .await;
+    let prompt_cache_key = "prompt-cache-affinity-lock-race-key";
+    let seeded_at = format_utc_iso(Utc::now());
+
+    upsert_sticky_route(&state.pool, prompt_cache_key, stale_account_id, &seeded_at)
+        .await
+        .expect("seed sticky route before lock race");
+    let stale_generation = load_sticky_affinity_generation(&state.pool, prompt_cache_key)
+        .await
+        .expect("load affinity generation before lock race");
+    assert_eq!(stale_generation, 0);
+
+    let mut conn = state
+        .pool
+        .acquire()
+        .await
+        .expect("acquire connection for affinity reset lock");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(conn.as_mut())
+        .await
+        .expect("begin immediate affinity reset lock");
+    let reset_now = format_utc_iso(Utc::now());
+    bump_sticky_affinity_generation_executor(conn.as_mut(), prompt_cache_key, &reset_now)
+        .await
+        .expect("bump affinity generation while lock is held");
+    delete_sticky_route_executor(conn.as_mut(), prompt_cache_key)
+        .await
+        .expect("delete sticky route while lock is held");
+
+    let pool = state.pool.clone();
+    let sticky_key = prompt_cache_key.to_string();
+    let write_task = tokio::spawn(async move {
+        upsert_runtime_prompt_cache_conversation_sticky_route(
+            &pool,
+            &sticky_key,
+            Some(&sticky_key),
+            stale_account_id,
+            &format_utc_iso(Utc::now()),
+            Some("locked-stale-invoke"),
+            Some(stale_generation),
+        )
+        .await
+    });
+
+    sleep(Duration::from_millis(50)).await;
+    sqlx::query("COMMIT")
+        .execute(conn.as_mut())
+        .await
+        .expect("commit affinity reset lock");
+    drop(conn);
+
+    let sticky_updated = write_task
+        .await
+        .expect("join locked stale sticky write task")
+        .expect("locked stale sticky write task should return result");
+    assert!(
+        !sticky_updated,
+        "stale sticky writeback must be rejected after the reset transaction commits"
+    );
+    assert!(
+        load_sticky_route(&state.pool, prompt_cache_key)
+            .await
+            .expect("load sticky route after locked stale writeback")
+            .is_none(),
+        "stale sticky writeback must not recreate sticky route after waiting on the reset lock"
     );
 }
 
