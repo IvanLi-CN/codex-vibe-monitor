@@ -492,11 +492,11 @@ async fn account_attempt_list_reads_models_from_invocation_payload_without_schem
     sqlx::query(
         r#"
         INSERT INTO pool_upstream_request_attempts (
-            invoke_id, occurred_at, endpoint, route_mode, upstream_account_id,
+            attempt_public_id, invoke_id, occurred_at, endpoint, route_mode, upstream_account_id,
             attempt_index, distinct_account_index, same_account_retry_index,
             started_at, finished_at, status, phase, http_status, created_at
         )
-        VALUES (?1, ?2, '/v1/responses', 'pool', ?3, 1, 1, 0, ?2, ?2, 'success', 'completed', 200, ?2)
+        VALUES ('APAYLOAD', ?1, ?2, '/v1/responses', 'pool', ?3, 1, 1, 0, ?2, ?2, 'success', 'completed', 200, ?2)
         "#,
     )
     .bind("attempt-payload-compat")
@@ -521,6 +521,202 @@ async fn account_attempt_list_reads_models_from_invocation_payload_without_schem
     assert_eq!(item.model.as_deref(), Some("gpt-5.3"));
     assert_eq!(item.request_model.as_deref(), Some("gpt-5.3"));
     assert_eq!(item.response_model.as_deref(), Some("gpt-5.4"));
+}
+
+#[tokio::test]
+async fn account_attempt_list_returns_workflow_entries_and_final_success_usage_only() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_api_key_account(&state.pool, "Attempt workflow parity").await;
+    let occurred_at = format_utc_iso(Utc::now());
+    let payload = json!({
+        "requestModel": "gpt-5.5",
+        "responseModel": "gpt-5.5",
+        "endpoint": "/v1/responses",
+        "routeMode": "pool",
+        "proxyDisplayName": "Direct",
+        "requestUserAgent": "codex-vibe-monitor-test/1.0",
+        "requestXForwardedFor": "192.168.31.6",
+        "requesterIp": "192.168.31.6",
+        "promptCacheKey": "019f89ab-b67e-71a2-9633-324247eec56e",
+        "requestedServiceTier": "low",
+        "reasoningEffort": "low",
+        "responseContentEncoding": "identity",
+        "forwardedChunkCount": 7,
+        "usageObserved": true
+    })
+    .to_string();
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, model, input_tokens, output_tokens,
+            cache_input_tokens, reasoning_tokens, total_tokens, cost, status,
+            failure_class, is_actionable, payload, raw_response, price_version,
+            request_raw_path, request_raw_size, request_raw_truncated,
+            response_raw_path, response_raw_size, response_raw_truncated,
+            detail_level, t_total_ms, t_req_read_ms, t_req_parse_ms,
+            t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms,
+            t_resp_parse_ms, t_persist_ms, created_at
+        )
+        VALUES (
+            ?1, ?2, 'proxy', 'gpt-5.5', 49042, 87,
+            46952, NULL, 48769, 0.0364, 'success',
+            'none', 0, ?3, '', 'test@response-tier',
+            'request-body.json', 217958, 0,
+            'response-body.json', 79224, 0,
+            'full', 3280, 11, 13,
+            45, 120, 3120,
+            18, 22, ?2
+        )
+        "#,
+    )
+    .bind("ACCOUNTWF1")
+    .bind(&occurred_at)
+    .bind(&payload)
+    .execute(&state.pool)
+    .await
+    .expect("insert successful invocation with usage");
+
+    for (attempt_id, attempt_index, status, http_status, error_message) in [
+        (
+            "AFAIL001",
+            1_i64,
+            "http_failure",
+            500_i64,
+            Some("upstream returned a diagnostic payload"),
+        ),
+        ("ASUCC002", 2_i64, "success", 200_i64, None),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_request_attempts (
+                attempt_public_id, invoke_id, occurred_at, endpoint, route_mode,
+                sticky_key, routing_source, upstream_account_id, upstream_route_key,
+                proxy_binding_key_snapshot, attempt_index, distinct_account_index,
+                same_account_retry_index, requester_ip, started_at, finished_at,
+                status, phase, http_status, failure_kind, error_message,
+                downstream_error_message, connect_latency_ms, first_byte_latency_ms,
+                stream_latency_ms, upstream_request_id,
+                upstream_request_compression_algorithm, upstream_request_compression_mode,
+                upstream_request_logical_body_bytes,
+                upstream_request_transmitted_body_bytes,
+                upstream_request_header_bytes_approx,
+                upstream_response_body_bytes,
+                upstream_response_header_bytes_approx,
+                created_at
+            )
+            VALUES (
+                ?1, 'ACCOUNTWF1', ?2, '/v1/responses', 'pool',
+                'sticky-a', 'failover', ?3, 'route-direct',
+                '__direct__', ?4, 1, ?4, '192.168.31.6', ?2, ?2,
+                ?5, 'completed', ?6, ?7, ?8,
+                ?8, 45, 120,
+                3120, 'req_upstream_account_workflow',
+                'zstd', 'recompressed',
+                217958,
+                53295,
+                1024,
+                79224,
+                776,
+                ?2
+            )
+            "#,
+        )
+        .bind(attempt_id)
+        .bind(&occurred_at)
+        .bind(account_id)
+        .bind(attempt_index)
+        .bind(status)
+        .bind(http_status)
+        .bind(error_message.map(|_| "upstream_response_failed"))
+        .bind(error_message)
+        .execute(&state.pool)
+        .await
+        .expect("insert upstream attempt");
+    }
+
+    let Json(response) = list_upstream_account_attempts(
+        State(state),
+        AxumPath(account_id),
+        Query(ListUpstreamAccountAttemptsQuery {
+            page: Some(1),
+            page_size: Some(20),
+        }),
+    )
+    .await
+    .expect("list account workflow attempts");
+
+    let success_item = response
+        .items
+        .iter()
+        .find(|item| item.attempt_id == "ASUCC002")
+        .expect("success attempt");
+    assert!(success_item.invocation_record.as_ref().unwrap().id > 0);
+    assert_eq!(success_item.logical_body_bytes, Some(217958));
+    assert_eq!(success_item.transmitted_body_bytes, Some(53295));
+    assert_eq!(success_item.approx_upload_bytes, Some(54319));
+    assert_eq!(success_item.approx_download_bytes, Some(80000));
+
+    let success_entry = success_item.workflow_entry.as_ref().unwrap();
+    let success_attempt = success_entry.attempt.as_ref().unwrap();
+    let request_summary = success_attempt.request_summary.as_ref().unwrap();
+    assert_eq!(
+        request_summary["headers"]["xForwardedFor"],
+        json!("192.168.31.6")
+    );
+    assert_eq!(request_summary["bodyCapture"]["size"], json!(217958));
+    assert_eq!(request_summary["bodyCapture"]["detailLevel"], json!("full"));
+    assert_eq!(request_summary["compression"]["algorithm"], json!("zstd"));
+    assert_eq!(
+        request_summary["compression"]["logicalBodyBytes"],
+        json!(217958)
+    );
+    assert_eq!(
+        request_summary["compression"]["transmittedBodyBytes"],
+        json!(53295)
+    );
+    let response_summary = success_attempt.response_summary.as_ref().unwrap();
+    assert_eq!(
+        response_summary["headers"]["contentEncoding"],
+        json!("identity")
+    );
+    assert_eq!(
+        response_summary["responseBodyCapture"]["size"],
+        json!(79224)
+    );
+    assert_eq!(response_summary["usage"]["cacheWriteTokens"], json!(2090));
+    assert_eq!(response_summary["usage"]["cacheInputTokens"], json!(46952));
+    assert_eq!(response_summary["usage"]["outputTokens"], json!(87));
+    assert_eq!(response_summary["usage"]["cost"], json!(0.0364));
+
+    let failure_item = response
+        .items
+        .iter()
+        .find(|item| item.attempt_id == "AFAIL001")
+        .expect("failure attempt");
+    let failure_response_summary = failure_item
+        .workflow_entry
+        .as_ref()
+        .unwrap()
+        .attempt
+        .as_ref()
+        .unwrap()
+        .response_summary
+        .as_ref()
+        .unwrap();
+    assert!(failure_response_summary["usage"].is_null());
+    assert_eq!(
+        failure_response_summary["responseBodyCapture"]["availableAtInvocationLevel"],
+        json!(false)
+    );
+    assert_eq!(
+        failure_response_summary["responseBodyCapture"]["size"],
+        json!(79224)
+    );
+    assert_eq!(
+        failure_response_summary["responseBodyCapture"]["unavailableReason"],
+        json!("non_final_attempt_response_body_not_captured")
+    );
 }
 
 pub(crate) async fn insert_oauth_account(pool: &SqlitePool, display_name: &str) -> i64 {

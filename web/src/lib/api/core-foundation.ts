@@ -507,6 +507,8 @@ export interface ApiPoolUpstreamRequestAttempt {
   approxUploadBytes?: number | null;
   approxDownloadBytes?: number | null;
   createdAt: string;
+  invocationRecord?: ApiInvocation | null;
+  workflowEntry?: ApiInvocationWorkflowTimelineEntry | null;
 }
 
 export interface UpstreamAccountAttemptListResponse {

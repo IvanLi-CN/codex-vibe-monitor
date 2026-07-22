@@ -32,7 +32,7 @@ pub(crate) async fn list_upstream_account_attempts(
 ) -> Result<Json<UpstreamAccountAttemptListResponse>, (StatusCode, String)> {
     let page = normalize_upstream_account_list_page(params.page);
     let page_size = normalize_upstream_account_list_page_size(params.page_size);
-    let response = load_upstream_account_attempt_page(&state.pool, account_id, page, page_size)
+    let response = load_upstream_account_attempt_page(state.as_ref(), account_id, page, page_size)
         .await
         .map_err(internal_error_tuple)?;
     Ok(Json(response))
@@ -94,19 +94,20 @@ pub(crate) async fn locate_upstream_account_attempt(
     .map_err(internal_error_tuple)?
     .max(0) as usize;
     let page = newer_count / page_size + 1;
-    let response = load_upstream_account_attempt_page(&state.pool, account_id, page, page_size)
+    let response = load_upstream_account_attempt_page(state.as_ref(), account_id, page, page_size)
         .await
         .map_err(internal_error_tuple)?;
     Ok(Json(response))
 }
 
 async fn load_upstream_account_attempt_page(
-    pool: &Pool<Sqlite>,
+    state: &AppState,
     account_id: i64,
     page: usize,
     page_size: usize,
 ) -> Result<UpstreamAccountAttemptListResponse> {
     const ATTEMPT_RETENTION_DAYS: u64 = 7;
+    let pool = &state.pool;
     let cutoff = shanghai_local_cutoff_string(ATTEMPT_RETENTION_DAYS);
     let total = sqlx::query_scalar::<_, i64>(
         r#"
@@ -121,7 +122,7 @@ async fn load_upstream_account_attempt_page(
     .await?
     .max(0) as usize;
     let offset = page.saturating_sub(1).saturating_mul(page_size);
-    let items = sqlx::query_as::<_, ApiPoolUpstreamRequestAttempt>(
+    let mut items = sqlx::query_as::<_, ApiPoolUpstreamRequestAttempt>(
         r#"
         SELECT
             attempts.id,
@@ -130,6 +131,7 @@ async fn load_upstream_account_attempt_page(
             attempts.occurred_at,
             attempts.endpoint,
             attempts.sticky_key,
+            attempts.routing_source,
             attempts.upstream_account_id,
             accounts.display_name AS upstream_account_name,
             attempts.upstream_route_key,
@@ -171,6 +173,11 @@ async fn load_upstream_account_attempt_page(
             COALESCE(inv.request_raw_codec, 'identity') AS downstream_request_content_encoding,
             attempts.upstream_request_compression_algorithm,
             attempts.upstream_request_compression_mode,
+            attempts.upstream_request_logical_body_bytes,
+            attempts.upstream_request_transmitted_body_bytes,
+            attempts.upstream_request_header_bytes_approx,
+            attempts.upstream_response_body_bytes,
+            attempts.upstream_response_header_bytes_approx,
             attempts.compact_support_status,
             attempts.compact_support_reason,
             attempts.created_at
@@ -191,6 +198,10 @@ async fn load_upstream_account_attempt_page(
     .bind(offset as i64)
     .fetch_all(pool)
     .await?;
+    hydrate_pool_attempt_request_compression_fields(&mut items);
+    hydrate_upstream_account_attempt_workflow_entries(state, &mut items)
+        .await
+        .map_err(|err| anyhow!("failed to hydrate account attempt workflow entries: {err:?}"))?;
     Ok(UpstreamAccountAttemptListResponse {
         items,
         total,

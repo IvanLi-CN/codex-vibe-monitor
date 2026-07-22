@@ -1,9 +1,241 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ReactNode, useEffect } from "react";
 import { MemoryRouter } from "react-router-dom";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
+import type { ApiPoolUpstreamRequestAttempt } from "../../lib/api";
 import { FullPageStorySurface } from "../../storybook/storybookPageHelpers";
 import { UpstreamAccountAttemptTimeline } from "./UpstreamAccountAttemptTimeline";
+
+const workflowSuccessAttemptItem: ApiPoolUpstreamRequestAttempt = {
+  attemptId: "ASUCC002",
+  invokeId: "ACCOUNTWF1",
+  occurredAt: "2026-07-11T12:00:00.000Z",
+  endpoint: "/v1/responses",
+  upstreamAccountId: 101,
+  upstreamAccountName: "CIII",
+  requestModel: "gpt-5.5",
+  responseModel: "gpt-5.5",
+  proxyBindingKeySnapshot: "__direct__",
+  attemptIndex: 2,
+  distinctAccountIndex: 1,
+  sameAccountRetryIndex: 1,
+  status: "success",
+  phase: "completed",
+  httpStatus: 200,
+  downstreamHttpStatus: 200,
+  connectLatencyMs: 45,
+  firstByteLatencyMs: 120,
+  streamLatencyMs: 3_280,
+  upstreamRequestId: "req_upstream_account_workflow",
+  upstreamRequestCompressionAlgorithm: "zstd",
+  upstreamRequestCompressionMode: "recompressed",
+  logicalBodyBytes: 217_958,
+  transmittedBodyBytes: 53_295,
+  savedBytes: 164_663,
+  ratioPct: -75.55,
+  approxUploadBytes: 54_319,
+  approxDownloadBytes: 80_000,
+  createdAt: "2026-07-11T12:00:00.000Z",
+  invocationRecord: {
+    id: 77,
+    invokeId: "ACCOUNTWF1",
+    occurredAt: "2026-07-11T12:00:00.000Z",
+    createdAt: "2026-07-11T12:00:00.000Z",
+    source: "proxy",
+    routeMode: "pool",
+    endpoint: "/v1/responses",
+    requestModel: "gpt-5.5",
+    responseModel: "gpt-5.5",
+    status: "success",
+    requesterIp: "192.168.31.6",
+    upstreamAccountId: 101,
+    upstreamAccountName: "CIII",
+    inputTokens: 49_042,
+    cacheInputTokens: 46_952,
+    outputTokens: 87,
+    totalTokens: 48_769,
+    cost: 0.0364,
+    responseContentEncoding: "identity",
+    tReqReadMs: 11,
+    tReqParseMs: 13,
+    tUpstreamConnectMs: 45,
+    tUpstreamTtfbMs: 120,
+    tUpstreamStreamMs: 3_280,
+    tRespParseMs: 18,
+    tPersistMs: 22,
+    tTotalMs: 3_280,
+  },
+  workflowEntry: {
+    blockId: "attempt-ASUCC002",
+    kind: "attempt",
+    occurredAt: "2026-07-11T12:00:00.000Z",
+    title: "Attempt #2",
+    subtitle: "CIII",
+    status: "success",
+    attempt: {
+      synthetic: false,
+      attemptId: "ASUCC002",
+      occurredAt: "2026-07-11T12:00:00.000Z",
+      endpoint: "/v1/responses",
+      stickyKey: "sticky-a",
+      routingSource: "failover",
+      upstreamAccountId: 101,
+      upstreamAccountName: "CIII",
+      requestModel: "gpt-5.5",
+      responseModel: "gpt-5.5",
+      upstreamRouteKey: "route-direct",
+      proxyBindingKeySnapshot: "__direct__",
+      attemptIndex: 2,
+      distinctAccountIndex: 1,
+      sameAccountRetryIndex: 1,
+      requesterIp: "192.168.31.6",
+      startedAt: "2026-07-11T12:00:00.000Z",
+      finishedAt: "2026-07-11T12:00:03.280Z",
+      status: "success",
+      phase: "completed",
+      httpStatus: 200,
+      downstreamHttpStatus: 200,
+      connectLatencyMs: 45,
+      firstByteLatencyMs: 120,
+      streamLatencyMs: 3_280,
+      upstreamRequestId: "req_upstream_account_workflow",
+      requestSummary: {
+        endpoint: "/v1/responses",
+        routeMode: "pool",
+        requestModel: "gpt-5.5",
+        responseModel: "gpt-5.5",
+        requestedServiceTier: "low",
+        reasoningEffort: "low",
+        promptCacheKey: "019f89ab-b67e-71a2-9633-324247eec56e",
+        requesterIp: "192.168.31.6",
+        routing: {
+          proxyDisplayName: "Direct",
+          upstreamRouteKey: "route-direct",
+          proxyBindingKey: "__direct__",
+        },
+        headers: {
+          userAgent: "codex-vibe-monitor-test/1.0",
+          xForwardedFor: "192.168.31.6",
+        },
+        compression: {
+          algorithm: "zstd",
+          mode: "recompressed",
+          logicalBodyBytes: 217_958,
+          transmittedBodyBytes: 53_295,
+          savedBytes: 164_663,
+          ratioPct: -75.55,
+          approxUploadBytes: 54_319,
+          approxDownloadBytes: 80_000,
+        },
+        bodyCapture: {
+          availableAtInvocationLevel: true,
+          size: 217_958,
+          truncated: false,
+          detailLevel: "full",
+        },
+      },
+      responseSummary: {
+        status: "success",
+        phase: "completed",
+        httpStatus: 200,
+        responseContentEncoding: "identity",
+        headers: {
+          contentEncoding: "identity",
+          upstreamRequestId: "req_upstream_account_workflow",
+        },
+        delivery: {
+          forwardedChunkCount: 7,
+          usageObserved: true,
+        },
+        latencyMs: {
+          connect: 45,
+          firstByte: 120,
+          stream: 3_280,
+          requestRead: 11,
+          requestParse: 13,
+          responseParse: 18,
+          persist: 22,
+          total: 3_280,
+        },
+        responseBodyCapture: {
+          availableAtInvocationLevel: true,
+          size: 79_224,
+          truncated: false,
+          detailLevel: "full",
+        },
+        usage: {
+          inputTokens: 49_042,
+          cacheWriteTokens: 2_090,
+          cacheInputTokens: 46_952,
+          outputTokens: 87,
+          totalTokens: 48_769,
+          cost: 0.0364,
+          tokens: {
+            input: 49_042,
+            cacheWrite: 2_090,
+            cacheRead: 46_952,
+            output: 87,
+            total: 48_769,
+          },
+          costs: {
+            recorded: {
+              total: 0.0364,
+            },
+          },
+          audit: {
+            mismatch: false,
+          },
+        },
+      },
+    },
+    detail: null,
+    responseBody: null,
+  },
+};
+
+const workflowFailureAttemptItem: ApiPoolUpstreamRequestAttempt = {
+  ...workflowSuccessAttemptItem,
+  attemptId: "AFAIL001",
+  attemptIndex: 1,
+  sameAccountRetryIndex: 0,
+  status: "http_failure",
+  httpStatus: 500,
+  downstreamHttpStatus: 502,
+  failureKind: "upstream_response_failed",
+  errorMessage: "upstream returned an oversized diagnostic payload",
+  workflowEntry: {
+    ...workflowSuccessAttemptItem.workflowEntry!,
+    blockId: "attempt-AFAIL001",
+    title: "Attempt #1",
+    status: "http_failure",
+    attempt: {
+      ...workflowSuccessAttemptItem.workflowEntry!.attempt!,
+      attemptId: "AFAIL001",
+      attemptIndex: 1,
+      sameAccountRetryIndex: 0,
+      status: "http_failure",
+      httpStatus: 500,
+      downstreamHttpStatus: 502,
+      failureKind: "upstream_response_failed",
+      errorMessage: "upstream returned an oversized diagnostic payload",
+      responseSummary: {
+        ...workflowSuccessAttemptItem.workflowEntry!.attempt!.responseSummary!,
+        status: "http_failure",
+        httpStatus: 500,
+        failureKind: "upstream_response_failed",
+        errorMessage: "upstream returned an oversized diagnostic payload",
+        responseBodyCapture: {
+          availableAtInvocationLevel: false,
+          size: 79_224,
+          detailLevel: "attempt_metrics",
+          unavailableReason: "non_final_attempt_response_body_not_captured",
+        },
+        usage: null,
+      },
+    },
+  },
+};
 
 function StorySurface({ children }: { children: ReactNode }) {
   return (
@@ -78,45 +310,73 @@ function AttemptTimelineFetchMock({ accountId }: { accountId: number }) {
       ) {
         return new Response(
           JSON.stringify({
-            items: [
-              {
-                attemptId: "4V7MYPJG",
-                invokeId: "K7QM9ZD4HP",
-                occurredAt: "2026-07-11T12:00:00.000Z",
-                endpoint: "/v1/responses",
-                upstreamAccountId: accountId,
-                requestModel: "gpt-5.4",
-                responseModel: "gpt-5.4-2026-07-01",
-                proxyBindingKeySnapshot: "jp-edge-01",
-                attemptIndex: 1,
-                distinctAccountIndex: 0,
-                sameAccountRetryIndex: 0,
-                status: "http_failure",
-                phase: "failed",
-                httpStatus: 500,
-                downstreamHttpStatus: 502,
-                failureKind: "upstream_response_failed",
-                errorMessage: "upstream returned an oversized diagnostic payload",
-                connectLatencyMs: 120,
-                firstByteLatencyMs: 480,
-                streamLatencyMs: 810,
-                downstreamRequestContentEncoding: "gzip",
-                upstreamRequestCompressionAlgorithm: "zstd",
-                upstreamRequestCompressionMode: "recompressed",
-                logicalBodyBytes: 1000,
-                transmittedBodyBytes: 580,
-                savedBytes: 420,
-                ratioPct: -42,
-                approxUploadBytes: 644,
-                approxDownloadBytes: 812,
-                upstreamRequestId: "req_upstream_123",
-                upstreamRouteKey: "route-tokyo-primary",
-                createdAt: "2026-07-11T12:00:00.000Z",
-              },
-            ],
-            total: 1,
+            items: [workflowSuccessAttemptItem, workflowFailureAttemptItem].map((item) => ({
+              ...item,
+              upstreamAccountId: accountId,
+              invocationRecord: item.invocationRecord
+                ? { ...item.invocationRecord, upstreamAccountId: accountId }
+                : item.invocationRecord,
+              workflowEntry: item.workflowEntry
+                ? {
+                    ...item.workflowEntry,
+                    attempt: item.workflowEntry.attempt
+                      ? { ...item.workflowEntry.attempt, upstreamAccountId: accountId }
+                      : item.workflowEntry.attempt,
+                  }
+                : item.workflowEntry,
+            })),
+            total: 2,
             page: 1,
             pageSize: 50,
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+      if (url.includes("/api/invocations/77/request-body")) {
+        return new Response(
+          JSON.stringify({
+            available: true,
+            bodyText: '{"model":"gpt-5.5","input":"large request"}',
+            headers: {
+              userAgent: "codex-vibe-monitor-test/1.0",
+              xForwardedFor: "192.168.31.6",
+            },
+            routing: {
+              routeMode: "pool",
+              stickyKey: "sticky-a",
+            },
+            bodySize: 217_958,
+            detailLevel: "full",
+            captureSource: "raw_file",
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+      if (url.includes("/api/invocations/77/response-body")) {
+        return new Response(
+          JSON.stringify({
+            available: true,
+            bodyText: '{"status":"success","output":"large response"}',
+            headers: {
+              contentEncoding: "identity",
+              upstreamRequestId: "req_upstream_account_workflow",
+            },
+            routing: {
+              forwardedChunkCount: 7,
+            },
+            bodySize: 79_224,
+            detailLevel: "full",
+            captureSource: "raw_file",
           }),
           {
             status: 200,
@@ -163,10 +423,34 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const FocusedFailureAttempt: Story = {
+async function verifyWorkflowParitySurface(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement);
+  await waitFor(() => {
+    expect(canvasElement.textContent ?? "").toContain("217,958 B");
+    expect(canvasElement.textContent ?? "").toContain("79,224 B");
+    expect(canvasElement.textContent ?? "").toContain("输入写 2,090");
+    expect(canvasElement.textContent ?? "").toContain("upstream_response_failed");
+  });
+  const requestBodyButton = (
+    await canvas.findAllByRole("button", { name: /请求体|request body/i })
+  )[0];
+  await userEvent.click(requestBodyButton);
+  await waitFor(() => {
+    expect(canvasElement.textContent ?? "").toContain("large request");
+  });
+  const responseBodyButton = (
+    await canvas.findAllByRole("button", { name: /响应体|response body/i })
+  )[0];
+  await userEvent.click(responseBodyButton);
+  await waitFor(() => {
+    expect(canvasElement.textContent ?? "").toContain("large response");
+  });
+}
+
+export const FullWorkflowSuccessAttempt: Story = {
   args: {
     accountId: 101,
-    focusedAttemptId: "4V7MYPJG",
+    focusedAttemptId: "ASUCC002",
     focusVersion: 1,
   },
   decorators: [
@@ -177,10 +461,14 @@ export const FocusedFailureAttempt: Story = {
       </>
     ),
   ],
+  play: async ({ canvasElement }) => {
+    await verifyWorkflowParitySurface(canvasElement);
+  },
 };
 
-export const FocusedFailureAttemptPage: Story = {
-  ...FocusedFailureAttempt,
+export const FullWorkflowSuccessAttemptPage: Story = {
+  ...FullWorkflowSuccessAttempt,
+  tags: ["test"],
   parameters: {
     layout: "fullscreen",
     viewport: { defaultViewport: "desktop1660" },
@@ -190,9 +478,22 @@ export const FocusedFailureAttemptPage: Story = {
     <AttemptTimelinePageSurface>
       <UpstreamAccountAttemptTimeline
         accountId={args.accountId ?? 101}
-        focusedAttemptId={args.focusedAttemptId ?? "4V7MYPJG"}
+        focusedAttemptId={args.focusedAttemptId ?? "ASUCC002"}
         focusVersion={args.focusVersion ?? 1}
       />
     </AttemptTimelinePageSurface>
   ),
+  play: async ({ canvasElement }) => {
+    await verifyWorkflowParitySurface(canvasElement);
+  },
+};
+
+export const FullWorkflowSuccessAttemptMobile: Story = {
+  ...FullWorkflowSuccessAttemptPage,
+  tags: ["test"],
+  parameters: {
+    layout: "fullscreen",
+    viewport: { defaultViewport: "mobile390" },
+    pageSurface: true,
+  },
 };

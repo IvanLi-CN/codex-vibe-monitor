@@ -171,6 +171,17 @@ function buildSyntheticWorkflowAttemptEntry(
   };
 }
 
+function resolveInvocationRecord(attempt: ApiPoolUpstreamRequestAttempt): ApiInvocation {
+  return attempt.invocationRecord ?? buildSyntheticInvocationRecord(attempt);
+}
+
+function resolveWorkflowAttemptEntry(
+  attempt: ApiPoolUpstreamRequestAttempt,
+  proxyDisplay: ReturnType<typeof formatProxyBinding>,
+): ApiInvocationWorkflowTimelineEntry {
+  return attempt.workflowEntry ?? buildSyntheticWorkflowAttemptEntry(attempt, proxyDisplay);
+}
+
 export function UpstreamAccountAttemptTimeline({
   accountId,
   focusedAttemptId,
@@ -402,16 +413,16 @@ export function UpstreamAccountAttemptTimeline({
             proxyDirectLabel,
           );
           const callShortId = displayCallShortId(attempt.invokeId);
-          const syntheticEntry = buildSyntheticWorkflowAttemptEntry(attempt, proxyDisplay);
-          const syntheticRecord = buildSyntheticInvocationRecord(attempt);
+          const workflowEntry = resolveWorkflowAttemptEntry(attempt, proxyDisplay);
+          const invocationRecord = resolveInvocationRecord(attempt);
           const isFocused = attempt.attemptId === activeFocus?.attemptId;
 
           return (
             <InvocationWorkflowAttemptRecord
               key={attempt.attemptId}
               containerRef={(node) => setAttemptElement(attempt.attemptId, node)}
-              record={syntheticRecord}
-              entry={syntheticEntry}
+              record={invocationRecord}
+              entry={workflowEntry}
               localeTag={localeTag}
               isZh={isZh}
               summaryIdentity={callShortId ?? attempt.attemptId}

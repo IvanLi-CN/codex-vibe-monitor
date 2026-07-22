@@ -28,7 +28,9 @@
 - Live 展开详情与 Dashboard 调用详情抽屉必须共用同一套调用详情组件，并按“快速排障”组织信息：请求身份、路由与模型、失败信号、细节保留、阶段耗时分组展示。
 - 新 HTTP proxy invocation 的 `invokeId` 必须使用 10 位 NanoID 风格短格式，去掉历史 `proxy-...` 前缀、内部 counter 与时间戳尾巴；历史 `proxy-...` 记录继续兼容查询和展示。
 - 账号详情“请求”tab 必须按真实 `pool_upstream_request_attempts` 行展示尝试请求、重试、失败与成功；概览统计继续采用最终调用口径。
-- 账号详情请求 tab 中的尝试请求列表必须复用调用详情里的 pool attempt 摘要卡；每张摘要卡仅表达一次真实上游尝试请求，主入口显示 owner-facing `attemptId`，并在摘要区展示时间、调用短 ID、请求/响应模型与尝试摘要。不得显示 endpoint、重试序号、最终 invocation 的 tokens/费用或其他非本次调用字段。
+- 账号详情请求 tab 中的尝试请求列表必须复用调用详情里的 workflow attempt 卡；后端为每个可关联主库 invocation 的账号 attempt 返回 workflow-compatible `workflowEntry` 与 `invocationRecord`，前端直接渲染共享组件，不再维护独立的摘要 schema。
+- 账号详情请求 tab 的 usage 显示规则必须与调用详情一致：仅顶层 invocation 属于成功终态且存在 usage 证据时，为最终成功 attempt 展示 Token/成本；更早的重试、失败 attempt 与无 usage 历史记录不显示 usage。
+- 每张账号 attempt 摘要卡仅表达一次真实上游尝试请求，主入口显示 owner-facing `attemptId`，并在摘要区展示时间、调用短 ID、请求/响应模型、请求头、请求体、响应头、响应体与尝试摘要；不得显示重试序号或把最终 invocation usage 复制到非最终成功 attempt。
 - 摘要卡内的 HTTP 值必须明确标记为上游 HTTP；点击摘要卡后在对应详情面板显示下游 HTTP、完整错误、上游请求 ID、路由键、压缩与近似传输字节等诊断证据。代理优先显示解析后的节点名，不能解析时显示截短绑定键并保留完整值提示。
 - 桌面与窄屏统一采用同一套摘要卡 + 详情面板交互；目标尝试被事件定位时，相关摘要卡必须滚动进入可视区、自动展开对应诊断面板并显示 focused 高亮。该高亮只在账号详情抽屉内发生下一次 pointer/keyboard 交互后延迟 1.5s 清除。
 - 新产生的路由调用事件必须携带精确 `attemptId`，健康与事件只能用该 ID 定位同账号的尝试；缺少 `attemptId` 的历史事件必须明确不可定位，不做 `invokeId` 模糊跳转。
@@ -133,6 +135,8 @@
 - `/api/invocations/{invoke_id}/pool-attempts` 读取 `pool_upstream_request_attempts.proxy_binding_key_snapshot` 并作为 `proxyBindingKeySnapshot` 返回。
 - workflow detail 仅为最终成功 attempt 注入 `responseSummary.usage` 审计对象；该对象复用 invocation 级 recorded/local 成本对账结果，并补齐 `未命中缓存输入 Token / 命中缓存输入 Token / 输出 Token / 金额` 这四项 owner-facing 关键指标。
 - `GET /api/pool/upstream-accounts/{accountId}/call-attempts` 返回该账号最近 7 天主库尝试的分页列表；`GET .../call-attempts/locate?attemptId=...` 返回目标尝试所在页，未命中返回 `404`。
+- 账号 attempts API 返回的每个 item 可选携带 `invocationRecord` 与 `workflowEntry`：当同一主库 `(invokeId, occurredAt)` 能加载 invocation 与真实 attempt 行时，`workflowEntry` 使用 `GET /api/invocations/:id/workflow-detail` 的 attempt 构造规则生成；缺失关联数据时仍返回基本 attempt 行并允许前端最小 fallback。该接口不读取 archive，仍只覆盖最近 7 天主库窗口。
+- 当账号 attempts API 为非最终真实 attempt 回填 workflow entry 且该 attempt 缺少 per-attempt `responseSummary` 时，响应体 capture 只能使用 attempt 行的响应字节指标，必须标记为不可从 invocation 级 body lazy-load；只有最终真实 attempt 可绑定 invocation 级响应体。
 - 号池详情中，真实上游尝试与合成终态记录分开展示。`budget_exhausted_final` 或 `sameAccountRetryIndex <= 0` 仅作为号池终态说明，不作为普通尝试卡片展示，不显示同账号重试序号或阶段耗时。
 - 启动阶段执行历史回填：读取 `request_raw_path` 指向的原始请求 JSON，提取 `prompt_cache_key` 后写回 payload。
 - Settings 页面在现有 proxy card 内新增两个独立开关，文案明确区分“请求 body 记录”与“响应 body 记录”，并说明关闭仅影响新记录，旧记录继续走 retention。
@@ -168,6 +172,7 @@
 - `GET /api/pool/upstream-accounts/{accountId}/call-attempts/locate` Query: `attemptId: string`、`pageSize?: number`；目标必须属于当前账号且处于 7 天主库窗口内。
 - 尝试对象必须返回 `attemptId: string`，映射自持久化 `attempt_public_id`；不得返回纯数字主键作为 owner-facing attempt 标识。
 - 尝试对象额外返回 `requestModel?: string | null` 与 `responseModel?: string | null`；两个字段从关联 invocation 的 `payload.requestModel` / `payload.responseModel` 投影，请求模型缺失时回退 `model`，缺少匹配 invocation 时保持空值。该查询不得依赖新增 SQLite 列。
+- 尝试对象可选返回 `invocationRecord?: ApiInvocation | null` 与 `workflowEntry?: ApiInvocationWorkflowTimelineEntry | null`。`workflowEntry.attempt.requestSummary` / `responseSummary` 必须与调用详情 attempt 卡同源，覆盖 request headers/body capture、compression、response headers/body capture、latency 与 usage 审计；usage 仅允许出现在最终成功 attempt。
 
 ### `GET /api/settings` / `PUT /api/settings/proxy` 新增字段
 
@@ -255,7 +260,8 @@
 - Given 历史 `proxy-9061-1783013997090` 记录存在，When 用户过滤、查询、展示或打开详情，Then 仍按完整历史 `invokeId` 兼容处理，不迁移、不回填。
 - Given 健康与事件带有当前账号的 `attemptId`，When 用户点击上游尝试 ID，Then 账号详情立即进入“请求”tab，后端只返回该尝试所在页，目标记录自动滚动进可视区、展开诊断并显示 focused 高亮。
 - Given 目标尝试已经被事件定位并处于 focused 状态，When 用户在账号详情抽屉内发生下一次 pointer 或 keyboard 交互，Then focused 高亮在 1.5 秒后消退；若未发生下一次交互，则高亮保持可见。
-- Given 账号详情展示尝试请求，When 摘要卡列表渲染，Then 每张卡直接显示 `attemptId`、调用短 ID、时间、请求/响应模型，以及与调用详情 pool attempt 一致的尝试摘要；不得显示 endpoint、重试序号、tokens、费用或最终调用汇总。
+- Given 账号详情展示尝试请求，When 摘要卡列表渲染，Then 每张卡直接复用调用详情 workflow attempt 卡，显示 `attemptId`、调用短 ID、时间、请求、请求头、请求体、响应、响应头、响应体、压缩与 lazy body 展开入口；tokens 与费用只按调用详情规则挂到最终成功 attempt，不复制到失败或非最终 attempt。
+- Given 某个失败重试不是最终真实 attempt 且缺少 per-attempt 响应体 capture，When 用户展开该 attempt 的响应体，Then 界面只显示该 attempt 的响应字节指标与不可用原因，不得请求或展示最终 invocation 的响应体。
 - Given 上游 HTTP 为 500 且下游 HTTP 为 502，When 用户展开对应摘要卡，Then 详情面板显示下游 HTTP 502、上游请求 ID、路由键与完整可复制错误。
 - Given 账号尝试请求列表在 `mobile390` 渲染，When 用户查看失败项，Then 移动端仍使用同一套摘要卡与详情面板交互，并可在展开后看到代理、压缩与完整错误信息。
 - Given 历史事件缺少 `attemptId` 或目标尝试已被 7 天 retention 清理，When 用户查看事件，Then 界面明确不可定位或显示结构化未找到提示，且不以 `invokeId` 模糊匹配。
@@ -277,20 +283,36 @@
 ## Visual Evidence
 
 - source_type: storybook_canvas
-  story_id_or_title: Account Pool/Components/Upstream Account Attempt Timeline / Focused Failure Attempt
-  state: event-located upstream attempt focus feedback
-  requested_viewport: desktop1280
+  story_id_or_title: Account Pool/Components/Upstream Account Attempt Timeline / Full Workflow Success Attempt Page
+  state: desktop account attempts reuse workflow attempt card with request body expanded
+  requested_viewport: desktop1660
   viewport_strategy: storybook-viewport
-  margin_policy: require_margin
-  evidence_surface: component
-  evidence_note: verifies the focused attempt component state with real outer margin: the event-located request card is visible, expanded, and highlighted inside the shared account-attempt timeline surface.
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the account attempt list renders the same workflow attempt summary as invocation detail, including request/header/body, response/header/body, compression, final-success token/cost chips, and no usage on the failed retry.
   PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only upstream attempt data
   submission_gate: approved
   image:
-  ![Focused upstream attempt storybook evidence](./assets/upstream-attempt-focus-storybook.png)
+  ![Account attempt workflow parity desktop](./assets/account-attempt-workflow-parity-desktop-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Account Pool/Components/Upstream Account Attempt Timeline / Full Workflow Success Attempt Mobile
+  state: mobile account attempts reuse workflow attempt card with response body expanded
+  requested_viewport: mobile390
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the mobile account attempt list keeps the full workflow attempt summary and lazy response body details available without reverting to the legacy compact account-only schema.
+  PR: include
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only upstream attempt data
+  submission_gate: approved
+  image:
+  ![Account attempt workflow parity mobile](./assets/account-attempt-workflow-parity-mobile-storybook.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Records/InvocationRecordsTable TokenCostAuditWarningMobile390

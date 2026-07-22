@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
 import {
   fetchForwardProxyBindingNodes,
+  fetchInvocationRequestBody,
+  fetchInvocationResponseBody,
   fetchUpstreamAccountAttempts,
   locateUpstreamAccountAttempt,
 } from "../../lib/api";
@@ -14,12 +16,16 @@ import { UpstreamAccountAttemptTimeline } from "./UpstreamAccountAttemptTimeline
 vi.mock("../../lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/api")>()),
   fetchForwardProxyBindingNodes: vi.fn(),
+  fetchInvocationRequestBody: vi.fn(),
+  fetchInvocationResponseBody: vi.fn(),
   fetchUpstreamAccountAttempts: vi.fn(),
   locateUpstreamAccountAttempt: vi.fn(),
 }));
 
 const fetchAttemptsMock = vi.mocked(fetchUpstreamAccountAttempts);
 const fetchBindingNodesMock = vi.mocked(fetchForwardProxyBindingNodes);
+const fetchRequestBodyMock = vi.mocked(fetchInvocationRequestBody);
+const fetchResponseBodyMock = vi.mocked(fetchInvocationResponseBody);
 const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
 
 let host: HTMLDivElement | null = null;
@@ -207,6 +213,375 @@ describe("UpstreamAccountAttemptTimeline", () => {
       responseButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(card?.textContent).toMatch(/upstream returned an oversized diagnostic payload/i);
+  });
+
+  it("uses backend workflow entries so account attempts match invocation detail summaries and lazy body loading", async () => {
+    fetchRequestBodyMock.mockResolvedValue({
+      available: true,
+      bodyText: '{"model":"gpt-5.5","input":"large request"}',
+      headers: {
+        userAgent: "codex-vibe-monitor-test/1.0",
+        xForwardedFor: "192.168.31.6",
+      },
+      routing: {
+        routeMode: "pool",
+        stickyKey: "sticky-a",
+      },
+      bodySize: 217_958,
+      detailLevel: "full",
+      captureSource: "raw_file",
+    });
+    fetchResponseBodyMock.mockResolvedValue({
+      available: true,
+      bodyText: '{"status":"success","output":"large response"}',
+      headers: {
+        contentEncoding: "identity",
+        upstreamRequestId: "req_upstream_account_workflow",
+      },
+      routing: {
+        forwardedChunkCount: 7,
+      },
+      bodySize: 79_224,
+      detailLevel: "full",
+      captureSource: "raw_file",
+    });
+    fetchAttemptsMock.mockResolvedValue({
+      items: [
+        {
+          attemptId: "ASUCC002",
+          invokeId: "ACCOUNTWF1",
+          occurredAt: "2026-07-11T12:00:00.000Z",
+          endpoint: "/v1/responses",
+          upstreamAccountId: 101,
+          upstreamAccountName: "CIII",
+          requestModel: "gpt-5.5",
+          responseModel: "gpt-5.5",
+          proxyBindingKeySnapshot: "__direct__",
+          attemptIndex: 2,
+          distinctAccountIndex: 1,
+          sameAccountRetryIndex: 1,
+          status: "success",
+          phase: "completed",
+          httpStatus: 200,
+          connectLatencyMs: 45,
+          firstByteLatencyMs: 120,
+          streamLatencyMs: 3_280,
+          upstreamRequestId: "req_upstream_account_workflow",
+          upstreamRequestCompressionAlgorithm: "zstd",
+          upstreamRequestCompressionMode: "recompressed",
+          logicalBodyBytes: 217_958,
+          transmittedBodyBytes: 53_295,
+          savedBytes: 164_663,
+          ratioPct: -75.55,
+          approxUploadBytes: 54_319,
+          approxDownloadBytes: 80_000,
+          createdAt: "2026-07-11T12:00:00.000Z",
+          invocationRecord: {
+            id: 77,
+            invokeId: "ACCOUNTWF1",
+            occurredAt: "2026-07-11T12:00:00.000Z",
+            createdAt: "2026-07-11T12:00:00.000Z",
+            source: "proxy",
+            routeMode: "pool",
+            endpoint: "/v1/responses",
+            requestModel: "gpt-5.5",
+            responseModel: "gpt-5.5",
+            status: "success",
+            requesterIp: "192.168.31.6",
+            upstreamAccountId: 101,
+            upstreamAccountName: "CIII",
+            inputTokens: 49_042,
+            cacheInputTokens: 46_952,
+            outputTokens: 87,
+            totalTokens: 48_769,
+            cost: 0.0364,
+            responseContentEncoding: "identity",
+            tReqReadMs: 11,
+            tReqParseMs: 13,
+            tUpstreamConnectMs: 45,
+            tUpstreamTtfbMs: 120,
+            tUpstreamStreamMs: 3_280,
+            tRespParseMs: 18,
+            tPersistMs: 22,
+            tTotalMs: 3_280,
+          },
+          workflowEntry: {
+            blockId: "attempt-ASUCC002",
+            kind: "attempt",
+            occurredAt: "2026-07-11T12:00:00.000Z",
+            title: "Attempt #2",
+            subtitle: "CIII",
+            status: "success",
+            attempt: {
+              synthetic: false,
+              attemptId: "ASUCC002",
+              occurredAt: "2026-07-11T12:00:00.000Z",
+              endpoint: "/v1/responses",
+              stickyKey: "sticky-a",
+              routingSource: "failover",
+              upstreamAccountId: 101,
+              upstreamAccountName: "CIII",
+              requestModel: "gpt-5.5",
+              responseModel: "gpt-5.5",
+              upstreamRouteKey: "route-direct",
+              proxyBindingKeySnapshot: "__direct__",
+              attemptIndex: 2,
+              distinctAccountIndex: 1,
+              sameAccountRetryIndex: 1,
+              requesterIp: "192.168.31.6",
+              startedAt: "2026-07-11T12:00:00.000Z",
+              finishedAt: "2026-07-11T12:00:03.280Z",
+              status: "success",
+              phase: "completed",
+              httpStatus: 200,
+              downstreamHttpStatus: 200,
+              connectLatencyMs: 45,
+              firstByteLatencyMs: 120,
+              streamLatencyMs: 3_280,
+              upstreamRequestId: "req_upstream_account_workflow",
+              requestSummary: {
+                endpoint: "/v1/responses",
+                routeMode: "pool",
+                requestModel: "gpt-5.5",
+                responseModel: "gpt-5.5",
+                requestedServiceTier: "low",
+                reasoningEffort: "low",
+                promptCacheKey: "019f89ab-b67e-71a2-9633-324247eec56e",
+                requesterIp: "192.168.31.6",
+                routing: {
+                  proxyDisplayName: "Direct",
+                  upstreamRouteKey: "route-direct",
+                  proxyBindingKey: "__direct__",
+                },
+                headers: {
+                  userAgent: "codex-vibe-monitor-test/1.0",
+                  xForwardedFor: "192.168.31.6",
+                },
+                compression: {
+                  algorithm: "zstd",
+                  mode: "recompressed",
+                  logicalBodyBytes: 217_958,
+                  transmittedBodyBytes: 53_295,
+                  savedBytes: 164_663,
+                  ratioPct: -75.55,
+                  approxUploadBytes: 54_319,
+                  approxDownloadBytes: 80_000,
+                },
+                bodyCapture: {
+                  availableAtInvocationLevel: true,
+                  size: 217_958,
+                  truncated: false,
+                  detailLevel: "full",
+                },
+              },
+              responseSummary: {
+                status: "success",
+                phase: "completed",
+                httpStatus: 200,
+                responseContentEncoding: "identity",
+                headers: {
+                  contentEncoding: "identity",
+                  upstreamRequestId: "req_upstream_account_workflow",
+                },
+                delivery: {
+                  forwardedChunkCount: 7,
+                  usageObserved: true,
+                },
+                latencyMs: {
+                  connect: 45,
+                  firstByte: 120,
+                  stream: 3_280,
+                  requestRead: 11,
+                  requestParse: 13,
+                  responseParse: 18,
+                  persist: 22,
+                  total: 3_280,
+                },
+                responseBodyCapture: {
+                  availableAtInvocationLevel: true,
+                  size: 79_224,
+                  truncated: false,
+                  detailLevel: "full",
+                },
+                usage: {
+                  inputTokens: 49_042,
+                  cacheWriteTokens: 2_090,
+                  cacheInputTokens: 46_952,
+                  outputTokens: 87,
+                  totalTokens: 48_769,
+                  cost: 0.0364,
+                  tokens: {
+                    input: 49_042,
+                    cacheWrite: 2_090,
+                    cacheRead: 46_952,
+                    output: 87,
+                    total: 48_769,
+                  },
+                  costs: {
+                    recorded: {
+                      total: 0.0364,
+                    },
+                  },
+                  audit: {
+                    mismatch: false,
+                  },
+                },
+              },
+            },
+            detail: null,
+            responseBody: null,
+          },
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 50,
+    });
+
+    renderTimeline();
+    await flushAsync();
+
+    const card = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-ASUCC002"]',
+    );
+    expect(card).not.toBeNull();
+    expect(card?.textContent).toContain("217,958 B");
+    expect(card?.textContent).toContain("79,224 B");
+    expect(card?.textContent).toContain("输入写 2,090");
+    expect(card?.textContent).toContain("输入读 46,952");
+    expect(card?.textContent).toContain("输出 87");
+    expect(card?.textContent).toContain("金额 US$0.0364");
+
+    const requestBodyButton = Array.from(card?.querySelectorAll("button") ?? []).find((button) =>
+      /请求体|request body/i.test(button.textContent ?? ""),
+    );
+    expect(requestBodyButton).toBeDefined();
+    act(() => {
+      requestBodyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+    expect(fetchRequestBodyMock).toHaveBeenCalledWith(77);
+    expect(card?.textContent).toContain("codex-vibe-monitor-test/1.0");
+
+    const responseBodyButton = Array.from(card?.querySelectorAll("button") ?? []).find((button) =>
+      /响应体|response body/i.test(button.textContent ?? ""),
+    );
+    expect(responseBodyButton).toBeDefined();
+    act(() => {
+      responseBodyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+    expect(fetchResponseBodyMock).toHaveBeenCalledWith(77);
+    expect(card?.textContent).toContain("large response");
+  });
+
+  it("does not lazy-load the final invocation response body for non-final retry attempts", async () => {
+    fetchAttemptsMock.mockResolvedValue({
+      items: [
+        {
+          attemptId: "AFAIL001",
+          invokeId: "ACCOUNTWF1",
+          occurredAt: "2026-07-11T12:00:00.000Z",
+          endpoint: "/v1/responses",
+          upstreamAccountId: 101,
+          upstreamAccountName: "CIII",
+          requestModel: "gpt-5.5",
+          responseModel: "gpt-5.5",
+          proxyBindingKeySnapshot: "__direct__",
+          attemptIndex: 1,
+          distinctAccountIndex: 1,
+          sameAccountRetryIndex: 0,
+          status: "http_failure",
+          phase: "completed",
+          httpStatus: 500,
+          failureKind: "upstream_response_failed",
+          streamLatencyMs: 3_280,
+          approxDownloadBytes: 80_000,
+          createdAt: "2026-07-11T12:00:00.000Z",
+          invocationRecord: {
+            id: 77,
+            invokeId: "ACCOUNTWF1",
+            occurredAt: "2026-07-11T12:00:00.000Z",
+            createdAt: "2026-07-11T12:00:00.000Z",
+            source: "proxy",
+            routeMode: "pool",
+            endpoint: "/v1/responses",
+            requestModel: "gpt-5.5",
+            responseModel: "gpt-5.5",
+            status: "success",
+          },
+          workflowEntry: {
+            blockId: "attempt-AFAIL001",
+            kind: "attempt",
+            occurredAt: "2026-07-11T12:00:00.000Z",
+            title: "Attempt #1",
+            subtitle: "CIII",
+            status: "http_failure",
+            attempt: {
+              synthetic: false,
+              attemptId: "AFAIL001",
+              occurredAt: "2026-07-11T12:00:00.000Z",
+              endpoint: "/v1/responses",
+              upstreamAccountId: 101,
+              upstreamAccountName: "CIII",
+              requestModel: "gpt-5.5",
+              responseModel: "gpt-5.5",
+              attemptIndex: 1,
+              distinctAccountIndex: 1,
+              sameAccountRetryIndex: 0,
+              status: "http_failure",
+              phase: "completed",
+              httpStatus: 500,
+              failureKind: "upstream_response_failed",
+              streamLatencyMs: 3_280,
+              requestSummary: {
+                endpoint: "/v1/responses",
+                requestModel: "gpt-5.5",
+              },
+              responseSummary: {
+                status: "http_failure",
+                phase: "completed",
+                httpStatus: 500,
+                failureKind: "upstream_response_failed",
+                responseBodyCapture: {
+                  availableAtInvocationLevel: false,
+                  size: 79_224,
+                  detailLevel: "attempt_metrics",
+                  unavailableReason: "non_final_attempt_response_body_not_captured",
+                },
+                usage: null,
+              },
+            },
+            detail: null,
+            responseBody: null,
+          },
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 50,
+    });
+
+    renderTimeline();
+    await flushAsync();
+
+    const card = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-AFAIL001"]',
+    );
+    expect(card).not.toBeNull();
+    expect(card?.textContent).toContain("79,224 B");
+
+    const responseBodyButton = Array.from(card?.querySelectorAll("button") ?? []).find((button) =>
+      /响应体|response body/i.test(button.textContent ?? ""),
+    );
+    expect(responseBodyButton).toBeDefined();
+    act(() => {
+      responseBodyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(fetchResponseBodyMock).not.toHaveBeenCalled();
+    expect(card?.textContent).toContain("未绑定调用级响应体");
   });
 
   it("shows the pending attempt phase without adding another permanent column", async () => {

@@ -10,7 +10,7 @@ use futures_util::TryStreamExt;
 use serde::Serialize;
 use serde_json::{Value, json};
 use sqlx::FromRow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 use tracing::debug;
@@ -4330,23 +4330,7 @@ fn build_workflow_timeline_entries(
                 attempt,
             ));
 
-            entries.push(InvocationWorkflowTimelineEntry {
-                block_id: format!(
-                    "attempt-{}",
-                    attempt
-                        .attempt_id
-                        .clone()
-                        .unwrap_or_else(|| attempt.attempt_index.to_string())
-                ),
-                kind: "attempt".to_string(),
-                occurred_at: Some(attempt.occurred_at.clone()),
-                title: format!("Attempt #{}", attempt.attempt_index),
-                subtitle: Some(workflow_attempt_account_label(attempt)),
-                status: Some(attempt.status.clone()),
-                attempt: Some(attempt.clone()),
-                detail: None,
-                response_body: None,
-            });
+            entries.push(build_workflow_attempt_timeline_entry(attempt.clone()));
 
             previous_finished_at = attempt
                 .finished_at
@@ -4378,6 +4362,155 @@ fn build_workflow_timeline_entries(
         });
     }
     entries
+}
+
+fn build_workflow_attempt_timeline_entry(
+    attempt: InvocationWorkflowAttempt,
+) -> InvocationWorkflowTimelineEntry {
+    InvocationWorkflowTimelineEntry {
+        block_id: format!(
+            "attempt-{}",
+            attempt
+                .attempt_id
+                .clone()
+                .unwrap_or_else(|| attempt.attempt_index.to_string())
+        ),
+        kind: "attempt".to_string(),
+        occurred_at: Some(attempt.occurred_at.clone()),
+        title: format!("Attempt #{}", attempt.attempt_index),
+        subtitle: Some(workflow_attempt_account_label(&attempt)),
+        status: Some(attempt.status.clone()),
+        attempt: Some(attempt),
+        detail: None,
+        response_body: None,
+    }
+}
+
+fn suppress_invocation_level_response_body_for_account_retry(
+    attempt: &mut InvocationWorkflowAttempt,
+    attempt_row: &InvocationWorkflowAttemptRow,
+) {
+    let Some(Value::Object(response_summary)) = attempt.response_summary.as_mut() else {
+        return;
+    };
+
+    let mut capture = serde_json::Map::new();
+    capture.insert("availableAtInvocationLevel".to_string(), Value::Bool(false));
+    if let Some(size) = attempt_row.upstream_response_body_bytes {
+        capture.insert("size".to_string(), json!(size));
+    }
+    capture.insert("detailLevel".to_string(), json!("attempt_metrics"));
+    capture.insert(
+        "unavailableReason".to_string(),
+        json!("non_final_attempt_response_body_not_captured"),
+    );
+    response_summary.insert("responseBodyCapture".to_string(), Value::Object(capture));
+}
+
+pub(crate) async fn hydrate_upstream_account_attempt_workflow_entries(
+    state: &AppState,
+    records: &mut [ApiPoolUpstreamRequestAttempt],
+) -> Result<(), ApiError> {
+    if records.is_empty() {
+        return Ok(());
+    }
+
+    let selectors = records
+        .iter()
+        .map(|record| (record.invoke_id.clone(), record.occurred_at.clone()))
+        .collect::<HashSet<_>>();
+    let pricing_catalog = state.pricing_catalog.read().await.clone();
+    let mut hydrated = HashMap::<
+        (String, String),
+        Option<(
+            ApiInvocation,
+            HashMap<String, InvocationWorkflowTimelineEntry>,
+        )>,
+    >::new();
+
+    for (invoke_id, occurred_at) in selectors {
+        let record = match load_persisted_api_invocation(&state.pool, &invoke_id, &occurred_at)
+            .await
+        {
+            Ok(record) => record,
+            Err(err) => {
+                debug!(
+                    invoke_id,
+                    occurred_at,
+                    error = %err,
+                    "skipping workflow hydration for account attempt without matching invocation"
+                );
+                hydrated.insert((invoke_id, occurred_at), None);
+                continue;
+            }
+        };
+        let body_row = fetch_invocation_response_body_row_by_id(&state.pool, record.id).await?;
+        let payload_value = body_row
+            .as_ref()
+            .and_then(|row| parse_optional_json_value(row.payload.as_deref()));
+        let attempt_rows = query_invocation_workflow_attempt_rows(
+            &state.pool,
+            &record.invoke_id,
+            &record.occurred_at,
+        )
+        .await?;
+        let real_attempt_rows = attempt_rows
+            .iter()
+            .filter(|attempt| !invocation_workflow_attempt_row_is_pseudo_terminal(attempt))
+            .collect::<Vec<_>>();
+        let final_attempt_index = real_attempt_rows
+            .iter()
+            .map(|attempt| attempt.attempt_index)
+            .max();
+        let last_success_attempt_index = last_success_like_attempt_index(&real_attempt_rows);
+        let usage_cost_audit = (invocation_status_is_success_like(&record)
+            && invocation_has_usage_evidence(&record))
+        .then(|| build_invocation_cost_audit(&record, &pricing_catalog, true))
+        .flatten();
+        let workflow_entries = real_attempt_rows
+            .into_iter()
+            .filter_map(|attempt_row| {
+                let mut attempt = build_workflow_attempt_from_row(
+                    &record,
+                    attempt_row,
+                    payload_value.as_ref(),
+                    (last_success_attempt_index == Some(attempt_row.attempt_index))
+                        .then_some(usage_cost_audit.as_ref())
+                        .flatten(),
+                );
+                if final_attempt_index != Some(attempt_row.attempt_index)
+                    && attempt_row
+                        .response_summary_json
+                        .as_deref()
+                        .map(str::trim)
+                        .is_none_or(str::is_empty)
+                {
+                    suppress_invocation_level_response_body_for_account_retry(
+                        &mut attempt,
+                        attempt_row,
+                    );
+                }
+                let attempt_id = attempt.attempt_id.clone()?;
+                Some((attempt_id, build_workflow_attempt_timeline_entry(attempt)))
+            })
+            .collect::<HashMap<_, _>>();
+        hydrated.insert(
+            (record.invoke_id.clone(), record.occurred_at.clone()),
+            Some((record, workflow_entries)),
+        );
+    }
+
+    for item in records {
+        let Some(Some((record, workflow_entries))) =
+            hydrated.get(&(item.invoke_id.clone(), item.occurred_at.clone()))
+        else {
+            continue;
+        };
+        item.invocation_record = Some(record.clone());
+        item.workflow_entry = workflow_entries.get(&item.attempt_id).cloned();
+    }
+
+    Ok(())
 }
 
 async fn load_invocation_workflow_identity(
