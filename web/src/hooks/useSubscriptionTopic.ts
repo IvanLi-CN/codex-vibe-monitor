@@ -15,6 +15,9 @@ export function useSubscriptionTopic<T>(
   const [data, setData] = useState<T | null>(() =>
     descriptor && enabled ? (getCachedTopicState<T>(descriptor)?.payload ?? null) : null,
   );
+  const [lastReceivedAt, setLastReceivedAt] = useState<number | null>(() =>
+    descriptor && enabled ? (getCachedTopicState<T>(descriptor)?.receivedAt ?? null) : null,
+  );
   const [isLoading, setIsLoading] = useState(() =>
     Boolean(descriptor && enabled && getCachedTopicState<T>(descriptor)?.payload == null),
   );
@@ -22,14 +25,18 @@ export function useSubscriptionTopic<T>(
   useEffect(() => {
     if (!descriptor || !enabled) {
       setData(null);
+      setLastReceivedAt(null);
       setIsLoading(false);
       return;
     }
     const cached = getCachedTopicState<T>(descriptor);
     setData(cached?.payload ?? null);
+    setLastReceivedAt(cached?.receivedAt ?? null);
     setIsLoading(cached?.payload == null);
     const unsubscribe = subscribeToTopic<T>(descriptor, (event) => {
+      const nextCached = getCachedTopicState<T>(descriptor);
       setData(event.payload);
+      setLastReceivedAt(nextCached?.receivedAt ?? Date.now());
       setIsLoading(false);
     });
     return unsubscribe;
@@ -43,6 +50,7 @@ export function useSubscriptionTopic<T>(
 
   return {
     data,
+    lastReceivedAt,
     isLoading,
     error: null as string | null,
     refresh,

@@ -1653,9 +1653,10 @@ export const UnifiedActivitySnapshot: Story = {
     await expect(accountHeaders[1]?.querySelector('[aria-label="进行中 3"]')).not.toBeNull();
     await expect(accountHeaders[0]?.querySelector('[aria-label="TPM 610"]')).not.toBeNull();
     await expect(accountHeaders[1]?.querySelector('[aria-label="TPM 490"]')).not.toBeNull();
-    await expect(
-      canvas.getByTestId("dashboard-upstream-account-total-network-speed"),
-    ).toHaveAttribute("title", "上行: 4.3 KiB/s · 下行: 12 MiB/s");
+    const totalNetworkSpeed = canvas.getByTestId("dashboard-upstream-account-total-network-speed");
+    await expect(totalNetworkSpeed).not.toHaveAttribute("title");
+    await expect(totalNetworkSpeed).toHaveTextContent("4.3");
+    await expect(totalNetworkSpeed).toHaveTextContent("12");
   },
 };
 
@@ -1806,7 +1807,9 @@ export const LiveRefreshDiagnostics: Story = {
       const totalNetworkSpeed = canvas.getByTestId(
         "dashboard-upstream-account-total-network-speed",
       );
-      expect(totalNetworkSpeed.getAttribute("title")).toBe("上行: 3 KiB/s · 下行: 9 MiB/s");
+      expect(totalNetworkSpeed.getAttribute("title")).toBeNull();
+      expect(totalNetworkSpeed.textContent ?? "").toContain("3");
+      expect(totalNetworkSpeed.textContent ?? "").toContain("9");
     });
   },
 };

@@ -1228,6 +1228,7 @@ describe("DashboardWorkingConversationsSection", () => {
       '[data-testid="dashboard-upstream-account-total-network-speed"]',
     );
     expect(totalNetworkSpeed).not.toBeNull();
+    expect(totalNetworkSpeed?.getAttribute("title")).toBeNull();
     expect(totalNetworkSpeed?.textContent).toContain("1.5");
     expect(totalNetworkSpeed?.textContent).toContain("KiB/s");
     expect(totalNetworkSpeed?.textContent).toContain("5");
@@ -1441,6 +1442,7 @@ describe("DashboardWorkingConversationsSection", () => {
       '[data-testid="dashboard-upstream-account-total-network-speed"]',
     );
     expect(totalNetworkSpeed).not.toBeNull();
+    expect(totalNetworkSpeed?.getAttribute("title")).toBeNull();
     expect(totalNetworkSpeed?.textContent).toContain("2");
     expect(totalNetworkSpeed?.textContent).toContain("KiB/s");
     expect(totalNetworkSpeed?.textContent).toContain("6");

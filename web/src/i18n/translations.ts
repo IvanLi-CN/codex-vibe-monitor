@@ -1820,10 +1820,8 @@ const baseTranslations = {
     "dashboard.networkRecent.windowRange": "{{start}} - {{end}}",
     "dashboard.networkRecent.scope": "Global scope",
     "dashboard.networkRecent.loading": "Loading recent network history",
+    "dashboard.networkRecent.staleLoading": "Waiting for pushed network data",
     "dashboard.networkRecent.empty": "No recent network history is available yet.",
-    "dashboard.networkRecent.warmingTitle": "Building the 5-minute history",
-    "dashboard.networkRecent.warmingBody":
-      "Older seconds stay blank until this runtime has accumulated enough live samples.",
     "dashboard.networkRecent.openPanel": "Open the recent network diagnostics panel",
     "dashboard.networkRecent.close": "Close recent network diagnostics",
     "dashboard.activityOverview.rangeToggleAria": "Switch activity range",
@@ -4396,10 +4394,8 @@ const baseTranslations = {
     "dashboard.networkRecent.windowRange": "{{start}} - {{end}}",
     "dashboard.networkRecent.scope": "全局口径",
     "dashboard.networkRecent.loading": "正在加载最近网速历史",
+    "dashboard.networkRecent.staleLoading": "正在等待网速推送同步",
     "dashboard.networkRecent.empty": "最近网速历史暂时不可用。",
-    "dashboard.networkRecent.warmingTitle": "正在积累 5 分钟历史",
-    "dashboard.networkRecent.warmingBody":
-      "当前运行期还没积累满 5 分钟样本，前导空档表示历史尚未准备好，不代表真实网速为 0。",
     "dashboard.networkRecent.openPanel": "打开最近网速诊断面板",
     "dashboard.networkRecent.close": "关闭最近网速诊断面板",
     "dashboard.activityOverview.rangeToggleAria": "时间范围切换",

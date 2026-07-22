@@ -129,11 +129,13 @@ function buildRecentTooltipRows(
 export function DashboardNetworkRecentPanel({
   response,
   loading,
+  stale = false,
   error,
   className,
 }: {
   response?: DashboardRecentNetworkWindowResponse | null;
   loading: boolean;
+  stale?: boolean;
   error?: string | null;
   className?: string;
 }) {
@@ -201,6 +203,22 @@ export function DashboardNetworkRecentPanel({
     );
   }
 
+  let latestAvailablePoint: DashboardRecentNetworkWindowResponse["points"][number] | null = null;
+  for (let index = response.points.length - 1; index >= 0; index -= 1) {
+    const point = response.points[index];
+    if (point?.isAvailable) {
+      latestAvailablePoint = point;
+      break;
+    }
+  }
+  const currentUploadSpeed = formatDashboardNetworkSpeed(
+    latestAvailablePoint?.uploadBytesPerSecond ?? 0,
+    localeTag,
+  );
+  const currentDownloadSpeed = formatDashboardNetworkSpeed(
+    latestAvailablePoint?.downloadBytesPerSecond ?? 0,
+    localeTag,
+  );
   const chartData: RecentChartDatum[] = response.points.map((point) => {
     const sampleStart = new Date(point.sampleStart);
     const sampleEnd = new Date(point.sampleEnd);
@@ -234,7 +252,7 @@ export function DashboardNetworkRecentPanel({
       className={cn("overflow-hidden rounded-[1.4rem] border border-base-300/60", className)}
     >
       <div className="flex flex-col gap-4 px-4 pb-4 pt-4 sm:px-5">
-        <div className="flex flex-col gap-3 border-b border-base-300/55 pb-3">
+        <div className="flex flex-col gap-3 border-b border-base-300/55 pb-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <span className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-info/25 bg-info/10 text-info">
@@ -250,33 +268,60 @@ export function DashboardNetworkRecentPanel({
               </div>
             </div>
           </div>
+          <div
+            data-testid="dashboard-network-recent-current-speed"
+            className="grid shrink-0 grid-cols-[auto_auto] gap-x-2 gap-y-1 pt-0.5 text-[0.74rem] leading-5 sm:justify-end"
+            aria-live="polite"
+          >
+            <span
+              className={cn("inline-flex items-center gap-1.5 font-medium text-base-content/68")}
+            >
+              <AppIcon
+                name="arrow-up-bold"
+                className={cn(
+                  "h-3.5 w-3.5",
+                  themeMode === "dark" ? "text-sky-300" : "text-sky-700",
+                )}
+                aria-hidden
+              />
+              {t("dashboard.activityOverview.networkUpload")}：
+            </span>
+            <span
+              className={cn(
+                "font-mono text-[0.82rem] font-bold tracking-tight tabular-nums",
+                themeMode === "dark" ? "text-sky-300" : "text-sky-700",
+              )}
+            >
+              {currentUploadSpeed}
+            </span>
+            <span
+              className={cn("inline-flex items-center gap-1.5 font-medium text-base-content/68")}
+            >
+              <AppIcon
+                name="arrow-down-bold"
+                className={cn(
+                  "h-3.5 w-3.5",
+                  themeMode === "dark" ? "text-emerald-300" : "text-emerald-700",
+                )}
+                aria-hidden
+              />
+              {t("dashboard.activityOverview.networkDownload")}：
+            </span>
+            <span
+              className={cn(
+                "font-mono text-[0.82rem] font-bold tracking-tight tabular-nums",
+                themeMode === "dark" ? "text-emerald-300" : "text-emerald-700",
+              )}
+            >
+              {currentDownloadSpeed}
+            </span>
+          </div>
         </div>
 
-        {response.isWarmingUp ? (
-          <div
-            data-testid="dashboard-network-recent-warming"
-            className="flex items-start gap-3 rounded-2xl border border-warning/28 bg-warning/10 px-3.5 py-3 text-warning"
-          >
-            <AppIcon name="timer-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-            <div className="min-w-0">
-              <div className="text-sm font-semibold">
-                {t("dashboard.networkRecent.warmingTitle")}
-              </div>
-              <div className="mt-1 text-xs leading-5 text-warning/85">
-                {t("dashboard.networkRecent.warmingBody")}
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {loading ? (
-          <div className="flex items-center justify-end gap-2 text-xs text-base-content/58">
-            <Spinner size="sm" aria-label={t("dashboard.activityOverview.networkRefreshing")} />
-            <span>{t("dashboard.activityOverview.networkRefreshing")}</span>
-          </div>
-        ) : null}
-
-        <div className="h-[22rem] w-full" data-testid="dashboard-network-recent-chart">
+        <div
+          className="relative h-[22rem] w-full overflow-hidden rounded-2xl"
+          data-testid="dashboard-network-recent-chart"
+        >
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={chartData} margin={{ top: 8, right: 18, left: 0, bottom: 4 }}>
               <defs>
@@ -330,21 +375,7 @@ export function DashboardNetworkRecentPanel({
                     return null;
                   }
                   if (!point.isAvailable) {
-                    return (
-                      <div
-                        data-testid="dashboard-network-recent-tooltip"
-                        data-theme={surfaceTheme}
-                        style={floatingSurfaceStyle("neutral", surfaceTheme)}
-                        className="min-w-[12rem] rounded-2xl border px-3.5 py-3 text-sm text-base-content"
-                      >
-                        <div className="font-semibold text-base-content/82">
-                          {point.chartTooltipLabel}
-                        </div>
-                        <div className="mt-2 text-xs leading-5 text-base-content/62">
-                          {t("dashboard.networkRecent.warmingBody")}
-                        </div>
-                      </div>
-                    );
+                    return null;
                   }
                   const rows = buildRecentTooltipRows(
                     payload as readonly DashboardRecentTooltipPayloadEntry[] | undefined,
@@ -429,6 +460,17 @@ export function DashboardNetworkRecentPanel({
               />
             </AreaChart>
           </ResponsiveContainer>
+          {stale ? (
+            <div
+              data-testid="dashboard-network-recent-stale-overlay"
+              className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-base-100/62 text-base-content shadow-[inset_0_0_0_1px_color-mix(in_oklab,oklch(var(--color-base-content))_8%,transparent)] backdrop-blur-[2px]"
+            >
+              <Spinner size="lg" aria-label={t("dashboard.networkRecent.staleLoading")} />
+              <div className="rounded-full border border-base-300/70 bg-base-100/82 px-3 py-1.5 text-xs font-semibold tracking-wide text-base-content/78">
+                {t("dashboard.networkRecent.staleLoading")}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
@@ -451,7 +493,7 @@ export function DashboardNetworkRecentPopover({
   const [lockedOpen, setLockedOpen] = useState(false);
   const [compactOpen, setCompactOpen] = useState(false);
   const panelOpen = isCompactViewport ? compactOpen : hoverOpen || lockedOpen;
-  const { data, isLoading, error } = useDashboardRecentNetworkWindow(panelOpen);
+  const { data, isLoading, isStale, error } = useDashboardRecentNetworkWindow(panelOpen);
 
   const clearCloseTimer = useCallback(() => {
     if (closeTimerRef.current != null) {
@@ -582,7 +624,12 @@ export function DashboardNetworkRecentPopover({
               <DialogCloseIcon aria-label={t("dashboard.networkRecent.close")} />
             </div>
             <div className="max-h-[calc(min(100dvh-0.5rem,100dvh)-5.5rem)] overflow-y-auto px-4 py-4 sm:px-5">
-              <DashboardNetworkRecentPanel response={data} loading={isLoading} error={error} />
+              <DashboardNetworkRecentPanel
+                response={data}
+                loading={isLoading}
+                stale={isStale}
+                error={error}
+              />
             </div>
           </DialogContent>
         </Dialog>
@@ -609,7 +656,12 @@ export function DashboardNetworkRecentPopover({
         onPointerLeave={handleContentPointerLeave}
         data-testid="dashboard-network-recent-popover"
       >
-        <DashboardNetworkRecentPanel response={data} loading={isLoading} error={error} />
+        <DashboardNetworkRecentPanel
+          response={data}
+          loading={isLoading}
+          stale={isStale}
+          error={error}
+        />
       </BubblePopoverContent>
     </Popover>
   );
