@@ -503,6 +503,36 @@ pub(crate) struct UpstreamAccountUsageHourlyRollupRecord {
 }
 
 #[derive(Debug, FromRow)]
+pub(crate) struct UpstreamAccountUsageBreakdownHourlyRollupRecord {
+    pub(crate) bucket_start_epoch: i64,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) model: String,
+    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) request_count: i64,
+    pub(crate) success_count: i64,
+    pub(crate) failure_count: i64,
+    pub(crate) cache_write_tokens: i64,
+    pub(crate) cache_read_tokens: i64,
+    pub(crate) output_tokens: i64,
+    pub(crate) cost_input: f64,
+    pub(crate) cost_cache_write: f64,
+    pub(crate) cost_cache_read: f64,
+    pub(crate) cost_output: f64,
+    pub(crate) cost_reasoning: f64,
+    pub(crate) cost_unknown: f64,
+    pub(crate) has_cost: i64,
+    pub(crate) performance_total_tokens: i64,
+    pub(crate) performance_stream_output_tokens: i64,
+    pub(crate) performance_stream_duration_ms: f64,
+    pub(crate) performance_response_sample_count: i64,
+    pub(crate) performance_response_sum_ms: f64,
+    pub(crate) performance_first_byte_sample_count: i64,
+    pub(crate) performance_first_byte_sum_ms: f64,
+    pub(crate) performance_usage_duration_sample_count: i64,
+    pub(crate) performance_usage_duration_sum_ms: f64,
+}
+
+#[derive(Debug, FromRow)]
 pub(crate) struct UpstreamAccountStatsRollupRecord {
     pub(crate) bucket_start_epoch: i64,
     pub(crate) total_count: i64,

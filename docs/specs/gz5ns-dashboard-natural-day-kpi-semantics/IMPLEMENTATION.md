@@ -11,6 +11,8 @@
 ## Coverage / rollout summary
 
 - 已完成 `TodayStatsOverview` 七卡四区布局重构，`较昨日` 统一移动到右上，底部左右辅助位统一改为 inline `label + value`。
+- 已完成 Dashboard open-range / `previous7d` summary `usage_breakdown` 的读路径收口：`today / 1d / 7d / yesterday / previous7d` 改走内部 hourly `model + reasoning` breakdown rollup + exact boundary tail，Dashboard 总览与 comparison summary 的字段、分组与排序保持不变，但不再依赖整段 raw aggregate 重算。
+- 已补齐 breakdown rollup 的升级期修补：对历史上已经 `historical_rollups_materialized_at` 的 invocation archive batch，只有 `usage/stats` 这类 legacy account rollup 仍可沿用“materialized 即视为 replayed”的 shortcut；新的 `usage_breakdown` target 若缺真实 hourly rows，会在启动期被重新挂回 historical rollup backlog，而不是继续误判成健康已回放。
 - 已完成 summary augmentation 字段扩展：strict in-progress retry、进行中等待均值、失败/中断 cost 与 tokens，同时覆盖全局 Dashboard 与 `upstreamAccountId` 账号作用域。
 - 已完成 natural-day timeseries `nonSuccessCost` 契约扩展，以及 `DashboardTodayActivityChart` 金额模式从单累计面积图切换为 `Success + Non-success` 堆叠累计面积图。
 - 已完成 Dashboard / 账号详情复用链路、账号活动总览 Storybook 场景与视觉证据落盘，以及前后端 targeted tests。

@@ -10466,11 +10466,18 @@ async fn invocation_hourly_rollup_ignores_null_status_for_success_failure_counts
             source: SOURCE_PROXY.to_string(),
             status: None,
             detail_level: DETAIL_LEVEL_FULL.to_string(),
+            model: None,
             input_tokens: None,
             output_tokens: None,
             cache_input_tokens: None,
             total_tokens: Some(7),
             cost: Some(0.07),
+            upstream_account_id: None,
+            cost_input: None,
+            cost_cache_write: None,
+            cost_cache_read: None,
+            cost_output: None,
+            cost_reasoning: None,
             error_message: None,
             failure_kind: None,
             failure_class: None,
@@ -10527,11 +10534,18 @@ async fn invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts
                 source: SOURCE_PROXY.to_string(),
                 status: Some("success".to_string()),
                 detail_level: DETAIL_LEVEL_FULL.to_string(),
+                model: None,
                 input_tokens: None,
                 output_tokens: None,
                 cache_input_tokens: None,
                 total_tokens: Some(7),
                 cost: Some(0.07),
+                upstream_account_id: None,
+                cost_input: None,
+                cost_cache_write: None,
+                cost_cache_read: None,
+                cost_output: None,
+                cost_reasoning: None,
                 error_message: None,
                 failure_kind: None,
                 failure_class: None,
@@ -10552,11 +10566,18 @@ async fn invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts
                 source: SOURCE_PROXY.to_string(),
                 status: Some("running".to_string()),
                 detail_level: DETAIL_LEVEL_FULL.to_string(),
+                model: None,
                 input_tokens: None,
                 output_tokens: None,
                 cache_input_tokens: None,
                 total_tokens: Some(9),
                 cost: Some(0.09),
+                upstream_account_id: None,
+                cost_input: None,
+                cost_cache_write: None,
+                cost_cache_read: None,
+                cost_output: None,
+                cost_reasoning: None,
                 error_message: Some(
                     "[upstream_response_failed] upstream response stream reported failure"
                         .to_string(),
@@ -10580,11 +10601,18 @@ async fn invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts
                 source: SOURCE_PROXY.to_string(),
                 status: Some("pending".to_string()),
                 detail_level: DETAIL_LEVEL_FULL.to_string(),
+                model: None,
                 input_tokens: None,
                 output_tokens: None,
                 cache_input_tokens: None,
                 total_tokens: Some(11),
                 cost: Some(0.11),
+                upstream_account_id: None,
+                cost_input: None,
+                cost_cache_write: None,
+                cost_cache_read: None,
+                cost_output: None,
+                cost_reasoning: None,
                 error_message: Some(
                     "[downstream_closed] downstream closed while streaming upstream response"
                         .to_string(),
@@ -10608,11 +10636,18 @@ async fn invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts
                 source: SOURCE_PROXY.to_string(),
                 status: Some("failed".to_string()),
                 detail_level: DETAIL_LEVEL_FULL.to_string(),
+                model: None,
                 input_tokens: None,
                 output_tokens: None,
                 cache_input_tokens: None,
                 total_tokens: Some(13),
                 cost: Some(0.13),
+                upstream_account_id: None,
+                cost_input: None,
+                cost_cache_write: None,
+                cost_cache_read: None,
+                cost_output: None,
+                cost_reasoning: None,
                 error_message: Some("upstream stream error".to_string()),
                 failure_kind: Some("upstream_stream_error".to_string()),
                 failure_class: None,
@@ -10670,11 +10705,18 @@ async fn invocation_hourly_rollup_excludes_structured_legacy_http_200_failures_f
                 source: SOURCE_PROXY.to_string(),
                 status: Some("http_200".to_string()),
                 detail_level: DETAIL_LEVEL_FULL.to_string(),
+                model: None,
                 input_tokens: None,
                 output_tokens: None,
                 cache_input_tokens: None,
                 total_tokens: Some(10),
                 cost: Some(0.10),
+                upstream_account_id: None,
+                cost_input: None,
+                cost_cache_write: None,
+                cost_cache_read: None,
+                cost_output: None,
+                cost_reasoning: None,
                 error_message: Some("".to_string()),
                 failure_kind: None,
                 failure_class: None,
@@ -10695,11 +10737,18 @@ async fn invocation_hourly_rollup_excludes_structured_legacy_http_200_failures_f
                 source: SOURCE_PROXY.to_string(),
                 status: Some("http_200".to_string()),
                 detail_level: DETAIL_LEVEL_FULL.to_string(),
+                model: None,
                 input_tokens: None,
                 output_tokens: None,
                 cache_input_tokens: None,
                 total_tokens: Some(20),
                 cost: Some(0.20),
+                upstream_account_id: None,
+                cost_input: None,
+                cost_cache_write: None,
+                cost_cache_read: None,
+                cost_output: None,
+                cost_reasoning: None,
                 error_message: Some("".to_string()),
                 failure_kind: Some("upstream_response_failed".to_string()),
                 failure_class: Some("service_failure".to_string()),
@@ -11514,6 +11563,495 @@ async fn ranged_summary_keeps_exact_costs_when_historical_cost_is_mixed_in() {
     assert_f64_close(historical_costs.reasoning, 0.0);
     assert_f64_close(historical_costs.unknown, 0.30);
     assert_f64_close(historical_summary.total_cost, 0.30);
+}
+
+#[tokio::test]
+async fn usage_breakdown_includes_archived_start_boundary_partial_hour_for_7d_range() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 6;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_boundary_at = format_naive(
+        (Utc::now() - ChronoDuration::days(7) + ChronoDuration::minutes(5))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "summary-7d-archived-boundary-breakdown",
+        &[SeedInvocationArchiveBatchRow {
+            id: 601_i64,
+            invoke_id: "summary-7d-archived-boundary-breakdown",
+            occurred_at: archived_boundary_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 20_i64,
+            cost: 0.20_f64,
+            ttfb_ms: Some(150.0_f64),
+            payload: Some(r#"{"responseModel":"gpt-5","reasoningEffort":"high"}"#),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0_i64),
+        }],
+    )
+    .await;
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("7d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch 7d summary with archived boundary usage breakdown");
+
+    let breakdown = summary
+        .usage_breakdown
+        .expect("7d summary should include usage breakdown");
+    let costs = breakdown
+        .costs
+        .expect("archived boundary cost should still surface in usage breakdown");
+    assert_f64_close(costs.unknown, 0.20);
+
+    let boundary_model = breakdown
+        .models
+        .iter()
+        .find(|model| model.model == "gpt-5" && model.reasoning_effort.as_deref() == Some("high"))
+        .expect("archived boundary model group should remain visible");
+    let boundary_model_costs = boundary_model
+        .costs
+        .as_ref()
+        .expect("archived boundary model costs should remain visible");
+    assert_f64_close(boundary_model_costs.unknown, 0.20);
+}
+
+#[tokio::test]
+async fn usage_breakdown_keeps_archived_boundary_partial_hour_during_partial_archive_replay() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 6;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_boundary_at = format_naive(
+        (Utc::now() - ChronoDuration::days(7) + ChronoDuration::minutes(5))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "summary-7d-archived-boundary-partial-progress",
+        &[SeedInvocationArchiveBatchRow {
+            id: 801_i64,
+            invoke_id: "summary-7d-archived-boundary-partial-progress",
+            occurred_at: archived_boundary_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 20_i64,
+            cost: 0.20_f64,
+            ttfb_ms: Some(150.0_f64),
+            payload: Some(r#"{"responseModel":"gpt-5","reasoningEffort":"high"}"#),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0_i64),
+        }],
+    )
+    .await;
+
+    let mut tx = state.pool.begin().await.expect("begin breakdown rollup tx");
+    upsert_invocation_hourly_rollups_tx(
+        tx.as_mut(),
+        &[InvocationHourlySourceRecord {
+            id: 801_i64,
+            occurred_at: archived_boundary_at.clone(),
+            source: SOURCE_PROXY.to_string(),
+            status: Some("success".to_string()),
+            detail_level: DETAIL_LEVEL_FULL.to_string(),
+            model: None,
+            input_tokens: None,
+            output_tokens: Some(20_i64),
+            cache_input_tokens: None,
+            total_tokens: Some(20_i64),
+            cost: Some(0.20_f64),
+            upstream_account_id: None,
+            cost_input: None,
+            cost_cache_write: None,
+            cost_cache_read: None,
+            cost_output: None,
+            cost_reasoning: None,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none".to_string()),
+            is_actionable: Some(0_i64),
+            payload: Some(r#"{"responseModel":"gpt-5","reasoningEffort":"high"}"#.to_string()),
+            t_total_ms: None,
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: Some(150.0_f64),
+            t_upstream_stream_ms: None,
+            t_resp_parse_ms: None,
+            t_persist_ms: None,
+        }],
+        &[HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN],
+    )
+    .await
+    .expect("seed boundary partial-hour usage breakdown rollup row");
+    tx.commit().await.expect("commit breakdown rollup tx");
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_progress (dataset, file_path, cursor_id, updated_at)
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(801_i64)
+    .execute(&state.pool)
+    .await
+    .expect("insert boundary partial archive replay progress");
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("7d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch 7d summary with partially replayed archived boundary usage breakdown");
+
+    let breakdown = summary
+        .usage_breakdown
+        .expect("7d summary should include usage breakdown");
+    let costs = breakdown
+        .costs
+        .expect("boundary partial-hour cost should still surface in usage breakdown");
+    assert_f64_close(costs.unknown, 0.20);
+
+    let boundary_model = breakdown
+        .models
+        .iter()
+        .find(|model| model.model == "gpt-5" && model.reasoning_effort.as_deref() == Some("high"))
+        .expect("boundary partial-hour model group should remain visible");
+    let boundary_model_costs = boundary_model
+        .costs
+        .as_ref()
+        .expect("boundary partial-hour model costs should remain visible");
+    assert_f64_close(boundary_model_costs.unknown, 0.20);
+}
+
+#[tokio::test]
+async fn usage_breakdown_avoids_double_counting_partially_materialized_archive_rows() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 6;
+    let state = test_state_from_config(config, true).await;
+
+    let first_archived_at = format_naive(
+        (Utc::now() - ChronoDuration::days(7) + ChronoDuration::hours(2))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let second_archived_at = format_naive(
+        (Utc::now() - ChronoDuration::days(7)
+            + ChronoDuration::hours(2)
+            + ChronoDuration::minutes(10))
+        .with_timezone(&Shanghai)
+        .naive_local(),
+    );
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "summary-7d-partial-usage-breakdown-backfill",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 701_i64,
+                invoke_id: "summary-7d-partial-usage-breakdown-a",
+                occurred_at: first_archived_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 10_i64,
+                cost: 0.10_f64,
+                ttfb_ms: Some(100.0_f64),
+                payload: Some(r#"{"responseModel":"gpt-5","reasoningEffort":"high"}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0_i64),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 702_i64,
+                invoke_id: "summary-7d-partial-usage-breakdown-b",
+                occurred_at: second_archived_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 20_i64,
+                cost: 0.20_f64,
+                ttfb_ms: Some(120.0_f64),
+                payload: Some(r#"{"responseModel":"gpt-5","reasoningEffort":"high"}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0_i64),
+            },
+        ],
+    )
+    .await;
+
+    let mut tx = state.pool.begin().await.expect("begin breakdown rollup tx");
+    upsert_invocation_hourly_rollups_tx(
+        tx.as_mut(),
+        &[InvocationHourlySourceRecord {
+            id: 701_i64,
+            occurred_at: first_archived_at.clone(),
+            source: SOURCE_PROXY.to_string(),
+            status: Some("success".to_string()),
+            detail_level: DETAIL_LEVEL_FULL.to_string(),
+            model: None,
+            input_tokens: None,
+            output_tokens: Some(10_i64),
+            cache_input_tokens: None,
+            total_tokens: Some(10_i64),
+            cost: Some(0.10_f64),
+            upstream_account_id: None,
+            cost_input: None,
+            cost_cache_write: None,
+            cost_cache_read: None,
+            cost_output: None,
+            cost_reasoning: None,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none".to_string()),
+            is_actionable: Some(0_i64),
+            payload: Some(r#"{"responseModel":"gpt-5","reasoningEffort":"high"}"#.to_string()),
+            t_total_ms: None,
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: Some(100.0_f64),
+            t_upstream_stream_ms: None,
+            t_resp_parse_ms: None,
+            t_persist_ms: None,
+        }],
+        &[HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN],
+    )
+    .await
+    .expect("seed partially materialized usage breakdown rollup row");
+    tx.commit().await.expect("commit breakdown rollup tx");
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_progress (dataset, file_path, cursor_id, updated_at)
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(701_i64)
+    .execute(&state.pool)
+    .await
+    .expect("insert partial archive replay progress");
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("7d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch 7d summary with partially materialized archive usage breakdown");
+
+    let breakdown = summary
+        .usage_breakdown
+        .expect("7d summary should include usage breakdown");
+    let costs = breakdown
+        .costs
+        .expect("partially materialized archive costs should remain visible");
+    assert_f64_close(costs.unknown, 0.30);
+
+    let model = breakdown
+        .models
+        .iter()
+        .find(|model| model.model == "gpt-5" && model.reasoning_effort.as_deref() == Some("high"))
+        .expect("partially materialized model group should remain visible");
+    let model_costs = model
+        .costs
+        .as_ref()
+        .expect("partially materialized model costs should remain visible");
+    assert_f64_close(model_costs.unknown, 0.30);
+}
+
+#[tokio::test]
+async fn usage_breakdown_prefers_breakdown_specific_archive_progress_over_shared_cursor() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 6;
+    let state = test_state_from_config(config, true).await;
+
+    let first_archived_at = format_naive(
+        (Utc::now() - ChronoDuration::days(7) + ChronoDuration::hours(2))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let second_archived_at = format_naive(
+        (Utc::now() - ChronoDuration::days(7)
+            + ChronoDuration::hours(2)
+            + ChronoDuration::minutes(10))
+        .with_timezone(&Shanghai)
+        .naive_local(),
+    );
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "summary-7d-breakdown-progress-override",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 801_i64,
+                invoke_id: "summary-7d-breakdown-progress-override-a",
+                occurred_at: first_archived_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 10_i64,
+                cost: 0.10_f64,
+                ttfb_ms: Some(100.0_f64),
+                payload: Some(r#"{"responseModel":"gpt-5","reasoningEffort":"high"}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0_i64),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 802_i64,
+                invoke_id: "summary-7d-breakdown-progress-override-b",
+                occurred_at: second_archived_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 20_i64,
+                cost: 0.20_f64,
+                ttfb_ms: Some(120.0_f64),
+                payload: Some(r#"{"responseModel":"gpt-5","reasoningEffort":"high"}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0_i64),
+            },
+        ],
+    )
+    .await;
+
+    let mut tx = state.pool.begin().await.expect("begin breakdown rollup tx");
+    upsert_invocation_hourly_rollups_tx(
+        tx.as_mut(),
+        &[InvocationHourlySourceRecord {
+            id: 801_i64,
+            occurred_at: first_archived_at.clone(),
+            source: SOURCE_PROXY.to_string(),
+            status: Some("success".to_string()),
+            detail_level: DETAIL_LEVEL_FULL.to_string(),
+            model: None,
+            input_tokens: None,
+            output_tokens: Some(10_i64),
+            cache_input_tokens: None,
+            total_tokens: Some(10_i64),
+            cost: Some(0.10_f64),
+            upstream_account_id: None,
+            cost_input: None,
+            cost_cache_write: None,
+            cost_cache_read: None,
+            cost_output: None,
+            cost_reasoning: None,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none".to_string()),
+            is_actionable: Some(0_i64),
+            payload: Some(r#"{"responseModel":"gpt-5","reasoningEffort":"high"}"#.to_string()),
+            t_total_ms: None,
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: Some(100.0_f64),
+            t_upstream_stream_ms: None,
+            t_resp_parse_ms: None,
+            t_persist_ms: None,
+        }],
+        &[HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN],
+    )
+    .await
+    .expect("seed partially materialized usage breakdown rollup row");
+    tx.commit().await.expect("commit breakdown rollup tx");
+
+    for (dataset, cursor_id) in [
+        (HOURLY_ROLLUP_DATASET_INVOCATIONS, 802_i64),
+        (INVOCATION_USAGE_BREAKDOWN_ARCHIVE_PROGRESS_DATASET, 801_i64),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO hourly_rollup_archive_progress (dataset, file_path, cursor_id, updated_at)
+            VALUES (?1, ?2, ?3, datetime('now'))
+            "#,
+        )
+        .bind(dataset)
+        .bind(archive_path.to_string_lossy().to_string())
+        .bind(cursor_id)
+        .execute(&state.pool)
+        .await
+        .expect("insert archive replay progress");
+    }
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("7d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch 7d summary with breakdown-specific progress override");
+
+    let breakdown = summary
+        .usage_breakdown
+        .expect("7d summary should include usage breakdown");
+    let costs = breakdown
+        .costs
+        .expect("usage breakdown costs should remain visible with progress override");
+    assert_f64_close(costs.unknown, 0.30);
+
+    let model = breakdown
+        .models
+        .iter()
+        .find(|model| model.model == "gpt-5" && model.reasoning_effort.as_deref() == Some("high"))
+        .expect("partially materialized model group should remain visible");
+    let model_costs = model
+        .costs
+        .as_ref()
+        .expect("partially materialized model costs should remain visible");
+    assert_f64_close(model_costs.unknown, 0.30);
 }
 
 #[tokio::test]
@@ -14717,26 +15255,34 @@ async fn dashboard_activity_subscription_terminal_refresh_is_deferred_until_ttl(
 
     tokio::time::sleep(std::time::Duration::from_millis(120)).await;
 
-    let refreshed_prepared = state
-        .subscription_hub
-        .prepare_connection(
-            state.clone(),
-            vec![dashboard_activity_topic_descriptor()],
-            vec![],
-        )
-        .await
-        .expect("prepare dashboard activity topic after deferred refresh window");
-    let refreshed_payload = extract_subscription_snapshot_payload(refreshed_prepared);
-    assert_eq!(
-        refreshed_payload
+    let refresh_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let refreshed_total_count = loop {
+        let refreshed_prepared = state
+            .subscription_hub
+            .prepare_connection(
+                state.clone(),
+                vec![dashboard_activity_topic_descriptor()],
+                vec![],
+            )
+            .await
+            .expect("prepare dashboard activity topic after deferred refresh window");
+        let refreshed_payload = extract_subscription_snapshot_payload(refreshed_prepared);
+        let refreshed_total_count = refreshed_payload
             .get("summary")
             .and_then(Value::as_object)
             .and_then(|summary| summary.get("stats"))
             .and_then(Value::as_object)
             .and_then(|stats| stats.get("totalCount"))
-            .and_then(Value::as_i64),
-        Some(1)
-    );
+            .and_then(Value::as_i64);
+        if refreshed_total_count == Some(1) {
+            break refreshed_total_count;
+        }
+        if tokio::time::Instant::now() >= refresh_deadline {
+            break refreshed_total_count;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    assert_eq!(refreshed_total_count, Some(1));
 }
 
 #[tokio::test]
@@ -17194,11 +17740,18 @@ fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error
         source: SOURCE_PROXY.to_string(),
         status: Some("http_200".to_string()),
         detail_level: DETAIL_LEVEL_STRUCTURED_ONLY.to_string(),
+        model: None,
         input_tokens: None,
         output_tokens: None,
         cache_input_tokens: None,
         total_tokens: None,
         cost: None,
+        upstream_account_id: None,
+        cost_input: None,
+        cost_cache_write: None,
+        cost_cache_read: None,
+        cost_output: None,
+        cost_reasoning: None,
         error_message: Some("upstream parse failed".to_string()),
         failure_kind: None,
         failure_class: None,
@@ -17224,11 +17777,18 @@ fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error
         source: SOURCE_PROXY.to_string(),
         status: Some("http_200".to_string()),
         detail_level: DETAIL_LEVEL_STRUCTURED_ONLY.to_string(),
+        model: None,
         input_tokens: None,
         output_tokens: None,
         cache_input_tokens: None,
         total_tokens: None,
         cost: None,
+        upstream_account_id: None,
+        cost_input: None,
+        cost_cache_write: None,
+        cost_cache_read: None,
+        cost_output: None,
+        cost_reasoning: None,
         error_message: Some("   ".to_string()),
         failure_kind: None,
         failure_class: None,
@@ -17254,11 +17814,18 @@ fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error
         source: SOURCE_PROXY.to_string(),
         status: Some("http_200".to_string()),
         detail_level: DETAIL_LEVEL_STRUCTURED_ONLY.to_string(),
+        model: None,
         input_tokens: None,
         output_tokens: None,
         cache_input_tokens: None,
         total_tokens: None,
         cost: None,
+        upstream_account_id: None,
+        cost_input: None,
+        cost_cache_write: None,
+        cost_cache_read: None,
+        cost_output: None,
+        cost_reasoning: None,
         error_message: Some("   ".to_string()),
         failure_kind: Some("upstream_response_failed".to_string()),
         failure_class: Some("service_failure".to_string()),

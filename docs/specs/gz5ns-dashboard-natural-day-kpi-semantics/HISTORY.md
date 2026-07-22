@@ -4,6 +4,8 @@
 
 ## Decision Trace
 
+- 2026-07-22：针对 101 线上残留的 `summary_usage_breakdown(previous7d)` 慢读，冻结 `usage_breakdown` 必须补齐 `model + reasoning` 维度的 hourly 内部 rollup；Dashboard 7d / previous7d 总览与 comparison summary 继续保持 owner-facing contract 不变，但实现上不再允许整段 raw aggregate 成为健康主链路。
+- 2026-07-22：在 rollout review 中进一步确认，新的 `usage_breakdown` rollup 不能继承旧的“historical materialized archive batch 视为已 replay” shortcut；否则升级后的老 archive 会被直接漏算。当前实现已改为只让 legacy usage/stats target 保留该 shortcut，并在启动期把缺 breakdown backfill 的 batch 重新放回 historical materialization backlog。
 - 2026-06-22：创建 active spec，冻结自然日七卡的四区布局、`较昨日` 统一右上、以及 Dashboard 与账号详情共用同一 KPI 语义的边界。
 - 2026-06-22：明确本轮继续走 `summary` / SSE `summary` 快路径，新增增强字段而不是前端独立 KPI 轮询。
 - 2026-06-23：将自然日金额图固定为“累计金额”而非“每分钟金额”语义，并把成本视图改为 `Success + Non-success` 堆叠累计面积；`Non-success` 文案显式承载 `failed + interrupted` 口径。

@@ -2,6 +2,11 @@ use super::*;
 
 const LIVE_ROLLUP_LOCK_RETRY_MAX_ATTEMPTS: u32 = 3;
 const LIVE_ROLLUP_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
+const LEGACY_MATERIALIZED_UPSTREAM_ACCOUNT_ARCHIVE_REPLAY_TARGETS: [&str; 3] = [
+    HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
+    HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+    HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
+];
 
 pub(crate) async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) -> Result<()> {
     let mut attempt = 1_u32;
@@ -68,11 +73,7 @@ pub(crate) async fn mark_materialized_upstream_account_archive_replayed_tx(
     tx: &mut SqliteConnection,
     file_path: &str,
 ) -> Result<()> {
-    for target in [
-        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
-        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
-        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
-    ] {
+    for target in LEGACY_MATERIALIZED_UPSTREAM_ACCOUNT_ARCHIVE_REPLAY_TARGETS {
         mark_hourly_rollup_archive_replayed_tx(
             tx,
             target,
@@ -82,6 +83,13 @@ pub(crate) async fn mark_materialized_upstream_account_archive_replayed_tx(
         .await?;
     }
     Ok(())
+}
+
+fn can_shortcut_legacy_materialized_upstream_account_targets(pending_targets: &[&str]) -> bool {
+    !pending_targets.is_empty()
+        && pending_targets.iter().all(|target| {
+            LEGACY_MATERIALIZED_UPSTREAM_ACCOUNT_ARCHIVE_REPLAY_TARGETS.contains(target)
+        })
 }
 
 pub(crate) async fn load_materialized_invocation_archives_missing_upstream_account_markers_tx(
@@ -141,6 +149,212 @@ pub(crate) async fn repair_materialized_upstream_account_archive_markers(
     }
     tx.commit().await?;
     Ok(file_paths.len())
+}
+
+async fn load_materialized_invocation_archives_for_usage_breakdown_repair_tx(
+    tx: &mut SqliteConnection,
+) -> Result<Vec<(String, Option<String>, Option<String>)>> {
+    sqlx::query_as(
+        r#"
+        SELECT
+            batches.file_path,
+            batches.coverage_start_at,
+            batches.coverage_end_at
+        FROM archive_batches AS batches
+        WHERE batches.dataset = 'codex_invocations'
+          AND batches.status = ?1
+          AND batches.historical_rollups_materialized_at IS NOT NULL
+        ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(Into::into)
+}
+
+async fn clear_usage_breakdown_rollup_rows_for_bucket_epochs_tx(
+    tx: &mut SqliteConnection,
+    bucket_start_epochs: &HashSet<i64>,
+) -> Result<()> {
+    if bucket_start_epochs.is_empty() {
+        return Ok(());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "DELETE FROM upstream_account_usage_breakdown_hourly WHERE bucket_start_epoch IN (",
+    );
+    let mut separated = query.separated(", ");
+    for bucket_start_epoch in bucket_start_epochs {
+        separated.push_bind(*bucket_start_epoch);
+    }
+    query.push(")");
+    query.build().execute(&mut *tx).await?;
+    Ok(())
+}
+
+async fn load_completed_invocation_archives_overlapping_usage_breakdown_buckets_tx(
+    tx: &mut SqliteConnection,
+    bucket_start_epochs: &HashSet<i64>,
+) -> Result<Vec<String>> {
+    if bucket_start_epochs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let min_bucket_start_epoch = bucket_start_epochs
+        .iter()
+        .copied()
+        .min()
+        .ok_or_else(|| anyhow!("missing minimum usage breakdown bucket start epoch"))?;
+    let max_bucket_start_epoch = bucket_start_epochs
+        .iter()
+        .copied()
+        .max()
+        .ok_or_else(|| anyhow!("missing maximum usage breakdown bucket start epoch"))?;
+    let overlap_start = chrono::Utc
+        .timestamp_opt(min_bucket_start_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid minimum usage breakdown bucket start epoch"))?;
+    let overlap_end = chrono::Utc
+        .timestamp_opt(max_bucket_start_epoch + 3_600, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid maximum usage breakdown bucket start epoch"))?;
+    let overlap_start =
+        crate::stats::format_naive(overlap_start.with_timezone(&Shanghai).naive_local());
+    let overlap_end =
+        crate::stats::format_naive(overlap_end.with_timezone(&Shanghai).naive_local());
+
+    sqlx::query_scalar(
+        r#"
+        SELECT file_path
+        FROM archive_batches
+        WHERE dataset = ?1
+          AND status = ?2
+          AND coverage_start_at IS NOT NULL
+          AND coverage_end_at IS NOT NULL
+          AND coverage_end_at > ?3
+          AND coverage_start_at < ?4
+        ORDER BY month_key ASC, created_at ASC, id ASC
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&overlap_start)
+    .bind(&overlap_end)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(Into::into)
+}
+
+async fn reset_invocation_archive_usage_breakdown_backfill_state_tx(
+    tx: &mut SqliteConnection,
+    file_path: &str,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        DELETE FROM hourly_rollup_archive_replay
+        WHERE dataset = ?1
+          AND target = ?2
+          AND file_path = ?3
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(file_path)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET historical_rollups_materialized_at = NULL
+        WHERE dataset = ?1
+          AND file_path = ?2
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(file_path)
+    .execute(&mut *tx)
+    .await?;
+    delete_hourly_rollup_archive_progress_tx(tx, HOURLY_ROLLUP_DATASET_INVOCATIONS, file_path)
+        .await?;
+    delete_hourly_rollup_archive_progress_tx(
+        tx,
+        INVOCATION_USAGE_BREAKDOWN_ARCHIVE_PROGRESS_DATASET,
+        file_path,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
+    tx: &mut SqliteConnection,
+    file_path: &str,
+    coverage_start_at: Option<&str>,
+    coverage_end_at: Option<&str>,
+) -> Result<Vec<String>> {
+    let mut reopened_file_paths = vec![file_path.to_string()];
+    if let (Some(coverage_start_at), Some(coverage_end_at)) = (coverage_start_at, coverage_end_at) {
+        let bucket_start_epochs = crate::stats::archive_bucket_start_epochs_from_bounds(
+            None,
+            Some(coverage_start_at),
+            Some(coverage_end_at),
+        )?;
+        reopened_file_paths =
+            load_completed_invocation_archives_overlapping_usage_breakdown_buckets_tx(
+                tx,
+                &bucket_start_epochs,
+            )
+            .await?;
+        if !reopened_file_paths.iter().any(|path| path == file_path) {
+            reopened_file_paths.push(file_path.to_string());
+        }
+        clear_usage_breakdown_rollup_rows_for_bucket_epochs_tx(tx, &bucket_start_epochs).await?;
+    }
+    for reopen_file_path in &reopened_file_paths {
+        reset_invocation_archive_usage_breakdown_backfill_state_tx(tx, reopen_file_path).await?;
+    }
+    Ok(reopened_file_paths)
+}
+
+pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state(
+    pool: &Pool<Sqlite>,
+) -> Result<usize> {
+    let mut tx = pool.begin().await?;
+    let archive_rows =
+        load_materialized_invocation_archives_for_usage_breakdown_repair_tx(tx.as_mut()).await?;
+    let mut touched_batches = 0usize;
+    let mut reopened_file_paths = HashSet::new();
+
+    for (file_path, coverage_start_at, coverage_end_at) in archive_rows {
+        if reopened_file_paths.contains(&file_path) {
+            continue;
+        }
+        let breakdown_replayed = hourly_rollup_archive_replayed_tx(
+            tx.as_mut(),
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            &file_path,
+        )
+        .await?;
+        if breakdown_replayed {
+            continue;
+        }
+        let reopened = reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
+            tx.as_mut(),
+            &file_path,
+            coverage_start_at.as_deref(),
+            coverage_end_at.as_deref(),
+        )
+        .await?;
+        for reopened_file_path in reopened {
+            if reopened_file_paths.insert(reopened_file_path) {
+                touched_batches += 1;
+            }
+        }
+    }
+
+    tx.commit().await?;
+    Ok(touched_batches)
 }
 
 pub(crate) const HISTORICAL_ROLLUP_ARCHIVE_REPLAY_BATCH_SIZE: i64 = BACKFILL_BATCH_SIZE;
@@ -449,6 +663,13 @@ pub(crate) fn build_invocation_archive_rows_chunk_query(
     let output_tokens = legacy_compatible_archive_select_expr(archive_columns, "output_tokens");
     let cache_input_tokens =
         legacy_compatible_archive_select_expr(archive_columns, "cache_input_tokens");
+    let model = legacy_compatible_archive_select_expr(archive_columns, "model");
+    let cost_input = legacy_compatible_archive_select_expr(archive_columns, "cost_input");
+    let cost_cache_write =
+        legacy_compatible_archive_select_expr(archive_columns, "cost_cache_write");
+    let cost_cache_read = legacy_compatible_archive_select_expr(archive_columns, "cost_cache_read");
+    let cost_output = legacy_compatible_archive_select_expr(archive_columns, "cost_output");
+    let cost_reasoning = legacy_compatible_archive_select_expr(archive_columns, "cost_reasoning");
     format!(
         r#"
         SELECT
@@ -457,11 +678,17 @@ pub(crate) fn build_invocation_archive_rows_chunk_query(
             source,
             status,
             detail_level,
+            {model},
             {input_tokens},
             {output_tokens},
             {cache_input_tokens},
             total_tokens,
             cost,
+            {cost_input},
+            {cost_cache_write},
+            {cost_cache_read},
+            {cost_output},
+            {cost_reasoning},
             error_message,
             failure_kind,
             failure_class,
@@ -606,6 +833,70 @@ pub(crate) async fn replay_invocation_archive_rows_into_hourly_rollups_tx_with_b
             .ok_or_else(|| anyhow!("missing invocation archive row id"))?;
 
         if !has_more {
+            return Ok(HistoricalRollupArchiveReplayResult {
+                outcome: HistoricalRollupArchiveReplayOutcome::Completed,
+                cursor_id: start_after_id,
+            });
+        }
+
+        if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+            return Ok(HistoricalRollupArchiveReplayResult {
+                outcome: HistoricalRollupArchiveReplayOutcome::HitBudget,
+                cursor_id: start_after_id,
+            });
+        }
+    }
+}
+
+async fn replay_invocation_archive_rows_into_hourly_rollups_until_cursor_tx_with_budget(
+    tx: &mut SqliteConnection,
+    archive_pool: &Pool<Sqlite>,
+    initial_cursor_id: i64,
+    target_cursor_id: i64,
+    pending_targets: &[&str],
+    started_at: Instant,
+    max_elapsed: Option<Duration>,
+) -> Result<HistoricalRollupArchiveReplayResult> {
+    let mut start_after_id = initial_cursor_id.max(0);
+    let target_cursor_id = target_cursor_id.max(0);
+    if start_after_id >= target_cursor_id {
+        return Ok(HistoricalRollupArchiveReplayResult {
+            outcome: HistoricalRollupArchiveReplayOutcome::Completed,
+            cursor_id: start_after_id,
+        });
+    }
+
+    let archive_columns = load_sqlite_table_columns(archive_pool, "codex_invocations").await?;
+    let query_sql = build_invocation_archive_rows_chunk_query(&archive_columns);
+    loop {
+        if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+            return Ok(HistoricalRollupArchiveReplayResult {
+                outcome: HistoricalRollupArchiveReplayOutcome::HitBudget,
+                cursor_id: start_after_id,
+            });
+        }
+
+        let (rows, has_more) =
+            load_invocation_archive_rows_chunk(archive_pool, &query_sql, start_after_id).await?;
+        let bounded_rows = rows
+            .into_iter()
+            .take_while(|row| row.id <= target_cursor_id)
+            .collect::<Vec<_>>();
+        if bounded_rows.is_empty() {
+            return Ok(HistoricalRollupArchiveReplayResult {
+                outcome: HistoricalRollupArchiveReplayOutcome::Completed,
+                cursor_id: start_after_id,
+            });
+        }
+
+        upsert_invocation_hourly_rollups_tx(tx, &bounded_rows, pending_targets).await?;
+        mark_invocation_hourly_rollup_buckets_materialized_tx(tx, &bounded_rows).await?;
+        start_after_id = bounded_rows
+            .last()
+            .map(|row| row.id)
+            .ok_or_else(|| anyhow!("missing invocation archive row id"))?;
+
+        if start_after_id >= target_cursor_id || !has_more {
             return Ok(HistoricalRollupArchiveReplayResult {
                 outcome: HistoricalRollupArchiveReplayOutcome::Completed,
                 cursor_id: start_after_id,
@@ -779,6 +1070,7 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
             HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
             HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
             HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
             HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
             HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
             HOURLY_ROLLUP_TARGET_STICKY_KEYS,
@@ -794,14 +1086,7 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
                 pending_targets.push(target);
             }
         }
-        if pending_targets.as_slice()
-            == [
-                HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
-                HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
-                HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
-            ]
-            || pending_targets.as_slice() == [HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE]
-        {
+        if can_shortcut_legacy_materialized_upstream_account_targets(&pending_targets) {
             mark_materialized_upstream_account_archive_replayed_tx(tx, &archive_file.file_path)
                 .await?;
             mark_archive_batch_historical_rollups_materialized_tx(
@@ -827,6 +1112,18 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
             &archive_file.file_path,
         )
         .await?;
+        let usage_breakdown_pending =
+            pending_targets.contains(&HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN);
+        let mut usage_breakdown_cursor = if usage_breakdown_pending {
+            load_hourly_rollup_archive_progress_tx(
+                tx,
+                INVOCATION_USAGE_BREAKDOWN_ARCHIVE_PROGRESS_DATASET,
+                &archive_file.file_path,
+            )
+            .await?
+        } else {
+            0
+        };
 
         let archive_path = PathBuf::from(&archive_file.file_path);
         if !archive_path.exists() {
@@ -838,6 +1135,12 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
             delete_hourly_rollup_archive_progress_tx(
                 tx,
                 HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                &archive_file.file_path,
+            )
+            .await?;
+            delete_hourly_rollup_archive_progress_tx(
+                tx,
+                INVOCATION_USAGE_BREAKDOWN_ARCHIVE_PROGRESS_DATASET,
                 &archive_file.file_path,
             )
             .await?;
@@ -867,6 +1170,12 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
         if pending_targets.is_empty() && blocked_targets.is_empty() {
             archive_pool.close().await;
             drop(temp_cleanup);
+            delete_hourly_rollup_archive_progress_tx(
+                tx,
+                INVOCATION_USAGE_BREAKDOWN_ARCHIVE_PROGRESS_DATASET,
+                &archive_file.file_path,
+            )
+            .await?;
             mark_archive_batch_historical_rollups_materialized_tx(
                 tx,
                 HOURLY_ROLLUP_DATASET_INVOCATIONS,
@@ -906,6 +1215,38 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
             .await?;
         }
 
+        if usage_breakdown_pending && usage_breakdown_cursor < replay_cursor {
+            let catch_up_outcome =
+                replay_invocation_archive_rows_into_hourly_rollups_until_cursor_tx_with_budget(
+                    tx,
+                    &archive_pool,
+                    usage_breakdown_cursor,
+                    replay_cursor,
+                    &[HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN],
+                    started_at,
+                    max_elapsed,
+                )
+                .await?;
+            if catch_up_outcome.cursor_id > usage_breakdown_cursor {
+                save_hourly_rollup_archive_progress_tx(
+                    tx,
+                    INVOCATION_USAGE_BREAKDOWN_ARCHIVE_PROGRESS_DATASET,
+                    &archive_file.file_path,
+                    catch_up_outcome.cursor_id,
+                )
+                .await?;
+                usage_breakdown_cursor = catch_up_outcome.cursor_id;
+            }
+            if catch_up_outcome.outcome == HistoricalRollupArchiveReplayOutcome::HitBudget
+                && usage_breakdown_cursor < replay_cursor
+            {
+                archive_pool.close().await;
+                summary.budget_consumed_batches += 1;
+                std::mem::forget(temp_cleanup);
+                break;
+            }
+        }
+
         let replay_outcome = replay_invocation_archive_rows_into_hourly_rollups_tx_with_budget(
             tx,
             &archive_pool,
@@ -927,6 +1268,15 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
                 )
                 .await?;
             }
+            if usage_breakdown_pending && replay_outcome.cursor_id > usage_breakdown_cursor {
+                save_hourly_rollup_archive_progress_tx(
+                    tx,
+                    INVOCATION_USAGE_BREAKDOWN_ARCHIVE_PROGRESS_DATASET,
+                    &archive_file.file_path,
+                    replay_outcome.cursor_id,
+                )
+                .await?;
+            }
             std::mem::forget(temp_cleanup);
             break;
         }
@@ -938,6 +1288,14 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
             &archive_file.file_path,
         )
         .await?;
+        if usage_breakdown_pending {
+            delete_hourly_rollup_archive_progress_tx(
+                tx,
+                INVOCATION_USAGE_BREAKDOWN_ARCHIVE_PROGRESS_DATASET,
+                &archive_file.file_path,
+            )
+            .await?;
+        }
         for target in pending_targets {
             mark_hourly_rollup_archive_replayed_tx(
                 tx,
@@ -1436,7 +1794,9 @@ pub(crate) async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
 }
 
 pub(crate) async fn bootstrap_hourly_rollups(pool: &Pool<Sqlite>) -> Result<()> {
+    repair_live_invocation_usage_breakdown_rollups(pool).await?;
     sync_hourly_rollups_from_live_tables(pool).await?;
+    repair_materialized_invocation_archive_usage_breakdown_backfill_state(pool).await?;
     repair_materialized_upstream_account_archive_markers(pool).await?;
     let account_stats_hourly_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_hourly")
