@@ -4102,6 +4102,7 @@ async fn locate_invocation_finds_runtime_only_account_record() {
     let response = locate_invocation_page(
         state.clone(),
         &LocateInvocationQuery {
+            invoke_id: Some(invoke_id.to_string()),
             request_id: Some(invoke_id.to_string()),
             attempt_id: None,
             upstream_account_id: Some(17),
@@ -4198,6 +4199,7 @@ async fn locate_invocation_finds_runtime_only_account_record() {
     let stable_response = locate_invocation_page(
         state.clone(),
         &LocateInvocationQuery {
+            invoke_id: Some("locate-stable-target".to_string()),
             request_id: Some("locate-stable-target".to_string()),
             attempt_id: None,
             upstream_account_id: Some(17),

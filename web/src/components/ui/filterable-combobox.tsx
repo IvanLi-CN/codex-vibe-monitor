@@ -6,10 +6,16 @@ import {
 } from "../../lib/form-autocomplete";
 import { cn } from "../../lib/utils";
 
+export interface FilterableComboboxOption {
+  value: string;
+  label?: string;
+  searchText?: string;
+}
+
 interface FilterableComboboxProps {
   value: string;
   onValueChange: (value: string) => void;
-  options: string[];
+  options: Array<string | FilterableComboboxOption>;
   placeholder?: string;
   emptyText?: string;
   loading?: boolean;
@@ -22,7 +28,20 @@ interface FilterableComboboxProps {
   name?: string;
   id?: string;
   onOpenChange?: (open: boolean) => void;
+  onOptionSelect?: (option: FilterableComboboxOption) => void;
   inputAutocompleteProps?: Partial<TextInputAutocompleteOffProps>;
+}
+
+function normalizeOption(option: string | FilterableComboboxOption): FilterableComboboxOption {
+  return typeof option === "string" ? { value: option, label: option } : option;
+}
+
+function getOptionDisplayValue(option: FilterableComboboxOption) {
+  return option.label?.trim() || option.value;
+}
+
+function isSearchableCandidate(candidate: string | undefined): candidate is string {
+  return typeof candidate === "string" && candidate.trim().length > 0;
 }
 
 export function FilterableCombobox({
@@ -41,6 +60,7 @@ export function FilterableCombobox({
   name,
   id,
   onOpenChange,
+  onOptionSelect,
   inputAutocompleteProps,
 }: FilterableComboboxProps) {
   const [open, setOpen] = useState(false);
@@ -66,19 +86,26 @@ export function FilterableCombobox({
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [open]);
 
+  const normalizedOptions = useMemo(() => options.map(normalizeOption), [options]);
+
   const filteredOptions = useMemo(() => {
     const query = value.trim().toLowerCase();
-    if (!query) return options;
-    return options.filter((option) => option.toLowerCase().includes(query));
-  }, [options, value]);
+    if (!query) return normalizedOptions;
+    return normalizedOptions.filter((option) =>
+      [getOptionDisplayValue(option), option.value, option.searchText]
+        .filter(isSearchableCandidate)
+        .some((candidate) => candidate.toLowerCase().includes(query)),
+    );
+  }, [normalizedOptions, value]);
 
   useEffect(() => {
     if (!open) return;
     setActiveIndex(filteredOptions.length > 0 ? 0 : -1);
   }, [filteredOptions, open]);
 
-  const selectOption = (option: string) => {
-    onValueChange(option);
+  const selectOption = (option: FilterableComboboxOption) => {
+    onValueChange(getOptionDisplayValue(option));
+    onOptionSelect?.(option);
     setOpen(false);
   };
 
@@ -99,7 +126,7 @@ export function FilterableCombobox({
       if (!open) return;
       event.preventDefault();
       const next = filteredOptions[activeIndex];
-      if (typeof next === "string") {
+      if (next) {
         selectOption(next);
       }
       return;
@@ -170,10 +197,10 @@ export function FilterableCombobox({
           ) : (
             filteredOptions.map((option, idx) => (
               <button
-                key={option}
+                key={`${option.value}:${getOptionDisplayValue(option)}`}
                 type="button"
                 role="option"
-                aria-selected={value === option}
+                aria-selected={value === getOptionDisplayValue(option)}
                 className={cn(
                   "flex w-full items-center justify-between px-3 py-2 text-left text-sm text-base-content",
                   idx === activeIndex ? "bg-base-200/70" : "hover:bg-base-200/50",
@@ -185,8 +212,13 @@ export function FilterableCombobox({
                 }}
                 onMouseEnter={() => setActiveIndex(idx)}
               >
-                <span className={cn("truncate", value === option && "font-semibold")}>
-                  {option}
+                <span
+                  className={cn(
+                    "truncate",
+                    value === getOptionDisplayValue(option) && "font-semibold",
+                  )}
+                >
+                  {getOptionDisplayValue(option)}
                 </span>
               </button>
             ))

@@ -13,7 +13,7 @@ describe("buildAppliedInvocationFilters", () => {
     };
 
     expect(() => buildAppliedInvocationFilters(draft)).toThrow(
-      "minTotalTokens must be a whole number",
+      "Total tokens range must use whole numbers",
     );
   });
 
@@ -53,11 +53,14 @@ describe("buildAppliedInvocationFilters", () => {
       customFrom: "2026-03-10T10:00:00",
       customTo: "2026-03-10T10:32:45",
       status: " failed ",
-      model: " gpt-5.4 ",
+      models: [" gpt-5.4 ", " gpt-5.5 "],
+      modelTarget: "response" as const,
+      modelRerouted: "rerouted" as const,
       endpoint: " /v1/responses ",
       failureClass: " service_failure ",
       failureKind: " http_502 ",
       promptCacheKey: " cache-key ",
+      reasoningEfforts: [" high ", " medium "],
       requesterIp: " 127.0.0.1 ",
       keyword: " retry ",
       minTotalTokens: "10",
@@ -70,11 +73,14 @@ describe("buildAppliedInvocationFilters", () => {
 
     expect(query.snapshotId).toBe(99);
     expect(query.status).toBe("failed");
-    expect(query.model).toBe("gpt-5.4");
+    expect(query.models).toEqual(["gpt-5.4", "gpt-5.5"]);
+    expect(query.modelTarget).toBe("response");
+    expect(query.modelRerouted).toBe(true);
     expect(query.endpoint).toBe("/v1/responses");
     expect(query.failureClass).toBe("service_failure");
     expect(query.failureKind).toBe("http_502");
     expect(query.promptCacheKey).toBe("cache-key");
+    expect(query.reasoningEfforts).toEqual(["high", "medium"]);
     expect(query.requesterIp).toBe("127.0.0.1");
     expect(query.keyword).toBe("retry");
     expect(query.minTotalTokens).toBe(10);
@@ -87,28 +93,72 @@ describe("buildAppliedInvocationFilters", () => {
     expect(query.to).toBeDefined();
   });
 
+  it("maps the not-rerouted draft state to an explicit false query value", () => {
+    const draft = {
+      ...createDefaultInvocationRecordsDraft(),
+      models: ["gpt-5.4"],
+      modelRerouted: "notRerouted" as const,
+    };
+
+    const query = buildAppliedInvocationFilters(draft);
+
+    expect(query.modelRerouted).toBe(false);
+  });
+
   it("includes the active suggestion field and server-side search text when provided", () => {
     const draft = {
       ...createDefaultInvocationRecordsDraft(),
-      model: " gpt-5.4-mini ",
+      models: ["gpt-5.4-mini"],
     };
 
-    const query = buildInvocationSuggestionsQuery(draft, 42, "model");
+    const query = buildInvocationSuggestionsQuery(
+      draft,
+      42,
+      "requestModel",
+      new Date(),
+      "gpt-5.4-mini",
+    );
 
     expect(query.snapshotId).toBe(42);
-    expect(query.suggestField).toBe("model");
+    expect(query.suggestField).toBe("requestModel");
     expect(query.suggestQuery).toBe("gpt-5.4-mini");
-    expect(query.model).toBe("gpt-5.4-mini");
+    expect(query.models).toEqual(["gpt-5.4-mini"]);
+    expect(query.modelTarget).toBe("request");
   });
 
-  it("normalizes requestId across applied filters and suggestion queries", () => {
+  it("rejects reasoning-effort filters without a selected model", () => {
     const draft = {
       ...createDefaultInvocationRecordsDraft(),
-      requestId: " invoke-123 ",
+      reasoningEfforts: ["high"],
     };
 
-    expect(buildAppliedInvocationFilters(draft).requestId).toBe("invoke-123");
-    expect(buildInvocationSuggestionsQuery(draft, 42).requestId).toBe("invoke-123");
+    expect(() => buildAppliedInvocationFilters(draft)).toThrow(
+      "Model filter requires at least one model",
+    );
+  });
+
+  it("normalizes invokeId and attemptId across applied filters and suggestion queries", () => {
+    const draft = {
+      ...createDefaultInvocationRecordsDraft(),
+      invokeId: " invoke-123 ",
+      attemptId: " 4V7MYPJG ",
+    };
+
+    expect(buildAppliedInvocationFilters(draft).invokeId).toBe("invoke-123");
+    expect(buildAppliedInvocationFilters(draft).attemptId).toBe("4V7MYPJG");
+    expect(buildInvocationSuggestionsQuery(draft, 42).invokeId).toBe("invoke-123");
+    expect(buildInvocationSuggestionsQuery(draft, 42).attemptId).toBe("4V7MYPJG");
+  });
+
+  it("uses upstreamAccountId for exact account filters while keeping the display label in draft", () => {
+    const draft = {
+      ...createDefaultInvocationRecordsDraft(),
+      upstreamAccount: "Pool Alpha (#42)",
+      upstreamAccountId: "42",
+    };
+
+    expect(buildAppliedInvocationFilters(draft).upstreamAccountId).toBe(42);
+    expect(buildInvocationSuggestionsQuery(draft, 42).upstreamAccountId).toBe(42);
   });
 
   it("tolerates invalid draft values when building suggestion queries", () => {

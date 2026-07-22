@@ -210,7 +210,7 @@ describe("demo MSW handlers", () => {
     expect(selectedRecord).toBeDefined();
 
     const locatedResponse = await fetch(
-      `http://demo.invalid/api/invocations?requestId=${encodeURIComponent(selectedRecord?.invokeId ?? "")}&pageSize=1`,
+      `http://demo.invalid/api/invocations?invokeId=${encodeURIComponent(selectedRecord?.invokeId ?? "")}&pageSize=1`,
     );
     const located = (await locatedResponse.json()) as {
       records: Array<{ invokeId: string }>;

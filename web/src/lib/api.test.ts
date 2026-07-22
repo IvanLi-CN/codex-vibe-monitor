@@ -1674,11 +1674,11 @@ describe("account pool frontend API helpers", () => {
     vi.unstubAllGlobals();
   });
 
-  it("adds requestId to invocation records query parameters", async () => {
+  it("adds invokeId to invocation records query parameters", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       expect(url).toContain("/api/invocations?");
-      expect(url).toContain("requestId=invoke-123");
+      expect(url).toContain("invokeId=invoke-123");
       expect(url).not.toContain("proxy=");
       return new Response(
         JSON.stringify({
@@ -1693,7 +1693,7 @@ describe("account pool frontend API helpers", () => {
     });
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
-    await fetchInvocationRecords({ requestId: "invoke-123" });
+    await fetchInvocationRecords({ invokeId: "invoke-123" });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -1702,7 +1702,7 @@ describe("account pool frontend API helpers", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       expect(url).toContain("/api/invocations/locate?");
-      expect(url).toContain("requestId=invoke-anchor");
+      expect(url).toContain("invokeId=invoke-anchor");
       expect(url).toContain("upstreamAccountId=42");
       expect(url).toContain("pageSize=50");
       return new Response(
@@ -1722,7 +1722,7 @@ describe("account pool frontend API helpers", () => {
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
     await fetchInvocationRecordLocation({
-      requestId: "invoke-anchor",
+      invokeId: "invoke-anchor",
       upstreamAccountId: 42,
     });
 
@@ -1755,6 +1755,39 @@ describe("account pool frontend API helpers", () => {
       upstreamAccountId: 42,
       snapshotId: 7,
       anchorId: "anchor-test-001",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("adds extended diagnostics filters to invocation records queries", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      expect(url).toContain("/api/invocations?");
+      expect(url).toContain("upstreamScope=internal");
+      expect(url).toContain("proxyDisplayName=tokyo-edge");
+      expect(url).toContain("transport=websocket");
+      expect(url).toContain("serviceTier=priority");
+      expect(url).toContain("reasoningEffort=high");
+      return new Response(
+        JSON.stringify({
+          snapshotId: 7,
+          total: 0,
+          page: 1,
+          pageSize: 20,
+          records: [],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await fetchInvocationRecords({
+      upstreamScope: "internal",
+      proxyDisplayName: "tokyo-edge",
+      transport: "websocket",
+      serviceTier: "priority",
+      reasoningEffort: "high",
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);

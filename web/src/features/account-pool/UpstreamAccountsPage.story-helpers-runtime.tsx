@@ -22,7 +22,6 @@ import MaintenanceRecordsPage from "../../pages/account-pool/MaintenanceRecords"
 import UpstreamAccountCreatePage from "../../pages/account-pool/UpstreamAccountCreate";
 import { resolveDisplayNameAfterEmailChange } from "../../pages/account-pool/UpstreamAccountCreate.shared";
 import UpstreamAccountsPage from "../../pages/account-pool/UpstreamAccounts";
-import { useTheme } from "../../theme/context";
 
 function applyRoutingRulePatchToEffectiveRule(
   rule: EffectiveRoutingRule,
@@ -1144,13 +1143,16 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
 
       if (path === "/api/invocations/locate" && method === "GET") {
         const requestedAccountId = Number(parsedUrl.searchParams.get("upstreamAccountId") || 0);
-        const requestId = parsedUrl.searchParams.get("requestId")?.trim() || "";
+        const invokeId =
+          parsedUrl.searchParams.get("invokeId")?.trim() ||
+          parsedUrl.searchParams.get("requestId")?.trim() ||
+          "";
         if (storyId?.endsWith("--detail-drawer-invocation-locate-not-found")) {
           return jsonResponse(
             {
               code: "invocation_not_found",
               message: "invocation record not found",
-              requestId,
+              invokeId,
             },
             404,
           );
@@ -1161,13 +1163,14 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         const target = {
           ...(records[0] ?? {}),
           id: 910_001,
-          invokeId: requestId,
+          invokeId,
           upstreamAccountId: requestedAccountId || 101,
         };
         const targetIndex = Math.min(3, records.length);
         return jsonResponse({
           anchorId: "storybook-anchor-001",
           snapshotId: 17,
+          invokeId,
           total: 121,
           page: 2,
           pageSize: 50,
@@ -1339,15 +1342,12 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
 }
 
 export function AccountPoolStoryRouter({ initialEntry }: { initialEntry: StoryInitialEntry }) {
-  const { themeMode } = useTheme();
-  const isDark = themeMode === "dark";
   return (
     <div
       className="min-h-screen bg-base-200 px-6 py-6 text-base-content"
       style={{
-        backgroundImage: isDark
-          ? "radial-gradient(circle at 10% -10%, rgba(56,189,248,0.18), transparent 36%), radial-gradient(circle at 88% 0%, rgba(45,212,191,0.16), transparent 34%), linear-gradient(180deg, #081428 0%, #10213a 62%)"
-          : "radial-gradient(circle at 10% -10%, rgba(14,165,233,0.10), transparent 34%), radial-gradient(circle at 88% 0%, rgba(16,185,129,0.10), transparent 30%), linear-gradient(180deg, #f7fbff 0%, #e8f1fb 58%, #e1ecf8 100%)",
+        backgroundImage:
+          "radial-gradient(circle at 10% -10%, var(--app-bg-orb-1), transparent 36%), radial-gradient(circle at 88% 0%, var(--app-bg-orb-2), transparent 34%), linear-gradient(180deg, var(--app-bg-top) 0%, var(--app-bg-bottom) 62%)",
       }}
     >
       <MemoryRouter initialEntries={[initialEntry]}>

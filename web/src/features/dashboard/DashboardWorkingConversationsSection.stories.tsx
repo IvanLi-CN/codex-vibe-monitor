@@ -36,6 +36,10 @@ import { formatStoryAttemptId } from "../records/invocationRecordsStoryFixtures"
 import { DashboardInvocationDetailDrawer } from "./DashboardInvocationDetailDrawer";
 import { DashboardWorkingConversationsSection } from "./DashboardWorkingConversationsSection";
 import { DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY } from "./dashboardActivityRange";
+import {
+  DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_STORAGE_KEY,
+  type DashboardBulkRouteBindRecentTarget,
+} from "./dashboardBulkRouteBindPreferences";
 
 function StorySurface({ children }: { children: ReactNode }) {
   return (
@@ -62,6 +66,16 @@ const DASHBOARD_STORY_PROMPT_CACHE_BINDING_ACCOUNTS = [
     provider: "codex",
     displayName: "Codex Pro - Tokyo",
     groupName: "Tokyo",
+    status: "active",
+    displayStatus: "active",
+    enabled: true,
+  },
+  {
+    id: 102,
+    kind: "oauth_codex",
+    provider: "codex",
+    displayName: "ops-west@relay.example",
+    groupName: "Relay-Blue",
     status: "active",
     displayStatus: "active",
     enabled: true,
@@ -2943,9 +2957,9 @@ function DrawerPreviewStory({
       }
 
       if (url.pathname === "/api/invocations") {
-        const requestId = url.searchParams.get("requestId");
-        if (requestId) {
-          const record = storyMocks.recordsByInvokeId.get(requestId);
+        const invokeId = url.searchParams.get("invokeId") ?? url.searchParams.get("requestId");
+        if (invokeId) {
+          const record = storyMocks.recordsByInvokeId.get(invokeId);
           return jsonResponse({
             snapshotId: 1,
             total: record ? 1 : 0,
@@ -5288,12 +5302,42 @@ function buildBulkSelectionStoryBindingResponse(
 
 function BulkSelectionStorySurface({
   theme,
+  recentTargets,
   ...props
 }: ComponentProps<typeof DashboardWorkingConversationsSection> & {
   theme?: "vibe-light" | "vibe-dark";
+  recentTargets?: DashboardBulkRouteBindRecentTarget[];
 }) {
   const originalFetchRef = useRef<typeof window.fetch | null>(null);
+  const [recentTargetsReady, setRecentTargetsReady] = useState(recentTargets == null);
   useStoryTheme(theme);
+
+  useLayoutEffect(() => {
+    const previousValue = window.localStorage.getItem(
+      DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_STORAGE_KEY,
+    );
+    if (recentTargets && recentTargets.length > 0) {
+      window.localStorage.setItem(
+        DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_STORAGE_KEY,
+        JSON.stringify(recentTargets),
+      );
+    } else {
+      window.localStorage.removeItem(DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_STORAGE_KEY);
+    }
+    setRecentTargetsReady(true);
+
+    return () => {
+      setRecentTargetsReady(recentTargets == null);
+      if (previousValue == null) {
+        window.localStorage.removeItem(DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_STORAGE_KEY);
+      } else {
+        window.localStorage.setItem(
+          DASHBOARD_BULK_ROUTE_BIND_RECENT_TARGETS_STORAGE_KEY,
+          previousValue,
+        );
+      }
+    };
+  }, [recentTargets]);
 
   useLayoutEffect(() => {
     if (!originalFetchRef.current) {
@@ -5313,6 +5357,7 @@ function BulkSelectionStorySurface({
             groups: [
               { groupName: "CIII", accountCount: 1 },
               { groupName: "Tokyo", accountCount: 1 },
+              { groupName: "Relay-Blue", accountCount: 1 },
             ],
             forwardProxyNodes: [],
             hasUngroupedAccounts: false,
@@ -5393,6 +5438,10 @@ function BulkSelectionStorySurface({
     };
   }, []);
 
+  if (!recentTargetsReady) {
+    return null;
+  }
+
   return (
     <ForcedWorkspaceViewStory view="conversations">
       <DashboardWorkingConversationsSection {...props} />
@@ -5407,6 +5456,14 @@ const bulkSelectionStoryArgs = {
   isLoading: false,
   error: null,
 };
+
+const bulkSelectionStoryRecentTargets: DashboardBulkRouteBindRecentTarget[] = [
+  { kind: "upstreamAccount", upstreamAccountId: 21, usedAt: Date.parse("2026-07-20T11:00:00Z") },
+  { kind: "group", groupName: "Tokyo", usedAt: Date.parse("2026-07-20T10:00:00Z") },
+  { kind: "group", groupName: "CIII", usedAt: Date.parse("2026-07-20T09:00:00Z") },
+  { kind: "upstreamAccount", upstreamAccountId: 101, usedAt: Date.parse("2026-07-20T08:00:00Z") },
+  { kind: "group", groupName: "Relay-Blue", usedAt: Date.parse("2026-07-20T07:00:00Z") },
+];
 
 async function enableConversationSelectionMode(canvasElement: HTMLElement) {
   const selectionModeButton = canvasElement.querySelector(
@@ -5497,6 +5554,87 @@ export const ConversationBulkRouteBindDialog: Story = {
           '[data-testid="dashboard-working-conversations-route-bind-dialog"]',
         ),
       ).not.toBeNull();
+    });
+  },
+};
+
+export const ConversationBulkRouteBindDialogRecentTargets: Story = {
+  args: bulkSelectionStoryArgs,
+  render: (args) => (
+    <BulkSelectionStorySurface {...args} recentTargets={bulkSelectionStoryRecentTargets} />
+  ),
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+  },
+  play: async ({ canvasElement }) => {
+    await selectConversationForBulkActions(canvasElement);
+    const routeBindButton = canvasElement.ownerDocument.body.querySelector(
+      '[data-testid="dashboard-working-conversations-route-bind-button"]',
+    );
+    if (!(routeBindButton instanceof HTMLButtonElement)) {
+      throw new Error("missing route bind button");
+    }
+
+    await userEvent.click(routeBindButton);
+    await waitFor(() => {
+      expect(
+        canvasElement.ownerDocument.body.querySelector(
+          '[data-testid="dashboard-working-conversations-route-bind-dialog"]',
+        ),
+      ).not.toBeNull();
+      expect(
+        canvasElement.ownerDocument.body.querySelectorAll(
+          '[data-testid="dashboard-working-conversations-route-bind-recent-chip"]',
+        ).length,
+      ).toBe(5);
+      expect(
+        canvasElement.ownerDocument.body.querySelector(
+          '[role="combobox"][aria-label="批量账号绑定目标"]',
+        )?.textContent,
+      ).toContain("growth.6vv4@relay.example · CIII");
+    });
+  },
+};
+
+export const ConversationBulkRouteBindDialogRecentTargetsMobile: Story = {
+  args: bulkSelectionStoryArgs,
+  render: (args) => (
+    <BulkSelectionStorySurface {...args} recentTargets={bulkSelectionStoryRecentTargets} />
+  ),
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+  },
+  play: async ({ canvasElement }) => {
+    await selectConversationForBulkActions(canvasElement);
+    const routeBindButton = canvasElement.ownerDocument.body.querySelector(
+      '[data-testid="dashboard-working-conversations-route-bind-button"]',
+    );
+    if (!(routeBindButton instanceof HTMLButtonElement)) {
+      throw new Error("missing route bind button");
+    }
+
+    await userEvent.click(routeBindButton);
+    await waitFor(() => {
+      expect(
+        canvasElement.ownerDocument.body.querySelector(
+          '[data-testid="dashboard-working-conversations-route-bind-recents"]',
+        ),
+      ).not.toBeNull();
+      expect(
+        canvasElement.ownerDocument.body.querySelectorAll(
+          '[data-testid="dashboard-working-conversations-route-bind-recent-chip"]',
+        ).length,
+      ).toBeGreaterThan(0);
+      expect(
+        canvasElement.ownerDocument.body.querySelector(
+          '[data-testid="dashboard-working-conversations-route-bind-recent-overflow-chip"]',
+        ),
+      ).toBeNull();
+      expect(
+        canvasElement.ownerDocument.body.querySelectorAll(
+          '[data-testid="dashboard-working-conversations-route-bind-recent-chip"]',
+        ).length,
+      ).toBeLessThan(bulkSelectionStoryRecentTargets.length);
     });
   },
 };

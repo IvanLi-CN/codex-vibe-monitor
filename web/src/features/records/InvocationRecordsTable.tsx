@@ -1046,6 +1046,7 @@ export function InvocationRecordsTable({
                       record={row.record}
                       focusedAttemptId={isExpanded ? focusedAttemptId : null}
                       size="compact"
+                      hideNonShortIds
                     />
                   </div>
                 </div>
@@ -1183,6 +1184,7 @@ export function InvocationRecordsTable({
                               record={row.record}
                               focusedAttemptId={isExpanded ? focusedAttemptId : null}
                               size="default"
+                              hideNonShortIds
                             />
                           </div>
                         </div>
@@ -1231,6 +1233,7 @@ export function InvocationRecordsTable({
               record={drawerRow.record}
               focusedAttemptId={focusedAttemptId}
               size="default"
+              hideNonShortIds
             />
           </div>
         </AccountDetailDrawerShell>

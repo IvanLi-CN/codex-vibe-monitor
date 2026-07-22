@@ -1,4 +1,6 @@
 import type {
+  InvocationModelRerouteFilter,
+  InvocationModelTarget,
   InvocationRangePreset,
   InvocationRecordsQuery,
   InvocationSortBy,
@@ -19,17 +21,36 @@ export interface InvocationRecordsDraftFilters {
   customTo: string;
   status: string;
   model: string;
+  models: string[];
+  modelTarget: InvocationModelTarget;
+  modelRerouted: InvocationModelRerouteFilter;
   endpoint: string;
+  invokeId: string;
+  attemptId: string;
   failureClass: string;
   failureKind: string;
   promptCacheKey: string;
+  upstreamScope: string;
+  upstreamAccount: string;
+  upstreamAccountId: string;
+  proxyDisplayName: string;
+  transport: string;
+  serviceTier: string;
+  reasoningEffort: string;
+  reasoningEfforts: string[];
   requesterIp: string;
-  requestId: string;
   keyword: string;
   minTotalTokens: string;
   maxTotalTokens: string;
   minTotalMs: string;
   maxTotalMs: string;
+}
+
+export interface InvocationRecordsDraftValidation {
+  timeRange: "invalid" | "order" | null;
+  totalTokens: "invalid" | "integer" | "order" | null;
+  totalMs: "invalid" | "order" | null;
+  modelFilters: "missingModel" | null;
 }
 
 export function createDefaultInvocationRecordsDraft(): InvocationRecordsDraftFilters {
@@ -39,12 +60,24 @@ export function createDefaultInvocationRecordsDraft(): InvocationRecordsDraftFil
     customTo: "",
     status: "",
     model: "",
+    models: [],
+    modelTarget: "request",
+    modelRerouted: "all",
     endpoint: "",
+    invokeId: "",
+    attemptId: "",
     failureClass: "",
     failureKind: "",
     promptCacheKey: "",
+    upstreamScope: "",
+    upstreamAccount: "",
+    upstreamAccountId: "",
+    proxyDisplayName: "",
+    transport: "",
+    serviceTier: "",
+    reasoningEffort: "",
+    reasoningEfforts: [],
     requesterIp: "",
-    requestId: "",
     keyword: "",
     minTotalTokens: "",
     maxTotalTokens: "",
@@ -90,6 +123,61 @@ function normalizeText(value: string) {
   return normalized ? normalized : undefined;
 }
 
+function normalizeTextList(values: string[]) {
+  const deduped = new Set<string>();
+  for (const value of values) {
+    const normalized = value.trim();
+    if (!normalized) continue;
+    deduped.add(normalized);
+  }
+  return Array.from(deduped);
+}
+
+function resolveModelList(draft: InvocationRecordsDraftFilters) {
+  const models = normalizeTextList(draft.models);
+  const legacyModel = normalizeText(draft.model);
+  if (models.length === 0 && legacyModel) {
+    return [legacyModel];
+  }
+  return models;
+}
+
+function resolveReasoningEffortList(draft: InvocationRecordsDraftFilters) {
+  const reasoningEfforts = normalizeTextList(draft.reasoningEfforts);
+  const legacyReasoningEffort = normalizeText(draft.reasoningEffort);
+  if (reasoningEfforts.length === 0 && legacyReasoningEffort) {
+    return [legacyReasoningEffort];
+  }
+  return reasoningEfforts;
+}
+
+function resolveModelReroutedQueryValue(draft: InvocationRecordsDraftFilters) {
+  if (draft.modelRerouted === "rerouted") return true;
+  if (draft.modelRerouted === "notRerouted") return false;
+  return undefined;
+}
+
+function parseDateInput(value: string) {
+  const normalized = value.trim();
+  if (!normalized) {
+    return {
+      date: undefined,
+      invalid: false,
+    };
+  }
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) {
+    return {
+      date: undefined,
+      invalid: true,
+    };
+  }
+  return {
+    date: parsed,
+    invalid: false,
+  };
+}
+
 function normalizeNumber(value: string) {
   const normalized = value.trim();
   if (!normalized) return undefined;
@@ -116,6 +204,77 @@ function normalizeIntegerSafely(value: string, fieldName: string) {
   }
 }
 
+function normalizeUpstreamAccountId(draft: InvocationRecordsDraftFilters) {
+  const explicitId = normalizeIntegerSafely(draft.upstreamAccountId, "upstreamAccountId");
+  if (explicitId !== undefined) {
+    return explicitId;
+  }
+  return normalizeIntegerSafely(draft.upstreamAccount, "upstreamAccount");
+}
+
+export function validateInvocationRecordsDraft(
+  draft: InvocationRecordsDraftFilters,
+): InvocationRecordsDraftValidation {
+  const timeRange: InvocationRecordsDraftValidation["timeRange"] = (() => {
+    if (draft.rangePreset !== "custom") return null;
+    const parsedFrom = parseDateInput(draft.customFrom);
+    const parsedTo = parseDateInput(draft.customTo);
+    if (parsedFrom.invalid || parsedTo.invalid) {
+      return "invalid";
+    }
+    if (parsedFrom.date && parsedTo.date) {
+      const exclusiveTo = resolveCustomToUpperBound(draft.customTo);
+      if (parsedFrom.date.getTime() >= exclusiveTo.getTime()) {
+        return "order";
+      }
+    }
+    return null;
+  })();
+
+  const totalTokens: InvocationRecordsDraftValidation["totalTokens"] = (() => {
+    const minValue = draft.minTotalTokens.trim();
+    const maxValue = draft.maxTotalTokens.trim();
+    const min = normalizeIntegerSafely(minValue, "minTotalTokens");
+    const max = normalizeIntegerSafely(maxValue, "maxTotalTokens");
+    if ((minValue && min === undefined) || (maxValue && max === undefined)) {
+      const invalidValue = [minValue, maxValue]
+        .filter((value) => value.length > 0)
+        .find((value) => Number.isFinite(Number(value)) && !Number.isInteger(Number(value)));
+      return invalidValue ? "integer" : "invalid";
+    }
+    if (min !== undefined && max !== undefined && min > max) {
+      return "order";
+    }
+    return null;
+  })();
+
+  const totalMs: InvocationRecordsDraftValidation["totalMs"] = (() => {
+    const minValue = draft.minTotalMs.trim();
+    const maxValue = draft.maxTotalMs.trim();
+    const min = normalizeNumber(minValue);
+    const max = normalizeNumber(maxValue);
+    if ((minValue && min === undefined) || (maxValue && max === undefined)) {
+      return "invalid";
+    }
+    if (min !== undefined && max !== undefined && min > max) {
+      return "order";
+    }
+    return null;
+  })();
+
+  const modelFilters: InvocationRecordsDraftValidation["modelFilters"] =
+    resolveReasoningEffortList(draft).length > 0 && resolveModelList(draft).length === 0
+      ? "missingModel"
+      : null;
+
+  return {
+    timeRange,
+    totalTokens,
+    totalMs,
+    modelFilters,
+  };
+}
+
 function resolveRangeBoundsSafely(
   rangePreset: InvocationRangePreset,
   draft: InvocationRecordsDraftFilters,
@@ -135,10 +294,21 @@ export function resolveRangeBoundsFromValues(
   now = new Date(),
 ) {
   if (rangePreset === "custom") {
+    const parsedFrom = parseDateInput(customFrom);
+    const parsedTo = parseDateInput(customTo);
+    if (parsedFrom.invalid || parsedTo.invalid) {
+      throw new Error("Invalid time range");
+    }
+    if (parsedFrom.date && parsedTo.date) {
+      const exclusiveTo = resolveCustomToUpperBound(customTo);
+      if (parsedFrom.date.getTime() >= exclusiveTo.getTime()) {
+        throw new Error("Time range must end after it starts");
+      }
+    }
     return {
-      from: customFrom ? toIsoString(new Date(customFrom)) : undefined,
+      from: parsedFrom.date ? toIsoString(parsedFrom.date) : undefined,
       // Treat minute-based inputs as inclusive-of-minute for UX, while keeping server-side `< to` bounds.
-      to: customTo ? toIsoString(resolveCustomToUpperBound(customTo)) : undefined,
+      to: parsedTo.date ? toIsoString(resolveCustomToUpperBound(customTo)) : undefined,
     };
   }
 
@@ -181,18 +351,56 @@ export function buildAppliedInvocationFilters(
   draft: InvocationRecordsDraftFilters,
   now = new Date(),
 ): Omit<InvocationRecordsQuery, "page" | "pageSize" | "sortBy" | "sortOrder" | "snapshotId"> {
+  const validation = validateInvocationRecordsDraft(draft);
+  if (validation.timeRange === "invalid") {
+    throw new Error("Invalid time range");
+  }
+  if (validation.timeRange === "order") {
+    throw new Error("Time range must end after it starts");
+  }
+  if (validation.totalTokens === "invalid") {
+    throw new Error("Total tokens range must use numbers");
+  }
+  if (validation.totalTokens === "integer") {
+    throw new Error("Total tokens range must use whole numbers");
+  }
+  if (validation.totalTokens === "order") {
+    throw new Error("Total tokens range must be in ascending order");
+  }
+  if (validation.totalMs === "invalid") {
+    throw new Error("Total ms range must use numbers");
+  }
+  if (validation.totalMs === "order") {
+    throw new Error("Total ms range must be in ascending order");
+  }
+  if (validation.modelFilters === "missingModel") {
+    throw new Error("Model filter requires at least one model");
+  }
   const bounds = resolveRangeBounds(draft.rangePreset, draft, now);
+  const models = resolveModelList(draft);
+  const reasoningEfforts = resolveReasoningEffortList(draft);
   return {
     rangePreset: draft.rangePreset,
     from: bounds.from,
     to: bounds.to,
     status: normalizeText(draft.status),
-    model: normalizeText(draft.model),
+    model: models.length === 1 ? models[0] : undefined,
+    models: models.length > 0 ? models : undefined,
+    modelTarget: models.length > 0 ? draft.modelTarget : undefined,
+    modelRerouted: resolveModelReroutedQueryValue(draft),
     endpoint: normalizeText(draft.endpoint),
-    requestId: normalizeText(draft.requestId),
+    invokeId: normalizeText(draft.invokeId),
+    attemptId: normalizeText(draft.attemptId),
     failureClass: normalizeText(draft.failureClass),
     failureKind: normalizeText(draft.failureKind),
     promptCacheKey: normalizeText(draft.promptCacheKey),
+    upstreamScope: normalizeText(draft.upstreamScope),
+    upstreamAccountId: normalizeUpstreamAccountId(draft),
+    proxyDisplayName: normalizeText(draft.proxyDisplayName),
+    transport: normalizeText(draft.transport),
+    serviceTier: normalizeText(draft.serviceTier),
+    reasoningEffort: reasoningEfforts.length === 1 ? reasoningEfforts[0] : undefined,
+    reasoningEfforts: reasoningEfforts.length > 0 ? reasoningEfforts : undefined,
     requesterIp: normalizeText(draft.requesterIp),
     keyword: normalizeText(draft.keyword),
     minTotalTokens: normalizeInteger(draft.minTotalTokens, "minTotalTokens"),
@@ -209,14 +417,27 @@ function readSuggestionDraftValue(
   switch (field) {
     case "model":
       return draft.model;
+    case "requestModel":
+    case "responseModel":
+      return undefined;
     case "endpoint":
       return draft.endpoint;
     case "failureKind":
       return draft.failureKind;
+    case "stickyKey":
+      return undefined;
     case "promptCacheKey":
       return draft.promptCacheKey;
     case "requesterIp":
       return draft.requesterIp;
+    case "proxyDisplayName":
+      return draft.proxyDisplayName;
+    case "upstreamAccount":
+      return draft.upstreamAccount;
+    case "serviceTier":
+      return draft.serviceTier;
+    case "reasoningEffort":
+      return draft.reasoningEffort;
     default:
       return undefined;
   }
@@ -227,19 +448,33 @@ export function buildInvocationSuggestionsQuery(
   snapshotId?: number,
   suggestField?: InvocationSuggestionField,
   now = new Date(),
+  suggestQueryOverride?: string,
 ): Omit<InvocationRecordsQuery, "page" | "pageSize" | "sortBy" | "sortOrder"> {
   const bounds = resolveRangeBoundsSafely(draft.rangePreset, draft, now);
+  const models = resolveModelList(draft);
+  const reasoningEfforts = resolveReasoningEffortList(draft);
   return {
     rangePreset: draft.rangePreset,
     from: bounds.from,
     to: bounds.to,
     status: normalizeText(draft.status),
-    model: normalizeText(draft.model),
+    model: models.length === 1 ? models[0] : undefined,
+    models: models.length > 0 ? models : undefined,
+    modelTarget: models.length > 0 ? draft.modelTarget : undefined,
+    modelRerouted: resolveModelReroutedQueryValue(draft),
     endpoint: normalizeText(draft.endpoint),
-    requestId: normalizeText(draft.requestId),
+    invokeId: normalizeText(draft.invokeId),
+    attemptId: normalizeText(draft.attemptId),
     failureClass: normalizeText(draft.failureClass),
     failureKind: normalizeText(draft.failureKind),
     promptCacheKey: normalizeText(draft.promptCacheKey),
+    upstreamScope: normalizeText(draft.upstreamScope),
+    upstreamAccountId: normalizeUpstreamAccountId(draft),
+    proxyDisplayName: normalizeText(draft.proxyDisplayName),
+    transport: normalizeText(draft.transport),
+    serviceTier: normalizeText(draft.serviceTier),
+    reasoningEffort: reasoningEfforts.length === 1 ? reasoningEfforts[0] : undefined,
+    reasoningEfforts: reasoningEfforts.length > 0 ? reasoningEfforts : undefined,
     requesterIp: normalizeText(draft.requesterIp),
     keyword: normalizeText(draft.keyword),
     minTotalTokens: normalizeIntegerSafely(draft.minTotalTokens, "minTotalTokens"),
@@ -248,7 +483,7 @@ export function buildInvocationSuggestionsQuery(
     maxTotalMs: normalizeNumber(draft.maxTotalMs),
     suggestField,
     suggestQuery: suggestField
-      ? normalizeText(readSuggestionDraftValue(draft, suggestField) ?? "")
+      ? normalizeText(suggestQueryOverride ?? readSuggestionDraftValue(draft, suggestField) ?? "")
       : undefined,
     snapshotId,
   };

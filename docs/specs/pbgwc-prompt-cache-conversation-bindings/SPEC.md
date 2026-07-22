@@ -42,6 +42,9 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - A `Cmd`/`Ctrl`-modified card click toggles only the clicked card's selection without switching the header into persistent selection mode.
 - Any non-zero selection shows a fixed bottom-center floating bulk action bar with selected count, route binding, clear-and-reselect affinity, FAST mode, and cancel-selection actions.
 - The bulk route-bind dialog supports `group` and `upstreamAccount` targets, and its destructive footer action submits `bindingKind='none'` to clear only the manual binding target without reading the current dropdown selection.
+- The Dashboard bulk route-bind dialog keeps a browser-local MRU list of the last successful `group` or `upstreamAccount` binding targets under one shared localStorage key; it does not persist clear actions, transient dropdown edits, or cancelled dialog state.
+- When the bulk route-bind dialog opens and binding targets are loaded, it restores the newest still-valid MRU target by switching both kind and target selection together. Invalid or stale MRU entries are silently dropped from localStorage before the dialog renders recent chips.
+- The Dashboard bulk route-bind dialog renders up to five recent MRU targets below the `绑定到 / kind / target` row using variable-width group/account chips under one unified order. The visible strip stays within two rows; when all recent targets cannot fit, the dialog omits the extra tail items instead of introducing any alternate selector or placeholder chip. Picking any recent target only refills the current selection and never submits the bulk bind action by itself.
 - The Dashboard bulk clear confirmation dialog resolves its header/footer chrome and destructive callout surfaces from the active themed ancestor so dark-theme or nested-theme renders cannot inherit light-theme mixed surfaces from `:root`.
 - The separate `clearAndResetAffinity` API action removes the manual conversation binding, `pool_sticky_routes`, and `prompt_cache_encrypted_session_owners` rows for each selected key so the next request reselects an upstream account from normal routing.
 - Bulk FAST mode writes one of the four concrete rewrite modes per selected key and preserves the key's current binding kind.
@@ -236,6 +239,11 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given the Dashboard conversations grid is not in persistent selection mode, when the operator `Cmd`/`Ctrl`-clicks a card, then only that card toggles selection and the header toggle remains in its default non-selection state.
 - Given Dashboard selection mode is on, when the operator clicks a card body or presses `Enter`/`Space` on it, then the card toggles selection instead of opening the conversation or invocation drawers.
 - Given selected Dashboard conversations and a bulk bind payload to an upstream account, when the request succeeds, then every successful item returns an `upstreamAccount` binding snapshot and the selected keys' sticky routes align to that account.
+- Given the bulk route-bind dialog opens and localStorage contains a newest valid account or group MRU target, when binding targets finish loading, then the dialog restores that target's kind and selected value before the operator clicks `应用绑定`.
+- Given the bulk route-bind dialog opens and localStorage contains stale MRU targets, when those groups or accounts are no longer selectable, then the dialog drops only the stale entries, keeps the remaining valid MRU order, and falls back to the existing default target-selection behavior without throwing.
+- Given recent route-bind chips are rendered, when the operator clicks a group or upstream-account chip, then the dialog switches to that chip's kind and target but does not submit any bulk bind API request until the operator explicitly clicks `应用绑定`.
+- Given the bulk route-bind dialog renders on a compact-width viewport, when recent MRU targets are available, then the dialog still uses recent chips in the main strip and omits any chips that cannot fit within the two-row budget; selecting any visible recent chip still only refills the current kind and target.
+- Given more than five valid MRU targets exist in localStorage, when the dialog renders its recent chips, then only the five newest unified MRU targets are shown and persisted.
 - Given a selected conversation has a manual binding, sticky route, and encrypted owner lock, when the operator uses the route-bind dialog footer bulk clear binding shortcut, then only the manual binding is removed and sticky / owner affinity remains available to routing.
 - Given a selected conversation has a manual binding, sticky route, and encrypted owner lock, when the operator uses the floating bulk bar clear-and-reselect action, then all three affinity rows are removed and the next routing constraint resolves as unconstrained.
 - Given a selected conversation has a manual binding, sticky route, and encrypted owner lock, when a client calls bulk `clearAndResetAffinity`, then all three affinity rows are removed and the next routing constraint resolves as unconstrained.
@@ -245,7 +253,7 @@ The key segment is URL-encoded with normal component encoding; the server accept
 
 ## Visual Evidence
 
-Recommended PR subset for this Dashboard bulk-actions change: the two web-demo captures in the first section below.
+PR: none
 
 ### Dashboard Bulk Actions (Web Demo)
 
@@ -274,6 +282,32 @@ Recommended PR subset for this Dashboard bulk-actions change: the two web-demo c
 - demo_route: `/dashboard?demoScene=attention&demoTheme=light`
 - state: route-bind kind selector opened with `分组` and `上游账号` options while the dialog still keeps the single-row `绑定到 / kind / target` layout
 - evidence_note: verifies the dialog no longer uses the earlier segmented switch, keeps the compact one-line binding row, and exposes the kind chooser as a dropdown instead of a persistent tabbed control.
+
+![Dashboard bulk route bind recent targets on desktop](./assets/dashboard-bulk-route-bind-recents-desktop-chrome-page.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: browser-viewport
+- requested_viewport: desktop1440
+- viewport_strategy: devtools-emulate
+- sensitive_exclusion: N/A
+- submission_gate: owner-requested desktop screenshot
+- story_id_or_title: `Dashboard/WorkingConversationsSection/ConversationBulkRouteBindDialogRecentTargets`
+- state: selected Dashboard conversation with the route-bind dialog open in the desktop layout, the restored upstream-account MRU target selected, and the full recent-chip strip visible below the binding row
+- evidence_note: captured from the Google Chrome Storybook iframe at a desktop viewport; verifies browser-local MRU restoration, unified variable-width recent chips, and the absence of any overflow placeholder chip in the desktop layout.
+
+![Dashboard bulk route bind recent targets on mobile](./assets/dashboard-bulk-route-bind-recents-mobile-chrome-page.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: browser-viewport
+- requested_viewport: mobile390
+- viewport_strategy: devtools-emulate
+- sensitive_exclusion: N/A
+- submission_gate: owner-requested mobile screenshot
+- story_id_or_title: `Dashboard/WorkingConversationsSection/ConversationBulkRouteBindDialogRecentTargetsMobile`
+- state: selected Dashboard conversation with the route-bind dialog open in the compact mobile layout, the restored upstream-account MRU target selected, and only the recent chips that fit within the two-row budget rendered below the binding row
+- evidence_note: captured from the Google Chrome Storybook iframe at a mobile viewport; verifies the same variable-width chip language on mobile and confirms the extra tail items are omitted instead of rendering any `+N 更多` chip or alternate selector.
 
 ![Dashboard bulk clear-and-reselect button restored](./assets/dashboard-bulk-clear-affinity-button-restored-storybook.png)
 

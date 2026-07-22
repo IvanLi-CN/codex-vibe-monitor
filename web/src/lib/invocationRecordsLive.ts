@@ -1,5 +1,6 @@
 import type {
   ApiInvocation,
+  InvocationModelTarget,
   InvocationRecordsQuery,
   InvocationSortBy,
   InvocationSortOrder,
@@ -25,8 +26,34 @@ function normalizeStatusFilter(value: string | null | undefined) {
   return normalized;
 }
 
-function resolveStickyFilterValue(record: ApiInvocation) {
-  return normalizeText(record.stickyKey) ?? normalizeText(record.promptCacheKey);
+function resolveUpstreamScopeFilterValue(record: ApiInvocation) {
+  const scope = normalizeText(record.upstreamScope);
+  if (scope) return scope;
+  return normalizeText(record.routeMode) === "pool" ? "internal" : "external";
+}
+
+function normalizeTextList(values: string[] | null | undefined) {
+  if (!values) return [];
+  const deduped = new Set<string>();
+  for (const value of values) {
+    const normalized = normalizeText(value);
+    if (!normalized) continue;
+    deduped.add(normalized);
+  }
+  return Array.from(deduped);
+}
+
+function resolveModelFilterValue(record: ApiInvocation, target: InvocationModelTarget) {
+  if (target === "response") {
+    return normalizeText(record.responseModel) ?? normalizeText(record.model);
+  }
+  return normalizeText(record.requestModel) ?? normalizeText(record.model);
+}
+
+function hasModelReroute(record: ApiInvocation) {
+  const requestModel = normalizeText(record.requestModel);
+  const responseModel = normalizeText(record.responseModel);
+  return !!requestModel && !!responseModel && requestModel !== responseModel;
 }
 
 function matchesFailedStatus(record: ApiInvocation) {
@@ -54,6 +81,8 @@ function resolveKeywordHaystack(record: ApiInvocation) {
   return [
     record.invokeId,
     record.model,
+    record.requestModel,
+    record.responseModel,
     record.proxyDisplayName,
     record.endpoint,
     record.failureKind,
@@ -124,14 +153,24 @@ export function matchesInvocationLiveFilters(
     | "to"
     | "status"
     | "model"
+    | "models"
+    | "modelTarget"
+    | "modelRerouted"
     | "endpoint"
+    | "invokeId"
+    | "attemptId"
     | "requestId"
     | "failureClass"
     | "failureKind"
     | "promptCacheKey"
-    | "stickyKey"
+    | "upstreamScope"
     | "requesterIp"
     | "upstreamAccountId"
+    | "proxyDisplayName"
+    | "transport"
+    | "serviceTier"
+    | "reasoningEffort"
+    | "reasoningEfforts"
     | "keyword"
     | "minTotalTokens"
     | "maxTotalTokens"
@@ -149,7 +188,21 @@ export function matchesInvocationLiveFilters(
     return false;
   }
 
-  if (filters.model && normalizeText(record.model) !== normalizeText(filters.model)) {
+  const modelFilters = normalizeTextList(filters.models);
+  if (modelFilters.length > 0) {
+    const target = filters.modelTarget ?? "request";
+    const recordModel = resolveModelFilterValue(record, target);
+    if (!recordModel || !modelFilters.includes(recordModel)) {
+      return false;
+    }
+  } else if (filters.model && normalizeText(record.model) !== normalizeText(filters.model)) {
+    return false;
+  }
+
+  if (filters.modelRerouted === true && !hasModelReroute(record)) {
+    return false;
+  }
+  if (filters.modelRerouted === false && hasModelReroute(record)) {
     return false;
   }
 
@@ -165,7 +218,11 @@ export function matchesInvocationLiveFilters(
   if (filters.endpoint && normalizeText(record.endpoint) !== normalizeText(filters.endpoint)) {
     return false;
   }
-  if (filters.requestId && normalizeText(record.invokeId) !== normalizeText(filters.requestId)) {
+  const invokeIdFilter = filters.invokeId ?? filters.requestId;
+  if (invokeIdFilter && normalizeText(record.invokeId) !== normalizeText(invokeIdFilter)) {
+    return false;
+  }
+  if (filters.attemptId) {
     return false;
   }
   if (
@@ -186,7 +243,10 @@ export function matchesInvocationLiveFilters(
   ) {
     return false;
   }
-  if (filters.stickyKey && resolveStickyFilterValue(record) !== normalizeText(filters.stickyKey)) {
+  if (
+    filters.upstreamScope &&
+    resolveUpstreamScopeFilterValue(record) !== normalizeText(filters.upstreamScope)
+  ) {
     return false;
   }
   if (
@@ -198,6 +258,33 @@ export function matchesInvocationLiveFilters(
   if (
     typeof filters.upstreamAccountId === "number" &&
     normalizeNumber(record.upstreamAccountId) !== filters.upstreamAccountId
+  ) {
+    return false;
+  }
+  if (
+    filters.proxyDisplayName &&
+    normalizeText(record.proxyDisplayName) !== normalizeText(filters.proxyDisplayName)
+  ) {
+    return false;
+  }
+  if (filters.transport && normalizeText(record.transport) !== normalizeText(filters.transport)) {
+    return false;
+  }
+  if (
+    filters.serviceTier &&
+    normalizeText(record.serviceTier) !== normalizeText(filters.serviceTier)
+  ) {
+    return false;
+  }
+  const reasoningEffortFilters = normalizeTextList(filters.reasoningEfforts);
+  if (reasoningEffortFilters.length > 0) {
+    const reasoningEffort = normalizeText(record.reasoningEffort);
+    if (!reasoningEffort || !reasoningEffortFilters.includes(reasoningEffort)) {
+      return false;
+    }
+  } else if (
+    filters.reasoningEffort &&
+    normalizeText(record.reasoningEffort) !== normalizeText(filters.reasoningEffort)
   ) {
     return false;
   }
@@ -351,14 +438,24 @@ export function mergeInvocationWindowRecords(
       | "to"
       | "status"
       | "model"
+      | "models"
+      | "modelTarget"
+      | "modelRerouted"
       | "endpoint"
+      | "invokeId"
+      | "attemptId"
       | "requestId"
       | "failureClass"
       | "failureKind"
       | "promptCacheKey"
-      | "stickyKey"
+      | "upstreamScope"
       | "requesterIp"
       | "upstreamAccountId"
+      | "proxyDisplayName"
+      | "transport"
+      | "serviceTier"
+      | "reasoningEffort"
+      | "reasoningEfforts"
       | "keyword"
       | "minTotalTokens"
       | "maxTotalTokens"
