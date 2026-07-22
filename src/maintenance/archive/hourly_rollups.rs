@@ -99,23 +99,132 @@ pub(crate) async fn mark_retention_archived_hourly_rollup_targets_tx(
     Ok(())
 }
 
-async fn clear_upstream_account_usage_breakdown_hourly_buckets_tx(
+async fn subtract_upstream_account_usage_breakdown_hourly_rows_tx(
     tx: &mut SqliteConnection,
-    bucket_start_epochs: &HashSet<i64>,
+    rows: &[InvocationHourlySourceRecord],
 ) -> Result<()> {
-    if bucket_start_epochs.is_empty() {
-        return Ok(());
+    let mut breakdowns = BTreeMap::new();
+    for row in rows {
+        accumulate_upstream_account_usage_breakdown_rollup(&mut breakdowns, row)?;
     }
 
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "DELETE FROM upstream_account_usage_breakdown_hourly WHERE bucket_start_epoch IN (",
-    );
-    let mut separated = query.separated(", ");
-    for bucket_start_epoch in bucket_start_epochs {
-        separated.push_bind(*bucket_start_epoch);
+    for (
+        (
+            bucket_start_epoch,
+            source,
+            upstream_account_key,
+            _upstream_account_id,
+            normalized_model,
+            normalized_reasoning_effort,
+        ),
+        delta,
+    ) in breakdowns
+    {
+        sqlx::query(
+            r#"
+            UPDATE upstream_account_usage_breakdown_hourly
+            SET
+                request_count = MAX(request_count - ?6, 0),
+                success_count = MAX(success_count - ?7, 0),
+                failure_count = MAX(failure_count - ?8, 0),
+                cache_write_tokens = MAX(cache_write_tokens - ?9, 0),
+                cache_read_tokens = MAX(cache_read_tokens - ?10, 0),
+                output_tokens = MAX(output_tokens - ?11, 0),
+                cost_input = MAX(cost_input - ?12, 0.0),
+                cost_cache_write = MAX(cost_cache_write - ?13, 0.0),
+                cost_cache_read = MAX(cost_cache_read - ?14, 0.0),
+                cost_output = MAX(cost_output - ?15, 0.0),
+                cost_reasoning = MAX(cost_reasoning - ?16, 0.0),
+                cost_unknown = MAX(cost_unknown - ?17, 0.0),
+                has_cost = MAX(has_cost - ?18, 0),
+                performance_total_tokens = MAX(performance_total_tokens - ?19, 0),
+                performance_stream_output_tokens = MAX(performance_stream_output_tokens - ?20, 0),
+                performance_stream_duration_ms = MAX(performance_stream_duration_ms - ?21, 0.0),
+                performance_response_sample_count = MAX(performance_response_sample_count - ?22, 0),
+                performance_response_sum_ms = MAX(performance_response_sum_ms - ?23, 0.0),
+                performance_first_byte_sample_count = MAX(performance_first_byte_sample_count - ?24, 0),
+                performance_first_byte_sum_ms = MAX(performance_first_byte_sum_ms - ?25, 0.0),
+                performance_usage_duration_sample_count = MAX(performance_usage_duration_sample_count - ?26, 0),
+                performance_usage_duration_sum_ms = MAX(performance_usage_duration_sum_ms - ?27, 0.0),
+                updated_at = datetime('now')
+            WHERE bucket_start_epoch = ?1
+              AND source = ?2
+              AND upstream_account_key = ?3
+              AND normalized_model = ?4
+              AND normalized_reasoning_effort = ?5
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .bind(&source)
+        .bind(&upstream_account_key)
+        .bind(&normalized_model)
+        .bind(&normalized_reasoning_effort)
+        .bind(delta.request_count)
+        .bind(delta.success_count)
+        .bind(delta.failure_count)
+        .bind(delta.cache_write_tokens)
+        .bind(delta.cache_read_tokens)
+        .bind(delta.output_tokens)
+        .bind(delta.cost_input)
+        .bind(delta.cost_cache_write)
+        .bind(delta.cost_cache_read)
+        .bind(delta.cost_output)
+        .bind(delta.cost_reasoning)
+        .bind(delta.cost_unknown)
+        .bind(delta.has_cost)
+        .bind(delta.performance_total_tokens)
+        .bind(delta.performance_stream_output_tokens)
+        .bind(delta.performance_stream_duration_ms)
+        .bind(delta.performance_response_sample_count)
+        .bind(delta.performance_response_sum_ms)
+        .bind(delta.performance_first_byte_sample_count)
+        .bind(delta.performance_first_byte_sum_ms)
+        .bind(delta.performance_usage_duration_sample_count)
+        .bind(delta.performance_usage_duration_sum_ms)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+            DELETE FROM upstream_account_usage_breakdown_hourly
+            WHERE bucket_start_epoch = ?1
+              AND source = ?2
+              AND upstream_account_key = ?3
+              AND normalized_model = ?4
+              AND normalized_reasoning_effort = ?5
+              AND request_count = 0
+              AND success_count = 0
+              AND failure_count = 0
+              AND cache_write_tokens = 0
+              AND cache_read_tokens = 0
+              AND output_tokens = 0
+              AND cost_input = 0.0
+              AND cost_cache_write = 0.0
+              AND cost_cache_read = 0.0
+              AND cost_output = 0.0
+              AND cost_reasoning = 0.0
+              AND cost_unknown = 0.0
+              AND has_cost = 0
+              AND performance_total_tokens = 0
+              AND performance_stream_output_tokens = 0
+              AND performance_stream_duration_ms = 0.0
+              AND performance_response_sample_count = 0
+              AND performance_response_sum_ms = 0.0
+              AND performance_first_byte_sample_count = 0
+              AND performance_first_byte_sum_ms = 0.0
+              AND performance_usage_duration_sample_count = 0
+              AND performance_usage_duration_sum_ms = 0.0
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .bind(&source)
+        .bind(&upstream_account_key)
+        .bind(&normalized_model)
+        .bind(&normalized_reasoning_effort)
+        .execute(&mut *tx)
+        .await?;
     }
-    query.push(")");
-    query.build().execute(&mut *tx).await?;
+
     Ok(())
 }
 
@@ -165,24 +274,7 @@ async fn mark_retention_archived_invocation_hourly_rollup_targets_tx(
         }
     }
 
-    clear_upstream_account_usage_breakdown_hourly_buckets_tx(tx, &upstream_account_usage_targets)
-        .await?;
-    let mut upstream_account_usage_bucket_epochs = upstream_account_usage_targets
-        .iter()
-        .copied()
-        .collect::<Vec<_>>();
-    upstream_account_usage_bucket_epochs.sort_unstable();
-    let retained_live_rows = load_live_invocation_hourly_rows_for_bucket_epochs_tx(
-        tx,
-        &upstream_account_usage_bucket_epochs,
-    )
-    .await?;
-    upsert_invocation_hourly_rollups_tx(
-        tx,
-        &retained_live_rows,
-        &[HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN],
-    )
-    .await?;
+    subtract_upstream_account_usage_breakdown_hourly_rows_tx(tx, rows).await?;
 
     for bucket_start_epoch in upstream_account_usage_targets {
         if live_targets
@@ -4242,7 +4334,8 @@ mod retention_breakdown_materialization_tests {
     }
 
     #[tokio::test]
-    async fn retention_partial_hour_rebuilds_breakdown_from_retained_live_rows() {
+    async fn retention_partial_hour_removes_archived_breakdown_without_dropping_retained_live_rows()
+    {
         let pool = test_pool().await;
         let archived_occurred_at = format_naive(
             Utc.with_ymd_and_hms(2026, 7, 1, 12, 5, 0)
@@ -4356,9 +4449,39 @@ mod retention_breakdown_materialization_tests {
         .await
         .expect("insert retained live invocation");
 
-        for (upstream_account_key, upstream_account_id, normalized_model, cost_unknown) in [
-            ("upstream:42", 42_i64, "gpt-5", 0.1_f64),
-            ("upstream:43", 43_i64, "gpt-5-mini", 0.2_f64),
+        for (
+            upstream_account_key,
+            upstream_account_id,
+            normalized_model,
+            output_tokens,
+            cost_input,
+            cost_cache_write,
+            cost_cache_read,
+            cost_output,
+            cost_reasoning,
+        ) in [
+            (
+                "upstream:42",
+                42_i64,
+                "gpt-5",
+                20_i64,
+                0.02_f64,
+                0.0_f64,
+                0.0_f64,
+                0.08_f64,
+                0.0_f64,
+            ),
+            (
+                "upstream:43",
+                43_i64,
+                "gpt-5-mini",
+                70_i64,
+                0.04_f64,
+                0.01_f64,
+                0.02_f64,
+                0.13_f64,
+                0.0_f64,
+            ),
         ] {
             sqlx::query(
                 r#"
@@ -4373,10 +4496,14 @@ mod retention_breakdown_materialization_tests {
                     success_count,
                     failure_count,
                     output_tokens,
-                    cost_unknown,
+                    cost_input,
+                    cost_cache_write,
+                    cost_cache_read,
+                    cost_output,
+                    cost_reasoning,
                     has_cost
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, '', 1, 1, 0, 1, ?6, 1)
+                VALUES (?1, ?2, ?3, ?4, ?5, '', 1, 1, 0, ?6, ?7, ?8, ?9, ?10, ?11, 1)
                 "#,
             )
             .bind(bucket_start_epoch)
@@ -4384,10 +4511,15 @@ mod retention_breakdown_materialization_tests {
             .bind(upstream_account_key)
             .bind(upstream_account_id)
             .bind(normalized_model)
-            .bind(cost_unknown)
+            .bind(output_tokens)
+            .bind(cost_input)
+            .bind(cost_cache_write)
+            .bind(cost_cache_read)
+            .bind(cost_output)
+            .bind(cost_reasoning)
             .execute(&pool)
             .await
-            .expect("seed stale breakdown rollup row");
+            .expect("seed existing breakdown rollup row");
         }
 
         let mut tx = pool.begin().await.expect("begin transaction");
@@ -4443,6 +4575,156 @@ mod retention_breakdown_materialization_tests {
         .await
         .expect("count usage materialized markers");
         assert_eq!(usage_materialized_count, 0);
+    }
+
+    #[tokio::test]
+    async fn retention_partial_hour_preserves_previously_replayed_archive_breakdown_rows() {
+        let pool = test_pool().await;
+        let archived_occurred_at = format_naive(
+            Utc.with_ymd_and_hms(2026, 7, 1, 12, 5, 0)
+                .single()
+                .expect("valid timestamp")
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let archived_row = InvocationHourlySourceRecord {
+            id: 1,
+            occurred_at: archived_occurred_at,
+            source: SOURCE_PROXY.to_string(),
+            status: Some("success".to_string()),
+            detail_level: DETAIL_LEVEL_FULL.to_string(),
+            model: Some("gpt-5".to_string()),
+            input_tokens: Some(10),
+            output_tokens: Some(20),
+            cache_input_tokens: Some(0),
+            total_tokens: Some(30),
+            cost: Some(0.1),
+            upstream_account_id: None,
+            cost_input: Some(0.02),
+            cost_cache_write: Some(0.0),
+            cost_cache_read: Some(0.0),
+            cost_output: Some(0.08),
+            cost_reasoning: Some(0.0),
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: None,
+            payload: Some(
+                json!({
+                    "upstreamAccountId": 42_i64,
+                    "responseModel": "gpt-5"
+                })
+                .to_string(),
+            ),
+            t_total_ms: Some(100.0),
+            t_req_read_ms: Some(0.0),
+            t_req_parse_ms: Some(0.0),
+            t_upstream_connect_ms: Some(0.0),
+            t_upstream_ttfb_ms: Some(10.0),
+            t_upstream_stream_ms: Some(20.0),
+            t_resp_parse_ms: Some(0.0),
+            t_persist_ms: Some(0.0),
+        };
+        let bucket_start_epoch = invocation_bucket_start_epoch(&archived_row.occurred_at)
+            .expect("derive bucket start epoch");
+
+        for (upstream_account_key, upstream_account_id, normalized_model, output_tokens, cost) in [
+            ("upstream:41", 41_i64, "gpt-5-previous", 15_i64, 0.07_f64),
+            ("upstream:42", 42_i64, "gpt-5", 20_i64, 0.08_f64),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO upstream_account_usage_breakdown_hourly (
+                    bucket_start_epoch,
+                    source,
+                    upstream_account_key,
+                    upstream_account_id,
+                    normalized_model,
+                    normalized_reasoning_effort,
+                    request_count,
+                    success_count,
+                    failure_count,
+                    output_tokens,
+                    cost_output,
+                    has_cost
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, '', 1, 1, 0, ?6, ?7, 1)
+                "#,
+            )
+            .bind(bucket_start_epoch)
+            .bind(SOURCE_PROXY)
+            .bind(upstream_account_key)
+            .bind(upstream_account_id)
+            .bind(normalized_model)
+            .bind(output_tokens)
+            .bind(cost)
+            .execute(&pool)
+            .await
+            .expect("seed breakdown rollup row");
+        }
+        sqlx::query(
+            r#"
+            INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+            VALUES (?1, ?2, ?3, datetime('now'))
+            "#,
+        )
+        .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind("/tmp/previous-usage-breakdown.sqlite.gz")
+        .execute(&pool)
+        .await
+        .expect("seed previous archive replay marker");
+
+        let mut tx = pool.begin().await.expect("begin transaction");
+        mark_retention_archived_hourly_rollup_targets_tx(
+            tx.as_mut(),
+            "codex_invocations",
+            &[archived_row],
+            &[],
+        )
+        .await
+        .expect("mark retention archived hourly rollup targets");
+        tx.commit().await.expect("commit transaction");
+
+        let previous = sqlx::query_as::<_, (i64, i64, f64)>(
+            r#"
+            SELECT request_count, output_tokens, cost_output
+            FROM upstream_account_usage_breakdown_hourly
+            WHERE bucket_start_epoch = ?1
+              AND upstream_account_key = 'upstream:41'
+              AND normalized_model = 'gpt-5-previous'
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .fetch_one(&pool)
+        .await
+        .expect("load previous archive breakdown row");
+        assert_eq!(previous, (1, 15, 0.07_f64));
+
+        let current_archived_row_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM upstream_account_usage_breakdown_hourly
+            WHERE bucket_start_epoch = ?1
+              AND upstream_account_key = 'upstream:42'
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .fetch_one(&pool)
+        .await
+        .expect("count current archived breakdown rows");
+        assert_eq!(current_archived_row_count, 0);
+
+        let previous_replay_marker_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2 AND file_path = ?3",
+        )
+        .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind("/tmp/previous-usage-breakdown.sqlite.gz")
+        .fetch_one(&pool)
+        .await
+        .expect("count previous archive replay marker");
+        assert_eq!(previous_replay_marker_count, 1);
     }
 
     #[tokio::test]
