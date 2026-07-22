@@ -254,8 +254,6 @@ The key segment is URL-encoded with normal component encoding; the server accept
 
 ## Visual Evidence
 
-PR: none
-
 ### Dashboard Bulk Actions (Web Demo)
 
 ![Dashboard bulk action bar and selected conversation card](./assets/dashboard-bulk-actions-selection-panel-web-demo.png)
@@ -371,9 +369,9 @@ The Storybook `DrawerBindingAndTimeouts` scenario now also renders the widened c
 
 The Storybook `DrawerBindingAndTimeouts` scenario also shows a multi-node conversation proxy list so the drawer contract remains reviewable alongside the Dashboard bulk-entry points.
 
+PR: include
 ![Conversation events tab showing affinity reset and fresh sticky reassignment](./assets/operations-tab-storybook.png)
 
-- PR: include
 - source_type: storybook_canvas
 - target_program: mock-only
 - capture_scope: browser-viewport
