@@ -2618,6 +2618,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         account.account_id,
                         upstream_attempt_started_at_utc_for_task.unwrap_or_else(Utc::now),
                         sticky_key_for_task.as_deref(),
+                        prompt_cache_key_for_task.as_deref(),
                         None,
                         request_endpoint_for_task.as_str(),
                         request_image_intent,

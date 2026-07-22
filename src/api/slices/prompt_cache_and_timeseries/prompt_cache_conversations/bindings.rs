@@ -948,18 +948,27 @@ async fn append_prompt_cache_conversation_operation_event(
 
 pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
     pool: &Pool<Sqlite>,
-    prompt_cache_key: &str,
+    sticky_key: &str,
+    prompt_cache_key: Option<&str>,
     upstream_account_id: i64,
     now_iso: &str,
     invoke_id: Option<&str>,
 ) -> Result<()> {
-    let sticky_before =
-        load_prompt_cache_conversation_sticky_snapshot(pool, prompt_cache_key).await?;
-    upsert_sticky_route(pool, prompt_cache_key, upstream_account_id, now_iso).await?;
-    let sticky_after =
-        load_prompt_cache_conversation_sticky_snapshot(pool, prompt_cache_key).await?;
+    let event_prompt_cache_key = prompt_cache_key.filter(|key| *key == sticky_key);
+    let sticky_before = if event_prompt_cache_key.is_some() {
+        load_prompt_cache_conversation_sticky_snapshot(pool, sticky_key).await?
+    } else {
+        None
+    };
+    upsert_sticky_route(pool, sticky_key, upstream_account_id, now_iso).await?;
+    let sticky_after = if event_prompt_cache_key.is_some() {
+        load_prompt_cache_conversation_sticky_snapshot(pool, sticky_key).await?
+    } else {
+        None
+    };
 
-    if sticky_before != sticky_after
+    if let Some(prompt_cache_key) = event_prompt_cache_key
+        && sticky_before != sticky_after
         && let Some(sticky_after) = sticky_after
     {
         append_prompt_cache_conversation_operation_event(

@@ -1019,6 +1019,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         account.account_id,
         Utc::now(),
         trace.sticky_key.as_deref(),
+        websocket_effective_prompt_cache_key(prompt_cache_key),
         Some(trace.invoke_id.as_str()),
         account.sticky_affinity_generation,
     )

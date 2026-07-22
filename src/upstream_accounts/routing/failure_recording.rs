@@ -59,6 +59,7 @@ pub(crate) async fn record_pool_route_success(
         account_id,
         request_started_at_utc,
         sticky_key,
+        None,
         invoke_id,
         None,
         None,
@@ -71,6 +72,7 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation(
     account_id: i64,
     request_started_at_utc: DateTime<Utc>,
     sticky_key: Option<&str>,
+    prompt_cache_key: Option<&str>,
     invoke_id: Option<&str>,
     sticky_affinity_generation: Option<i64>,
 ) -> Result<()> {
@@ -79,6 +81,7 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation(
         account_id,
         request_started_at_utc,
         sticky_key,
+        prompt_cache_key,
         invoke_id,
         None,
         sticky_affinity_generation,
@@ -91,6 +94,7 @@ async fn record_pool_route_success_inner(
     account_id: i64,
     request_started_at_utc: DateTime<Utc>,
     sticky_key: Option<&str>,
+    prompt_cache_key: Option<&str>,
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
@@ -129,7 +133,12 @@ async fn record_pool_route_success_inner(
     if let Some(sticky_key) = sticky_key {
         if sticky_affinity_generation_matches(pool, sticky_key, sticky_affinity_generation).await? {
             upsert_runtime_prompt_cache_conversation_sticky_route(
-                pool, sticky_key, account_id, &now_iso, invoke_id,
+                pool,
+                sticky_key,
+                prompt_cache_key,
+                account_id,
+                &now_iso,
+                invoke_id,
             )
             .await?;
         } else {
@@ -231,6 +240,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     account_id: i64,
     request_started_at_utc: DateTime<Utc>,
     sticky_key: Option<&str>,
+    prompt_cache_key: Option<&str>,
     invoke_id: Option<&str>,
     endpoint: &str,
     image_intent: ImageIntent,
@@ -242,6 +252,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         account_id,
         request_started_at_utc,
         sticky_key,
+        prompt_cache_key,
         invoke_id,
         attempt_id,
         sticky_affinity_generation,
@@ -266,6 +277,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_for
         account_id,
         request_started_at_utc,
         sticky_key,
+        None,
         invoke_id,
         attempt_id,
         None,

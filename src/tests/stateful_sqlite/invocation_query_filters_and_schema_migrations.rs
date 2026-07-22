@@ -5363,6 +5363,7 @@ async fn prompt_cache_clear_and_reset_affinity_fences_stale_sticky_revival_and_e
         stale_account_id,
         Utc::now(),
         Some(prompt_cache_key),
+        Some(prompt_cache_key),
         Some(stale_invoke_id),
         Some(stale_generation),
     )
@@ -5380,6 +5381,7 @@ async fn prompt_cache_clear_and_reset_affinity_fences_stale_sticky_revival_and_e
         rebound_account_id,
         Utc::now(),
         Some(prompt_cache_key),
+        Some(prompt_cache_key),
         Some(fresh_invoke_id),
         Some(fresh_generation),
     )
@@ -5395,6 +5397,7 @@ async fn prompt_cache_clear_and_reset_affinity_fences_stale_sticky_revival_and_e
         &state.pool,
         rebound_account_id,
         Utc::now(),
+        Some(prompt_cache_key),
         Some(prompt_cache_key),
         Some(keepalive_invoke_id),
         Some(fresh_generation),
@@ -5457,6 +5460,51 @@ async fn prompt_cache_clear_and_reset_affinity_fences_stale_sticky_revival_and_e
                 && event.invoke_id.as_deref() == Some(keepalive_invoke_id)
         }),
         "same-account keepalive should not emit extra sticky change noise"
+    );
+}
+
+#[tokio::test]
+async fn generic_sticky_route_success_does_not_emit_prompt_cache_conversation_event() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Generic Sticky Route", "upstream-generic").await;
+    let sticky_key = "generic-sticky-only-key";
+
+    record_pool_route_success_with_affinity_generation(
+        &state.pool,
+        account_id,
+        Utc::now(),
+        Some(sticky_key),
+        None,
+        Some("generic-sticky-invoke"),
+        None,
+    )
+    .await
+    .expect("generic sticky success should still upsert the sticky route");
+
+    let sticky_row = load_sticky_route(&state.pool, sticky_key)
+        .await
+        .expect("load sticky route after generic sticky success")
+        .expect("generic sticky success should persist sticky route");
+    assert_eq!(sticky_row.account_id, account_id);
+
+    let Json(event_response) = list_prompt_cache_conversation_operation_events(
+        State(state.clone()),
+        AxumPath(sticky_key.to_string()),
+        axum::extract::Query(ListPromptCacheConversationOperationEventsQuery {
+            page: Some(1),
+            page_size: Some(20),
+            info_type: None,
+        }),
+    )
+    .await
+    .expect("list generic sticky operation events");
+    assert!(
+        event_response.items.is_empty(),
+        "generic sticky affinities must not create prompt cache conversation events"
     );
 }
 
