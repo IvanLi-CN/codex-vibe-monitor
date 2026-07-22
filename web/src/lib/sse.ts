@@ -78,6 +78,7 @@ export interface SubscriptionTopicState<T = unknown> {
   cursor: number | null;
   payload: T | null;
   lastKind: SubscriptionTopicEnvelope["type"] | null;
+  receivedAt: number | null;
 }
 
 type TopicListener<T = unknown> = (event: SubscriptionTopicEnvelope<T>) => void;
@@ -441,6 +442,7 @@ function handleMessage(event: MessageEvent<string>) {
     };
     const descriptor = normalizeIncomingDescriptor(payload.topic);
     const descriptorKey = getTopicDescriptorKey(descriptor);
+    const receivedAt = Date.now();
     const nextState: TopicCacheEntry = {
       descriptor,
       topicKey: payload.topicKey,
@@ -448,10 +450,11 @@ function handleMessage(event: MessageEvent<string>) {
       cursor: payload.cursor,
       payload: payload.payload,
       lastKind: payload.type,
+      receivedAt,
     };
     topicCache.set(descriptorKey, nextState);
     forcedSnapshotDescriptors.delete(descriptorKey);
-    emitDiagnostics({ lastMessageAt: Date.now() });
+    emitDiagnostics({ lastMessageAt: receivedAt });
     const entry = topicEntries.get(descriptorKey);
     if (entry) {
       entry.listeners.forEach((listener) => {

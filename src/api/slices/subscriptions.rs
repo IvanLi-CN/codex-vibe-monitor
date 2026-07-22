@@ -13,6 +13,7 @@ const SUBSCRIPTION_DEFAULT_PROMPT_CACHE_RECENT_LIMIT: i64 = 16;
 const SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES: i64 = 5;
 const SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_PAGE_SIZE: i64 = 20;
 const SUBSCRIPTION_DEFAULT_INVOCATION_LIMIT: i64 = 20;
+const DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL: Duration = Duration::from_secs(1);
 
 #[cfg(not(test))]
 const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration =
@@ -1083,6 +1084,10 @@ pub(crate) async fn topic_sse_stream(
         last_sent_cursors: last_seen_by_topic,
         outcomes: _,
     } = prepared;
+    let recent_network_push_topic = selected_topics
+        .iter()
+        .find(|topic| topic.uses_server_push_cadence())
+        .cloned();
 
     let initial_stream = stream::iter(
         initial
@@ -1092,32 +1097,55 @@ pub(crate) async fn topic_sse_stream(
 
     let live_stream = async_stream::stream! {
         let mut last_seen = last_seen_by_topic;
+        let mut recent_network_push_interval = recent_network_push_topic.as_ref().map(|_| {
+            let mut interval = tokio::time::interval(DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval
+        });
+        if let Some(interval) = recent_network_push_interval.as_mut() {
+            interval.tick().await;
+        }
         loop {
-            match live_receiver.recv().await {
-                Ok(dispatch) => {
-                    if !selected_topic_keys.contains(&dispatch.topic_key) {
-                        continue;
-                    }
-                    let previous_cursor = last_seen.get(&dispatch.topic_key).copied().unwrap_or(0);
-                    if dispatch.cursor <= previous_cursor {
-                        continue;
-                    }
-                    last_seen.insert(dispatch.topic_key.clone(), dispatch.cursor);
-                    let payload = SubscriptionEventEnvelope::Live {
-                        topic: dispatch.descriptor.clone(),
-                        topic_key: dispatch.topic_key.clone(),
-                        schema_epoch: dispatch.schema_epoch.clone(),
-                        cursor: dispatch.cursor,
-                        payload: dispatch.payload.clone(),
-                    };
-                    if let Ok(event) = serialize_sse_event(&payload) {
-                        yield event;
+            tokio::select! {
+                received = live_receiver.recv() => {
+                    match received {
+                        Ok(dispatch) => {
+                            if !selected_topic_keys.contains(&dispatch.topic_key) {
+                                continue;
+                            }
+                            let previous_cursor = last_seen.get(&dispatch.topic_key).copied().unwrap_or(0);
+                            if dispatch.cursor <= previous_cursor {
+                                continue;
+                            }
+                            last_seen.insert(dispatch.topic_key.clone(), dispatch.cursor);
+                            let payload = SubscriptionEventEnvelope::Live {
+                                topic: dispatch.descriptor.clone(),
+                                topic_key: dispatch.topic_key.clone(),
+                                schema_epoch: dispatch.schema_epoch.clone(),
+                                cursor: dispatch.cursor,
+                                payload: dispatch.payload.clone(),
+                            };
+                            if let Ok(event) = serialize_sse_event(&payload) {
+                                yield event;
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            warn!(skipped, "subscription live fanout lagged");
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    warn!(skipped, "subscription live fanout lagged");
+                _ = async {
+                    if let Some(interval) = recent_network_push_interval.as_mut() {
+                        interval.tick().await;
+                    }
+                }, if recent_network_push_interval.is_some() => {
+                    if let Some(topic) = recent_network_push_topic.clone()
+                        && let Err(err) = state.subscription_hub.refresh_topic(state.clone(), topic, true).await
+                    {
+                        warn!(?err, "failed to push dashboard recent network topic");
+                    }
                 }
-                Err(broadcast::error::RecvError::Closed) => break,
             }
         }
     };
@@ -1127,6 +1155,10 @@ pub(crate) async fn topic_sse_stream(
 }
 
 impl SubscriptionTopic {
+    fn uses_server_push_cadence(&self) -> bool {
+        matches!(self, Self::DashboardNetworkRecentCurrent)
+    }
+
     fn uses_dashboard_activity_live_overlay(&self) -> bool {
         matches!(
             self,
@@ -2122,6 +2154,59 @@ mod tests {
                     accounts: Vec::new(),
                 },
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn dashboard_network_recent_topic_push_cadence_emits_live_payload() {
+        let state =
+            crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap())
+                .await;
+        let hub = SubscriptionHub::new();
+        let topic = SubscriptionTopic::DashboardNetworkRecentCurrent;
+        let descriptor = topic.descriptor();
+        let mut receiver = hub.subscribe();
+
+        let prepared = hub
+            .prepare_connection(state.clone(), vec![descriptor.clone()], Vec::new())
+            .await
+            .expect("prepare recent network topic");
+
+        assert_eq!(prepared.initial.len(), 1);
+        assert!(topic.uses_server_push_cadence());
+
+        hub.refresh_topic(state, topic, true)
+            .await
+            .expect("push recent network topic");
+
+        let dispatch = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .expect("recent network push should be emitted")
+            .expect("recent network dispatch");
+
+        assert_eq!(dispatch.descriptor, descriptor);
+        assert_eq!(dispatch.schema_epoch, "dashboard.network-recent.current/v1");
+        assert_eq!(
+            dispatch
+                .payload
+                .get("windowSeconds")
+                .and_then(Value::as_i64),
+            Some(300)
+        );
+        assert_eq!(
+            dispatch
+                .payload
+                .get("sampleSeconds")
+                .and_then(Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(
+            dispatch
+                .payload
+                .get("points")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(300)
         );
     }
 

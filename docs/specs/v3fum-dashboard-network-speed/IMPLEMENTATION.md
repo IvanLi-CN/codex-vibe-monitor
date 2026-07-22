@@ -27,6 +27,7 @@
 - 新增 `GET /api/stats/dashboard-network-recent` 与 `dashboard.network-recent.current`：
   - 由后端直接组装 `DashboardRecentNetworkWindowResponse` / `DashboardRecentNetworkWindowPoint`。
   - topic payload 与 HTTP response 共用同一权威读模型，固定 `windowSeconds=300`、`sampleSeconds=1`。
+  - SSE 连接订阅 `dashboard.network-recent.current` 时由服务端按 1 秒 cadence 推送 live payload，用于推进 recent 窗口右边界；前端不再通过 `refresh()` 维持 steady-state。
 - `src/oauth_bridge.rs` 新增 counted OAuth transport path，避免 OAuth HTTP 请求继续走 reqwest body 近似值。
 - `src/proxy/upstream_transport.rs` 提供 counted HTTP transport，`src/proxy/websocket.rs` 复用同一套 meter / reporter，统一 direct、pool、OAuth 与 WebSocket 的真实网速事实源。
 
@@ -50,12 +51,17 @@
 - 新增 `dashboardNetworkFormatting.ts` 统一处理 `B/s / KiB/s / MiB/s` 与字节单位格式化。
 - 新增 `web/src/hooks/useDashboardRecentNetworkWindow.ts`：
   - 只消费 `dashboard.network-recent.current` topic。
-  - 仅在 recent 面板打开期间订阅，并以 1 秒 cadence 对同一 topic 触发 `refresh()`，关闭即停止。
+  - 仅在 recent 面板打开期间订阅服务端 push，关闭即停止订阅。
+  - 不再设置前端 interval，也不在 steady-state 或手动 reload 中调用 `subscription.refresh()`。
+  - 以最后一次 topic payload 到达时间判断 stale；超过 5 秒未收到 payload 时让 panel 显示图表级 Loading/Spinner 遮罩。
 - 新增 `web/src/features/dashboard/DashboardNetworkRecentPopover.tsx`：
   - 以 `NetworkSpeedInline` 作为唯一触发器。
+  - 网速胶囊不再设置 `title`，避免浏览器原生 tooltip 覆盖悬浮面板。
   - 桌面端复用现有 popover chrome，实现 `hover 打开 + click 固定 + 再次点击/外点/Esc 关闭`。
   - 窄屏端改用 dialog/sheet 承载同一 panel 内容。
-  - 图表层将 `isAvailable=false` 样本渲染成空档，并用 warming callout / tooltip 明确“历史积累中”而不是零流量。
+  - panel 右上角从最近一帧可用样本派生两行当前摘要：`上行：<speed>` 与 `下行：<speed>`；两行使用图表同源的上传蓝、下载绿裸文本编码，不再使用 chip 轮廓或额外卡片包裹。
+  - 图表层将 `isAvailable=false` 样本渲染成空档；UI 不再显示 warming callout 或不可用点 tooltip，避免在窄屏面板中出现额外提示。
+  - topic payload 超过 5 秒未同步时，仅图表区域显示 Loading/Spinner stale 遮罩；旧图保留，不再显示局部“刷新中”。
   - `DashboardNetworkRecentPanel` 的秒级图表 tick 计算改成普通派生值，避免组件从 loading 切到有数据时因条件分支后的额外 hook 触发 React hook order 崩溃。
 
 ## 测试与 Storybook
@@ -65,8 +71,8 @@
   - Dashboard `network` metric 的可见性与 24 小时图切换。
   - 对话工作区右上总网速与账号卡速率删除断言。
 - 前端新增 recent 面板单测覆盖：
-  - `useDashboardRecentNetworkWindow` 的 topic descriptor、打开期间 1 秒 refresh cadence 与关闭停表。
-  - `DashboardNetworkRecentPopover` 的桌面 hover/click 固定、`Esc` 关闭、窄屏 dialog 打开与 warming banner 渲染。
+  - `useDashboardRecentNetworkWindow` 的 topic descriptor、无前端 interval refresh、无手动 refresh、last payload stale 判断。
+  - `DashboardNetworkRecentPopover` 的桌面 hover/click 固定、`Esc` 关闭、窄屏 dialog 打开、前导空档无提示、右上角上/下行摘要与 stale 遮罩渲染。
   - `DashboardNetworkRecentPanel` 从 loading 切到真实数据时的 hook order 回归，防止线上打开 recent 面板直接触发 React 310。
 - 后端定向单测覆盖：
   - global/host/account runtime bucket 记账。
@@ -76,7 +82,7 @@
 - 后端新增 recent 面板定向单测覆盖：
   - 300 秒 recent 窗口保留与上一完整秒快照语义。
   - 进程启动不足 5 分钟时 recent 前导空档的 `isAvailable=false` 语义。
-  - recent endpoint response builder 与 subscription topic schema epoch。
+  - recent endpoint response builder、subscription topic schema epoch 与服务端 live payload 推送。
 - `DashboardPage.stories.tsx` 新增页面级 SSE / HTTP bootstrap，确保整页证据能同时覆盖活动总览网速图和上游账号顶部总速率胶囊，不再依赖缺失首帧 snapshot 的假空态。
 - Storybook 继续使用 `DashboardNetworkActivityChart` 与 `UpstreamAccountTab` 场景验证图表背景与账号 tab 顶部总速率展示，并补充整页 `UnifiedActivitySnapshot` 证据验证 page-shell 接线。
-- 新增 `DashboardNetworkRecentPopover.stories.tsx`，提供桌面固定展开态与窄屏 sheet warming 态，作为 recent 诊断面板的稳定视觉证据入口。
+- 新增 `DashboardNetworkRecentPopover.stories.tsx`，提供桌面固定展开态、stale 遮罩态与窄屏 sheet 前导空档无提示态，作为 recent 诊断面板的稳定视觉证据入口。

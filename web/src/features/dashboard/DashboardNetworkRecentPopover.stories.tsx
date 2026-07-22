@@ -2,7 +2,6 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect } from "storybook/test";
 import { I18nProvider, useTranslation } from "../../i18n";
 import type { DashboardRecentNetworkWindowResponse } from "../../lib/api";
-import { FullPageStorySurface } from "../../storybook/storybookPageHelpers";
 import { DashboardNetworkRecentPanel } from "./DashboardNetworkRecentPopover";
 import { DashboardNetworkSpeedCapsule } from "./DashboardNetworkSpeedCapsule";
 
@@ -170,15 +169,23 @@ function buildSampleResponse(unavailablePrefixSeconds = 0): DashboardRecentNetwo
 }
 
 const populatedResponse = buildSampleResponse();
-const warmingResponse = buildSampleResponse(96);
+const partialHistoryResponse = buildSampleResponse(96);
 
-function DesktopLockedPreview({ response }: { response: DashboardRecentNetworkWindowResponse }) {
+function DesktopLockedPreview({
+  response,
+  stale = false,
+  ambientClassName = "bg-[#071a31]",
+}: {
+  response: DashboardRecentNetworkWindowResponse;
+  stale?: boolean;
+  ambientClassName?: string;
+}) {
   const latestAvailablePoint =
     [...response.points].reverse().find((point) => point.isAvailable) ?? null;
 
   return (
-    <FullPageStorySurface>
-      <section className="surface-panel overflow-visible">
+    <div className={`inline-flex max-w-full p-[18px] text-base-content ${ambientClassName}`}>
+      <section className="surface-panel w-[56rem] max-w-[calc(100vw-4rem)] overflow-visible">
         <div className="surface-panel-body gap-4 sm:gap-5">
           <div className="flex justify-end">
             <DashboardNetworkSpeedCapsule
@@ -192,45 +199,59 @@ function DesktopLockedPreview({ response }: { response: DashboardRecentNetworkWi
           </div>
           <div className="flex justify-end">
             <div className="w-full max-w-[52rem]">
-              <DashboardNetworkRecentPanel response={response} loading={false} error={null} />
+              <DashboardNetworkRecentPanel
+                response={response}
+                loading={false}
+                stale={stale}
+                error={null}
+              />
             </div>
           </div>
         </div>
       </section>
-    </FullPageStorySurface>
+    </div>
   );
 }
 
-function CompactSheetPreview({ response }: { response: DashboardRecentNetworkWindowResponse }) {
+function CompactSheetPreview({
+  response,
+  stale = false,
+}: {
+  response: DashboardRecentNetworkWindowResponse;
+  stale?: boolean;
+}) {
   const { t } = useTranslation();
 
   return (
-    <div className="min-h-screen bg-[#08172b] px-3 py-6 text-white">
-      <div className="mx-auto flex min-h-[calc(100vh-3rem)] max-w-[430px] items-end">
-        <div
-          data-theme="vibe-dark"
-          className="w-full overflow-hidden rounded-[1.75rem] border border-base-300/70 bg-base-100 shadow-[0_32px_72px_rgba(3,9,20,0.55)]"
-        >
-          <div className="flex items-start gap-3 border-b border-base-300/70 px-4 py-4 sm:px-5">
-            <div className="min-w-0 flex-1">
-              <div className="min-w-0 text-lg font-semibold">
-                {t("dashboard.networkRecent.title")}
-              </div>
-              <div className="mt-1 text-sm leading-6 text-base-content/68">
-                {t("dashboard.networkRecent.subtitle")}
-              </div>
+    <div className="inline-flex bg-[#08172b] p-4 text-white">
+      <div
+        data-theme="vibe-dark"
+        className="w-[398px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-[1.75rem] border border-base-300/70 bg-base-100 shadow-[0_32px_72px_rgba(3,9,20,0.55)]"
+      >
+        <div className="flex items-start gap-3 border-b border-base-300/70 px-4 py-4 sm:px-5">
+          <div className="min-w-0 flex-1">
+            <div className="min-w-0 text-lg font-semibold">
+              {t("dashboard.networkRecent.title")}
             </div>
-            <button
-              type="button"
-              aria-label={t("dashboard.networkRecent.close")}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-base-300/70 bg-base-200/80 text-xl leading-none text-base-content/72"
-            >
-              ×
-            </button>
+            <div className="mt-1 text-sm leading-6 text-base-content/68">
+              {t("dashboard.networkRecent.subtitle")}
+            </div>
           </div>
-          <div className="max-h-[min(100dvh-7rem,48rem)] overflow-y-auto px-4 py-4 sm:px-5">
-            <DashboardNetworkRecentPanel response={response} loading={false} error={null} />
-          </div>
+          <button
+            type="button"
+            aria-label={t("dashboard.networkRecent.close")}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-base-300/70 bg-base-200/80 text-xl leading-none text-base-content/72"
+          >
+            ×
+          </button>
+        </div>
+        <div className="max-h-[min(100dvh-7rem,48rem)] overflow-y-auto px-4 py-4 sm:px-5">
+          <DashboardNetworkRecentPanel
+            response={response}
+            loading={false}
+            stale={stale}
+            error={null}
+          />
         </div>
       </div>
     </div>
@@ -274,6 +295,7 @@ export const DesktopFixedOpen: Story = {
     const panel = canvasElement.querySelector('[data-testid="dashboard-network-recent-panel"]');
     expect(panel).not.toBeNull();
     expect(canvasElement.textContent ?? "").toContain("最近 5 分钟网速");
+    expect(canvasElement.textContent ?? "").toContain("上行：");
   },
 };
 
@@ -294,22 +316,43 @@ export const DesktopFixedOpenLight: Story = {
     const panel = canvasElement.querySelector('[data-testid="dashboard-network-recent-panel"]');
     expect(panel).not.toBeNull();
     expect(canvasElement.textContent ?? "").toContain("最近 5 分钟网速");
+    expect(canvasElement.textContent ?? "").toContain("下行：");
   },
 };
 
-export const CompactSheetWarming: Story = {
+export const DesktopStaleOverlay: Story = {
   args: {
     response: null,
     loading: false,
     error: null,
   },
-  render: () => <CompactSheetPreview response={warmingResponse} />,
+  render: () => <DesktopLockedPreview response={populatedResponse} stale />,
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+  },
+  play: async ({ canvasElement }) => {
+    const overlay = canvasElement.querySelector(
+      '[data-testid="dashboard-network-recent-stale-overlay"]',
+    );
+    expect(overlay).not.toBeNull();
+    expect(canvasElement.textContent ?? "").toContain("正在等待网速推送同步");
+    expect(canvasElement.textContent ?? "").toContain("上行：");
+  },
+};
+
+export const CompactSheetPartialHistory: Story = {
+  args: {
+    response: null,
+    loading: false,
+    error: null,
+  },
+  render: () => <CompactSheetPreview response={partialHistoryResponse} />,
   parameters: {
     viewport: { defaultViewport: "mobile390" },
   },
   play: async ({ canvasElement }) => {
-    const warming = canvasElement.querySelector('[data-testid="dashboard-network-recent-warming"]');
-    expect(warming).not.toBeNull();
     expect(canvasElement.textContent ?? "").toContain("最近 5 分钟网速");
+    expect(canvasElement.textContent ?? "").toContain("上行：");
+    expect(canvasElement.textContent ?? "").not.toContain("正在积累 5 分钟历史");
   },
 };

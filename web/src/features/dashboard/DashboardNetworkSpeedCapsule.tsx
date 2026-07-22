@@ -30,17 +30,18 @@ export function DashboardNetworkSpeedCapsule({
         "inline-flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-full border border-base-300/65 bg-base-100/78 px-2.5 py-1",
         className,
       )}
-      title={`${uploadLabel}: ${uploadValue} · ${downloadLabel}: ${downloadValue}`}
     >
       <span className="inline-flex min-w-0 items-center gap-1 whitespace-nowrap text-sky-500 dark:text-sky-300">
         <AppIcon name="arrow-up-bold" className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
         <span className="font-mono text-[0.82rem] font-semibold leading-none">
+          <span className="sr-only">{uploadLabel}: </span>
           <AnimatedDigits value={uploadValue} />
         </span>
       </span>
       <span className="inline-flex min-w-0 items-center gap-1 whitespace-nowrap text-emerald-500 dark:text-emerald-300">
         <AppIcon name="arrow-down-bold" className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
         <span className="font-mono text-[0.82rem] font-semibold leading-none">
+          <span className="sr-only">{downloadLabel}: </span>
           <AnimatedDigits value={downloadValue} />
         </span>
       </span>

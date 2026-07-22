@@ -12,6 +12,7 @@ import {
 const hookState = vi.hoisted(() => ({
   data: null as DashboardRecentNetworkWindowResponse | null,
   isLoading: false,
+  isStale: false,
   error: null as string | null,
 }));
 
@@ -33,6 +34,7 @@ vi.mock("../../hooks/useDashboardRecentNetworkWindow", () => ({
     data: hookState.data,
     isLoading: hookState.isLoading,
     isRefreshing: false,
+    isStale: hookState.isStale,
     error: hookState.error,
     reload: vi.fn(),
   }),
@@ -129,10 +131,8 @@ vi.mock("../../i18n", () => ({
         "dashboard.networkRecent.windowRange": `${vars?.start ?? ""} - ${vars?.end ?? ""}`,
         "dashboard.networkRecent.scope": "全局口径",
         "dashboard.networkRecent.loading": "正在加载最近网速历史",
+        "dashboard.networkRecent.staleLoading": "正在等待网速推送同步",
         "dashboard.networkRecent.empty": "最近网速历史暂时不可用。",
-        "dashboard.networkRecent.warmingTitle": "正在积累 5 分钟历史",
-        "dashboard.networkRecent.warmingBody":
-          "当前运行期还没积累满 5 分钟样本，前导空档表示历史尚未准备好，不代表真实网速为 0。",
         "dashboard.networkRecent.openPanel": "打开最近网速诊断面板",
         "dashboard.networkRecent.close": "关闭最近网速诊断面板",
         "dashboard.activityOverview.networkUpload": "上行",
@@ -188,6 +188,7 @@ beforeEach(() => {
   overlayState.dialogOpen = false;
   hookState.data = createResponse();
   hookState.isLoading = false;
+  hookState.isStale = false;
   hookState.error = null;
 });
 
@@ -309,7 +310,7 @@ describe("DashboardNetworkRecentPanel", () => {
     expect(host?.querySelector('[data-testid="dashboard-network-recent-chart"]')).not.toBeNull();
   });
 
-  it("shows the warming banner for unavailable leading history", () => {
+  it("keeps unavailable leading history as chart gaps without a warming prompt", () => {
     render(
       <DashboardNetworkRecentPanel
         response={createResponse({
@@ -332,7 +333,34 @@ describe("DashboardNetworkRecentPanel", () => {
       />,
     );
 
-    expect(host?.querySelector('[data-testid="dashboard-network-recent-warming"]')).not.toBeNull();
-    expect(host?.textContent).toContain("正在积累 5 分钟历史");
+    expect(host?.querySelector('[data-testid="dashboard-network-recent-warming"]')).toBeNull();
+    expect(host?.querySelector('[data-testid="dashboard-network-recent-chart"]')).not.toBeNull();
+    expect(host?.textContent).not.toContain("正在积累 5 分钟历史");
+  });
+
+  it("shows the current upload and download summary without the refreshing label", () => {
+    render(<DashboardNetworkRecentPanel response={createResponse()} loading={true} error={null} />);
+
+    const summary = host?.querySelector('[data-testid="dashboard-network-recent-current-speed"]');
+    expect(summary).not.toBeNull();
+    expect(summary?.textContent).toContain("上行：3 KiB/s");
+    expect(summary?.textContent).toContain("下行：12 KiB/s");
+    expect(host?.textContent).not.toContain("刷新中");
+  });
+
+  it("covers the chart with a pushed-data loading overlay when stale", () => {
+    render(
+      <DashboardNetworkRecentPanel
+        response={createResponse()}
+        loading={false}
+        stale={true}
+        error={null}
+      />,
+    );
+
+    const overlay = host?.querySelector('[data-testid="dashboard-network-recent-stale-overlay"]');
+    expect(overlay).not.toBeNull();
+    expect(overlay?.textContent).toContain("正在等待网速推送同步");
+    expect(host?.textContent).not.toContain("刷新中");
   });
 });

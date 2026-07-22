@@ -13,6 +13,7 @@ const topicMocks = vi.hoisted(() => ({
     data: null as DashboardRecentNetworkWindowResponse | null,
     isLoading: false,
     error: null as string | null,
+    lastReceivedAt: null as number | null,
   },
 }));
 
@@ -23,6 +24,7 @@ vi.mock("./useSubscriptionTopic", () => ({
       data: topicMocks.state.data,
       isLoading: topicMocks.state.isLoading,
       error: topicMocks.state.error,
+      lastReceivedAt: topicMocks.state.lastReceivedAt,
       refresh: topicMocks.refresh,
     };
   },
@@ -38,6 +40,7 @@ beforeEach(() => {
   topicMocks.state.data = null;
   topicMocks.state.isLoading = false;
   topicMocks.state.error = null;
+  topicMocks.state.lastReceivedAt = null;
 });
 
 afterEach(() => {
@@ -93,11 +96,13 @@ function text(testId: string) {
 }
 
 function Probe({ enabled = true }: { enabled?: boolean }) {
-  const { data, isLoading, isRefreshing, error, reload } = useDashboardRecentNetworkWindow(enabled);
+  const { data, isLoading, isRefreshing, isStale, error, reload } =
+    useDashboardRecentNetworkWindow(enabled);
   return (
     <div>
       <div data-testid="loading">{isLoading ? "true" : "false"}</div>
       <div data-testid="refreshing">{isRefreshing ? "true" : "false"}</div>
+      <div data-testid="stale">{isStale ? "true" : "false"}</div>
       <div data-testid="error">{error ?? ""}</div>
       <div data-testid="point-count">{String(data?.points.length ?? 0)}</div>
       <button type="button" data-testid="reload" onClick={() => void reload()} />
@@ -108,6 +113,7 @@ function Probe({ enabled = true }: { enabled?: boolean }) {
 describe("useDashboardRecentNetworkWindow", () => {
   it("subscribes to the recent network topic and exposes cached topic state", () => {
     topicMocks.state.data = createResponse();
+    topicMocks.state.lastReceivedAt = Date.now();
 
     render(<Probe />);
 
@@ -120,16 +126,20 @@ describe("useDashboardRecentNetworkWindow", () => {
     });
     expect(text("loading")).toBe("false");
     expect(text("refreshing")).toBe("false");
+    expect(text("stale")).toBe("false");
     expect(text("point-count")).toBe("1");
   });
 
-  it("refreshes every second only while enabled and still forwards manual reload", () => {
+  it("does not refresh from the frontend timer or manual reload", () => {
+    topicMocks.state.data = createResponse();
+    topicMocks.state.lastReceivedAt = Date.now();
+
     render(<Probe />);
 
     act(() => {
       vi.advanceTimersByTime(3_000);
     });
-    expect(topicMocks.refresh).toHaveBeenCalledTimes(3);
+    expect(topicMocks.refresh).not.toHaveBeenCalled();
 
     render(<Probe enabled={false} />);
 
@@ -140,7 +150,7 @@ describe("useDashboardRecentNetworkWindow", () => {
       descriptor: null,
       enabled: false,
     });
-    expect(topicMocks.refresh).toHaveBeenCalledTimes(3);
+    expect(topicMocks.refresh).not.toHaveBeenCalled();
 
     topicMocks.state.isLoading = true;
     render(<Probe />);
@@ -153,6 +163,21 @@ describe("useDashboardRecentNetworkWindow", () => {
     });
 
     expect(text("loading")).toBe("true");
-    expect(topicMocks.refresh).toHaveBeenCalledTimes(4);
+    expect(topicMocks.refresh).not.toHaveBeenCalled();
+  });
+
+  it("marks cached data stale when no pushed payload arrives within the threshold", () => {
+    const receivedAt = Date.now();
+    topicMocks.state.data = createResponse();
+    topicMocks.state.lastReceivedAt = receivedAt;
+
+    render(<Probe />);
+    expect(text("stale")).toBe("false");
+
+    act(() => {
+      vi.advanceTimersByTime(5_001);
+    });
+
+    expect(text("stale")).toBe("true");
   });
 });
