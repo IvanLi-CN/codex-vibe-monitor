@@ -1262,7 +1262,7 @@ describe("DashboardWorkingConversationsSection", () => {
     const firstRecentRow = host?.querySelector(
       '[data-testid="dashboard-upstream-account-recent-row"]',
     );
-    expect(firstRecentRow?.textContent).toContain("Responses");
+    expect(firstRecentRow?.textContent).toMatch(/一般|Normal/);
     expect(firstRecentRow?.textContent).toContain("Token 200");
     expect(firstRecentRow?.textContent).not.toContain("RQ ");
     expect(firstRecentRow?.textContent).not.toContain("UP ");
@@ -2335,8 +2335,8 @@ describe("DashboardWorkingConversationsSection", () => {
     const reasoningBadge = firstRow.querySelector(
       '[data-testid="dashboard-working-conversation-reasoning-effort"]',
     );
-    const endpointBadge = Array.from(firstRow.querySelectorAll("span")).find(
-      (element) => element.textContent?.trim() === "Responses",
+    const endpointBadge = Array.from(firstRow.querySelectorAll("span")).find((element) =>
+      /^(一般|Normal)$/.test(element.textContent?.trim() ?? ""),
     )?.parentElement;
     expect(reasoningBadge?.className).toContain("min-h-5");
     expect(endpointBadge?.className).toContain("min-h-5");
