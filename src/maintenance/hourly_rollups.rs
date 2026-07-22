@@ -309,6 +309,16 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
             reopened_file_paths.push(file_path.to_string());
         }
         clear_usage_breakdown_rollup_rows_for_bucket_epochs_tx(tx, &bucket_start_epochs).await?;
+        let mut bucket_start_epochs = bucket_start_epochs.into_iter().collect::<Vec<_>>();
+        bucket_start_epochs.sort_unstable();
+        let retained_live_rows =
+            load_live_invocation_hourly_rows_for_bucket_epochs_tx(tx, &bucket_start_epochs).await?;
+        upsert_invocation_hourly_rollups_tx(
+            tx,
+            &retained_live_rows,
+            &[HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN],
+        )
+        .await?;
     }
     for reopen_file_path in &reopened_file_paths {
         reset_invocation_archive_usage_breakdown_backfill_state_tx(tx, reopen_file_path).await?;

@@ -2791,6 +2791,140 @@ async fn bootstrap_hourly_rollups_reopens_same_bucket_partial_usage_breakdown_gr
 }
 
 #[tokio::test]
+async fn usage_breakdown_repair_preserves_retained_live_rows_in_reopened_archive_bucket() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("breakdown-repair-preserves-live-bucket").await;
+    let live_local = shanghai_local_days_ago(0, 9, 50, 0);
+    let coverage_start = shanghai_local_days_ago(0, 9, 5, 0);
+    let coverage_end = shanghai_local_days_ago(0, 9, 20, 0);
+
+    insert_retention_invocation(
+        &pool,
+        "breakdown-repair-retained-live",
+        &live_local,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"upstreamAccountId\":17,\"upstreamAccountName\":\"Retained Live\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("seed live breakdown rollup before repair");
+
+    let bucket_epoch = local_naive_to_utc(
+        parse_shanghai_local_naive(&live_local).expect("valid live local timestamp"),
+        Shanghai,
+    )
+    .timestamp()
+        / 3_600
+        * 3_600;
+    let seeded_live_rows: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(SUM(request_count), 0)
+        FROM upstream_account_usage_breakdown_hourly
+        WHERE bucket_start_epoch = ?1
+          AND upstream_account_id = ?2
+        "#,
+    )
+    .bind(bucket_epoch)
+    .bind(17_i64)
+    .fetch_one(&pool)
+    .await
+    .expect("load seeded live breakdown rows");
+    assert_eq!(seeded_live_rows, 1);
+
+    let archive_path = temp_dir
+        .join("archives")
+        .join("codex_invocations")
+        .join("partial-retained-live.sqlite.gz");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            historical_rollups_materialized_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&coverage_start[..7])
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind("partial-retained-live-sha")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&coverage_start)
+    .bind(&coverage_end)
+    .execute(&pool)
+    .await
+    .expect("seed materialized archive batch overlapping retained live bucket");
+
+    let touched = repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+        .await
+        .expect("repair missing usage breakdown replay state");
+    assert_eq!(touched, 1);
+
+    let retained_live_rows: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(SUM(request_count), 0)
+        FROM upstream_account_usage_breakdown_hourly
+        WHERE bucket_start_epoch = ?1
+          AND upstream_account_id = ?2
+        "#,
+    )
+    .bind(bucket_epoch)
+    .bind(17_i64)
+    .fetch_one(&pool)
+    .await
+    .expect("load retained live breakdown rows after repair");
+    assert_eq!(retained_live_rows, 1);
+
+    let retained_live_cost: f64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(SUM(cost_unknown), 0.0)
+        FROM upstream_account_usage_breakdown_hourly
+        WHERE bucket_start_epoch = ?1
+          AND upstream_account_id = ?2
+        "#,
+    )
+    .bind(bucket_epoch)
+    .bind(17_i64)
+    .fetch_one(&pool)
+    .await
+    .expect("load retained live breakdown cost after repair");
+    assert_f64_close(retained_live_cost, 0.42);
+
+    let materialized_at: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT historical_rollups_materialized_at
+        FROM archive_batches
+        WHERE dataset = ?1
+          AND file_path = ?2
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(archive_path.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("load materialized timestamp after repair");
+    assert!(materialized_at.is_none());
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn historical_rollup_backfill_stays_critical_until_legacy_invocations_materialized() {
     let (pool, config, temp_dir) =
         retention_memory_test_pool_and_config("historical-rollup-backfill-critical").await;
