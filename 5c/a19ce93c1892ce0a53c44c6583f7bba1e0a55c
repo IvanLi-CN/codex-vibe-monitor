@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.46.4",
+  "base_stable_version": "2.46.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-22T12:27:08Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.46.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "b10b605f91b940488c77e165f616923fe885b6ed",
+  "pr_number": 681,
+  "pr_title": "fix(dashboard): push recent network panel updates",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.46.4",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.46.4",
+  "target_sha": "5ca19ce93c1892ce0a53c44c6583f7bba1e0a55c",
+  "type_label": "type:patch"
+}
