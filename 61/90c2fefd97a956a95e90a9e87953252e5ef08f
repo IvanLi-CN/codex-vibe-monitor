@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.46.6",
+  "base_stable_version": "2.46.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-22T14:27:39Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.46.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "92825276006d238b22a58516b60efcb37b3cb542",
+  "pr_number": 682,
+  "pr_title": "fix: align account attempts with workflow details",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.46.6",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.46.6",
+  "target_sha": "6190c2fefd97a956a95e90a9e87953252e5ef08f",
+  "type_label": "type:patch"
+}
