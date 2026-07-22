@@ -121,22 +121,18 @@
 
 - 账号详情抽屉固定桌面宽度（mock Storybook；`1920px` viewport 下抽屉保持 `1440px`，五个 tab 切换前后宽度一致）
 
-PR: include
 ![账号详情抽屉固定桌面宽度](./assets/detail-drawer-fixed-width-health-events.png)
 
 - 账号详情请求 ID 锚点定位成功态（mock Storybook；冻结历史窗口、返回最新入口、目标行居中聚焦与非布局型高亮）
 
-PR: include
 ![账号详情请求 ID 锚点定位成功态](./assets/detail-drawer-invocation-locate-success.png)
 
 - 账号详情请求 ID 未找到态（mock Storybook；停留请求 tab，警告包含目标 ID 且获得焦点）
 
-PR: include
 ![账号详情请求 ID 未找到态](./assets/detail-drawer-invocation-locate-not-found.png)
 
 - 账号详情请求 ID 移动端定位态（mock Storybook；ID 保持单行完整显示，抽屉无横向溢出）
 
-PR: include
 ![账号详情请求 ID 移动端定位态](./assets/detail-drawer-invocation-locate-mobile.png)
 
 - 详情抽屉概览页活动总览（mock Storybook；账号活动总览已归属概览页，记录页不再承载统计图表）
@@ -165,8 +161,10 @@ PR: include
 
 - 详情抽屉请求 tab 诊断筛选态（Storybook state gallery；默认态、图片类型筛选、模型筛选、对话筛选与筛选后空结果均保持筛选条常驻并复用同一 attempts API）
 
+PR: include
 ![详情抽屉请求 tab 诊断筛选默认态](./assets/detail-drawer-records-filter-gallery-default.png)
 
+PR: include
 ![详情抽屉请求 tab 图片类型筛选态](./assets/detail-drawer-records-filter-gallery-image.png)
 
 - 详情抽屉请求 tab 宽屏放宽态（mock Storybook；共享抽屉桌面宽度提升到 `90rem` 后，请求摘要卡列表有更稳定的阅读空间，不再被旧的 `60rem` 壳层过早压缩）

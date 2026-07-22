@@ -332,7 +332,6 @@
   margin_policy: trim_only
   evidence_surface: page
   evidence_note: verifies the account attempt list renders the same workflow attempt summary as invocation detail, including request/header/body, response/header/body, compression, final-success token/cost chips, and no usage on the failed retry.
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only upstream attempt data
@@ -348,7 +347,6 @@
   margin_policy: trim_only
   evidence_surface: page
   evidence_note: verifies the mobile account attempt list keeps the full workflow attempt summary and lazy response body details available without reverting to the legacy compact account-only schema.
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only upstream attempt data
@@ -364,7 +362,6 @@
   margin_policy: trim_only
   evidence_surface: page
   evidence_note: verifies the 390px Records expand state switches to a flattened single-column detail stack so the rerouted model summary, warning state, and embedded workflow panel keep the full working width without horizontal overflow.
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only invocation data
@@ -380,7 +377,6 @@
   margin_policy: trim_only
   evidence_surface: page
   evidence_note: verifies the desktop Records list shows rerouted request/response models, reasoning/image badges, a single shared cost-mismatch warning entry, normal text-color amounts, and the linked invocation detail below the row.
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only invocation data
@@ -396,7 +392,6 @@
   margin_policy: trim_only
   evidence_surface: page
   evidence_note: verifies the shared warning icon opens an opaque custom mismatch tooltip with `成本不一致`, recorded/local rows, delta, and price-version explanation, without underlying table text bleeding through the surface.
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only invocation data
@@ -412,7 +407,6 @@
   margin_policy: trim_only
   evidence_surface: page
   evidence_note: verifies long invoke IDs, prompt cache keys, endpoint paths, and IPv6 values wrap inside the flattened mobile detail layout without clipping adjacent content or causing horizontal overflow at the tighter 390px viewport.
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only invocation data
@@ -428,7 +422,6 @@
   margin_policy: trim_only
   evidence_surface: page
   evidence_note: verifies opening the desktop Records response-body panel keeps document width stable while each oversized SSE event card owns horizontal scrolling for long unbroken fields.
-  PR: include
   target_program: mock-only
   capture_scope: page
   sensitive_exclusion: fixture-only invocation data
@@ -444,7 +437,6 @@
   margin_policy: trim_only
   evidence_surface: page
   evidence_note: verifies the successful final attempt exposes `未命中缓存输入 Token / 命中缓存输入 Token / 输出 Token / 金额`, abbreviates the timeline chips to `输入写 / 输入读`, keeps rerouted request/response models visible, and renders recorded-vs-local cost comparison plus warning icon in the response `Token 与成本` panel.
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only workflow data
@@ -460,7 +452,6 @@
   margin_policy: trim_only
   evidence_surface: page
   evidence_note: verifies the compact workflow detail stops wasting horizontal space on narrow screens by flattening nested card padding and packing the four summary metrics into a single row at 390px.
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only workflow data
@@ -476,7 +467,6 @@
   margin_policy: trim_only
   evidence_surface: page
   evidence_note: verifies the workflow attempt summary abbreviates the cache-hit bucket to `输入读` while the custom tooltip expands the full label `输入（命中缓存）`.
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only workflow data
@@ -490,7 +480,6 @@
   requested_viewport: 1440x1024
   viewport_strategy: storybook-viewport
   evidence_note: verifies the desktop tooltip canvas shows the overlap note and the explicit `墙钟时长 / 累计时长 / 并行数` columns, with `Total` exposing `1.7 min / 2.2 min / x1.31` after scrolling the desktop table to the duration region.
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only Dashboard data
@@ -504,7 +493,6 @@
   requested_viewport: 390x844
   viewport_strategy: storybook-viewport
   evidence_note: verifies the compact drawer keeps the stacked metric layout, repeats the overlap note, and renders `墙钟时长 / 累计时长 / 并行数` as `1.7 min / 2.2 min / x1.31` for `Total`.
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only Dashboard data
@@ -516,7 +504,6 @@
   story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays/DetailDrawer
   state: upstream request-attempt table
   evidence_note: verifies the account drawer renders independent failed and successful upstream request attempts as table rows, labels upstream HTTP explicitly, resolves the proxy name, and exposes full error evidence in a full-width diagnostics row without endpoint, retry ordinals or final-invocation usage fields.
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only account and request data
@@ -528,7 +515,6 @@
   story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays/DetailDrawerRecordsMobile
   state: mobile upstream request-attempt table with expanded failure evidence
   evidence_note: verifies the mobile table keeps time, request/model, result and error summary in the first row while the full-width diagnostics row exposes proxy, timings, route evidence and full error text without duplicating the model mapping.
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only account and request data
@@ -542,7 +528,6 @@
   evidence_note: verifies an account event opens the exact upstream attempt, highlights the failed row, and expands the full-width diagnostics evidence without manual disclosure interaction.
   requested_viewport: 1440x1024
   viewport_strategy: storybook-viewport
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only account and request data
@@ -570,7 +555,6 @@
   evidence_note: verifies the invocation detail exposes request compression ratio, algorithm, mode, and the approximate upstream upload/download bytes in a stable single-row desktop grid.
   requested_viewport: 1660x1400
   viewport_strategy: storybook-viewport
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only invocation data
@@ -584,7 +568,6 @@
   evidence_note: verifies the upstream attempt diagnostics disclose compression ratio, approximate upload/download bytes, and related HTTP evidence without horizontal overflow at desktop width.
   requested_viewport: 1660x1400
   viewport_strategy: storybook-viewport
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only account and request data
@@ -661,7 +644,6 @@
   sensitive_exclusion: fixture-only invocation data
   submission_gate: approved
   image:
-  PR: include
   ![Records warning-success terminal row](./assets/records-warning-success-status.png)
 
 - source_type: storybook_canvas
@@ -691,7 +673,6 @@
   evidence_note: verifies a new routing event exposes one clickable upstream attempt ID while adjacent historical events remain visibly non-locatable rather than rendering an empty final invocation ID.
   requested_viewport: 1280x720
   viewport_strategy: storybook-manager-canvas
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only account and request data
