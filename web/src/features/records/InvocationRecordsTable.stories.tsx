@@ -733,7 +733,7 @@ export const ResponseBodyWidthGuard: Story = {
     docs: {
       description: {
         story:
-          "Desktop regression surface for long SSE response bodies. Opening the response-body panel must keep page width stable while the payload inspector owns any horizontal scrolling.",
+          "Desktop regression surface for long SSE response bodies. Opening the response-body panel must keep page width stable while each oversized SSE event card owns its horizontal scrolling.",
       },
     },
   },
@@ -773,7 +773,20 @@ export const ResponseBodyWidthGuard: Story = {
           candidate.offsetHeight > 0,
       );
       expect(payloadScroll).not.toBeNull();
-      expect(payloadScroll?.scrollWidth ?? 0).toBeGreaterThan(payloadScroll?.clientWidth ?? 0);
+      expect(
+        (payloadScroll?.scrollWidth ?? 0) - (payloadScroll?.clientWidth ?? 0),
+      ).toBeLessThanOrEqual(1);
+      const eventCardScroll = Array.from(
+        document.querySelectorAll(".structured-payload-entry-scroll"),
+      ).find(
+        (candidate): candidate is HTMLElement =>
+          candidate instanceof HTMLElement &&
+          candidate.offsetWidth > 0 &&
+          candidate.offsetHeight > 0 &&
+          (candidate.textContent ?? "").includes("visible_unbroken_response_body_probe"),
+      );
+      expect(eventCardScroll).not.toBeNull();
+      expect(eventCardScroll?.scrollWidth ?? 0).toBeGreaterThan(eventCardScroll?.clientWidth ?? 0);
       expect(
         document.documentElement.scrollWidth - document.documentElement.clientWidth,
       ).toBeLessThanOrEqual(1);

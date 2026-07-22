@@ -668,7 +668,7 @@ body {
   }
 
   .structured-payload-scroll {
-    @apply max-h-96 w-full min-w-0 max-w-full overflow-auto rounded-lg border border-base-300/70 bg-base-100/70 p-3;
+    @apply max-h-96 w-full min-w-0 max-w-full overflow-x-hidden overflow-y-auto rounded-lg border border-base-300/70 bg-base-100/70 p-3;
     overscroll-behavior: contain;
   }
 
@@ -739,10 +739,12 @@ body {
   }
 
   .structured-payload-entry {
-    @apply rounded-lg border border-base-300/60 bg-base-200/30 p-3;
-    min-width: 100%;
-    width: max-content;
-    max-width: none;
+    @apply w-full min-w-0 max-w-full overflow-hidden rounded-lg border border-base-300/60 bg-base-200/30 p-3;
+  }
+
+  .structured-payload-entry-scroll {
+    @apply mt-2 w-full min-w-0 max-w-full overflow-x-auto overflow-y-hidden;
+    overscroll-behavior-x: contain;
   }
 
   .structured-payload-entry-label {

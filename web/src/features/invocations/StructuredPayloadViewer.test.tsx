@@ -74,6 +74,26 @@ describe("StructuredPayloadViewer", () => {
     expect(host?.querySelector(".structured-payload-scroll")).not.toBeNull();
   });
 
+  it("keeps SSE event overflow inside each event card", () => {
+    const ssePayload = [
+      `event: response.created\ndata: ${JSON.stringify({ type: "response.created" })}`,
+      `event: response.output_item.added\ndata: ${JSON.stringify({
+        type: "response.output_item.added",
+        widthGuardProbe: `visible_unbroken_response_body_probe_${"0123456789abcdef".repeat(16)}`,
+      })}`,
+    ].join("\n\n");
+
+    render(ssePayload);
+
+    expect(parsedViewer()?.getAttribute("data-payload-kind")).toBe("sse");
+    expect(host?.querySelector(".structured-payload-scroll")).not.toBeNull();
+    expect(host?.querySelectorAll(".structured-payload-entry")).toHaveLength(2);
+    expect(host?.querySelectorAll(".structured-payload-entry-scroll")).toHaveLength(2);
+    expect(
+      host?.querySelector(".structured-payload-entry-scroll .structured-payload-json"),
+    ).not.toBeNull();
+  });
+
   it("resets large payload parse consent when the payload value changes", async () => {
     const parseSpy = vi.spyOn(structuredPayloadModule, "parseStructuredPayload");
     const firstPayload = JSON.stringify({ payload: "x".repeat(1024 * 1024) });

@@ -89,6 +89,22 @@ function JsonTree({
   );
 }
 
+function EntryJsonTree({
+  value,
+  expandDepth,
+  labels,
+}: {
+  value: StructuredPayloadValue;
+  expandDepth: number;
+  labels: StructuredPayloadViewerProps["labels"];
+}) {
+  return (
+    <div className="structured-payload-entry-scroll">
+      <JsonTree value={value} expandDepth={expandDepth} labels={labels} />
+    </div>
+  );
+}
+
 export function StructuredPayloadViewer({
   value,
   labels,
@@ -156,7 +172,7 @@ export function StructuredPayloadViewer({
             {parsed.values.map((entry) => (
               <section className="structured-payload-entry" key={entry.lineNumber}>
                 <div className="structured-payload-entry-label">#{entry.lineNumber}</div>
-                <JsonTree value={entry.value} expandDepth={1} labels={labels} />
+                <EntryJsonTree value={entry.value} expandDepth={1} labels={labels} />
               </section>
             ))}
           </div>
@@ -179,7 +195,7 @@ export function StructuredPayloadViewer({
                   ) : null}
                 </div>
                 {entry.data ? (
-                  <JsonTree value={entry.data} expandDepth={1} labels={labels} />
+                  <EntryJsonTree value={entry.data} expandDepth={1} labels={labels} />
                 ) : entry.dataText ? (
                   <div className="mt-2">
                     <div className="structured-payload-entry-label">{labels.data}</div>
