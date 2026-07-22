@@ -932,10 +932,19 @@ pub(crate) struct UpstreamAccountActionEventListResponse {
     pub(crate) page_size: usize,
 }
 
+#[derive(Debug, Clone, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountAttemptStickyKeyOption {
+    pub(crate) value: String,
+    #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
+    pub(crate) latest_created_at: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountAttemptListResponse {
     pub(crate) items: Vec<ApiPoolUpstreamRequestAttempt>,
+    pub(crate) sticky_key_options: Vec<UpstreamAccountAttemptStickyKeyOption>,
     pub(crate) total: usize,
     pub(crate) page: usize,
     pub(crate) page_size: usize,
@@ -951,6 +960,10 @@ pub(crate) struct LocateUpstreamAccountAttemptQuery {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListUpstreamAccountAttemptsQuery {
+    #[serde(rename = "type")]
+    pub(crate) attempt_type: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) sticky_key: Option<String>,
     pub(crate) page: Option<usize>,
     pub(crate) page_size: Option<usize>,
 }

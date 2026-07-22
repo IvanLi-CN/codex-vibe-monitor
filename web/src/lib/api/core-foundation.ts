@@ -478,6 +478,9 @@ export interface ApiPoolUpstreamRequestAttempt {
   model?: string | null;
   requestModel?: string | null;
   responseModel?: string | null;
+  compactionRequestKind?: ApiInvocation["compactionRequestKind"];
+  compactionResponseKind?: ApiInvocation["compactionResponseKind"];
+  imageIntent?: ApiInvocation["imageIntent"];
   upstreamRouteKey?: string | null;
   proxyBindingKeySnapshot?: string | null;
   attemptIndex: number;
@@ -511,8 +514,14 @@ export interface ApiPoolUpstreamRequestAttempt {
   workflowEntry?: ApiInvocationWorkflowTimelineEntry | null;
 }
 
+export interface UpstreamAccountAttemptStickyKeyOption {
+  value: string;
+  latestCreatedAt: string;
+}
+
 export interface UpstreamAccountAttemptListResponse {
   items: ApiPoolUpstreamRequestAttempt[];
+  stickyKeyOptions: UpstreamAccountAttemptStickyKeyOption[];
   total: number;
   page: number;
   pageSize: number;
@@ -1321,12 +1330,22 @@ export async function fetchInvocationPoolAttempts(invokeId: string) {
 
 export async function fetchUpstreamAccountAttempts(
   accountId: number,
-  options?: { page?: number; pageSize?: number; signal?: AbortSignal },
+  options?: {
+    type?: "normal" | "remote_v2" | "compact" | "image";
+    model?: string;
+    stickyKey?: string;
+    page?: number;
+    pageSize?: number;
+    signal?: AbortSignal;
+  },
 ) {
   const search = new URLSearchParams({
     page: String(options?.page ?? 1),
     pageSize: String(options?.pageSize ?? 50),
   });
+  if (options?.type) search.set("type", options.type);
+  if (options?.model?.trim()) search.set("model", options.model.trim());
+  if (options?.stickyKey?.trim()) search.set("stickyKey", options.stickyKey.trim());
   return fetchJson<UpstreamAccountAttemptListResponse>(
     `/api/pool/upstream-accounts/${encodeURIComponent(String(accountId))}/call-attempts?${search.toString()}`,
     { signal: options?.signal },

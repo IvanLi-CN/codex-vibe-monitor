@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
+import {
+  FilterableCombobox,
+  type FilterableComboboxOption,
+} from "../../components/ui/filterable-combobox";
+import { SelectField, type SelectFieldOption } from "../../components/ui/select-field";
 import { Spinner } from "../../components/ui/spinner";
 import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
 import { useTranslation } from "../../i18n";
@@ -12,10 +17,139 @@ import type {
   UpstreamAccountAttemptListResponse,
 } from "../../lib/api";
 import { fetchUpstreamAccountAttempts, locateUpstreamAccountAttempt } from "../../lib/api";
+import { normalizeModelComparisonKey } from "../../lib/invocation";
 import { InvocationWorkflowAttemptRecord } from "../invocations/InvocationWorkflowDetailPanel";
 
 const PAGE_SIZE = 50;
 const CALL_SHORT_ID_PATTERN = /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{10}$/;
+const UNBOUND_STICKY_KEY = "__unbound__";
+const FILTER_INPUT_CLASS_NAME =
+  "h-9 w-full rounded-md border border-base-300/80 bg-base-100 px-3 text-sm text-base-content shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100 disabled:cursor-not-allowed disabled:opacity-60";
+
+type UpstreamAttemptTypeFilter = "" | "normal" | "remote_v2" | "compact" | "image";
+
+type AttemptFilterState = {
+  type: UpstreamAttemptTypeFilter;
+  model: string;
+  stickyKey: string;
+};
+
+const DEFAULT_FILTERS: AttemptFilterState = {
+  type: "",
+  model: "",
+  stickyKey: "",
+};
+
+function createDefaultFilters(): AttemptFilterState {
+  return { ...DEFAULT_FILTERS };
+}
+
+function normalizeFilterValue(value: string | null | undefined) {
+  return value?.trim() ?? "";
+}
+
+function buildAttemptTypeOptions(t: (key: string) => string): SelectFieldOption[] {
+  return [
+    {
+      value: "",
+      label: t("accountPool.upstreamAttempts.filters.typeAll"),
+    },
+    {
+      value: "normal",
+      label: t("table.endpoint.responsesBadge"),
+    },
+    {
+      value: "remote_v2",
+      label: t("table.endpoint.remoteV2Badge"),
+    },
+    {
+      value: "compact",
+      label: t("table.endpoint.compactBadge"),
+    },
+    {
+      value: "image",
+      label: t("table.endpoint.imageBadge"),
+    },
+  ];
+}
+
+function buildModelOptions(
+  items: ApiPoolUpstreamRequestAttempt[] | undefined,
+  selectedValue: string,
+  allLabel: string,
+): FilterableComboboxOption[] {
+  const optionMap = new Map<string, { value: string; latestCreatedAt: string }>();
+  for (const item of items ?? []) {
+    for (const candidate of [item.requestModel, item.responseModel, item.model]) {
+      const displayValue = normalizeFilterValue(candidate);
+      if (!displayValue) continue;
+      const key = normalizeModelComparisonKey(displayValue) ?? displayValue.toLowerCase();
+      const existing = optionMap.get(key);
+      if (!existing || item.createdAt > existing.latestCreatedAt) {
+        optionMap.set(key, {
+          value: displayValue,
+          latestCreatedAt: item.createdAt,
+        });
+      }
+    }
+  }
+  const trimmedSelectedValue = normalizeFilterValue(selectedValue);
+  if (trimmedSelectedValue) {
+    const selectedKey =
+      normalizeModelComparisonKey(trimmedSelectedValue) ?? trimmedSelectedValue.toLowerCase();
+    if (!optionMap.has(selectedKey)) {
+      optionMap.set(selectedKey, {
+        value: trimmedSelectedValue,
+        latestCreatedAt: "",
+      });
+    }
+  }
+  return [
+    {
+      value: "",
+      label: allLabel,
+    },
+    ...Array.from(optionMap.values())
+      .sort(
+        (left, right) =>
+          right.latestCreatedAt.localeCompare(left.latestCreatedAt) ||
+          left.value.localeCompare(right.value),
+      )
+      .map((option) => ({
+        value: option.value,
+        label: option.value,
+      })),
+  ];
+}
+
+function buildStickyKeyOptions(
+  stickyKeyOptions: UpstreamAccountAttemptListResponse["stickyKeyOptions"] | undefined,
+  selectedValue: string,
+  allLabel: string,
+  unboundLabel: string,
+): SelectFieldOption[] {
+  const options = new Map<string, SelectFieldOption>();
+  for (const option of stickyKeyOptions ?? []) {
+    options.set(option.value, {
+      value: option.value,
+      label: option.value === UNBOUND_STICKY_KEY ? unboundLabel : option.value,
+    });
+  }
+  const trimmedSelectedValue = normalizeFilterValue(selectedValue);
+  if (trimmedSelectedValue && !options.has(trimmedSelectedValue)) {
+    options.set(trimmedSelectedValue, {
+      value: trimmedSelectedValue,
+      label: trimmedSelectedValue === UNBOUND_STICKY_KEY ? unboundLabel : trimmedSelectedValue,
+    });
+  }
+  return [
+    {
+      value: "",
+      label: allLabel,
+    },
+    ...Array.from(options.values()),
+  ];
+}
 
 function compactProxyBindingKey(value: string) {
   if (value.length <= 18) return value;
@@ -77,6 +211,9 @@ function buildSyntheticInvocationRecord(attempt: ApiPoolUpstreamRequestAttempt):
     endpoint: attempt.endpoint,
     requestModel: attempt.requestModel ?? attempt.model ?? undefined,
     responseModel: attempt.responseModel ?? undefined,
+    compactionRequestKind: attempt.compactionRequestKind ?? undefined,
+    compactionResponseKind: attempt.compactionResponseKind ?? undefined,
+    imageIntent: attempt.imageIntent ?? undefined,
     status: attempt.status,
     requesterIp: attempt.requesterIp ?? undefined,
     upstreamAccountId: attempt.upstreamAccountId ?? undefined,
@@ -94,6 +231,8 @@ function buildSyntheticWorkflowAttemptEntry(
   const requestSummary: Record<string, unknown> = {
     requestModel: attempt.requestModel ?? attempt.model ?? null,
     responseModel: attempt.responseModel ?? null,
+    compactionRequestKind: attempt.compactionRequestKind ?? null,
+    imageIntent: attempt.imageIntent ?? null,
     endpoint: attempt.endpoint ?? null,
     routing: {
       routeMode: "pool",
@@ -121,6 +260,7 @@ function buildSyntheticWorkflowAttemptEntry(
   const responseSummary: Record<string, unknown> = {
     status: attempt.status,
     failureKind: attempt.failureKind ?? null,
+    compactionResponseKind: attempt.compactionResponseKind ?? null,
     errorMessage: attempt.errorMessage ?? null,
     downstreamErrorMessage: attempt.downstreamErrorMessage ?? null,
   };
@@ -199,6 +339,7 @@ export function UpstreamAccountAttemptTimeline({
   const [response, setResponse] = useState<UpstreamAccountAttemptListResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [filters, setFilters] = useState<AttemptFilterState>(() => createDefaultFilters());
   const [activeFocus, setActiveFocus] = useState<{
     attemptId: string;
     version: number;
@@ -221,6 +362,26 @@ export function UpstreamAccountAttemptTimeline({
     () => buildProxyBindingNodeMap(proxyBindingNodes),
     [proxyBindingNodes],
   );
+  const typeOptions = useMemo(() => buildAttemptTypeOptions(t), [t]);
+  const modelOptions = useMemo(
+    () =>
+      buildModelOptions(
+        response?.items,
+        filters.model,
+        t("accountPool.upstreamAttempts.filters.modelAll"),
+      ),
+    [filters.model, response?.items, t],
+  );
+  const stickyKeyOptions = useMemo(
+    () =>
+      buildStickyKeyOptions(
+        response?.stickyKeyOptions,
+        filters.stickyKey,
+        t("accountPool.upstreamAttempts.filters.conversationAll"),
+        t("accountPool.upstreamAttempts.filters.conversationUnbound"),
+      ),
+    [filters.stickyKey, response?.stickyKeyOptions, t],
+  );
 
   const clearFocusDismissTimer = useCallback(() => {
     if (focusDismissTimerRef.current == null) return;
@@ -242,48 +403,75 @@ export function UpstreamAccountAttemptTimeline({
     };
   }, [clearFocusDismissTimer]);
 
+  const loadAttemptsPage = useCallback(
+    (page: number, nextFilters: AttemptFilterState, signal?: AbortSignal) => {
+      const requestSeq = requestSeqRef.current + 1;
+      requestSeqRef.current = requestSeq;
+      clearFocusDismissTimer();
+      setLoading(true);
+      setError(null);
+      setResponse(null);
+      setActiveFocus(null);
+      void fetchUpstreamAccountAttempts(accountId, {
+        type: nextFilters.type || undefined,
+        model: nextFilters.model || undefined,
+        stickyKey: nextFilters.stickyKey || undefined,
+        page,
+        pageSize: PAGE_SIZE,
+        signal,
+      })
+        .then((next) => {
+          if (signal?.aborted || requestSeq !== requestSeqRef.current) return;
+          resolvedAccountIdRef.current = accountId;
+          setResponse(next);
+        })
+        .catch((requestError) => {
+          if (signal?.aborted || requestSeq !== requestSeqRef.current) return;
+          resolvedAccountIdRef.current = accountId;
+          setResponse(null);
+          setError(requestError instanceof Error ? requestError.message : String(requestError));
+        })
+        .finally(() => {
+          if (!signal?.aborted && requestSeq === requestSeqRef.current) setLoading(false);
+        });
+    },
+    [accountId, clearFocusDismissTimer],
+  );
+
+  const updateFilters = useCallback((patch: Partial<AttemptFilterState>) => {
+    setFilters((current) => {
+      const next = {
+        ...current,
+        ...patch,
+      };
+      next.model = normalizeFilterValue(next.model);
+      next.stickyKey = normalizeFilterValue(next.stickyKey);
+      return next.type === current.type &&
+        next.model === current.model &&
+        next.stickyKey === current.stickyKey
+        ? current
+        : next;
+    });
+  }, []);
+
   useEffect(() => {
-    setActiveFocus(null);
-    clearFocusDismissTimer();
-    if (focusedAttemptId != null || resolvedAccountIdRef.current === accountId) return;
+    if (focusedAttemptId != null) return;
     const controller = new AbortController();
-    const requestSeq = requestSeqRef.current + 1;
-    requestSeqRef.current = requestSeq;
-    setLoading(true);
-    setError(null);
-    setResponse(null);
-    void fetchUpstreamAccountAttempts(accountId, {
-      page: 1,
-      pageSize: PAGE_SIZE,
-      signal: controller.signal,
-    })
-      .then((next) => {
-        if (controller.signal.aborted || requestSeq !== requestSeqRef.current) return;
-        resolvedAccountIdRef.current = accountId;
-        setResponse(next);
-      })
-      .catch((requestError) => {
-        if (controller.signal.aborted || requestSeq !== requestSeqRef.current) return;
-        resolvedAccountIdRef.current = accountId;
-        setResponse(null);
-        setError(requestError instanceof Error ? requestError.message : String(requestError));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted && requestSeq === requestSeqRef.current) setLoading(false);
-      });
+    loadAttemptsPage(1, filters, controller.signal);
     return () => controller.abort();
-  }, [accountId, clearFocusDismissTimer, focusedAttemptId]);
+  }, [filters, focusedAttemptId, loadAttemptsPage]);
 
   useEffect(() => {
     if (focusedAttemptId == null) return;
     const controller = new AbortController();
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
-    clearFocusDismissTimer();
+    setFilters(createDefaultFilters());
     setLoading(true);
     setError(null);
     setResponse(null);
     setActiveFocus(null);
+    clearFocusDismissTimer();
     void locateUpstreamAccountAttempt(accountId, focusedAttemptId, {
       pageSize: PAGE_SIZE,
       signal: controller.signal,
@@ -326,7 +514,7 @@ export function UpstreamAccountAttemptTimeline({
       behavior: "smooth",
       block: "nearest",
     });
-  }, [activeFocus, response]);
+  }, [activeFocus]);
 
   useEffect(() => {
     if (!activeFocus || !interactionBoundary) return;
@@ -356,44 +544,10 @@ export function UpstreamAccountAttemptTimeline({
     };
   }, [activeFocus, clearFocusDismissTimer, interactionBoundary]);
 
-  const loadPage = (page: number) => {
-    const requestSeq = requestSeqRef.current + 1;
-    requestSeqRef.current = requestSeq;
-    clearFocusDismissTimer();
-    setLoading(true);
-    setError(null);
-    setActiveFocus(null);
-    void fetchUpstreamAccountAttempts(accountId, { page, pageSize: PAGE_SIZE })
-      .then((next) => {
-        if (requestSeq === requestSeqRef.current) {
-          resolvedAccountIdRef.current = accountId;
-          setResponse(next);
-        }
-      })
-      .catch((requestError) => {
-        if (requestSeq === requestSeqRef.current) {
-          resolvedAccountIdRef.current = accountId;
-          setError(requestError instanceof Error ? requestError.message : String(requestError));
-        }
-      })
-      .finally(() => {
-        if (requestSeq === requestSeqRef.current) setLoading(false);
-      });
-  };
-
-  if (loading && !response) {
-    return (
-      <div className="flex justify-center py-10">
-        <Spinner />
-      </div>
-    );
-  }
-  if (error) return <Alert variant="warning">{error}</Alert>;
-  if (!response || response.items.length === 0) {
-    return (
-      <p className="text-sm text-base-content/68">{t("accountPool.upstreamAttempts.empty")}</p>
-    );
-  }
+  const loadPage = (page: number) => loadAttemptsPage(page, filters);
+  const showListLoading = loading && !response;
+  const showListError = !loading && error != null;
+  const showListEmpty = !loading && !error && (!response || response.items.length === 0);
 
   return (
     <section className="space-y-3" data-testid="upstream-account-call-records">
@@ -401,57 +555,110 @@ export function UpstreamAccountAttemptTimeline({
         <p className="text-sm text-base-content/68">
           {t("accountPool.upstreamAttempts.description")}
         </p>
-        <span className="shrink-0 text-sm tabular-nums text-base-content/58">
-          {t("accountPool.upstreamAttempts.total", { count: response.total })}
-        </span>
+        {response ? (
+          <span className="shrink-0 text-sm tabular-nums text-base-content/58">
+            {t("accountPool.upstreamAttempts.total", { count: response.total })}
+          </span>
+        ) : null}
+      </div>
+      <div
+        className="grid gap-3 rounded-2xl border border-base-300/70 bg-base-100/55 p-3 sm:grid-cols-[minmax(9rem,0.8fr)_minmax(12rem,1fr)_minmax(12rem,1fr)]"
+        data-testid="upstream-account-attempt-filter-bar"
+      >
+        <SelectField
+          label={t("accountPool.upstreamAttempts.filters.type")}
+          value={filters.type}
+          onValueChange={(value) =>
+            updateFilters({ type: (value || "") as UpstreamAttemptTypeFilter })
+          }
+          options={typeOptions}
+          size="sm"
+          data-testid="upstream-attempt-type-filter"
+        />
+        <label className="field">
+          <span className="field-label">{t("accountPool.upstreamAttempts.filters.model")}</span>
+          <FilterableCombobox
+            label={t("accountPool.upstreamAttempts.filters.model")}
+            id="upstream-attempt-model-filter"
+            value={filters.model}
+            onValueChange={(value) => updateFilters({ model: value })}
+            options={modelOptions}
+            placeholder={t("accountPool.upstreamAttempts.filters.modelAll")}
+            emptyText={t("accountPool.upstreamAttempts.empty")}
+            inputClassName={FILTER_INPUT_CLASS_NAME}
+          />
+        </label>
+        <SelectField
+          label={t("accountPool.upstreamAttempts.filters.conversation")}
+          value={filters.stickyKey}
+          onValueChange={(value) => updateFilters({ stickyKey: value || "" })}
+          options={stickyKeyOptions}
+          size="sm"
+          data-testid="upstream-attempt-conversation-filter"
+        />
       </div>
       <div className="space-y-3" data-testid="upstream-account-attempt-list">
-        {response.items.map((attempt) => {
-          const proxyDisplay = formatProxyBinding(
-            attempt,
-            proxyBindingNodesByKey,
-            proxyDirectLabel,
-          );
-          const callShortId = displayCallShortId(attempt.invokeId);
-          const workflowEntry = resolveWorkflowAttemptEntry(attempt, proxyDisplay);
-          const invocationRecord = resolveInvocationRecord(attempt);
-          const isFocused = attempt.attemptId === activeFocus?.attemptId;
+        {showListLoading ? (
+          <div className="flex justify-center rounded-2xl border border-base-300/60 bg-base-100/45 py-10">
+            <Spinner />
+          </div>
+        ) : null}
+        {showListError ? <Alert variant="warning">{error}</Alert> : null}
+        {showListEmpty ? (
+          <p className="rounded-2xl border border-base-300/60 bg-base-100/45 px-4 py-6 text-sm text-base-content/68">
+            {t("accountPool.upstreamAttempts.empty")}
+          </p>
+        ) : null}
+        {!showListLoading && !showListError
+          ? response?.items.map((attempt) => {
+              const proxyDisplay = formatProxyBinding(
+                attempt,
+                proxyBindingNodesByKey,
+                proxyDirectLabel,
+              );
+              const callShortId = displayCallShortId(attempt.invokeId);
+              const workflowEntry = resolveWorkflowAttemptEntry(attempt, proxyDisplay);
+              const invocationRecord = resolveInvocationRecord(attempt);
+              const isFocused = attempt.attemptId === activeFocus?.attemptId;
 
-          return (
-            <InvocationWorkflowAttemptRecord
-              key={attempt.attemptId}
-              containerRef={(node) => setAttemptElement(attempt.attemptId, node)}
-              record={invocationRecord}
-              entry={workflowEntry}
-              localeTag={localeTag}
-              isZh={isZh}
-              summaryIdentity={callShortId ?? attempt.attemptId}
-              focused={isFocused}
-              focusVersion={isFocused ? (activeFocus?.version ?? 0) : 0}
-              defaultSection={isFocused ? "timing" : null}
-              testId={`account-attempt-record-${attempt.attemptId}`}
-            />
-          );
-        })}
+              return (
+                <InvocationWorkflowAttemptRecord
+                  key={attempt.attemptId}
+                  containerRef={(node) => setAttemptElement(attempt.attemptId, node)}
+                  record={invocationRecord}
+                  entry={workflowEntry}
+                  localeTag={localeTag}
+                  isZh={isZh}
+                  summaryIdentity={callShortId ?? attempt.attemptId}
+                  focused={isFocused}
+                  focusVersion={isFocused ? (activeFocus?.version ?? 0) : 0}
+                  defaultSection={isFocused ? "timing" : null}
+                  testId={`account-attempt-record-${attempt.attemptId}`}
+                />
+              );
+            })
+          : null}
       </div>
-      <div className="flex items-center justify-end gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={loading || response.page <= 1}
-          onClick={() => loadPage(response.page - 1)}
-        >
-          {t("accountPool.upstreamAttempts.previous")}
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={loading || response.page * response.pageSize >= response.total}
-          onClick={() => loadPage(response.page + 1)}
-        >
-          {t("accountPool.upstreamAttempts.next")}
-        </Button>
-      </div>
+      {response && response.total > 0 ? (
+        <div className="flex items-center justify-end gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={loading || response.page <= 1}
+            onClick={() => loadPage(response.page - 1)}
+          >
+            {t("accountPool.upstreamAttempts.previous")}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={loading || response.page * response.pageSize >= response.total}
+            onClick={() => loadPage(response.page + 1)}
+          >
+            {t("accountPool.upstreamAttempts.next")}
+          </Button>
+        </div>
+      ) : null}
     </section>
   );
 }

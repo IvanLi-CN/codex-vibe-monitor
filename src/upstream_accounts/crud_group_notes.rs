@@ -1,5 +1,37 @@
 use super::*;
+use sqlx::{Pool, QueryBuilder, Sqlite};
 use std::time::Instant;
+
+const ACCOUNT_ATTEMPT_RETENTION_DAYS: u64 = 7;
+const ACCOUNT_ATTEMPT_STICKY_KEY_UNBOUND: &str = "__unbound__";
+const ACCOUNT_ATTEMPT_TYPE_NORMAL: &str = "normal";
+const ACCOUNT_ATTEMPT_TYPE_REMOTE_V2: &str = "remote_v2";
+const ACCOUNT_ATTEMPT_TYPE_IMAGE: &str = "image";
+const ACCOUNT_ATTEMPT_TYPE_COMPACT: &str = "compact";
+const ACCOUNT_ATTEMPT_RESPONSES_ENDPOINT: &str = "/v1/responses";
+const ACCOUNT_ATTEMPT_COMPACT_ENDPOINT: &str = "/v1/responses/compact";
+const ACCOUNT_ATTEMPT_IMAGE_ENDPOINT_PREFIX: &str = "/v1/images/%";
+const ACCOUNT_ATTEMPT_MODEL_SQL: &str = r#"
+COALESCE(
+    CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.requestModel') AS TEXT) END,
+    inv.model,
+    CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.responseModel') AS TEXT) END
+)
+"#;
+const ACCOUNT_ATTEMPT_REQUEST_MODEL_SQL: &str = r#"
+COALESCE(
+    CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.requestModel') AS TEXT) END,
+    inv.model
+)
+"#;
+const ACCOUNT_ATTEMPT_RESPONSE_MODEL_SQL: &str = r#"CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.responseModel') AS TEXT) END"#;
+
+#[derive(Debug, Clone, Default)]
+struct UpstreamAccountAttemptFilters {
+    attempt_type: Option<String>,
+    model: Option<String>,
+    sticky_key: Option<String>,
+}
 
 #[cfg(test)]
 pub(crate) async fn list_upstream_accounts(
@@ -32,9 +64,11 @@ pub(crate) async fn list_upstream_account_attempts(
 ) -> Result<Json<UpstreamAccountAttemptListResponse>, (StatusCode, String)> {
     let page = normalize_upstream_account_list_page(params.page);
     let page_size = normalize_upstream_account_list_page_size(params.page_size);
-    let response = load_upstream_account_attempt_page(state.as_ref(), account_id, page, page_size)
-        .await
-        .map_err(internal_error_tuple)?;
+    let filters = normalize_upstream_account_attempt_filters(&params);
+    let response =
+        load_upstream_account_attempt_page(state.as_ref(), account_id, page, page_size, &filters)
+            .await
+            .map_err(internal_error_tuple)?;
     Ok(Json(response))
 }
 
@@ -44,7 +78,7 @@ pub(crate) async fn locate_upstream_account_attempt(
     Query(params): Query<LocateUpstreamAccountAttemptQuery>,
 ) -> Result<Json<UpstreamAccountAttemptListResponse>, (StatusCode, String)> {
     let page_size = normalize_upstream_account_list_page_size(params.page_size);
-    let cutoff = shanghai_local_cutoff_string(7);
+    let cutoff = shanghai_local_cutoff_string(ACCOUNT_ATTEMPT_RETENTION_DAYS);
     let target_occurred_at = sqlx::query_scalar::<_, String>(
         r#"
         SELECT occurred_at
@@ -94,9 +128,15 @@ pub(crate) async fn locate_upstream_account_attempt(
     .map_err(internal_error_tuple)?
     .max(0) as usize;
     let page = newer_count / page_size + 1;
-    let response = load_upstream_account_attempt_page(state.as_ref(), account_id, page, page_size)
-        .await
-        .map_err(internal_error_tuple)?;
+    let response = load_upstream_account_attempt_page(
+        state.as_ref(),
+        account_id,
+        page,
+        page_size,
+        &UpstreamAccountAttemptFilters::default(),
+    )
+    .await
+    .map_err(internal_error_tuple)?;
     Ok(Json(response))
 }
 
@@ -105,24 +145,13 @@ async fn load_upstream_account_attempt_page(
     account_id: i64,
     page: usize,
     page_size: usize,
+    filters: &UpstreamAccountAttemptFilters,
 ) -> Result<UpstreamAccountAttemptListResponse> {
-    const ATTEMPT_RETENTION_DAYS: u64 = 7;
     let pool = &state.pool;
-    let cutoff = shanghai_local_cutoff_string(ATTEMPT_RETENTION_DAYS);
-    let total = sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT COUNT(*)
-        FROM pool_upstream_request_attempts
-        WHERE upstream_account_id = ?1 AND occurred_at >= ?2
-        "#,
-    )
-    .bind(account_id)
-    .bind(&cutoff)
-    .fetch_one(pool)
-    .await?
-    .max(0) as usize;
+    let cutoff = shanghai_local_cutoff_string(ACCOUNT_ATTEMPT_RETENTION_DAYS);
+    let total = load_upstream_account_attempt_total(pool, account_id, &cutoff, filters).await?;
     let offset = page.saturating_sub(1).saturating_mul(page_size);
-    let mut items = sqlx::query_as::<_, ApiPoolUpstreamRequestAttempt>(
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
             attempts.id,
@@ -140,16 +169,12 @@ async fn load_upstream_account_attempt_page(
             attempts.distinct_account_index,
             attempts.same_account_retry_index,
             attempts.requester_ip,
-            COALESCE(
-                CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.requestModel') AS TEXT) END,
-                inv.model,
-                CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.responseModel') AS TEXT) END
-            ) AS model,
-            COALESCE(
-                CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.requestModel') AS TEXT) END,
-                inv.model
-            ) AS request_model,
-            CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.responseModel') AS TEXT) END AS response_model,
+            {model_sql} AS model,
+            {request_model_sql} AS request_model,
+            {response_model_sql} AS response_model,
+            {compaction_request_kind_sql} AS compaction_request_kind,
+            {compaction_response_kind_sql} AS compaction_response_kind,
+            {image_intent_sql} AS image_intent,
             attempts.started_at,
             attempts.finished_at,
             attempts.status,
@@ -187,27 +212,249 @@ async fn load_upstream_account_attempt_page(
         LEFT JOIN codex_invocations AS inv
             ON inv.invoke_id = attempts.invoke_id
            AND inv.occurred_at = attempts.occurred_at
-        WHERE attempts.upstream_account_id = ?1 AND attempts.occurred_at >= ?2
-        ORDER BY attempts.occurred_at DESC, attempts.id DESC
-        LIMIT ?3 OFFSET ?4
         "#,
-    )
-    .bind(account_id)
-    .bind(&cutoff)
-    .bind(page_size as i64)
-    .bind(offset as i64)
-    .fetch_all(pool)
-    .await?;
+        model_sql = ACCOUNT_ATTEMPT_MODEL_SQL,
+        request_model_sql = ACCOUNT_ATTEMPT_REQUEST_MODEL_SQL,
+        response_model_sql = ACCOUNT_ATTEMPT_RESPONSE_MODEL_SQL,
+        compaction_request_kind_sql = crate::api::INVOCATION_COMPACTION_REQUEST_KIND_SQL,
+        compaction_response_kind_sql = crate::api::INVOCATION_COMPACTION_RESPONSE_KIND_SQL,
+        image_intent_sql = crate::api::INVOCATION_IMAGE_INTENT_SQL,
+    ));
+    push_upstream_account_attempt_scope(&mut query, account_id, &cutoff);
+    push_upstream_account_attempt_filters(&mut query, filters, true);
+    query
+        .push(" ORDER BY attempts.occurred_at DESC, attempts.id DESC LIMIT ")
+        .push_bind(page_size as i64)
+        .push(" OFFSET ")
+        .push_bind(offset as i64);
+    let mut items = query
+        .build_query_as::<ApiPoolUpstreamRequestAttempt>()
+        .fetch_all(pool)
+        .await?;
     hydrate_pool_attempt_request_compression_fields(&mut items);
     hydrate_upstream_account_attempt_workflow_entries(state, &mut items)
         .await
         .map_err(|err| anyhow!("failed to hydrate account attempt workflow entries: {err:?}"))?;
+    let sticky_key_options =
+        load_upstream_account_attempt_sticky_key_options(pool, account_id, &cutoff, filters)
+            .await?;
     Ok(UpstreamAccountAttemptListResponse {
         items,
+        sticky_key_options,
         total,
         page,
         page_size,
     })
+}
+
+fn normalize_upstream_account_attempt_filters(
+    params: &ListUpstreamAccountAttemptsQuery,
+) -> UpstreamAccountAttemptFilters {
+    let attempt_type = params
+        .attempt_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+        .filter(|value| {
+            matches!(
+                value.as_str(),
+                ACCOUNT_ATTEMPT_TYPE_NORMAL
+                    | ACCOUNT_ATTEMPT_TYPE_REMOTE_V2
+                    | ACCOUNT_ATTEMPT_TYPE_IMAGE
+                    | ACCOUNT_ATTEMPT_TYPE_COMPACT
+            )
+        });
+    let model = params
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let sticky_key = params
+        .sticky_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    UpstreamAccountAttemptFilters {
+        attempt_type,
+        model,
+        sticky_key,
+    }
+}
+
+fn push_upstream_account_attempt_scope<'a>(
+    query: &mut QueryBuilder<'a, Sqlite>,
+    account_id: i64,
+    cutoff: &'a str,
+) {
+    query
+        .push(" WHERE attempts.upstream_account_id = ")
+        .push_bind(account_id)
+        .push(" AND attempts.occurred_at >= ")
+        .push_bind(cutoff);
+}
+
+fn push_upstream_account_attempt_filters(
+    query: &mut QueryBuilder<'_, Sqlite>,
+    filters: &UpstreamAccountAttemptFilters,
+    include_sticky_key: bool,
+) {
+    if let Some(attempt_type) = filters.attempt_type.as_deref() {
+        query.push(" AND ");
+        push_upstream_account_attempt_type_condition(query, attempt_type);
+    }
+
+    if let Some(model) = filters.model.as_deref() {
+        let normalized_model = model.trim().to_ascii_lowercase();
+        query.push(" AND (LOWER(TRIM(COALESCE(");
+        query.push(ACCOUNT_ATTEMPT_MODEL_SQL);
+        query.push(", ''))) = ");
+        query.push_bind(normalized_model.clone());
+        query.push(" OR LOWER(TRIM(COALESCE(");
+        query.push(ACCOUNT_ATTEMPT_REQUEST_MODEL_SQL);
+        query.push(", ''))) = ");
+        query.push_bind(normalized_model.clone());
+        query.push(" OR LOWER(TRIM(COALESCE(");
+        query.push(ACCOUNT_ATTEMPT_RESPONSE_MODEL_SQL);
+        query.push(", ''))) = ");
+        query.push_bind(normalized_model);
+        query.push(" OR LOWER(TRIM(COALESCE(inv.model, ''))) = ");
+        query.push_bind(model.trim().to_ascii_lowercase());
+        query.push(")");
+    }
+
+    if include_sticky_key && let Some(sticky_key) = filters.sticky_key.as_deref() {
+        if sticky_key == ACCOUNT_ATTEMPT_STICKY_KEY_UNBOUND {
+            query.push(" AND (attempts.sticky_key IS NULL OR TRIM(attempts.sticky_key) = '')");
+        } else {
+            query
+                .push(" AND LOWER(TRIM(COALESCE(attempts.sticky_key, ''))) = ")
+                .push_bind(sticky_key.trim().to_ascii_lowercase());
+        }
+    }
+}
+
+fn push_upstream_account_attempt_type_condition(
+    query: &mut QueryBuilder<'_, Sqlite>,
+    attempt_type: &str,
+) {
+    match attempt_type {
+        ACCOUNT_ATTEMPT_TYPE_IMAGE => push_upstream_account_attempt_image_condition(query),
+        ACCOUNT_ATTEMPT_TYPE_REMOTE_V2 => push_upstream_account_attempt_remote_v2_condition(query),
+        ACCOUNT_ATTEMPT_TYPE_COMPACT => push_upstream_account_attempt_compact_condition(query),
+        ACCOUNT_ATTEMPT_TYPE_NORMAL => {
+            query.push("(").push("NOT ");
+            push_upstream_account_attempt_image_condition(query);
+            query.push(" AND NOT ");
+            push_upstream_account_attempt_remote_v2_condition(query);
+            query.push(" AND NOT ");
+            push_upstream_account_attempt_compact_condition(query);
+            query.push(")");
+        }
+        _ => {
+            query.push("1 = 1");
+        }
+    }
+}
+
+fn push_upstream_account_attempt_image_condition(query: &mut QueryBuilder<'_, Sqlite>) {
+    query
+        .push("(attempts.endpoint LIKE ")
+        .push_bind(ACCOUNT_ATTEMPT_IMAGE_ENDPOINT_PREFIX)
+        .push(" OR ")
+        .push("COALESCE(")
+        .push(crate::api::INVOCATION_IMAGE_INTENT_SQL)
+        .push(", '') IN ('yes', 'direct_image'))");
+}
+
+fn push_upstream_account_attempt_remote_v2_condition(query: &mut QueryBuilder<'_, Sqlite>) {
+    query
+        .push("(attempts.endpoint = ")
+        .push_bind(ACCOUNT_ATTEMPT_RESPONSES_ENDPOINT)
+        .push(" AND (")
+        .push("COALESCE(")
+        .push(crate::api::INVOCATION_COMPACTION_REQUEST_KIND_SQL)
+        .push(", '') = 'remote_v2' OR COALESCE(")
+        .push(crate::api::INVOCATION_COMPACTION_RESPONSE_KIND_SQL)
+        .push(", '') = 'remote_v2'))");
+}
+
+fn push_upstream_account_attempt_compact_condition(query: &mut QueryBuilder<'_, Sqlite>) {
+    query
+        .push("(attempts.endpoint = ")
+        .push_bind(ACCOUNT_ATTEMPT_COMPACT_ENDPOINT)
+        .push(" OR ")
+        .push("COALESCE(")
+        .push(crate::api::INVOCATION_COMPACTION_REQUEST_KIND_SQL)
+        .push(", '') = 'compact' OR COALESCE(")
+        .push(crate::api::INVOCATION_COMPACTION_RESPONSE_KIND_SQL)
+        .push(", '') = 'compact')");
+}
+
+async fn load_upstream_account_attempt_total(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    cutoff: &str,
+    filters: &UpstreamAccountAttemptFilters,
+) -> Result<usize> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_upstream_request_attempts AS attempts
+        LEFT JOIN codex_invocations AS inv
+            ON inv.invoke_id = attempts.invoke_id
+           AND inv.occurred_at = attempts.occurred_at
+        "#,
+    );
+    push_upstream_account_attempt_scope(&mut query, account_id, cutoff);
+    push_upstream_account_attempt_filters(&mut query, filters, true);
+    let total = query
+        .build_query_scalar::<i64>()
+        .fetch_one(pool)
+        .await?
+        .max(0) as usize;
+    Ok(total)
+}
+
+async fn load_upstream_account_attempt_sticky_key_options(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    cutoff: &str,
+    filters: &UpstreamAccountAttemptFilters,
+) -> Result<Vec<UpstreamAccountAttemptStickyKeyOption>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            CASE
+                WHEN attempts.sticky_key IS NULL OR TRIM(attempts.sticky_key) = '' THEN
+        "#,
+    );
+    query.push_bind(ACCOUNT_ATTEMPT_STICKY_KEY_UNBOUND).push(
+        r#"
+                ELSE TRIM(attempts.sticky_key)
+            END AS value,
+            MAX(attempts.created_at) AS latest_created_at
+        FROM pool_upstream_request_attempts AS attempts
+        LEFT JOIN codex_invocations AS inv
+            ON inv.invoke_id = attempts.invoke_id
+           AND inv.occurred_at = attempts.occurred_at
+        "#,
+    );
+    push_upstream_account_attempt_scope(&mut query, account_id, cutoff);
+    push_upstream_account_attempt_filters(&mut query, filters, false);
+    query.push(
+        r#"
+        GROUP BY value
+        ORDER BY MAX(attempts.created_at) DESC, value ASC
+        "#,
+    );
+    let rows = query
+        .build_query_as::<UpstreamAccountAttemptStickyKeyOption>()
+        .fetch_all(pool)
+        .await?;
+    Ok(rows)
 }
 
 pub(crate) async fn list_upstream_accounts_from_params(

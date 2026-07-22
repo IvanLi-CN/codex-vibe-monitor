@@ -29,6 +29,8 @@
 - 新 HTTP proxy invocation 的 `invokeId` 必须使用 10 位 NanoID 风格短格式，去掉历史 `proxy-...` 前缀、内部 counter 与时间戳尾巴；历史 `proxy-...` 记录继续兼容查询和展示。
 - 账号详情“请求”tab 必须按真实 `pool_upstream_request_attempts` 行展示尝试请求、重试、失败与成功；概览统计继续采用最终调用口径。
 - 账号详情请求 tab 中的尝试请求列表必须复用调用详情里的 workflow attempt 卡；后端为每个可关联主库 invocation 的账号 attempt 返回 workflow-compatible `workflowEntry` 与 `invocationRecord`，前端直接渲染共享组件，不再维护独立的摘要 schema。
+- 账号详情 attempts API 必须投影 `compactionRequestKind`、`compactionResponseKind` 与 `imageIntent`，使请求 tab 能用与 Records / Dashboard 一致的 endpoint / 图片 / 远程压缩语义展示和筛选。
+- 账号详情请求 tab 必须提供类型、模型与对话筛选；类型使用统一派生口径：`normal`、`remote_v2`、`image`、`compact`，其中 `/v1/responses` 的 owner-facing chip 显示为 `Normal` / `一般`，不再显示 `Responses`。
 - 账号详情请求 tab 的 usage 显示规则必须与调用详情一致：仅顶层 invocation 属于成功终态且存在 usage 证据时，为最终成功 attempt 展示 Token/成本；更早的重试、失败 attempt 与无 usage 历史记录不显示 usage。
 - 每张账号 attempt 摘要卡仅表达一次真实上游尝试请求，主入口显示 owner-facing `attemptId`，并在摘要区展示时间、调用短 ID、请求/响应模型、请求头、请求体、响应头、响应体与尝试摘要；不得显示重试序号或把最终 invocation usage 复制到非最终成功 attempt。
 - 摘要卡内的 HTTP 值必须明确标记为上游 HTTP；点击摘要卡后在对应详情面板显示下游 HTTP、完整错误、上游请求 ID、路由键、压缩与近似传输字节等诊断证据。代理优先显示解析后的节点名，不能解析时显示截短绑定键并保留完整值提示。
@@ -135,6 +137,9 @@
 - `/api/invocations/{invoke_id}/pool-attempts` 读取 `pool_upstream_request_attempts.proxy_binding_key_snapshot` 并作为 `proxyBindingKeySnapshot` 返回。
 - workflow detail 仅为最终成功 attempt 注入 `responseSummary.usage` 审计对象；该对象复用 invocation 级 recorded/local 成本对账结果，并补齐 `未命中缓存输入 Token / 命中缓存输入 Token / 输出 Token / 金额` 这四项 owner-facing 关键指标。
 - `GET /api/pool/upstream-accounts/{accountId}/call-attempts` 返回该账号最近 7 天主库尝试的分页列表；`GET .../call-attempts/locate?attemptId=...` 返回目标尝试所在页，未命中返回 `404`。
+- `GET /api/pool/upstream-accounts/{accountId}/call-attempts` 支持 `type?: "normal" | "remote_v2" | "image" | "compact"`、`model?: string`、`stickyKey?: string`、`page?: number`、`pageSize?: number`；`items`、`total`、`page`、`pageSize` 必须以筛选后结果为准。
+- `stickyKey` 默认表示对话身份；`stickyKey=__unbound__` 匹配空或缺失 `sticky_key` 的未绑定尝试。响应必须返回 `stickyKeyOptions: { value: string; latestCreatedAt: string }[]`，并按该对话最近一次 attempt `createdAt` 倒序排列。
+- `model` 筛选必须按 `requestModel`、`responseModel`、legacy `model` 任一精确命中，不得只看主显示模型。
 - 账号 attempts API 返回的每个 item 可选携带 `invocationRecord` 与 `workflowEntry`：当同一主库 `(invokeId, occurredAt)` 能加载 invocation 与真实 attempt 行时，`workflowEntry` 使用 `GET /api/invocations/:id/workflow-detail` 的 attempt 构造规则生成；缺失关联数据时仍返回基本 attempt 行并允许前端最小 fallback。该接口不读取 archive，仍只覆盖最近 7 天主库窗口。
 - 当账号 attempts API 为非最终真实 attempt 回填 workflow entry 且该 attempt 缺少 per-attempt `responseSummary` 时，响应体 capture 只能使用 attempt 行的响应字节指标，必须标记为不可从 invocation 级 body lazy-load；只有最终真实 attempt 可绑定 invocation 级响应体。
 - 号池详情中，真实上游尝试与合成终态记录分开展示。`budget_exhausted_final` 或 `sameAccountRetryIndex <= 0` 仅作为号池终态说明，不作为普通尝试卡片展示，不显示同账号重试序号或阶段耗时。
@@ -168,10 +173,11 @@
 ### Upstream account attempts
 
 - `pool_upstream_account_events.attempt_id` 为可空精确关联；只为新产生且调用链路已拿到尝试主键的路由事件写入，不回填历史事件。
-- `GET /api/pool/upstream-accounts/{accountId}/call-attempts` Query: `page?: number`、`pageSize?: number`；Response: `items`、`total`、`page`、`pageSize`。
+- `GET /api/pool/upstream-accounts/{accountId}/call-attempts` Query: `type?: "normal" | "remote_v2" | "image" | "compact"`、`model?: string`、`stickyKey?: string`、`page?: number`、`pageSize?: number`；Response: `items`、`stickyKeyOptions`、`total`、`page`、`pageSize`。
 - `GET /api/pool/upstream-accounts/{accountId}/call-attempts/locate` Query: `attemptId: string`、`pageSize?: number`；目标必须属于当前账号且处于 7 天主库窗口内。
 - 尝试对象必须返回 `attemptId: string`，映射自持久化 `attempt_public_id`；不得返回纯数字主键作为 owner-facing attempt 标识。
 - 尝试对象额外返回 `requestModel?: string | null` 与 `responseModel?: string | null`；两个字段从关联 invocation 的 `payload.requestModel` / `payload.responseModel` 投影，请求模型缺失时回退 `model`，缺少匹配 invocation 时保持空值。该查询不得依赖新增 SQLite 列。
+- 尝试对象额外返回 `compactionRequestKind?: "compact" | "remote_v2" | null`、`compactionResponseKind?: "compact" | "remote_v2" | null`、`imageIntent?: "yes" | "direct_image" | "no" | "unknown" | null`；这些字段从关联 invocation payload 投影，不依赖 raw body logging。
 - 尝试对象可选返回 `invocationRecord?: ApiInvocation | null` 与 `workflowEntry?: ApiInvocationWorkflowTimelineEntry | null`。`workflowEntry.attempt.requestSummary` / `responseSummary` 必须与调用详情 attempt 卡同源，覆盖 request headers/body capture、compression、response headers/body capture、latency 与 usage 审计；usage 仅允许出现在最终成功 attempt。
 
 ### `GET /api/settings` / `PUT /api/settings/proxy` 新增字段
@@ -239,11 +245,15 @@
 - Given `requestBodyLoggingEnabled=true` 且 `responseBodyLoggingEnabled=false`，When 新代理调用完成，Then invocation 记录保留结构化 payload / stats / timing，但 `response_raw_path` 为空，且 `raw_response` preview 为空字符串。
 - Given 两个开关都关闭，When 新代理调用完成并打开详情，Then Settings 页面保存成功、调用记录仍可查询，且 body 读取接口返回既有 unavailable/fallback 语义而非 500。
 - Given `/v1/responses` 请求启用了 remote compaction V2，When 记录处于 `running` 或 `pending`，Then 列表 badge 显示 `远程压缩V2`，详情同时显示原始 endpoint 与 `压缩请求=远程压缩V2`。
-- Given `/v1/responses` 请求启用了 remote compaction V2 但响应未触发 compaction，When 记录进入终态，Then 列表 badge 回退为 `Responses`，详情显示 `压缩请求=远程压缩V2`、`压缩响应=—`。
+- Given `/v1/responses` 请求启用了 remote compaction V2 但响应未触发 compaction，When 记录进入终态，Then 列表 badge 回退为 `Normal` / `一般`，详情显示 `压缩请求=远程压缩V2`、`压缩响应=—`。
 - Given `/v1/responses` 响应出现 `response.output_item.added` 的 compaction item 或 `response.compaction` 负载，When 记录进入终态，Then 列表 badge 显示 `远程压缩V2`，详情显示 `压缩响应=远程压缩V2`。
 - Given `/v1/responses` 请求命中图片工具意图，When Records 与 Dashboard 渲染该 invocation，Then 两个列表都显示独立的“图片工具”徽标，且不改写 endpoint badge。
 - Given `/v1/images/generations` 或 `/v1/images/edits` 请求完成，When 用户打开详情，Then `图片工具` 字段显示 `direct_image`，同时保留原始 endpoint。
 - Given 历史 invocation 缺少 `imageIntent`，When Records 或 Dashboard 渲染，Then 列表不显示图片徽标，详情字段显示 `—`。
+- Given 同一账号最近 7 天存在 `/v1/images/*`、`/v1/responses` remote_v2、普通 `/v1/responses` 与 `/v1/responses/compact` 尝试，When 查询账号 attempts API，Then 未筛选列表能返回这些当前账号尝试，`type=image|remote_v2|normal|compact` 分别命中正确集合，且其他账号尝试不会串入。
+- Given 账号 attempts API 使用 `model` 筛选，When 筛选值命中 `requestModel`、`responseModel` 或 legacy `model` 任一字段，Then 返回的 `total/items` 均基于筛选后结果。
+- Given 账号 attempts API 返回 `stickyKeyOptions`，When 前端渲染对话筛选，Then 选项按最近 attempt `createdAt` 倒序显示，`__unbound__` 以未绑定对话文案展示。
+- Given 用户在请求 tab 手动选择了类型、模型或对话筛选，When 外部事件传入 `focusedAttemptId`，Then 前端清空筛选、调用 locate 接口并滚动聚焦目标 attempt。
 - Given 新记录同时携带 `requestModel=gpt-5.4` 与 `responseModel=gpt-5.5`，When Records、InvocationTable 或 Dashboard working conversations 渲染，Then 主模型文本显示 `gpt-5.5`，并在模型 badge 前显示上游路由差异图标。
 - Given `requestModel` 与 `responseModel` 仅大小写不同，或仅 dated alias/base-model 归并后等价，When 列表渲染，Then 不显示模型路由差异图标。
 - Given Records 展开摘要与详情首屏模型卡存在 `reasoningEffort`、`imageIntent` 或重路由信号，When 记录渲染，Then 这些值与 badge 会稳定显示；缺值显示 `—`，不伪造默认值。
@@ -281,6 +291,38 @@
 - 启动 backend/frontend 后打开 `/dashboard` 与 `/#/live`，验证新增列与详情展开可用。
 
 ## Visual Evidence
+
+- source_type: storybook_canvas
+  story_id_or_title: Account Pool/Components/Upstream Account Attempt Timeline / Default Request Attempts
+  state: account request attempts filter gallery default state
+  requested_viewport: 1440x1050
+  viewport_strategy: chrome_storybook_iframe
+  margin_policy: full_page
+  evidence_surface: page
+  evidence_note: verifies type/model/conversation filters are visible, image and remote_v2 attempts are present, and `/v1/responses` owner-facing endpoint chip renders as `一般`.
+  PR: include
+  target_program: mock-only
+  capture_scope: storybook iframe
+  sensitive_exclusion: fixture-only upstream attempt data
+  submission_gate: approved
+  image:
+  ![Account attempt filter gallery default](./assets/account-attempt-filter-gallery-default.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Account Pool/Components/Upstream Account Attempt Timeline / Type Filtered Image Attempts
+  state: account request attempts image type filter state
+  requested_viewport: 1440x1050
+  viewport_strategy: chrome_storybook_iframe
+  margin_policy: full_page
+  evidence_surface: page
+  evidence_note: verifies the image type filter keeps the filter bar visible and narrows the list to the direct image attempt.
+  PR: include
+  target_program: mock-only
+  capture_scope: storybook iframe
+  sensitive_exclusion: fixture-only upstream attempt data
+  submission_gate: approved
+  image:
+  ![Account attempt image type filter](./assets/account-attempt-filter-gallery-image.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Account Pool/Components/Upstream Account Attempt Timeline / Full Workflow Success Attempt Page

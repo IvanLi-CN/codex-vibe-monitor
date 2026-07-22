@@ -214,6 +214,7 @@ export type {
   UpstreamAccountActivityAccount,
   UpstreamAccountActivityResponse,
   UpstreamAccountAttemptListResponse,
+  UpstreamAccountAttemptStickyKeyOption,
   UpstreamAccountDetail,
   UpstreamAccountDuplicateInfo,
   UpstreamAccountGroupSummary,

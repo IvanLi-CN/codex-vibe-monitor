@@ -3,7 +3,7 @@ import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
 import { Spinner } from "../../components/ui/spinner";
 import { Tooltip } from "../../components/ui/tooltip";
-import { useTranslation } from "../../i18n";
+import { type TranslationKey, useTranslation } from "../../i18n";
 import type {
   ApiInvocation,
   ApiInvocationRequestBodyResponse,
@@ -22,6 +22,7 @@ import {
   formatDashboardWorkingConversationSequenceId,
   hashDashboardWorkingConversationKey,
 } from "../../lib/dashboardWorkingConversations";
+import { resolveInvocationEndpointDisplay } from "../../lib/invocation";
 import { resolveInvocationDisplayStatus } from "../../lib/invocationStatus";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
@@ -41,6 +42,7 @@ export type AttemptSection =
   | "responseHeaders"
   | "responseBody";
 type GenericSection = "request" | "requestHeaders" | "requestBody" | "json" | "body";
+type Translator = (key: TranslationKey, values?: Record<string, string | number>) => string;
 
 interface PayloadFetchState<T> {
   status: "idle" | "loading" | "loaded" | "error";
@@ -112,6 +114,43 @@ function formatTimestamp(value: string | null | undefined, locale: string) {
 function formatOptionalText(value: string | null | undefined) {
   const normalized = value?.trim();
   return normalized ? normalized : FALLBACK_CELL;
+}
+
+function normalizeEndpointCompactionKind(
+  value: string | null | undefined,
+): ApiInvocation["compactionRequestKind"] {
+  if (value === "compact" || value === "remote_v2") return value;
+  return undefined;
+}
+
+function resolveEndpointMetricDisplay({
+  endpoint,
+  status,
+  compactionRequestKind,
+  compactionResponseKind,
+  t,
+}: {
+  endpoint: string | null | undefined;
+  status: string | null | undefined;
+  compactionRequestKind?: string | null | undefined;
+  compactionResponseKind?: string | null | undefined;
+  t: Translator;
+}) {
+  const display = resolveInvocationEndpointDisplay({
+    endpoint: endpoint ?? undefined,
+    status: status ?? undefined,
+    compactionRequestKind: normalizeEndpointCompactionKind(compactionRequestKind),
+    compactionResponseKind: normalizeEndpointCompactionKind(compactionResponseKind),
+  });
+  const value =
+    display.labelKey && display.kind !== "raw"
+      ? t(display.labelKey)
+      : formatOptionalText(display.endpointValue);
+
+  return {
+    tag: display.kind === "raw" ? null : value,
+    tertiary: display.kind === "raw" ? value : null,
+  };
 }
 
 function formatOptionalNumber(value: number | null | undefined, locale: string) {
@@ -818,6 +857,7 @@ function buildAttemptMetricActions(
   entry: ApiInvocationWorkflowTimelineEntry,
   localeTag: string,
   isZh: boolean,
+  t: Translator,
 ): Array<TimelineMetricAction<AttemptSection>> {
   const attempt = entry.attempt;
   if (!attempt) return [];
@@ -841,7 +881,13 @@ function buildAttemptMetricActions(
   const requestTier = formatOptionalText(readString(requestSummary?.requestedServiceTier));
   const requestReasoning = formatOptionalText(readString(requestSummary?.reasoningEffort));
   const requestTransport = formatOptionalText(readString(requestSummary?.transport));
-  const requestEndpoint = formatOptionalText(readString(requestSummary?.endpoint));
+  const requestEndpoint = resolveEndpointMetricDisplay({
+    endpoint: readString(requestSummary?.endpoint),
+    status: attempt.status,
+    compactionRequestKind: readString(requestSummary?.compactionRequestKind),
+    compactionResponseKind: readString(responseSummary?.compactionResponseKind),
+    t,
+  });
   const requestCompaction = formatCompactionSummary(
     readString(requestSummary?.compactionRequestKind),
     isZh,
@@ -895,9 +941,10 @@ function buildAttemptMetricActions(
     {
       section: "requestParsed",
       label: isZh ? "请求" : "Request",
+      tag: requestEndpoint.tag,
       primary: requestModel,
       secondary: compactJoin([requestTier, requestReasoning]),
-      tertiary: compactJoin([requestTransport, requestEndpoint]),
+      tertiary: compactJoin([requestTransport, requestEndpoint.tertiary]),
     },
     {
       section: "requestHeaders",
@@ -948,6 +995,7 @@ function buildGenericMetricActions(
   entry: ApiInvocationWorkflowTimelineEntry,
   localeTag: string,
   isZh: boolean,
+  t: Translator,
 ): Array<TimelineMetricAction<GenericSection>> {
   const routeRequest = readRecord(entry.detail?.request);
   const routeRequestHeaders =
@@ -959,7 +1007,12 @@ function buildGenericMetricActions(
     const requestTier = formatOptionalText(readString(routeRequest.requestedServiceTier));
     const requestReasoning = formatOptionalText(readString(routeRequest.reasoningEffort));
     const requestTransport = formatOptionalText(readString(routeRequest.transport));
-    const requestEndpoint = formatOptionalText(readString(routeRequest.endpoint));
+    const requestEndpoint = resolveEndpointMetricDisplay({
+      endpoint: readString(routeRequest.endpoint),
+      status: entry.status,
+      compactionRequestKind: readString(routeRequest.compactionRequestKind),
+      t,
+    });
     const requesterIp = formatOptionalText(readString(routeRequest.requesterIp));
     const requestUserAgent = formatOptionalText(readString(routeRequestHeaders?.userAgent));
     const requestBodySize = formatByteSize(readNumber(routeRequestBody?.size), localeTag);
@@ -972,9 +1025,10 @@ function buildGenericMetricActions(
       {
         section: "request",
         label: isZh ? "请求" : "Request",
+        tag: requestEndpoint.tag,
         primary: requestModel,
         secondary: compactJoin([requestTier, requestReasoning]),
-        tertiary: compactJoin([requestTransport, requestEndpoint]),
+        tertiary: compactJoin([requestTransport, requestEndpoint.tertiary]),
       },
       {
         section: "requestHeaders",
@@ -2462,14 +2516,15 @@ function TimelineSummary({
   attemptIdentityOverride?: string | null;
   testId?: string;
 }) {
+  const { t } = useTranslation();
   const kindMeta = resolveKindMeta(entry.kind, isZh);
   const statusMeta = resolveStatusMeta(entry.status, isZh);
   const summaryFacts = buildTimelineFacts(entry, isZh, localeTag);
   const attemptId = attemptIdentityOverride?.trim() || entry.attempt?.attemptId?.trim() || null;
   const showTitle = !entry.attempt;
   const metricActions = entry.attempt
-    ? buildAttemptMetricActions(entry, localeTag, isZh)
-    : buildGenericMetricActions(entry, localeTag, isZh);
+    ? buildAttemptMetricActions(entry, localeTag, isZh, t)
+    : buildGenericMetricActions(entry, localeTag, isZh, t);
 
   return (
     <div
