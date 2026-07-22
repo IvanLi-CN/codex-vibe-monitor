@@ -385,6 +385,25 @@ fn shanghai_bucket_date(bucket_start: &str) -> NaiveDate {
     bucket_date_in_tz(bucket_start, Shanghai)
 }
 
+fn archived_start_partial_hour_at() -> String {
+    let range_start = Utc::now() - ChronoDuration::days(7);
+    let range_start_epoch = range_start.timestamp();
+    let floor_hour_epoch = range_start_epoch - range_start_epoch.rem_euclid(3_600);
+    let first_full_hour_epoch = if floor_hour_epoch < range_start_epoch {
+        floor_hour_epoch + 3_600
+    } else {
+        floor_hour_epoch
+    };
+    let first_full_hour = Utc
+        .timestamp_opt(first_full_hour_epoch, 0)
+        .single()
+        .expect("valid first full hour");
+    let latest_partial_second = first_full_hour - ChronoDuration::seconds(1);
+    let preferred = range_start + ChronoDuration::minutes(5);
+    let occurred_at = preferred.min(latest_partial_second);
+    format_naive(occurred_at.with_timezone(&Shanghai).naive_local())
+}
+
 pub(crate) fn assert_f64_close(actual: f64, expected: f64) {
     let diff = (actual - expected).abs();
     assert!(
@@ -11573,11 +11592,7 @@ async fn usage_breakdown_includes_archived_start_boundary_partial_hour_for_7d_ra
     config.invocation_max_days = 6;
     let state = test_state_from_config(config, true).await;
 
-    let archived_boundary_at = format_naive(
-        (Utc::now() - ChronoDuration::days(7) + ChronoDuration::minutes(5))
-            .with_timezone(&Shanghai)
-            .naive_local(),
-    );
+    let archived_boundary_at = archived_start_partial_hour_at();
     seed_invocation_archive_batch_with_details(
         &state.pool,
         &state.config,
@@ -11641,11 +11656,7 @@ async fn usage_breakdown_keeps_archived_boundary_partial_hour_during_partial_arc
     config.invocation_max_days = 6;
     let state = test_state_from_config(config, true).await;
 
-    let archived_boundary_at = format_naive(
-        (Utc::now() - ChronoDuration::days(7) + ChronoDuration::minutes(5))
-            .with_timezone(&Shanghai)
-            .naive_local(),
-    );
+    let archived_boundary_at = archived_start_partial_hour_at();
     let archive_path = seed_invocation_archive_batch_with_details(
         &state.pool,
         &state.config,
