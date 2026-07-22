@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.46.3",
+  "base_stable_version": "2.46.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-22T05:20:14Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.46.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "a62bfe7b1e41def5ffb46c35a398d11ba1e90db0",
+  "pr_number": 679,
+  "pr_title": "fix(prompt-cache): fence sticky revival after affinity reset",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.46.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.46.3",
+  "target_sha": "ee696b41aaf47333feca7811e8c95648b6fb1fb0",
+  "type_label": "type:patch"
+}
