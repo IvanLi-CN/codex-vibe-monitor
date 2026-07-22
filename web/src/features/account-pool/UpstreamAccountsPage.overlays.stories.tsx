@@ -217,6 +217,7 @@ export const DetailDrawerEventLocatesAttempt: Story = {
     );
     await within(dialog).findByTestId("upstream-account-attempt-list");
     const record = within(dialog).getByTestId("account-attempt-record-4V7MYPJG");
+    await userEvent.click(within(record).getByRole("button", { name: /时间|timing/i }));
     await expect(record).toHaveTextContent(/关键诊断|key diagnostics/i);
     await expect(within(record).getAllByText("upstream-story-500").length).toBeGreaterThan(0);
   },
