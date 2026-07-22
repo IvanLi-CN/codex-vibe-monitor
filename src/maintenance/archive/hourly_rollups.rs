@@ -165,17 +165,24 @@ async fn mark_retention_archived_invocation_hourly_rollup_targets_tx(
         }
     }
 
-    let fully_archived_usage_buckets = upstream_account_usage_targets
+    clear_upstream_account_usage_breakdown_hourly_buckets_tx(tx, &upstream_account_usage_targets)
+        .await?;
+    let mut upstream_account_usage_bucket_epochs = upstream_account_usage_targets
         .iter()
         .copied()
-        .filter(|bucket_start_epoch| {
-            !live_targets
-                .iter()
-                .any(|(live_bucket_start_epoch, _)| *live_bucket_start_epoch == *bucket_start_epoch)
-        })
-        .collect::<HashSet<_>>();
-    clear_upstream_account_usage_breakdown_hourly_buckets_tx(tx, &fully_archived_usage_buckets)
-        .await?;
+        .collect::<Vec<_>>();
+    upstream_account_usage_bucket_epochs.sort_unstable();
+    let retained_live_rows = load_live_invocation_hourly_rows_for_bucket_epochs_tx(
+        tx,
+        &upstream_account_usage_bucket_epochs,
+    )
+    .await?;
+    upsert_invocation_hourly_rollups_tx(
+        tx,
+        &retained_live_rows,
+        &[HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN],
+    )
+    .await?;
 
     for bucket_start_epoch in upstream_account_usage_targets {
         if live_targets
@@ -4232,6 +4239,210 @@ mod retention_breakdown_materialization_tests {
         .await
         .expect("count usage materialized markers");
         assert_eq!(usage_materialized_count, 1);
+    }
+
+    #[tokio::test]
+    async fn retention_partial_hour_rebuilds_breakdown_from_retained_live_rows() {
+        let pool = test_pool().await;
+        let archived_occurred_at = format_naive(
+            Utc.with_ymd_and_hms(2026, 7, 1, 12, 5, 0)
+                .single()
+                .expect("valid timestamp")
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let live_occurred_at = format_naive(
+            Utc.with_ymd_and_hms(2026, 7, 1, 12, 45, 0)
+                .single()
+                .expect("valid timestamp")
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let archived_row = InvocationHourlySourceRecord {
+            id: 1,
+            occurred_at: archived_occurred_at,
+            source: SOURCE_PROXY.to_string(),
+            status: Some("success".to_string()),
+            detail_level: DETAIL_LEVEL_FULL.to_string(),
+            model: Some("gpt-5".to_string()),
+            input_tokens: Some(10),
+            output_tokens: Some(20),
+            cache_input_tokens: Some(0),
+            total_tokens: Some(30),
+            cost: Some(0.1),
+            upstream_account_id: None,
+            cost_input: Some(0.02),
+            cost_cache_write: Some(0.0),
+            cost_cache_read: Some(0.0),
+            cost_output: Some(0.08),
+            cost_reasoning: Some(0.0),
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: None,
+            payload: Some(
+                json!({
+                    "upstreamAccountId": 42_i64,
+                    "responseModel": "gpt-5"
+                })
+                .to_string(),
+            ),
+            t_total_ms: Some(100.0),
+            t_req_read_ms: Some(0.0),
+            t_req_parse_ms: Some(0.0),
+            t_upstream_connect_ms: Some(0.0),
+            t_upstream_ttfb_ms: Some(10.0),
+            t_upstream_stream_ms: Some(20.0),
+            t_resp_parse_ms: Some(0.0),
+            t_persist_ms: Some(0.0),
+        };
+        let bucket_start_epoch = invocation_bucket_start_epoch(&archived_row.occurred_at)
+            .expect("derive bucket start epoch");
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                occurred_at,
+                source,
+                status,
+                detail_level,
+                model,
+                input_tokens,
+                output_tokens,
+                cache_input_tokens,
+                total_tokens,
+                cost,
+                cost_input,
+                cost_cache_write,
+                cost_cache_read,
+                cost_output,
+                cost_reasoning,
+                payload,
+                t_total_ms,
+                t_upstream_ttfb_ms,
+                t_upstream_stream_ms
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+            "#,
+        )
+        .bind(2_i64)
+        .bind(&live_occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(DETAIL_LEVEL_FULL)
+        .bind("gpt-5-mini")
+        .bind(50_i64)
+        .bind(70_i64)
+        .bind(5_i64)
+        .bind(125_i64)
+        .bind(0.2_f64)
+        .bind(0.04_f64)
+        .bind(0.01_f64)
+        .bind(0.02_f64)
+        .bind(0.13_f64)
+        .bind(0.0_f64)
+        .bind(
+            json!({
+                "upstreamAccountId": 43_i64,
+                "responseModel": "gpt-5-mini"
+            })
+            .to_string(),
+        )
+        .bind(130.0_f64)
+        .bind(13.0_f64)
+        .bind(26.0_f64)
+        .execute(&pool)
+        .await
+        .expect("insert retained live invocation");
+
+        for (upstream_account_key, upstream_account_id, normalized_model, cost_unknown) in [
+            ("upstream:42", 42_i64, "gpt-5", 0.1_f64),
+            ("upstream:43", 43_i64, "gpt-5-mini", 0.2_f64),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO upstream_account_usage_breakdown_hourly (
+                    bucket_start_epoch,
+                    source,
+                    upstream_account_key,
+                    upstream_account_id,
+                    normalized_model,
+                    normalized_reasoning_effort,
+                    request_count,
+                    success_count,
+                    failure_count,
+                    output_tokens,
+                    cost_unknown,
+                    has_cost
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, '', 1, 1, 0, 1, ?6, 1)
+                "#,
+            )
+            .bind(bucket_start_epoch)
+            .bind(SOURCE_PROXY)
+            .bind(upstream_account_key)
+            .bind(upstream_account_id)
+            .bind(normalized_model)
+            .bind(cost_unknown)
+            .execute(&pool)
+            .await
+            .expect("seed stale breakdown rollup row");
+        }
+
+        let mut tx = pool.begin().await.expect("begin transaction");
+        mark_retention_archived_hourly_rollup_targets_tx(
+            tx.as_mut(),
+            "codex_invocations",
+            &[archived_row],
+            &[],
+        )
+        .await
+        .expect("mark retention archived hourly rollup targets");
+        tx.commit().await.expect("commit transaction");
+
+        let archived_breakdown_row_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM upstream_account_usage_breakdown_hourly
+            WHERE bucket_start_epoch = ?1
+              AND upstream_account_key = 'upstream:42'
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .fetch_one(&pool)
+        .await
+        .expect("count archived account breakdown rows");
+        assert_eq!(archived_breakdown_row_count, 0);
+
+        let retained = sqlx::query_as::<_, (i64, i64, i64, f64, f64)>(
+            r#"
+            SELECT request_count, success_count, output_tokens, cost_output, cost_unknown
+            FROM upstream_account_usage_breakdown_hourly
+            WHERE bucket_start_epoch = ?1
+              AND upstream_account_key = 'upstream:43'
+              AND normalized_model = 'gpt-5-mini'
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .fetch_one(&pool)
+        .await
+        .expect("load retained live breakdown row");
+        assert_eq!(retained.0, 1);
+        assert_eq!(retained.1, 1);
+        assert_eq!(retained.2, 70);
+        assert_eq!(retained.3, 0.13_f64);
+        assert_eq!(retained.4, 0.0_f64);
+
+        let usage_materialized_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM hourly_rollup_materialized_buckets WHERE target = ?1 AND bucket_start_epoch = ?2",
+        )
+        .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+        .bind(bucket_start_epoch)
+        .fetch_one(&pool)
+        .await
+        .expect("count usage materialized markers");
+        assert_eq!(usage_materialized_count, 0);
     }
 
     #[tokio::test]
