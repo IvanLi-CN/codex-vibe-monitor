@@ -13,6 +13,7 @@ pub(crate) struct PoolUpstreamRequestAttemptArchiveRow {
     endpoint: String,
     route_mode: String,
     sticky_key: Option<String>,
+    routing_source: Option<String>,
     upstream_base_url_host: Option<String>,
     group_name_snapshot: Option<String>,
     proxy_binding_key_snapshot: Option<String>,
@@ -334,6 +335,7 @@ pub(crate) async fn archive_pool_upstream_request_attempt_rows_into_month_batch(
                 .push_bind(&row.endpoint)
                 .push_bind(&row.route_mode)
                 .push_bind(&row.sticky_key)
+                .push_bind(&row.routing_source)
                 .push_bind(&row.upstream_base_url_host)
                 .push_bind(&row.group_name_snapshot)
                 .push_bind(&row.proxy_binding_key_snapshot)
