@@ -2298,9 +2298,11 @@ describe("DashboardWorkingConversationsSection", () => {
       host?.querySelectorAll('[data-testid="dashboard-upstream-account-recent-row"]') ?? [],
     );
     const firstRow = rows[0];
-    if (!(firstRow instanceof HTMLButtonElement)) {
+    if (!(firstRow instanceof HTMLElement)) {
       throw new Error("missing first upstream recent row");
     }
+    expect(firstRow.getAttribute("role")).toBe("button");
+    expect(firstRow.getAttribute("tabindex")).toBe("0");
 
     const expectedConversationId = formatDashboardWorkingConversationSequenceId(
       `WC-${hashDashboardWorkingConversationKey("pck-upstream-running").slice(0, 6)}`,

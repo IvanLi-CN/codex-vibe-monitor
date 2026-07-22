@@ -1,4 +1,4 @@
-import { type CSSProperties, useId } from "react";
+import type { CSSProperties } from "react";
 
 interface PolicyInlineOption<T extends string | number> {
   value: T;
@@ -20,7 +20,6 @@ export function PolicyInlineOptionGroup<T extends string | number>({
   disabled,
   onChange,
 }: PolicyInlineOptionGroupProps<T>) {
-  const groupName = useId();
   const activeIndex = Math.max(
     0,
     options.findIndex((option) => option.value === value),
@@ -40,23 +39,18 @@ export function PolicyInlineOptionGroup<T extends string | number>({
     >
       <span className="policy-inline-radio-indicator" aria-hidden />
       {options.map((option) => (
-        <label
+        <button
           key={String(option.value)}
+          type="button"
+          role="radio"
+          aria-checked={option.value === value}
+          disabled={disabled}
           className="policy-inline-radio-item"
           data-active={option.value === value}
-          data-disabled={disabled ? "true" : undefined}
+          onClick={() => onChange(option.value)}
         >
-          <input
-            type="radio"
-            name={groupName}
-            value={String(option.value)}
-            checked={option.value === value}
-            disabled={disabled}
-            className="sr-only"
-            onChange={() => onChange(option.value)}
-          />
-          <span>{option.label}</span>
-        </label>
+          {option.label}
+        </button>
       ))}
     </div>
   );

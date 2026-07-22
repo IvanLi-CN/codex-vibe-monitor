@@ -2173,7 +2173,7 @@ function AccountRecentInvocationRow({
   }, [displayPromptCacheKey, onOpenConversation]);
 
   const handleRowKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
       if (event.target !== event.currentTarget) return;
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
@@ -2201,8 +2201,9 @@ function AccountRecentInvocationRow({
   );
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       aria-label={invocationActionLabel}
       data-testid="dashboard-upstream-account-recent-row"
       data-motion-surface
@@ -2325,7 +2326,7 @@ function AccountRecentInvocationRow({
           message={viewModel.collapsedErrorSummary}
         />
       ) : null}
-    </button>
+    </div>
   );
 }
 
