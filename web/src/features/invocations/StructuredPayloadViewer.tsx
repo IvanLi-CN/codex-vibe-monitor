@@ -89,17 +89,19 @@ function JsonTree({
   );
 }
 
-function EntryJsonTree({
+function ScrollableJsonTree({
   value,
   expandDepth,
   labels,
+  className,
 }: {
   value: StructuredPayloadValue;
   expandDepth: number;
   labels: StructuredPayloadViewerProps["labels"];
+  className?: string;
 }) {
   return (
-    <div className="structured-payload-entry-scroll">
+    <div className={cn("structured-payload-json-scroll", className)}>
       <JsonTree value={value} expandDepth={expandDepth} labels={labels} />
     </div>
   );
@@ -162,7 +164,7 @@ export function StructuredPayloadViewer({
       </div>
       <div className="structured-payload-scroll">
         {parsed.kind === "json" ? (
-          <JsonTree
+          <ScrollableJsonTree
             value={parsed.value}
             expandDepth={byteLength < 64 * 1024 ? 2 : 1}
             labels={labels}
@@ -172,7 +174,12 @@ export function StructuredPayloadViewer({
             {parsed.values.map((entry) => (
               <section className="structured-payload-entry" key={entry.lineNumber}>
                 <div className="structured-payload-entry-label">#{entry.lineNumber}</div>
-                <EntryJsonTree value={entry.value} expandDepth={1} labels={labels} />
+                <ScrollableJsonTree
+                  value={entry.value}
+                  expandDepth={1}
+                  labels={labels}
+                  className="structured-payload-entry-scroll"
+                />
               </section>
             ))}
           </div>
@@ -195,7 +202,12 @@ export function StructuredPayloadViewer({
                   ) : null}
                 </div>
                 {entry.data ? (
-                  <EntryJsonTree value={entry.data} expandDepth={1} labels={labels} />
+                  <ScrollableJsonTree
+                    value={entry.data}
+                    expandDepth={1}
+                    labels={labels}
+                    className="structured-payload-entry-scroll"
+                  />
                 ) : entry.dataText ? (
                   <div className="mt-2">
                     <div className="structured-payload-entry-label">{labels.data}</div>

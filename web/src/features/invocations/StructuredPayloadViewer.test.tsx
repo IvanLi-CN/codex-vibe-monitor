@@ -72,6 +72,10 @@ describe("StructuredPayloadViewer", () => {
 
     expect(parsedViewer()?.className).toContain("overflow-hidden");
     expect(host?.querySelector(".structured-payload-scroll")).not.toBeNull();
+    expect(host?.querySelector(".structured-payload-json-scroll")).not.toBeNull();
+    expect(
+      host?.querySelector(".structured-payload-json-scroll .structured-payload-json"),
+    ).not.toBeNull();
   });
 
   it("keeps SSE event overflow inside each event card", () => {
@@ -89,6 +93,7 @@ describe("StructuredPayloadViewer", () => {
     expect(host?.querySelector(".structured-payload-scroll")).not.toBeNull();
     expect(host?.querySelectorAll(".structured-payload-entry")).toHaveLength(2);
     expect(host?.querySelectorAll(".structured-payload-entry-scroll")).toHaveLength(2);
+    expect(host?.querySelectorAll(".structured-payload-json-scroll")).toHaveLength(2);
     expect(
       host?.querySelector(".structured-payload-entry-scroll .structured-payload-json"),
     ).not.toBeNull();

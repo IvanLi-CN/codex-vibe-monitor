@@ -686,6 +686,11 @@ body {
     max-width: none;
   }
 
+  .structured-payload-json-scroll {
+    @apply w-full min-w-0 max-w-full overflow-x-auto overflow-y-hidden;
+    overscroll-behavior-x: contain;
+  }
+
   .structured-payload-json-child {
     @apply whitespace-pre;
   }
@@ -743,8 +748,7 @@ body {
   }
 
   .structured-payload-entry-scroll {
-    @apply mt-2 w-full min-w-0 max-w-full overflow-x-auto overflow-y-hidden;
-    overscroll-behavior-x: contain;
+    @apply mt-2;
   }
 
   .structured-payload-entry-label {
