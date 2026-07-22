@@ -1,6 +1,10 @@
 use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
 
+use crate::api::{
+    normalized_usage_breakdown_account_key, normalized_usage_breakdown_model,
+    normalized_usage_breakdown_reasoning_effort, runtime_text_equals,
+};
 use crate::maintenance::invocation_status_is_success_like as archive_invocation_status_is_success_like;
 use crate::{
     ApproxHistogramCounts, DETAIL_LEVEL_FULL, FailureClass, InvocationHourlySourceRecord,
@@ -63,6 +67,32 @@ pub(crate) struct UpstreamAccountUsageHourlyDelta {
     pub(crate) cache_input_tokens: i64,
     pub(crate) first_seen_at: String,
     pub(crate) last_seen_at: String,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct UpstreamAccountUsageBreakdownHourlyDelta {
+    pub(crate) request_count: i64,
+    pub(crate) success_count: i64,
+    pub(crate) failure_count: i64,
+    pub(crate) cache_write_tokens: i64,
+    pub(crate) cache_read_tokens: i64,
+    pub(crate) output_tokens: i64,
+    pub(crate) cost_input: f64,
+    pub(crate) cost_cache_write: f64,
+    pub(crate) cost_cache_read: f64,
+    pub(crate) cost_output: f64,
+    pub(crate) cost_reasoning: f64,
+    pub(crate) cost_unknown: f64,
+    pub(crate) has_cost: i64,
+    pub(crate) performance_total_tokens: i64,
+    pub(crate) performance_stream_output_tokens: i64,
+    pub(crate) performance_stream_duration_ms: f64,
+    pub(crate) performance_response_sample_count: i64,
+    pub(crate) performance_response_sum_ms: f64,
+    pub(crate) performance_first_byte_sample_count: i64,
+    pub(crate) performance_first_byte_sum_ms: f64,
+    pub(crate) performance_usage_duration_sample_count: i64,
+    pub(crate) performance_usage_duration_sum_ms: f64,
 }
 
 #[derive(Debug, Default)]
@@ -249,6 +279,121 @@ pub(crate) fn accumulate_invocation_hourly_overall_rollups(
                 &mut overall_entry.first_response_byte_total_histogram,
                 first_response_byte_total_ms,
             );
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn accumulate_upstream_account_usage_breakdown_rollup(
+    breakdowns: &mut BTreeMap<
+        (i64, String, String, Option<i64>, String, String),
+        UpstreamAccountUsageBreakdownHourlyDelta,
+    >,
+    row: &InvocationHourlySourceRecord,
+) -> Result<()> {
+    if runtime_text_equals(row.status.as_deref(), "running")
+        || runtime_text_equals(row.status.as_deref(), "pending")
+    {
+        return Ok(());
+    }
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&row.occurred_at)?;
+    let (upstream_account_key, upstream_account_id) = normalized_usage_breakdown_account_key(
+        row.payload.as_deref(),
+        row.resolved_upstream_account_id(),
+    );
+    let model = normalized_usage_breakdown_model(row.model.as_deref(), row.payload.as_deref());
+    let reasoning_effort =
+        normalized_usage_breakdown_reasoning_effort(row.payload.as_deref()).unwrap_or_default();
+    let entry = breakdowns
+        .entry((
+            bucket_start_epoch,
+            row.source.clone(),
+            upstream_account_key,
+            upstream_account_id,
+            model,
+            reasoning_effort,
+        ))
+        .or_default();
+    entry.request_count += 1;
+
+    let classification = resolve_failure_classification(
+        row.status.as_deref(),
+        row.error_message.as_deref(),
+        row.failure_kind.as_deref(),
+        row.failure_class.as_deref(),
+        row.is_actionable,
+    );
+    let has_terminal_status =
+        invocation_status_counts_toward_terminal_totals(row.status.as_deref());
+    let is_success_like = archive_invocation_status_is_success_like(
+        row.status.as_deref(),
+        row.error_message.as_deref(),
+    ) && classification.failure_class == FailureClass::None;
+    if is_success_like {
+        entry.success_count += 1;
+    } else if has_terminal_status && classification.failure_class != FailureClass::None {
+        entry.failure_count += 1;
+    }
+
+    let input_tokens = row.input_tokens.unwrap_or_default().max(0);
+    let cache_read_tokens = row.cache_input_tokens.unwrap_or_default().max(0);
+    entry.cache_write_tokens += input_tokens.saturating_sub(cache_read_tokens);
+    entry.cache_read_tokens += cache_read_tokens;
+    entry.output_tokens += row.output_tokens.unwrap_or_default().max(0);
+
+    if let Some(total_cost) = row.cost {
+        entry.has_cost += 1;
+        if let (
+            Some(cost_input),
+            Some(cost_cache_write),
+            Some(cost_cache_read),
+            Some(cost_output),
+            Some(cost_reasoning),
+        ) = (
+            row.cost_input,
+            row.cost_cache_write,
+            row.cost_cache_read,
+            row.cost_output,
+            row.cost_reasoning,
+        ) {
+            entry.cost_input += cost_input;
+            entry.cost_cache_write += cost_cache_write;
+            entry.cost_cache_read += cost_cache_read;
+            entry.cost_output += cost_output;
+            entry.cost_reasoning += cost_reasoning;
+        } else {
+            entry.cost_unknown += total_cost;
+        }
+    }
+
+    let success_billed = is_success_like && row.cost.is_some();
+    if success_billed {
+        entry.performance_total_tokens += row.total_tokens.unwrap_or_default().max(0);
+        if let Some(stream_duration_ms) =
+            normalize_non_negative_timing_value(row.t_upstream_stream_ms)
+        {
+            entry.performance_stream_output_tokens += row.output_tokens.unwrap_or_default().max(0);
+            entry.performance_stream_duration_ms += stream_duration_ms;
+            entry.performance_response_sample_count += 1;
+            entry.performance_response_sum_ms += stream_duration_ms;
+        }
+        if let Some(ttfb_ms) = row
+            .t_upstream_ttfb_ms
+            .filter(|value| value.is_finite() && *value > 0.0)
+        {
+            entry.performance_first_byte_sample_count += 1;
+            entry.performance_first_byte_sum_ms +=
+                normalize_non_negative_timing_value(row.t_req_read_ms).unwrap_or_default()
+                    + normalize_non_negative_timing_value(row.t_req_parse_ms).unwrap_or_default()
+                    + normalize_non_negative_timing_value(row.t_upstream_connect_ms)
+                        .unwrap_or_default()
+                    + ttfb_ms;
+        }
+        if let Some(total_duration_ms) = normalize_non_negative_timing_value(row.t_total_ms) {
+            entry.performance_usage_duration_sample_count += 1;
+            entry.performance_usage_duration_sum_ms += total_duration_ms;
         }
     }
 

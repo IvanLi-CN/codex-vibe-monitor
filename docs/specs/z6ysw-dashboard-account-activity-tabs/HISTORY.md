@@ -4,6 +4,8 @@
 
 ## Decision Trace
 
+- 2026-07-22：确认旧的 `full_range_preview_rows` 已退出健康主链后，7d 残留热点进一步收缩到 `usage_breakdown` 自身；因此冻结新的实现约束为“补内部 `model + reasoning` hourly breakdown rollup，并让 summary / dashboard / upstream-account 共用同一 `rollup + exact tail + archive hole fallback` builder”，而不是继续在各路 handler 上重复 raw aggregate 优化。
+- 2026-07-22：review 收口时补充确认 rollout 迁移约束：新的 `usage_breakdown` target 不能复用 legacy account rollup 的 materialized shortcut。对已上线版本留下的老 archive materialized batch，缺 breakdown rows 时必须 reopen backlog 做历史回放，而不是继续输出看似健康但实际漏算的 `7d` usage breakdown。
 - 2026-07-20：Dashboard 7d 总览残留慢点确认不只来自 account activity；同轮把 `/api/stats/summary` 与 `stats.summary.current` 的 open-range `usage_breakdown / non_success_tokens` 改成 aggregate-only builder，移除 raw preview 全窗扫描与 live-id overlap 扫描，避免 overview bundle 在 `fetchDashboardActivity("7d") + fetchSummary("7d")` 下继续把 SQLite 压力打回读侧。
 - 2026-07-20：落实 Dashboard 读侧 CPU 修复。`upstream-account-activity` 与 dashboard full path 不再对完整 `7d` range 做 persisted `running/pending` preview 扫描，recent 改为“每账号 bounded candidate + hydration + runtime/live overlay”；同日把 non-`yesterday` dashboard 基础快照缓存收敛为稳定请求参数选择键与 `5s` TTL，并补齐 `route / builder / purpose / limit / cache_ttl_ms / cache_entry_age_ms / cache_entry_count / in_flight_count` 遥测，便于线上继续判定是缓存未合并还是 preview 仍过宽。
 - 2026-07-20：收紧 Dashboard 对话卡片 `当前调用 / 上一条调用` 的可见用量行。此前槽位常驻展示 `IN / CW / C / O / T / $`，在窄卡里噪声偏高；本轮冻结为只显示 `Hit / Token / $` 三项，其中 `Hit` 口径固定为 `cacheInputTokens / totalTokens`，成本值复用金额主题 accent，而完整 token/cost/reasoning 明细继续保留在 hover/title，避免压缩卡面时丢失诊断能力。

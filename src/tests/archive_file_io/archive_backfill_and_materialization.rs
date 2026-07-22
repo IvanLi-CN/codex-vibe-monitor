@@ -1672,6 +1672,218 @@ async fn materialize_historical_rollups_resumes_invocation_archive_from_saved_pr
 }
 
 #[tokio::test]
+async fn materialize_historical_rollups_backfills_usage_breakdown_prefix_behind_shared_cursor() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-breakdown-prefix-catchup").await;
+    let archive_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 45) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let bucket_start_epoch = align_bucket_epoch(
+        local_naive_to_utc(archive_hour_local, Shanghai).timestamp(),
+        3_600,
+        0,
+    );
+    let first_occurred_at = format_naive(
+        archive_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid first archived occurred_at"),
+    );
+    let second_occurred_at = format_naive(
+        archive_hour_local
+            .checked_add_signed(ChronoDuration::minutes(20))
+            .expect("valid second archived occurred_at"),
+    );
+
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "historical-rollup-breakdown-prefix-catchup",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 1,
+                invoke_id: "historical-rollup-breakdown-prefix-catchup-1",
+                occurred_at: first_occurred_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 12,
+                cost: 0.12,
+                ttfb_ms: Some(120.0),
+                payload: Some(r#"{"upstreamAccountId":17}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 2,
+                invoke_id: "historical-rollup-breakdown-prefix-catchup-2",
+                occurred_at: second_occurred_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 21,
+                cost: 0.21,
+                ttfb_ms: Some(210.0),
+                payload: Some(r#"{"upstreamAccountId":17}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0),
+            },
+        ],
+    )
+    .await;
+    let archive_db_path = config
+        .archive_dir
+        .join("historical-rollup-breakdown-prefix-catchup.sqlite");
+    let archive_pool = SqlitePool::connect(&test_sqlite_url_for_path(&archive_db_path))
+        .await
+        .expect("open mutable invocation archive sqlite");
+    for (id, cost_input, cost_output) in [(1_i64, 0.05_f64, 0.07_f64), (2_i64, 0.08_f64, 0.13_f64)]
+    {
+        sqlx::query(
+            r#"
+            UPDATE codex_invocations
+            SET model = 'gpt-5',
+                cost_input = ?2,
+                cost_cache_write = 0.0,
+                cost_cache_read = 0.0,
+                cost_output = ?3,
+                cost_reasoning = 0.0
+            WHERE id = ?1
+            "#,
+        )
+        .bind(id)
+        .bind(cost_input)
+        .bind(cost_output)
+        .execute(&archive_pool)
+        .await
+        .expect("write archive usage breakdown detail fields");
+    }
+    archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+        .expect("refresh archive gzip with usage breakdown detail fields");
+
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(12_i64)
+    .bind(0.12_f64)
+    .bind(1_i64)
+    .bind(120.0_f64)
+    .bind(120.0_f64)
+    .bind("[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1]")
+    .execute(&pool)
+    .await
+    .expect("seed historical invocation rollup prefix");
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_account_usage_hourly (
+            bucket_start_epoch,
+            upstream_account_id,
+            request_count,
+            total_tokens,
+            total_cost,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            success_count,
+            failure_count,
+            first_seen_at,
+            last_seen_at
+        )
+        VALUES (?1, ?2, 1, 12, 0.12, 0, 12, 0, 1, 0, ?3, ?4)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(17_i64)
+    .bind(&first_occurred_at)
+    .bind(&first_occurred_at)
+    .execute(&pool)
+    .await
+    .expect("seed historical account usage prefix");
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_progress (
+            dataset,
+            file_path,
+            cursor_id,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(1_i64)
+    .execute(&pool)
+    .await
+    .expect("seed shared replay cursor from legacy targets");
+
+    let summary = materialize_historical_rollups_bounded(&pool, &config, false, Some(1), None)
+        .await
+        .expect("materialize historical rollups with breakdown prefix catch-up");
+    assert_eq!(summary.materialized_invocation_batches, 1);
+
+    let (request_count, cost_input, cost_output, cost_unknown): (i64, f64, f64, f64) =
+        sqlx::query_as::<_, (i64, f64, f64, f64)>(
+            r#"
+        SELECT
+            COALESCE(SUM(request_count), 0) AS request_count,
+            COALESCE(SUM(cost_input), 0) AS cost_input,
+            COALESCE(SUM(cost_output), 0) AS cost_output,
+            COALESCE(SUM(cost_unknown), 0) AS cost_unknown
+        FROM upstream_account_usage_breakdown_hourly
+        WHERE upstream_account_id = ?1
+          AND normalized_model = 'gpt-5'
+        "#,
+        )
+        .bind(17_i64)
+        .fetch_one(&pool)
+        .await
+        .expect("load historical usage breakdown totals after catch-up");
+    assert_eq!(request_count, 2);
+    assert_f64_close(cost_input, 0.13_f64);
+    assert_f64_close(cost_output, 0.20_f64);
+    assert_f64_close(cost_unknown, 0.0_f64);
+
+    let breakdown_progress_cursor: Option<i64> = sqlx::query_scalar(
+        "SELECT cursor_id FROM hourly_rollup_archive_progress WHERE dataset = ?1 AND file_path = ?2",
+    )
+    .bind(INVOCATION_USAGE_BREAKDOWN_ARCHIVE_PROGRESS_DATASET)
+    .bind(archive_path.to_string_lossy().to_string())
+    .fetch_optional(&pool)
+    .await
+    .expect("load breakdown-specific archive progress after materialization");
+    assert_eq!(breakdown_progress_cursor, None);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn materialize_historical_rollups_bounded_skips_live_replay_when_elapsed_budget_is_zero() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("historical-rollup-bounded-live-budget-zero").await;
@@ -1725,7 +1937,8 @@ async fn materialize_historical_rollups_bounded_skips_live_replay_when_elapsed_b
 }
 
 #[tokio::test]
-async fn materialize_historical_rollups_marks_replayed_batches_as_materialized() {
+async fn materialize_historical_rollups_marks_replayed_batches_as_materialized_after_usage_breakdown_replay()
+ {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("historical-rollup-mark-replayed").await;
     let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
@@ -1822,7 +2035,7 @@ async fn materialize_historical_rollups_marks_replayed_batches_as_materialized()
     let materialize = materialize_historical_rollups(&pool, &config, false)
         .await
         .expect("materialize should only mark replayed batches");
-    assert_eq!(materialize.materialized_invocation_batches, 0);
+    assert_eq!(materialize.materialized_invocation_batches, 1);
     assert_eq!(materialize.materialized_forward_proxy_batches, 0);
 
     let materialized_batches: i64 = sqlx::query_scalar(
@@ -1842,8 +2055,7 @@ async fn materialize_historical_rollups_marks_replayed_batches_as_materialized()
 }
 
 #[tokio::test]
-async fn materialize_historical_rollups_marks_account_replay_targets_when_only_account_targets_are_pending()
- {
+async fn materialize_historical_rollups_replays_usage_breakdown_when_account_targets_are_pending() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("historical-rollup-account-target-markers").await;
     let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
@@ -1906,8 +2118,8 @@ async fn materialize_historical_rollups_marks_account_replay_targets_when_only_a
 
     let materialize = materialize_historical_rollups(&pool, &config, false)
         .await
-        .expect("materialize should mark account replay targets too");
-    assert_eq!(materialize.materialized_invocation_batches, 0);
+        .expect("materialize should replay pending usage breakdown target");
+    assert_eq!(materialize.materialized_invocation_batches, 1);
 
     let account_target_markers: i64 = sqlx::query_scalar(
         r#"
@@ -1915,23 +2127,31 @@ async fn materialize_historical_rollups_marks_account_replay_targets_when_only_a
         FROM hourly_rollup_archive_replay
         WHERE dataset = 'codex_invocations'
           AND file_path = ?1
-          AND target IN (?2, ?3, ?4)
+          AND target IN (?2, ?3, ?4, ?5)
         "#,
     )
     .bind(&invocation_archive_path)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE)
     .fetch_one(&pool)
     .await
     .expect("count account replay markers");
-    assert_eq!(account_target_markers, 3);
+    assert_eq!(account_target_markers, 4);
+
+    let breakdown_row_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_usage_breakdown_hourly")
+            .fetch_one(&pool)
+            .await
+            .expect("count usage breakdown rollup rows after replay");
+    assert!(breakdown_row_count > 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]
-async fn bootstrap_hourly_rollups_repairs_missing_materialized_account_replay_markers() {
+async fn bootstrap_hourly_rollups_reopens_materialized_batches_missing_usage_breakdown_backfill() {
     let (pool, config, temp_dir) =
         retention_memory_test_pool_and_config("bootstrap-repairs-account-markers").await;
     let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
@@ -1971,11 +2191,12 @@ async fn bootstrap_hourly_rollups_repairs_missing_materialized_account_replay_ma
         DELETE FROM hourly_rollup_archive_replay
         WHERE dataset = 'codex_invocations'
           AND file_path = ?1
-          AND target IN (?2, ?3, ?4)
+          AND target IN (?2, ?3, ?4, ?5)
         "#,
     )
     .bind(&invocation_archive_path)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE)
     .execute(&pool)
@@ -1984,12 +2205,279 @@ async fn bootstrap_hourly_rollups_repairs_missing_materialized_account_replay_ma
 
     bootstrap_hourly_rollups(&pool)
         .await
-        .expect("bootstrap should repair missing account replay markers");
+        .expect("bootstrap should reopen missing usage breakdown backfill");
 
-    let account_target_markers: i64 = sqlx::query_scalar(
+    let breakdown_replay_markers: i64 = sqlx::query_scalar(
         r#"
         SELECT COUNT(*)
         FROM hourly_rollup_archive_replay
+        WHERE dataset = 'codex_invocations'
+          AND file_path = ?1
+          AND target = ?2
+        "#,
+    )
+    .bind(&invocation_archive_path)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .fetch_one(&pool)
+    .await
+    .expect("count remaining breakdown replay markers");
+    assert_eq!(breakdown_replay_markers, 0);
+
+    let materialized_at: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT historical_rollups_materialized_at
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND file_path = ?1
+        "#,
+    )
+    .bind(&invocation_archive_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load materialized timestamp after bootstrap");
+    assert!(materialized_at.is_none());
+
+    let backlog_snapshot = load_historical_rollup_backfill_snapshot(&pool, &config)
+        .await
+        .expect("load backlog after bootstrap repair");
+    assert_eq!(backlog_snapshot.legacy_archive_pending, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn bootstrap_hourly_rollups_repairs_pre_upgrade_breakdown_rows_before_syncing_new_live_rows()
+{
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("bootstrap-live-breakdown-repair-before-sync").await;
+    let first_local = shanghai_local_days_ago(0, 9, 10, 0);
+    let second_local = shanghai_local_days_ago(0, 9, 20, 0);
+
+    for (id, invoke_id, occurred_at, total_tokens, cost, upstream_account_id) in [
+        (
+            41_i64,
+            "bootstrap-live-breakdown-old-cursor",
+            first_local.as_str(),
+            30_i64,
+            0.01_f64,
+            17_i64,
+        ),
+        (
+            42_i64,
+            "bootstrap-live-breakdown-new-row",
+            second_local.as_str(),
+            40_i64,
+            0.02_f64,
+            17_i64,
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                detail_level,
+                model,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                cost,
+                payload,
+                raw_response,
+                created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(DETAIL_LEVEL_FULL)
+        .bind("gpt-5")
+        .bind(12_i64)
+        .bind(6_i64)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(
+            json!({
+                "upstreamAccountId": upstream_account_id,
+                "responseModel": "gpt-5",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .bind(occurred_at)
+        .execute(&pool)
+        .await
+        .expect("insert live invocation for breakdown bootstrap repair");
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_live_progress (dataset, cursor_id)
+        VALUES (?1, ?2)
+        ON CONFLICT(dataset) DO UPDATE SET cursor_id = excluded.cursor_id
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(41_i64)
+    .execute(&pool)
+    .await
+    .expect("seed pre-upgrade shared invocation cursor");
+
+    bootstrap_hourly_rollups(&pool)
+        .await
+        .expect("bootstrap should repair old breakdown rows before syncing new live rows");
+
+    let breakdown = sqlx::query_as::<_, (i64, i64, i64)>(
+        r#"
+        SELECT request_count, success_count, performance_total_tokens
+        FROM upstream_account_usage_breakdown_hourly
+        WHERE upstream_account_id = ?1
+          AND normalized_model = 'gpt-5'
+        "#,
+    )
+    .bind(17_i64)
+    .fetch_one(&pool)
+    .await
+    .expect("load repaired breakdown rollup row");
+    assert_eq!(breakdown.0, 2);
+    assert_eq!(breakdown.1, 2);
+    assert_eq!(breakdown.2, 70);
+
+    let shared_cursor: i64 =
+        sqlx::query_scalar("SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1")
+            .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+            .fetch_one(&pool)
+            .await
+            .expect("load shared invocation cursor after bootstrap");
+    assert_eq!(shared_cursor, 42);
+
+    let repair_cursor: i64 =
+        sqlx::query_scalar("SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1")
+            .bind(INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_CURSOR_DATASET)
+            .fetch_one(&pool)
+            .await
+            .expect("load breakdown repair cursor after bootstrap");
+    assert_eq!(repair_cursor, 41);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn bootstrap_hourly_rollups_repairs_legacy_account_replay_markers_when_breakdown_is_healthy()
+{
+    let (pool, config, temp_dir) =
+        retention_memory_test_pool_and_config("bootstrap-repairs-legacy-account-markers").await;
+    let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
+
+    insert_retention_invocation(
+        &pool,
+        "bootstrap-repairs-legacy-account-markers",
+        &old_invocation,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"upstreamAccountId\":17,\"upstreamAccountName\":\"Replay\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("seed live hourly rollups before retention");
+    let retention = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("archive old rows before bootstrap repair");
+    assert_eq!(retention.invocation_rows_archived, 1);
+
+    let invocation_archive_path: String = sqlx::query_scalar(
+        "SELECT file_path FROM archive_batches WHERE dataset = 'codex_invocations' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load invocation archive path");
+
+    let bucket_epoch: i64 = sqlx::query_scalar(
+        "SELECT bucket_start_epoch FROM upstream_account_usage_hourly ORDER BY bucket_start_epoch DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load usage rollup bucket epoch");
+
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_account_usage_breakdown_hourly (
+            bucket_start_epoch,
+            source,
+            upstream_account_key,
+            upstream_account_id,
+            normalized_model,
+            normalized_reasoning_effort,
+            request_count,
+            success_count,
+            failure_count,
+            cache_write_tokens,
+            cache_read_tokens,
+            output_tokens,
+            cost_input,
+            cost_cache_write,
+            cost_cache_read,
+            cost_output,
+            cost_reasoning,
+            cost_unknown,
+            has_cost,
+            performance_total_tokens,
+            performance_stream_output_tokens,
+            performance_stream_duration_ms,
+            performance_response_sample_count,
+            performance_response_sum_ms,
+            performance_first_byte_sample_count,
+            performance_first_byte_sum_ms,
+            performance_usage_duration_sample_count,
+            performance_usage_duration_sum_ms,
+            updated_at
+        )
+        VALUES (
+            ?1, ?2, ?3, ?4, ?5, '', 1, 1, 0, 0, 0, 42,
+            0.42, 0.0, 0.0, 0.0, 0.0, 0.0, 1, 42, 42, 120.0, 1, 120.0, 1, 60.0, 1, 120.0,
+            datetime('now')
+        )
+        "#,
+    )
+    .bind(bucket_epoch)
+    .bind(SOURCE_PROXY)
+    .bind("upstream:17")
+    .bind(17_i64)
+    .bind("gpt-5")
+    .execute(&pool)
+    .await
+    .expect("seed healthy breakdown rollup row");
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&invocation_archive_path)
+    .execute(&pool)
+    .await
+    .expect("seed healthy breakdown replay marker");
+
+    sqlx::query(
+        r#"
+        DELETE FROM hourly_rollup_archive_replay
         WHERE dataset = 'codex_invocations'
           AND file_path = ?1
           AND target IN (?2, ?3, ?4)
@@ -1999,10 +2487,439 @@ async fn bootstrap_hourly_rollups_repairs_missing_materialized_account_replay_ma
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE)
+    .execute(&pool)
+    .await
+    .expect("drop legacy account replay markers");
+
+    bootstrap_hourly_rollups(&pool)
+        .await
+        .expect("bootstrap should repair legacy account replay markers");
+
+    let account_target_markers: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_archive_replay
+        WHERE dataset = 'codex_invocations'
+          AND file_path = ?1
+          AND target IN (?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind(&invocation_archive_path)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE)
     .fetch_one(&pool)
     .await
-    .expect("count repaired account replay markers");
-    assert_eq!(account_target_markers, 3);
+    .expect("count repaired legacy account replay markers");
+    assert_eq!(account_target_markers, 4);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn bootstrap_hourly_rollups_reopens_partially_populated_usage_breakdown_history() {
+    let (pool, config, temp_dir) =
+        retention_memory_test_pool_and_config("bootstrap-reopens-partial-breakdown-history").await;
+    let first_local = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 10, 0);
+    let second_local = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 10, 20, 0);
+
+    for occurred_at in [&first_local, &second_local] {
+        insert_retention_invocation(
+            &pool,
+            "bootstrap-reopens-partial-breakdown-history",
+            occurred_at,
+            SOURCE_PROXY,
+            "success",
+            Some("{\"upstreamAccountId\":17,\"upstreamAccountName\":\"Replay\"}"),
+            "{\"ok\":true}",
+            None,
+            None,
+            Some(42),
+            Some(0.42),
+        )
+        .await;
+    }
+
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("seed live hourly rollups before retention");
+    let retention = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("archive old rows before partial breakdown repair");
+    assert_eq!(retention.invocation_rows_archived, 2);
+
+    let invocation_archive_path: String = sqlx::query_scalar(
+        "SELECT file_path FROM archive_batches WHERE dataset = 'codex_invocations' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load invocation archive path");
+
+    let first_bucket_epoch = local_naive_to_utc(
+        parse_shanghai_local_naive(&first_local).expect("valid first local timestamp"),
+        Shanghai,
+    )
+    .timestamp()
+        / 3_600
+        * 3_600;
+    let second_bucket_epoch = local_naive_to_utc(
+        parse_shanghai_local_naive(&second_local).expect("valid second local timestamp"),
+        Shanghai,
+    )
+    .timestamp()
+        / 3_600
+        * 3_600;
+
+    sqlx::query(
+        r#"
+        DELETE FROM upstream_account_usage_breakdown_hourly
+        WHERE bucket_start_epoch = ?1
+        "#,
+    )
+    .bind(second_bucket_epoch)
+    .execute(&pool)
+    .await
+    .expect("drop second breakdown bucket to mimic partial backfill");
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_materialized_buckets (
+            target,
+            bucket_start_epoch,
+            source,
+            materialized_at
+        )
+        VALUES (?1, ?2, ?3, datetime('now'))
+        ON CONFLICT(target, bucket_start_epoch, source) DO NOTHING
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(first_bucket_epoch)
+    .bind(SOURCE_PROXY)
+    .execute(&pool)
+    .await
+    .expect("seed first invocation materialized bucket");
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_materialized_buckets (
+            target,
+            bucket_start_epoch,
+            source,
+            materialized_at
+        )
+        VALUES (?1, ?2, ?3, datetime('now'))
+        ON CONFLICT(target, bucket_start_epoch, source) DO NOTHING
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(second_bucket_epoch)
+    .bind(SOURCE_PROXY)
+    .execute(&pool)
+    .await
+    .expect("seed second invocation materialized bucket");
+
+    bootstrap_hourly_rollups(&pool)
+        .await
+        .expect("bootstrap should reopen partial usage breakdown history");
+
+    let materialized_at: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT historical_rollups_materialized_at
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND file_path = ?1
+        "#,
+    )
+    .bind(&invocation_archive_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load materialized timestamp after partial repair");
+    assert!(materialized_at.is_none());
+
+    let breakdown_replay_markers: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_archive_replay
+        WHERE dataset = 'codex_invocations'
+          AND file_path = ?1
+          AND target = ?2
+        "#,
+    )
+    .bind(&invocation_archive_path)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .fetch_one(&pool)
+    .await
+    .expect("count breakdown replay markers after partial repair");
+    assert_eq!(breakdown_replay_markers, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn bootstrap_hourly_rollups_reopens_same_bucket_partial_usage_breakdown_groups() {
+    let (pool, config, temp_dir) = retention_memory_test_pool_and_config(
+        "bootstrap-reopens-same-bucket-partial-breakdown-groups",
+    )
+    .await;
+    let first_local = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 10, 0);
+    let second_local = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 20, 0);
+
+    insert_retention_invocation(
+        &pool,
+        "bootstrap-reopens-same-bucket-group-a",
+        &first_local,
+        SOURCE_PROXY,
+        "success",
+        Some(
+            "{\"upstreamAccountId\":17,\"upstreamAccountName\":\"Replay A\",\"responseModel\":\"gpt-5\"}",
+        ),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    insert_retention_invocation(
+        &pool,
+        "bootstrap-reopens-same-bucket-group-b",
+        &second_local,
+        SOURCE_PROXY,
+        "success",
+        Some(
+            "{\"upstreamAccountId\":18,\"upstreamAccountName\":\"Replay B\",\"responseModel\":\"gpt-4o\"}",
+        ),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(64),
+        Some(0.64),
+    )
+    .await;
+
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("seed live hourly rollups before same-bucket repair");
+    let retention = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("archive old rows before same-bucket partial breakdown repair");
+    assert_eq!(retention.invocation_rows_archived, 2);
+
+    let invocation_archive_path: String = sqlx::query_scalar(
+        "SELECT file_path FROM archive_batches WHERE dataset = 'codex_invocations' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load invocation archive path");
+
+    let bucket_epoch = local_naive_to_utc(
+        parse_shanghai_local_naive(&first_local).expect("valid same-bucket local timestamp"),
+        Shanghai,
+    )
+    .timestamp()
+        / 3_600
+        * 3_600;
+
+    sqlx::query(
+        r#"
+        DELETE FROM upstream_account_usage_breakdown_hourly
+        WHERE bucket_start_epoch = ?1
+          AND upstream_account_id = ?2
+        "#,
+    )
+    .bind(bucket_epoch)
+    .bind(18_i64)
+    .execute(&pool)
+    .await
+    .expect("drop one same-bucket breakdown group to mimic partial backfill");
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_materialized_buckets (
+            target,
+            bucket_start_epoch,
+            source,
+            materialized_at
+        )
+        VALUES (?1, ?2, ?3, datetime('now'))
+        ON CONFLICT(target, bucket_start_epoch, source) DO NOTHING
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(bucket_epoch)
+    .bind(SOURCE_PROXY)
+    .execute(&pool)
+    .await
+    .expect("seed same-bucket invocation materialized marker");
+
+    bootstrap_hourly_rollups(&pool)
+        .await
+        .expect("bootstrap should reopen same-bucket partial breakdown groups");
+
+    let materialized_at: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT historical_rollups_materialized_at
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND file_path = ?1
+        "#,
+    )
+    .bind(&invocation_archive_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load materialized timestamp after same-bucket repair");
+    assert!(materialized_at.is_none());
+
+    let breakdown_replay_markers: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_archive_replay
+        WHERE dataset = 'codex_invocations'
+          AND file_path = ?1
+          AND target = ?2
+        "#,
+    )
+    .bind(&invocation_archive_path)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .fetch_one(&pool)
+    .await
+    .expect("count breakdown replay markers after same-bucket repair");
+    assert_eq!(breakdown_replay_markers, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn usage_breakdown_repair_preserves_retained_live_rows_in_reopened_archive_bucket() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("breakdown-repair-preserves-live-bucket").await;
+    let live_local = shanghai_local_days_ago(0, 9, 50, 0);
+    let coverage_start = shanghai_local_days_ago(0, 9, 5, 0);
+    let coverage_end = shanghai_local_days_ago(0, 9, 20, 0);
+
+    insert_retention_invocation(
+        &pool,
+        "breakdown-repair-retained-live",
+        &live_local,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"upstreamAccountId\":17,\"upstreamAccountName\":\"Retained Live\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("seed live breakdown rollup before repair");
+
+    let bucket_epoch = local_naive_to_utc(
+        parse_shanghai_local_naive(&live_local).expect("valid live local timestamp"),
+        Shanghai,
+    )
+    .timestamp()
+        / 3_600
+        * 3_600;
+    let seeded_live_rows: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(SUM(request_count), 0)
+        FROM upstream_account_usage_breakdown_hourly
+        WHERE bucket_start_epoch = ?1
+          AND upstream_account_id = ?2
+        "#,
+    )
+    .bind(bucket_epoch)
+    .bind(17_i64)
+    .fetch_one(&pool)
+    .await
+    .expect("load seeded live breakdown rows");
+    assert_eq!(seeded_live_rows, 1);
+
+    let archive_path = temp_dir
+        .join("archives")
+        .join("codex_invocations")
+        .join("partial-retained-live.sqlite.gz");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            historical_rollups_materialized_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&coverage_start[..7])
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind("partial-retained-live-sha")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&coverage_start)
+    .bind(&coverage_end)
+    .execute(&pool)
+    .await
+    .expect("seed materialized archive batch overlapping retained live bucket");
+
+    let touched = repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+        .await
+        .expect("repair missing usage breakdown replay state");
+    assert_eq!(touched, 1);
+
+    let retained_live_rows: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(SUM(request_count), 0)
+        FROM upstream_account_usage_breakdown_hourly
+        WHERE bucket_start_epoch = ?1
+          AND upstream_account_id = ?2
+        "#,
+    )
+    .bind(bucket_epoch)
+    .bind(17_i64)
+    .fetch_one(&pool)
+    .await
+    .expect("load retained live breakdown rows after repair");
+    assert_eq!(retained_live_rows, 1);
+
+    let retained_live_cost: f64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(SUM(cost_unknown), 0.0)
+        FROM upstream_account_usage_breakdown_hourly
+        WHERE bucket_start_epoch = ?1
+          AND upstream_account_id = ?2
+        "#,
+    )
+    .bind(bucket_epoch)
+    .bind(17_i64)
+    .fetch_one(&pool)
+    .await
+    .expect("load retained live breakdown cost after repair");
+    assert_f64_close(retained_live_cost, 0.42);
+
+    let materialized_at: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT historical_rollups_materialized_at
+        FROM archive_batches
+        WHERE dataset = ?1
+          AND file_path = ?2
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(archive_path.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("load materialized timestamp after repair");
+    assert!(materialized_at.is_none());
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -3806,7 +4723,8 @@ async fn prune_archive_batches_removes_expired_segments_and_legacy_batches() {
 }
 
 #[tokio::test]
-async fn bootstrap_hourly_rollups_keeps_retention_materialized_totals_unchanged() {
+async fn bootstrap_hourly_rollups_keeps_retention_materialized_totals_unchanged_while_reopening_missing_breakdown_backfill()
+ {
     let (pool, config, temp_dir) =
         retention_memory_test_pool_and_config("hourly-rollup-retention-accounted").await;
     let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
@@ -3948,7 +4866,7 @@ async fn bootstrap_hourly_rollups_keeps_retention_materialized_totals_unchanged(
     .fetch_one(&pool)
     .await
     .expect("count materialized invocation archive batches");
-    assert_eq!(invocation_materialized_batches, 1);
+    assert_eq!(invocation_materialized_batches, 0);
 
     let forward_proxy_materialized_batches: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'forward_proxy_attempts' AND historical_rollups_materialized_at IS NOT NULL",
@@ -3963,7 +4881,12 @@ async fn bootstrap_hourly_rollups_keeps_retention_materialized_totals_unchanged(
             .fetch_one(&pool)
             .await
             .expect("count hourly rollup archive replay markers");
-    assert_eq!(replay_marker_count, 3);
+    assert_eq!(replay_marker_count, 0);
+
+    let historical_backfill_snapshot = load_historical_rollup_backfill_snapshot(&pool, &config)
+        .await
+        .expect("load backlog after reopening missing breakdown backfill");
+    assert_eq!(historical_backfill_snapshot.legacy_archive_pending, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }

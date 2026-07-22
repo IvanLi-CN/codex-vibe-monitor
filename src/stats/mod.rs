@@ -969,6 +969,10 @@ pub(crate) struct ArchiveBatchPathRow {
 }
 
 impl ArchiveBatchPathRow {
+    pub(crate) fn file_path(&self) -> &str {
+        &self.file_path
+    }
+
     pub(crate) fn has_materialized_historical_rollups(&self) -> bool {
         self.historical_rollups_materialized_at.is_some()
     }
@@ -1043,11 +1047,17 @@ pub(crate) async fn load_invocation_hourly_source_rows_after_id(
             source,
             status,
             detail_level,
+            model,
             input_tokens,
             output_tokens,
             cache_input_tokens,
             total_tokens,
             cost,
+            cost_input,
+            cost_cache_write,
+            cost_cache_read,
+            cost_output,
+            cost_reasoning,
             error_message,
             failure_kind,
             failure_class,
@@ -3187,9 +3197,7 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_hourly_rollup_
                 if !invocation_hourly_source_record_matches_range(&row, range) {
                     continue;
                 }
-                if upstream_account_id_from_payload(row.payload.as_deref())
-                    != Some(upstream_account_id)
-                {
+                if row.resolved_upstream_account_id() != Some(upstream_account_id) {
                     continue;
                 }
                 let bucket_start_epoch = summary_rollup_bucket_start_epoch(&row.occurred_at)?;
@@ -3307,9 +3315,7 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_non_success_us
                 if !invocation_hourly_source_record_matches_range(&row, range) {
                     continue;
                 }
-                if upstream_account_id_from_payload(row.payload.as_deref())
-                    != Some(upstream_account_id)
-                {
+                if row.resolved_upstream_account_id() != Some(upstream_account_id) {
                     continue;
                 }
                 if !invocation_row_counts_toward_non_success_usage(
@@ -3371,9 +3377,7 @@ pub(crate) async fn query_completed_upstream_account_archive_non_success_usage(
                 if !invocation_hourly_source_record_matches_range(&row, range) {
                     continue;
                 }
-                if upstream_account_id_from_payload(row.payload.as_deref())
-                    != Some(upstream_account_id)
-                {
+                if row.resolved_upstream_account_id() != Some(upstream_account_id) {
                     continue;
                 }
                 if !invocation_row_counts_toward_non_success_usage(

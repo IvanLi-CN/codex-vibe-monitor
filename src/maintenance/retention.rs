@@ -241,6 +241,8 @@ pub(crate) const HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS: &str =
     "prompt_cache_upstream_account_hourly";
 pub(crate) const HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE: &str =
     "upstream_account_usage_hourly";
+pub(crate) const HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN: &str =
+    "upstream_account_usage_breakdown_hourly";
 pub(crate) const HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY: &str =
     "upstream_account_stats_hourly";
 pub(crate) const HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE: &str =
@@ -253,13 +255,14 @@ pub(crate) const HISTORICAL_ROLLUP_ARCHIVE_DATASETS: [&str; 2] = [
     HOURLY_ROLLUP_DATASET_INVOCATIONS,
     HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
 ];
-pub(crate) const INVOCATION_HOURLY_ROLLUP_TARGETS: [&str; 9] = [
+pub(crate) const INVOCATION_HOURLY_ROLLUP_TARGETS: [&str; 10] = [
     HOURLY_ROLLUP_TARGET_INVOCATIONS,
     HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
     HOURLY_ROLLUP_TARGET_PROXY_PERF,
     HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
     HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
     HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
+    HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
     HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
     HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
     HOURLY_ROLLUP_TARGET_STICKY_KEYS,
@@ -281,11 +284,25 @@ pub(crate) struct InvocationHourlySourceRecord {
     pub(crate) source: String,
     pub(crate) status: Option<String>,
     pub(crate) detail_level: String,
+    #[sqlx(default)]
+    pub(crate) model: Option<String>,
     pub(crate) input_tokens: Option<i64>,
     pub(crate) output_tokens: Option<i64>,
     pub(crate) cache_input_tokens: Option<i64>,
     pub(crate) total_tokens: Option<i64>,
     pub(crate) cost: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) upstream_account_id: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) cost_input: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_cache_write: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_cache_read: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_output: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) cost_reasoning: Option<f64>,
     pub(crate) error_message: Option<String>,
     pub(crate) failure_kind: Option<String>,
     pub(crate) failure_class: Option<String>,
@@ -299,6 +316,13 @@ pub(crate) struct InvocationHourlySourceRecord {
     pub(crate) t_upstream_stream_ms: Option<f64>,
     pub(crate) t_resp_parse_ms: Option<f64>,
     pub(crate) t_persist_ms: Option<f64>,
+}
+
+impl InvocationHourlySourceRecord {
+    pub(crate) fn resolved_upstream_account_id(&self) -> Option<i64> {
+        self.upstream_account_id
+            .or_else(|| crate::proxy::upstream_account_id_from_payload(self.payload.as_deref()))
+    }
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -1680,11 +1704,18 @@ pub(crate) async fn archive_old_invocations(
                     source: candidate.source.clone(),
                     status: candidate.status.clone(),
                     detail_level: DETAIL_LEVEL_FULL.to_string(),
+                    model: None,
                     input_tokens: candidate.input_tokens,
                     output_tokens: candidate.output_tokens,
                     cache_input_tokens: candidate.cache_input_tokens,
                     total_tokens: candidate.total_tokens,
                     cost: candidate.cost,
+                    upstream_account_id: None,
+                    cost_input: None,
+                    cost_cache_write: None,
+                    cost_cache_read: None,
+                    cost_output: None,
+                    cost_reasoning: None,
                     error_message: None,
                     failure_kind: None,
                     failure_class: None,

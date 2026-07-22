@@ -853,6 +853,69 @@ pub(crate) async fn query_upstream_account_usage_hourly_rollup_range_tx(
         .map_err(Into::into)
 }
 
+pub(crate) async fn query_upstream_account_usage_breakdown_hourly_rollup_range_tx(
+    tx: &mut SqliteConnection,
+    range_start_epoch: i64,
+    range_end_epoch: i64,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+) -> Result<Vec<UpstreamAccountUsageBreakdownHourlyRollupRecord>, ApiError> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            bucket_start_epoch,
+            upstream_account_id,
+            normalized_model AS model,
+            NULLIF(normalized_reasoning_effort, '') AS reasoning_effort,
+            request_count,
+            success_count,
+            failure_count,
+            cache_write_tokens,
+            cache_read_tokens,
+            output_tokens,
+            cost_input,
+            cost_cache_write,
+            cost_cache_read,
+            cost_output,
+            cost_reasoning,
+            cost_unknown,
+            has_cost,
+            performance_total_tokens,
+            performance_stream_output_tokens,
+            performance_stream_duration_ms,
+            performance_response_sample_count,
+            performance_response_sum_ms,
+            performance_first_byte_sample_count,
+            performance_first_byte_sum_ms,
+            performance_usage_duration_sample_count,
+            performance_usage_duration_sum_ms
+        FROM upstream_account_usage_breakdown_hourly
+        WHERE bucket_start_epoch >=
+        "#,
+    );
+    query.push_bind(range_start_epoch);
+    query
+        .push(" AND bucket_start_epoch < ")
+        .push_bind(range_end_epoch);
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND upstream_account_id = ")
+            .push_bind(upstream_account_id);
+    }
+    query.push(
+        " ORDER BY bucket_start_epoch ASC, upstream_account_id ASC, normalized_model ASC, normalized_reasoning_effort ASC",
+    );
+
+    query
+        .build_query_as::<UpstreamAccountUsageBreakdownHourlyRollupRecord>()
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(Into::into)
+}
+
 pub(crate) async fn query_upstream_account_stats_rollup_range_tx(
     tx: &mut SqliteConnection,
     table_name: &str,

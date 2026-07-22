@@ -1269,6 +1269,50 @@ pub(crate) fn normalized_runtime_text(value: Option<&str>) -> String {
         .to_lowercase()
 }
 
+pub(crate) const USAGE_BREAKDOWN_UNASSIGNED_ACCOUNT_KEY: &str = "__unassigned__";
+
+fn usage_breakdown_payload_text(payload: Option<&str>, key: &str) -> Option<String> {
+    let payload = payload?;
+    let value = serde_json::from_str::<Value>(payload).ok()?;
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+pub(crate) fn normalized_usage_breakdown_model(
+    model: Option<&str>,
+    payload: Option<&str>,
+) -> String {
+    usage_breakdown_payload_text(payload, "responseModel")
+        .or_else(|| {
+            model
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+pub(crate) fn normalized_usage_breakdown_reasoning_effort(payload: Option<&str>) -> Option<String> {
+    usage_breakdown_payload_text(payload, "reasoningEffort")
+}
+
+pub(crate) fn normalized_usage_breakdown_account_key(
+    payload: Option<&str>,
+    upstream_account_id: Option<i64>,
+) -> (String, Option<i64>) {
+    match upstream_account_id.or_else(|| crate::proxy::upstream_account_id_from_payload(payload)) {
+        Some(upstream_account_id) => (
+            format!("upstream:{upstream_account_id}"),
+            Some(upstream_account_id),
+        ),
+        None => (USAGE_BREAKDOWN_UNASSIGNED_ACCOUNT_KEY.to_string(), None),
+    }
+}
+
 pub(crate) fn runtime_text_equals(value: Option<&str>, expected: &str) -> bool {
     normalized_runtime_text(value) == expected.trim().to_lowercase()
 }
@@ -5487,6 +5531,39 @@ impl SummaryRangeBuildTelemetry {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct UsageBreakdownBuildTelemetry {
+    route: &'static str,
+    window_kind: &'static str,
+    window_name: &'static str,
+}
+
+impl UsageBreakdownBuildTelemetry {
+    fn from_summary(telemetry: SummaryRangeBuildTelemetry) -> Self {
+        Self {
+            route: telemetry.route_label(),
+            window_kind: telemetry.window_kind,
+            window_name: telemetry.window_name,
+        }
+    }
+
+    fn from_range_route(route: &'static str, range_name: &str) -> Self {
+        let (window_kind, window_name) = match range_name {
+            "today" => ("calendar", "today"),
+            "yesterday" => ("calendar", "yesterday"),
+            "1d" => ("duration", "1d"),
+            "7d" => ("duration", "7d"),
+            "previous7d" => ("previous_full_days", "previous7d"),
+            _ => ("range", "range"),
+        };
+        Self {
+            route,
+            window_kind,
+            window_name,
+        }
+    }
+}
+
 fn emit_summary_range_builder_telemetry(
     telemetry: SummaryRangeBuildTelemetry,
     builder: &'static str,
@@ -5537,6 +5614,56 @@ fn emit_summary_range_builder_telemetry(
             live_id_overlap_scan_mode,
             elapsed_ms,
             "summary range builder completed"
+        );
+    }
+}
+
+fn emit_usage_breakdown_builder_telemetry(
+    telemetry: UsageBreakdownBuildTelemetry,
+    source_scope: InvocationSourceScope,
+    full_hour_bucket_count: usize,
+    rollup_row_count: usize,
+    partial_hour_row_count: usize,
+    archive_batch_count: usize,
+    fallback_reason: &'static str,
+    elapsed_ms: u64,
+) {
+    let builder = if archive_batch_count > 0 {
+        "usage_breakdown_archive_fallback"
+    } else if full_hour_bucket_count == 0 {
+        "usage_breakdown_exact_tail"
+    } else {
+        "usage_breakdown_rollup"
+    };
+    if elapsed_ms >= 250 {
+        tracing::warn!(
+            route = telemetry.route,
+            builder,
+            ?source_scope,
+            window_kind = telemetry.window_kind,
+            window_name = telemetry.window_name,
+            full_hour_bucket_count,
+            rollup_row_count,
+            partial_hour_row_count,
+            archive_batch_count,
+            fallback_reason,
+            elapsed_ms,
+            "usage breakdown builder exceeded slow-path threshold"
+        );
+    } else {
+        tracing::debug!(
+            route = telemetry.route,
+            builder,
+            ?source_scope,
+            window_kind = telemetry.window_kind,
+            window_name = telemetry.window_name,
+            full_hour_bucket_count,
+            rollup_row_count,
+            partial_hour_row_count,
+            archive_batch_count,
+            fallback_reason,
+            elapsed_ms,
+            "usage breakdown builder completed"
         );
     }
 }
@@ -6901,11 +7028,14 @@ struct UpstreamAccountPromptCacheCreatedAtRow {
     first_occurred_at: String,
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug, Clone, FromRow)]
 struct UpstreamAccountUsageBreakdownAggregateRow {
     upstream_account_id: Option<i64>,
     model: String,
     reasoning_effort: Option<String>,
+    request_count: i64,
+    success_count: i64,
+    failure_count: i64,
     cache_write_tokens: i64,
     cache_read_tokens: i64,
     output_tokens: i64,
@@ -6925,6 +7055,113 @@ struct UpstreamAccountUsageBreakdownAggregateRow {
     performance_first_byte_sum_ms: f64,
     performance_usage_duration_sample_count: i64,
     performance_usage_duration_sum_ms: f64,
+}
+
+type UsageBreakdownAggregateMergeKey = (Option<i64>, String, Option<String>);
+
+fn merge_usage_breakdown_aggregate_row_map(
+    rows_by_key: &mut HashMap<
+        UsageBreakdownAggregateMergeKey,
+        UpstreamAccountUsageBreakdownAggregateRow,
+    >,
+    row: &UpstreamAccountUsageBreakdownAggregateRow,
+) {
+    let key = (
+        row.upstream_account_id,
+        row.model.clone(),
+        row.reasoning_effort.clone(),
+    );
+    let entry =
+        rows_by_key
+            .entry(key)
+            .or_insert_with(|| UpstreamAccountUsageBreakdownAggregateRow {
+                upstream_account_id: row.upstream_account_id,
+                model: row.model.clone(),
+                reasoning_effort: row.reasoning_effort.clone(),
+                request_count: 0,
+                success_count: 0,
+                failure_count: 0,
+                cache_write_tokens: 0,
+                cache_read_tokens: 0,
+                output_tokens: 0,
+                cost_input: 0.0,
+                cost_cache_write: 0.0,
+                cost_cache_read: 0.0,
+                cost_output: 0.0,
+                cost_reasoning: 0.0,
+                cost_unknown: 0.0,
+                has_cost: 0,
+                performance_total_tokens: 0,
+                performance_stream_output_tokens: 0,
+                performance_stream_duration_ms: 0.0,
+                performance_response_sample_count: 0,
+                performance_response_sum_ms: 0.0,
+                performance_first_byte_sample_count: 0,
+                performance_first_byte_sum_ms: 0.0,
+                performance_usage_duration_sample_count: 0,
+                performance_usage_duration_sum_ms: 0.0,
+            });
+    entry.request_count += row.request_count;
+    entry.success_count += row.success_count;
+    entry.failure_count += row.failure_count;
+    entry.cache_write_tokens += row.cache_write_tokens;
+    entry.cache_read_tokens += row.cache_read_tokens;
+    entry.output_tokens += row.output_tokens;
+    entry.cost_input += row.cost_input;
+    entry.cost_cache_write += row.cost_cache_write;
+    entry.cost_cache_read += row.cost_cache_read;
+    entry.cost_output += row.cost_output;
+    entry.cost_reasoning += row.cost_reasoning;
+    entry.cost_unknown += row.cost_unknown;
+    entry.has_cost += row.has_cost;
+    entry.performance_total_tokens += row.performance_total_tokens;
+    entry.performance_stream_output_tokens += row.performance_stream_output_tokens;
+    entry.performance_stream_duration_ms += row.performance_stream_duration_ms;
+    entry.performance_response_sample_count += row.performance_response_sample_count;
+    entry.performance_response_sum_ms += row.performance_response_sum_ms;
+    entry.performance_first_byte_sample_count += row.performance_first_byte_sample_count;
+    entry.performance_first_byte_sum_ms += row.performance_first_byte_sum_ms;
+    entry.performance_usage_duration_sample_count += row.performance_usage_duration_sample_count;
+    entry.performance_usage_duration_sum_ms += row.performance_usage_duration_sum_ms;
+}
+
+fn merge_usage_breakdown_rollup_record_map(
+    rows_by_key: &mut HashMap<
+        UsageBreakdownAggregateMergeKey,
+        UpstreamAccountUsageBreakdownAggregateRow,
+    >,
+    row: &UpstreamAccountUsageBreakdownHourlyRollupRecord,
+) {
+    merge_usage_breakdown_aggregate_row_map(
+        rows_by_key,
+        &UpstreamAccountUsageBreakdownAggregateRow {
+            upstream_account_id: row.upstream_account_id,
+            model: row.model.clone(),
+            reasoning_effort: row.reasoning_effort.clone(),
+            request_count: row.request_count,
+            success_count: row.success_count,
+            failure_count: row.failure_count,
+            cache_write_tokens: row.cache_write_tokens,
+            cache_read_tokens: row.cache_read_tokens,
+            output_tokens: row.output_tokens,
+            cost_input: row.cost_input,
+            cost_cache_write: row.cost_cache_write,
+            cost_cache_read: row.cost_cache_read,
+            cost_output: row.cost_output,
+            cost_reasoning: row.cost_reasoning,
+            cost_unknown: row.cost_unknown,
+            has_cost: row.has_cost,
+            performance_total_tokens: row.performance_total_tokens,
+            performance_stream_output_tokens: row.performance_stream_output_tokens,
+            performance_stream_duration_ms: row.performance_stream_duration_ms,
+            performance_response_sample_count: row.performance_response_sample_count,
+            performance_response_sum_ms: row.performance_response_sum_ms,
+            performance_first_byte_sample_count: row.performance_first_byte_sample_count,
+            performance_first_byte_sum_ms: row.performance_first_byte_sum_ms,
+            performance_usage_duration_sample_count: row.performance_usage_duration_sample_count,
+            performance_usage_duration_sum_ms: row.performance_usage_duration_sum_ms,
+        },
+    );
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -7482,15 +7719,20 @@ async fn query_live_upstream_account_prompt_cache_created_at_rows(
         .map_err(Into::into)
 }
 
-async fn query_live_upstream_account_usage_breakdown_rows(
-    pool: &Pool<Sqlite>,
+async fn query_upstream_account_usage_breakdown_rows_from_executor<'e, E>(
+    executor: E,
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
     has_cost_breakdown_columns: bool,
     use_attempt_fallback: bool,
     exclude_invocation_ids: DashboardActivityExcludedInvocationIdsFilter<'_>,
-) -> Result<Vec<UpstreamAccountUsageBreakdownAggregateRow>, ApiError> {
-    let started_at = Instant::now();
+    start_after_id: Option<i64>,
+    snapshot_id: Option<i64>,
+    upstream_account_id_filter: Option<i64>,
+) -> Result<Vec<UpstreamAccountUsageBreakdownAggregateRow>, ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let upstream_account_id_sql = if use_attempt_fallback {
         invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations")
     } else {
@@ -7532,9 +7774,13 @@ async fn query_live_upstream_account_usage_breakdown_rows(
         "0"
     };
     let failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
-    let success_billed_sql = format!(
-        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', '{warning_success}') AND ({failure_class_sql}) = 'none' AND cost IS NOT NULL",
+    let success_like_sql = format!(
+        "LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', '{warning_success}') AND ({failure_class_sql}) = 'none'",
         warning_success = INVOCATION_STATUS_WARNING_SUCCESS,
+    );
+    let success_billed_sql = format!("{success_like_sql} AND cost IS NOT NULL");
+    let failure_count_sql = format!(
+        "LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending') AND ({failure_class_sql}) IN ('service_failure', 'client_failure', 'client_abort')"
     );
     let first_response_byte_total_sql = "COALESCE(t_req_read_ms, 0) + COALESCE(t_req_parse_ms, 0) + COALESCE(t_upstream_connect_ms, 0) + COALESCE(t_upstream_ttfb_ms, 0)";
     let mut query = QueryBuilder::<Sqlite>::new(format!(
@@ -7543,6 +7789,9 @@ async fn query_live_upstream_account_usage_breakdown_rows(
             {upstream_account_id_sql} AS upstream_account_id,
             {model_sql} AS model,
             {reasoning_effort_sql} AS reasoning_effort,
+            COUNT(*) AS request_count,
+            COALESCE(SUM(CASE WHEN {success_like_sql} THEN 1 ELSE 0 END), 0) AS success_count,
+            COALESCE(SUM(CASE WHEN {failure_count_sql} THEN 1 ELSE 0 END), 0) AS failure_count,
             COALESCE(SUM(MAX(COALESCE(input_tokens, 0) - COALESCE(cache_input_tokens, 0), 0)), 0) AS cache_write_tokens,
             COALESCE(SUM(COALESCE(cache_input_tokens, 0)), 0) AS cache_read_tokens,
             COALESCE(SUM(COALESCE(output_tokens, 0)), 0) AS output_tokens,
@@ -7570,16 +7819,53 @@ async fn query_live_upstream_account_usage_breakdown_rows(
         .push_bind(db_occurred_at_lower_bound(range.start))
         .push(" AND occurred_at < ")
         .push_bind(db_occurred_at_upper_bound(range.end));
+    if let Some(start_after_id) = start_after_id {
+        query.push(" AND id > ").push_bind(start_after_id);
+    }
+    if let Some(snapshot_id) = snapshot_id {
+        query.push(" AND id <= ").push_bind(snapshot_id);
+    }
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id_filter {
+        query
+            .push(" AND ")
+            .push(upstream_account_id_sql.as_str())
+            .push(" = ")
+            .push_bind(upstream_account_id);
     }
     push_excluded_invocation_ids_filter(&mut query, exclude_invocation_ids);
     query.push(" AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')");
     query.push(" GROUP BY upstream_account_id, model, reasoning_effort");
-    let rows = query
+    query
         .build_query_as::<UpstreamAccountUsageBreakdownAggregateRow>()
-        .fetch_all(pool)
-        .await?;
+        .fetch_all(executor)
+        .await
+        .map_err(Into::into)
+}
+
+async fn query_live_upstream_account_usage_breakdown_rows(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    has_cost_breakdown_columns: bool,
+    use_attempt_fallback: bool,
+    exclude_invocation_ids: DashboardActivityExcludedInvocationIdsFilter<'_>,
+) -> Result<Vec<UpstreamAccountUsageBreakdownAggregateRow>, ApiError> {
+    let started_at = Instant::now();
+    let rows = query_upstream_account_usage_breakdown_rows_from_executor(
+        pool,
+        source_scope,
+        range,
+        has_cost_breakdown_columns,
+        use_attempt_fallback,
+        exclude_invocation_ids,
+        None,
+        None,
+        None,
+    )
+    .await?;
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
     if elapsed_ms >= 1_000 {
         tracing::warn!(
@@ -7594,6 +7880,31 @@ async fn query_live_upstream_account_usage_breakdown_rows(
         );
     }
     Ok(rows)
+}
+
+async fn query_live_upstream_account_usage_breakdown_rows_tx(
+    tx: &mut SqliteConnection,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    has_cost_breakdown_columns: bool,
+    use_attempt_fallback: bool,
+    exclude_invocation_ids: DashboardActivityExcludedInvocationIdsFilter<'_>,
+    start_after_id: Option<i64>,
+    snapshot_id: Option<i64>,
+    upstream_account_id_filter: Option<i64>,
+) -> Result<Vec<UpstreamAccountUsageBreakdownAggregateRow>, ApiError> {
+    query_upstream_account_usage_breakdown_rows_from_executor(
+        &mut *tx,
+        source_scope,
+        range,
+        has_cost_breakdown_columns,
+        use_attempt_fallback,
+        exclude_invocation_ids,
+        start_after_id,
+        snapshot_id,
+        upstream_account_id_filter,
+    )
+    .await
 }
 
 async fn query_live_model_performance_duration_overrides(
@@ -7672,7 +7983,6 @@ async fn query_live_model_performance_duration_overrides(
 #[derive(Debug, Default)]
 struct QueryCompletedInvocationArchiveActivityAggregateRows {
     aggregates: Vec<UpstreamAccountActivityAggregateRow>,
-    usage_breakdowns: Vec<UpstreamAccountUsageBreakdownAggregateRow>,
     skipped_materialized_ranges: Vec<ExactUtcRange>,
 }
 
@@ -7700,7 +8010,6 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
     )
     .await?;
     let mut aggregates = Vec::new();
-    let mut usage_breakdowns = Vec::new();
     let mut skipped_materialized_ranges = Vec::new();
     let mut earliest_created_at_by_prompt_cache_key = HashMap::<String, String>::new();
     let mut prompt_cache_keys_by_account = HashMap::<Option<i64>, HashSet<String>>::new();
@@ -7719,9 +8028,6 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
             }
             continue;
         };
-        let has_cost_breakdown_columns =
-            crate::stats::sqlite_table_has_column(&archive_pool, "codex_invocations", "cost_input")
-                .await?;
         let overlapping_live_ids = query_archive_upstream_account_activity_overlapping_live_ids(
             pool,
             &archive_pool,
@@ -7772,17 +8078,6 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
                 .or_default()
                 .insert(prompt_cache_key);
         }
-        usage_breakdowns.extend(
-            query_live_upstream_account_usage_breakdown_rows(
-                &archive_pool,
-                source_scope,
-                range,
-                has_cost_breakdown_columns,
-                false,
-                exclude_invocation_ids_filter,
-            )
-            .await?,
-        );
         archive_pool.close().await;
         drop(temp_cleanup);
     }
@@ -7810,7 +8105,6 @@ async fn query_completed_invocation_archive_activity_aggregate_rows(
     }
     Ok(QueryCompletedInvocationArchiveActivityAggregateRows {
         aggregates,
-        usage_breakdowns,
         skipped_materialized_ranges,
     })
 }
@@ -8563,6 +8857,391 @@ async fn load_dashboard_activity_runtime_terminal_preview_rows(
     Ok(terminal_rows)
 }
 
+#[derive(Debug, Default)]
+struct UsageBreakdownRowsBuildResult {
+    rows: Vec<UpstreamAccountUsageBreakdownAggregateRow>,
+    full_hour_bucket_count: usize,
+    rollup_row_count: usize,
+    partial_hour_row_count: usize,
+    archive_batch_count: usize,
+    fallback_reason: &'static str,
+}
+
+fn usage_breakdown_request_count(rows: &[UpstreamAccountUsageBreakdownAggregateRow]) -> usize {
+    rows.iter()
+        .map(|row| row.request_count.max(0) as usize)
+        .sum::<usize>()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct UsageBreakdownArchiveFallbackRange {
+    range: ExactUtcRange,
+    skip_replayed_prefix: bool,
+}
+
+#[derive(Debug, FromRow)]
+struct HourlyRollupArchiveProgressRow {
+    file_path: String,
+    cursor_id: i64,
+}
+
+async fn load_hourly_rollup_archive_progress_by_file_path(
+    pool: &Pool<Sqlite>,
+    dataset: &str,
+    file_paths: &[String],
+) -> Result<HashMap<String, i64>, ApiError> {
+    if file_paths.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT file_path, cursor_id FROM hourly_rollup_archive_progress WHERE dataset = ",
+    );
+    query.push_bind(dataset).push(" AND file_path IN (");
+    {
+        let mut separated = query.separated(", ");
+        for file_path in file_paths {
+            separated.push_bind(file_path);
+        }
+    }
+    query.push(")");
+
+    let rows = query
+        .build_query_as::<HourlyRollupArchiveProgressRow>()
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.file_path, row.cursor_id.max(0)))
+        .collect())
+}
+
+async fn load_usage_breakdown_archive_progress_by_file_path(
+    pool: &Pool<Sqlite>,
+    file_paths: &[String],
+) -> Result<HashMap<String, i64>, ApiError> {
+    load_hourly_rollup_archive_progress_by_file_path(
+        pool,
+        INVOCATION_USAGE_BREAKDOWN_ARCHIVE_PROGRESS_DATASET,
+        file_paths,
+    )
+    .await
+}
+
+async fn query_unmaterialized_archive_usage_breakdown_rows(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    ranges: &[UsageBreakdownArchiveFallbackRange],
+    upstream_account_id: Option<i64>,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
+) -> Result<
+    (
+        Vec<UpstreamAccountUsageBreakdownAggregateRow>,
+        usize,
+        &'static str,
+    ),
+    ApiError,
+> {
+    if ranges.is_empty() {
+        return Ok((Vec::new(), 0, "none"));
+    }
+
+    let archive_lookup_range = ranges
+        .iter()
+        .map(|fallback_range| fallback_range.range)
+        .reduce(|combined, range| ExactUtcRange {
+            start: combined.start.min(range.start),
+            end: combined.end.max(range.end),
+        });
+    let archive_rows = crate::stats::load_invocation_archives_missing_effective_rollup_target(
+        pool,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+        archive_lookup_range.map(|range| (range.start, range.end)),
+    )
+    .await?;
+    if archive_rows.is_empty() {
+        return Ok((Vec::new(), 0, "none"));
+    }
+
+    let archive_progress_by_file_path = load_usage_breakdown_archive_progress_by_file_path(
+        pool,
+        &archive_rows
+            .iter()
+            .map(|archive_row| archive_row.file_path().to_string())
+            .collect::<Vec<_>>(),
+    )
+    .await?;
+    let mut fallback_reason = "archive_rollup_marker_missing";
+    let mut saw_partial_progress = false;
+    let mut rows_by_key =
+        HashMap::<UsageBreakdownAggregateMergeKey, UpstreamAccountUsageBreakdownAggregateRow>::new(
+        );
+    for archive_row in &archive_rows {
+        let start_after_id = archive_progress_by_file_path
+            .get(archive_row.file_path())
+            .copied()
+            .unwrap_or(0)
+            .max(0);
+        saw_partial_progress |= start_after_id > 0;
+        let Some((archive_pool, temp_cleanup)) = crate::stats::open_invocation_archive_batch_pool(
+            archive_row,
+            "usage-breakdown-fallback",
+        )
+        .await?
+        else {
+            fallback_reason = "archive_batch_unavailable";
+            continue;
+        };
+        let has_cost_breakdown_columns =
+            crate::stats::sqlite_table_has_column(&archive_pool, "codex_invocations", "cost_input")
+                .await?;
+        let exclude_filter = prepare_dashboard_activity_excluded_invocation_ids_filter(
+            &archive_pool,
+            exclude_invocation_ids,
+        )
+        .await?;
+        for fallback_range in ranges {
+            let rows = query_upstream_account_usage_breakdown_rows_from_executor(
+                &archive_pool,
+                source_scope,
+                fallback_range.range,
+                has_cost_breakdown_columns,
+                false,
+                exclude_filter,
+                (fallback_range.skip_replayed_prefix && start_after_id > 0)
+                    .then_some(start_after_id),
+                None,
+                upstream_account_id,
+            )
+            .await?;
+            for row in &rows {
+                merge_usage_breakdown_aggregate_row_map(&mut rows_by_key, row);
+            }
+        }
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+    if fallback_reason == "archive_rollup_marker_missing" && saw_partial_progress {
+        fallback_reason = "archive_rollup_partial_progress";
+    }
+
+    Ok((
+        rows_by_key.into_values().collect(),
+        archive_rows.len(),
+        fallback_reason,
+    ))
+}
+
+fn build_usage_breakdown_archive_fallback_ranges(
+    range: ExactUtcRange,
+    range_plan: &HourlyRollupExactRangePlan,
+    retention_cutoff: DateTime<Utc>,
+) -> Result<Vec<UsageBreakdownArchiveFallbackRange>, ApiError> {
+    let mut ranges = Vec::new();
+    if let Some(full_hour_range) =
+        dashboard_activity_full_hour_exact_range(range_plan.full_hour_range)?
+    {
+        push_usage_breakdown_archive_fallback_range(
+            &mut ranges,
+            full_hour_range.start,
+            full_hour_range.end,
+            true,
+        )?;
+        push_usage_breakdown_archive_fallback_range(
+            &mut ranges,
+            range.start,
+            full_hour_range.start.min(range.end).min(retention_cutoff),
+            false,
+        )?;
+        push_usage_breakdown_archive_fallback_range(
+            &mut ranges,
+            full_hour_range.end.max(range.start),
+            range.end.min(retention_cutoff),
+            false,
+        )?;
+    } else {
+        push_usage_breakdown_archive_fallback_range(
+            &mut ranges,
+            range.start,
+            range.end.min(retention_cutoff),
+            false,
+        )?;
+    }
+    Ok(ranges)
+}
+
+fn push_usage_breakdown_archive_fallback_range(
+    ranges: &mut Vec<UsageBreakdownArchiveFallbackRange>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    skip_replayed_prefix: bool,
+) -> Result<(), ApiError> {
+    if start >= end {
+        return Ok(());
+    }
+    ranges.push(UsageBreakdownArchiveFallbackRange {
+        range: ExactUtcRange { start, end },
+        skip_replayed_prefix,
+    });
+    Ok(())
+}
+
+async fn load_usage_breakdown_rows_for_range(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    range: ExactUtcRange,
+    telemetry: UsageBreakdownBuildTelemetry,
+) -> Result<UsageBreakdownRowsBuildResult, ApiError> {
+    let started_at = Instant::now();
+    let has_cost_breakdown_columns =
+        crate::stats::sqlite_table_has_column(&state.pool, "codex_invocations", "cost_input")
+            .await?;
+    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
+    let range_plan =
+        build_hourly_rollup_exact_range_plan(range.start, range.end, retention_cutoff)?;
+    let full_hour_bucket_count = range_plan
+        .full_hour_range
+        .map(|(start_epoch, end_epoch)| ((end_epoch - start_epoch).max(0) / 3_600) as usize)
+        .unwrap_or(0);
+    let mut rows_by_key =
+        HashMap::<UsageBreakdownAggregateMergeKey, UpstreamAccountUsageBreakdownAggregateRow>::new(
+        );
+    let mut partial_hour_row_count = 0usize;
+    let mut rollup_row_count = 0usize;
+    let mut archive_overlap_ids = HashSet::new();
+
+    {
+        let mut tx = state.pool.begin().await?;
+        let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
+        let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
+
+        if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+            let rollup_rows = query_upstream_account_usage_breakdown_hourly_rollup_range_tx(
+                tx.as_mut(),
+                range_start_epoch,
+                range_end_epoch,
+                source_scope,
+                upstream_account_id,
+            )
+            .await?;
+            rollup_row_count = rollup_rows.len();
+            for row in &rollup_rows {
+                merge_usage_breakdown_rollup_record_map(&mut rows_by_key, row);
+            }
+        }
+
+        if snapshot_id > 0 {
+            for exact_range in &range_plan.live_exact_ranges {
+                let exact_rows = query_live_upstream_account_usage_breakdown_rows_tx(
+                    tx.as_mut(),
+                    source_scope,
+                    *exact_range,
+                    has_cost_breakdown_columns,
+                    true,
+                    DashboardActivityExcludedInvocationIdsFilter::None,
+                    None,
+                    Some(snapshot_id),
+                    upstream_account_id,
+                )
+                .await?;
+                partial_hour_row_count += usage_breakdown_request_count(&exact_rows);
+                for row in &exact_rows {
+                    merge_usage_breakdown_aggregate_row_map(&mut rows_by_key, row);
+                }
+            }
+
+            if let Some(full_hour_range) =
+                dashboard_activity_full_hour_exact_range(range_plan.full_hour_range)?
+            {
+                let tail_rows = query_live_upstream_account_usage_breakdown_rows_tx(
+                    tx.as_mut(),
+                    source_scope,
+                    full_hour_range,
+                    has_cost_breakdown_columns,
+                    true,
+                    DashboardActivityExcludedInvocationIdsFilter::None,
+                    Some(rollup_live_cursor),
+                    Some(snapshot_id),
+                    upstream_account_id,
+                )
+                .await?;
+                partial_hour_row_count += usage_breakdown_request_count(&tail_rows);
+                for row in &tail_rows {
+                    merge_usage_breakdown_aggregate_row_map(&mut rows_by_key, row);
+                }
+
+                archive_overlap_ids = if let Some(upstream_account_id) = upstream_account_id {
+                    query_invocation_full_hour_tail_records_tx_for_account(
+                        tx.as_mut(),
+                        &range_plan,
+                        source_scope,
+                        rollup_live_cursor,
+                        snapshot_id,
+                        upstream_account_id,
+                    )
+                    .await?
+                    .into_iter()
+                    .map(|record| record.id)
+                    .collect()
+                } else {
+                    query_invocation_full_hour_tail_records_tx(
+                        tx.as_mut(),
+                        &range_plan,
+                        source_scope,
+                        rollup_live_cursor,
+                        snapshot_id,
+                    )
+                    .await?
+                    .into_iter()
+                    .map(|record| record.id)
+                    .collect()
+                };
+            }
+        }
+    }
+
+    let archive_fallback_ranges =
+        build_usage_breakdown_archive_fallback_ranges(range, &range_plan, retention_cutoff)?;
+    let (archive_rows, archive_batch_count, fallback_reason) = if archive_fallback_ranges.is_empty()
+    {
+        (Vec::new(), 0, "none")
+    } else {
+        query_unmaterialized_archive_usage_breakdown_rows(
+            &state.pool,
+            source_scope,
+            &archive_fallback_ranges,
+            upstream_account_id,
+            (!archive_overlap_ids.is_empty()).then_some(&archive_overlap_ids),
+        )
+        .await?
+    };
+    for row in &archive_rows {
+        merge_usage_breakdown_aggregate_row_map(&mut rows_by_key, row);
+    }
+
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    emit_usage_breakdown_builder_telemetry(
+        telemetry,
+        source_scope,
+        full_hour_bucket_count,
+        rollup_row_count,
+        partial_hour_row_count,
+        archive_batch_count,
+        fallback_reason,
+        elapsed_ms,
+    );
+
+    Ok(UsageBreakdownRowsBuildResult {
+        rows: rows_by_key.into_values().collect(),
+        full_hour_bucket_count,
+        rollup_row_count,
+        partial_hour_row_count,
+        archive_batch_count,
+        fallback_reason,
+    })
+}
+
 pub(crate) async fn load_usage_breakdown_for_range(
     state: &AppState,
     source_scope: InvocationSourceScope,
@@ -8570,89 +9249,18 @@ pub(crate) async fn load_usage_breakdown_for_range(
     range: ExactUtcRange,
     telemetry: SummaryRangeBuildTelemetry,
 ) -> Result<Option<UsageBreakdownResponse>, ApiError> {
-    let started_at = Instant::now();
-    let has_cost_breakdown_columns =
-        crate::stats::sqlite_table_has_column(&state.pool, "codex_invocations", "cost_input")
-            .await?;
     let mut usage_breakdown = UsageBreakdownAccumulator::default();
-    let live_rows = query_live_upstream_account_usage_breakdown_rows(
-        &state.pool,
-        source_scope,
-        range,
-        has_cost_breakdown_columns,
-        true,
-        DashboardActivityExcludedInvocationIdsFilter::None,
-    )
-    .await?;
-    let live_group_row_count = live_rows.len();
-    for row in live_rows {
-        if upstream_account_id.is_none_or(|account_id| row.upstream_account_id == Some(account_id))
-        {
-            usage_breakdown.add_aggregate_row(&row);
-        }
-    }
-    if range.start < shanghai_retention_cutoff(state.config.invocation_max_days) {
-        let archive_rows = query_completed_invocation_archive_activity_aggregate_rows(
-            &state.pool,
-            source_scope,
-            range,
-        )
-        .await?;
-        let archive_group_row_count = archive_rows.usage_breakdowns.len();
-        if !archive_rows.skipped_materialized_ranges.is_empty() {
-            let elapsed_ms = started_at.elapsed().as_millis() as u64;
-            emit_summary_range_builder_telemetry(
-                telemetry,
-                "summary_usage_breakdown",
-                source_scope,
-                upstream_account_id,
-                "fallback",
-                "fallback",
-                live_group_row_count,
-                archive_group_row_count,
-                "none",
-                "none",
-                elapsed_ms,
-            );
-            return Ok(None);
-        }
-        for row in archive_rows.usage_breakdowns {
-            if upstream_account_id
-                .is_none_or(|account_id| row.upstream_account_id == Some(account_id))
-            {
-                usage_breakdown.add_aggregate_row(&row);
-            }
-        }
-        let elapsed_ms = started_at.elapsed().as_millis() as u64;
-        emit_summary_range_builder_telemetry(
-            telemetry,
-            "summary_usage_breakdown",
-            source_scope,
-            upstream_account_id,
-            "aggregate_only",
-            "aggregate_merge",
-            live_group_row_count,
-            archive_group_row_count,
-            "none",
-            "none",
-            elapsed_ms,
-        );
-        return Ok(Some(usage_breakdown.into_response()));
-    }
-    let elapsed_ms = started_at.elapsed().as_millis() as u64;
-    emit_summary_range_builder_telemetry(
-        telemetry,
-        "summary_usage_breakdown",
+    let build = load_usage_breakdown_rows_for_range(
+        state,
         source_scope,
         upstream_account_id,
-        "aggregate_only",
-        "aggregate_merge",
-        live_group_row_count,
-        0,
-        "none",
-        "none",
-        elapsed_ms,
-    );
+        range,
+        UsageBreakdownBuildTelemetry::from_summary(telemetry),
+    )
+    .await?;
+    for row in &build.rows {
+        usage_breakdown.add_aggregate_row(row);
+    }
     Ok(Some(usage_breakdown.into_response()))
 }
 
@@ -11041,20 +11649,27 @@ async fn load_dashboard_activity_account_build_result(
             row.latest_avg_total_ms,
         );
     }
-    for row in query_live_upstream_account_usage_breakdown_rows(
-        &state.pool,
+    let usage_breakdown_build = load_usage_breakdown_rows_for_range(
+        state,
         source_scope,
+        None,
         range,
-        true,
-        true,
-        DashboardActivityExcludedInvocationIdsFilter::None,
+        UsageBreakdownBuildTelemetry::from_range_route(
+            if builder_kind == DashboardActivityAccountBuilderKind::UpstreamAccount {
+                "upstream_account"
+            } else {
+                "dashboard"
+            },
+            range_name,
+        ),
     )
     .await?
-    {
+    .rows;
+    for row in &usage_breakdown_build {
         let entry = account_activity.entry(row.upstream_account_id).or_default();
-        entry.usage_breakdown.add_aggregate_row(&row);
-        entry.model_performance.add_aggregate_row(&row);
-        model_performance.add_aggregate_row(&row);
+        entry.usage_breakdown.add_aggregate_row(row);
+        entry.model_performance.add_aggregate_row(row);
+        model_performance.add_aggregate_row(row);
     }
     if range.start < retention_cutoff {
         let archive_rows = query_completed_invocation_archive_activity_aggregate_rows(
@@ -11065,7 +11680,6 @@ async fn load_dashboard_activity_account_build_result(
         .await?;
         let QueryCompletedInvocationArchiveActivityAggregateRows {
             aggregates: archived_aggregates,
-            usage_breakdowns: archived_usage_breakdowns,
             skipped_materialized_ranges,
         } = archive_rows;
         for row in archived_aggregates {
@@ -11104,13 +11718,6 @@ async fn load_dashboard_activity_account_build_result(
                 row.latest_avg_total_at,
                 row.latest_avg_total_ms,
             );
-        }
-        for row in archived_usage_breakdowns {
-            account_activity
-                .entry(row.upstream_account_id)
-                .or_default()
-                .usage_breakdown
-                .add_aggregate_row(&row);
         }
         if !skipped_materialized_ranges.is_empty() {
             let global_fallback_totals = dashboard_activity_materialized_archive_fallback_totals(

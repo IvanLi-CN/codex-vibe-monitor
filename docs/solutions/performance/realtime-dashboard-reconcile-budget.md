@@ -65,6 +65,7 @@ related_specs:
 - 对 `dashboard.activity.current` 这类 open-range topic，`live` 广播不应该再反向触发完整 DB snapshot builder。更稳妥的模式是：topic cache 内存 snapshot 直接覆写当前态字段并立即 fanout；terminal `records` 只负责安排一次 `<=TTL` 的节流 refresh，且 refresh 前必须失效对应的 dashboard snapshot cache，否则 deferred refresh 仍可能命中旧 TTL 快照，owner-facing totals 会比预算再多滞后一个窗口。
 - Dashboard / upstream-account 的 recent 预览不得再为了补当前态而对整个选中 range 扫 persisted `running/pending` 行；当前态应来自 runtime/live read model，旧持久化运行态最多只能作为 bounded recent 候选参与展示。
 - `stats.summary.current` 与 `/api/stats/summary` 的 open-range `usage_breakdown / non_success_tokens` 也不能再借道 raw preview rows 或 live invocation id overlap scan。若 summary 仍需要 `7d` / `today` / 长 duration 的模型分组或非成功 token，优先复用 live aggregate + archive aggregate merge；只有在 materialized archive 无法提供所需明细时，才允许显式 fallback/置空，而不是悄悄扫整窗 raw rows。
+- 如果 Dashboard / upstream-account 的 `usage_breakdown` 还需要 `model + reasoning` 维度，则应和 summary 一样共用单一的 `rollup + exact tail` builder，并把 fallback 限定在“缺 replay marker 的 archive hole”这类显式不健康窗口。不要让 dashboard full、upstream-account、summary 三个入口各自保留一份 7d raw aggregate 逻辑，否则单个页面 bundle 仍会通过不同 route 反复打 SQLite。
 - 与 Dashboard 同屏但不共享同一 owner-facing contract 的接口，不要为了“省实现”直接复用 dashboard full snapshot builder；应复用更低层的账户活动聚合块，避免把 summary/model-performance/reconcile 之类 dashboard-only 组装再次带回实时主链路。
 - 不要为 replay 失败发明第三条恢复路径。恢复规则只应是 replay 或 snapshot。
 - 手动“立即重连”不应偷偷复用旧 `resume` 去赌 replay 命中。若产品语义是“人工要求重新拉一份当前态”，前端就应该对 active topics 强制 fresh snapshot，并给这次连接分配独立 `attempt/reason` 供前后端对账。

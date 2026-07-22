@@ -2141,6 +2141,62 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS upstream_account_usage_breakdown_hourly (
+            bucket_start_epoch INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            upstream_account_key TEXT NOT NULL,
+            upstream_account_id INTEGER,
+            normalized_model TEXT NOT NULL,
+            normalized_reasoning_effort TEXT NOT NULL DEFAULT '',
+            request_count INTEGER NOT NULL DEFAULT 0,
+            success_count INTEGER NOT NULL DEFAULT 0,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cost_input REAL NOT NULL DEFAULT 0,
+            cost_cache_write REAL NOT NULL DEFAULT 0,
+            cost_cache_read REAL NOT NULL DEFAULT 0,
+            cost_output REAL NOT NULL DEFAULT 0,
+            cost_reasoning REAL NOT NULL DEFAULT 0,
+            cost_unknown REAL NOT NULL DEFAULT 0,
+            has_cost INTEGER NOT NULL DEFAULT 0,
+            performance_total_tokens INTEGER NOT NULL DEFAULT 0,
+            performance_stream_output_tokens INTEGER NOT NULL DEFAULT 0,
+            performance_stream_duration_ms REAL NOT NULL DEFAULT 0,
+            performance_response_sample_count INTEGER NOT NULL DEFAULT 0,
+            performance_response_sum_ms REAL NOT NULL DEFAULT 0,
+            performance_first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
+            performance_first_byte_sum_ms REAL NOT NULL DEFAULT 0,
+            performance_usage_duration_sample_count INTEGER NOT NULL DEFAULT 0,
+            performance_usage_duration_sum_ms REAL NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (
+                bucket_start_epoch,
+                source,
+                upstream_account_key,
+                normalized_model,
+                normalized_reasoning_effort
+            )
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure upstream_account_usage_breakdown_hourly table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_upstream_account_usage_breakdown_hourly_account_bucket
+        ON upstream_account_usage_breakdown_hourly (upstream_account_id, bucket_start_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_upstream_account_usage_breakdown_hourly_account_bucket")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS upstream_account_stats_hourly (
             bucket_start_epoch INTEGER NOT NULL,
             source TEXT NOT NULL,

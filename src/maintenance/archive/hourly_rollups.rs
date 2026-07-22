@@ -7,6 +7,78 @@ use tracing::warn;
 mod archive_hourly_rollup_support;
 pub(crate) use archive_hourly_rollup_support::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PoolAttemptFallbackCapability {
+    Unavailable,
+    IdOnly,
+    Full,
+}
+
+fn payload_upstream_account_id_sql(invocation_ref: &str) -> String {
+    format!(
+        "CASE WHEN json_valid({invocation_ref}.payload) THEN CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) END"
+    )
+}
+
+fn invocation_upstream_account_id_with_attempt_id_fallback_sql(invocation_ref: &str) -> String {
+    let payload_sql = payload_upstream_account_id_sql(invocation_ref);
+    format!(
+        "COALESCE(\
+           {payload_sql}, \
+           (SELECT attempt.upstream_account_id \
+              FROM pool_upstream_request_attempts attempt \
+             WHERE attempt.invoke_id = {invocation_ref}.invoke_id \
+               AND attempt.occurred_at = {invocation_ref}.occurred_at \
+               AND attempt.upstream_account_id IS NOT NULL \
+             ORDER BY attempt.id DESC \
+             LIMIT 1)\
+         )"
+    )
+}
+
+async fn load_pool_attempt_fallback_capability_tx(
+    tx: &mut SqliteConnection,
+) -> Result<PoolAttemptFallbackCapability> {
+    let has_attempt_table = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pool_upstream_request_attempts' LIMIT 1",
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .is_some();
+    if !has_attempt_table {
+        return Ok(PoolAttemptFallbackCapability::Unavailable);
+    }
+
+    let has_attempt_index = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM pragma_table_info('pool_upstream_request_attempts') WHERE name = 'attempt_index' LIMIT 1",
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .is_some();
+    Ok(if has_attempt_index {
+        PoolAttemptFallbackCapability::Full
+    } else {
+        PoolAttemptFallbackCapability::IdOnly
+    })
+}
+
+fn live_invocation_upstream_account_id_sql(
+    invocation_ref: &str,
+    capability: PoolAttemptFallbackCapability,
+) -> String {
+    match capability {
+        PoolAttemptFallbackCapability::Unavailable => {
+            payload_upstream_account_id_sql(invocation_ref)
+        }
+        PoolAttemptFallbackCapability::IdOnly => {
+            invocation_upstream_account_id_with_attempt_id_fallback_sql(invocation_ref)
+        }
+        PoolAttemptFallbackCapability::Full => {
+            crate::api::invocation_upstream_account_id_with_attempt_fallback_sql(invocation_ref)
+        }
+    }
+}
+
 pub(crate) async fn mark_retention_archived_hourly_rollup_targets_tx(
     tx: &mut SqliteConnection,
     dataset: &str,
@@ -15,7 +87,8 @@ pub(crate) async fn mark_retention_archived_hourly_rollup_targets_tx(
 ) -> Result<()> {
     match dataset {
         "codex_invocations" => {
-            mark_invocation_hourly_rollup_buckets_materialized_tx(tx, invocation_rows).await?;
+            mark_retention_archived_invocation_hourly_rollup_targets_tx(tx, invocation_rows)
+                .await?;
         }
         "forward_proxy_attempts" => {
             mark_forward_proxy_hourly_rollup_buckets_materialized_tx(tx, forward_proxy_rows)
@@ -26,10 +99,226 @@ pub(crate) async fn mark_retention_archived_hourly_rollup_targets_tx(
     Ok(())
 }
 
+async fn subtract_upstream_account_usage_breakdown_hourly_rows_tx(
+    tx: &mut SqliteConnection,
+    rows: &[InvocationHourlySourceRecord],
+) -> Result<()> {
+    let mut breakdowns = BTreeMap::new();
+    for row in rows {
+        accumulate_upstream_account_usage_breakdown_rollup(&mut breakdowns, row)?;
+    }
+
+    for (
+        (
+            bucket_start_epoch,
+            source,
+            upstream_account_key,
+            _upstream_account_id,
+            normalized_model,
+            normalized_reasoning_effort,
+        ),
+        delta,
+    ) in breakdowns
+    {
+        sqlx::query(
+            r#"
+            UPDATE upstream_account_usage_breakdown_hourly
+            SET
+                request_count = MAX(request_count - ?6, 0),
+                success_count = MAX(success_count - ?7, 0),
+                failure_count = MAX(failure_count - ?8, 0),
+                cache_write_tokens = MAX(cache_write_tokens - ?9, 0),
+                cache_read_tokens = MAX(cache_read_tokens - ?10, 0),
+                output_tokens = MAX(output_tokens - ?11, 0),
+                cost_input = MAX(cost_input - ?12, 0.0),
+                cost_cache_write = MAX(cost_cache_write - ?13, 0.0),
+                cost_cache_read = MAX(cost_cache_read - ?14, 0.0),
+                cost_output = MAX(cost_output - ?15, 0.0),
+                cost_reasoning = MAX(cost_reasoning - ?16, 0.0),
+                cost_unknown = MAX(cost_unknown - ?17, 0.0),
+                has_cost = MAX(has_cost - ?18, 0),
+                performance_total_tokens = MAX(performance_total_tokens - ?19, 0),
+                performance_stream_output_tokens = MAX(performance_stream_output_tokens - ?20, 0),
+                performance_stream_duration_ms = MAX(performance_stream_duration_ms - ?21, 0.0),
+                performance_response_sample_count = MAX(performance_response_sample_count - ?22, 0),
+                performance_response_sum_ms = MAX(performance_response_sum_ms - ?23, 0.0),
+                performance_first_byte_sample_count = MAX(performance_first_byte_sample_count - ?24, 0),
+                performance_first_byte_sum_ms = MAX(performance_first_byte_sum_ms - ?25, 0.0),
+                performance_usage_duration_sample_count = MAX(performance_usage_duration_sample_count - ?26, 0),
+                performance_usage_duration_sum_ms = MAX(performance_usage_duration_sum_ms - ?27, 0.0),
+                updated_at = datetime('now')
+            WHERE bucket_start_epoch = ?1
+              AND source = ?2
+              AND upstream_account_key = ?3
+              AND normalized_model = ?4
+              AND normalized_reasoning_effort = ?5
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .bind(&source)
+        .bind(&upstream_account_key)
+        .bind(&normalized_model)
+        .bind(&normalized_reasoning_effort)
+        .bind(delta.request_count)
+        .bind(delta.success_count)
+        .bind(delta.failure_count)
+        .bind(delta.cache_write_tokens)
+        .bind(delta.cache_read_tokens)
+        .bind(delta.output_tokens)
+        .bind(delta.cost_input)
+        .bind(delta.cost_cache_write)
+        .bind(delta.cost_cache_read)
+        .bind(delta.cost_output)
+        .bind(delta.cost_reasoning)
+        .bind(delta.cost_unknown)
+        .bind(delta.has_cost)
+        .bind(delta.performance_total_tokens)
+        .bind(delta.performance_stream_output_tokens)
+        .bind(delta.performance_stream_duration_ms)
+        .bind(delta.performance_response_sample_count)
+        .bind(delta.performance_response_sum_ms)
+        .bind(delta.performance_first_byte_sample_count)
+        .bind(delta.performance_first_byte_sum_ms)
+        .bind(delta.performance_usage_duration_sample_count)
+        .bind(delta.performance_usage_duration_sum_ms)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+            DELETE FROM upstream_account_usage_breakdown_hourly
+            WHERE bucket_start_epoch = ?1
+              AND source = ?2
+              AND upstream_account_key = ?3
+              AND normalized_model = ?4
+              AND normalized_reasoning_effort = ?5
+              AND request_count = 0
+              AND success_count = 0
+              AND failure_count = 0
+              AND cache_write_tokens = 0
+              AND cache_read_tokens = 0
+              AND output_tokens = 0
+              AND cost_input = 0.0
+              AND cost_cache_write = 0.0
+              AND cost_cache_read = 0.0
+              AND cost_output = 0.0
+              AND cost_reasoning = 0.0
+              AND cost_unknown = 0.0
+              AND has_cost = 0
+              AND performance_total_tokens = 0
+              AND performance_stream_output_tokens = 0
+              AND performance_stream_duration_ms = 0.0
+              AND performance_response_sample_count = 0
+              AND performance_response_sum_ms = 0.0
+              AND performance_first_byte_sample_count = 0
+              AND performance_first_byte_sum_ms = 0.0
+              AND performance_usage_duration_sample_count = 0
+              AND performance_usage_duration_sum_ms = 0.0
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .bind(&source)
+        .bind(&upstream_account_key)
+        .bind(&normalized_model)
+        .bind(&normalized_reasoning_effort)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn mark_retention_archived_invocation_hourly_rollup_targets_tx(
+    tx: &mut SqliteConnection,
+    rows: &[InvocationHourlySourceRecord],
+) -> Result<()> {
+    let mut overall_targets = HashSet::new();
+    let mut upstream_account_usage_targets = HashSet::new();
+    let mut sticky_targets = HashSet::new();
+    for row in rows {
+        let bucket_start_epoch = invocation_bucket_start_epoch(&row.occurred_at)?;
+        overall_targets.insert((bucket_start_epoch, row.source.clone()));
+        upstream_account_usage_targets.insert(bucket_start_epoch);
+        sticky_targets.insert(bucket_start_epoch);
+    }
+
+    let live_targets = load_live_invocation_bucket_targets_tx(tx, &overall_targets).await?;
+    let live_proxy_buckets = live_targets
+        .iter()
+        .filter_map(|(bucket_start_epoch, source)| {
+            (source == SOURCE_PROXY).then_some(*bucket_start_epoch)
+        })
+        .collect::<HashSet<_>>();
+
+    for (bucket_start_epoch, source) in overall_targets {
+        if live_targets.contains(&(bucket_start_epoch, source.clone())) {
+            continue;
+        }
+        for target in [
+            HOURLY_ROLLUP_TARGET_INVOCATIONS,
+            HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+            HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
+            HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
+        ] {
+            mark_hourly_rollup_bucket_materialized_tx(tx, target, bucket_start_epoch, &source)
+                .await?;
+        }
+        if source == SOURCE_PROXY && !live_proxy_buckets.contains(&bucket_start_epoch) {
+            mark_hourly_rollup_bucket_materialized_tx(
+                tx,
+                HOURLY_ROLLUP_TARGET_PROXY_PERF,
+                bucket_start_epoch,
+                SOURCE_PROXY,
+            )
+            .await?;
+        }
+    }
+
+    subtract_upstream_account_usage_breakdown_hourly_rows_tx(tx, rows).await?;
+
+    for bucket_start_epoch in upstream_account_usage_targets {
+        if live_targets
+            .iter()
+            .any(|(live_bucket_start_epoch, _)| *live_bucket_start_epoch == bucket_start_epoch)
+        {
+            continue;
+        }
+        mark_hourly_rollup_bucket_materialized_tx(
+            tx,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
+            bucket_start_epoch,
+            HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE,
+        )
+        .await?;
+    }
+
+    for bucket_start_epoch in sticky_targets {
+        if live_proxy_buckets.contains(&bucket_start_epoch) {
+            continue;
+        }
+        mark_hourly_rollup_bucket_materialized_tx(
+            tx,
+            HOURLY_ROLLUP_TARGET_STICKY_KEYS,
+            bucket_start_epoch,
+            HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
 pub(crate) const POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET: &str =
     "pool_upstream_node_health_archive";
 pub(crate) const POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET: &str =
     "pool_upstream_node_health_hourly_archive";
+pub(crate) const INVOCATION_USAGE_BREAKDOWN_ARCHIVE_PROGRESS_DATASET: &str =
+    "codex_invocations_usage_breakdown_archive_progress";
+pub(crate) const INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_MARKER_DATASET: &str =
+    "invocation_usage_breakdown_rollup_repair";
+pub(crate) const INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_CURSOR_DATASET: &str =
+    "invocation_usage_breakdown_rollup_repair_live_cursor";
+const INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_MARKER_DONE: i64 = 1;
 
 pub(crate) fn pool_upstream_node_health_archive_identity_for_batch_id(
     archive_batch_id: i64,
@@ -350,10 +639,19 @@ pub(crate) fn legacy_compatible_archive_select_expr(
 pub(crate) fn build_legacy_compatible_invocation_archive_query(
     archive_columns: &HashSet<String>,
 ) -> String {
+    let model = legacy_compatible_archive_select_expr(archive_columns, "model");
     let input_tokens = legacy_compatible_archive_select_expr(archive_columns, "input_tokens");
     let output_tokens = legacy_compatible_archive_select_expr(archive_columns, "output_tokens");
     let cache_input_tokens =
         legacy_compatible_archive_select_expr(archive_columns, "cache_input_tokens");
+    let upstream_account_id =
+        legacy_compatible_archive_select_expr(archive_columns, "upstream_account_id");
+    let cost_input = legacy_compatible_archive_select_expr(archive_columns, "cost_input");
+    let cost_cache_write =
+        legacy_compatible_archive_select_expr(archive_columns, "cost_cache_write");
+    let cost_cache_read = legacy_compatible_archive_select_expr(archive_columns, "cost_cache_read");
+    let cost_output = legacy_compatible_archive_select_expr(archive_columns, "cost_output");
+    let cost_reasoning = legacy_compatible_archive_select_expr(archive_columns, "cost_reasoning");
     format!(
         r#"
         SELECT
@@ -362,11 +660,18 @@ pub(crate) fn build_legacy_compatible_invocation_archive_query(
             source,
             status,
             detail_level,
+            {model},
             {input_tokens},
             {output_tokens},
             {cache_input_tokens},
             total_tokens,
             cost,
+            {upstream_account_id},
+            {cost_input},
+            {cost_cache_write},
+            {cost_cache_read},
+            {cost_output},
+            {cost_reasoning},
             error_message,
             failure_kind,
             failure_class,
@@ -587,6 +892,13 @@ pub(crate) async fn mark_invocation_hourly_rollup_buckets_materialized_tx(
             HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE,
         )
         .await?;
+        mark_hourly_rollup_bucket_materialized_tx(
+            tx,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+            bucket_start_epoch,
+            HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE,
+        )
+        .await?;
     }
 
     for bucket_start_epoch in sticky_targets {
@@ -751,6 +1063,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
         targets.contains(&HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS);
     let upsert_upstream_account_usage =
         targets.contains(&HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE);
+    let upsert_upstream_account_usage_breakdown =
+        targets.contains(&HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN);
     let upsert_upstream_account_stats_hourly =
         targets.contains(&HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY);
     let upsert_upstream_account_stats_minute =
@@ -768,6 +1082,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
     > = BTreeMap::new();
     let mut upstream_account_usage: BTreeMap<(i64, i64), UpstreamAccountUsageHourlyDelta> =
         BTreeMap::new();
+    let mut upstream_account_usage_breakdown: BTreeMap<
+        (i64, String, String, Option<i64>, String, String),
+        UpstreamAccountUsageBreakdownHourlyDelta,
+    > = BTreeMap::new();
     let mut upstream_account_stats_hourly: BTreeMap<(i64, String, i64), UpstreamAccountStatsDelta> =
         BTreeMap::new();
     let mut upstream_account_stats_minute: BTreeMap<(i64, String, i64), UpstreamAccountStatsDelta> =
@@ -890,7 +1208,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             }
 
             if upsert_prompt_cache_upstream_accounts {
-                let upstream_account_id = upstream_account_id_from_payload(row.payload.as_deref());
+                let upstream_account_id = row.resolved_upstream_account_id();
                 let upstream_account_name =
                     upstream_account_name_from_payload(row.payload.as_deref());
                 let rollup_key = prompt_cache_upstream_account_rollup_key(
@@ -929,8 +1247,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
         }
 
         if upsert_upstream_account_usage
-            && let Some(upstream_account_id) =
-                upstream_account_id_from_payload(row.payload.as_deref())
+            && let Some(upstream_account_id) = row.resolved_upstream_account_id()
         {
             let entry = upstream_account_usage
                 .entry((bucket_start_epoch, upstream_account_id))
@@ -981,9 +1298,15 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
         }
 
+        if upsert_upstream_account_usage_breakdown {
+            accumulate_upstream_account_usage_breakdown_rollup(
+                &mut upstream_account_usage_breakdown,
+                row,
+            )?;
+        }
+
         if (upsert_upstream_account_stats_hourly || upsert_upstream_account_stats_minute)
-            && let Some(upstream_account_id) =
-                upstream_account_id_from_payload(row.payload.as_deref())
+            && let Some(upstream_account_id) = row.resolved_upstream_account_id()
         {
             if upsert_upstream_account_stats_hourly {
                 let entry = upstream_account_stats_hourly
@@ -1016,7 +1339,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
 
         if upsert_sticky_keys
             && let (Some(upstream_account_id), Some(sticky_key)) = (
-                upstream_account_id_from_payload(row.payload.as_deref()),
+                row.resolved_upstream_account_id(),
                 sticky_key_from_payload(row.payload.as_deref()),
             )
         {
@@ -1406,6 +1729,112 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
         }
     }
 
+    if upsert_upstream_account_usage_breakdown {
+        for (
+            (
+                bucket_start_epoch,
+                source,
+                upstream_account_key,
+                upstream_account_id,
+                normalized_model,
+                normalized_reasoning_effort,
+            ),
+            delta,
+        ) in upstream_account_usage_breakdown
+        {
+            sqlx::query(
+                r#"
+                INSERT INTO upstream_account_usage_breakdown_hourly (
+                    bucket_start_epoch,
+                    source,
+                    upstream_account_key,
+                    upstream_account_id,
+                    normalized_model,
+                    normalized_reasoning_effort,
+                    request_count,
+                    success_count,
+                    failure_count,
+                    cache_write_tokens,
+                    cache_read_tokens,
+                    output_tokens,
+                    cost_input,
+                    cost_cache_write,
+                    cost_cache_read,
+                    cost_output,
+                    cost_reasoning,
+                    cost_unknown,
+                    has_cost,
+                    performance_total_tokens,
+                    performance_stream_output_tokens,
+                    performance_stream_duration_ms,
+                    performance_response_sample_count,
+                    performance_response_sum_ms,
+                    performance_first_byte_sample_count,
+                    performance_first_byte_sum_ms,
+                    performance_usage_duration_sample_count,
+                    performance_usage_duration_sum_ms,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, datetime('now'))
+                ON CONFLICT(bucket_start_epoch, source, upstream_account_key, normalized_model, normalized_reasoning_effort) DO UPDATE SET
+                    request_count = upstream_account_usage_breakdown_hourly.request_count + excluded.request_count,
+                    success_count = upstream_account_usage_breakdown_hourly.success_count + excluded.success_count,
+                    failure_count = upstream_account_usage_breakdown_hourly.failure_count + excluded.failure_count,
+                    cache_write_tokens = upstream_account_usage_breakdown_hourly.cache_write_tokens + excluded.cache_write_tokens,
+                    cache_read_tokens = upstream_account_usage_breakdown_hourly.cache_read_tokens + excluded.cache_read_tokens,
+                    output_tokens = upstream_account_usage_breakdown_hourly.output_tokens + excluded.output_tokens,
+                    cost_input = upstream_account_usage_breakdown_hourly.cost_input + excluded.cost_input,
+                    cost_cache_write = upstream_account_usage_breakdown_hourly.cost_cache_write + excluded.cost_cache_write,
+                    cost_cache_read = upstream_account_usage_breakdown_hourly.cost_cache_read + excluded.cost_cache_read,
+                    cost_output = upstream_account_usage_breakdown_hourly.cost_output + excluded.cost_output,
+                    cost_reasoning = upstream_account_usage_breakdown_hourly.cost_reasoning + excluded.cost_reasoning,
+                    cost_unknown = upstream_account_usage_breakdown_hourly.cost_unknown + excluded.cost_unknown,
+                    has_cost = upstream_account_usage_breakdown_hourly.has_cost + excluded.has_cost,
+                    performance_total_tokens = upstream_account_usage_breakdown_hourly.performance_total_tokens + excluded.performance_total_tokens,
+                    performance_stream_output_tokens = upstream_account_usage_breakdown_hourly.performance_stream_output_tokens + excluded.performance_stream_output_tokens,
+                    performance_stream_duration_ms = upstream_account_usage_breakdown_hourly.performance_stream_duration_ms + excluded.performance_stream_duration_ms,
+                    performance_response_sample_count = upstream_account_usage_breakdown_hourly.performance_response_sample_count + excluded.performance_response_sample_count,
+                    performance_response_sum_ms = upstream_account_usage_breakdown_hourly.performance_response_sum_ms + excluded.performance_response_sum_ms,
+                    performance_first_byte_sample_count = upstream_account_usage_breakdown_hourly.performance_first_byte_sample_count + excluded.performance_first_byte_sample_count,
+                    performance_first_byte_sum_ms = upstream_account_usage_breakdown_hourly.performance_first_byte_sum_ms + excluded.performance_first_byte_sum_ms,
+                    performance_usage_duration_sample_count = upstream_account_usage_breakdown_hourly.performance_usage_duration_sample_count + excluded.performance_usage_duration_sample_count,
+                    performance_usage_duration_sum_ms = upstream_account_usage_breakdown_hourly.performance_usage_duration_sum_ms + excluded.performance_usage_duration_sum_ms,
+                    updated_at = datetime('now')
+                "#,
+            )
+            .bind(bucket_start_epoch)
+            .bind(&source)
+            .bind(&upstream_account_key)
+            .bind(upstream_account_id)
+            .bind(&normalized_model)
+            .bind(&normalized_reasoning_effort)
+            .bind(delta.request_count)
+            .bind(delta.success_count)
+            .bind(delta.failure_count)
+            .bind(delta.cache_write_tokens)
+            .bind(delta.cache_read_tokens)
+            .bind(delta.output_tokens)
+            .bind(delta.cost_input)
+            .bind(delta.cost_cache_write)
+            .bind(delta.cost_cache_read)
+            .bind(delta.cost_output)
+            .bind(delta.cost_reasoning)
+            .bind(delta.cost_unknown)
+            .bind(delta.has_cost)
+            .bind(delta.performance_total_tokens)
+            .bind(delta.performance_stream_output_tokens)
+            .bind(delta.performance_stream_duration_ms)
+            .bind(delta.performance_response_sample_count)
+            .bind(delta.performance_response_sum_ms)
+            .bind(delta.performance_first_byte_sample_count)
+            .bind(delta.performance_first_byte_sum_ms)
+            .bind(delta.performance_usage_duration_sample_count)
+            .bind(delta.performance_usage_duration_sum_ms)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+
     if upsert_upstream_account_stats_hourly {
         #[derive(sqlx::FromRow)]
         struct AccountStatsHistogramRow {
@@ -1705,6 +2134,7 @@ pub(crate) fn invocation_archive_target_needs_full_payload(target: &str) -> bool
         HOURLY_ROLLUP_TARGET_PROMPT_CACHE
             | HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS
             | HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE
+            | HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN
             | HOURLY_ROLLUP_TARGET_STICKY_KEYS
     )
 }
@@ -1853,19 +2283,30 @@ pub(crate) async fn load_live_invocation_hourly_rows_for_bucket_epochs_tx(
         .single()
         .ok_or_else(|| anyhow!("invalid maximum invocation bucket epoch"))?;
     let bucket_epoch_set = bucket_epochs.iter().copied().collect::<HashSet<_>>();
+    let upstream_account_id_sql = live_invocation_upstream_account_id_sql(
+        "codex_invocations",
+        load_pool_attempt_fallback_capability_tx(tx).await?,
+    );
 
-    let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(
+    let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
         "SELECT \
             id,
             occurred_at,
             source,
             status,
             detail_level,
+            model,
             input_tokens,
             output_tokens,
             cache_input_tokens,
             total_tokens,
             cost,
+            {} AS upstream_account_id,
+            cost_input,
+            cost_cache_write,
+            cost_cache_read,
+            cost_output,
+            cost_reasoning,
             error_message,
             failure_kind,
             failure_class,
@@ -1883,7 +2324,8 @@ pub(crate) async fn load_live_invocation_hourly_rows_for_bucket_epochs_tx(
          WHERE occurred_at >= ?1
            AND occurred_at < ?2
          ORDER BY id ASC",
-    )
+        upstream_account_id_sql,
+    ))
     .bind(db_occurred_at_lower_bound(min_bucket_start))
     .bind(db_occurred_at_lower_bound(max_bucket_end))
     .fetch_all(&mut *tx)
@@ -1941,6 +2383,7 @@ pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_tx(
         HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
         HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
         HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
         HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
         HOURLY_ROLLUP_TARGET_STICKY_KEYS,
     ] {
@@ -1962,19 +2405,32 @@ pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_tx(
 pub(crate) async fn replay_live_invocation_hourly_rollups(pool: &Pool<Sqlite>) -> Result<u64> {
     let cursor_id =
         load_hourly_rollup_live_progress(pool, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
-    let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(
-        r#"
+    let rows = {
+        let mut conn = pool.acquire().await?;
+        let upstream_account_id_sql = live_invocation_upstream_account_id_sql(
+            "codex_invocations",
+            load_pool_attempt_fallback_capability_tx(&mut conn).await?,
+        );
+        sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
+            r#"
         SELECT
             id,
             occurred_at,
             source,
             status,
             detail_level,
+            model,
             input_tokens,
             output_tokens,
             cache_input_tokens,
             total_tokens,
             cost,
+            {} AS upstream_account_id,
+            cost_input,
+            cost_cache_write,
+            cost_cache_read,
+            cost_output,
+            cost_reasoning,
             error_message,
             failure_kind,
             failure_class,
@@ -1993,11 +2449,13 @@ pub(crate) async fn replay_live_invocation_hourly_rollups(pool: &Pool<Sqlite>) -
         ORDER BY id ASC
         LIMIT ?2
         "#,
-    )
-    .bind(cursor_id)
-    .bind(BACKFILL_BATCH_SIZE)
-    .fetch_all(pool)
-    .await?;
+            upstream_account_id_sql,
+        ))
+        .bind(cursor_id)
+        .bind(BACKFILL_BATCH_SIZE)
+        .fetch_all(&mut *conn)
+        .await?
+    };
     if rows.is_empty() {
         return Ok(0);
     }
@@ -2017,7 +2475,11 @@ pub(crate) async fn replay_live_invocation_hourly_rollups_tx(
 ) -> Result<u64> {
     let cursor_id =
         load_hourly_rollup_live_progress_tx(tx, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
-    let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(
+    let upstream_account_id_sql = live_invocation_upstream_account_id_sql(
+        "codex_invocations",
+        load_pool_attempt_fallback_capability_tx(tx).await?,
+    );
+    let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
         r#"
         SELECT
             id,
@@ -2025,11 +2487,18 @@ pub(crate) async fn replay_live_invocation_hourly_rollups_tx(
             source,
             status,
             detail_level,
+            model,
             input_tokens,
             output_tokens,
             cache_input_tokens,
             total_tokens,
             cost,
+            {} AS upstream_account_id,
+            cost_input,
+            cost_cache_write,
+            cost_cache_read,
+            cost_output,
+            cost_reasoning,
             error_message,
             failure_kind,
             failure_class,
@@ -2048,7 +2517,8 @@ pub(crate) async fn replay_live_invocation_hourly_rollups_tx(
         ORDER BY id ASC
         LIMIT ?2
         "#,
-    )
+        upstream_account_id_sql,
+    ))
     .bind(cursor_id)
     .bind(BACKFILL_BATCH_SIZE)
     .fetch_all(&mut *tx)
@@ -2060,6 +2530,151 @@ pub(crate) async fn replay_live_invocation_hourly_rollups_tx(
     let last_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
     upsert_invocation_hourly_rollups_tx(tx, &rows, &INVOCATION_HOURLY_ROLLUP_TARGETS).await?;
     save_hourly_rollup_live_progress_tx(tx, HOURLY_ROLLUP_DATASET_INVOCATIONS, last_id).await?;
+    Ok(rows.len() as u64)
+}
+
+pub(crate) async fn repair_live_invocation_usage_breakdown_rollups(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    if load_hourly_rollup_live_progress(
+        pool,
+        INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_MARKER_DATASET,
+    )
+    .await?
+        >= INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_MARKER_DONE
+    {
+        return Ok(());
+    }
+
+    loop {
+        let updated = repair_live_invocation_usage_breakdown_rollups_once(pool).await?;
+        if updated == 0 {
+            return Ok(());
+        }
+    }
+}
+
+async fn repair_live_invocation_usage_breakdown_rollups_once(pool: &Pool<Sqlite>) -> Result<u64> {
+    let mut tx = pool.begin().await?;
+    if load_hourly_rollup_live_progress_tx(
+        tx.as_mut(),
+        INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_MARKER_DATASET,
+    )
+    .await?
+        >= INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_MARKER_DONE
+    {
+        tx.rollback().await?;
+        return Ok(0);
+    }
+
+    let shared_live_cursor =
+        load_hourly_rollup_live_progress_tx(tx.as_mut(), HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
+    let repair_cursor = load_hourly_rollup_live_progress_tx(
+        tx.as_mut(),
+        INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_CURSOR_DATASET,
+    )
+    .await?;
+    if repair_cursor >= shared_live_cursor {
+        save_hourly_rollup_live_progress_tx(
+            tx.as_mut(),
+            INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_MARKER_DATASET,
+            INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_MARKER_DONE,
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(0);
+    }
+
+    let upstream_account_id_sql = live_invocation_upstream_account_id_sql(
+        "codex_invocations",
+        load_pool_attempt_fallback_capability_tx(tx.as_mut()).await?,
+    );
+    let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
+        r#"
+        SELECT
+            id,
+            occurred_at,
+            source,
+            status,
+            detail_level,
+            model,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            total_tokens,
+            cost,
+            {} AS upstream_account_id,
+            cost_input,
+            cost_cache_write,
+            cost_cache_read,
+            cost_output,
+            cost_reasoning,
+            error_message,
+            failure_kind,
+            failure_class,
+            is_actionable,
+            payload,
+            t_total_ms,
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
+            t_upstream_ttfb_ms,
+            t_upstream_stream_ms,
+            t_resp_parse_ms,
+            t_persist_ms
+        FROM codex_invocations
+        WHERE id > ?1
+          AND id <= ?2
+        ORDER BY id ASC
+        LIMIT ?3
+        "#,
+        upstream_account_id_sql,
+    ))
+    .bind(repair_cursor)
+    .bind(shared_live_cursor)
+    .bind(BACKFILL_BATCH_SIZE)
+    .fetch_all(tx.as_mut())
+    .await?;
+
+    if rows.is_empty() {
+        save_hourly_rollup_live_progress_tx(
+            tx.as_mut(),
+            INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_CURSOR_DATASET,
+            shared_live_cursor,
+        )
+        .await?;
+        save_hourly_rollup_live_progress_tx(
+            tx.as_mut(),
+            INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_MARKER_DATASET,
+            INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_MARKER_DONE,
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(0);
+    }
+
+    let last_id = rows.last().map(|row| row.id).unwrap_or(repair_cursor);
+    upsert_invocation_hourly_rollups_tx(
+        tx.as_mut(),
+        &rows,
+        &[HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN],
+    )
+    .await?;
+    save_hourly_rollup_live_progress_tx(
+        tx.as_mut(),
+        INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_CURSOR_DATASET,
+        last_id,
+    )
+    .await?;
+    if last_id >= shared_live_cursor {
+        save_hourly_rollup_live_progress_tx(
+            tx.as_mut(),
+            INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_MARKER_DATASET,
+            INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_MARKER_DONE,
+        )
+        .await?;
+    }
+    tx.commit().await?;
     Ok(rows.len() as u64)
 }
 
@@ -2574,11 +3189,17 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
                 source,
                 status,
                 detail_level,
+                model,
                 input_tokens,
                 output_tokens,
                 cache_input_tokens,
                 total_tokens,
                 cost,
+                cost_input,
+                cost_cache_write,
+                cost_cache_read,
+                cost_output,
+                cost_reasoning,
                 error_message,
                 failure_kind,
                 failure_class,
@@ -2764,8 +3385,13 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
     }
 
     let mut cursor_id = 0_i64;
+    let mut live_conn = pool.acquire().await?;
+    let upstream_account_id_sql = live_invocation_upstream_account_id_sql(
+        "codex_invocations",
+        load_pool_attempt_fallback_capability_tx(&mut live_conn).await?,
+    );
     loop {
-        let mut live_rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(
+        let mut live_rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
             r#"
             SELECT
                 id,
@@ -2773,11 +3399,18 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
                 source,
                 status,
                 detail_level,
+                model,
                 input_tokens,
                 output_tokens,
                 cache_input_tokens,
                 total_tokens,
                 cost,
+                {} AS upstream_account_id,
+                cost_input,
+                cost_cache_write,
+                cost_cache_read,
+                cost_output,
+                cost_reasoning,
                 error_message,
                 failure_kind,
                 failure_class,
@@ -2796,10 +3429,11 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
             ORDER BY id ASC
             LIMIT ?2
             "#,
-        )
+            upstream_account_id_sql,
+        ))
         .bind(cursor_id)
         .bind(BACKFILL_BATCH_SIZE)
-        .fetch_all(pool)
+        .fetch_all(&mut *live_conn)
         .await?;
         if live_rows.is_empty() {
             break;
@@ -2808,6 +3442,7 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
         live_rows.retain(|row| seen_ids.insert(row.id));
         source_rows.extend(live_rows);
     }
+    drop(live_conn);
 
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM upstream_account_stats_hourly")
@@ -2865,7 +3500,32 @@ mod upstream_host_network_minute_tests {
                 id INTEGER PRIMARY KEY,
                 invoke_id TEXT NOT NULL,
                 occurred_at TEXT NOT NULL,
+                status TEXT,
+                detail_level TEXT,
+                model TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cache_input_tokens INTEGER,
+                total_tokens INTEGER,
+                cost REAL,
+                cost_input REAL,
+                cost_cache_write REAL,
+                cost_cache_read REAL,
+                cost_output REAL,
+                cost_reasoning REAL,
+                error_message TEXT,
+                failure_kind TEXT,
+                failure_class TEXT,
+                is_actionable INTEGER,
                 payload TEXT,
+                t_total_ms REAL,
+                t_req_read_ms REAL,
+                t_req_parse_ms REAL,
+                t_upstream_connect_ms REAL,
+                t_upstream_ttfb_ms REAL,
+                t_upstream_stream_ms REAL,
+                t_resp_parse_ms REAL,
+                t_persist_ms REAL,
                 response_raw_size INTEGER,
                 raw_response TEXT NOT NULL DEFAULT '',
                 request_raw_size INTEGER,
@@ -2884,6 +3544,8 @@ mod upstream_host_network_minute_tests {
                 invoke_id TEXT NOT NULL,
                 occurred_at TEXT NOT NULL,
                 upstream_base_url_host TEXT,
+                upstream_account_id INTEGER,
+                attempt_index INTEGER,
                 upstream_request_header_bytes_approx INTEGER,
                 upstream_request_transmitted_body_bytes INTEGER,
                 upstream_response_header_bytes_approx INTEGER,
@@ -2910,6 +3572,51 @@ mod upstream_host_network_minute_tests {
         .execute(&pool)
         .await
         .expect("create upstream_host_network_minute table");
+        sqlx::query(
+            r#"
+            CREATE TABLE upstream_account_usage_breakdown_hourly (
+                bucket_start_epoch INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                upstream_account_key TEXT NOT NULL,
+                upstream_account_id INTEGER,
+                normalized_model TEXT NOT NULL,
+                normalized_reasoning_effort TEXT NOT NULL DEFAULT '',
+                request_count INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cost_input REAL NOT NULL DEFAULT 0,
+                cost_cache_write REAL NOT NULL DEFAULT 0,
+                cost_cache_read REAL NOT NULL DEFAULT 0,
+                cost_output REAL NOT NULL DEFAULT 0,
+                cost_reasoning REAL NOT NULL DEFAULT 0,
+                cost_unknown REAL NOT NULL DEFAULT 0,
+                has_cost INTEGER NOT NULL DEFAULT 0,
+                performance_total_tokens INTEGER NOT NULL DEFAULT 0,
+                performance_stream_output_tokens INTEGER NOT NULL DEFAULT 0,
+                performance_stream_duration_ms REAL NOT NULL DEFAULT 0,
+                performance_response_sample_count INTEGER NOT NULL DEFAULT 0,
+                performance_response_sum_ms REAL NOT NULL DEFAULT 0,
+                performance_first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
+                performance_first_byte_sum_ms REAL NOT NULL DEFAULT 0,
+                performance_usage_duration_sample_count INTEGER NOT NULL DEFAULT 0,
+                performance_usage_duration_sum_ms REAL NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (
+                    bucket_start_epoch,
+                    source,
+                    upstream_account_key,
+                    normalized_model,
+                    normalized_reasoning_effort
+                )
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create upstream_account_usage_breakdown_hourly table");
         sqlx::query(
             r#"
             CREATE TABLE hourly_rollup_live_progress (
@@ -3143,5 +3850,1280 @@ mod upstream_host_network_minute_tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0], ("backup.example.com".to_string(), 60, 30));
         assert_eq!(rows[1], ("primary.example.com".to_string(), 100, 40));
+    }
+
+    #[tokio::test]
+    async fn live_invocation_hourly_rows_preserve_attempt_fallback_account_id() {
+        let pool = test_pool().await;
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                status,
+                detail_level,
+                model,
+                input_tokens,
+                output_tokens,
+                cache_input_tokens,
+                total_tokens,
+                cost,
+                payload,
+                raw_response,
+                source,
+                created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            "#,
+        )
+        .bind(11_i64)
+        .bind("invoke-fallback-account")
+        .bind("2026-07-18 15:03:00")
+        .bind("success")
+        .bind(DETAIL_LEVEL_FULL)
+        .bind("gpt-5")
+        .bind(40_i64)
+        .bind(60_i64)
+        .bind(10_i64)
+        .bind(100_i64)
+        .bind(0.25_f64)
+        .bind(r#"{"routeMode":"pool","responseModel":"gpt-5"}"#)
+        .bind("")
+        .bind(SOURCE_PROXY)
+        .bind("2026-07-18T07:03:00Z")
+        .execute(&pool)
+        .await
+        .expect("insert invocation without payload account");
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_request_attempts (
+                id,
+                invoke_id,
+                occurred_at,
+                attempt_index,
+                upstream_account_id
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(17_i64)
+        .bind("invoke-fallback-account")
+        .bind("2026-07-18 15:03:00")
+        .bind(0_i64)
+        .bind(42_i64)
+        .execute(&pool)
+        .await
+        .expect("insert fallback attempt account");
+
+        let bucket_start_epoch =
+            invocation_bucket_start_epoch("2026-07-18 15:03:00").expect("bucket start");
+        let mut tx = pool.begin().await.expect("begin tx");
+        let rows = load_live_invocation_hourly_rows_for_bucket_epochs_tx(
+            tx.as_mut(),
+            &[bucket_start_epoch],
+        )
+        .await
+        .expect("load live hourly rows");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].upstream_account_id, Some(42));
+        assert_eq!(rows[0].resolved_upstream_account_id(), Some(42));
+    }
+
+    #[tokio::test]
+    async fn usage_breakdown_live_repair_backfills_rows_behind_shared_cursor() {
+        let pool = test_pool().await;
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                status,
+                detail_level,
+                model,
+                input_tokens,
+                output_tokens,
+                cache_input_tokens,
+                total_tokens,
+                cost,
+                cost_input,
+                cost_cache_write,
+                cost_cache_read,
+                cost_output,
+                cost_reasoning,
+                payload,
+                raw_response,
+                source,
+                created_at
+            )
+            VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+                ?18, ?19, ?20
+            )
+            "#,
+        )
+        .bind(41_i64)
+        .bind("invoke-upgrade-breakdown-repair")
+        .bind("2026-07-18 15:04:00")
+        .bind("success")
+        .bind(DETAIL_LEVEL_FULL)
+        .bind("gpt-5")
+        .bind(40_i64)
+        .bind(60_i64)
+        .bind(10_i64)
+        .bind(100_i64)
+        .bind(0.25_f64)
+        .bind(0.11_f64)
+        .bind(0.02_f64)
+        .bind(0.03_f64)
+        .bind(0.09_f64)
+        .bind(0.0_f64)
+        .bind(r#"{"routeMode":"pool","responseModel":"gpt-5"}"#)
+        .bind("")
+        .bind(SOURCE_PROXY)
+        .bind("2026-07-18T07:04:00Z")
+        .execute(&pool)
+        .await
+        .expect("insert retained invocation behind shared cursor");
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_request_attempts (
+                id,
+                invoke_id,
+                occurred_at,
+                attempt_index,
+                upstream_account_id
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(21_i64)
+        .bind("invoke-upgrade-breakdown-repair")
+        .bind("2026-07-18 15:04:00")
+        .bind(0_i64)
+        .bind(42_i64)
+        .execute(&pool)
+        .await
+        .expect("insert fallback attempt for retained invocation");
+        save_progress(&pool, HOURLY_ROLLUP_DATASET_INVOCATIONS, 41).await;
+
+        repair_live_invocation_usage_breakdown_rollups(&pool)
+            .await
+            .expect("repair missing usage breakdown live rows");
+
+        let repaired = sqlx::query_as::<_, (Option<i64>, String, i64, f64)>(
+            r#"
+            SELECT upstream_account_id, normalized_model, request_count, cost_input
+            FROM upstream_account_usage_breakdown_hourly
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load repaired usage breakdown rollup row");
+        assert_eq!(repaired.0, Some(42));
+        assert_eq!(repaired.1, "gpt-5");
+        assert_eq!(repaired.2, 1);
+        assert_eq!(repaired.3, 0.11_f64);
+
+        let shared_cursor: i64 = sqlx::query_scalar(
+            "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+        )
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .fetch_one(&pool)
+        .await
+        .expect("load shared invocation cursor");
+        assert_eq!(shared_cursor, 41);
+
+        let repair_cursor: i64 = sqlx::query_scalar(
+            "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+        )
+        .bind(INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_CURSOR_DATASET)
+        .fetch_one(&pool)
+        .await
+        .expect("load breakdown repair cursor");
+        assert_eq!(repair_cursor, 41);
+
+        let repair_marker: i64 = sqlx::query_scalar(
+            "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+        )
+        .bind(INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_MARKER_DATASET)
+        .fetch_one(&pool)
+        .await
+        .expect("load breakdown repair marker");
+        assert_eq!(
+            repair_marker,
+            INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_MARKER_DONE
+        );
+    }
+}
+
+#[cfg(test)]
+mod retention_breakdown_materialization_tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn test_pool() -> Pool<Sqlite> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite pool");
+        sqlx::query(
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY,
+                occurred_at TEXT NOT NULL,
+                source TEXT NOT NULL,
+                status TEXT,
+                detail_level TEXT NOT NULL DEFAULT 'full',
+                model TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cache_input_tokens INTEGER,
+                total_tokens INTEGER,
+                cost REAL,
+                cost_input REAL,
+                cost_cache_write REAL,
+                cost_cache_read REAL,
+                cost_output REAL,
+                cost_reasoning REAL,
+                error_message TEXT,
+                failure_kind TEXT,
+                failure_class TEXT,
+                is_actionable INTEGER,
+                payload TEXT,
+                t_total_ms REAL,
+                t_req_read_ms REAL,
+                t_req_parse_ms REAL,
+                t_upstream_connect_ms REAL,
+                t_upstream_ttfb_ms REAL,
+                t_upstream_stream_ms REAL,
+                t_resp_parse_ms REAL,
+                t_persist_ms REAL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create codex_invocations table");
+        sqlx::query(
+            r#"
+            CREATE TABLE hourly_rollup_materialized_buckets (
+                target TEXT NOT NULL,
+                bucket_start_epoch INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                materialized_at TEXT NOT NULL,
+                PRIMARY KEY (target, bucket_start_epoch, source)
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create hourly_rollup_materialized_buckets table");
+        sqlx::query(
+            r#"
+            CREATE TABLE upstream_account_usage_breakdown_hourly (
+                bucket_start_epoch INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                upstream_account_key TEXT NOT NULL,
+                upstream_account_id INTEGER,
+                normalized_model TEXT NOT NULL,
+                normalized_reasoning_effort TEXT NOT NULL DEFAULT '',
+                request_count INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cost_input REAL NOT NULL DEFAULT 0,
+                cost_cache_write REAL NOT NULL DEFAULT 0,
+                cost_cache_read REAL NOT NULL DEFAULT 0,
+                cost_output REAL NOT NULL DEFAULT 0,
+                cost_reasoning REAL NOT NULL DEFAULT 0,
+                cost_unknown REAL NOT NULL DEFAULT 0,
+                has_cost INTEGER NOT NULL DEFAULT 0,
+                performance_total_tokens INTEGER NOT NULL DEFAULT 0,
+                performance_stream_output_tokens INTEGER NOT NULL DEFAULT 0,
+                performance_stream_duration_ms REAL NOT NULL DEFAULT 0,
+                performance_response_sample_count INTEGER NOT NULL DEFAULT 0,
+                performance_response_sum_ms REAL NOT NULL DEFAULT 0,
+                performance_first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
+                performance_first_byte_sum_ms REAL NOT NULL DEFAULT 0,
+                performance_usage_duration_sample_count INTEGER NOT NULL DEFAULT 0,
+                performance_usage_duration_sum_ms REAL NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (
+                    bucket_start_epoch,
+                    source,
+                    upstream_account_key,
+                    normalized_model,
+                    normalized_reasoning_effort
+                )
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create upstream_account_usage_breakdown_hourly table");
+        sqlx::query(
+            r#"
+            CREATE TABLE archive_batches (
+                id INTEGER PRIMARY KEY,
+                dataset TEXT NOT NULL,
+                month_key TEXT,
+                file_path TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                coverage_start_at TEXT,
+                coverage_end_at TEXT,
+                historical_rollups_materialized_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create archive_batches table");
+        sqlx::query(
+            r#"
+            CREATE TABLE hourly_rollup_archive_replay (
+                target TEXT NOT NULL,
+                dataset TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                replayed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (target, dataset, file_path)
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create hourly_rollup_archive_replay table");
+        sqlx::query(
+            r#"
+            CREATE TABLE hourly_rollup_archive_progress (
+                dataset TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                cursor_id INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (dataset, file_path)
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create hourly_rollup_archive_progress table");
+        pool
+    }
+
+    #[tokio::test]
+    async fn retention_archived_bucket_clears_breakdown_rollup_without_marking_it_materialized() {
+        let pool = test_pool().await;
+        let occurred_at = format_naive(
+            Utc.with_ymd_and_hms(2026, 7, 1, 12, 34, 56)
+                .single()
+                .expect("valid timestamp")
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let row = InvocationHourlySourceRecord {
+            id: 1,
+            occurred_at: occurred_at.clone(),
+            source: SOURCE_PROXY.to_string(),
+            status: Some("success".to_string()),
+            detail_level: DETAIL_LEVEL_FULL.to_string(),
+            model: Some("gpt-5".to_string()),
+            input_tokens: Some(10),
+            output_tokens: Some(20),
+            cache_input_tokens: Some(0),
+            total_tokens: Some(30),
+            cost: Some(0.1),
+            upstream_account_id: None,
+            cost_input: Some(0.02),
+            cost_cache_write: Some(0.0),
+            cost_cache_read: Some(0.0),
+            cost_output: Some(0.08),
+            cost_reasoning: Some(0.0),
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: None,
+            payload: Some(
+                json!({
+                    "upstreamAccountId": 42_i64,
+                    "responseModel": "gpt-5"
+                })
+                .to_string(),
+            ),
+            t_total_ms: Some(100.0),
+            t_req_read_ms: Some(0.0),
+            t_req_parse_ms: Some(0.0),
+            t_upstream_connect_ms: Some(0.0),
+            t_upstream_ttfb_ms: Some(10.0),
+            t_upstream_stream_ms: Some(20.0),
+            t_resp_parse_ms: Some(0.0),
+            t_persist_ms: Some(0.0),
+        };
+        let bucket_start_epoch =
+            invocation_bucket_start_epoch(&row.occurred_at).expect("derive bucket start epoch");
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_account_usage_breakdown_hourly (
+                bucket_start_epoch,
+                source,
+                upstream_account_key,
+                upstream_account_id,
+                normalized_model,
+                normalized_reasoning_effort,
+                request_count,
+                success_count,
+                failure_count
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, '', 1, 1, 0)
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .bind(SOURCE_PROXY)
+        .bind("upstream:42")
+        .bind(42_i64)
+        .bind("gpt-5")
+        .execute(&pool)
+        .await
+        .expect("seed breakdown rollup row");
+
+        let mut tx = pool.begin().await.expect("begin transaction");
+        mark_retention_archived_hourly_rollup_targets_tx(
+            tx.as_mut(),
+            "codex_invocations",
+            &[row],
+            &[],
+        )
+        .await
+        .expect("mark retention archived hourly rollup targets");
+        tx.commit().await.expect("commit transaction");
+
+        let breakdown_row_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM upstream_account_usage_breakdown_hourly WHERE bucket_start_epoch = ?1",
+        )
+        .bind(bucket_start_epoch)
+        .fetch_one(&pool)
+        .await
+        .expect("count retained breakdown rollup rows");
+        assert_eq!(breakdown_row_count, 0);
+
+        let breakdown_materialized_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM hourly_rollup_materialized_buckets WHERE target = ?1 AND bucket_start_epoch = ?2",
+        )
+        .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+        .bind(bucket_start_epoch)
+        .fetch_one(&pool)
+        .await
+        .expect("count breakdown materialized markers");
+        assert_eq!(breakdown_materialized_count, 0);
+
+        let usage_materialized_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM hourly_rollup_materialized_buckets WHERE target = ?1 AND bucket_start_epoch = ?2",
+        )
+        .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+        .bind(bucket_start_epoch)
+        .fetch_one(&pool)
+        .await
+        .expect("count usage materialized markers");
+        assert_eq!(usage_materialized_count, 1);
+    }
+
+    #[tokio::test]
+    async fn retention_partial_hour_removes_archived_breakdown_without_dropping_retained_live_rows()
+    {
+        let pool = test_pool().await;
+        let archived_occurred_at = format_naive(
+            Utc.with_ymd_and_hms(2026, 7, 1, 12, 5, 0)
+                .single()
+                .expect("valid timestamp")
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let live_occurred_at = format_naive(
+            Utc.with_ymd_and_hms(2026, 7, 1, 12, 45, 0)
+                .single()
+                .expect("valid timestamp")
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let archived_row = InvocationHourlySourceRecord {
+            id: 1,
+            occurred_at: archived_occurred_at,
+            source: SOURCE_PROXY.to_string(),
+            status: Some("success".to_string()),
+            detail_level: DETAIL_LEVEL_FULL.to_string(),
+            model: Some("gpt-5".to_string()),
+            input_tokens: Some(10),
+            output_tokens: Some(20),
+            cache_input_tokens: Some(0),
+            total_tokens: Some(30),
+            cost: Some(0.1),
+            upstream_account_id: None,
+            cost_input: Some(0.02),
+            cost_cache_write: Some(0.0),
+            cost_cache_read: Some(0.0),
+            cost_output: Some(0.08),
+            cost_reasoning: Some(0.0),
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: None,
+            payload: Some(
+                json!({
+                    "upstreamAccountId": 42_i64,
+                    "responseModel": "gpt-5"
+                })
+                .to_string(),
+            ),
+            t_total_ms: Some(100.0),
+            t_req_read_ms: Some(0.0),
+            t_req_parse_ms: Some(0.0),
+            t_upstream_connect_ms: Some(0.0),
+            t_upstream_ttfb_ms: Some(10.0),
+            t_upstream_stream_ms: Some(20.0),
+            t_resp_parse_ms: Some(0.0),
+            t_persist_ms: Some(0.0),
+        };
+        let bucket_start_epoch = invocation_bucket_start_epoch(&archived_row.occurred_at)
+            .expect("derive bucket start epoch");
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                occurred_at,
+                source,
+                status,
+                detail_level,
+                model,
+                input_tokens,
+                output_tokens,
+                cache_input_tokens,
+                total_tokens,
+                cost,
+                cost_input,
+                cost_cache_write,
+                cost_cache_read,
+                cost_output,
+                cost_reasoning,
+                payload,
+                t_total_ms,
+                t_upstream_ttfb_ms,
+                t_upstream_stream_ms
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+            "#,
+        )
+        .bind(2_i64)
+        .bind(&live_occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(DETAIL_LEVEL_FULL)
+        .bind("gpt-5-mini")
+        .bind(50_i64)
+        .bind(70_i64)
+        .bind(5_i64)
+        .bind(125_i64)
+        .bind(0.2_f64)
+        .bind(0.04_f64)
+        .bind(0.01_f64)
+        .bind(0.02_f64)
+        .bind(0.13_f64)
+        .bind(0.0_f64)
+        .bind(
+            json!({
+                "upstreamAccountId": 43_i64,
+                "responseModel": "gpt-5-mini"
+            })
+            .to_string(),
+        )
+        .bind(130.0_f64)
+        .bind(13.0_f64)
+        .bind(26.0_f64)
+        .execute(&pool)
+        .await
+        .expect("insert retained live invocation");
+
+        for (
+            upstream_account_key,
+            upstream_account_id,
+            normalized_model,
+            output_tokens,
+            cost_input,
+            cost_cache_write,
+            cost_cache_read,
+            cost_output,
+            cost_reasoning,
+        ) in [
+            (
+                "upstream:42",
+                42_i64,
+                "gpt-5",
+                20_i64,
+                0.02_f64,
+                0.0_f64,
+                0.0_f64,
+                0.08_f64,
+                0.0_f64,
+            ),
+            (
+                "upstream:43",
+                43_i64,
+                "gpt-5-mini",
+                70_i64,
+                0.04_f64,
+                0.01_f64,
+                0.02_f64,
+                0.13_f64,
+                0.0_f64,
+            ),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO upstream_account_usage_breakdown_hourly (
+                    bucket_start_epoch,
+                    source,
+                    upstream_account_key,
+                    upstream_account_id,
+                    normalized_model,
+                    normalized_reasoning_effort,
+                    request_count,
+                    success_count,
+                    failure_count,
+                    output_tokens,
+                    cost_input,
+                    cost_cache_write,
+                    cost_cache_read,
+                    cost_output,
+                    cost_reasoning,
+                    has_cost
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, '', 1, 1, 0, ?6, ?7, ?8, ?9, ?10, ?11, 1)
+                "#,
+            )
+            .bind(bucket_start_epoch)
+            .bind(SOURCE_PROXY)
+            .bind(upstream_account_key)
+            .bind(upstream_account_id)
+            .bind(normalized_model)
+            .bind(output_tokens)
+            .bind(cost_input)
+            .bind(cost_cache_write)
+            .bind(cost_cache_read)
+            .bind(cost_output)
+            .bind(cost_reasoning)
+            .execute(&pool)
+            .await
+            .expect("seed existing breakdown rollup row");
+        }
+
+        let mut tx = pool.begin().await.expect("begin transaction");
+        mark_retention_archived_hourly_rollup_targets_tx(
+            tx.as_mut(),
+            "codex_invocations",
+            &[archived_row],
+            &[],
+        )
+        .await
+        .expect("mark retention archived hourly rollup targets");
+        tx.commit().await.expect("commit transaction");
+
+        let archived_breakdown_row_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM upstream_account_usage_breakdown_hourly
+            WHERE bucket_start_epoch = ?1
+              AND upstream_account_key = 'upstream:42'
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .fetch_one(&pool)
+        .await
+        .expect("count archived account breakdown rows");
+        assert_eq!(archived_breakdown_row_count, 0);
+
+        let retained = sqlx::query_as::<_, (i64, i64, i64, f64, f64)>(
+            r#"
+            SELECT request_count, success_count, output_tokens, cost_output, cost_unknown
+            FROM upstream_account_usage_breakdown_hourly
+            WHERE bucket_start_epoch = ?1
+              AND upstream_account_key = 'upstream:43'
+              AND normalized_model = 'gpt-5-mini'
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .fetch_one(&pool)
+        .await
+        .expect("load retained live breakdown row");
+        assert_eq!(retained.0, 1);
+        assert_eq!(retained.1, 1);
+        assert_eq!(retained.2, 70);
+        assert_eq!(retained.3, 0.13_f64);
+        assert_eq!(retained.4, 0.0_f64);
+
+        let usage_materialized_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM hourly_rollup_materialized_buckets WHERE target = ?1 AND bucket_start_epoch = ?2",
+        )
+        .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+        .bind(bucket_start_epoch)
+        .fetch_one(&pool)
+        .await
+        .expect("count usage materialized markers");
+        assert_eq!(usage_materialized_count, 0);
+    }
+
+    #[tokio::test]
+    async fn retention_partial_hour_preserves_previously_replayed_archive_breakdown_rows() {
+        let pool = test_pool().await;
+        let archived_occurred_at = format_naive(
+            Utc.with_ymd_and_hms(2026, 7, 1, 12, 5, 0)
+                .single()
+                .expect("valid timestamp")
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let archived_row = InvocationHourlySourceRecord {
+            id: 1,
+            occurred_at: archived_occurred_at,
+            source: SOURCE_PROXY.to_string(),
+            status: Some("success".to_string()),
+            detail_level: DETAIL_LEVEL_FULL.to_string(),
+            model: Some("gpt-5".to_string()),
+            input_tokens: Some(10),
+            output_tokens: Some(20),
+            cache_input_tokens: Some(0),
+            total_tokens: Some(30),
+            cost: Some(0.1),
+            upstream_account_id: None,
+            cost_input: Some(0.02),
+            cost_cache_write: Some(0.0),
+            cost_cache_read: Some(0.0),
+            cost_output: Some(0.08),
+            cost_reasoning: Some(0.0),
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: None,
+            payload: Some(
+                json!({
+                    "upstreamAccountId": 42_i64,
+                    "responseModel": "gpt-5"
+                })
+                .to_string(),
+            ),
+            t_total_ms: Some(100.0),
+            t_req_read_ms: Some(0.0),
+            t_req_parse_ms: Some(0.0),
+            t_upstream_connect_ms: Some(0.0),
+            t_upstream_ttfb_ms: Some(10.0),
+            t_upstream_stream_ms: Some(20.0),
+            t_resp_parse_ms: Some(0.0),
+            t_persist_ms: Some(0.0),
+        };
+        let bucket_start_epoch = invocation_bucket_start_epoch(&archived_row.occurred_at)
+            .expect("derive bucket start epoch");
+
+        for (upstream_account_key, upstream_account_id, normalized_model, output_tokens, cost) in [
+            ("upstream:41", 41_i64, "gpt-5-previous", 15_i64, 0.07_f64),
+            ("upstream:42", 42_i64, "gpt-5", 20_i64, 0.08_f64),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO upstream_account_usage_breakdown_hourly (
+                    bucket_start_epoch,
+                    source,
+                    upstream_account_key,
+                    upstream_account_id,
+                    normalized_model,
+                    normalized_reasoning_effort,
+                    request_count,
+                    success_count,
+                    failure_count,
+                    output_tokens,
+                    cost_output,
+                    has_cost
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, '', 1, 1, 0, ?6, ?7, 1)
+                "#,
+            )
+            .bind(bucket_start_epoch)
+            .bind(SOURCE_PROXY)
+            .bind(upstream_account_key)
+            .bind(upstream_account_id)
+            .bind(normalized_model)
+            .bind(output_tokens)
+            .bind(cost)
+            .execute(&pool)
+            .await
+            .expect("seed breakdown rollup row");
+        }
+        sqlx::query(
+            r#"
+            INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+            VALUES (?1, ?2, ?3, datetime('now'))
+            "#,
+        )
+        .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind("/tmp/previous-usage-breakdown.sqlite.gz")
+        .execute(&pool)
+        .await
+        .expect("seed previous archive replay marker");
+
+        let mut tx = pool.begin().await.expect("begin transaction");
+        mark_retention_archived_hourly_rollup_targets_tx(
+            tx.as_mut(),
+            "codex_invocations",
+            &[archived_row],
+            &[],
+        )
+        .await
+        .expect("mark retention archived hourly rollup targets");
+        tx.commit().await.expect("commit transaction");
+
+        let previous = sqlx::query_as::<_, (i64, i64, f64)>(
+            r#"
+            SELECT request_count, output_tokens, cost_output
+            FROM upstream_account_usage_breakdown_hourly
+            WHERE bucket_start_epoch = ?1
+              AND upstream_account_key = 'upstream:41'
+              AND normalized_model = 'gpt-5-previous'
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .fetch_one(&pool)
+        .await
+        .expect("load previous archive breakdown row");
+        assert_eq!(previous, (1, 15, 0.07_f64));
+
+        let current_archived_row_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM upstream_account_usage_breakdown_hourly
+            WHERE bucket_start_epoch = ?1
+              AND upstream_account_key = 'upstream:42'
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .fetch_one(&pool)
+        .await
+        .expect("count current archived breakdown rows");
+        assert_eq!(current_archived_row_count, 0);
+
+        let previous_replay_marker_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2 AND file_path = ?3",
+        )
+        .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind("/tmp/previous-usage-breakdown.sqlite.gz")
+        .fetch_one(&pool)
+        .await
+        .expect("count previous archive replay marker");
+        assert_eq!(previous_replay_marker_count, 1);
+    }
+
+    #[tokio::test]
+    async fn breakdown_rollup_uses_resolved_upstream_account_id() {
+        let pool = test_pool().await;
+        let occurred_at = format_naive(
+            Utc.with_ymd_and_hms(2026, 7, 1, 13, 4, 5)
+                .single()
+                .expect("valid timestamp")
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let row = InvocationHourlySourceRecord {
+            id: 2,
+            occurred_at,
+            source: SOURCE_PROXY.to_string(),
+            status: Some("success".to_string()),
+            detail_level: DETAIL_LEVEL_FULL.to_string(),
+            model: Some("gpt-5".to_string()),
+            input_tokens: Some(25),
+            output_tokens: Some(35),
+            cache_input_tokens: Some(5),
+            total_tokens: Some(60),
+            cost: Some(0.3),
+            upstream_account_id: Some(42),
+            cost_input: Some(0.1),
+            cost_cache_write: Some(0.02),
+            cost_cache_read: Some(0.03),
+            cost_output: Some(0.15),
+            cost_reasoning: Some(0.0),
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: None,
+            payload: Some(
+                json!({
+                    "responseModel": "gpt-5"
+                })
+                .to_string(),
+            ),
+            t_total_ms: Some(120.0),
+            t_req_read_ms: Some(0.0),
+            t_req_parse_ms: Some(0.0),
+            t_upstream_connect_ms: Some(0.0),
+            t_upstream_ttfb_ms: Some(12.0),
+            t_upstream_stream_ms: Some(24.0),
+            t_resp_parse_ms: Some(0.0),
+            t_persist_ms: Some(0.0),
+        };
+
+        let mut tx = pool.begin().await.expect("begin tx");
+        upsert_invocation_hourly_rollups_tx(
+            tx.as_mut(),
+            &[row],
+            &[HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN],
+        )
+        .await
+        .expect("upsert breakdown rollup");
+        tx.commit().await.expect("commit breakdown rollup");
+
+        let stored = sqlx::query_as::<_, (String, Option<i64>, i64)>(
+            r#"
+            SELECT upstream_account_key, upstream_account_id, request_count
+            FROM upstream_account_usage_breakdown_hourly
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load stored breakdown row");
+        assert_eq!(stored.0, "upstream:42");
+        assert_eq!(stored.1, Some(42));
+        assert_eq!(stored.2, 1);
+    }
+
+    #[tokio::test]
+    async fn breakdown_rollup_excludes_running_and_pending_rows() {
+        let pool = test_pool().await;
+        let occurred_at = format_naive(
+            Utc.with_ymd_and_hms(2026, 7, 1, 14, 4, 5)
+                .single()
+                .expect("valid timestamp")
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let payload = json!({
+            "upstreamAccountId": 42_i64,
+            "responseModel": "gpt-5",
+        })
+        .to_string();
+
+        let rows = [
+            InvocationHourlySourceRecord {
+                id: 10,
+                occurred_at: occurred_at.clone(),
+                source: SOURCE_PROXY.to_string(),
+                status: Some("success".to_string()),
+                detail_level: DETAIL_LEVEL_FULL.to_string(),
+                model: Some("gpt-5".to_string()),
+                input_tokens: Some(10),
+                output_tokens: Some(20),
+                cache_input_tokens: Some(0),
+                total_tokens: Some(30),
+                cost: Some(0.30),
+                upstream_account_id: Some(42),
+                cost_input: None,
+                cost_cache_write: None,
+                cost_cache_read: None,
+                cost_output: None,
+                cost_reasoning: None,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none".to_string()),
+                is_actionable: Some(0),
+                payload: Some(payload.clone()),
+                t_total_ms: Some(100.0),
+                t_req_read_ms: Some(0.0),
+                t_req_parse_ms: Some(0.0),
+                t_upstream_connect_ms: Some(0.0),
+                t_upstream_ttfb_ms: Some(10.0),
+                t_upstream_stream_ms: Some(20.0),
+                t_resp_parse_ms: Some(0.0),
+                t_persist_ms: Some(0.0),
+            },
+            InvocationHourlySourceRecord {
+                id: 11,
+                occurred_at: occurred_at.clone(),
+                source: SOURCE_PROXY.to_string(),
+                status: Some("failed".to_string()),
+                detail_level: DETAIL_LEVEL_FULL.to_string(),
+                model: Some("gpt-5".to_string()),
+                input_tokens: Some(11),
+                output_tokens: Some(21),
+                cache_input_tokens: Some(0),
+                total_tokens: Some(32),
+                cost: Some(0.20),
+                upstream_account_id: Some(42),
+                cost_input: None,
+                cost_cache_write: None,
+                cost_cache_read: None,
+                cost_output: None,
+                cost_reasoning: None,
+                error_message: Some("upstream stream error".to_string()),
+                failure_kind: Some("upstream_response_failed".to_string()),
+                failure_class: Some("service_failure".to_string()),
+                is_actionable: Some(1),
+                payload: Some(payload.clone()),
+                t_total_ms: Some(101.0),
+                t_req_read_ms: Some(0.0),
+                t_req_parse_ms: Some(0.0),
+                t_upstream_connect_ms: Some(0.0),
+                t_upstream_ttfb_ms: Some(11.0),
+                t_upstream_stream_ms: Some(21.0),
+                t_resp_parse_ms: Some(0.0),
+                t_persist_ms: Some(0.0),
+            },
+            InvocationHourlySourceRecord {
+                id: 12,
+                occurred_at: occurred_at.clone(),
+                source: SOURCE_PROXY.to_string(),
+                status: Some("running".to_string()),
+                detail_level: DETAIL_LEVEL_FULL.to_string(),
+                model: Some("gpt-5".to_string()),
+                input_tokens: Some(12),
+                output_tokens: Some(22),
+                cache_input_tokens: Some(0),
+                total_tokens: Some(34),
+                cost: Some(0.40),
+                upstream_account_id: Some(42),
+                cost_input: None,
+                cost_cache_write: None,
+                cost_cache_read: None,
+                cost_output: None,
+                cost_reasoning: None,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none".to_string()),
+                is_actionable: Some(0),
+                payload: Some(payload.clone()),
+                t_total_ms: Some(102.0),
+                t_req_read_ms: Some(0.0),
+                t_req_parse_ms: Some(0.0),
+                t_upstream_connect_ms: Some(0.0),
+                t_upstream_ttfb_ms: Some(12.0),
+                t_upstream_stream_ms: Some(22.0),
+                t_resp_parse_ms: Some(0.0),
+                t_persist_ms: Some(0.0),
+            },
+            InvocationHourlySourceRecord {
+                id: 13,
+                occurred_at,
+                source: SOURCE_PROXY.to_string(),
+                status: Some("pending".to_string()),
+                detail_level: DETAIL_LEVEL_FULL.to_string(),
+                model: Some("gpt-5".to_string()),
+                input_tokens: Some(13),
+                output_tokens: Some(23),
+                cache_input_tokens: Some(0),
+                total_tokens: Some(36),
+                cost: Some(0.50),
+                upstream_account_id: Some(42),
+                cost_input: None,
+                cost_cache_write: None,
+                cost_cache_read: None,
+                cost_output: None,
+                cost_reasoning: None,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none".to_string()),
+                is_actionable: Some(0),
+                payload: Some(payload),
+                t_total_ms: Some(103.0),
+                t_req_read_ms: Some(0.0),
+                t_req_parse_ms: Some(0.0),
+                t_upstream_connect_ms: Some(0.0),
+                t_upstream_ttfb_ms: Some(13.0),
+                t_upstream_stream_ms: Some(23.0),
+                t_resp_parse_ms: Some(0.0),
+                t_persist_ms: Some(0.0),
+            },
+        ];
+
+        let mut tx = pool.begin().await.expect("begin tx");
+        upsert_invocation_hourly_rollups_tx(
+            tx.as_mut(),
+            &rows,
+            &[HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN],
+        )
+        .await
+        .expect("upsert breakdown rollup");
+        tx.commit().await.expect("commit breakdown rollup");
+
+        let stored = sqlx::query_as::<_, (i64, i64, i64, i64, f64)>(
+            r#"
+            SELECT request_count, success_count, failure_count, output_tokens, cost_unknown
+            FROM upstream_account_usage_breakdown_hourly
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load stored breakdown row");
+        assert_eq!(stored.0, 2);
+        assert_eq!(stored.1, 1);
+        assert_eq!(stored.2, 1);
+        assert_eq!(stored.3, 41);
+        assert_eq!(stored.4, 0.50_f64);
+    }
+
+    #[tokio::test]
+    async fn repair_materialized_breakdown_reopens_overlapping_replayed_batches() {
+        let pool = test_pool().await;
+        let bucket_start_epoch = invocation_bucket_start_epoch("2026-07-01 15:05:00")
+            .expect("derive bucket start epoch");
+        let first_file_path = "/tmp/usage-breakdown-overlap-first.sqlite.gz";
+        let second_file_path = "/tmp/usage-breakdown-overlap-second.sqlite.gz";
+
+        for (file_path, coverage_start_at, coverage_end_at, replayed, cursor_id) in [
+            (
+                first_file_path,
+                "2026-07-01 15:05:00",
+                "2026-07-01 15:15:00",
+                false,
+                101_i64,
+            ),
+            (
+                second_file_path,
+                "2026-07-01 15:25:00",
+                "2026-07-01 15:35:00",
+                true,
+                202_i64,
+            ),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO archive_batches (
+                    dataset,
+                    month_key,
+                    file_path,
+                    status,
+                    coverage_start_at,
+                    coverage_end_at,
+                    historical_rollups_materialized_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+                "#,
+            )
+            .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+            .bind("2026-07")
+            .bind(file_path)
+            .bind(ARCHIVE_STATUS_COMPLETED)
+            .bind(coverage_start_at)
+            .bind(coverage_end_at)
+            .execute(&pool)
+            .await
+            .expect("insert archive batch");
+
+            sqlx::query(
+                r#"
+                INSERT INTO hourly_rollup_archive_progress (dataset, file_path, cursor_id, updated_at)
+                VALUES (?1, ?2, ?3, datetime('now'))
+                "#,
+            )
+            .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+            .bind(file_path)
+            .bind(cursor_id)
+            .execute(&pool)
+            .await
+            .expect("insert archive progress");
+
+            if replayed {
+                sqlx::query(
+                    r#"
+                    INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+                    VALUES (?1, ?2, ?3, datetime('now'))
+                    "#,
+                )
+                .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+                .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+                .bind(file_path)
+                .execute(&pool)
+                .await
+                .expect("insert replay marker");
+            }
+        }
+
+        for (upstream_account_key, upstream_account_id, normalized_model) in [
+            ("upstream:17", Some(17_i64), "gpt-5"),
+            ("upstream:18", Some(18_i64), "gpt-5-mini"),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO upstream_account_usage_breakdown_hourly (
+                    bucket_start_epoch,
+                    source,
+                    upstream_account_key,
+                    upstream_account_id,
+                    normalized_model,
+                    normalized_reasoning_effort,
+                    request_count,
+                    success_count,
+                    failure_count
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, '', 1, 1, 0)
+                "#,
+            )
+            .bind(bucket_start_epoch)
+            .bind(SOURCE_PROXY)
+            .bind(upstream_account_key)
+            .bind(upstream_account_id)
+            .bind(normalized_model)
+            .execute(&pool)
+            .await
+            .expect("seed breakdown rollup row");
+        }
+
+        let touched = repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+            .await
+            .expect("repair materialized usage breakdown state");
+        assert_eq!(touched, 2);
+
+        let remaining_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM upstream_account_usage_breakdown_hourly WHERE bucket_start_epoch = ?1",
+        )
+        .bind(bucket_start_epoch)
+        .fetch_one(&pool)
+        .await
+        .expect("count remaining breakdown rows");
+        assert_eq!(remaining_rows, 0);
+
+        for file_path in [first_file_path, second_file_path] {
+            let replay_marker_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2 AND file_path = ?3",
+            )
+            .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+            .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+            .bind(file_path)
+            .fetch_one(&pool)
+            .await
+            .expect("count replay markers after repair");
+            assert_eq!(replay_marker_count, 0);
+
+            let materialized_at: Option<String> = sqlx::query_scalar(
+                "SELECT historical_rollups_materialized_at FROM archive_batches WHERE dataset = ?1 AND file_path = ?2",
+            )
+            .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+            .bind(file_path)
+            .fetch_one(&pool)
+            .await
+            .expect("load archive materialized state after repair");
+            assert!(materialized_at.is_none());
+
+            let progress_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM hourly_rollup_archive_progress WHERE dataset = ?1 AND file_path = ?2",
+            )
+            .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+            .bind(file_path)
+            .fetch_one(&pool)
+            .await
+            .expect("count archive progress rows after repair");
+            assert_eq!(progress_count, 0);
+        }
     }
 }
