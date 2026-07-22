@@ -1,4 +1,5 @@
 use super::*;
+use crate::api::upsert_runtime_prompt_cache_conversation_sticky_route;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum UpstreamCapabilityAxis {
@@ -58,8 +59,32 @@ pub(crate) async fn record_pool_route_success(
         account_id,
         request_started_at_utc,
         sticky_key,
+        None,
         invoke_id,
         None,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn record_pool_route_success_with_affinity_generation(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    request_started_at_utc: DateTime<Utc>,
+    sticky_key: Option<&str>,
+    prompt_cache_key: Option<&str>,
+    invoke_id: Option<&str>,
+    sticky_affinity_generation: Option<i64>,
+) -> Result<()> {
+    record_pool_route_success_inner(
+        pool,
+        account_id,
+        request_started_at_utc,
+        sticky_key,
+        prompt_cache_key,
+        invoke_id,
+        None,
+        sticky_affinity_generation,
     )
     .await
 }
@@ -69,8 +94,10 @@ async fn record_pool_route_success_inner(
     account_id: i64,
     request_started_at_utc: DateTime<Utc>,
     sticky_key: Option<&str>,
+    prompt_cache_key: Option<&str>,
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
+    sticky_affinity_generation: Option<i64>,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
     let request_started_at_iso = format_utc_iso(request_started_at_utc);
@@ -104,7 +131,25 @@ async fn record_pool_route_success_inner(
         return Ok(());
     }
     if let Some(sticky_key) = sticky_key {
-        upsert_sticky_route(pool, sticky_key, account_id, &now_iso).await?;
+        let sticky_updated = upsert_runtime_prompt_cache_conversation_sticky_route(
+            pool,
+            sticky_key,
+            prompt_cache_key,
+            account_id,
+            &now_iso,
+            invoke_id,
+            sticky_affinity_generation,
+        )
+        .await?;
+        if !sticky_updated {
+            debug!(
+                sticky_key,
+                account_id,
+                invoke_id,
+                expected_generation = sticky_affinity_generation,
+                "skipped stale sticky route success after affinity reset"
+            );
+        }
     }
     record_upstream_account_action_for_attempt(
         pool,
@@ -190,6 +235,33 @@ pub(crate) async fn record_pool_route_success_with_image_intent_for_attempt(
     .await
 }
 
+pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    request_started_at_utc: DateTime<Utc>,
+    sticky_key: Option<&str>,
+    prompt_cache_key: Option<&str>,
+    invoke_id: Option<&str>,
+    endpoint: &str,
+    image_intent: ImageIntent,
+    attempt_id: Option<i64>,
+    sticky_affinity_generation: Option<i64>,
+) -> Result<()> {
+    record_pool_route_success_inner(
+        pool,
+        account_id,
+        request_started_at_utc,
+        sticky_key,
+        prompt_cache_key,
+        invoke_id,
+        attempt_id,
+        sticky_affinity_generation,
+    )
+    .await?;
+    record_pool_route_success_capability_observations(pool, account_id, endpoint, image_intent)
+        .await
+}
+
 pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -205,10 +277,22 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_for
         account_id,
         request_started_at_utc,
         sticky_key,
+        None,
         invoke_id,
         attempt_id,
+        None,
     )
     .await?;
+    record_pool_route_success_capability_observations(pool, account_id, endpoint, image_intent)
+        .await
+}
+
+async fn record_pool_route_success_capability_observations(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    endpoint: &str,
+    image_intent: ImageIntent,
+) -> Result<()> {
     let requirements =
         RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
     if requirements.response_endpoint {

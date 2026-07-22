@@ -2207,6 +2207,7 @@ async fn finalize_pool_upstream_request_attempt_fallback_preserves_scope_snapsho
         occurred_at: "2026-03-23 21:00:00".to_string(),
         endpoint: "/v1/responses".to_string(),
         sticky_key: Some("sticky-scope-fallback".to_string()),
+        routing_source: None,
         requester_ip: Some("192.168.31.10".to_string()),
         upstream_base_url_host: None,
         group_name_snapshot: Some("prod".to_string()),
@@ -2317,6 +2318,7 @@ async fn insert_pool_upstream_terminal_attempt_skips_pre_dispatch_pseudo_attempt
                 upstream_base_url: Url::parse("https://api.openai.com/")
                     .expect("valid upstream base"),
                 routing_source: PoolRoutingSelectionSource::FreshAssignment,
+                sticky_affinity_generation: None,
             }),
             status: StatusCode::BAD_GATEWAY,
             message: "terminal scoped failure".to_string(),
@@ -2568,15 +2570,36 @@ async fn fetch_invocation_pool_attempts_returns_live_pending_attempts_without_pa
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
     };
-    let _pending = begin_pool_upstream_request_attempt(
+    let _sticky_pending = begin_pool_upstream_request_attempt_with_scope_and_routing_source(
         &state.pool,
         &trace,
+        Some("live-fetch-group"),
+        Some(FORWARD_PROXY_DIRECT_KEY),
+        Some(PoolRoutingSelectionSource::StickyReuse),
         account_id,
         "route-primary",
         1,
         1,
         1,
         "2026-03-23 20:49:02",
+    )
+    .await;
+    let _fresh_pending = begin_pool_upstream_request_attempt_with_scope_and_routing_source(
+        &state.pool,
+        &PoolUpstreamAttemptTraceContext {
+            sticky_key: None,
+            requester_ip: Some("192.168.31.7".to_string()),
+            ..trace.clone()
+        },
+        Some("live-fetch-group"),
+        Some(FORWARD_PROXY_DIRECT_KEY),
+        Some(PoolRoutingSelectionSource::FreshAssignment),
+        account_id,
+        "route-fallback",
+        2,
+        2,
+        1,
+        "2026-03-23 20:49:03",
     )
     .await;
 
@@ -2587,7 +2610,7 @@ async fn fetch_invocation_pool_attempts_returns_live_pending_attempts_without_pa
     .await
     .expect("fetch live pending attempts");
 
-    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts.len(), 2);
     assert_eq!(
         attempts[0].status,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING
@@ -2598,6 +2621,11 @@ async fn fetch_invocation_pool_attempts_returns_live_pending_attempts_without_pa
     );
     assert_eq!(attempts[0].finished_at, None);
     assert_eq!(attempts[0].upstream_account_id, Some(account_id));
+    assert_eq!(attempts[0].routing_source.as_deref(), Some("stickyReuse"));
+    assert_eq!(
+        attempts[1].routing_source.as_deref(),
+        Some("freshAssignment")
+    );
 }
 
 #[tokio::test]
@@ -3287,6 +3315,7 @@ async fn recover_guard_dropped_pool_early_phase_orphan_without_persisted_attempt
         occurred_at: occurred_at.to_string(),
         endpoint: "/v1/responses".to_string(),
         sticky_key: Some("sticky-guard-skip".to_string()),
+        routing_source: None,
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
         group_name_snapshot: None,
@@ -4513,6 +4542,7 @@ async fn pool_early_phase_orphan_cleanup_guard_disarm_keeps_invocation_running_w
         occurred_at: occurred_at.to_string(),
         endpoint: "/v1/responses".to_string(),
         sticky_key: Some("sticky-guard-disarm".to_string()),
+        routing_source: None,
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
         group_name_snapshot: None,
@@ -4575,6 +4605,7 @@ async fn finalize_deferred_pool_early_phase_cleanup_guard_after_terminal_invocat
         occurred_at: "2026-03-23 21:10:10".to_string(),
         endpoint: "/v1/responses".to_string(),
         sticky_key: Some("sticky-guard-complete-after-invocation".to_string()),
+        routing_source: None,
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
         group_name_snapshot: None,
@@ -4637,6 +4668,7 @@ async fn complete_deferred_pool_early_phase_cleanup_guard_marks_terminal_and_dis
         occurred_at: occurred_at.to_string(),
         endpoint: "/v1/responses".to_string(),
         sticky_key: Some("sticky-guard-complete".to_string()),
+        routing_source: None,
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
         group_name_snapshot: None,
@@ -4722,6 +4754,7 @@ async fn attempt_completion_preserves_synthetic_runtime_until_request_cleanup() 
         occurred_at: occurred_at.to_string(),
         endpoint: "/v1/responses".to_string(),
         sticky_key: None,
+        routing_source: None,
         requester_ip: None,
         upstream_base_url_host: None,
         group_name_snapshot: None,
@@ -4836,6 +4869,7 @@ async fn send_pool_request_with_failover_defers_armed_guard_when_pending_attempt
         },
         upstream_base_url: Url::parse(&upstream_base).expect("valid upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        sticky_affinity_generation: None,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
         forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
@@ -4959,6 +4993,7 @@ async fn send_pool_request_with_failover_disarms_guard_after_streaming_phase_is_
         },
         upstream_base_url: Url::parse(&upstream_base).expect("valid upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        sticky_affinity_generation: None,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
         forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
@@ -5097,6 +5132,7 @@ async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_stre
         },
         upstream_base_url: Url::parse(&upstream_base).expect("valid upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        sticky_affinity_generation: None,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
         forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(

@@ -1326,6 +1326,19 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS pool_sticky_route_generations (
+            sticky_key TEXT PRIMARY KEY,
+            generation INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_sticky_route_generations table existence")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS pool_routing_settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             encrypted_api_key TEXT,

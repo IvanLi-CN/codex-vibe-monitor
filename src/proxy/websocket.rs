@@ -734,11 +734,12 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         .host_str()
         .and_then(normalize_upstream_base_url_host_value);
     let pending_attempt_record = Some(
-        begin_pool_upstream_request_attempt_with_scope(
+        begin_pool_upstream_request_attempt_with_scope_and_routing_source(
             &state.pool,
             &attempt_trace,
             group_name_snapshot.as_deref(),
             proxy_binding_key_snapshot.as_deref(),
+            Some(account.routing_source),
             account.account_id,
             account.upstream_route_key().as_str(),
             attempt_index as i64,
@@ -1013,12 +1014,14 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         ForwardProxyRouteResultKind::CompletedRequest,
     )
     .await;
-    if let Err(err) = record_pool_route_success(
+    if let Err(err) = record_pool_route_success_with_affinity_generation(
         &state.pool,
         account.account_id,
         Utc::now(),
         trace.sticky_key.as_deref(),
+        websocket_effective_prompt_cache_key(prompt_cache_key),
         Some(trace.invoke_id.as_str()),
+        account.sticky_affinity_generation,
     )
     .await
     {
@@ -2783,6 +2786,7 @@ mod websocket_tests {
             response_image_tool_capability: CapabilitySupport::Unknown,
             upstream_base_url,
             routing_source: PoolRoutingSelectionSource::FreshAssignment,
+            sticky_affinity_generation: None,
         }
     }
 
@@ -2810,6 +2814,7 @@ mod websocket_tests {
             response_image_tool_capability: CapabilitySupport::Unknown,
             upstream_base_url,
             routing_source: PoolRoutingSelectionSource::FreshAssignment,
+            sticky_affinity_generation: None,
         }
     }
 

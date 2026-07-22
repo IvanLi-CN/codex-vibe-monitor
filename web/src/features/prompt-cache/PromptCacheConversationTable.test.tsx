@@ -1497,7 +1497,7 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).toContain("对话");
   });
 
-  it("renders conversation operation events and filters by info type in the operations tab", async () => {
+  it("renders conversation events and filters by info type in the operations tab", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     apiMocks.fetchPromptCacheConversationOperationEvents.mockImplementation(
       async (_promptCacheKey, query) => {
@@ -1590,7 +1590,7 @@ describe("PromptCacheConversationTable", () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushInteractive();
-    await clickDrawerTab("操作记录");
+    await clickDrawerTab("事件记录");
 
     expect(apiMocks.fetchPromptCacheConversationOperationEvents).toHaveBeenCalledWith(
       "pck-operations",

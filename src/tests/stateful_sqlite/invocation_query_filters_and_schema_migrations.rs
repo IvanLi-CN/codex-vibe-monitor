@@ -1,5 +1,12 @@
 use super::*;
+use crate::api::upsert_runtime_prompt_cache_conversation_sticky_route;
+use crate::upstream_accounts::{
+    bump_sticky_affinity_generation_executor, delete_sticky_route_executor,
+    load_sticky_affinity_generation, load_sticky_route,
+    record_pool_route_success_with_affinity_generation, upsert_sticky_route,
+};
 use serde_json::json;
+use tokio::time::{Duration, sleep};
 
 #[tokio::test]
 #[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
@@ -655,6 +662,53 @@ async fn ensure_schema_creates_prompt_cache_conversation_operation_events_table(
     assert!(columns.iter().any(|column| column == "info_types_json"));
     assert!(columns.iter().any(|column| column == "binding_before_json"));
     assert!(columns.iter().any(|column| column == "sticky_after_json"));
+}
+
+#[tokio::test]
+async fn ensure_schema_creates_sticky_affinity_generation_and_routing_source_storage() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+
+    ensure_schema(&pool)
+        .await
+        .expect("schema should create sticky affinity generation and routing source storage");
+
+    let generation_columns = sqlx::query("PRAGMA table_info('pool_sticky_route_generations')")
+        .fetch_all(&pool)
+        .await
+        .expect("inspect sticky affinity generation columns")
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<Vec<_>>();
+    assert!(
+        generation_columns
+            .iter()
+            .any(|column| column == "sticky_key")
+    );
+    assert!(
+        generation_columns
+            .iter()
+            .any(|column| column == "generation")
+    );
+    assert!(
+        generation_columns
+            .iter()
+            .any(|column| column == "updated_at")
+    );
+
+    let attempt_columns = sqlx::query("PRAGMA table_info('pool_upstream_request_attempts')")
+        .fetch_all(&pool)
+        .await
+        .expect("inspect pool attempt columns")
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<Vec<_>>();
+    assert!(
+        attempt_columns
+            .iter()
+            .any(|column| column == "routing_source")
+    );
 }
 
 #[tokio::test]
@@ -5254,6 +5308,282 @@ async fn bulk_prompt_cache_conversation_bindings_clear_and_reset_affinity_remove
             .items
             .iter()
             .any(|event| event.action == "stickyTargetCleared" && event.origin == "dashboardBulk")
+    );
+}
+
+#[tokio::test]
+async fn prompt_cache_clear_and_reset_affinity_fences_stale_sticky_revival_and_emits_only_fresh_runtime_sticky_event()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let stale_account_id =
+        insert_test_pool_api_key_account(&state, "Prompt Cache Stale Sticky", "upstream-stale")
+            .await;
+    let rebound_account_id =
+        insert_test_pool_api_key_account(&state, "Prompt Cache Fresh Sticky", "upstream-fresh")
+            .await;
+    let prompt_cache_key = "prompt-cache-affinity-fence-key";
+    let stale_invoke_id = "prompt-cache-stale-sticky-invoke";
+    let fresh_invoke_id = "prompt-cache-fresh-sticky-invoke";
+    let keepalive_invoke_id = "prompt-cache-keepalive-sticky-invoke";
+    let seeded_at = format_utc_iso(Utc::now());
+
+    upsert_sticky_route(&state.pool, prompt_cache_key, stale_account_id, &seeded_at)
+        .await
+        .expect("seed sticky route before clear");
+    let stale_generation = load_sticky_affinity_generation(&state.pool, prompt_cache_key)
+        .await
+        .expect("load affinity generation before clear");
+    assert_eq!(stale_generation, 0);
+
+    let payload: BulkPromptCacheConversationBindingsRequest = serde_json::from_value(json!({
+        "promptCacheKeys": [prompt_cache_key],
+        "action": "clearAndResetAffinity",
+    }))
+    .expect("deserialize clear payload");
+    let Json(response) =
+        post_bulk_prompt_cache_conversation_bindings(State(state.clone()), Json(payload))
+            .await
+            .expect("clear and reset affinity should succeed");
+    assert_eq!(response.action, "clearAndResetAffinity");
+    assert_eq!(response.total_succeeded, 1);
+
+    let fresh_generation = load_sticky_affinity_generation(&state.pool, prompt_cache_key)
+        .await
+        .expect("load affinity generation after clear");
+    assert_eq!(fresh_generation, stale_generation + 1);
+    assert!(
+        load_sticky_route(&state.pool, prompt_cache_key)
+            .await
+            .expect("load sticky route after clear")
+            .is_none()
+    );
+
+    record_pool_route_success_with_affinity_generation(
+        &state.pool,
+        stale_account_id,
+        Utc::now(),
+        Some(prompt_cache_key),
+        Some(prompt_cache_key),
+        Some(stale_invoke_id),
+        Some(stale_generation),
+    )
+    .await
+    .expect("stale success writeback should be ignored");
+    assert!(
+        load_sticky_route(&state.pool, prompt_cache_key)
+            .await
+            .expect("load sticky route after stale success")
+            .is_none()
+    );
+
+    record_pool_route_success_with_affinity_generation(
+        &state.pool,
+        rebound_account_id,
+        Utc::now(),
+        Some(prompt_cache_key),
+        Some(prompt_cache_key),
+        Some(fresh_invoke_id),
+        Some(fresh_generation),
+    )
+    .await
+    .expect("fresh success should create sticky route");
+    let sticky_row = load_sticky_route(&state.pool, prompt_cache_key)
+        .await
+        .expect("load sticky route after fresh success")
+        .expect("fresh success should rebuild sticky route");
+    assert_eq!(sticky_row.account_id, rebound_account_id);
+
+    record_pool_route_success_with_affinity_generation(
+        &state.pool,
+        rebound_account_id,
+        Utc::now(),
+        Some(prompt_cache_key),
+        Some(prompt_cache_key),
+        Some(keepalive_invoke_id),
+        Some(fresh_generation),
+    )
+    .await
+    .expect("same-account keepalive should refresh without a new event");
+
+    let Json(event_response) = list_prompt_cache_conversation_operation_events(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        axum::extract::Query(ListPromptCacheConversationOperationEventsQuery {
+            page: Some(1),
+            page_size: Some(20),
+            info_type: None,
+        }),
+    )
+    .await
+    .expect("list prompt cache operation events after stale and fresh successes");
+
+    assert!(
+        !event_response.items.iter().any(|event| {
+            event.action == "stickyTargetChanged"
+                && event.origin == "systemAuto"
+                && event.invoke_id.as_deref() == Some(stale_invoke_id)
+        }),
+        "stale in-flight success must not resurrect sticky ownership"
+    );
+
+    let fresh_events = event_response
+        .items
+        .iter()
+        .filter(|event| event.action == "stickyTargetChanged" && event.origin == "systemAuto")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        fresh_events.len(),
+        1,
+        "fresh assignment should emit exactly one runtime sticky change event"
+    );
+    let fresh_event = fresh_events[0];
+    assert_eq!(fresh_event.invoke_id.as_deref(), Some(fresh_invoke_id));
+    assert_eq!(fresh_event.info_types, vec!["routing".to_string()]);
+    assert_eq!(
+        fresh_event
+            .sticky_before
+            .as_ref()
+            .map(|sticky| sticky.upstream_account_id),
+        None
+    );
+    assert_eq!(
+        fresh_event
+            .sticky_after
+            .as_ref()
+            .map(|sticky| sticky.upstream_account_id),
+        Some(rebound_account_id)
+    );
+    assert!(
+        !event_response.items.iter().any(|event| {
+            event.action == "stickyTargetChanged"
+                && event.origin == "systemAuto"
+                && event.invoke_id.as_deref() == Some(keepalive_invoke_id)
+        }),
+        "same-account keepalive should not emit extra sticky change noise"
+    );
+}
+
+#[tokio::test]
+async fn runtime_sticky_upsert_rechecks_generation_after_waiting_for_write_lock() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let stale_account_id =
+        insert_test_pool_api_key_account(&state, "Prompt Cache Locked Stale", "upstream-locked")
+            .await;
+    let prompt_cache_key = "prompt-cache-affinity-lock-race-key";
+    let seeded_at = format_utc_iso(Utc::now());
+
+    upsert_sticky_route(&state.pool, prompt_cache_key, stale_account_id, &seeded_at)
+        .await
+        .expect("seed sticky route before lock race");
+    let stale_generation = load_sticky_affinity_generation(&state.pool, prompt_cache_key)
+        .await
+        .expect("load affinity generation before lock race");
+    assert_eq!(stale_generation, 0);
+
+    let mut conn = state
+        .pool
+        .acquire()
+        .await
+        .expect("acquire connection for affinity reset lock");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(conn.as_mut())
+        .await
+        .expect("begin immediate affinity reset lock");
+    let reset_now = format_utc_iso(Utc::now());
+    bump_sticky_affinity_generation_executor(conn.as_mut(), prompt_cache_key, &reset_now)
+        .await
+        .expect("bump affinity generation while lock is held");
+    delete_sticky_route_executor(conn.as_mut(), prompt_cache_key)
+        .await
+        .expect("delete sticky route while lock is held");
+
+    let pool = state.pool.clone();
+    let sticky_key = prompt_cache_key.to_string();
+    let write_task = tokio::spawn(async move {
+        upsert_runtime_prompt_cache_conversation_sticky_route(
+            &pool,
+            &sticky_key,
+            Some(&sticky_key),
+            stale_account_id,
+            &format_utc_iso(Utc::now()),
+            Some("locked-stale-invoke"),
+            Some(stale_generation),
+        )
+        .await
+    });
+
+    sleep(Duration::from_millis(50)).await;
+    sqlx::query("COMMIT")
+        .execute(conn.as_mut())
+        .await
+        .expect("commit affinity reset lock");
+    drop(conn);
+
+    let sticky_updated = write_task
+        .await
+        .expect("join locked stale sticky write task")
+        .expect("locked stale sticky write task should return result");
+    assert!(
+        !sticky_updated,
+        "stale sticky writeback must be rejected after the reset transaction commits"
+    );
+    assert!(
+        load_sticky_route(&state.pool, prompt_cache_key)
+            .await
+            .expect("load sticky route after locked stale writeback")
+            .is_none(),
+        "stale sticky writeback must not recreate sticky route after waiting on the reset lock"
+    );
+}
+
+#[tokio::test]
+async fn generic_sticky_route_success_does_not_emit_prompt_cache_conversation_event() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Generic Sticky Route", "upstream-generic").await;
+    let sticky_key = "generic-sticky-only-key";
+
+    record_pool_route_success_with_affinity_generation(
+        &state.pool,
+        account_id,
+        Utc::now(),
+        Some(sticky_key),
+        None,
+        Some("generic-sticky-invoke"),
+        None,
+    )
+    .await
+    .expect("generic sticky success should still upsert the sticky route");
+
+    let sticky_row = load_sticky_route(&state.pool, sticky_key)
+        .await
+        .expect("load sticky route after generic sticky success")
+        .expect("generic sticky success should persist sticky route");
+    assert_eq!(sticky_row.account_id, account_id);
+
+    let Json(event_response) = list_prompt_cache_conversation_operation_events(
+        State(state.clone()),
+        AxumPath(sticky_key.to_string()),
+        axum::extract::Query(ListPromptCacheConversationOperationEventsQuery {
+            page: Some(1),
+            page_size: Some(20),
+            info_type: None,
+        }),
+    )
+    .await
+    .expect("list generic sticky operation events");
+    assert!(
+        event_response.items.is_empty(),
+        "generic sticky affinities must not create prompt cache conversation events"
     );
 }
 

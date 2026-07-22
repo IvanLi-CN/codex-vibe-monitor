@@ -3020,6 +3020,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             endpoint TEXT NOT NULL,
             route_mode TEXT NOT NULL,
             sticky_key TEXT,
+            routing_source TEXT,
             upstream_base_url_host TEXT,
             group_name_snapshot TEXT,
             proxy_binding_key_snapshot TEXT,
@@ -3166,6 +3167,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         load_sqlite_table_columns(pool, "pool_upstream_request_attempts").await?;
     for (column, ty) in [
         ("attempt_public_id", "TEXT"),
+        ("routing_source", "TEXT"),
         ("upstream_route_key", "TEXT"),
         ("phase", "TEXT"),
         ("downstream_http_status", "INTEGER"),

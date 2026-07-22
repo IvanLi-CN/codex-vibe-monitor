@@ -472,6 +472,7 @@ export interface ApiPoolUpstreamRequestAttempt {
   occurredAt: string;
   endpoint: string;
   stickyKey?: string | null;
+  routingSource?: string | null;
   upstreamAccountId?: number | null;
   upstreamAccountName?: string | null;
   model?: string | null;
@@ -716,6 +717,7 @@ export interface ApiInvocationWorkflowAttempt {
   occurredAt: string;
   endpoint: string;
   stickyKey?: string | null;
+  routingSource?: string | null;
   upstreamAccountId?: number | null;
   upstreamAccountName?: string | null;
   requestModel?: string | null;

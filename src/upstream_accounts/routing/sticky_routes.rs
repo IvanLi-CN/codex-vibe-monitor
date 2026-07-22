@@ -431,12 +431,78 @@ pub(crate) async fn load_sticky_route(
     .map_err(Into::into)
 }
 
-pub(crate) async fn upsert_sticky_route(
+pub(crate) async fn load_sticky_affinity_generation_executor<'e, E>(
+    executor: E,
+    sticky_key: &str,
+) -> Result<i64>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT generation
+        FROM pool_sticky_route_generations
+        WHERE sticky_key = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(sticky_key)
+    .fetch_optional(executor)
+    .await
+    .map(|generation| generation.unwrap_or_default())
+    .map_err(Into::into)
+}
+
+pub(crate) async fn load_sticky_affinity_generation(
     pool: &Pool<Sqlite>,
+    sticky_key: &str,
+) -> Result<i64> {
+    load_sticky_affinity_generation_executor(pool, sticky_key).await
+}
+
+pub(crate) async fn bump_sticky_affinity_generation_executor<'e, E>(
+    executor: E,
+    sticky_key: &str,
+    now_iso: &str,
+) -> Result<i64>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        INSERT INTO pool_sticky_route_generations (
+            sticky_key, generation, updated_at
+        ) VALUES (?1, 1, ?2)
+        ON CONFLICT(sticky_key) DO UPDATE SET
+            generation = pool_sticky_route_generations.generation + 1,
+            updated_at = excluded.updated_at
+        RETURNING generation
+        "#,
+    )
+    .bind(sticky_key)
+    .bind(now_iso)
+    .fetch_one(executor)
+    .await
+    .map_err(Into::into)
+}
+
+pub(crate) async fn bump_sticky_affinity_generation(
+    pool: &Pool<Sqlite>,
+    sticky_key: &str,
+    now_iso: &str,
+) -> Result<i64> {
+    bump_sticky_affinity_generation_executor(pool, sticky_key, now_iso).await
+}
+
+pub(crate) async fn upsert_sticky_route_executor<'e, E>(
+    executor: E,
     sticky_key: &str,
     account_id: i64,
     now_iso: &str,
-) -> Result<()> {
+) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     sqlx::query(
         r#"
         INSERT INTO pool_sticky_routes (
@@ -451,15 +517,31 @@ pub(crate) async fn upsert_sticky_route(
     .bind(sticky_key)
     .bind(account_id)
     .bind(now_iso)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
 }
 
-pub(crate) async fn delete_sticky_route(pool: &Pool<Sqlite>, sticky_key: &str) -> Result<()> {
+pub(crate) async fn upsert_sticky_route(
+    pool: &Pool<Sqlite>,
+    sticky_key: &str,
+    account_id: i64,
+    now_iso: &str,
+) -> Result<()> {
+    upsert_sticky_route_executor(pool, sticky_key, account_id, now_iso).await
+}
+
+pub(crate) async fn delete_sticky_route_executor<'e, E>(executor: E, sticky_key: &str) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     sqlx::query("DELETE FROM pool_sticky_routes WHERE sticky_key = ?1")
         .bind(sticky_key)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(())
+}
+
+pub(crate) async fn delete_sticky_route(pool: &Pool<Sqlite>, sticky_key: &str) -> Result<()> {
+    delete_sticky_route_executor(pool, sticky_key).await
 }

@@ -2431,6 +2431,7 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
             .expect("oauth upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        sticky_affinity_generation: None,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
         forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
