@@ -371,7 +371,7 @@ The Storybook `DrawerBindingAndTimeouts` scenario now also renders the widened c
 
 The Storybook `DrawerBindingAndTimeouts` scenario also shows a multi-node conversation proxy list so the drawer contract remains reviewable alongside the Dashboard bulk-entry points.
 
-![Conversation events tab with categorized filters](./assets/operations-tab-storybook.png)
+![Conversation events tab showing affinity reset and fresh sticky reassignment](./assets/operations-tab-storybook.png)
 
 - source_type: storybook_canvas
 - target_program: mock-only
@@ -383,5 +383,5 @@ The Storybook `DrawerBindingAndTimeouts` scenario also shows a multi-node conver
 - sensitive_exclusion: N/A
 - submission_gate: pending-owner-approval
 - story_id_or_title: `Monitoring/PromptCacheConversationTable/DrawerOperations`
-- state: events tab open with the default `全部` filter and two categorized events visible
-- evidence_note: verifies the sibling `事件记录` tab, the lightweight `全部 / 路由相关 / 正向代理相关 / 请求改写相关` filter row, and mixed event badges showing `detailDrawer` plus `dashboardBulk` origins on the same drawer shell.
+- state: events tab open with the default `全部` filter, showing `affinityReset`, `stickyTargetCleared`, and one later `systemAuto stickyTargetChanged` event with `invokeId`
+- evidence_note: verifies the sibling `事件记录` tab, the lightweight `全部 / 路由相关 / 正向代理相关 / 请求改写相关` filter row, and the bug-fix sequence itself: clearing affinity removes the old sticky target, no stale revival event appears in between, and only the later fresh reassignment emits `Sticky 目标已切换` from `systemAuto`.

@@ -390,45 +390,66 @@ const operationEventsByPromptCacheKey = new Map<string, PromptCacheConversationO
     CONVERSATION_SHORT_KEY,
     [
       {
+        id: 303,
+        promptCacheKey: CONVERSATION_SHORT_KEY,
+        action: "stickyTargetChanged",
+        origin: "systemAuto",
+        infoTypes: ["routing"],
+        occurredAt: "2026-05-13T23:47:36.000Z",
+        headline: "Sticky target changed",
+        changedFields: ["stickyTarget"],
+        bindingBefore: null,
+        bindingAfter: null,
+        stickyBefore: null,
+        stickyAfter: {
+          upstreamAccountId: 22,
+          upstreamAccountName: "mia.7rmmq@support.example",
+        },
+        invokeId: "invoke-short-32",
+      },
+      {
+        id: 302,
+        promptCacheKey: CONVERSATION_SHORT_KEY,
+        action: "stickyTargetCleared",
+        origin: "dashboardBulk",
+        infoTypes: ["routing"],
+        occurredAt: "2026-05-13T23:46:12.000Z",
+        headline: "Sticky target cleared",
+        changedFields: ["stickyTarget"],
+        bindingBefore: null,
+        bindingAfter: null,
+        stickyBefore: {
+          upstreamAccountId: 21,
+          upstreamAccountName: "growth.6vv4@relay.example",
+        },
+        stickyAfter: null,
+        invokeId: null,
+      },
+      {
         id: 301,
         promptCacheKey: CONVERSATION_SHORT_KEY,
-        action: "manualBindingUpdated",
-        origin: "detailDrawer",
+        action: "affinityReset",
+        origin: "dashboardBulk",
         infoTypes: ["routing"],
-        occurredAt: "2026-05-13T23:45:00.000Z",
-        headline: "Manual binding updated",
+        occurredAt: "2026-05-13T23:46:12.000Z",
+        headline: "Affinity reset",
         changedFields: ["bindingKind"],
         bindingBefore: {
-          bindingKind: "none",
-          groupName: null,
-          upstreamAccountId: null,
-          upstreamAccountName: null,
-        },
-        bindingAfter: {
           bindingKind: "upstreamAccount",
           groupName: null,
           upstreamAccountId: 21,
           upstreamAccountName: "growth.6vv4@relay.example",
         },
-        stickyBefore: null,
-        stickyAfter: {
+        bindingAfter: {
+          bindingKind: "none",
+          groupName: null,
+          upstreamAccountId: null,
+          upstreamAccountName: null,
+        },
+        stickyBefore: {
           upstreamAccountId: 21,
           upstreamAccountName: "growth.6vv4@relay.example",
         },
-        invokeId: "inv-story-301",
-      },
-      {
-        id: 300,
-        promptCacheKey: CONVERSATION_SHORT_KEY,
-        action: "conversationPolicyUpdated",
-        origin: "dashboardBulk",
-        infoTypes: ["forwardProxy", "requestRewrite"],
-        occurredAt: "2026-05-13T23:43:00.000Z",
-        headline: "Conversation policy updated",
-        changedFields: ["forwardProxyKeys", "fastModeRewriteMode"],
-        bindingBefore: null,
-        bindingAfter: null,
-        stickyBefore: null,
         stickyAfter: null,
         invokeId: null,
       },
@@ -2246,7 +2267,7 @@ export const DrawerOperations: Story = {
     docs: {
       description: {
         story:
-          "Prompt Cache drawer showing the new events tab with lightweight routing/proxy/rewrite filters and categorized event badges.",
+          "Prompt Cache drawer showing the affinity reset sequence: clear the existing sticky target, suppress stale in-flight sticky resurrection, then record exactly one fresh systemAuto sticky reassignment event with invokeId.",
       },
     },
   },
@@ -2264,15 +2285,29 @@ export const DrawerOperations: Story = {
       ),
     ).toBeInTheDocument();
     await expect(documentScope.getAllByText(/路由相关|Routing/i).length).toBeGreaterThan(0);
-    await expect(documentScope.getAllByText(/正向代理相关|Forward proxy/i).length).toBeGreaterThan(
-      0,
-    );
+    await expect(documentScope.getByText(/会话亲和性已重置|Affinity reset/i)).toBeInTheDocument();
+    await expect(
+      documentScope.getByText(/Sticky 目标已清空|Sticky target cleared/i),
+    ).toBeInTheDocument();
+    await expect(
+      documentScope.getByText(/Sticky 目标已切换|Sticky target changed/i),
+    ).toBeInTheDocument();
+    await expect(documentScope.getByText(/系统自动|System auto/i)).toBeInTheDocument();
+    await expect(documentScope.getByText(/invokeId: invoke-short-32/i)).toBeInTheDocument();
     await expect(
       documentScope.getByText(
-        /绑定目标：无手工绑定 -> 账号|Binding: No manual binding -> Account/i,
+        /Sticky 目标：无 Sticky 目标 -> mia\.7rmmq@support\.example|Sticky target: No sticky target -> mia\.7rmmq@support\.example/i,
       ),
     ).toBeInTheDocument();
-    await expect(documentScope.getByText(/策略更新|Policy updated/i)).toBeInTheDocument();
+    await expect(
+      documentScope.getAllByText(/Sticky 目标已切换|Sticky target changed/i).length,
+    ).toBe(1);
+    await expect(
+      documentScope.getByText(
+        /绑定目标：账号 growth\.6vv4@relay\.example -> 无手工绑定|Binding: Account growth\.6vv4@relay\.example -> No manual binding/i,
+      ),
+    ).toBeInTheDocument();
+    await expect(documentScope.queryByText(/策略更新|Policy updated/i)).not.toBeInTheDocument();
   },
 };
 

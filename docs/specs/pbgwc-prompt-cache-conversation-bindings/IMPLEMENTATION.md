@@ -113,7 +113,7 @@
 - Storybook `DrawerBindingAndTimeouts` mock evidence: one drawer shows the “对话详情” title, conversation-level policy override rows with source badges, binding controls, and the timeout subpanel in the Settings tab.
 - Storybook `DrawerBindingAndTimeouts` mock evidence now also shows a multi-node conversation proxy list and the visual evidence at `./assets/conversation-settings-multi-proxy-story.png`.
 - Storybook `DrawerBindingAndTimeouts` mock evidence now also captures the widened detail drawer and account-style conversation routing form at `./assets/conversation-settings-wide-drawer-story.png`, including hidden account-only rows, expanded conversation-owned policy/timeouts, and the separate route-binding block.
-- Storybook `DrawerOperations` mock evidence shows the categorized events tab with routing / forward-proxy / request-rewrite badges plus lightweight filter buttons on the same drawer shell.
+- Storybook `DrawerOperations` mock evidence now shows the affinity-reset recovery sequence itself: `affinityReset`, `stickyTargetCleared`, and exactly one later `systemAuto stickyTargetChanged` event with `invokeId`, so the visual contract proves stale in-flight success does not resurrect sticky after reset.
 - Storybook `build-storybook` now succeeds after the Storybook-local Vite plugin merge deduplicates repeated React plugins, so the `DrawerOperations` evidence path remains usable for future UI reviews.
 
 ## 101 Read-only Follow-up

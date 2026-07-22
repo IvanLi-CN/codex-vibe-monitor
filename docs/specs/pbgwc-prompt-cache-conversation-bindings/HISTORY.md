@@ -24,5 +24,6 @@
 - 2026-07-18: Normalized per-conversation operation history into three categories: `routing`, `forwardProxy`, and `requestRewrite`. Policy PATCH records can carry multiple categories in one `infoTypes[]` payload so mixed-field writes stay collapsed.
 - 2026-07-18: Locked operation origins to `detailDrawer`, `dashboardBulk`, and `systemAuto`, while explicitly excluding historical backfill and actor-identity audit from v1.
 - 2026-07-18: Deduplicated Storybook-local React Vite plugins so the `DrawerOperations` story can build and serve stable mock visual evidence for the new events tab.
+- 2026-07-22: Added sticky-affinity generation fencing so `clearAndResetAffinity` prevents stale in-flight success from reviving the old sticky target. Fresh reassignment after reset now emits one runtime `systemAuto stickyTargetChanged` event with `invokeId`, and Storybook evidence was tightened to show that exact sequence.
 - Upstream account bindings are operator-forced account assignments: they override sticky transfer policy only, not account health, quota, guard, concurrency, route-key, or forward-proxy readiness.
 - “切出” is a conversation-level permission to switch away from the original/sticky upstream account, preserving user-facing terminology from account settings without introducing a conversation-level cut-in permission.
