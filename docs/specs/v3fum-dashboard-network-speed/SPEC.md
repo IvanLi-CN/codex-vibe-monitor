@@ -64,7 +64,7 @@
 - 当前 5 分钟桶与上一完整 1 秒实时快照必须以内存缓存为主；socket minute rollup 不做历史回填，初次 materialize 时只从当前 live table 尾部开始累计。
 - 连接在握手前失败、等待首包超时或流式途中提前 drop 时，已实际发生的 socket 字节仍必须冲刷到 live bucket 与 minute rollup，不能因为 future 被取消而丢样本。
 - `GET /api/stats/dashboard-network-recent` 与 `dashboard.network-recent.current` 必须固定返回 `windowSeconds=300`、`sampleSeconds=1`、完整 300 点全局窗口，以及 `rangeStart`、`rangeEnd`、`isWarmingUp` 与每个点的 `isAvailable` 状态。
-- `dashboard.network-recent.current` 必须由服务端 SSE live payload 推送；前端不得再用 interval 或 `refresh()` 维持窗口推进。
+- `dashboard.network-recent.current` 必须由服务端 SSE live payload 推送；服务端 cadence 必须按 topic 共享，不能随 SSE 连接数线性放大；前端不得再用 interval 或 `refresh()` 维持窗口推进。
 - recent 面板历史必须直接来自 `DashboardNetworkSpeedCache` 的运行期秒桶真历史；不得从分钟表反推，也不得新增 SQLite 持久化。
 - 进程启动不足 5 分钟时，recent 面板前导缺失区间必须通过 `isAvailable=false` 表示空档，数值字段固定归零仅供渲染；前端不得把这些点伪装成真实 `0 B/s` 历史。
 - recent 面板只允许展示全局上传/下载两条秒级曲线；顶部胶囊自身继续独立读取 `networkRealtimeRate`，不与 recent 面板共享回退或格式化语义。
@@ -89,7 +89,7 @@
 - 工作台上游账号 tab 始终在右上 badge 区显示总上传/总下载实时速率；账号卡只保留活动账号数量、TPM、消费速率、进行中等摘要信息。
 - owner 悬浮工作区顶部网速胶囊时，桌面端弹出最近 5 分钟逐秒诊断面板；点击同一胶囊后面板保持固定打开，直到再次点击、点击外部或按 `Esc` 关闭。面板右上角同步显示最近一帧可用样本的上行/下行摘要，图表区在 topic 超过阈值未收到新 payload 时显示 stale 遮罩。
 - 窄屏端点击同一胶囊时，改用 dialog/sheet 承载同一份 recent 面板内容；关闭 overlay 后立即停止 recent topic 订阅。
-- recent 面板打开期间每秒由服务端推送同一 topic 的新 snapshot，以便即使当前 1 秒没有新流量，窗口右边界也会继续按 1 秒 cadence 前进。
+- recent 面板打开期间每秒由服务端按 topic 共享 cadence 推送同一 topic 的新 snapshot，以便即使当前 1 秒没有新流量，窗口右边界也会继续按 1 秒 cadence 前进。
 
 ### Edge cases / errors
 

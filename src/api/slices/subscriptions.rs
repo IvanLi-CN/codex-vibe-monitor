@@ -13,7 +13,10 @@ const SUBSCRIPTION_DEFAULT_PROMPT_CACHE_RECENT_LIMIT: i64 = 16;
 const SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES: i64 = 5;
 const SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_PAGE_SIZE: i64 = 20;
 const SUBSCRIPTION_DEFAULT_INVOCATION_LIMIT: i64 = 20;
+#[cfg(not(test))]
 const DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL: Duration = Duration::from_millis(50);
 
 #[cfg(not(test))]
 const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration =
@@ -111,6 +114,8 @@ pub(crate) struct SubscriptionHub {
 #[derive(Debug, Default)]
 struct SubscriptionHubState {
     topics: HashMap<String, CachedSubscriptionTopic>,
+    server_push_subscribers: HashMap<String, usize>,
+    server_push_tasks: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +138,24 @@ struct ReplayableTopicEvent {
     payload: Value,
     bytes: usize,
     emitted_at: DateTime<Utc>,
+}
+
+struct ServerPushTopicLease {
+    hub: Arc<SubscriptionHub>,
+    topic_keys: Vec<String>,
+}
+
+impl Drop for ServerPushTopicLease {
+    fn drop(&mut self) {
+        if self.topic_keys.is_empty() {
+            return;
+        }
+        let hub = self.hub.clone();
+        let topic_keys = std::mem::take(&mut self.topic_keys);
+        tokio::spawn(async move {
+            hub.release_server_push_topics(topic_keys).await;
+        });
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -265,6 +288,78 @@ impl SubscriptionHub {
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<SubscriptionDispatchEvent> {
         self.broadcaster.subscribe()
+    }
+
+    async fn register_server_push_topics(
+        self: &Arc<Self>,
+        state: Arc<AppState>,
+        topics: Vec<SubscriptionTopic>,
+    ) -> Result<ServerPushTopicLease, ApiError> {
+        let mut unique_topics = HashMap::new();
+        for topic in topics {
+            unique_topics.entry(topic.cache_key()?).or_insert(topic);
+        }
+
+        let topic_keys = unique_topics.keys().cloned().collect::<Vec<_>>();
+        let mut topics_to_start = Vec::new();
+        {
+            let mut guard = self.state.lock().await;
+            for (topic_key, topic) in unique_topics {
+                *guard
+                    .server_push_subscribers
+                    .entry(topic_key.clone())
+                    .or_insert(0) += 1;
+                if guard.server_push_tasks.insert(topic_key.clone()) {
+                    topics_to_start.push((topic_key, topic));
+                }
+            }
+        }
+
+        for (topic_key, topic) in topics_to_start {
+            let hub = self.clone();
+            let state = state.clone();
+            tokio::spawn(async move {
+                run_server_push_topic_loop(hub, state, topic_key, topic).await;
+            });
+        }
+
+        Ok(ServerPushTopicLease {
+            hub: self.clone(),
+            topic_keys,
+        })
+    }
+
+    async fn release_server_push_topics(&self, topic_keys: Vec<String>) {
+        let mut guard = self.state.lock().await;
+        for topic_key in topic_keys {
+            match guard.server_push_subscribers.get_mut(&topic_key) {
+                Some(count) if *count > 1 => *count -= 1,
+                Some(_) => {
+                    guard.server_push_subscribers.remove(&topic_key);
+                }
+                None => {}
+            }
+        }
+    }
+
+    async fn stop_server_push_task_if_idle(&self, topic_key: &str) -> bool {
+        let mut guard = self.state.lock().await;
+        if guard
+            .server_push_subscribers
+            .get(topic_key)
+            .copied()
+            .unwrap_or(0)
+            > 0
+        {
+            return false;
+        }
+        guard.server_push_tasks.remove(topic_key);
+        true
+    }
+
+    async fn clear_server_push_task(&self, topic_key: &str) {
+        let mut guard = self.state.lock().await;
+        guard.server_push_tasks.remove(topic_key);
     }
 
     pub(crate) async fn prepare_connection(
@@ -1029,6 +1124,34 @@ fn apply_dashboard_activity_live_overlay_to_payload(
     Ok(true)
 }
 
+async fn run_server_push_topic_loop(
+    hub: Arc<SubscriptionHub>,
+    state: Arc<AppState>,
+    topic_key: String,
+    topic: SubscriptionTopic,
+) {
+    let mut interval = tokio::time::interval(DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = state.shutdown.cancelled() => {
+                hub.clear_server_push_task(&topic_key).await;
+                break;
+            }
+            _ = interval.tick() => {
+                if hub.stop_server_push_task_if_idle(&topic_key).await {
+                    break;
+                }
+                if let Err(err) = hub.refresh_topic(state.clone(), topic.clone(), true).await {
+                    warn!(?err, topic = %topic.name(), "failed to push subscription topic cadence");
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn spawn_subscription_broadcast_listener(state: Arc<AppState>) {
     let hub = state.subscription_hub.clone();
     let shutdown = state.shutdown.clone();
@@ -1084,10 +1207,15 @@ pub(crate) async fn topic_sse_stream(
         last_sent_cursors: last_seen_by_topic,
         outcomes: _,
     } = prepared;
-    let recent_network_push_topic = selected_topics
+    let server_push_topics = selected_topics
         .iter()
-        .find(|topic| topic.uses_server_push_cadence())
-        .cloned();
+        .filter(|topic| topic.uses_server_push_cadence())
+        .cloned()
+        .collect::<Vec<_>>();
+    let server_push_lease = state
+        .subscription_hub
+        .register_server_push_topics(state.clone(), server_push_topics)
+        .await?;
 
     let initial_stream = stream::iter(
         initial
@@ -1096,56 +1224,34 @@ pub(crate) async fn topic_sse_stream(
     );
 
     let live_stream = async_stream::stream! {
+        let _server_push_lease = server_push_lease;
         let mut last_seen = last_seen_by_topic;
-        let mut recent_network_push_interval = recent_network_push_topic.as_ref().map(|_| {
-            let mut interval = tokio::time::interval(DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL);
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            interval
-        });
-        if let Some(interval) = recent_network_push_interval.as_mut() {
-            interval.tick().await;
-        }
         loop {
-            tokio::select! {
-                received = live_receiver.recv() => {
-                    match received {
-                        Ok(dispatch) => {
-                            if !selected_topic_keys.contains(&dispatch.topic_key) {
-                                continue;
-                            }
-                            let previous_cursor = last_seen.get(&dispatch.topic_key).copied().unwrap_or(0);
-                            if dispatch.cursor <= previous_cursor {
-                                continue;
-                            }
-                            last_seen.insert(dispatch.topic_key.clone(), dispatch.cursor);
-                            let payload = SubscriptionEventEnvelope::Live {
-                                topic: dispatch.descriptor.clone(),
-                                topic_key: dispatch.topic_key.clone(),
-                                schema_epoch: dispatch.schema_epoch.clone(),
-                                cursor: dispatch.cursor,
-                                payload: dispatch.payload.clone(),
-                            };
-                            if let Ok(event) = serialize_sse_event(&payload) {
-                                yield event;
-                            }
-                        }
-                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                            warn!(skipped, "subscription live fanout lagged");
-                        }
-                        Err(broadcast::error::RecvError::Closed) => break,
+            match live_receiver.recv().await {
+                Ok(dispatch) => {
+                    if !selected_topic_keys.contains(&dispatch.topic_key) {
+                        continue;
+                    }
+                    let previous_cursor = last_seen.get(&dispatch.topic_key).copied().unwrap_or(0);
+                    if dispatch.cursor <= previous_cursor {
+                        continue;
+                    }
+                    last_seen.insert(dispatch.topic_key.clone(), dispatch.cursor);
+                    let payload = SubscriptionEventEnvelope::Live {
+                        topic: dispatch.descriptor.clone(),
+                        topic_key: dispatch.topic_key.clone(),
+                        schema_epoch: dispatch.schema_epoch.clone(),
+                        cursor: dispatch.cursor,
+                        payload: dispatch.payload.clone(),
+                    };
+                    if let Ok(event) = serialize_sse_event(&payload) {
+                        yield event;
                     }
                 }
-                _ = async {
-                    if let Some(interval) = recent_network_push_interval.as_mut() {
-                        interval.tick().await;
-                    }
-                }, if recent_network_push_interval.is_some() => {
-                    if let Some(topic) = recent_network_push_topic.clone()
-                        && let Err(err) = state.subscription_hub.refresh_topic(state.clone(), topic, true).await
-                    {
-                        warn!(?err, "failed to push dashboard recent network topic");
-                    }
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    warn!(skipped, "subscription live fanout lagged");
                 }
+                Err(broadcast::error::RecvError::Closed) => break,
             }
         }
     };
@@ -2162,7 +2268,7 @@ mod tests {
         let state =
             crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap())
                 .await;
-        let hub = SubscriptionHub::new();
+        let hub = Arc::new(SubscriptionHub::new());
         let topic = SubscriptionTopic::DashboardNetworkRecentCurrent;
         let descriptor = topic.descriptor();
         let mut receiver = hub.subscribe();
@@ -2175,9 +2281,10 @@ mod tests {
         assert_eq!(prepared.initial.len(), 1);
         assert!(topic.uses_server_push_cadence());
 
-        hub.refresh_topic(state, topic, true)
+        let _lease = hub
+            .register_server_push_topics(state, vec![topic])
             .await
-            .expect("push recent network topic");
+            .expect("register recent network push topic");
 
         let dispatch = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
             .await
@@ -2208,6 +2315,59 @@ mod tests {
                 .map(Vec::len),
             Some(300)
         );
+    }
+
+    #[tokio::test]
+    async fn dashboard_network_recent_topic_push_cadence_is_shared_across_subscribers() {
+        let state =
+            crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap())
+                .await;
+        let hub = Arc::new(SubscriptionHub::new());
+        let topic = SubscriptionTopic::DashboardNetworkRecentCurrent;
+        let topic_key = topic.cache_key().expect("recent topic key");
+        let descriptor = topic.descriptor();
+
+        hub.prepare_connection(state.clone(), vec![descriptor.clone()], Vec::new())
+            .await
+            .expect("prepare first recent network topic connection");
+        let first_lease = hub
+            .register_server_push_topics(state.clone(), vec![topic.clone()])
+            .await
+            .expect("register first recent network push topic");
+        hub.prepare_connection(state.clone(), vec![descriptor], Vec::new())
+            .await
+            .expect("prepare second recent network topic connection");
+        let second_lease = hub
+            .register_server_push_topics(state, vec![topic])
+            .await
+            .expect("register second recent network push topic");
+
+        {
+            let guard = hub.state.lock().await;
+            assert_eq!(
+                guard.server_push_subscribers.get(&topic_key).copied(),
+                Some(2)
+            );
+            assert_eq!(guard.server_push_tasks.len(), 1);
+            assert!(guard.server_push_tasks.contains(&topic_key));
+        }
+
+        drop(first_lease);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        {
+            let guard = hub.state.lock().await;
+            assert_eq!(
+                guard.server_push_subscribers.get(&topic_key).copied(),
+                Some(1)
+            );
+            assert_eq!(guard.server_push_tasks.len(), 1);
+        }
+
+        drop(second_lease);
+        tokio::time::sleep(DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL * 2).await;
+        let guard = hub.state.lock().await;
+        assert_eq!(guard.server_push_subscribers.get(&topic_key), None);
+        assert!(!guard.server_push_tasks.contains(&topic_key));
     }
 
     #[test]

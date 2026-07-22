@@ -27,7 +27,8 @@
 - 新增 `GET /api/stats/dashboard-network-recent` 与 `dashboard.network-recent.current`：
   - 由后端直接组装 `DashboardRecentNetworkWindowResponse` / `DashboardRecentNetworkWindowPoint`。
   - topic payload 与 HTTP response 共用同一权威读模型，固定 `windowSeconds=300`、`sampleSeconds=1`。
-  - SSE 连接订阅 `dashboard.network-recent.current` 时由服务端按 1 秒 cadence 推送 live payload，用于推进 recent 窗口右边界；前端不再通过 `refresh()` 维持 steady-state。
+  - 只要存在 `dashboard.network-recent.current` 订阅者，服务端由 `SubscriptionHub` 按 topic 共享 1 秒 cadence 推送 live payload，用于推进 recent 窗口右边界；前端不再通过 `refresh()` 维持 steady-state。
+  - 共享 cadence 由 topic 订阅 lease 计数驱动，多条 SSE 连接订阅同一 topic 时只保留一个 server-push task，避免连接数放大 payload build / broadcast。
 - `src/oauth_bridge.rs` 新增 counted OAuth transport path，避免 OAuth HTTP 请求继续走 reqwest body 近似值。
 - `src/proxy/upstream_transport.rs` 提供 counted HTTP transport，`src/proxy/websocket.rs` 复用同一套 meter / reporter，统一 direct、pool、OAuth 与 WebSocket 的真实网速事实源。
 
@@ -82,7 +83,7 @@
 - 后端新增 recent 面板定向单测覆盖：
   - 300 秒 recent 窗口保留与上一完整秒快照语义。
   - 进程启动不足 5 分钟时 recent 前导空档的 `isAvailable=false` 语义。
-  - recent endpoint response builder、subscription topic schema epoch 与服务端 live payload 推送。
+  - recent endpoint response builder、subscription topic schema epoch、服务端 live payload 推送与多订阅者共享 cadence。
 - `DashboardPage.stories.tsx` 新增页面级 SSE / HTTP bootstrap，确保整页证据能同时覆盖活动总览网速图和上游账号顶部总速率胶囊，不再依赖缺失首帧 snapshot 的假空态。
 - Storybook 继续使用 `DashboardNetworkActivityChart` 与 `UpstreamAccountTab` 场景验证图表背景与账号 tab 顶部总速率展示，并补充整页 `UnifiedActivitySnapshot` 证据验证 page-shell 接线。
 - 新增 `DashboardNetworkRecentPopover.stories.tsx`，提供桌面固定展开态、stale 遮罩态与窄屏 sheet 前导空档无提示态，作为 recent 诊断面板的稳定视觉证据入口。

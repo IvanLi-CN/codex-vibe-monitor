@@ -22,3 +22,4 @@
 - 2026-07-22 recent 面板的 steady-state 从前端 1 秒 `refresh()` 改为服务端 SSE live payload 推送；前端只消费 topic payload，并用最后一次 payload 到达时间判定 5 秒 stale 遮罩，避免出现“刷新中”局部状态和第二真相源。
 - 2026-07-22 网速胶囊移除浏览器原生 `title` tooltip；recent 面板头部右上角改为显示最近一帧可用样本的两行上行/下行摘要，让 owner 不需要依赖 hover tooltip 读取当前值。
 - 2026-07-22 窄屏 recent 面板不再显示“正在积累 5 分钟历史”类 warming 提示；前导不可用样本继续通过 `isAvailable=false` 渲染为空档，但 UI 不额外弹出提示。
+- 2026-07-22 PR merge-proof 发现连接级 recent cadence 会在多 tab 下放大 payload build / broadcast；实现收敛为 `SubscriptionHub` topic 级共享 server-push task，并用订阅 lease 计数停止闲置 task。
