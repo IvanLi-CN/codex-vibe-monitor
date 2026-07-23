@@ -38,7 +38,7 @@
   - `invocations.window`
   - `prompt-cache.window`
   - `prompt-cache.sticky.window`
-  - `stats.summary.current`
+  - `stats.summary.current`（仅 open-range owner-facing 当前态；`yesterday` / `previous7d` 保持 HTTP exact）
   - `stats.timeseries.open-window`
   - `stats.parallel-work.current`
   - `forward-proxy.live`
@@ -59,6 +59,7 @@
 - `/events` 请求允许附带可选 `attempt` 与 `reason` 诊断参数；它们不得影响 snapshot/replay/live 语义，只用于前后端关联重连证据。
 - 服务端对主应用 topic 只发送 `SubscriptionEventEnvelope::Snapshot | Replay | Live`；覆盖范围内不再向前端暴露 “收到 `records` 后自己回源” 这一合同。
 - 覆盖范围内页面首屏不得先发 HTTP bootstrap；可见数据 hydration 必须等待 topic `snapshot` 或可恢复的 `replay` 完成。
+- `stats.summary.current` 只服务 open-range owner-facing 当前态；`yesterday`、`previous7d` 等闭区间 summary 在当前应用里不得建立 pure SSE 订阅，必须继续走 HTTP exact path。
 - 健康连接状态下，覆盖范围内页面不得触发后台 HTTP reconcile、`subscribeToSseOpen` resync fetch、定时拉取校准或页面私有 fallback。
 - 恢复规则只允许二选一：
   - client cursor 仍在该 topic replay 窗口内，且 `schemaEpoch` 一致、gap 连续、回放批次未超预算时，发送 `replay`
@@ -142,7 +143,7 @@
 - `invocations.window`
 - `prompt-cache.window`
 - `prompt-cache.sticky.window`
-- `stats.summary.current`
+- `stats.summary.current`（open-range only）
 - `stats.timeseries.open-window`
 - `stats.parallel-work.current`
 - `forward-proxy.live`
@@ -154,6 +155,7 @@
   - 闭合历史窗口
   - 非订阅页面
   - 调试与手动读取
+- owner-facing summary 的边界固定为：`today / 1d / 7d` 等 open-range 继续走 topic，`yesterday / previous7d` 通过 `fetchSummary(...)` 走 exact HTTP。
 - 但主应用订阅类 UI 在健康态与恢复态都不能再依赖这些 HTTP 端点完成“当前态校准”。
 
 ## 验收标准（Acceptance Criteria）

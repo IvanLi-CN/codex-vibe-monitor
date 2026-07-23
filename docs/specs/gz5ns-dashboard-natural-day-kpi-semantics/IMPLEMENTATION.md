@@ -14,6 +14,8 @@
 - 已完成 Dashboard open-range / `previous7d` summary `usage_breakdown` 的读路径收口：`today / 1d / 7d / yesterday / previous7d` 改走内部 hourly `model + reasoning` breakdown rollup + exact boundary tail，Dashboard 总览与 comparison summary 的字段、分组与排序保持不变，但不再依赖整段 raw aggregate 重算。
 - 已补齐 breakdown rollup 的升级期修补：对历史上已经 `historical_rollups_materialized_at` 的 invocation archive batch，只有 `usage/stats` 这类 legacy account rollup 仍可沿用“materialized 即视为 replayed”的 shortcut；新的 `usage_breakdown` target 若缺真实 hourly rows，会在启动期被重新挂回 historical rollup backlog，而不是继续误判成健康已回放。
 - 已补齐 pruned legacy archive 的 breakdown replay 规则：`upstream_account_usage_breakdown_hourly` 不再要求完整 payload，历史裁剪 payload 可用结构化列回放，缺失的 `reasoning_effort` 统一落入空/unknown 分组；`prompt_cache_*` 与 `sticky_key` 仍保持 payload-required blocked 语义。
+- 已完成 owner-facing `previous7d` summary 消费边界收口：Dashboard / Stats 当前应用不再为 `previous7d` 建立 `stats.summary.current` pure SSE 订阅，而是和 `yesterday` 一样走 closed-range HTTP exact path；summary topic 侧仅保留兼容返回与 misuse telemetry。
+- 已补齐 `usage_breakdown` backlog 的 startup 自愈提速：缺 `upstream_account_usage_breakdown_hourly` replay marker 的 invocation archive 会被单独识别并优先 drain，每轮最多处理 `2` 个 batch、最多使用 `6s` 预算；永久 blocked 的 `prompt_cache_*` / `sticky_key` 不再拖住 `previous7d` 健康判定。
 - 已完成 summary augmentation 字段扩展：strict in-progress retry、进行中等待均值、失败/中断 cost 与 tokens，同时覆盖全局 Dashboard 与 `upstreamAccountId` 账号作用域。
 - 已完成 natural-day timeseries `nonSuccessCost` 契约扩展，以及 `DashboardTodayActivityChart` 金额模式从单累计面积图切换为 `Success + Non-success` 堆叠累计面积图。
 - 已完成 Dashboard / 账号详情复用链路、账号活动总览 Storybook 场景与视觉证据落盘，以及前后端 targeted tests。

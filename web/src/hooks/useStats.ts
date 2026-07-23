@@ -19,6 +19,7 @@ const CALENDAR_SUMMARY_WINDOWS = new Set([
   "previous7d",
 ]);
 const DAY_BOUNDARY_SUMMARY_WINDOWS = new Set(["today", "yesterday", "previous7d"]);
+const CLOSED_RANGE_SUMMARY_WINDOWS = new Set(["yesterday", "previous7d"]);
 export const UNSUPPORTED_SSE_REFRESH_INTERVAL_MS = 60_000;
 export const CALENDAR_SUMMARY_RECORDS_REFRESH_THROTTLE_MS = 5_000;
 export const CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS = 5_000;
@@ -103,6 +104,10 @@ export function isCalendarSummaryWindow(window: string) {
 
 function isDayBoundarySummaryWindow(window: string) {
   return DAY_BOUNDARY_SUMMARY_WINDOWS.has(window);
+}
+
+export function shouldUsePureSummarySse(window: string) {
+  return !CLOSED_RANGE_SUMMARY_WINDOWS.has(window);
 }
 
 export function getCurrentSummarySseRefreshDelay(lastRefreshAt: number, now: number) {
@@ -269,7 +274,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     SUMMARY_REMOUNT_CACHE_TTL_MS,
     options?.upstreamAccountId,
   );
-  const supportsPureSse = window !== "yesterday";
+  const supportsPureSse = shouldUsePureSummarySse(window);
   const topic = supportsPureSse
     ? buildTopicDescriptor("stats.summary.current", {
         window,
@@ -315,6 +320,36 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       void loadHttpSummary();
     }
   }, [loadHttpSummary, supportsPureSse]);
+
+  useEffect(() => {
+    if (supportsPureSse) {
+      return undefined;
+    }
+    let cancelled = false;
+    let timerId: ReturnType<typeof globalThis.setTimeout> | null = null;
+
+    const scheduleNextRefresh = () => {
+      const refreshEpoch = getCalendarSummaryDayRolloverRefreshEpoch(window);
+      if (refreshEpoch == null || cancelled) {
+        return;
+      }
+      const delayMs = Math.max(0, refreshEpoch * 1000 - Date.now());
+      timerId = globalThis.setTimeout(async () => {
+        await loadHttpSummary();
+        if (!cancelled) {
+          scheduleNextRefresh();
+        }
+      }, delayMs);
+    };
+
+    scheduleNextRefresh();
+    return () => {
+      cancelled = true;
+      if (timerId != null) {
+        globalThis.clearTimeout(timerId);
+      }
+    };
+  }, [loadHttpSummary, supportsPureSse, window]);
 
   useEffect(() => {
     if (supportsPureSse && sse.data) {

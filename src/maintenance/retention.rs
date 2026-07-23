@@ -222,6 +222,7 @@ pub(crate) enum HistoricalRollupBackfillAlertLevel {
 pub(crate) struct HistoricalRollupBackfillSnapshot {
     pub(crate) pending_buckets: u64,
     pub(crate) legacy_archive_pending: u64,
+    pub(crate) pending_usage_breakdown_batches: u64,
     pub(crate) last_materialized_hour: Option<String>,
     pub(crate) alert_level: HistoricalRollupBackfillAlertLevel,
 }

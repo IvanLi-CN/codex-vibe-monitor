@@ -5616,6 +5616,18 @@ impl SummaryBuildRoute {
             Self::Topic => "summary_topic",
         }
     }
+
+    fn closed_window_delivery_mode(self) -> &'static str {
+        match self {
+            Self::Http => "http_closed",
+            Self::Topic => "sse_topic",
+        }
+    }
+}
+
+fn summary_window_is_closed(window: &SummaryWindow) -> bool {
+    matches!(window, SummaryWindow::Calendar(spec) if spec == "yesterday")
+        || matches!(window, SummaryWindow::PreviousFullDays(_))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -5623,6 +5635,7 @@ pub(crate) struct SummaryRangeBuildTelemetry {
     route: SummaryBuildRoute,
     window_kind: &'static str,
     window_name: &'static str,
+    closed_window: bool,
 }
 
 impl SummaryRangeBuildTelemetry {
@@ -5656,6 +5669,7 @@ impl SummaryRangeBuildTelemetry {
             route,
             window_kind,
             window_name,
+            closed_window: summary_window_is_closed(window),
         }
     }
 
@@ -5669,6 +5683,7 @@ struct UsageBreakdownBuildTelemetry {
     route: &'static str,
     window_kind: &'static str,
     window_name: &'static str,
+    closed_window: bool,
 }
 
 impl UsageBreakdownBuildTelemetry {
@@ -5677,22 +5692,24 @@ impl UsageBreakdownBuildTelemetry {
             route: telemetry.route_label(),
             window_kind: telemetry.window_kind,
             window_name: telemetry.window_name,
+            closed_window: telemetry.closed_window,
         }
     }
 
     fn from_range_route(route: &'static str, range_name: &str) -> Self {
-        let (window_kind, window_name) = match range_name {
-            "today" => ("calendar", "today"),
-            "yesterday" => ("calendar", "yesterday"),
-            "1d" => ("duration", "1d"),
-            "7d" => ("duration", "7d"),
-            "previous7d" => ("previous_full_days", "previous7d"),
-            _ => ("range", "range"),
+        let (window_kind, window_name, closed_window) = match range_name {
+            "today" => ("calendar", "today", false),
+            "yesterday" => ("calendar", "yesterday", true),
+            "1d" => ("duration", "1d", false),
+            "7d" => ("duration", "7d", false),
+            "previous7d" => ("previous_full_days", "previous7d", true),
+            _ => ("range", "range", false),
         };
         Self {
             route,
             window_kind,
             window_name,
+            closed_window,
         }
     }
 }
@@ -5720,6 +5737,7 @@ fn emit_summary_range_builder_telemetry(
             upstream_account_id,
             window_kind = telemetry.window_kind,
             window_name = telemetry.window_name,
+            closed_window = telemetry.closed_window,
             aggregation_mode,
             archive_overlap_strategy,
             live_group_row_count,
@@ -5738,6 +5756,7 @@ fn emit_summary_range_builder_telemetry(
             upstream_account_id,
             window_kind = telemetry.window_kind,
             window_name = telemetry.window_name,
+            closed_window = telemetry.closed_window,
             aggregation_mode,
             archive_overlap_strategy,
             live_group_row_count,
@@ -5778,6 +5797,7 @@ fn emit_usage_breakdown_builder_telemetry(
             ?source_scope,
             window_kind = telemetry.window_kind,
             window_name = telemetry.window_name,
+            closed_window = telemetry.closed_window,
             full_hour_bucket_count,
             rollup_row_count,
             partial_hour_row_count,
@@ -5796,6 +5816,7 @@ fn emit_usage_breakdown_builder_telemetry(
             ?source_scope,
             window_kind = telemetry.window_kind,
             window_name = telemetry.window_name,
+            closed_window = telemetry.closed_window,
             full_hour_bucket_count,
             rollup_row_count,
             partial_hour_row_count,
@@ -13803,10 +13824,37 @@ pub(crate) async fn load_summary_response_from_query(
 ) -> Result<StatsResponse, ApiError> {
     let default_limit = state.config.list_limit_max as i64;
     let window = parse_summary_window(params, default_limit)?;
+    let summary_range_telemetry =
+        SummaryRangeBuildTelemetry::new(route, &window, params.window.as_deref());
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let upstream_account_id = params.upstream_account_id;
     let now = Utc::now();
+
+    if summary_range_telemetry.closed_window {
+        let summary_delivery_mode = route.closed_window_delivery_mode();
+        if matches!(route, SummaryBuildRoute::Topic) {
+            tracing::warn!(
+                route = route.telemetry_route(),
+                summary_delivery_mode,
+                closed_window = true,
+                window_kind = summary_range_telemetry.window_kind,
+                window_name = summary_range_telemetry.window_name,
+                upstream_account_id,
+                "closed-window summary topic request received; prefer exact http path"
+            );
+        } else {
+            tracing::debug!(
+                route = route.telemetry_route(),
+                summary_delivery_mode,
+                closed_window = true,
+                window_kind = summary_range_telemetry.window_kind,
+                window_name = summary_range_telemetry.window_name,
+                upstream_account_id,
+                "closed-window summary request using exact http path"
+            );
+        }
+    }
 
     let totals = match window {
         SummaryWindow::All => {
@@ -13906,8 +13954,7 @@ pub(crate) async fn load_summary_response_from_query(
     let mut response = totals.into_response();
     response.non_success_cost = Some(totals.non_success_cost);
     let range = summary_window_range(&window, reporting_tz, now)?;
-    let range_telemetry =
-        range.map(|_| SummaryRangeBuildTelemetry::new(route, &window, params.window.as_deref()));
+    let range_telemetry = range.map(|_| summary_range_telemetry);
     if let Some((start, end)) = range {
         let telemetry = range_telemetry.expect("summary range telemetry should exist");
         response.usage_breakdown = load_usage_breakdown_for_range(

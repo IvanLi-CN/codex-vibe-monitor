@@ -1,5 +1,8 @@
 use super::*;
 
+const STARTUP_HISTORICAL_ROLLUP_PRIORITY_BATCH_LIMIT: u64 = 2;
+const STARTUP_HISTORICAL_ROLLUP_PRIORITY_BUDGET_SECS: u64 = 6;
+
 pub(crate) fn push_backfill_sample(samples: &mut Vec<String>, sample: String) {
     if samples.len() < STARTUP_BACKFILL_LOG_SAMPLE_LIMIT {
         samples.push(sample);
@@ -192,32 +195,40 @@ pub(crate) fn historical_rollup_startup_backfill_run_state(
     before: &HistoricalRollupBackfillSnapshot,
     after: &HistoricalRollupBackfillSnapshot,
     summary: &HistoricalRollupMaterializationSummary,
+    pending_before: u64,
+    pending_after: u64,
 ) -> StartupBackfillRunState {
     let archive_progress = before
         .legacy_archive_pending
         .saturating_sub(after.legacy_archive_pending);
+    let usage_breakdown_progress = before
+        .pending_usage_breakdown_batches
+        .saturating_sub(after.pending_usage_breakdown_batches);
     let bucket_progress = before.pending_buckets.saturating_sub(after.pending_buckets);
+    let selected_backlog_progress = pending_before.saturating_sub(pending_after);
     let attempted_archive_batches = summary
         .scanned_archive_batches
         .saturating_sub(summary.skipped_archive_batches);
-    let scanned_all_pending_archives =
-        attempted_archive_batches as u64 >= before.legacy_archive_pending;
+    let scanned_all_pending_archives = attempted_archive_batches as u64 >= pending_before;
     let exhausted_blocked_cycle = summary.blocked_archive_batches == attempted_archive_batches
-        && archive_progress == 0
+        && selected_backlog_progress == 0
         && bucket_progress == 0
         && zero_update_streak.saturating_add(attempted_archive_batches as u32) as u64
-            >= before.legacy_archive_pending;
+            >= pending_before;
     let permanently_blocked = summary.blocked_archive_batches > 0
-        && archive_progress == 0
+        && selected_backlog_progress == 0
         && bucket_progress == 0
         && (scanned_all_pending_archives || exhausted_blocked_cycle);
 
     StartupBackfillRunState {
         next_cursor_id: cursor_id.saturating_add(attempted_archive_batches as i64),
         scanned: summary.scanned_archive_batches as u64,
-        updated: archive_progress.max(bucket_progress),
-        hit_scan_limit: after.legacy_archive_pending > 0 && !permanently_blocked,
-        force_idle: after.legacy_archive_pending == 0 || permanently_blocked,
+        updated: archive_progress
+            .max(usage_breakdown_progress)
+            .max(selected_backlog_progress)
+            .max(bucket_progress),
+        hit_scan_limit: pending_after > 0 && !permanently_blocked,
+        force_idle: pending_after == 0 || permanently_blocked,
         samples: Vec::new(),
     }
 }
@@ -917,6 +928,54 @@ pub(crate) async fn run_startup_backfill_task(
         StartupBackfillTask::HistoricalRollups => {
             let before =
                 load_historical_rollup_backfill_snapshot(&state.pool, &state.config).await?;
+            if before.pending_usage_breakdown_batches > 0 {
+                let priority_elapsed_budget =
+                    Duration::from_secs(STARTUP_HISTORICAL_ROLLUP_PRIORITY_BUDGET_SECS);
+                let skip_pending_archives =
+                    (cursor_id as u64 % before.pending_usage_breakdown_batches) as usize;
+                let summary = materialize_usage_breakdown_historical_rollups_bounded_from_skip(
+                    &state.pool,
+                    &state.config,
+                    Some(STARTUP_HISTORICAL_ROLLUP_PRIORITY_BATCH_LIMIT),
+                    Some(priority_elapsed_budget),
+                    skip_pending_archives,
+                )
+                .await?;
+                let after =
+                    load_historical_rollup_backfill_snapshot(&state.pool, &state.config).await?;
+                let drained_usage_breakdown_batches = before
+                    .pending_usage_breakdown_batches
+                    .saturating_sub(after.pending_usage_breakdown_batches);
+                info!(
+                    task = StartupBackfillTask::HistoricalRollups.log_label(),
+                    priority_mode = "usage_breakdown_repair",
+                    priority_batch_limit = STARTUP_HISTORICAL_ROLLUP_PRIORITY_BATCH_LIMIT,
+                    priority_elapsed_budget_ms = priority_elapsed_budget.as_millis() as u64,
+                    pending_usage_breakdown_batches = before.pending_usage_breakdown_batches,
+                    drained_usage_breakdown_batches,
+                    remaining_usage_breakdown_batches = after.pending_usage_breakdown_batches,
+                    blocked_archive_batches = summary.blocked_archive_batches,
+                    "startup historical rollup priority pass completed"
+                );
+                return Ok((
+                    historical_rollup_startup_backfill_run_state(
+                        cursor_id,
+                        zero_update_streak,
+                        &before,
+                        &after,
+                        &summary,
+                        before.pending_usage_breakdown_batches,
+                        after.pending_usage_breakdown_batches,
+                    ),
+                    format!(
+                        "priority_mode=usage_breakdown_repair pending_usage_breakdown_before={} pending_usage_breakdown_after={} blocked_archive_batches={} legacy_archive_pending_after={}",
+                        before.pending_usage_breakdown_batches,
+                        after.pending_usage_breakdown_batches,
+                        summary.blocked_archive_batches,
+                        after.legacy_archive_pending,
+                    ),
+                ));
+            }
             if before.legacy_archive_pending == 0 {
                 return Ok((
                     StartupBackfillRunState {
@@ -943,6 +1002,19 @@ pub(crate) async fn run_startup_backfill_task(
             .await?;
             let after =
                 load_historical_rollup_backfill_snapshot(&state.pool, &state.config).await?;
+            info!(
+                task = StartupBackfillTask::HistoricalRollups.log_label(),
+                priority_mode = "normal",
+                priority_batch_limit = 0_u64,
+                priority_elapsed_budget_ms = 0_u64,
+                pending_usage_breakdown_batches = before.pending_usage_breakdown_batches,
+                drained_usage_breakdown_batches = before
+                    .pending_usage_breakdown_batches
+                    .saturating_sub(after.pending_usage_breakdown_batches),
+                remaining_usage_breakdown_batches = after.pending_usage_breakdown_batches,
+                blocked_archive_batches = summary.blocked_archive_batches,
+                "startup historical rollup generic pass completed"
+            );
             Ok((
                 historical_rollup_startup_backfill_run_state(
                     cursor_id,
@@ -950,11 +1022,15 @@ pub(crate) async fn run_startup_backfill_task(
                     &before,
                     &after,
                     &summary,
-                ),
-                format!(
-                    "pending_before={} pending_after={} blocked_archive_batches={} alert_level={:?}",
                     before.legacy_archive_pending,
                     after.legacy_archive_pending,
+                ),
+                format!(
+                    "pending_before={} pending_after={} pending_usage_breakdown_before={} pending_usage_breakdown_after={} blocked_archive_batches={} alert_level={:?}",
+                    before.legacy_archive_pending,
+                    after.legacy_archive_pending,
+                    before.pending_usage_breakdown_batches,
+                    after.pending_usage_breakdown_batches,
                     summary.blocked_archive_batches,
                     after.alert_level
                 ),
@@ -1050,6 +1126,7 @@ mod startup_backfill_tests {
         let before = HistoricalRollupBackfillSnapshot {
             pending_buckets: 2,
             legacy_archive_pending: 1,
+            pending_usage_breakdown_batches: 1,
             last_materialized_hour: None,
             alert_level: HistoricalRollupBackfillAlertLevel::Critical,
         };
@@ -1060,7 +1137,8 @@ mod startup_backfill_tests {
             ..HistoricalRollupMaterializationSummary::default()
         };
 
-        let run = historical_rollup_startup_backfill_run_state(7, 0, &before, &after, &summary);
+        let run =
+            historical_rollup_startup_backfill_run_state(7, 0, &before, &after, &summary, 1, 1);
 
         assert_eq!(run.next_cursor_id, 8);
         assert_eq!(run.scanned, 1);
@@ -1074,12 +1152,14 @@ mod startup_backfill_tests {
         let before = HistoricalRollupBackfillSnapshot {
             pending_buckets: 8,
             legacy_archive_pending: 3,
+            pending_usage_breakdown_batches: 3,
             last_materialized_hour: None,
             alert_level: HistoricalRollupBackfillAlertLevel::Critical,
         };
         let after = HistoricalRollupBackfillSnapshot {
             pending_buckets: 4,
             legacy_archive_pending: 2,
+            pending_usage_breakdown_batches: 2,
             last_materialized_hour: None,
             alert_level: HistoricalRollupBackfillAlertLevel::Warn,
         };
@@ -1090,7 +1170,8 @@ mod startup_backfill_tests {
             ..HistoricalRollupMaterializationSummary::default()
         };
 
-        let run = historical_rollup_startup_backfill_run_state(11, 0, &before, &after, &summary);
+        let run =
+            historical_rollup_startup_backfill_run_state(11, 0, &before, &after, &summary, 3, 2);
 
         assert_eq!(run.next_cursor_id, 12);
         assert_eq!(run.scanned, 1);
@@ -1105,6 +1186,7 @@ mod startup_backfill_tests {
         let before = HistoricalRollupBackfillSnapshot {
             pending_buckets: 8,
             legacy_archive_pending: 3,
+            pending_usage_breakdown_batches: 3,
             last_materialized_hour: None,
             alert_level: HistoricalRollupBackfillAlertLevel::Critical,
         };
@@ -1115,7 +1197,8 @@ mod startup_backfill_tests {
             ..HistoricalRollupMaterializationSummary::default()
         };
 
-        let run = historical_rollup_startup_backfill_run_state(5, 0, &before, &after, &summary);
+        let run =
+            historical_rollup_startup_backfill_run_state(5, 0, &before, &after, &summary, 3, 3);
 
         assert_eq!(run.next_cursor_id, 6);
         assert_eq!(run.scanned, 1);
@@ -1130,6 +1213,7 @@ mod startup_backfill_tests {
         let before = HistoricalRollupBackfillSnapshot {
             pending_buckets: 8,
             legacy_archive_pending: 2,
+            pending_usage_breakdown_batches: 2,
             last_materialized_hour: None,
             alert_level: HistoricalRollupBackfillAlertLevel::Critical,
         };
@@ -1141,7 +1225,8 @@ mod startup_backfill_tests {
             ..HistoricalRollupMaterializationSummary::default()
         };
 
-        let run = historical_rollup_startup_backfill_run_state(9, 0, &before, &after, &summary);
+        let run =
+            historical_rollup_startup_backfill_run_state(9, 0, &before, &after, &summary, 2, 2);
 
         assert_eq!(run.next_cursor_id, 10);
         assert_eq!(run.scanned, 2);
@@ -1155,6 +1240,7 @@ mod startup_backfill_tests {
         let before = HistoricalRollupBackfillSnapshot {
             pending_buckets: 8,
             legacy_archive_pending: 2,
+            pending_usage_breakdown_batches: 2,
             last_materialized_hour: None,
             alert_level: HistoricalRollupBackfillAlertLevel::Critical,
         };
@@ -1166,7 +1252,8 @@ mod startup_backfill_tests {
             ..HistoricalRollupMaterializationSummary::default()
         };
 
-        let run = historical_rollup_startup_backfill_run_state(9, 1, &before, &after, &summary);
+        let run =
+            historical_rollup_startup_backfill_run_state(9, 1, &before, &after, &summary, 2, 2);
 
         assert_eq!(run.next_cursor_id, 10);
         assert_eq!(run.scanned, 2);
