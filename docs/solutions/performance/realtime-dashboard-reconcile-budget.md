@@ -69,6 +69,8 @@ related_specs:
 - 如果 Dashboard / upstream-account 的 `usage_breakdown` 还需要 `model + reasoning` 维度，则应和 summary 一样共用单一的 `rollup + exact tail` builder，并把 fallback 限定在“缺 replay marker 的 archive hole”这类显式不健康窗口。不要让 dashboard full、upstream-account、summary 三个入口各自保留一份 7d raw aggregate 逻辑，否则单个页面 bundle 仍会通过不同 route 反复打 SQLite。
 - Archive-hole fallback 的健康目标不是隐藏告警，而是让可修复缺口尽快消失。对 pruned legacy archive，breakdown rollup 可结构化 replay 并用空/unknown reasoning 兜住不可恢复维度；只有 archive 不可读、repair 仍有部分进度，或真正 payload-required 的 target blocked 时，fallback/blocked telemetry 才应该继续出现。
 - 如果 read path 对某个 rollout 中的新 rollup target 仍有依赖，就要把这类 backlog 的修复调度前置到 startup / bounded backfill 的高优先级 pass，并和永久 blocked target 分开统计。否则即使 owner-facing 已不再需要 topic 订阅，该 target 也会在每次冷加载/切窗时继续走同一条 archive fallback。
+- Dashboard 账号累计活动不应每个 5 秒 refresh 都重跑整窗 conversation/window SQL。稳定做法是让 Dashboard full 与 upstream-account 共用逐小时 coverage planner：完整且已覆盖的小时读版本化 rollup，hole 只回退对应连续小时，leading/trailing partial hour 保持 exact；latest timestamp/value 必须作为一对合并，conversation created-at 可由 keyed hourly rollup 补齐。
+- `wait_on_in_flight=0` 本身不能证明 cache key 抖动；没有并发同参请求时它是正常结果。判责日志应同时记录 `refresh_reason`、`invalidation_reason`、稳定 selection fingerprint、base snapshot age 与 TTL，才能区分正常 TTL rebuild、显式 topic invalidation 和真正的 selection 漂移。
 - 与 Dashboard 同屏但不共享同一 owner-facing contract 的接口，不要为了“省实现”直接复用 dashboard full snapshot builder；应复用更低层的账户活动聚合块，避免把 summary/model-performance/reconcile 之类 dashboard-only 组装再次带回实时主链路。
 - 不要为 replay 失败发明第三条恢复路径。恢复规则只应是 replay 或 snapshot。
 - 手动“立即重连”不应偷偷复用旧 `resume` 去赌 replay 命中。若产品语义是“人工要求重新拉一份当前态”，前端就应该对 active topics 强制 fresh snapshot，并给这次连接分配独立 `attempt/reason` 供前后端对账。

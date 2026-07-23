@@ -107,6 +107,17 @@ pub(crate) struct UpstreamAccountStatsDelta {
     pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
     pub(crate) non_success_cost: f64,
+    pub(crate) non_success_count: i64,
+    pub(crate) success_tokens: i64,
+    pub(crate) non_success_tokens: i64,
+    pub(crate) failure_tokens: i64,
+    pub(crate) failure_cost: f64,
+    pub(crate) last_invocation_at: Option<String>,
+    pub(crate) latest_unkeyed_conversation_at: Option<String>,
+    pub(crate) latest_first_response_byte_total_at: Option<String>,
+    pub(crate) latest_first_response_byte_total_ms: Option<f64>,
+    pub(crate) latest_total_latency_at: Option<String>,
+    pub(crate) latest_total_latency_ms: Option<f64>,
     pub(crate) total_latency_sample_count: i64,
     pub(crate) total_latency_sum_ms: f64,
     pub(crate) first_byte_sample_count: i64,
@@ -424,6 +435,21 @@ pub(crate) fn accumulate_upstream_account_stats_delta(
     entry: &mut UpstreamAccountStatsDelta,
     row: &InvocationHourlySourceRecord,
 ) {
+    accumulate_upstream_account_stats_delta_with_mode(entry, row, false);
+}
+
+pub(crate) fn accumulate_upstream_account_activity_v2_delta(
+    entry: &mut UpstreamAccountStatsDelta,
+    row: &InvocationHourlySourceRecord,
+) {
+    accumulate_upstream_account_stats_delta_with_mode(entry, row, true);
+}
+
+fn accumulate_upstream_account_stats_delta_with_mode(
+    entry: &mut UpstreamAccountStatsDelta,
+    row: &InvocationHourlySourceRecord,
+    terminal_activity_only: bool,
+) {
     let classification = resolve_failure_classification(
         row.status.as_deref(),
         row.error_message.as_deref(),
@@ -439,29 +465,45 @@ pub(crate) fn accumulate_upstream_account_stats_delta(
     ) && classification.failure_class == FailureClass::None;
 
     entry.total_count += 1;
-    if is_success_like {
-        entry.success_count += 1;
-    } else if has_terminal_status && classification.failure_class != FailureClass::None {
-        entry.failure_count += 1;
-    } else {
-        entry.in_flight_count += 1;
-    }
-    entry.total_tokens += row.total_tokens.unwrap_or_default();
-    entry.input_tokens += row.input_tokens.unwrap_or_default();
-    entry.output_tokens += row.output_tokens.unwrap_or_default();
-    entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
-    let cost = row.cost.unwrap_or_default();
-    entry.total_cost += cost;
-    if invocation_counts_toward_non_success_usage(
+    let is_failure = has_terminal_status && classification.failure_class != FailureClass::None;
+    let is_non_success = invocation_counts_toward_non_success_usage(
         row.status.as_deref(),
         row.error_message.as_deref(),
         row.failure_kind.as_deref(),
         row.failure_class.as_deref(),
         row.is_actionable,
-    ) {
+    );
+    let total_tokens = row.total_tokens.unwrap_or_default();
+    let cost = row.cost.unwrap_or_default();
+
+    if is_success_like {
+        entry.success_count += 1;
+        entry.success_tokens += total_tokens;
+    } else if is_failure {
+        entry.failure_count += 1;
+        entry.failure_tokens += total_tokens;
+        entry.failure_cost += cost;
+    } else {
+        entry.in_flight_count += 1;
+    }
+    if is_non_success {
+        entry.non_success_count += 1;
+        entry.non_success_tokens += total_tokens;
         entry.non_success_cost += cost;
     }
-    if has_terminal_status
+    entry.total_tokens += total_tokens;
+    entry.input_tokens += row.input_tokens.unwrap_or_default();
+    entry.output_tokens += row.output_tokens.unwrap_or_default();
+    entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
+    entry.total_cost += cost;
+    if entry
+        .last_invocation_at
+        .as_deref()
+        .is_none_or(|latest| row.occurred_at.as_str() > latest)
+    {
+        entry.last_invocation_at = Some(row.occurred_at.clone());
+    }
+    if (!terminal_activity_only && has_terminal_status || is_success_like)
         && let Some(total_ms) = normalize_non_negative_timing_value(row.t_total_ms)
     {
         entry.total_latency_sample_count += 1;
@@ -481,12 +523,27 @@ pub(crate) fn accumulate_upstream_account_stats_delta(
         entry.first_byte_max_ms = entry.first_byte_max_ms.max(ttfb_ms);
         add_approx_histogram_sample(&mut entry.first_byte_histogram, ttfb_ms);
     }
-    if let Some(first_response_byte_total_ms) = resolve_first_response_byte_total_ms(
-        row.t_req_read_ms,
-        row.t_req_parse_ms,
-        row.t_upstream_connect_ms,
-        row.t_upstream_ttfb_ms,
-    ) {
+    let first_response_byte_total_ms = if terminal_activity_only {
+        row.t_upstream_ttfb_ms
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .map(|ttfb_ms| {
+                row.t_req_read_ms.unwrap_or_default()
+                    + row.t_req_parse_ms.unwrap_or_default()
+                    + row.t_upstream_connect_ms.unwrap_or_default()
+                    + ttfb_ms
+            })
+            .filter(|value| value.is_finite())
+    } else {
+        resolve_first_response_byte_total_ms(
+            row.t_req_read_ms,
+            row.t_req_parse_ms,
+            row.t_upstream_connect_ms,
+            row.t_upstream_ttfb_ms,
+        )
+    };
+    if (!terminal_activity_only || is_success_like)
+        && let Some(first_response_byte_total_ms) = first_response_byte_total_ms
+    {
         if entry.first_response_byte_total_histogram.is_empty() {
             entry.first_response_byte_total_histogram = empty_approx_histogram();
         }
@@ -499,5 +556,23 @@ pub(crate) fn accumulate_upstream_account_stats_delta(
             &mut entry.first_response_byte_total_histogram,
             first_response_byte_total_ms,
         );
+        if entry
+            .latest_first_response_byte_total_at
+            .as_deref()
+            .is_none_or(|latest| row.occurred_at.as_str() > latest)
+        {
+            entry.latest_first_response_byte_total_at = Some(row.occurred_at.clone());
+            entry.latest_first_response_byte_total_ms = Some(first_response_byte_total_ms);
+        }
+    }
+    if is_success_like
+        && let Some(total_ms) = normalize_non_negative_timing_value(row.t_total_ms)
+        && entry
+            .latest_total_latency_at
+            .as_deref()
+            .is_none_or(|latest| row.occurred_at.as_str() > latest)
+    {
+        entry.latest_total_latency_at = Some(row.occurred_at.clone());
+        entry.latest_total_latency_ms = Some(total_ms);
     }
 }

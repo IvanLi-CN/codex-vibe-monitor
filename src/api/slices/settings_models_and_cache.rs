@@ -2,6 +2,7 @@ use super::*;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use std::hash::{Hash, Hasher};
 use tokio::sync::watch;
 
 #[derive(Debug, Clone, Default)]
@@ -1155,6 +1156,14 @@ pub(crate) struct DashboardActivitySnapshotSelection {
     pub(crate) recent_limit: usize,
     pub(crate) include_accounts: bool,
     pub(crate) include_recent: bool,
+}
+
+pub(crate) fn dashboard_activity_selection_fingerprint(
+    selection: &DashboardActivitySnapshotSelection,
+) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    selection.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[derive(Debug, Clone)]

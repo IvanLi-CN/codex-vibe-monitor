@@ -246,6 +246,8 @@ pub(crate) const HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN: &str =
     "upstream_account_usage_breakdown_hourly";
 pub(crate) const HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY: &str =
     "upstream_account_stats_hourly";
+pub(crate) const HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2: &str =
+    "upstream_account_activity_hourly_v2";
 pub(crate) const HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE: &str =
     "upstream_account_stats_minute";
 pub(crate) const HOURLY_ROLLUP_TARGET_UPSTREAM_HOST_NETWORK_MINUTE: &str =
@@ -256,7 +258,7 @@ pub(crate) const HISTORICAL_ROLLUP_ARCHIVE_DATASETS: [&str; 2] = [
     HOURLY_ROLLUP_DATASET_INVOCATIONS,
     HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
 ];
-pub(crate) const INVOCATION_HOURLY_ROLLUP_TARGETS: [&str; 10] = [
+pub(crate) const INVOCATION_HOURLY_ROLLUP_TARGETS: [&str; 11] = [
     HOURLY_ROLLUP_TARGET_INVOCATIONS,
     HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
     HOURLY_ROLLUP_TARGET_PROXY_PERF,
@@ -265,6 +267,7 @@ pub(crate) const INVOCATION_HOURLY_ROLLUP_TARGETS: [&str; 10] = [
     HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
     HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
     HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+    HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2,
     HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
     HOURLY_ROLLUP_TARGET_STICKY_KEYS,
 ];
@@ -277,6 +280,7 @@ pub(crate) const PERF_STAGE_UPSTREAM_STREAM: &str = "upstreamStream";
 pub(crate) const PERF_STAGE_RESPONSE_PARSE: &str = "responseParse";
 pub(crate) const PERF_STAGE_PERSISTENCE: &str = "persistence";
 pub(crate) const HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE: &str = "";
+pub(crate) const UPSTREAM_ACCOUNT_ACTIVITY_UNASSIGNED_ID: i64 = -1;
 
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct InvocationHourlySourceRecord {

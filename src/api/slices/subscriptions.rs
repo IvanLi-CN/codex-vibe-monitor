@@ -751,6 +751,12 @@ impl SubscriptionHub {
             let hub = state.subscription_hub.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(delay).await;
+                tracing::debug!(
+                    refresh_reason = "ttl_expired",
+                    invalidation_reason = "deferred_topic_refresh",
+                    selection_fingerprint = dashboard_activity_selection_fingerprint(&selection),
+                    "invalidating dashboard activity base snapshot before topic refresh"
+                );
                 invalidate_dashboard_activity_snapshot_cache(
                     state.dashboard_activity_snapshot_cache.as_ref(),
                     &selection,
@@ -769,6 +775,12 @@ impl SubscriptionHub {
             return Ok(());
         }
 
+        tracing::debug!(
+            refresh_reason = "ttl_expired",
+            invalidation_reason = "immediate_topic_refresh",
+            selection_fingerprint = dashboard_activity_selection_fingerprint(&selection),
+            "invalidating dashboard activity base snapshot before topic refresh"
+        );
         invalidate_dashboard_activity_snapshot_cache(
             state.dashboard_activity_snapshot_cache.as_ref(),
             &selection,
