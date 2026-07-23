@@ -4,6 +4,7 @@
 
 ## Decision Trace
 
+- 2026-07-23：线上 `v2.46.6` 复查确认 7d/previous7d 残留热点不再是 raw preview 或 raw aggregate，而是 pruned legacy archive 的 `upstream_account_usage_breakdown_hourly` marker 永久缺失。新的约束是 breakdown target 可在裁剪 payload 上结构化 replay，`reasoning_effort` 缺失归空/unknown；prompt cache 与 sticky key 仍必须 blocked，避免误造不可恢复的 keyed 维度。
 - 2026-07-22：确认旧的 `full_range_preview_rows` 已退出健康主链后，7d 残留热点进一步收缩到 `usage_breakdown` 自身；因此冻结新的实现约束为“补内部 `model + reasoning` hourly breakdown rollup，并让 summary / dashboard / upstream-account 共用同一 `rollup + exact tail + archive hole fallback` builder”，而不是继续在各路 handler 上重复 raw aggregate 优化。
 - 2026-07-22：review 收口时补充确认 rollout 迁移约束：新的 `usage_breakdown` target 不能复用 legacy account rollup 的 materialized shortcut。对已上线版本留下的老 archive materialized batch，缺 breakdown rows 时必须 reopen backlog 做历史回放，而不是继续输出看似健康但实际漏算的 `7d` usage breakdown。
 - 2026-07-20：Dashboard 7d 总览残留慢点确认不只来自 account activity；同轮把 `/api/stats/summary` 与 `stats.summary.current` 的 open-range `usage_breakdown / non_success_tokens` 改成 aggregate-only builder，移除 raw preview 全窗扫描与 live-id overlap 扫描，避免 overview bundle 在 `fetchDashboardActivity("7d") + fetchSummary("7d")` 下继续把 SQLite 压力打回读侧。

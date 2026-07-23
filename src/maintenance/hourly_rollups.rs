@@ -2,6 +2,9 @@ use super::*;
 
 const LIVE_ROLLUP_LOCK_RETRY_MAX_ATTEMPTS: u32 = 3;
 const LIVE_ROLLUP_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
+const LEGACY_PRUNED_PAYLOAD_MODE_STRUCTURED_ROLLUP_UNKNOWN_REASONING: &str =
+    "structured_rollup_unknown_reasoning";
+const LEGACY_PRUNED_PAYLOAD_MODE_BLOCKED_PAYLOAD_REQUIRED: &str = "blocked_payload_required";
 const LEGACY_MATERIALIZED_UPSTREAM_ACCOUNT_ARCHIVE_REPLAY_TARGETS: [&str; 3] = [
     HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
     HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
@@ -1167,14 +1170,31 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
             invocation_archive_has_pruned_success_details_in_db(&archive_pool).await?;
         if has_pruned_success_details {
             let mut replayable_targets = Vec::with_capacity(pending_targets.len());
+            let mut structured_rollup_targets = Vec::new();
             for target in pending_targets {
                 if invocation_archive_target_needs_full_payload(target) {
                     blocked_targets.push(target);
                 } else {
+                    if target == HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN {
+                        structured_rollup_targets.push(target);
+                    }
                     replayable_targets.push(target);
                 }
             }
             pending_targets = replayable_targets;
+            if !structured_rollup_targets.is_empty() {
+                tracing::info!(
+                    dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                    file_path = archive_file.file_path,
+                    legacy_pruned_payload_mode =
+                        LEGACY_PRUNED_PAYLOAD_MODE_STRUCTURED_ROLLUP_UNKNOWN_REASONING,
+                    archive_replay_target = ?structured_rollup_targets,
+                    pending_target_count = pending_targets.len(),
+                    blocked_target_count = blocked_targets.len(),
+                    materialized_batch_count = summary.materialized_batches,
+                    "legacy archive batch contains pruned success details; replaying structured hourly rollup targets with unknown reasoning fallback"
+                );
+            }
         }
 
         if pending_targets.is_empty() && blocked_targets.is_empty() {
@@ -1208,6 +1228,11 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
             warn!(
                 dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
                 file_path = archive_file.file_path,
+                legacy_pruned_payload_mode = LEGACY_PRUNED_PAYLOAD_MODE_BLOCKED_PAYLOAD_REQUIRED,
+                archive_replay_target = "none",
+                pending_target_count = 0_usize,
+                blocked_target_count = blocked_targets.len(),
+                materialized_batch_count = summary.materialized_batches,
                 blocked_targets = ?blocked_targets,
                 "legacy archive batch contains pruned success details; keeping historical rollup materialization pending for keyed conversation targets"
             );
@@ -1328,6 +1353,11 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
             warn!(
                 dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
                 file_path = archive_file.file_path,
+                legacy_pruned_payload_mode = LEGACY_PRUNED_PAYLOAD_MODE_BLOCKED_PAYLOAD_REQUIRED,
+                archive_replay_target = "mixed",
+                pending_target_count = 0_usize,
+                blocked_target_count = blocked_targets.len(),
+                materialized_batch_count = summary.materialized_batches,
                 blocked_targets = ?blocked_targets,
                 "legacy archive batch contains pruned success details; keeping historical rollup materialization pending for keyed conversation targets"
             );

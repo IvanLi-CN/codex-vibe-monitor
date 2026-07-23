@@ -5759,6 +5759,7 @@ fn emit_usage_breakdown_builder_telemetry(
     partial_hour_row_count: usize,
     archive_batch_count: usize,
     fallback_reason: &'static str,
+    legacy_pruned_payload_mode: &'static str,
     elapsed_ms: u64,
 ) {
     let builder = if archive_batch_count > 0 {
@@ -5768,6 +5769,8 @@ fn emit_usage_breakdown_builder_telemetry(
     } else {
         "usage_breakdown_rollup"
     };
+    let archive_replay_target = HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN;
+    let fallback_batch_count_after_rollup = archive_batch_count;
     if elapsed_ms >= 250 {
         tracing::warn!(
             route = telemetry.route,
@@ -5780,6 +5783,9 @@ fn emit_usage_breakdown_builder_telemetry(
             partial_hour_row_count,
             archive_batch_count,
             fallback_reason,
+            legacy_pruned_payload_mode,
+            archive_replay_target,
+            fallback_batch_count_after_rollup,
             elapsed_ms,
             "usage breakdown builder exceeded slow-path threshold"
         );
@@ -5795,6 +5801,9 @@ fn emit_usage_breakdown_builder_telemetry(
             partial_hour_row_count,
             archive_batch_count,
             fallback_reason,
+            legacy_pruned_payload_mode,
+            archive_replay_target,
+            fallback_batch_count_after_rollup,
             elapsed_ms,
             "usage breakdown builder completed"
         );
@@ -8998,6 +9007,7 @@ struct UsageBreakdownRowsBuildResult {
     partial_hour_row_count: usize,
     archive_batch_count: usize,
     fallback_reason: &'static str,
+    legacy_pruned_payload_mode: &'static str,
 }
 
 fn usage_breakdown_request_count(rows: &[UpstreamAccountUsageBreakdownAggregateRow]) -> usize {
@@ -9072,11 +9082,12 @@ async fn query_unmaterialized_archive_usage_breakdown_rows(
         Vec<UpstreamAccountUsageBreakdownAggregateRow>,
         usize,
         &'static str,
+        &'static str,
     ),
     ApiError,
 > {
     if ranges.is_empty() {
-        return Ok((Vec::new(), 0, "none"));
+        return Ok((Vec::new(), 0, "none", "none"));
     }
 
     let archive_lookup_range = ranges
@@ -9093,7 +9104,7 @@ async fn query_unmaterialized_archive_usage_breakdown_rows(
     )
     .await?;
     if archive_rows.is_empty() {
-        return Ok((Vec::new(), 0, "none"));
+        return Ok((Vec::new(), 0, "none", "none"));
     }
 
     let archive_progress_by_file_path = load_usage_breakdown_archive_progress_by_file_path(
@@ -9105,6 +9116,7 @@ async fn query_unmaterialized_archive_usage_breakdown_rows(
     )
     .await?;
     let mut fallback_reason = "archive_rollup_marker_missing";
+    let mut legacy_pruned_payload_mode = "none";
     let mut saw_partial_progress = false;
     let mut rows_by_key =
         HashMap::<UsageBreakdownAggregateMergeKey, UpstreamAccountUsageBreakdownAggregateRow>::new(
@@ -9125,6 +9137,11 @@ async fn query_unmaterialized_archive_usage_breakdown_rows(
             fallback_reason = "archive_batch_unavailable";
             continue;
         };
+        if crate::maintenance::invocation_archive_has_pruned_success_details_in_db(&archive_pool)
+            .await?
+        {
+            legacy_pruned_payload_mode = "structured_rollup_unknown_reasoning";
+        }
         let has_cost_breakdown_columns =
             crate::stats::sqlite_table_has_column(&archive_pool, "codex_invocations", "cost_input")
                 .await?;
@@ -9162,6 +9179,7 @@ async fn query_unmaterialized_archive_usage_breakdown_rows(
         rows_by_key.into_values().collect(),
         archive_rows.len(),
         fallback_reason,
+        legacy_pruned_payload_mode,
     ))
 }
 
@@ -9336,19 +9354,19 @@ async fn load_usage_breakdown_rows_for_range(
 
     let archive_fallback_ranges =
         build_usage_breakdown_archive_fallback_ranges(range, &range_plan, retention_cutoff)?;
-    let (archive_rows, archive_batch_count, fallback_reason) = if archive_fallback_ranges.is_empty()
-    {
-        (Vec::new(), 0, "none")
-    } else {
-        query_unmaterialized_archive_usage_breakdown_rows(
-            &state.pool,
-            source_scope,
-            &archive_fallback_ranges,
-            upstream_account_id,
-            (!archive_overlap_ids.is_empty()).then_some(&archive_overlap_ids),
-        )
-        .await?
-    };
+    let (archive_rows, archive_batch_count, fallback_reason, legacy_pruned_payload_mode) =
+        if archive_fallback_ranges.is_empty() {
+            (Vec::new(), 0, "none", "none")
+        } else {
+            query_unmaterialized_archive_usage_breakdown_rows(
+                &state.pool,
+                source_scope,
+                &archive_fallback_ranges,
+                upstream_account_id,
+                (!archive_overlap_ids.is_empty()).then_some(&archive_overlap_ids),
+            )
+            .await?
+        };
     for row in &archive_rows {
         merge_usage_breakdown_aggregate_row_map(&mut rows_by_key, row);
     }
@@ -9362,6 +9380,7 @@ async fn load_usage_breakdown_rows_for_range(
         partial_hour_row_count,
         archive_batch_count,
         fallback_reason,
+        legacy_pruned_payload_mode,
         elapsed_ms,
     );
 
@@ -9372,6 +9391,7 @@ async fn load_usage_breakdown_rows_for_range(
         partial_hour_row_count,
         archive_batch_count,
         fallback_reason,
+        legacy_pruned_payload_mode,
     })
 }
 

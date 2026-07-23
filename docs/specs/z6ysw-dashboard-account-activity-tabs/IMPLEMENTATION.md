@@ -75,6 +75,7 @@
 - 已实现：`dashboard.activity.current` 的 open-range topic refresh 不再在每个 `records` / `DashboardActivityLive` 广播上反向调用完整 `fetch_dashboard_activity`。live 广播现在直接覆写 subscription hub 内存 snapshot 的当前态字段并立即 fanout，terminal `records` 仅触发 `<=5s` 节流后的 DB refresh，且 refresh 前会主动失效内部 dashboard snapshot cache，避免 topic 层 deferred refresh 又命中旧 TTL 快照。
 - 已实现：summary / Dashboard full / `/api/stats/upstream-account-activity` 共享 `usage_breakdown` range builder 现已切到 `upstream_account_usage_breakdown_hourly` 内部 rollup + exact boundary tail。`7d` / `previous7d` 健康路径不再对整段 live raw rows 做 `model + reasoning` 聚合；archive 缺 replay marker 时仅按缺口 batch 触发显式 fallback，并统一输出 `route / builder / window / full_hour_bucket_count / rollup_row_count / partial_hour_row_count / archive_batch_count / fallback_reason` telemetry。
 - 已补齐 rollout repair：`dashboard / upstream-account` 共享的 `usage_breakdown` builder 不再把 `upstream_account_usage_breakdown_hourly` 误当成“历史 materialized archive 必然已 replay”的 legacy target；bootstrap 会把缺真实 breakdown rows 的旧 archive batch 重新标成 pending，由 historical rollup materialization 回补，而不是把 `7d` 精度问题静默留在线上。
+- 已补齐 legacy pruned archive fallback 收口：`upstream_account_usage_breakdown_hourly` 从 full-payload-required target 集合拆出，裁剪 payload 的历史 batch 会结构化 replay 并写入 breakdown replay marker，读侧健康路径不再因该 target 缺口反复打开 archive fallback；新增 telemetry 区分 `structured_rollup_unknown_reasoning` 与 `blocked_payload_required`。
 
 ## Remaining Gaps
 
