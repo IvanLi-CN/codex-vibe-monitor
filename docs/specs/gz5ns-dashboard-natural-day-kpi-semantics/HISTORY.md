@@ -4,6 +4,7 @@
 
 ## Decision Trace
 
+- 2026-07-23：101 复查确认 `usage_breakdown_archive_fallback` 残留集中在 pruned legacy archive 缺 `upstream_account_usage_breakdown_hourly` replay marker；冻结修复为 breakdown target 可从裁剪 payload 的结构化列回放，无法恢复的 `reasoning_effort` 只归入空/unknown，不放宽 `prompt_cache_*` / `sticky_key` 的 payload 要求。
 - 2026-07-22：针对 101 线上残留的 `summary_usage_breakdown(previous7d)` 慢读，冻结 `usage_breakdown` 必须补齐 `model + reasoning` 维度的 hourly 内部 rollup；Dashboard 7d / previous7d 总览与 comparison summary 继续保持 owner-facing contract 不变，但实现上不再允许整段 raw aggregate 成为健康主链路。
 - 2026-07-22：在 rollout review 中进一步确认，新的 `usage_breakdown` rollup 不能继承旧的“historical materialized archive batch 视为已 replay” shortcut；否则升级后的老 archive 会被直接漏算。当前实现已改为只让 legacy usage/stats target 保留该 shortcut，并在启动期把缺 breakdown backfill 的 batch 重新放回 historical materialization backlog。
 - 2026-06-22：创建 active spec，冻结自然日七卡的四区布局、`较昨日` 统一右上、以及 Dashboard 与账号详情共用同一 KPI 语义的边界。

@@ -1122,7 +1122,7 @@ async fn materialize_historical_rollups_skips_already_materialized_batches() {
 }
 
 #[tokio::test]
-async fn materialize_historical_rollups_keeps_pruned_detail_archives_pending() {
+async fn materialize_historical_rollups_replays_breakdown_for_pruned_detail_archives() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("historical-rollup-pruned-detail-pending").await;
     let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
@@ -1161,6 +1161,7 @@ async fn materialize_historical_rollups_keeps_pruned_detail_archives_pending() {
         .await
         .expect("materialize historical rollups with pruned detail archive");
     assert_eq!(summary.materialized_invocation_batches, 0);
+    assert_eq!(summary.blocked_archive_batches, 1);
 
     let total_count: i64 = sqlx::query_scalar(
         "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = ?1",
@@ -1170,6 +1171,61 @@ async fn materialize_historical_rollups_keeps_pruned_detail_archives_pending() {
     .await
     .expect("load invocation hourly total count after partial materialization");
     assert_eq!(total_count, 1);
+
+    let breakdown_replay_markers: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_archive_replay
+        WHERE dataset = 'codex_invocations'
+          AND file_path = ?1
+          AND target = ?2
+        "#,
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .fetch_one(&pool)
+    .await
+    .expect("load usage breakdown replay marker for pruned archive");
+    assert_eq!(breakdown_replay_markers, 1);
+
+    let missing_breakdown_archives =
+        crate::stats::load_invocation_archives_missing_effective_rollup_target(
+            &pool,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+            None,
+        )
+        .await
+        .expect("load archives missing usage breakdown replay marker");
+    assert!(
+        missing_breakdown_archives.is_empty(),
+        "replayed usage breakdown target should not trigger read-side archive fallback"
+    );
+
+    let breakdown_row: (String, Option<i64>, String, String, i64, i64, i64, f64) = sqlx::query_as(
+        r#"
+            SELECT
+                upstream_account_key,
+                upstream_account_id,
+                normalized_model,
+                normalized_reasoning_effort,
+                request_count,
+                success_count,
+                performance_total_tokens,
+                cost_unknown
+            FROM upstream_account_usage_breakdown_hourly
+            "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load usage breakdown rollup row for pruned archive");
+    assert_eq!(breakdown_row.0, "upstream:17");
+    assert_eq!(breakdown_row.1, Some(17));
+    assert_eq!(breakdown_row.2, "unknown");
+    assert_eq!(breakdown_row.3, "");
+    assert_eq!(breakdown_row.4, 1);
+    assert_eq!(breakdown_row.5, 1);
+    assert_eq!(breakdown_row.6, 12);
+    assert_f64_close(breakdown_row.7, 0.12);
 
     let keyed_replay_markers: i64 = sqlx::query_scalar(
         r#"

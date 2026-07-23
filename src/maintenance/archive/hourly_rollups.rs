@@ -2134,7 +2134,6 @@ pub(crate) fn invocation_archive_target_needs_full_payload(target: &str) -> bool
         HOURLY_ROLLUP_TARGET_PROMPT_CACHE
             | HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS
             | HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE
-            | HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN
             | HOURLY_ROLLUP_TARGET_STICKY_KEYS
     )
 }
@@ -5125,5 +5124,29 @@ mod retention_breakdown_materialization_tests {
             .expect("count archive progress rows after repair");
             assert_eq!(progress_count, 0);
         }
+    }
+
+    #[test]
+    fn pruned_invocation_archive_payload_requirements_keep_breakdown_replayable() {
+        assert!(
+            !invocation_archive_target_needs_full_payload(
+                HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN
+            ),
+            "usage breakdown can be rebuilt from structured archive columns; missing reasoning falls back to the unknown group"
+        );
+        assert!(
+            invocation_archive_target_needs_full_payload(HOURLY_ROLLUP_TARGET_PROMPT_CACHE),
+            "prompt cache rollup still needs payload keys"
+        );
+        assert!(
+            invocation_archive_target_needs_full_payload(
+                HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS
+            ),
+            "prompt-cache/account rollup still needs payload keys"
+        );
+        assert!(
+            invocation_archive_target_needs_full_payload(HOURLY_ROLLUP_TARGET_STICKY_KEYS),
+            "sticky-key rollup still needs payload keys"
+        );
     }
 }
