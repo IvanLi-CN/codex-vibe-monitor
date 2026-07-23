@@ -2631,6 +2631,7 @@ interface InvocationWorkflowAttemptRecordProps {
   activeSection?: AttemptSection | null;
   onSelectSection?: (section: AttemptSection) => void;
   hideNonShortIds?: boolean;
+  allowTerminalResponseBodyFallback?: boolean;
   className?: string;
   containerRef?: (node: HTMLDivElement | null) => void;
   testId?: string;
@@ -2649,6 +2650,7 @@ export function InvocationWorkflowAttemptRecord({
   activeSection,
   onSelectSection,
   hideNonShortIds = false,
+  allowTerminalResponseBodyFallback = false,
   className,
   containerRef,
   testId,
@@ -2713,7 +2715,9 @@ export function InvocationWorkflowAttemptRecord({
 
   useEffect(() => {
     if (!(record.id > 0)) return;
-    if (responseBodyAvailableAtInvocationLevel === false) return;
+    if (responseBodyAvailableAtInvocationLevel === false && !allowTerminalResponseBodyFallback) {
+      return;
+    }
     if (
       !currentSection ||
       !isResponseSection(currentSection) ||
@@ -2738,7 +2742,13 @@ export function InvocationWorkflowAttemptRecord({
           error: error instanceof Error ? error.message : String(error),
         });
       });
-  }, [currentSection, record.id, responseBodyAvailableAtInvocationLevel, responseBodyState.status]);
+  }, [
+    allowTerminalResponseBodyFallback,
+    currentSection,
+    record.id,
+    responseBodyAvailableAtInvocationLevel,
+    responseBodyState.status,
+  ]);
 
   const handleSelectSection = (section: AttemptSection) => {
     if (isControlled) {
@@ -2921,6 +2931,7 @@ export function InvocationWorkflowDetailPanel({
 
   const hero = detail.hero;
   const timeline = detail.timeline;
+  const terminalAttemptBlockId = [...timeline].reverse().find((entry) => entry.attempt)?.blockId;
   const conversationShortId = buildConversationShortId(hero.promptCacheKey);
   const finalStatusRaw =
     hero.finalStatus ?? resolveInvocationDisplayStatus(record) ?? record.status ?? FALLBACK_CELL;
@@ -3257,6 +3268,7 @@ export function InvocationWorkflowDetailPanel({
                         activeSection={isOpen ? attemptSection : null}
                         onSelectSection={(section) => toggleAttemptSection(entry, section)}
                         hideNonShortIds={hideNonShortIds}
+                        allowTerminalResponseBodyFallback={entry.blockId === terminalAttemptBlockId}
                       />
                     ) : (
                       <>
