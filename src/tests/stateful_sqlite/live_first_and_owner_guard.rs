@@ -8,16 +8,22 @@ fn assert_encrypted_owner_blocked_proxy_error(
     prompt_cache_key: &str,
 ) {
     let owner_label = owner_label.into();
-    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "unexpected encrypted owner guard proxy response: {response:?}"
+    );
     assert_eq!(
         response.message,
         format!(
             "encrypted session owner routing is constrained to upstream account {owner_label} but that account is currently unavailable"
-        )
+        ),
+        "unexpected encrypted owner guard proxy response: {response:?}"
     );
     assert_eq!(
         response.code.as_deref(),
-        Some(PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED)
+        Some(PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED),
+        "unexpected encrypted owner guard proxy response: {response:?}"
     );
     assert_eq!(
         response.blocked_binding,
@@ -27,8 +33,33 @@ fn assert_encrypted_owner_blocked_proxy_error(
             upstream_account_label: owner_label,
             prompt_cache_key: Some(prompt_cache_key.to_string()),
             recovery_action: BlockedBindingRecoveryAction::ClearAndResetAffinity,
-        })
+        }),
+        "unexpected encrypted owner guard proxy response: {response:?}"
     );
+}
+
+async fn assert_encrypted_owner_constraint_active(
+    state: &AppState,
+    prompt_cache_key: &str,
+    owner_account_id: i64,
+) -> (Option<PromptCacheConversationBindingConstraint>, bool) {
+    let (binding_constraint, owner_auto_guard_active) =
+        load_via_pool_effective_routing_constraint(state, Some(prompt_cache_key), false)
+            .await
+            .expect("load encrypted owner effective routing constraint");
+    assert!(
+        owner_auto_guard_active,
+        "encrypted owner auto guard should be active for {prompt_cache_key}: {binding_constraint:?}"
+    );
+    assert!(
+        matches!(
+            binding_constraint.as_ref(),
+            Some(PromptCacheConversationBindingConstraint::UpstreamAccount(account_id))
+                if *account_id == owner_account_id
+        ),
+        "unexpected encrypted owner routing constraint for {prompt_cache_key}: {binding_constraint:?}"
+    );
+    (binding_constraint, owner_auto_guard_active)
 }
 
 fn run_future_with_large_stack<T, Fut>(future: Fut) -> T
@@ -1370,6 +1401,77 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_encrypted_ow
 }
 
 #[tokio::test]
+async fn resolver_blocks_encrypted_owner_when_active_sticky_route_fills_owner_capacity() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(10),
+    )
+    .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Encrypted Owner",
+        "upstream-owner",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let _secondary_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Secondary",
+        "upstream-secondary",
+        None,
+        None,
+        None,
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_concurrency_limit = 1 WHERE id = ?1")
+        .bind(owner_account_id)
+        .execute(&state.pool)
+        .await
+        .expect("set encrypted owner account concurrency limit");
+    let now_iso = format_utc_iso(Utc::now());
+    upsert_sticky_route(
+        &state.pool,
+        "pck-resolver-encrypted-owner-rate-limited-active",
+        owner_account_id,
+        &now_iso,
+    )
+    .await
+    .expect("seed active sticky route for resolver owner");
+    let prompt_cache_key = "pck-resolver-encrypted-owner-rate-limited";
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
+        .await
+        .expect("persist encrypted owner lock");
+    let (binding_constraint, _owner_auto_guard_active) = assert_encrypted_owner_constraint_active(
+        state.as_ref(),
+        prompt_cache_key,
+        owner_account_id,
+    )
+    .await;
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement(
+        state.as_ref(),
+        None,
+        None,
+        &[],
+        &HashSet::new(),
+        None,
+        binding_constraint.as_ref(),
+    )
+    .await
+    .expect("resolve encrypted owner-constrained pool account");
+
+    assert!(
+        matches!(resolution, PoolAccountResolution::Unavailable),
+        "rate-limited encrypted owner should block fresh assignment, got {resolution:?}"
+    );
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_returns_owner_unavailable()
  {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
@@ -1418,6 +1520,12 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_ret
     upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
         .await
         .expect("persist encrypted owner lock");
+    let _ = assert_encrypted_owner_constraint_active(
+        state.as_ref(),
+        prompt_cache_key,
+        owner_account_id,
+    )
+    .await;
 
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
         .await
@@ -1539,6 +1647,12 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_same_account_binding_n
     .execute(&state.pool)
     .await
     .expect("persist same-account binding newer than owner");
+    let _ = assert_encrypted_owner_constraint_active(
+        state.as_ref(),
+        prompt_cache_key,
+        owner_account_id,
+    )
+    .await;
 
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
         .await
@@ -1740,15 +1854,26 @@ async fn websocket_prepare_rate_limited_owner_returns_owner_unavailable() {
         .execute(&state.pool)
         .await
         .expect("set websocket encrypted owner account concurrency limit");
+    let now_iso = format_utc_iso(Utc::now());
     insert_test_pool_limit_sample(&state, owner_account_id, Some(20.0), Some(20.0)).await;
+    upsert_sticky_route(
+        &state.pool,
+        "pck-websocket-encrypted-owner-rate-limited-active",
+        owner_account_id,
+        &now_iso,
+    )
+    .await
+    .expect("seed active sticky route for websocket rate-limited owner");
     let prompt_cache_key = "pck-websocket-encrypted-owner-rate-limited";
     upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
         .await
         .expect("persist encrypted owner lock");
-    let (binding_constraint, owner_auto_guard_active) =
-        load_via_pool_effective_routing_constraint(state.as_ref(), Some(prompt_cache_key), false)
-            .await
-            .expect("load websocket effective routing constraint");
+    let (binding_constraint, owner_auto_guard_active) = assert_encrypted_owner_constraint_active(
+        state.as_ref(),
+        prompt_cache_key,
+        owner_account_id,
+    )
+    .await;
 
     let err = prepare_upstream_websocket(
         state.clone(),
