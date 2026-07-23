@@ -76,7 +76,9 @@ pub(crate) async fn run_startup_persistent_prep_inner(
         missing_manifest_files: manifest_refresh.missing_files,
         backfilled_archive_expiries: archive_expiry_backfill_count,
         bootstrapped_hourly_rollups: include_hourly_rollup_bootstrap,
-        pending_historical_rollup_archive_batches: historical_rollup_snapshot.legacy_archive_pending
+        pending_historical_rollup_archive_batches: historical_rollup_snapshot
+            .legacy_archive_pending
+            .max(historical_rollup_snapshot.pending_usage_breakdown_batches)
             as usize,
     })
 }

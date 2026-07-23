@@ -658,6 +658,37 @@ pub(crate) async fn pending_pool_upstream_node_health_hourly_archive_batches(
     )
 }
 
+pub(crate) async fn load_invocation_archive_files_missing_rollup_target(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    target: &str,
+) -> Result<Vec<ArchiveBatchFileRow>> {
+    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+        r#"
+        SELECT id, file_path, coverage_start_at, coverage_end_at
+        FROM archive_batches AS batches
+        WHERE batches.dataset = 'codex_invocations'
+          AND batches.status = ?1
+          AND NOT EXISTS (
+                SELECT 1
+                FROM hourly_rollup_archive_replay AS replay
+                WHERE replay.target = ?2
+                  AND replay.dataset = batches.dataset
+                  AND replay.file_path = batches.file_path
+          )
+        ORDER BY month_key ASC, created_at ASC, id ASC
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(target)
+    .fetch_all(executor)
+    .await
+    .context("failed to list invocation archive batches missing historical rollup target")?;
+    Ok(archive_files
+        .into_iter()
+        .filter(|archive_file| Path::new(&archive_file.file_path).exists())
+        .collect())
+}
+
 pub(crate) fn legacy_compatible_archive_select_expr(
     archive_columns: &HashSet<String>,
     column_name: &str,
@@ -1035,28 +1066,16 @@ pub(crate) async fn replay_pool_upstream_node_health_archive_rows_tx_with_budget
     }
 }
 
-pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
+async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
     tx: &mut SqliteConnection,
     started_at: Instant,
     max_archive_batches: Option<u64>,
     max_elapsed: Option<Duration>,
     skip_archive_batches: usize,
+    archive_files: Vec<ArchiveBatchFileRow>,
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
     let mut summary = HistoricalRollupArchiveReplaySummary::default();
     let mut skip_remaining = skip_archive_batches;
-    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
-        r#"
-        SELECT id, file_path, coverage_start_at, coverage_end_at
-        FROM archive_batches
-        WHERE dataset = 'codex_invocations'
-          AND status = ?1
-          AND historical_rollups_materialized_at IS NULL
-        ORDER BY month_key ASC, created_at ASC, id ASC
-        "#,
-    )
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .fetch_all(&mut *tx)
-    .await?;
 
     for archive_file in archive_files {
         if skip_remaining > 0 {
@@ -1366,6 +1385,60 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
 
     summary.remaining_skip_batches = skip_remaining;
     Ok(summary)
+}
+
+pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
+    tx: &mut SqliteConnection,
+    started_at: Instant,
+    max_archive_batches: Option<u64>,
+    max_elapsed: Option<Duration>,
+    skip_archive_batches: usize,
+) -> Result<HistoricalRollupArchiveReplaySummary> {
+    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+        r#"
+        SELECT id, file_path, coverage_start_at, coverage_end_at
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND status = ?1
+          AND historical_rollups_materialized_at IS NULL
+        ORDER BY month_key ASC, created_at ASC, id ASC
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_all(&mut *tx)
+    .await?;
+    replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
+        tx,
+        started_at,
+        max_archive_batches,
+        max_elapsed,
+        skip_archive_batches,
+        archive_files,
+    )
+    .await
+}
+
+pub(crate) async fn replay_invocation_usage_breakdown_archives_into_hourly_rollups_tx_with_limits(
+    tx: &mut SqliteConnection,
+    started_at: Instant,
+    max_archive_batches: Option<u64>,
+    max_elapsed: Option<Duration>,
+    skip_archive_batches: usize,
+) -> Result<HistoricalRollupArchiveReplaySummary> {
+    let archive_files = load_invocation_archive_files_missing_rollup_target(
+        &mut *tx,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+    )
+    .await?;
+    replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
+        tx,
+        started_at,
+        max_archive_batches,
+        max_elapsed,
+        skip_archive_batches,
+        archive_files,
+    )
+    .await
 }
 
 pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx(

@@ -2207,6 +2207,87 @@ async fn materialize_historical_rollups_replays_usage_breakdown_when_account_tar
 }
 
 #[tokio::test]
+async fn usage_breakdown_priority_materialization_drains_backlog_without_clearing_blocked_batches()
+{
+    let (pool, config, temp_dir) =
+        retention_memory_test_pool_and_config("usage-breakdown-priority-materialize").await;
+    let archived_occurred_at = shanghai_local_days_ago(120, 9, 0, 0);
+    let payload = json!({
+        "upstreamAccountId": 17,
+        "upstreamAccountName": "Replay",
+        "promptCacheKey": "pck-priority-materialize",
+        "stickyKey": "sticky-priority-materialize",
+        "responseModel": "gpt-5.4",
+        "reasoningEffort": "high",
+    })
+    .to_string();
+    seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "usage-breakdown-priority-materialize",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "usage-breakdown-priority-materialize",
+            occurred_at: &archived_occurred_at,
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 42_i64,
+            cost: 0.42_f64,
+            ttfb_ms: Some(120.0),
+            payload: Some(payload.as_str()),
+            detail_level: "summary",
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+
+    let snapshot_before = load_historical_rollup_backfill_snapshot(&pool, &config)
+        .await
+        .expect("load backlog before priority materialization");
+    assert_eq!(snapshot_before.legacy_archive_pending, 1);
+    assert_eq!(snapshot_before.pending_usage_breakdown_batches, 1);
+
+    let summary = materialize_usage_breakdown_historical_rollups_bounded_from_skip(
+        &pool,
+        &config,
+        Some(2),
+        Some(Duration::from_secs(6)),
+        0,
+    )
+    .await
+    .expect("priority materialization should drain usage breakdown backlog");
+    assert_eq!(summary.scanned_archive_batches, 1);
+    assert_eq!(summary.materialized_invocation_batches, 0);
+    assert_eq!(summary.blocked_archive_batches, 1);
+
+    let snapshot_after = load_historical_rollup_backfill_snapshot(&pool, &config)
+        .await
+        .expect("load backlog after priority materialization");
+    assert_eq!(snapshot_after.pending_usage_breakdown_batches, 0);
+    assert_eq!(snapshot_after.legacy_archive_pending, 1);
+
+    let usage_breakdown_marker_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_archive_replay
+        WHERE dataset = ?1
+          AND target = ?2
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .fetch_one(&pool)
+    .await
+    .expect("count usage breakdown replay markers after priority materialization");
+    assert_eq!(usage_breakdown_marker_count, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn bootstrap_hourly_rollups_reopens_materialized_batches_missing_usage_breakdown_backfill() {
     let (pool, config, temp_dir) =
         retention_memory_test_pool_and_config("bootstrap-repairs-account-markers").await;
@@ -2258,6 +2339,16 @@ async fn bootstrap_hourly_rollups_reopens_materialized_batches_missing_usage_bre
     .execute(&pool)
     .await
     .expect("drop account replay markers to mimic old materialized state");
+
+    let snapshot_before_bootstrap = load_historical_rollup_backfill_snapshot(&pool, &config)
+        .await
+        .expect("load historical rollup snapshot before bootstrap repair");
+    assert_eq!(snapshot_before_bootstrap.legacy_archive_pending, 0);
+    assert_eq!(snapshot_before_bootstrap.pending_usage_breakdown_batches, 1);
+    assert_eq!(
+        snapshot_before_bootstrap.alert_level,
+        HistoricalRollupBackfillAlertLevel::Critical
+    );
 
     bootstrap_hourly_rollups(&pool)
         .await

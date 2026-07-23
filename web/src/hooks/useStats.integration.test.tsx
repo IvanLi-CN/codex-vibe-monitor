@@ -142,4 +142,75 @@ describe("useSummary", () => {
     expect(apiMocks.fetchSummary).toHaveBeenCalledTimes(1);
     expect(text("total")).toBe("7");
   });
+
+  it("uses HTTP for previous7d summaries", async () => {
+    apiMocks.fetchSummary.mockResolvedValue({
+      totalCount: 17,
+      successCount: 14,
+      failureCount: 3,
+      totalCost: 1.7,
+      totalTokens: 1700,
+    } as StatsResponse);
+
+    render(<Probe window="previous7d" />);
+    await flushAsync();
+
+    expect(topicMocks.lastDescriptor).toBeNull();
+    expect(topicMocks.lastEnabled).toBe(false);
+    expect(apiMocks.fetchSummary).toHaveBeenCalledTimes(1);
+    expect(text("total")).toBe("17");
+  });
+
+  it("refreshes previous7d over HTTP at each local midnight", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 3, 8, 23, 59, 58));
+    apiMocks.fetchSummary
+      .mockResolvedValueOnce({
+        totalCount: 17,
+        successCount: 14,
+        failureCount: 3,
+        totalCost: 1.7,
+        totalTokens: 1700,
+      } as StatsResponse)
+      .mockResolvedValueOnce({
+        totalCount: 18,
+        successCount: 15,
+        failureCount: 3,
+        totalCost: 1.8,
+        totalTokens: 1800,
+      } as StatsResponse)
+      .mockResolvedValueOnce({
+        totalCount: 19,
+        successCount: 16,
+        failureCount: 3,
+        totalCost: 1.9,
+        totalTokens: 1900,
+      } as StatsResponse);
+
+    try {
+      render(<Probe window="previous7d" />);
+      await flushAsync();
+
+      expect(apiMocks.fetchSummary).toHaveBeenCalledTimes(1);
+      expect(text("total")).toBe("17");
+
+      await act(async () => {
+        vi.advanceTimersByTime(2_100);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(apiMocks.fetchSummary).toHaveBeenCalledTimes(2);
+      expect(text("total")).toBe("18");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+      });
+
+      expect(apiMocks.fetchSummary).toHaveBeenCalledTimes(3);
+      expect(text("total")).toBe("19");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

@@ -608,14 +608,22 @@ pub(crate) async fn load_historical_rollup_backfill_snapshot(
         .iter()
         .filter(|row| Path::new(&row.file_path).exists())
         .any(|row| row.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS);
+    let pending_usage_breakdown_batches = load_invocation_archive_files_missing_rollup_target(
+        pool,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+    )
+    .await?
+    .len() as u64;
     let last_materialized_hour =
         load_latest_materialized_legacy_invocation_rollup_bucket_epoch(pool, config)
             .await?
             .and_then(|epoch| Utc.timestamp_opt(epoch, 0).single())
             .map(format_utc_iso);
-    let alert_level = if legacy_archive_pending == 0 {
+    let has_invocation_rollup_gap =
+        legacy_invocation_pending || pending_usage_breakdown_batches > 0;
+    let alert_level = if legacy_archive_pending == 0 && pending_usage_breakdown_batches == 0 {
         HistoricalRollupBackfillAlertLevel::None
-    } else if legacy_invocation_pending {
+    } else if has_invocation_rollup_gap {
         HistoricalRollupBackfillAlertLevel::Critical
     } else {
         HistoricalRollupBackfillAlertLevel::Warn
@@ -624,8 +632,55 @@ pub(crate) async fn load_historical_rollup_backfill_snapshot(
     Ok(HistoricalRollupBackfillSnapshot {
         pending_buckets,
         legacy_archive_pending,
+        pending_usage_breakdown_batches,
         last_materialized_hour,
         alert_level,
+    })
+}
+
+pub(crate) async fn materialize_usage_breakdown_historical_rollups_bounded_from_skip(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    max_archive_batches: Option<u64>,
+    max_elapsed: Option<Duration>,
+    skip_pending_archives: usize,
+) -> Result<HistoricalRollupMaterializationSummary> {
+    let started_at = Instant::now();
+    let pending_archive_files = load_invocation_archive_files_missing_rollup_target(
+        pool,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+    )
+    .await?;
+    let pending_usage_breakdown_batches = pending_archive_files.len();
+    let bounded_skip = if pending_usage_breakdown_batches == 0 {
+        0
+    } else {
+        skip_pending_archives % pending_usage_breakdown_batches
+    };
+
+    let mut tx = pool.begin().await?;
+    let invocation_summary =
+        replay_invocation_usage_breakdown_archives_into_hourly_rollups_tx_with_limits(
+            tx.as_mut(),
+            started_at,
+            max_archive_batches,
+            max_elapsed,
+            bounded_skip,
+        )
+        .await?;
+    tx.commit().await?;
+
+    Ok(HistoricalRollupMaterializationSummary {
+        scanned_archive_batches: invocation_summary.scanned_batches as usize,
+        skipped_archive_batches: invocation_summary.skipped_batches as usize,
+        materialized_archive_batches: invocation_summary.materialized_batches as usize,
+        blocked_archive_batches: invocation_summary.blocked_batches as usize,
+        materialized_bucket_count: count_materialized_historical_rollup_buckets(pool).await?
+            as usize,
+        materialized_invocation_batches: invocation_summary.materialized_batches as usize,
+        materialized_forward_proxy_batches: 0,
+        last_materialized_bucket_start_epoch:
+            load_latest_materialized_legacy_invocation_rollup_bucket_epoch(pool, config).await?,
     })
 }
 

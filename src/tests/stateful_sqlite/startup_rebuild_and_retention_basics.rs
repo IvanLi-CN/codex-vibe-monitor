@@ -1010,6 +1010,72 @@ async fn startup_backfill_progress_persists_terminal_missing_raw_cursor() {
 }
 
 #[tokio::test]
+async fn startup_historical_rollup_backfill_prioritizes_usage_breakdown_repair() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18082").expect("valid upstream url"),
+    )
+    .await;
+    let archived_occurred_at = shanghai_local_days_ago(120, 9, 0, 0);
+    let payload = json!({
+        "upstreamAccountId": 17,
+        "upstreamAccountName": "Replay",
+        "promptCacheKey": "pck-startup-priority",
+        "stickyKey": "sticky-startup-priority",
+        "responseModel": "gpt-5.4",
+        "reasoningEffort": "high",
+    })
+    .to_string();
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "startup-priority-usage-breakdown",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "startup-priority-usage-breakdown",
+            occurred_at: &archived_occurred_at,
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 42_i64,
+            cost: 0.42_f64,
+            ttfb_ms: Some(120.0),
+            payload: Some(payload.as_str()),
+            detail_level: "summary",
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+
+    let snapshot_before = load_historical_rollup_backfill_snapshot(&state.pool, &state.config)
+        .await
+        .expect("load startup historical rollup snapshot before priority pass");
+    assert_eq!(snapshot_before.legacy_archive_pending, 1);
+    assert_eq!(snapshot_before.pending_usage_breakdown_batches, 1);
+
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::HistoricalRollups)
+        .await
+        .expect("startup historical rollup backfill should run priority breakdown repair");
+
+    let snapshot_after = load_historical_rollup_backfill_snapshot(&state.pool, &state.config)
+        .await
+        .expect("load startup historical rollup snapshot after priority pass");
+    assert_eq!(snapshot_after.pending_usage_breakdown_batches, 0);
+    assert_eq!(snapshot_after.legacy_archive_pending, 1);
+
+    let task_name =
+        startup_backfill_task_progress_key(state.as_ref(), StartupBackfillTask::HistoricalRollups)
+            .await;
+    let progress = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load startup historical rollup progress after priority pass");
+    assert_eq!(progress.last_scanned, 1);
+    assert!(progress.last_updated > 0);
+    assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_OK);
+}
+
+#[tokio::test]
 async fn startup_backfill_not_due_check_does_not_claim_background_gate() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),

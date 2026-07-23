@@ -25,6 +25,7 @@ import {
   shouldRetryCurrentSummaryError,
   shouldReuseSummaryRemountCache,
   shouldTriggerCurrentSummaryOpenResync,
+  shouldUsePureSummarySse,
   UNSUPPORTED_SSE_REFRESH_INTERVAL_MS,
   writeSummaryRemountCache,
 } from "./useStats";
@@ -109,6 +110,13 @@ describe("useSummary unsupported window fallback", () => {
     expect(isCalendarSummaryWindow("thisMonth")).toBe(true);
     expect(isCalendarSummaryWindow("previous7d")).toBe(true);
     expect(isCalendarSummaryWindow("1d")).toBe(false);
+  });
+
+  it("treats closed summary windows as http-only", () => {
+    expect(shouldUsePureSummarySse("today")).toBe(true);
+    expect(shouldUsePureSummarySse("7d")).toBe(true);
+    expect(shouldUsePureSummarySse("yesterday")).toBe(false);
+    expect(shouldUsePureSummarySse("previous7d")).toBe(false);
   });
 
   it("throttles calendar-window records reconciles to 5 seconds", async () => {
