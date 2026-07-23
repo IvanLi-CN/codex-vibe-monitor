@@ -352,6 +352,199 @@ function createWorkflowDetailResponse(): ApiInvocationWorkflowDetailResponse {
   };
 }
 
+function createPreviewOnlyTerminalAttemptWorkflowResponse(): ApiInvocationWorkflowDetailResponse {
+  return {
+    hero: {
+      recordId: 77,
+      invokeId: "invoke-workflow-77",
+      promptCacheKey: "019f8c9c-66b0-7b11-805d-d33b80aba996",
+      routeMode: "pool",
+      endpoint: "/v1/responses",
+      requestModel: "gpt-5.5",
+      responseModel: "gpt-5.5",
+      finalStatus: "http_503",
+      failureClass: "service_failure",
+      downstreamStatusCode: 503,
+      upstreamAccountId: 2805,
+      upstreamAccountName: "CIII",
+      totalDurationMs: 18472,
+      timelineAttemptCount: 1,
+      poolAttemptCount: 1,
+      totalTokens: null,
+      cost: null,
+      occurredAt: "2026-07-23T02:33:53Z",
+    },
+    timeline: [
+      {
+        blockId: "route-terminal-preview",
+        kind: "routingDecision",
+        occurredAt: "2026-07-23T02:33:57Z",
+        title: "Route CIII",
+        subtitle: "gpt-5.5 · __direct__ · https://codex.ciii.club/",
+        detail: {
+          request: {
+            endpoint: "/v1/responses",
+            routeMode: "pool",
+            requestModel: "gpt-5.5",
+            responseModel: "gpt-5.5",
+            reasoningEffort: "high",
+            promptCacheKey: "019f8c9c-66b0-7b11-805d-d33b80aba996",
+            requesterIp: "192.168.31.6",
+            account: {
+              id: 2805,
+              name: "CIII",
+            },
+            routing: {
+              upstreamRouteKey: "https://codex.ciii.club/",
+              proxyBindingKey: "__direct__",
+            },
+            headers: {
+              userAgent: "Codex Desktop/0.145.0-alpha.27",
+              xForwardedFor: "192.168.31.6",
+            },
+            compression: {
+              algorithm: "zstd",
+              mode: "recompressed",
+              logicalBodyBytes: 638076,
+              transmittedBodyBytes: 176017,
+              savedBytes: 462059,
+              ratioPct: -72.4,
+              approxUploadBytes: 177364,
+              approxDownloadBytes: 711,
+            },
+            bodyCapture: {
+              availableAtInvocationLevel: false,
+              size: 638076,
+              truncated: false,
+              detailLevel: "full",
+            },
+          },
+          requestHeaders: {
+            userAgent: "Codex Desktop/0.145.0-alpha.27",
+            xForwardedFor: "192.168.31.6",
+          },
+          requestBody: {
+            availableAtInvocationLevel: false,
+            size: 638076,
+            truncated: false,
+            detailLevel: "full",
+          },
+        },
+      },
+      {
+        blockId: "attempt-terminal-preview",
+        kind: "attempt",
+        occurredAt: "2026-07-23T02:33:53Z",
+        title: "Attempt 1",
+        subtitle: "CIII",
+        status: "http_failure",
+        attempt: {
+          synthetic: false,
+          attemptId: "attempt-terminal-preview",
+          occurredAt: "2026-07-23T02:33:53Z",
+          endpoint: "/v1/responses",
+          stickyKey: "019f8c9c-66b0-7b11-805d-d33b80aba996",
+          routingSource: "stickyReuse",
+          upstreamAccountId: 2805,
+          upstreamAccountName: "CIII",
+          requestModel: "gpt-5.5",
+          responseModel: "gpt-5.5",
+          upstreamRouteKey: "https://codex.ciii.club/",
+          proxyBindingKeySnapshot: "__direct__",
+          attemptIndex: 1,
+          distinctAccountIndex: 1,
+          sameAccountRetryIndex: 1,
+          requesterIp: "192.168.31.6",
+          startedAt: "2026-07-23T02:33:57Z",
+          finishedAt: "2026-07-23T02:34:02Z",
+          status: "http_failure",
+          phase: "failed",
+          httpStatus: 503,
+          failureKind: "upstream_http_5xx",
+          errorMessage: "pool upstream responded with 503: Service temporarily unavailable",
+          downstreamErrorMessage:
+            "pool upstream responded with 503: Service temporarily unavailable",
+          connectLatencyMs: 919.042544,
+          firstByteLatencyMs: 0,
+          streamLatencyMs: 0,
+          upstreamRequestId: "ba5d4a00-808f-493f-9309-fe74f5662337",
+          requestSummary: {
+            endpoint: "/v1/responses",
+            routeMode: "pool",
+            requestModel: "gpt-5.5",
+            responseModel: "gpt-5.5",
+            reasoningEffort: "high",
+            headers: {
+              userAgent: "Codex Desktop/0.145.0-alpha.27",
+              xForwardedFor: "192.168.31.6",
+            },
+            compression: {
+              algorithm: "zstd",
+              mode: "recompressed",
+              logicalBodyBytes: 638076,
+              transmittedBodyBytes: 176017,
+              savedBytes: 462059,
+              ratioPct: -72.4,
+              approxUploadBytes: 177364,
+              approxDownloadBytes: 711,
+            },
+            bodyCapture: {
+              availableAtInvocationLevel: false,
+              size: 638076,
+              truncated: false,
+              detailLevel: "full",
+            },
+          },
+          responseSummary: {
+            status: "http_failure",
+            phase: "failed",
+            httpStatus: 503,
+            failureKind: "upstream_http_5xx",
+            errorMessage: "pool upstream responded with 503: Service temporarily unavailable",
+            downstreamErrorMessage:
+              "pool upstream responded with 503: Service temporarily unavailable",
+            responseContentEncoding: null,
+            headers: {
+              upstreamRequestId: "ba5d4a00-808f-493f-9309-fe74f5662337",
+            },
+            responseBodyCapture: {
+              availableAtInvocationLevel: false,
+              size: 98,
+              truncated: false,
+              detailLevel: "full",
+            },
+          },
+        },
+      },
+      {
+        blockId: "system-final-failure",
+        kind: "systemFinalFailure",
+        occurredAt: "2026-07-23T02:34:11Z",
+        title: "Final downstream response",
+        subtitle: "upstream_http_5xx",
+        status: "http_503",
+        detail: {
+          downstreamStatusCode: 503,
+          failureClass: "service_failure",
+          failureKind: "upstream_http_5xx",
+          errorMessage:
+            "[upstream_http_5xx] pool upstream responded with 503: Service temporarily unavailable",
+          downstreamErrorMessage:
+            "pool upstream responded with 503: Service temporarily unavailable",
+        },
+        responseBody: {
+          available: true,
+          bodyText:
+            '{"cvmId":"invoke-workflow-77","error":"pool upstream responded with 503: Service temporarily unavailable"}',
+        },
+      },
+    ],
+    reconstructed: false,
+    partial: false,
+    partialReason: null,
+  };
+}
+
 function createBlockedPoolWorkflowResponse(): ApiInvocationWorkflowDetailResponse {
   return {
     hero: {
@@ -666,6 +859,68 @@ describe("InvocationWorkflowDetailPanel", () => {
     await flushAsyncWork();
     expect(host?.textContent ?? "").toContain("pool assigned account blocked");
     expect(host?.textContent ?? "").not.toContain("missing_body");
+  });
+
+  it("fetches the terminal attempt response body even when only a preview is retained", async () => {
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(
+      createPreviewOnlyTerminalAttemptWorkflowResponse(),
+    );
+    apiMocks.fetchInvocationResponseBody.mockResolvedValue({
+      available: true,
+      bodyText:
+        '{"cvmId":"invoke-workflow-77","error":"pool upstream responded with 503: Service temporarily unavailable"}',
+      headers: {
+        contentEncoding: null,
+        upstreamRequestId: "ba5d4a00-808f-493f-9309-fe74f5662337",
+      },
+      routing: {
+        forwardedChunkCount: null,
+      },
+      bodySize: 98,
+      bodyTruncated: false,
+      detailLevel: "full",
+      captureSource: "preview",
+    });
+
+    render(
+      <InvocationWorkflowDetailPanel
+        record={createRecord({
+          status: "http_503",
+          model: "gpt-5.5",
+          requestModel: "gpt-5.5",
+          responseModel: "gpt-5.5",
+          upstreamAccountId: 2805,
+          upstreamAccountName: "CIII",
+          totalTokens: null,
+          cost: null,
+          failureKind: "upstream_http_5xx",
+          errorMessage: "pool upstream responded with 503: Service temporarily unavailable",
+          downstreamStatusCode: 503,
+          downstreamErrorMessage:
+            "pool upstream responded with 503: Service temporarily unavailable",
+        })}
+      />,
+    );
+
+    await waitFor(() => (host?.textContent ?? "").includes("98 B"));
+
+    const responseBodyButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement &&
+        candidate.textContent?.includes("响应体") &&
+        candidate.textContent?.includes("98 B"),
+    );
+    expect(responseBodyButton).not.toBeNull();
+
+    act(() => {
+      responseBodyButton?.click();
+    });
+    await waitFor(() => apiMocks.fetchInvocationResponseBody.mock.calls.length > 0);
+
+    expect(apiMocks.fetchInvocationResponseBody).toHaveBeenCalledWith(77);
+    await waitFor(() => (host?.textContent ?? "").includes("Service temporarily unavailable"));
+    expect(host?.textContent ?? "").toContain("preview");
+    expect(host?.textContent ?? "").not.toContain("响应体不可用");
   });
 
   it("replaces route request-body loading state after an async unavailable payload result", async () => {
