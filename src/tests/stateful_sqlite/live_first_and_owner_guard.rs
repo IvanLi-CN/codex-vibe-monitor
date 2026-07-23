@@ -1468,6 +1468,134 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_ret
 }
 
 #[tokio::test]
+async fn unwrap_via_pool_initial_account_retries_sqlite_lock_before_rate_limited_owner_returns_owner_unavailable()
+ {
+    let (state, _temp_dir, db_url) = file_backed_test_state_with_busy_timeout(
+        "bodyless-owner-rate-limited-sqlite-lock",
+        Duration::from_millis(20),
+    )
+    .await;
+    enable_encrypted_session_owner_routing_for_test(&state).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Encrypted Owner",
+        "upstream-owner",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let _secondary_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Secondary",
+        "upstream-secondary",
+        None,
+        None,
+        None,
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_concurrency_limit = 1 WHERE id = ?1")
+        .bind(owner_account_id)
+        .execute(&state.pool)
+        .await
+        .expect("set encrypted owner account concurrency limit");
+    let now_iso = format_utc_iso(Utc::now());
+    insert_test_pool_limit_sample(&state, owner_account_id, Some(20.0), Some(20.0)).await;
+    upsert_sticky_route(
+        &state.pool,
+        "pck-bodyless-header-encrypted-owner-rate-limited-locked-active",
+        owner_account_id,
+        &now_iso,
+    )
+    .await
+    .expect("seed active sticky route for locked rate-limited owner");
+    let prompt_cache_key = "pck-bodyless-header-encrypted-owner-rate-limited-locked";
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
+        .await
+        .expect("persist encrypted owner lock");
+
+    let mut lock_conn = SqliteConnection::connect(&db_url)
+        .await
+        .expect("connect sqlite lock holder");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut lock_conn)
+        .await
+        .expect("acquire sqlite write lock");
+
+    let started = Instant::now();
+    let request_task = tokio::task::spawn_blocking({
+        let state = state.clone();
+        move || {
+            run_future_with_large_stack(async move {
+                let (
+                    prompt_cache_binding_constraint,
+                    owner_auto_guard_active,
+                    conversation_override,
+                ) = load_via_pool_effective_routing(state.as_ref(), Some(prompt_cache_key), false)
+                    .await
+                    .expect("load via-pool effective routing");
+                let mut no_available_wait_deadline = None;
+                let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
+                    state.as_ref(),
+                    None,
+                    None,
+                    &[],
+                    &HashSet::new(),
+                    None,
+                    prompt_cache_binding_constraint.as_ref(),
+                    conversation_override.as_ref(),
+                    true,
+                    &mut no_available_wait_deadline,
+                    None,
+                    "/v1/models",
+                    crate::ImageIntent::Unknown,
+                )
+                .await;
+                unwrap_via_pool_initial_account(
+                    state.as_ref(),
+                    Some(&build_via_pool_attempt_trace_context(
+                        5350,
+                        "/v1/models",
+                        None,
+                    )),
+                    resolution,
+                    no_available_wait_deadline,
+                    None,
+                    prompt_cache_binding_constraint.as_ref(),
+                    owner_auto_guard_active,
+                    Some(prompt_cache_key),
+                )
+                .await
+                .expect_err("sqlite lock retries should still end at owner guard")
+            })
+        }
+    });
+
+    tokio::time::sleep(Duration::from_millis(70)).await;
+    sqlx::query("COMMIT")
+        .execute(&mut lock_conn)
+        .await
+        .expect("release sqlite write lock");
+
+    let response = request_task
+        .await
+        .expect("locked owner-guard request should join");
+    assert!(
+        started.elapsed() >= Duration::from_millis(40),
+        "expected sqlite lock retries before owner guard, elapsed={:?}",
+        started.elapsed()
+    );
+    assert_encrypted_owner_blocked_proxy_error(
+        &response,
+        owner_account_id,
+        format!("#{owner_account_id}"),
+        prompt_cache_key,
+    );
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_bodyless_header_prompt_cache_key_same_account_binding_newer_than_owner_still_returns_owner_unavailable()
  {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
