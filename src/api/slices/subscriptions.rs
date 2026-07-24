@@ -134,6 +134,7 @@ struct CachedSubscriptionTopic {
     summary_refresh_in_flight: bool,
     summary_pending_event_count: u64,
     summary_retry_backoff_ms: u64,
+    latest_live_snapshot: Option<DashboardActivityLiveSnapshot>,
     snapshot_payload: Value,
     snapshot_bytes: usize,
     replay_events: VecDeque<ReplayableTopicEvent>,
@@ -329,6 +330,16 @@ impl SubscriptionHub {
             .get(topic_name)
             .copied()
             .unwrap_or_default()
+    }
+
+    async fn has_active_topic_key(&self, topic_key: &str) -> bool {
+        let guard = self.state.lock().await;
+        guard
+            .active_subscribers
+            .get(topic_key)
+            .copied()
+            .unwrap_or_default()
+            > 0
     }
 
     pub(crate) fn has_active_topic_name_sync(&self, topic_name: &str) -> bool {
@@ -757,8 +768,8 @@ impl SubscriptionHub {
         let schema_epoch = topic.schema_epoch();
         let descriptor = topic.descriptor();
         let started = Instant::now();
-        let payload = topic.build_payload(state.clone()).await?;
-        let payload_bytes = serialized_len(&payload)?;
+        let mut payload = topic.build_payload(state.clone()).await?;
+        let mut payload_bytes = serialized_len(&payload)?;
 
         let (cached, dispatch) = {
             let mut guard = self.state.lock().await;
@@ -772,8 +783,19 @@ impl SubscriptionHub {
             {
                 if let Some(cached) = guard.topics.get_mut(&topic_key) {
                     cached.dirty = true;
+                    cached.refresh_scheduled = false;
+                    cached.latest_live_snapshot = None;
                 }
                 return Ok(None);
+            }
+            if let Some(live) = guard
+                .topics
+                .get(&topic_key)
+                .and_then(|cached| cached.latest_live_snapshot.as_ref())
+                .cloned()
+            {
+                apply_topic_live_overlay_to_payload(state.as_ref(), &topic, &mut payload, &live)?;
+                payload_bytes = serialized_len(&payload)?;
             }
             let current_cursor = guard.topics.get(&topic_key).map_or(0, |entry| entry.cursor);
             let next_cursor = current_cursor.saturating_add(1);
@@ -801,6 +823,10 @@ impl SubscriptionHub {
                     .topics
                     .get(&topic_key)
                     .map_or(0, |entry| entry.summary_retry_backoff_ms),
+                latest_live_snapshot: guard
+                    .topics
+                    .get(&topic_key)
+                    .and_then(|entry| entry.latest_live_snapshot.clone()),
                 snapshot_payload: payload.clone(),
                 snapshot_bytes: payload_bytes,
                 replay_events: guard
@@ -880,7 +906,15 @@ impl SubscriptionHub {
                         > 0;
                     if !active {
                         cached.dirty = true;
+                        cached.latest_live_snapshot = None;
                         return None;
+                    }
+                    if matches!(payload, BroadcastPayload::DashboardActivityLive { .. })
+                        && (cached.topic.uses_summary_live_overlay()
+                            || cached.topic.uses_dashboard_activity_live_overlay())
+                        && let BroadcastPayload::DashboardActivityLive { snapshot } = &payload
+                    {
+                        cached.latest_live_snapshot = Some(snapshot.as_ref().clone());
                     }
                     Some(cached.clone())
                 })
@@ -929,19 +963,21 @@ impl SubscriptionHub {
 
             if cached.topic.uses_dashboard_activity_live_overlay()
                 && let BroadcastPayload::DashboardActivityLive { snapshot } = &payload
-                && let Err(err) = self
+            {
+                if let Err(err) = self
                     .apply_dashboard_activity_live_overlay(
                         state.clone(),
                         &cached.topic,
                         snapshot.as_ref().clone(),
                     )
                     .await
-            {
-                warn!(
-                    ?err,
-                    topic = %cached.topic.name(),
-                    "failed to apply dashboard activity live overlay"
-                );
+                {
+                    warn!(
+                        ?err,
+                        topic = %cached.topic.name(),
+                        "failed to apply dashboard activity live overlay"
+                    );
+                }
                 continue;
             }
 
@@ -1010,6 +1046,7 @@ impl SubscriptionHub {
         if let Some(cached) = guard.topics.get_mut(&topic_key) {
             cached.dirty = true;
             cached.refresh_scheduled = false;
+            cached.latest_live_snapshot = None;
         }
     }
 
@@ -1043,7 +1080,7 @@ impl SubscriptionHub {
             let hub = state.subscription_hub.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(delay).await;
-                if !hub.has_active_topic_name(topic.name()).await {
+                if !hub.has_active_topic_key(&topic_key).await {
                     tracing::debug!(
                         topic = %topic.name(),
                         refresh_outcome = "marked_dirty",
@@ -1064,14 +1101,20 @@ impl SubscriptionHub {
                     "scheduled_terminal_refresh",
                 )
                 .await;
-                if let Err(err) = hub.refresh_topic(state.clone(), topic.clone(), true).await {
-                    warn!(
-                        ?err,
-                        topic = %topic.name(),
-                        "failed to run deferred dashboard activity topic refresh"
-                    );
-                    hub.clear_dashboard_activity_topic_refresh_flag(&topic)
-                        .await;
+                match hub
+                    .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                    .await
+                {
+                    Ok(Some(_)) | Ok(None) => {}
+                    Err(err) => {
+                        warn!(
+                            ?err,
+                            topic = %topic.name(),
+                            "failed to run deferred dashboard activity topic refresh"
+                        );
+                        hub.clear_dashboard_activity_topic_refresh_flag(&topic)
+                            .await;
+                    }
                 }
             });
             return Ok(());
@@ -1089,7 +1132,7 @@ impl SubscriptionHub {
             "scheduled_terminal_refresh",
         )
         .await;
-        self.refresh_topic(state, topic, true).await?;
+        let _ = self.refresh_topic_if_active(state, topic, true).await?;
         Ok(())
     }
 
@@ -1112,6 +1155,7 @@ impl SubscriptionHub {
             };
             if active == 0 {
                 cached.dirty = true;
+                cached.latest_live_snapshot = None;
                 return Ok(());
             }
             cached.summary_pending_event_count = cached
@@ -1161,6 +1205,7 @@ impl SubscriptionHub {
             };
             if active == 0 {
                 cached.dirty = true;
+                cached.latest_live_snapshot = None;
                 cached.summary_refresh_scheduled = false;
                 cached.summary_pending_event_count = 0;
                 return;
@@ -1196,6 +1241,7 @@ impl SubscriptionHub {
                 }
                 Ok(None) => {
                     cached.dirty = true;
+                    cached.latest_live_snapshot = None;
                     cached.summary_refresh_scheduled = false;
                     cached.summary_pending_event_count = 0;
                     refresh_outcome = "marked_dirty";
@@ -1283,6 +1329,7 @@ impl SubscriptionHub {
             let Some(cached) = guard.topics.get_mut(&topic_key) else {
                 return Ok(());
             };
+            cached.latest_live_snapshot = Some(live.clone());
             let Some(object) = cached.snapshot_payload.as_object_mut() else {
                 return Ok(());
             };
@@ -1374,6 +1421,74 @@ impl SubscriptionHub {
         let _ = self.broadcaster.send(dispatch);
         Ok(())
     }
+}
+
+fn apply_topic_live_overlay_to_payload(
+    state: &AppState,
+    topic: &SubscriptionTopic,
+    payload: &mut Value,
+    live: &DashboardActivityLiveSnapshot,
+) -> Result<bool, ApiError> {
+    if topic.uses_summary_live_overlay() {
+        let SubscriptionTopic::SummaryCurrent {
+            upstream_account_id,
+            ..
+        } = topic
+        else {
+            return Ok(false);
+        };
+        let account = upstream_account_id.and_then(|account_id| {
+            live.accounts
+                .iter()
+                .find(|account| account.upstream_account_id == Some(account_id))
+        });
+        let (count, retry_count, phase_counts, wait_ms) = match account {
+            Some(account) => (
+                account.in_progress_invocation_count,
+                account.retry_invocation_count,
+                account.in_progress_phase_counts,
+                (account.in_progress_wait_sample_count > 0).then_some(
+                    account.in_progress_wait_sum_ms / account.in_progress_wait_sample_count as f64,
+                ),
+            ),
+            None if upstream_account_id.is_some() => {
+                (0, 0, InvocationPhaseCountsResponse::default(), None)
+            }
+            None => (
+                live.in_progress_invocation_count,
+                live.retry_invocation_count,
+                live.in_progress_phase_counts,
+                (live.in_progress_wait_sample_count > 0).then_some(
+                    live.in_progress_wait_sum_ms / live.in_progress_wait_sample_count as f64,
+                ),
+            ),
+        };
+        let Some(object) = payload.as_object_mut() else {
+            return Ok(false);
+        };
+        let next_values = [
+            ("inProgressConversationCount", Value::from(count)),
+            ("inProgressRetryConversationCount", Value::from(retry_count)),
+            (
+                "inProgressAvgWaitMs",
+                wait_ms.map(Value::from).unwrap_or(Value::Null),
+            ),
+            ("inProgressPhaseCounts", serde_json::to_value(phase_counts)?),
+        ];
+        let changed = next_values
+            .iter()
+            .any(|(key, value)| object.get(*key) != Some(value));
+        for (key, value) in next_values {
+            set_json_field(object, key, value);
+        }
+        return Ok(changed);
+    }
+
+    if topic.uses_dashboard_activity_live_overlay() {
+        return apply_dashboard_activity_live_overlay_to_payload(state, payload, live);
+    }
+
+    Ok(false)
 }
 
 fn set_json_field(object: &mut serde_json::Map<String, Value>, key: &str, value: Value) {
@@ -2945,6 +3060,7 @@ mod tests {
             summary_refresh_in_flight: false,
             summary_pending_event_count: 0,
             summary_retry_backoff_ms: 0,
+            latest_live_snapshot: None,
             snapshot_payload: json!({ "cursor": cursor }),
             snapshot_bytes: 32,
             replay_events,
