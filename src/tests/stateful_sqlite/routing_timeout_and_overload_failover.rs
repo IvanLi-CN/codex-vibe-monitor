@@ -1545,6 +1545,15 @@ data: {"type":"response.failed","response":{"id":"resp_generic_rate_limit","mode
         classify_pool_initial_responses_sse_event(StatusCode::OK, generic_rate_limit_payload),
         PoolInitialResponsesSseEventDecision::Forward
     ));
+
+    let reached_payload = br#"event: response.failed
+data: {"type":"response.failed","response":{"id":"resp_concurrency_reached","model":"gpt-5.6-sol","status":"failed","error":{"code":"rate_limit_exceeded","message":"Concurrent request limit reached, please retry later"}}}
+
+"#;
+    assert!(matches!(
+        classify_pool_initial_responses_sse_event(StatusCode::OK, reached_payload),
+        PoolInitialResponsesSseEventDecision::RetrySameAccount { .. }
+    ));
 }
 
 #[test]
@@ -1593,6 +1602,14 @@ fn pool_responses_route_failure_keeps_generic_rate_limit_out_of_overload_class()
     assert!(!route_http_failure_is_retryable_responses_overload(
         StatusCode::TOO_MANY_REQUESTS,
         "[upstream_response_failed] rate_limit_exceeded: Concurrency limit exceeded for account, please retry later",
+    ));
+    assert!(!route_http_failure_is_retryable_responses_overload(
+        StatusCode::OK,
+        "[upstream_response_failed] rate_limit_exceeded: Concurrent request limit is active, please retry later",
+    ));
+    assert!(route_http_failure_is_retryable_responses_overload(
+        StatusCode::OK,
+        "[upstream_response_failed] rate_limit_exceeded: Concurrent request limit reached, please retry later",
     ));
 }
 

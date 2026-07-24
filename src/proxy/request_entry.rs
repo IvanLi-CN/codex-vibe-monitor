@@ -1746,7 +1746,9 @@ fn upstream_error_message_indicates_concurrency_limit(message: Option<&str>) -> 
     let has_limit_term = normalized.contains("limit") || normalized.contains("request");
     let has_exhaustion_term = normalized.contains("exceed")
         || normalized.contains("too many")
-        || normalized.contains("maximum");
+        || normalized.contains("maximum")
+        || normalized.contains("reached")
+        || normalized.contains("hit");
     has_concurrency_term && has_limit_term && has_exhaustion_term
 }
 
@@ -1770,11 +1772,14 @@ pub(crate) fn route_http_failure_is_retryable_responses_overload(
         return false;
     }
 
-    let normalized = error_message.to_ascii_lowercase();
-    normalized.contains(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
-        && (normalized.contains(UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED)
-            || (normalized.contains(UPSTREAM_ERROR_CODE_RATE_LIMIT_EXCEEDED)
-                && upstream_error_message_indicates_concurrency_limit(Some(error_message))))
+    let prefix = format!("[{}] ", PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED);
+    let Some(details) = error_message.strip_prefix(prefix.as_str()) else {
+        return false;
+    };
+    let (code, message) = details
+        .split_once(": ")
+        .map_or((details, None), |(code, message)| (code, Some(message)));
+    upstream_error_is_retryable_responses_overload(Some(code.trim()), message.map(str::trim))
 }
 
 pub(crate) fn response_info_is_retryable_responses_overload(
