@@ -5644,7 +5644,7 @@ pub(crate) struct SummaryRangeBuildTelemetry {
 }
 
 impl SummaryRangeBuildTelemetry {
-    fn new(
+    pub(crate) fn new(
         route: SummaryBuildRoute,
         window: &SummaryWindow,
         requested_window: Option<&str>,
@@ -6305,6 +6305,58 @@ async fn query_non_success_tokens_exact_tail(
     Ok(query.build_query_scalar::<i64>().fetch_one(pool).await?)
 }
 
+async fn query_non_success_tokens_unreplayed_live_tail(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    covered_hours: &[i64],
+    repair_cursor: i64,
+) -> Result<i64, ApiError> {
+    if covered_hours.is_empty() {
+        return Ok(0);
+    }
+    let normalized_status_sql = INVOCATION_STATUS_NORMALIZED_SQL;
+    let resolved_failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
+    let non_success_sql = format!(
+        "({normalized_status_sql} = 'interrupted' OR \
+         ({normalized_status_sql} NOT IN ('running', 'pending') \
+          AND ({resolved_failure_class_sql}) <> 'none'))"
+    );
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
+        "SELECT COALESCE(SUM(CASE WHEN {non_success_sql} THEN COALESCE(total_tokens, 0) ELSE 0 END), 0) \
+         FROM codex_invocations WHERE id > "
+    ));
+    query.push_bind(repair_cursor).push(" AND (");
+    for (index, bucket_epoch) in covered_hours.iter().enumerate() {
+        let start = Utc
+            .timestamp_opt(*bucket_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid covered-hour start epoch")))?;
+        let end = start + ChronoDuration::hours(1);
+        if index > 0 {
+            query.push(" OR ");
+        }
+        query
+            .push("(occurred_at >= ")
+            .push_bind(db_occurred_at_lower_bound(start))
+            .push(" AND occurred_at < ")
+            .push_bind(db_occurred_at_upper_bound(end))
+            .push(")");
+    }
+    query.push(")");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(" = ")
+            .push_bind(upstream_account_id);
+    }
+    Ok(query.build_query_scalar::<i64>().fetch_one(pool).await?)
+}
+
 fn summary_non_success_tokens_lock_fallback(
     telemetry: SummaryRangeBuildTelemetry,
     source_scope: InvocationSourceScope,
@@ -6417,6 +6469,58 @@ pub(crate) async fn load_non_success_tokens_snapshot(
         };
         live_tokens += rollup_tokens;
         live_group_row_count = plan.covered_hours.len();
+        let repair_cursor = match load_hourly_rollup_live_progress(
+            &state.pool,
+            INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_CURSOR_DATASET,
+        )
+        .await
+        {
+            Ok(cursor) => cursor,
+            Err(err) => {
+                if crate::is_sqlite_lock_error(&err) {
+                    return summary_non_success_tokens_lock_fallback(
+                        telemetry,
+                        source_scope,
+                        upstream_account_id,
+                        range,
+                        "v2_repair_cursor",
+                    );
+                }
+                return Err(err.into());
+            }
+        };
+        let unreplayed_live_tail = match query_non_success_tokens_unreplayed_live_tail(
+            &state.pool,
+            source_scope,
+            upstream_account_id,
+            &plan.covered_hours,
+            repair_cursor,
+        )
+        .await
+        {
+            Ok(tokens) => tokens,
+            Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
+                return summary_non_success_tokens_lock_fallback(
+                    telemetry,
+                    source_scope,
+                    upstream_account_id,
+                    range,
+                    "unreplayed_live_tail",
+                );
+            }
+            Err(err) => return Err(err),
+        };
+        live_tokens += unreplayed_live_tail;
+        if unreplayed_live_tail != 0 {
+            tracing::debug!(
+                route = telemetry.route_label(),
+                builder = "summary_non_success_tokens",
+                purpose = "unreplayed_live_tail",
+                repair_cursor,
+                covered_hour_count = plan.covered_hours.len(),
+                "summary non-success token rollup included unreplayed live tail"
+            );
+        }
         for (index, exact_range) in plan.exact_ranges.into_iter().enumerate() {
             let exact_tokens = match query_non_success_tokens_exact_tail(
                 &state.pool,

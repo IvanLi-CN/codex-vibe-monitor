@@ -15713,6 +15713,89 @@ async fn account_activity_v2_partial_merge_reads_only_covered_hours_from_rollup(
 }
 
 #[tokio::test]
+async fn summary_non_success_tokens_includes_unreplayed_live_tail_in_covered_hour() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let bucket_epoch = align_bucket_epoch(Utc::now().timestamp(), 3_600, 0) - 2 * 3_600;
+    let occurred_at = Utc
+        .timestamp_opt(bucket_epoch + 10 * 60, 0)
+        .single()
+        .expect("covered invocation time");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, payload, raw_response
+        )
+        VALUES ('unreplayed-non-success', ?1, ?2, 'failed', 7, ?3, '{}')
+        "#,
+    )
+    .bind(format_naive(
+        occurred_at.with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind(r#"{"upstreamAccountId":42}"#)
+    .execute(&state.pool)
+    .await
+    .expect("insert unreplayed invocation");
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_account_stats_hourly (
+            bucket_start_epoch, source, upstream_account_id,
+            activity_v2_non_success_tokens
+        )
+        VALUES (?1, ?2, 42, 3)
+        "#,
+    )
+    .bind(bucket_epoch)
+    .bind(SOURCE_PROXY)
+    .execute(&state.pool)
+    .await
+    .expect("insert covered v2 non-success rollup");
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_materialized_buckets (
+            target, bucket_start_epoch, source, materialized_at
+        )
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2)
+    .bind(bucket_epoch)
+    .bind(HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE)
+    .execute(&state.pool)
+    .await
+    .expect("mark covered v2 hour");
+
+    let value = load_non_success_tokens_snapshot(
+        state.as_ref(),
+        InvocationSourceScope::ProxyOnly,
+        None,
+        ExactUtcRange {
+            start: Utc
+                .timestamp_opt(bucket_epoch, 0)
+                .single()
+                .expect("range start"),
+            end: Utc
+                .timestamp_opt(bucket_epoch + 3_600, 0)
+                .single()
+                .expect("range end"),
+        },
+        SummaryRangeBuildTelemetry::new(
+            SummaryBuildRoute::Http,
+            &SummaryWindow::Duration(ChronoDuration::days(1)),
+            Some("1d"),
+        ),
+    )
+    .await
+    .expect("load non-success tokens")
+    .expect("non-success tokens should be available");
+
+    assert_eq!(value, 10);
+}
+
+#[tokio::test]
 async fn account_activity_v2_rollup_keeps_latest_timestamp_and_value_paired() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
