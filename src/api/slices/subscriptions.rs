@@ -44,6 +44,20 @@ fn subscription_calendar_anchor(topic: &SubscriptionTopic) -> Option<String> {
     )
 }
 
+fn subscription_calendar_rollover_delay(topic: &SubscriptionTopic) -> Duration {
+    let SubscriptionTopic::SummaryCurrent { time_zone, .. } = topic else {
+        return Duration::from_secs(1);
+    };
+    let reporting_tz = parse_reporting_tz(Some(time_zone.as_str()))
+        .unwrap_or_else(|_| "Asia/Shanghai".parse().expect("default timezone is valid"));
+    let now = Utc::now();
+    let next_midnight = start_of_local_day(now, reporting_tz) + ChronoDuration::days(1);
+    (next_midnight - now)
+        .to_std()
+        .unwrap_or_else(|_| Duration::from_millis(1))
+        .max(Duration::from_millis(1))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SubscriptionTopicDescriptor {
@@ -1853,6 +1867,26 @@ async fn run_server_push_topic_loop(
     topic_key: String,
     topic: SubscriptionTopic,
 ) {
+    if topic.is_closed_summary_topic() {
+        loop {
+            tokio::select! {
+                _ = state.shutdown.cancelled() => {
+                    hub.clear_server_push_task(&topic_key).await;
+                    break;
+                }
+                _ = tokio::time::sleep(subscription_calendar_rollover_delay(&topic)) => {
+                    if hub.stop_server_push_task_if_idle(&topic_key).await {
+                        break;
+                    }
+                    if let Err(err) = hub.refresh_topic(state.clone(), topic.clone(), true).await {
+                        warn!(?err, topic = %topic.name(), "failed to refresh closed summary topic at calendar rollover");
+                    }
+                }
+            }
+        }
+        return;
+    }
+
     let mut interval = tokio::time::interval(DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     interval.tick().await;
@@ -1990,7 +2024,7 @@ pub(crate) async fn topic_sse_stream(
 
 impl SubscriptionTopic {
     fn uses_server_push_cadence(&self) -> bool {
-        matches!(self, Self::DashboardNetworkRecentCurrent)
+        matches!(self, Self::DashboardNetworkRecentCurrent) || self.is_closed_summary_topic()
     }
 
     fn uses_dashboard_activity_live_overlay(&self) -> bool {
@@ -3099,6 +3133,23 @@ mod tests {
 
         assert!(hub.has_active_dashboard_activity_live_topic().await);
         assert!(hub.has_active_dashboard_activity_live_topic_sync());
+    }
+
+    #[test]
+    fn closed_summary_topics_use_calendar_rollover_push_cadence() {
+        for window in ["yesterday", "previous7d"] {
+            let topic = SubscriptionTopic::SummaryCurrent {
+                window: window.to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                limit: None,
+                upstream_account_id: None,
+            };
+
+            assert!(topic.uses_server_push_cadence());
+            assert!(
+                subscription_calendar_rollover_delay(&topic) <= Duration::from_secs(24 * 60 * 60)
+            );
+        }
     }
 
     #[tokio::test]
