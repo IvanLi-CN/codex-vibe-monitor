@@ -967,6 +967,17 @@ impl SubscriptionHub {
         }
     }
 
+    async fn mark_dashboard_activity_topic_dirty(&self, topic: &SubscriptionTopic) {
+        let Ok(topic_key) = topic.cache_key() else {
+            return;
+        };
+        let mut guard = self.state.lock().await;
+        if let Some(cached) = guard.topics.get_mut(&topic_key) {
+            cached.dirty = true;
+            cached.refresh_scheduled = false;
+        }
+    }
+
     async fn schedule_dashboard_activity_topic_refresh(
         &self,
         state: Arc<AppState>,
@@ -997,6 +1008,15 @@ impl SubscriptionHub {
             let hub = state.subscription_hub.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(delay).await;
+                if !hub.has_active_topic_name(topic.name()).await {
+                    tracing::debug!(
+                        topic = %topic.name(),
+                        refresh_outcome = "marked_dirty",
+                        "skipping deferred dashboard activity refresh without owner subscribers"
+                    );
+                    hub.mark_dashboard_activity_topic_dirty(&topic).await;
+                    return;
+                }
                 tracing::debug!(
                     refresh_reason = "ttl_expired",
                     invalidation_reason = "deferred_topic_refresh",
