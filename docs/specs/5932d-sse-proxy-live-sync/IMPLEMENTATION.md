@@ -64,11 +64,14 @@
 - `cd web && bun run test -- src/features/app-shell/AppLayout.test.tsx src/hooks/useDashboardWorkingConversations.test.tsx src/hooks/useDashboardUpstreamAccountActivity.test.tsx src/hooks/useInvocations.test.tsx src/hooks/useStats.integration.test.tsx src/hooks/useTimeseries.integration.test.tsx src/lib/sse.test.ts src/hooks/useSubscriptionTopic.test.tsx`
 - 浏览器侧 drill：`/#/live` 首屏 `apiCalls=[]`，只经 `/events` 接收 `snapshot` 完成 hydration；断线期间 `dashboard.activity.current` 新增 cursor 后，重连通过 `resume` 收到 `replay`，未触发额外 HTTP。
 - 浏览器侧 drill：在同页阻断 `/events` 后，自动重试间隔观测为约 `4.1s -> 8.0s`，未再出现高频 `attempt` 风暴；解封后同页手动重连发出新的 `attempt=26&reason=manual`，后端日志对应 `resume_count=0`，随后状态恢复为 `connected`。
+- `cd web && bun run test -- AppLayout.test.tsx`
+- `cd web && bun run test-storybook -- AppLayout.stories.tsx`
+- `cd web && bun run build`
 
 ## Visual Evidence
 
-- `assets/sse-offline-banner-desktop-reconnect.png`
-- `assets/sse-offline-banner-mobile-reconnect.png`
+- `assets/sse-offline-banner-plain-duration-desktop.png`
+- `assets/sse-offline-banner-plain-duration-mobile-390.png`
 
 ## Related Changes
 
