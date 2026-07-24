@@ -674,6 +674,10 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
         .has_active_topic_name("quota.current")
         .await
     {
+        state
+            .subscription_hub
+            .mark_topic_name_dirty("quota.current")
+            .await;
         return Ok(());
     }
 

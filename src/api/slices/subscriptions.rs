@@ -377,6 +377,18 @@ impl SubscriptionHub {
             > 0
     }
 
+    pub(crate) async fn mark_topic_name_dirty(&self, topic_name: &str) {
+        let mut guard = self.state.lock().await;
+        for cached in guard
+            .topics
+            .values_mut()
+            .filter(|cached| cached.topic.name() == topic_name)
+        {
+            cached.dirty = true;
+            cached.latest_live_snapshot = None;
+        }
+    }
+
     pub(crate) async fn has_active_dashboard_activity_live_topic(&self) -> bool {
         let guard = self.state.lock().await;
         guard.topics.iter().any(|(topic_key, cached)| {
@@ -2978,6 +2990,27 @@ mod tests {
                 .expect("cached topic")
                 .replay_events
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn topic_name_dirty_marker_invalidates_cached_quota_snapshot() {
+        let hub = SubscriptionHub::new();
+        let topic = SubscriptionTopic::QuotaCurrent;
+        let topic_key = topic.cache_key().expect("quota topic key");
+        hub.state.lock().await.topics.insert(
+            topic_key.clone(),
+            seeded_cached_topic(topic, &[], Utc::now()),
+        );
+
+        hub.mark_topic_name_dirty("quota.current").await;
+
+        let guard = hub.state.lock().await;
+        assert!(
+            guard
+                .topics
+                .get(&topic_key)
+                .is_some_and(|cached| cached.dirty)
         );
     }
 
