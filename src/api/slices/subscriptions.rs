@@ -155,6 +155,7 @@ struct CachedSubscriptionTopic {
     summary_retry_backoff_ms: u64,
     latest_live_snapshot: Option<DashboardActivityLiveSnapshot>,
     calendar_anchor: Option<String>,
+    continuity_reset_cursor: Option<u64>,
     snapshot_payload: Value,
     snapshot_bytes: usize,
     replay_events: VecDeque<ReplayableTopicEvent>,
@@ -214,6 +215,7 @@ pub(crate) enum ReplayMissReason {
     GapEventBudgetExceeded,
     GapByteBudgetExceeded,
     UnknownTopic,
+    ContinuityReset,
 }
 
 impl ReplayMissReason {
@@ -224,6 +226,7 @@ impl ReplayMissReason {
             Self::GapEventBudgetExceeded => "gap_event_budget_exceeded",
             Self::GapByteBudgetExceeded => "gap_byte_budget_exceeded",
             Self::UnknownTopic => "unknown_topic",
+            Self::ContinuityReset => "continuity_reset",
         }
     }
 }
@@ -587,9 +590,15 @@ impl SubscriptionHub {
                 .await?;
             let topic_key = topic.cache_key()?;
             let resume_cursor = resume_by_topic_key.get(&topic_key);
-            let replay_attempt = self
-                .replay_events_for_resume(&topic_key, topic.schema_epoch(), resume_cursor)
-                .await;
+            let continuity_reset = resume_cursor
+                .zip(cached.continuity_reset_cursor)
+                .is_some_and(|(resume, reset_cursor)| resume.cursor < reset_cursor);
+            let replay_attempt = if continuity_reset {
+                Err(ReplayMissReason::ContinuityReset)
+            } else {
+                self.replay_events_for_resume(&topic_key, topic.schema_epoch(), resume_cursor)
+                    .await
+            };
 
             match replay_attempt {
                 Ok(Some(events)) if !events.is_empty() => {
@@ -821,6 +830,13 @@ impl SubscriptionHub {
             }
             let current_cursor = guard.topics.get(&topic_key).map_or(0, |entry| entry.cursor);
             let next_cursor = current_cursor.saturating_add(1);
+            let continuity_reset_cursor = guard.topics.get(&topic_key).and_then(|entry| {
+                if entry.dirty {
+                    Some(next_cursor)
+                } else {
+                    entry.continuity_reset_cursor
+                }
+            });
             let mut next = CachedSubscriptionTopic {
                 topic: topic.clone(),
                 descriptor: descriptor.clone(),
@@ -850,6 +866,7 @@ impl SubscriptionHub {
                     .get(&topic_key)
                     .and_then(|entry| entry.latest_live_snapshot.clone()),
                 calendar_anchor: subscription_calendar_anchor(&topic),
+                continuity_reset_cursor,
                 snapshot_payload: payload.clone(),
                 snapshot_bytes: payload_bytes,
                 replay_events: guard
@@ -2912,9 +2929,11 @@ mod tests {
         let descriptor = topic.descriptor();
         let topic_key = topic.cache_key().expect("topic key");
 
-        hub.prepare_connection(state.clone(), vec![descriptor.clone()], Vec::new())
+        let initial = hub
+            .prepare_connection(state.clone(), vec![descriptor.clone()], Vec::new())
             .await
             .expect("prepare initial app version topic");
+        let initial_cursor = initial.outcomes[0].cursor;
         hub.handle_internal_broadcast(
             state.clone(),
             BroadcastPayload::Version {
@@ -2933,10 +2952,23 @@ mod tests {
         }
 
         let prepared = hub
-            .prepare_connection(state, vec![descriptor], Vec::new())
+            .prepare_connection(
+                state,
+                vec![descriptor],
+                vec![SubscriptionResumeCursor {
+                    topic_key: topic_key.clone(),
+                    cursor: initial_cursor,
+                    schema_epoch: topic.schema_epoch(),
+                }],
+            )
             .await
             .expect("reconnect should rebuild dirty topic");
         assert_eq!(prepared.initial.len(), 1);
+        assert_eq!(
+            prepared.outcomes[0].disposition,
+            TopicInitDisposition::SnapshotResumeMiss
+        );
+        assert_eq!(prepared.outcomes[0].miss_reason, Some("continuity_reset"));
         let guard = hub.state.lock().await;
         assert!(!guard.topics.get(&topic_key).expect("cached topic").dirty);
         assert!(
@@ -3091,6 +3123,7 @@ mod tests {
             summary_retry_backoff_ms: 0,
             latest_live_snapshot: None,
             calendar_anchor: None,
+            continuity_reset_cursor: None,
             snapshot_payload: json!({ "cursor": cursor }),
             snapshot_bytes: 32,
             replay_events,
