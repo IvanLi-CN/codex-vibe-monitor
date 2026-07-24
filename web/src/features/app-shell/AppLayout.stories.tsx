@@ -1,11 +1,16 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { expect, userEvent, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
+import type { SseReconnectReason, SseTerminalOutcome } from "../../lib/sse";
 import AccountPoolLayout from "../../pages/account-pool/AccountPoolLayout";
 import SystemLayout from "../../pages/system/SystemLayout";
-import { AppLayout } from "./AppLayout";
+import {
+  AppLayout,
+  type SseOfflineBannerStoryState,
+  SseOfflineBannerStoryStateProvider,
+} from "./AppLayout";
 
 type StorybookSseState = {
   status: {
@@ -16,7 +21,7 @@ type StorybookSseState = {
   };
   diagnostics: {
     attempt: number;
-    reason: string;
+    reason: SseReconnectReason;
     activeTopics: string[];
     resumeTopics: string[];
     forcedSnapshotTopics: string[];
@@ -24,7 +29,7 @@ type StorybookSseState = {
     lastOpenAgeMs: number | null;
     lastErrorAgeMs: number | null;
     lastConnectionStartedAgeMs: number | null;
-    lastTerminalOutcome: string;
+    lastTerminalOutcome: SseTerminalOutcome;
   };
 };
 
@@ -174,47 +179,32 @@ function StorybookSseStateController({
   children: ReactNode;
   state?: StorybookSseState;
 }) {
-  const [revision, setRevision] = useState(0);
-
-  useLayoutEffect(() => {
-    if (!state || typeof window === "undefined" || !window.__CVM_SSE__) {
-      return;
-    }
+  const storyState = useMemo<SseOfflineBannerStoryState | undefined>(() => {
+    if (!state) return undefined;
 
     const now = Date.now();
-    const status = window.__CVM_SSE__.getCurrentSseStatus();
-    const diagnostics = window.__CVM_SSE__.getCurrentSseDiagnostics();
-    const previousStatus = { ...status };
-    const previousDiagnostics = {
-      ...diagnostics,
-      activeTopics: [...diagnostics.activeTopics],
-      resumeTopics: [...diagnostics.resumeTopics],
-      forcedSnapshotTopics: [...diagnostics.forcedSnapshotTopics],
-    };
-
-    Object.assign(status, state.status);
-    Object.assign(diagnostics, {
-      attempt: state.diagnostics.attempt,
-      reason: state.diagnostics.reason,
-      activeTopics: [...state.diagnostics.activeTopics],
-      resumeTopics: [...state.diagnostics.resumeTopics],
-      forcedSnapshotTopics: [...state.diagnostics.forcedSnapshotTopics],
-      lastMessageAt: ageToTimestamp(now, state.diagnostics.lastMessageAgeMs),
-      lastOpenAt: ageToTimestamp(now, state.diagnostics.lastOpenAgeMs),
-      lastErrorAt: ageToTimestamp(now, state.diagnostics.lastErrorAgeMs),
-      lastConnectionStartedAt: ageToTimestamp(now, state.diagnostics.lastConnectionStartedAgeMs),
-      lastTerminalOutcome: state.diagnostics.lastTerminalOutcome,
-    });
-
-    setRevision((current) => current + 1);
-
-    return () => {
-      Object.assign(status, previousStatus);
-      Object.assign(diagnostics, previousDiagnostics);
+    return {
+      status: state.status,
+      diagnostics: {
+        attempt: state.diagnostics.attempt,
+        reason: state.diagnostics.reason,
+        activeTopics: [...state.diagnostics.activeTopics],
+        resumeTopics: [...state.diagnostics.resumeTopics],
+        forcedSnapshotTopics: [...state.diagnostics.forcedSnapshotTopics],
+        lastMessageAt: ageToTimestamp(now, state.diagnostics.lastMessageAgeMs),
+        lastOpenAt: ageToTimestamp(now, state.diagnostics.lastOpenAgeMs),
+        lastErrorAt: ageToTimestamp(now, state.diagnostics.lastErrorAgeMs),
+        lastConnectionStartedAt: ageToTimestamp(now, state.diagnostics.lastConnectionStartedAgeMs),
+        lastTerminalOutcome: state.diagnostics.lastTerminalOutcome,
+      },
     };
   }, [state]);
 
-  return <div key={revision}>{children}</div>;
+  return (
+    <SseOfflineBannerStoryStateProvider state={storyState}>
+      {children}
+    </SseOfflineBannerStoryStateProvider>
+  );
 }
 
 function StorybookPwaRuntimeController({
@@ -236,7 +226,7 @@ function StorybookPwaRuntimeController({
       return undefined;
     }
 
-    const hadOwnOnLine = Object.prototype.hasOwnProperty.call(window.navigator, "onLine");
+    const hadOwnOnLine = Object.hasOwn(window.navigator, "onLine");
     const previousOnLineDescriptor = hadOwnOnLine
       ? Object.getOwnPropertyDescriptor(window.navigator, "onLine")
       : undefined;
@@ -396,6 +386,53 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
+const offlineReconnectSseState = {
+  status: {
+    phase: "reconnecting",
+    downtimeMs: 4 * 60 * 1000 + 39 * 1000,
+    nextRetryAt: Date.now() + 8_000,
+    autoReconnect: true,
+  },
+  diagnostics: {
+    attempt: 26,
+    reason: "manual",
+    activeTopics: [
+      "overview?t=day",
+      "overview-counters?t=day",
+      "timeseries?t=day",
+      "model-breakdown?t=day",
+      "tokens-breakdown?t=day",
+      "cost-breakdown?t=day",
+      "requests-breakdown?t=day",
+      "latency-breakdown?t=day",
+    ],
+    resumeTopics: [],
+    forcedSnapshotTopics: [
+      "overview?t=day",
+      "overview-counters?t=day",
+      "timeseries?t=day",
+      "model-breakdown?t=day",
+      "tokens-breakdown?t=day",
+      "cost-breakdown?t=day",
+      "requests-breakdown?t=day",
+      "latency-breakdown?t=day",
+    ],
+    lastMessageAgeMs: 4 * 60 * 1000 + 39 * 1000,
+    lastOpenAgeMs: 5 * 60 * 1000,
+    lastErrorAgeMs: 2_000,
+    lastConnectionStartedAgeMs: 1_000,
+    lastTerminalOutcome: "eventsource-error",
+  },
+} satisfies StorybookSseState;
+
+async function assertOfflineReconnectBanner(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement.ownerDocument.body);
+  await expect(canvas.getByText("实时连接已中断")).toBeVisible();
+  await expect(canvas.getByTestId("app-sse-downtime")).toHaveTextContent("已掉线 4分39秒");
+  await expect(canvas.getByRole("button", { name: "立即重连" })).toBeVisible();
+  await expect(canvas.getByTestId("app-sse-diagnostics")).toBeVisible();
+}
+
 export const Default: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -445,50 +482,22 @@ export const TabletNavigationMenu: Story = {
 export const OfflineReconnectBanner: Story = {
   parameters: {
     initialEntry: "/dashboard",
-    sseState: {
-      status: {
-        phase: "reconnecting",
-        downtimeMs: 4 * 60 * 1000 + 39 * 1000,
-        nextRetryAt: Date.now() + 8_000,
-        autoReconnect: true,
-      },
-      diagnostics: {
-        attempt: 26,
-        reason: "manual",
-        activeTopics: [
-          "overview?t=day",
-          "overview-counters?t=day",
-          "timeseries?t=day",
-          "model-breakdown?t=day",
-          "tokens-breakdown?t=day",
-          "cost-breakdown?t=day",
-          "requests-breakdown?t=day",
-          "latency-breakdown?t=day",
-        ],
-        resumeTopics: [],
-        forcedSnapshotTopics: [
-          "overview?t=day",
-          "overview-counters?t=day",
-          "timeseries?t=day",
-          "model-breakdown?t=day",
-          "tokens-breakdown?t=day",
-          "cost-breakdown?t=day",
-          "requests-breakdown?t=day",
-          "latency-breakdown?t=day",
-        ],
-        lastMessageAgeMs: 4 * 60 * 1000 + 39 * 1000,
-        lastOpenAgeMs: 5 * 60 * 1000,
-        lastErrorAgeMs: 2_000,
-        lastConnectionStartedAgeMs: 1_000,
-        lastTerminalOutcome: "eventsource-error",
-      },
-    },
+    sseState: offlineReconnectSseState,
   },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement.ownerDocument.body);
-    await expect(canvas.getByText("实时连接已中断")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "立即重连" })).toBeVisible();
-    await expect(canvas.getByTestId("app-sse-diagnostics")).toBeVisible();
+  play: async ({ canvasElement }) => assertOfflineReconnectBanner(canvasElement),
+};
+
+export const OfflineReconnectBannerMobile: Story = {
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+    initialEntry: "/dashboard",
+    sseState: offlineReconnectSseState,
+  },
+  play: async (context) => {
+    await assertOfflineReconnectBanner(context.canvasElement);
+
+    const canvas = within(context.canvasElement);
+    await expect(canvas.getByTestId("app-sse-reconnect-mobile-row")).toHaveClass("justify-end");
   },
 };
 
