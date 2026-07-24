@@ -731,6 +731,28 @@ impl SubscriptionHub {
         topic: SubscriptionTopic,
         emit_live: bool,
     ) -> Result<CachedSubscriptionTopic, ApiError> {
+        self.refresh_topic_inner(state, topic, emit_live, false)
+            .await
+            .map(|cached| cached.expect("unguarded topic refresh should always commit"))
+    }
+
+    async fn refresh_topic_if_active(
+        &self,
+        state: Arc<AppState>,
+        topic: SubscriptionTopic,
+        emit_live: bool,
+    ) -> Result<Option<CachedSubscriptionTopic>, ApiError> {
+        self.refresh_topic_inner(state, topic, emit_live, true)
+            .await
+    }
+
+    async fn refresh_topic_inner(
+        &self,
+        state: Arc<AppState>,
+        topic: SubscriptionTopic,
+        emit_live: bool,
+        require_active_owner: bool,
+    ) -> Result<Option<CachedSubscriptionTopic>, ApiError> {
         let topic_key = topic.cache_key()?;
         let schema_epoch = topic.schema_epoch();
         let descriptor = topic.descriptor();
@@ -740,6 +762,19 @@ impl SubscriptionHub {
 
         let (cached, dispatch) = {
             let mut guard = self.state.lock().await;
+            if require_active_owner
+                && guard
+                    .active_subscribers
+                    .get(&topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    == 0
+            {
+                if let Some(cached) = guard.topics.get_mut(&topic_key) {
+                    cached.dirty = true;
+                }
+                return Ok(None);
+            }
             let current_cursor = guard.topics.get(&topic_key).map_or(0, |entry| entry.cursor);
             let next_cursor = current_cursor.saturating_add(1);
             let mut next = CachedSubscriptionTopic {
@@ -821,7 +856,7 @@ impl SubscriptionHub {
             );
         }
 
-        Ok(cached)
+        Ok(Some(cached))
     }
 
     pub(crate) async fn handle_internal_broadcast(
@@ -1136,7 +1171,9 @@ impl SubscriptionHub {
         };
 
         let started = Instant::now();
-        let result = self.refresh_topic(state.clone(), topic.clone(), true).await;
+        let result = self
+            .refresh_topic_if_active(state.clone(), topic.clone(), true)
+            .await;
         let elapsed_ms = started.elapsed().as_millis() as u64;
         let mut retry_delay = None;
         let mut coalesced_event_count = event_count;
@@ -1148,7 +1185,7 @@ impl SubscriptionHub {
             };
             cached.summary_refresh_in_flight = false;
             match result {
-                Ok(_) => {
+                Ok(Some(_)) => {
                     cached.summary_retry_backoff_ms = 0;
                     if cached.summary_pending_event_count > 0 {
                         cached.summary_refresh_scheduled = true;
@@ -1156,6 +1193,12 @@ impl SubscriptionHub {
                     } else {
                         cached.summary_refresh_scheduled = false;
                     }
+                }
+                Ok(None) => {
+                    cached.dirty = true;
+                    cached.summary_refresh_scheduled = false;
+                    cached.summary_pending_event_count = 0;
+                    refresh_outcome = "marked_dirty";
                 }
                 Err(err) => {
                     refresh_outcome = "retained_last_good";
