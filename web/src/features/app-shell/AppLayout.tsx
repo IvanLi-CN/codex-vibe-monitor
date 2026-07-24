@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Button } from "../../components/ui/button";
 import { SegmentedControl } from "../../components/ui/segmented-control";
@@ -11,7 +20,9 @@ import useUpdateAvailable from "../../hooks/useUpdateAvailable";
 import { type Locale, supportedLocales, useTranslation } from "../../i18n";
 import {
   requestImmediateReconnect,
+  type SseDiagnostics,
   type SseReconnectReason,
+  type SseStatus,
   type SseTerminalOutcome,
   subscribeToSseActivity,
 } from "../../lib/sse";
@@ -35,6 +46,27 @@ const LOCALE_FLAG: Record<Locale, string> = {
 };
 const OFFLINE_NOTICE_THRESHOLD_MS = 2 * 60 * 1000;
 export const HEADER_BRAND_ACTIVITY_HOLD_MS = 3200;
+
+export type SseOfflineBannerStoryState = {
+  status: SseStatus;
+  diagnostics: SseDiagnostics;
+};
+
+const SseOfflineBannerStoryStateContext = createContext<SseOfflineBannerStoryState | null>(null);
+
+export function SseOfflineBannerStoryStateProvider({
+  children,
+  state,
+}: {
+  children: ReactNode;
+  state?: SseOfflineBannerStoryState;
+}) {
+  return (
+    <SseOfflineBannerStoryStateContext.Provider value={state ?? null}>
+      {children}
+    </SseOfflineBannerStoryStateContext.Provider>
+  );
+}
 
 type InstallPromptMode = Extract<
   ReturnType<typeof usePwaRuntime>["installMode"],
@@ -109,8 +141,11 @@ function outcomeLabelKey(outcome: SseTerminalOutcome | null) {
 
 function SseOfflineBanner({ topClassName }: { topClassName: string }) {
   const { t } = useTranslation();
-  const sseStatus = useSseStatus();
-  const sseDiagnostics = useSseDiagnostics();
+  const storyState = useContext(SseOfflineBannerStoryStateContext);
+  const currentSseStatus = useSseStatus();
+  const currentSseDiagnostics = useSseDiagnostics();
+  const sseStatus = storyState?.status ?? currentSseStatus;
+  const sseDiagnostics = storyState?.diagnostics ?? currentSseDiagnostics;
   const diagnosticsNow = Date.now();
 
   const isOffline = sseStatus.phase !== "connected" && sseStatus.phase !== "idle";
@@ -157,9 +192,12 @@ function SseOfflineBanner({ topClassName }: { topClassName: string }) {
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-4">
               <div className="min-w-0 flex-1 space-y-1">
-                <div className="flex flex-wrap items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2">
                   <span className="font-semibold">{t("app.sse.banner.title")}</span>
-                  <span className="rounded-full bg-warning/20 px-2 py-0.5 text-xs font-mono tone-ink-warning">
+                  <span
+                    className="text-xs font-mono tabular-nums text-warning-content/80"
+                    data-testid="app-sse-downtime"
+                  >
                     {durationChipLabel}
                   </span>
                 </div>
@@ -182,14 +220,16 @@ function SseOfflineBanner({ topClassName }: { topClassName: string }) {
             >
               {diagnosticsLine}
             </p>
-            <Button
-              type="button"
-              size="sm"
-              className="inline-flex w-auto self-end px-5 sm:hidden"
-              onClick={requestImmediateReconnect}
-            >
-              {t("app.sse.banner.reconnectButton")}
-            </Button>
+            <div className="flex justify-end sm:hidden" data-testid="app-sse-reconnect-mobile-row">
+              <Button
+                type="button"
+                size="sm"
+                className="w-auto px-5"
+                onClick={requestImmediateReconnect}
+              >
+                {t("app.sse.banner.reconnectButton")}
+              </Button>
+            </div>
           </div>
         </div>
       </div>

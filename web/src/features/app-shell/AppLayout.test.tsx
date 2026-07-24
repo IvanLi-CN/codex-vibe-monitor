@@ -555,6 +555,13 @@ describe("AppLayout", () => {
     });
 
     const diagnostics = host?.querySelector('[data-testid="app-sse-diagnostics"]');
+    const downtime = host?.querySelector('[data-testid="app-sse-downtime"]');
+    const mobileReconnectRow = host?.querySelector('[data-testid="app-sse-reconnect-mobile-row"]');
+    expect(downtime?.textContent).toBe("2:10");
+    expect(downtime?.className).not.toContain("rounded-full");
+    expect(downtime?.className).not.toContain("bg-warning");
+    expect(mobileReconnectRow?.className).toContain("justify-end");
+    expect(mobileReconnectRow?.textContent).toContain("立即重连");
     expect(diagnostics?.textContent).toContain("Attempt 7");
     expect(diagnostics?.textContent).toContain("manual reconnect");
     expect(diagnostics?.textContent).toContain("topics 2");

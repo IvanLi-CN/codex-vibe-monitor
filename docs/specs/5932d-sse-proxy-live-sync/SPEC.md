@@ -206,10 +206,15 @@
 - 2026-07-16：主应用 `/#/live` 纯 SSE drill 的 owner-facing 页面证据已确认。
   - Immutable snapshot: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__d7e3b892/2026/07/16/20260716T110814Z-live-sse-drill-evidence-cac8522a.png`
   - 验证重点：页面已由 topic `snapshot` 正常完成 hydration，且在 `app.version` topic 迁移后不再依赖 `/api/version` 首屏 bootstrap。
-- 2026-07-17：主应用离线黄条的 owner-facing 证据已确认。
-  - `assets/sse-offline-banner-desktop-reconnect.png`
-  - `assets/sse-offline-banner-mobile-reconnect.png`
-  - 验证重点：桌面端“立即重连”按钮保持在标题/说明块右侧；移动端按钮收口到黄条右下角；黄条同时展示可判责的 SSE diagnostics，而不是整页刷新恢复。
+
+PR: none
+
+- 2026-07-24：主应用离线黄条的 Storybook Canvas 断线态证据。
+  - source_type: `storybook_canvas`; target_program: `mock-only`; capture_scope: `browser-viewport`; viewport_strategy: `storybook-viewport`; margin_policy: `trim_only`; evidence_surface: `page`; sensitive_exclusion: `N/A`; submission_gate: `approved`
+  - 桌面状态：时长作为标题旁的紧凑等宽文本呈现，不含圆角、边框、填充或独立 warning 背景；诊断信息与右侧“立即重连”操作保持可扫描。
+  - ![SSE offline banner with plain duration on desktop](./assets/sse-offline-banner-plain-duration-desktop.png)
+  - 移动 `390px` 状态：标题、时长、诊断信息与横幅内右对齐的“立即重连”操作均保持可见，不发生挤压或溢出。
+  - ![SSE offline banner with plain duration on mobile 390](./assets/sse-offline-banner-plain-duration-mobile-390.png)
 
 ## References
 
