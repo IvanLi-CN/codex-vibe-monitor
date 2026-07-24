@@ -565,58 +565,17 @@ pub(crate) enum ProxyCaptureFollowUpBroadcastMode {
 
 pub(crate) async fn broadcast_proxy_capture_follow_up(
     pool: &Pool<Sqlite>,
-    _hourly_rollup_sync_lock: &Mutex<()>,
     broadcaster: &broadcast::Sender<BroadcastPayload>,
     broadcast_state_cache: &Mutex<BroadcastStateCache>,
-    invocation_max_days: u64,
+    subscription_hub: &SubscriptionHub,
     mode: ProxyCaptureFollowUpBroadcastMode,
     invoke_id: &str,
 ) {
     if matches!(mode, ProxyCaptureFollowUpBroadcastMode::ActiveSubscribers)
-        && broadcaster.receiver_count() == 0
+        && !subscription_hub
+            .has_active_topic_name("quota.current")
+            .await
     {
-        return;
-    }
-
-    match collect_summary_snapshots(pool, invocation_max_days).await {
-        Ok(summaries) => {
-            for summary in summaries {
-                if let Err(err) = broadcast_summary_if_changed(
-                    broadcaster,
-                    broadcast_state_cache,
-                    &summary.window,
-                    summary.summary,
-                )
-                .await
-                {
-                    warn!(
-                        ?err,
-                        invoke_id = %invoke_id,
-                        window = %summary.window,
-                        "failed to broadcast proxy summary payload"
-                    );
-                }
-            }
-        }
-        Err(err) => {
-            if crate::is_sqlite_lock_error(&err) {
-                warn!(
-                    invoke_id = %invoke_id,
-                    mode = ?mode,
-                    sqlite_locked = true,
-                    "proxy capture follow-up summary broadcast skipped because sqlite is locked"
-                );
-                return;
-            }
-            warn!(
-                ?err,
-                invoke_id = %invoke_id,
-                "failed to collect summary snapshots after proxy capture persistence"
-            );
-        }
-    }
-
-    if broadcaster.receiver_count() == 0 {
         return;
     }
 
@@ -648,10 +607,9 @@ pub(crate) struct SummaryQuotaBroadcastIdleContext<'a> {
     pub(crate) broadcast_running: &'a AtomicBool,
     pub(crate) shutdown: &'a CancellationToken,
     pub(crate) pool: &'a Pool<Sqlite>,
-    pub(crate) hourly_rollup_sync_lock: &'a Mutex<()>,
     pub(crate) broadcaster: &'a broadcast::Sender<BroadcastPayload>,
     pub(crate) broadcast_state_cache: &'a Mutex<BroadcastStateCache>,
-    pub(crate) invocation_max_days: u64,
+    pub(crate) subscription_hub: &'a SubscriptionHub,
     pub(crate) invoke_id: &'a str,
 }
 
@@ -675,10 +633,9 @@ pub(crate) async fn finish_summary_quota_broadcast_idle(
         );
         broadcast_proxy_capture_follow_up(
             ctx.pool,
-            ctx.hourly_rollup_sync_lock,
             ctx.broadcaster,
             ctx.broadcast_state_cache,
-            ctx.invocation_max_days,
+            ctx.subscription_hub,
             ProxyCaptureFollowUpBroadcastMode::ShutdownFlush,
             ctx.invoke_id,
         )
@@ -698,14 +655,13 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
     if state.shutdown.is_cancelled() {
         info!(
             invoke_id = %invoke_id,
-            "broadcasting final summary/quota snapshots inline because shutdown is in progress"
+            "broadcasting final quota snapshot inline because shutdown is in progress"
         );
         broadcast_proxy_capture_follow_up(
             &state.pool,
-            state.hourly_rollup_sync_lock.as_ref(),
             &state.broadcaster,
             state.broadcast_state_cache.as_ref(),
-            state.config.invocation_max_days,
+            state.subscription_hub.as_ref(),
             ProxyCaptureFollowUpBroadcastMode::ShutdownFlush,
             invoke_id,
         )
@@ -713,7 +669,11 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
         return Ok(());
     }
 
-    if state.broadcaster.receiver_count() == 0 {
+    if !state
+        .subscription_hub
+        .has_active_topic_name("quota.current")
+        .await
+    {
         return Ok(());
     }
 
@@ -723,14 +683,13 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
     if state.shutdown.is_cancelled() {
         info!(
             invoke_id = %invoke_id,
-            "broadcasting final summary/quota snapshots inline because shutdown started after record broadcast"
+            "broadcasting final quota snapshot inline because shutdown started after record broadcast"
         );
         broadcast_proxy_capture_follow_up(
             &state.pool,
-            state.hourly_rollup_sync_lock.as_ref(),
             &state.broadcaster,
             state.broadcast_state_cache.as_ref(),
-            state.config.invocation_max_days,
+            state.subscription_hub.as_ref(),
             ProxyCaptureFollowUpBroadcastMode::ShutdownFlush,
             invoke_id,
         )
@@ -748,10 +707,9 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
     let latest_broadcast_seq = state.proxy_summary_quota_broadcast_seq.clone();
     let broadcast_running = state.proxy_summary_quota_broadcast_running.clone();
     let pool = state.pool.clone();
-    let hourly_rollup_sync_lock = state.hourly_rollup_sync_lock.clone();
     let broadcaster = state.broadcaster.clone();
     let broadcast_state_cache = state.broadcast_state_cache.clone();
-    let invocation_max_days = state.config.invocation_max_days;
+    let subscription_hub = state.subscription_hub.clone();
     let shutdown = state.shutdown.clone();
     let broadcast_handle_slot = state.proxy_summary_quota_broadcast_handle.clone();
     let invoke_id = invoke_id.to_string();
@@ -763,14 +721,13 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
                 if target_seq != synced_seq {
                     info!(
                         invoke_id = %invoke_id,
-                        "flushing final summary/quota snapshots inline before shutdown"
+                        "flushing final quota snapshot inline before shutdown"
                     );
                     broadcast_proxy_capture_follow_up(
                         &pool,
-                        hourly_rollup_sync_lock.as_ref(),
                         &broadcaster,
                         broadcast_state_cache.as_ref(),
-                        invocation_max_days,
+                        subscription_hub.as_ref(),
                         ProxyCaptureFollowUpBroadcastMode::ShutdownFlush,
                         &invoke_id,
                     )
@@ -779,7 +736,7 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
                 broadcast_running.store(false, Ordering::Release);
                 info!(
                     invoke_id = %invoke_id,
-                    "stopping summary/quota broadcast worker because shutdown is in progress"
+                        "stopping quota broadcast worker because shutdown is in progress"
                 );
                 break;
             }
@@ -791,10 +748,9 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
                         broadcast_running: broadcast_running.as_ref(),
                         shutdown: &shutdown,
                         pool: &pool,
-                        hourly_rollup_sync_lock: hourly_rollup_sync_lock.as_ref(),
                         broadcaster: &broadcaster,
                         broadcast_state_cache: broadcast_state_cache.as_ref(),
-                        invocation_max_days,
+                        subscription_hub: subscription_hub.as_ref(),
                         invoke_id: &invoke_id,
                     },
                     synced_seq,
@@ -811,10 +767,9 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
                 _ = shutdown.cancelled() => {
                     broadcast_proxy_capture_follow_up(
                         &pool,
-                        hourly_rollup_sync_lock.as_ref(),
                         &broadcaster,
                         broadcast_state_cache.as_ref(),
-                        invocation_max_days,
+                        subscription_hub.as_ref(),
                         ProxyCaptureFollowUpBroadcastMode::ShutdownFlush,
                         &invoke_id,
                     )
@@ -822,16 +777,15 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
                     broadcast_running.store(false, Ordering::Release);
                     info!(
                         invoke_id = %invoke_id,
-                        "summary/quota broadcast worker flushed follow-up before shutdown"
+                        "quota broadcast worker flushed follow-up before shutdown"
                     );
                     break;
                 }
                 _ = broadcast_proxy_capture_follow_up(
                     &pool,
-                    hourly_rollup_sync_lock.as_ref(),
                     &broadcaster,
                     broadcast_state_cache.as_ref(),
-                    invocation_max_days,
+                    subscription_hub.as_ref(),
                     ProxyCaptureFollowUpBroadcastMode::ActiveSubscribers,
                     &invoke_id,
                 ) => {}
@@ -857,10 +811,7 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
     };
     for finished_handle in finished_handles {
         if let Err(err) = finished_handle.await {
-            error!(
-                ?err,
-                "summary/quota broadcast worker terminated unexpectedly"
-            );
+            error!(?err, "quota broadcast worker terminated unexpectedly");
         }
     }
 
@@ -877,15 +828,18 @@ pub(crate) fn schedule_proxy_capture_follow_up_after_terminal_enqueue(
         return;
     }
 
-    if state.broadcaster.receiver_count() == 0 && !state.shutdown.is_cancelled() {
+    if !state.shutdown.is_cancelled()
+        && !state
+            .subscription_hub
+            .has_active_topic_name_sync("quota.current")
+    {
         return;
     }
 
     let pool = state.pool.clone();
-    let hourly_rollup_sync_lock = state.hourly_rollup_sync_lock.clone();
     let broadcaster = state.broadcaster.clone();
     let broadcast_state_cache = state.broadcast_state_cache.clone();
-    let invocation_max_days = state.config.invocation_max_days;
+    let subscription_hub = state.subscription_hub.clone();
     let shutdown = state.shutdown.clone();
     let invoke_id = invoke_id.to_string();
     tokio::spawn(async move {
@@ -903,10 +857,9 @@ pub(crate) fn schedule_proxy_capture_follow_up_after_terminal_enqueue(
         );
         broadcast_proxy_capture_follow_up(
             &pool,
-            hourly_rollup_sync_lock.as_ref(),
             &broadcaster,
             broadcast_state_cache.as_ref(),
-            invocation_max_days,
+            subscription_hub.as_ref(),
             mode,
             &invoke_id,
         )

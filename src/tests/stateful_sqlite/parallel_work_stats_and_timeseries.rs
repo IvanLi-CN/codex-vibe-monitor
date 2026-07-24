@@ -10162,73 +10162,6 @@ async fn summary_hourly_backed_since_omits_pre_cutoff_partial_archived_hours() {
 }
 
 #[tokio::test]
-async fn collect_summary_snapshots_uses_hourly_backed_duration_windows() {
-    let mut config = test_config();
-    config.openai_upstream_base_url =
-        Url::parse("https://api.openai.com/").expect("valid upstream base url");
-    config.invocation_max_days = 7;
-    let state = test_state_from_config(config, true).await;
-
-    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
-        - ChronoDuration::days(10))
-    .and_hms_opt(8, 0, 0)
-    .expect("valid archived local hour");
-    let bucket_start = local_naive_to_utc(archived_hour_local, Shanghai);
-    let archived_occurred_at = format_naive(
-        archived_hour_local
-            .checked_add_signed(ChronoDuration::minutes(45))
-            .expect("archived local time"),
-    );
-    seed_invocation_archive_batch(
-        &state.pool,
-        &state.config,
-        "summary-broadcast-hourly-window",
-        &[(
-            1_i64,
-            "summary-broadcast-archived-row",
-            archived_occurred_at.as_str(),
-            SOURCE_PROXY,
-            "success",
-            25_i64,
-            0.25_f64,
-            Some(250.0),
-        )],
-    )
-    .await;
-    insert_invocation_hourly_rollup_bucket(
-        &state.pool,
-        bucket_start,
-        SOURCE_PROXY,
-        1,
-        1,
-        0,
-        25,
-        0.25,
-    )
-    .await;
-
-    let summaries = collect_summary_snapshots(&state.pool, state.config.invocation_max_days)
-        .await
-        .expect("collect summary snapshots");
-
-    let month = summaries
-        .iter()
-        .find(|summary| summary.window == "1mo")
-        .expect("1mo summary should be present");
-    assert_eq!(month.summary.total_count, 1);
-    assert_eq!(month.summary.success_count, 1);
-    assert_eq!(month.summary.failure_count, 0);
-    assert_eq!(month.summary.total_tokens, 25);
-    assert_f64_close(month.summary.total_cost, 0.25);
-
-    let day = summaries
-        .iter()
-        .find(|summary| summary.window == "1d")
-        .expect("1d summary should be present");
-    assert_eq!(day.summary.total_count, 0);
-}
-
-#[tokio::test]
 async fn timeseries_hourly_backed_omits_pre_cutoff_partial_archived_hours() {
     let mut config = test_config();
     config.openai_upstream_base_url =
@@ -14987,6 +14920,10 @@ async fn dashboard_activity_subscription_live_overlay_updates_cached_snapshot_wi
         .await
         .expect("prepare dashboard activity subscription snapshot");
     let initial_payload = extract_subscription_snapshot_payload(initial_prepared);
+    let _dashboard_lease = state
+        .subscription_hub
+        .register_test_topic_name("dashboard.activity.current")
+        .await;
     let initial_accounts = initial_payload
         .get("accounts")
         .and_then(Value::as_array)
@@ -15171,7 +15108,7 @@ async fn dashboard_activity_subscription_live_overlay_updates_cached_snapshot_wi
         .handle_internal_broadcast(
             state.clone(),
             BroadcastPayload::DashboardActivityLive {
-                snapshot: live_snapshot,
+                snapshot: Box::new(live_snapshot),
             },
         )
         .await;
@@ -15228,6 +15165,10 @@ async fn dashboard_activity_subscription_terminal_refresh_is_deferred_until_ttl(
         .await
         .expect("prepare initial dashboard activity subscription snapshot");
     let initial_payload = extract_subscription_snapshot_payload(initial_prepared);
+    let _dashboard_lease = state
+        .subscription_hub
+        .register_test_topic_name("dashboard.activity.current")
+        .await;
     assert_eq!(
         initial_payload
             .get("summary")

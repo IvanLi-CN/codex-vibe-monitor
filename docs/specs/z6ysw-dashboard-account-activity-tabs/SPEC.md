@@ -109,6 +109,8 @@
 - `dashboard-activity.accounts[]` 必须包含真实上游账号聚合项；如果存在无法归属到账号的活动流量，必须返回明确的 `unassigned` 聚合项，而不是让顶部总数无法被明细解释。
 - `dashboard-activity.accounts[]` 与 `upstream-account-activity.accounts[]` 必须携带最小账号状态快照字段：`enabled/displayStatus/enableStatus/workStatus/healthStatus/syncState/lastError/lastActionReasonMessage`；这些字段只服务 Dashboard 状态 badge 与健康入口，不改变账号活动聚合口径。
 - `includeAccounts=false` 必须支持顶部轻量使用，只返回同源 `summary` 与快照元数据；该路径不得先构建、排序完整账号 preview/archive 明细再丢弃，只能读取 summary/read-model、live overlay 与短尾速率窗口所需数据；账号 tab 首次打开后升级为 `includeAccounts=true`，并用该 full snapshot 同步刷新顶部和账号卡片。
+- Dashboard full 与 upstream-account 的 open-range 账号聚合必须按“covered full hours rollup + uncovered contiguous hours exact fallback + boundary exact tail”合并；健康路径不得整窗调用账号活动 raw aggregate。缺口与边界必须通过结构化 telemetry 标明，禁止静默漏计。
+- Dashboard 的 terminal refresh 继续使用既有 `5s` TTL；判责字段必须区分 `initial_build`、`ttl_expired` 与 `scheduled_terminal_refresh`，并记录真实 owner subscriber 数量、selection fingerprint 与 base snapshot age。
 - `DashboardActivityOverview` 与 `TodayStatsOverview` 不得再用 `buildDashboardTodayRateSnapshot`、timeseries recent snapshot 或 `modelPerformance.total.*` 驱动顶部当前 KPI；顶部实时卡与账号标题当前值只允许读取 `dashboard-activity.summary` / `accounts[]` 的同源后端字段。
 
 ### SHOULD

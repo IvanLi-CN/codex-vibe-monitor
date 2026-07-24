@@ -23,6 +23,7 @@ const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration =
     Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS);
 #[cfg(test)]
 const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_millis(500);
+const SUMMARY_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -114,6 +115,8 @@ pub(crate) struct SubscriptionHub {
 #[derive(Debug, Default)]
 struct SubscriptionHubState {
     topics: HashMap<String, CachedSubscriptionTopic>,
+    active_subscribers: HashMap<String, usize>,
+    active_topic_names: HashMap<String, usize>,
     server_push_subscribers: HashMap<String, usize>,
     server_push_tasks: HashSet<String>,
 }
@@ -126,6 +129,11 @@ struct CachedSubscriptionTopic {
     cursor: u64,
     snapshot_built_at: Instant,
     refresh_scheduled: bool,
+    dirty: bool,
+    summary_refresh_scheduled: bool,
+    summary_refresh_in_flight: bool,
+    summary_pending_event_count: u64,
+    summary_retry_backoff_ms: u64,
     snapshot_payload: Value,
     snapshot_bytes: usize,
     replay_events: VecDeque<ReplayableTopicEvent>,
@@ -143,6 +151,26 @@ struct ReplayableTopicEvent {
 struct ServerPushTopicLease {
     hub: Arc<SubscriptionHub>,
     topic_keys: Vec<String>,
+}
+
+pub(crate) struct TopicSubscriptionLease {
+    hub: Arc<SubscriptionHub>,
+    topic_keys: Vec<String>,
+    topic_names: Vec<String>,
+}
+
+impl Drop for TopicSubscriptionLease {
+    fn drop(&mut self) {
+        if self.topic_keys.is_empty() {
+            return;
+        }
+        let hub = self.hub.clone();
+        let topic_keys = std::mem::take(&mut self.topic_keys);
+        let topic_names = std::mem::take(&mut self.topic_names);
+        tokio::spawn(async move {
+            hub.release_topic_subscribers(topic_keys, topic_names).await;
+        });
+    }
 }
 
 impl Drop for ServerPushTopicLease {
@@ -288,6 +316,151 @@ impl SubscriptionHub {
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<SubscriptionDispatchEvent> {
         self.broadcaster.subscribe()
+    }
+
+    pub(crate) async fn has_active_topic_name(&self, topic_name: &str) -> bool {
+        self.active_topic_subscriber_count(topic_name).await > 0
+    }
+
+    pub(crate) async fn active_topic_subscriber_count(&self, topic_name: &str) -> usize {
+        let guard = self.state.lock().await;
+        guard
+            .active_topic_names
+            .get(topic_name)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn has_active_topic_name_sync(&self, topic_name: &str) -> bool {
+        let Ok(guard) = self.state.try_lock() else {
+            return true;
+        };
+        guard
+            .active_topic_names
+            .get(topic_name)
+            .copied()
+            .unwrap_or_default()
+            > 0
+    }
+
+    pub(crate) async fn has_active_dashboard_activity_live_topic(&self) -> bool {
+        let guard = self.state.lock().await;
+        guard.topics.iter().any(|(topic_key, cached)| {
+            (cached.topic.uses_dashboard_activity_live_overlay()
+                || cached.topic.uses_summary_live_overlay()
+                || cached.topic.uses_dashboard_network_live_snapshot())
+                && guard
+                    .active_subscribers
+                    .get(topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    > 0
+        })
+    }
+
+    pub(crate) fn has_active_dashboard_activity_live_topic_sync(&self) -> bool {
+        let Ok(guard) = self.state.try_lock() else {
+            return true;
+        };
+        guard.topics.iter().any(|(topic_key, cached)| {
+            (cached.topic.uses_dashboard_activity_live_overlay()
+                || cached.topic.uses_summary_live_overlay()
+                || cached.topic.uses_dashboard_network_live_snapshot())
+                && guard
+                    .active_subscribers
+                    .get(topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    > 0
+        })
+    }
+
+    async fn register_topic_subscribers(
+        self: &Arc<Self>,
+        topics: &[SubscriptionTopic],
+    ) -> Result<TopicSubscriptionLease, ApiError> {
+        let topic_keys = topics
+            .iter()
+            .map(SubscriptionTopic::cache_key)
+            .collect::<Result<HashSet<_>, _>>()?
+            .into_iter()
+            .collect::<Vec<_>>();
+        let topic_names = topics
+            .iter()
+            .map(SubscriptionTopic::name)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let mut guard = self.state.lock().await;
+        for topic_key in &topic_keys {
+            *guard
+                .active_subscribers
+                .entry(topic_key.clone())
+                .or_insert(0) += 1;
+        }
+        for topic_name in &topic_names {
+            *guard
+                .active_topic_names
+                .entry(topic_name.clone())
+                .or_insert(0) += 1;
+        }
+        Ok(TopicSubscriptionLease {
+            hub: self.clone(),
+            topic_keys,
+            topic_names,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn register_test_topic_name(
+        self: &Arc<Self>,
+        topic_name: &str,
+    ) -> TopicSubscriptionLease {
+        let mut guard = self.state.lock().await;
+        *guard
+            .active_topic_names
+            .entry(topic_name.to_string())
+            .or_insert(0) += 1;
+        let topic_keys = guard
+            .topics
+            .iter()
+            .filter(|(_, cached)| cached.topic.name() == topic_name)
+            .map(|(topic_key, _)| topic_key.clone())
+            .collect::<Vec<_>>();
+        for topic_key in &topic_keys {
+            *guard
+                .active_subscribers
+                .entry(topic_key.clone())
+                .or_insert(0) += 1;
+        }
+        TopicSubscriptionLease {
+            hub: self.clone(),
+            topic_keys,
+            topic_names: vec![topic_name.to_string()],
+        }
+    }
+
+    async fn release_topic_subscribers(&self, topic_keys: Vec<String>, topic_names: Vec<String>) {
+        let mut guard = self.state.lock().await;
+        for topic_key in topic_keys {
+            match guard.active_subscribers.get_mut(&topic_key) {
+                Some(count) if *count > 1 => *count -= 1,
+                Some(_) => {
+                    guard.active_subscribers.remove(&topic_key);
+                }
+                None => {}
+            }
+        }
+        for topic_name in topic_names {
+            match guard.active_topic_names.get_mut(&topic_name) {
+                Some(count) if *count > 1 => *count -= 1,
+                Some(_) => {
+                    guard.active_topic_names.remove(&topic_name);
+                }
+                None => {}
+            }
+        }
     }
 
     async fn register_server_push_topics(
@@ -544,7 +717,9 @@ impl SubscriptionHub {
         topic: SubscriptionTopic,
     ) -> Result<CachedSubscriptionTopic, ApiError> {
         let topic_key = topic.cache_key()?;
-        if let Some(existing) = self.state.lock().await.topics.get(&topic_key).cloned() {
+        if let Some(existing) = self.state.lock().await.topics.get(&topic_key).cloned()
+            && !existing.dirty
+        {
             return Ok(existing);
         }
         self.refresh_topic(state, topic, false).await
@@ -574,16 +749,35 @@ impl SubscriptionHub {
                 cursor: next_cursor,
                 snapshot_built_at: Instant::now(),
                 refresh_scheduled: false,
+                dirty: false,
+                summary_refresh_scheduled: guard
+                    .topics
+                    .get(&topic_key)
+                    .is_some_and(|entry| entry.summary_refresh_scheduled),
+                summary_refresh_in_flight: guard
+                    .topics
+                    .get(&topic_key)
+                    .is_some_and(|entry| entry.summary_refresh_in_flight),
+                summary_pending_event_count: guard
+                    .topics
+                    .get(&topic_key)
+                    .map_or(0, |entry| entry.summary_pending_event_count),
+                summary_retry_backoff_ms: guard
+                    .topics
+                    .get(&topic_key)
+                    .map_or(0, |entry| entry.summary_retry_backoff_ms),
                 snapshot_payload: payload.clone(),
                 snapshot_bytes: payload_bytes,
                 replay_events: guard
                     .topics
                     .get(&topic_key)
+                    .filter(|entry| !entry.dirty)
                     .map(|entry| entry.replay_events.clone())
                     .unwrap_or_default(),
                 replay_bytes: guard
                     .topics
                     .get(&topic_key)
+                    .filter(|entry| !entry.dirty)
                     .map_or(0, |entry| entry.replay_bytes),
             };
             if emit_live {
@@ -636,23 +830,75 @@ impl SubscriptionHub {
         payload: BroadcastPayload,
     ) {
         let affected = {
-            let guard = self.state.lock().await;
+            let mut guard = self.state.lock().await;
+            let active_subscribers = guard.active_subscribers.clone();
             guard
                 .topics
-                .values()
+                .values_mut()
                 .filter(|cached| cached.topic.is_affected_by(&payload))
-                .cloned()
+                .filter_map(|cached| {
+                    let topic_key = cached.topic.cache_key().ok()?;
+                    let active = active_subscribers
+                        .get(&topic_key)
+                        .copied()
+                        .unwrap_or_default()
+                        > 0;
+                    if !active {
+                        cached.dirty = true;
+                        return None;
+                    }
+                    Some(cached.clone())
+                })
                 .collect::<Vec<_>>()
         };
 
         for cached in affected {
+            if cached.topic.uses_summary_live_overlay()
+                && let BroadcastPayload::DashboardActivityLive { snapshot } = &payload
+            {
+                if let Err(err) = self
+                    .apply_summary_live_overlay(&cached.topic, snapshot.as_ref().clone())
+                    .await
+                {
+                    warn!(
+                        ?err,
+                        topic = %cached.topic.name(),
+                        "failed to apply summary live overlay"
+                    );
+                }
+                continue;
+            }
+
+            if cached.topic.uses_summary_topic_refresh()
+                && let BroadcastPayload::Records { records } = &payload
+            {
+                if records
+                    .iter()
+                    .any(crate::app_state::runtime_store_record_is_terminal)
+                    && let Err(err) = self
+                        .schedule_summary_topic_refresh(
+                            state.clone(),
+                            cached.topic.clone(),
+                            records.len() as u64,
+                        )
+                        .await
+                {
+                    warn!(
+                        ?err,
+                        topic = %cached.topic.name(),
+                        "failed to schedule summary topic refresh"
+                    );
+                }
+                continue;
+            }
+
             if cached.topic.uses_dashboard_activity_live_overlay()
                 && let BroadcastPayload::DashboardActivityLive { snapshot } = &payload
                 && let Err(err) = self
                     .apply_dashboard_activity_live_overlay(
                         state.clone(),
                         &cached.topic,
-                        snapshot.clone(),
+                        snapshot.as_ref().clone(),
                     )
                     .await
             {
@@ -760,6 +1006,7 @@ impl SubscriptionHub {
                 invalidate_dashboard_activity_snapshot_cache(
                     state.dashboard_activity_snapshot_cache.as_ref(),
                     &selection,
+                    "scheduled_terminal_refresh",
                 )
                 .await;
                 if let Err(err) = hub.refresh_topic(state.clone(), topic.clone(), true).await {
@@ -784,9 +1031,237 @@ impl SubscriptionHub {
         invalidate_dashboard_activity_snapshot_cache(
             state.dashboard_activity_snapshot_cache.as_ref(),
             &selection,
+            "scheduled_terminal_refresh",
         )
         .await;
         self.refresh_topic(state, topic, true).await?;
+        Ok(())
+    }
+
+    async fn schedule_summary_topic_refresh(
+        &self,
+        state: Arc<AppState>,
+        topic: SubscriptionTopic,
+        event_count: u64,
+    ) -> Result<(), ApiError> {
+        let topic_key = topic.cache_key()?;
+        let delay = {
+            let mut guard = self.state.lock().await;
+            let active = guard
+                .active_subscribers
+                .get(&topic_key)
+                .copied()
+                .unwrap_or_default();
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                return Ok(());
+            };
+            if active == 0 {
+                cached.dirty = true;
+                return Ok(());
+            }
+            cached.summary_pending_event_count = cached
+                .summary_pending_event_count
+                .saturating_add(event_count.max(1));
+            if cached.summary_refresh_scheduled || cached.summary_refresh_in_flight {
+                return Ok(());
+            }
+            cached.summary_refresh_scheduled = true;
+            Duration::from_millis(
+                cached
+                    .summary_retry_backoff_ms
+                    .max(SUMMARY_TOPIC_REFRESH_DEBOUNCE.as_millis() as u64),
+            )
+        };
+
+        self.spawn_summary_topic_refresh(state, topic, delay);
+        Ok(())
+    }
+
+    fn spawn_summary_topic_refresh(
+        &self,
+        state: Arc<AppState>,
+        topic: SubscriptionTopic,
+        delay: Duration,
+    ) {
+        let hub = state.subscription_hub.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            hub.run_summary_topic_refresh(state, topic).await;
+        });
+    }
+
+    async fn run_summary_topic_refresh(&self, state: Arc<AppState>, topic: SubscriptionTopic) {
+        let Ok(topic_key) = topic.cache_key() else {
+            return;
+        };
+        let (event_count, active) = {
+            let mut guard = self.state.lock().await;
+            let active = guard
+                .active_subscribers
+                .get(&topic_key)
+                .copied()
+                .unwrap_or_default();
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                return;
+            };
+            if active == 0 {
+                cached.dirty = true;
+                cached.summary_refresh_scheduled = false;
+                cached.summary_pending_event_count = 0;
+                return;
+            }
+            cached.summary_refresh_in_flight = true;
+            let event_count = std::mem::take(&mut cached.summary_pending_event_count);
+            (event_count, active)
+        };
+
+        let started = Instant::now();
+        let result = self.refresh_topic(state.clone(), topic.clone(), true).await;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        let mut retry_delay = None;
+        let mut coalesced_event_count = event_count;
+        let mut refresh_outcome = "published";
+        {
+            let mut guard = self.state.lock().await;
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                return;
+            };
+            cached.summary_refresh_in_flight = false;
+            match result {
+                Ok(_) => {
+                    cached.summary_retry_backoff_ms = 0;
+                    if cached.summary_pending_event_count > 0 {
+                        cached.summary_refresh_scheduled = true;
+                        retry_delay = Some(SUMMARY_TOPIC_REFRESH_DEBOUNCE);
+                    } else {
+                        cached.summary_refresh_scheduled = false;
+                    }
+                }
+                Err(err) => {
+                    refresh_outcome = "retained_last_good";
+                    let backoff_ms = match cached.summary_retry_backoff_ms {
+                        0 => 500,
+                        500 => 1_000,
+                        1_000 => 2_000,
+                        _ => 5_000,
+                    };
+                    cached.summary_retry_backoff_ms = backoff_ms;
+                    cached.summary_refresh_scheduled = true;
+                    retry_delay = Some(Duration::from_millis(backoff_ms));
+                    warn!(
+                        ?err,
+                        topic = %topic.name(),
+                        refresh_outcome,
+                        retry_backoff_ms = backoff_ms,
+                        last_good_age_ms = cached.snapshot_built_at.elapsed().as_millis() as u64,
+                        "summary topic refresh failed; retaining last-good snapshot"
+                    );
+                }
+            }
+            coalesced_event_count =
+                coalesced_event_count.saturating_add(cached.summary_pending_event_count);
+        }
+        tracing::debug!(
+            topic = %topic.name(),
+            active_subscriber_count = active,
+            coalesced_event_count,
+            build_source = "summary_exact",
+            elapsed_ms,
+            refresh_outcome,
+            "summary topic refresh completed"
+        );
+        if let Some(delay) = retry_delay {
+            self.spawn_summary_topic_refresh(state, topic, delay);
+        }
+    }
+
+    async fn apply_summary_live_overlay(
+        &self,
+        topic: &SubscriptionTopic,
+        live: DashboardActivityLiveSnapshot,
+    ) -> Result<(), ApiError> {
+        let SubscriptionTopic::SummaryCurrent {
+            upstream_account_id,
+            ..
+        } = topic
+        else {
+            return Ok(());
+        };
+        let account = upstream_account_id.and_then(|account_id| {
+            live.accounts
+                .iter()
+                .find(|account| account.upstream_account_id == Some(account_id))
+        });
+        let (count, retry_count, phase_counts, wait_ms) = match account {
+            Some(account) => (
+                account.in_progress_invocation_count,
+                account.retry_invocation_count,
+                account.in_progress_phase_counts,
+                (account.in_progress_wait_sample_count > 0).then_some(
+                    account.in_progress_wait_sum_ms / account.in_progress_wait_sample_count as f64,
+                ),
+            ),
+            None if upstream_account_id.is_some() => {
+                (0, 0, InvocationPhaseCountsResponse::default(), None)
+            }
+            None => (
+                live.in_progress_invocation_count,
+                live.retry_invocation_count,
+                live.in_progress_phase_counts,
+                (live.in_progress_wait_sample_count > 0).then_some(
+                    live.in_progress_wait_sum_ms / live.in_progress_wait_sample_count as f64,
+                ),
+            ),
+        };
+
+        let topic_key = topic.cache_key()?;
+        let dispatch = {
+            let mut guard = self.state.lock().await;
+            let Some(cached) = guard.topics.get_mut(&topic_key) else {
+                return Ok(());
+            };
+            let Some(object) = cached.snapshot_payload.as_object_mut() else {
+                return Ok(());
+            };
+            let next_values = [
+                ("inProgressConversationCount", Value::from(count)),
+                ("inProgressRetryConversationCount", Value::from(retry_count)),
+                (
+                    "inProgressAvgWaitMs",
+                    wait_ms.map(Value::from).unwrap_or(Value::Null),
+                ),
+                ("inProgressPhaseCounts", serde_json::to_value(phase_counts)?),
+            ];
+            if next_values
+                .iter()
+                .all(|(key, value)| object.get(*key) == Some(value))
+            {
+                return Ok(());
+            }
+            for (key, value) in next_values {
+                set_json_field(object, key, value);
+            }
+            let payload = cached.snapshot_payload.clone();
+            let payload_bytes = serialized_len(&payload)?;
+            cached.cursor = cached.cursor.saturating_add(1);
+            cached.snapshot_bytes = payload_bytes;
+            cached.replay_events.push_back(ReplayableTopicEvent {
+                cursor: cached.cursor,
+                payload: payload.clone(),
+                bytes: payload_bytes,
+                emitted_at: Utc::now(),
+            });
+            cached.replay_bytes = cached.replay_bytes.saturating_add(payload_bytes);
+            prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
+            SubscriptionDispatchEvent {
+                topic_key: topic_key.clone(),
+                schema_epoch: cached.schema_epoch.clone(),
+                cursor: cached.cursor,
+                payload,
+                descriptor: cached.descriptor.clone(),
+            }
+        };
+        let _ = self.broadcaster.send(dispatch);
         Ok(())
     }
 
@@ -1202,6 +1677,10 @@ pub(crate) async fn topic_sse_stream(
         .iter()
         .map(SubscriptionTopic::cache_key)
         .collect::<Result<HashSet<_>, _>>()?;
+    let topic_lease = state
+        .subscription_hub
+        .register_topic_subscribers(&selected_topics)
+        .await?;
     let prepared = state
         .subscription_hub
         .prepare_connection(state.clone(), descriptors, resume)
@@ -1236,6 +1715,7 @@ pub(crate) async fn topic_sse_stream(
     );
 
     let live_stream = async_stream::stream! {
+        let _topic_lease = topic_lease;
         let _server_push_lease = server_push_lease;
         let mut last_seen = last_seen_by_topic;
         loop {
@@ -1282,6 +1762,22 @@ impl SubscriptionTopic {
             self,
             Self::DashboardActivityCurrent { range, .. } if range != "yesterday"
         )
+    }
+
+    fn uses_summary_live_overlay(&self) -> bool {
+        matches!(
+            self,
+            Self::SummaryCurrent { window, .. }
+                if !matches!(window.as_str(), "yesterday" | "previous7d")
+        )
+    }
+
+    fn uses_summary_topic_refresh(&self) -> bool {
+        self.uses_summary_live_overlay()
+    }
+
+    fn uses_dashboard_network_live_snapshot(&self) -> bool {
+        matches!(self, Self::DashboardNetworkTimeseriesWindow { .. })
     }
 
     fn from_descriptor(descriptor: &SubscriptionTopicDescriptor) -> Result<Self, ApiError> {
@@ -1650,7 +2146,24 @@ impl SubscriptionTopic {
         serde_json::to_string(&self.descriptor()).map_err(ApiError::from)
     }
 
+    fn is_closed_summary_topic(&self) -> bool {
+        matches!(
+            self,
+            Self::SummaryCurrent { window, .. }
+                if matches!(window.as_str(), "yesterday" | "previous7d")
+        )
+    }
+
     fn is_affected_by(&self, payload: &BroadcastPayload) -> bool {
+        if self.is_closed_summary_topic()
+            && matches!(
+                payload,
+                BroadcastPayload::Records { .. } | BroadcastPayload::DashboardActivityLive { .. }
+            )
+        {
+            return false;
+        }
+
         match payload {
             BroadcastPayload::Records { .. } => matches!(
                 self,
@@ -1672,13 +2185,13 @@ impl SubscriptionTopic {
                     Self::DashboardActivityCurrent { .. }
                         | Self::DashboardNetworkTimeseriesWindow { .. }
                         | Self::DashboardNetworkRecentCurrent
+                        | Self::SummaryCurrent { .. }
                 )
             }
             BroadcastPayload::PoolAttempts { invoke_id, .. } => matches!(
                 self,
                 Self::InvocationPoolAttempts { invoke_id: current } if current == invoke_id
             ),
-            BroadcastPayload::Summary { .. } => matches!(self, Self::SummaryCurrent { .. }),
             BroadcastPayload::Quota { .. } => matches!(self, Self::QuotaCurrent),
             BroadcastPayload::Version { .. } => matches!(self, Self::AppVersion),
         }
@@ -2181,6 +2694,163 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn inactive_topics_are_marked_dirty_and_rebuilt_on_reconnect() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = SubscriptionHub::new();
+        let topic = SubscriptionTopic::AppVersion;
+        let descriptor = topic.descriptor();
+        let topic_key = topic.cache_key().expect("topic key");
+
+        hub.prepare_connection(state.clone(), vec![descriptor.clone()], Vec::new())
+            .await
+            .expect("prepare initial app version topic");
+        hub.handle_internal_broadcast(
+            state.clone(),
+            BroadcastPayload::Version {
+                version: "next".to_string(),
+            },
+        )
+        .await;
+        {
+            let guard = hub.state.lock().await;
+            assert!(
+                guard
+                    .topics
+                    .get(&topic_key)
+                    .is_some_and(|cached| cached.dirty)
+            );
+        }
+
+        let prepared = hub
+            .prepare_connection(state, vec![descriptor], Vec::new())
+            .await
+            .expect("reconnect should rebuild dirty topic");
+        assert_eq!(prepared.initial.len(), 1);
+        let guard = hub.state.lock().await;
+        assert!(!guard.topics.get(&topic_key).expect("cached topic").dirty);
+        assert!(
+            guard
+                .topics
+                .get(&topic_key)
+                .expect("cached topic")
+                .replay_events
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_live_overlay_updates_only_changed_fields() {
+        let hub = Arc::new(SubscriptionHub::new());
+        let topic = summary_topic();
+        let topic_key = topic.cache_key().expect("topic key");
+        let mut cached = seeded_cached_topic(topic.clone(), &[], Utc::now());
+        cached.snapshot_payload = json!({
+            "inProgressConversationCount": 0,
+            "inProgressRetryConversationCount": 0,
+            "inProgressAvgWaitMs": null,
+            "inProgressPhaseCounts": {"queued": 0, "requesting": 0, "responding": 0}
+        });
+        hub.state.lock().await.topics.insert(topic_key, cached);
+        let mut receiver = hub.subscribe();
+        let live = DashboardActivityLiveSnapshot {
+            revision: 1,
+            generated_at: "2026-07-24T00:00:00.000Z".to_string(),
+            in_progress_invocation_count: 2,
+            in_progress_phase_counts: InvocationPhaseCountsResponse {
+                queued: 1,
+                requesting: 1,
+                responding: 0,
+            },
+            retry_invocation_count: 1,
+            in_progress_wait_sum_ms: 80.0,
+            in_progress_wait_sample_count: 2,
+            network_live_bucket: None,
+            network_realtime_rate: None,
+            accounts: Vec::new(),
+        };
+
+        hub.apply_summary_live_overlay(&topic, live.clone())
+            .await
+            .expect("apply summary live overlay");
+        let dispatch = receiver
+            .recv()
+            .await
+            .expect("summary overlay should dispatch a changed payload");
+        assert_eq!(dispatch.payload["inProgressConversationCount"], json!(2));
+        assert_eq!(
+            dispatch.payload["inProgressRetryConversationCount"],
+            json!(1)
+        );
+        assert_eq!(dispatch.payload["inProgressAvgWaitMs"], json!(40.0));
+
+        hub.apply_summary_live_overlay(&topic, live)
+            .await
+            .expect("reapply summary live overlay");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), receiver.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn closed_summary_topics_do_not_keep_live_snapshot_worker_active() {
+        let hub = Arc::new(SubscriptionHub::new());
+        let closed_topic = SubscriptionTopic::SummaryCurrent {
+            window: "previous7d".to_string(),
+            time_zone: "Asia/Shanghai".to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let closed_key = closed_topic.cache_key().expect("closed topic key");
+        hub.state.lock().await.topics.insert(
+            closed_key,
+            seeded_cached_topic(closed_topic, &[], Utc::now()),
+        );
+        let _closed_lease = hub.register_test_topic_name("stats.summary.current").await;
+
+        assert!(!hub.has_active_dashboard_activity_live_topic().await);
+        assert!(!hub.has_active_dashboard_activity_live_topic_sync());
+
+        let open_topic = summary_topic();
+        let open_key = open_topic.cache_key().expect("open topic key");
+        hub.state
+            .lock()
+            .await
+            .topics
+            .insert(open_key, seeded_cached_topic(open_topic, &[], Utc::now()));
+        let _open_lease = hub.register_test_topic_name("stats.summary.current").await;
+
+        assert!(hub.has_active_dashboard_activity_live_topic().await);
+        assert!(hub.has_active_dashboard_activity_live_topic_sync());
+    }
+
+    #[tokio::test]
+    async fn network_timeseries_topics_keep_live_snapshot_worker_active() {
+        let hub = Arc::new(SubscriptionHub::new());
+        let topic = SubscriptionTopic::DashboardNetworkTimeseriesWindow {
+            range: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            upstream_account_id: None,
+        };
+        let topic_key = topic.cache_key().expect("network topic key");
+        hub.state
+            .lock()
+            .await
+            .topics
+            .insert(topic_key, seeded_cached_topic(topic, &[], Utc::now()));
+        let _lease = hub
+            .register_test_topic_name("dashboard.network-timeseries.window")
+            .await;
+
+        assert!(hub.has_active_dashboard_activity_live_topic().await);
+        assert!(hub.has_active_dashboard_activity_live_topic_sync());
+    }
+
     fn seeded_cached_topic(
         topic: SubscriptionTopic,
         cursors: &[u64],
@@ -2207,6 +2877,11 @@ mod tests {
             cursor,
             snapshot_built_at: Instant::now(),
             refresh_scheduled: false,
+            dirty: false,
+            summary_refresh_scheduled: false,
+            summary_refresh_in_flight: false,
+            summary_pending_event_count: 0,
+            summary_retry_backoff_ms: 0,
             snapshot_payload: json!({ "cursor": cursor }),
             snapshot_bytes: 32,
             replay_events,
@@ -2261,16 +2936,18 @@ mod tests {
         }));
         assert!(
             topic.is_affected_by(&BroadcastPayload::DashboardActivityLive {
-                snapshot: DashboardActivityLiveSnapshot {
+                snapshot: Box::new(DashboardActivityLiveSnapshot {
                     revision: 1,
                     generated_at: "2026-07-20T00:00:00.000Z".to_string(),
                     in_progress_invocation_count: 0,
                     in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
                     retry_invocation_count: 0,
+                    in_progress_wait_sum_ms: 0.0,
+                    in_progress_wait_sample_count: 0,
                     network_live_bucket: None,
                     network_realtime_rate: None,
                     accounts: Vec::new(),
-                },
+                }),
             })
         );
     }
@@ -2840,7 +3517,12 @@ mod tests {
             );
         }
 
-        invalidate_dashboard_activity_snapshot_cache(cache.as_ref(), &selection_a).await;
+        invalidate_dashboard_activity_snapshot_cache(
+            cache.as_ref(),
+            &selection_a,
+            "scheduled_terminal_refresh",
+        )
+        .await;
 
         rx_a.changed()
             .await
@@ -2895,6 +3577,8 @@ mod tests {
             in_progress_invocation_count: 0,
             in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
             retry_invocation_count: 0,
+            in_progress_wait_sum_ms: 0.0,
+            in_progress_wait_sample_count: 0,
             network_live_bucket: None,
             network_realtime_rate: None,
             accounts: Vec::new(),

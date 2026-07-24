@@ -1184,6 +1184,7 @@ pub(crate) struct DashboardActivitySnapshotCacheState {
         HashMap<DashboardActivitySnapshotSelection, DashboardActivitySnapshotCacheEntry>,
     pub(crate) in_flight:
         HashMap<DashboardActivitySnapshotSelection, DashboardActivitySnapshotInFlight>,
+    pub(crate) invalidation_reasons: HashMap<DashboardActivitySnapshotSelection, &'static str>,
 }
 
 #[derive(Debug)]
@@ -1239,10 +1240,12 @@ impl Drop for DashboardActivitySnapshotFlightGuard {
 pub(crate) async fn invalidate_dashboard_activity_snapshot_cache(
     cache: &Mutex<DashboardActivitySnapshotCacheState>,
     selection: &DashboardActivitySnapshotSelection,
+    reason: &'static str,
 ) {
     let in_flight = {
         let mut state = cache.lock().await;
         state.entries.remove(selection);
+        state.invalidation_reasons.insert(selection.clone(), reason);
         state.in_flight.remove(selection)
     };
 
