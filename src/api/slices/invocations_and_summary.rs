@@ -7116,22 +7116,22 @@ pub(crate) fn compute_upstream_account_activity_tail_rate(
 }
 
 #[derive(Debug, FromRow)]
-struct UpstreamAccountActivityAggregateRow {
-    upstream_account_id: Option<i64>,
+pub(crate) struct UpstreamAccountActivityAggregateRow {
+    pub(crate) upstream_account_id: Option<i64>,
     latest_conversation_created_at: Option<String>,
     last_invocation_at: Option<String>,
-    request_count: i64,
-    success_count: i64,
+    pub(crate) request_count: i64,
+    pub(crate) success_count: i64,
     failure_count: i64,
     non_success_count: i64,
-    total_tokens: i64,
+    pub(crate) total_tokens: i64,
     success_tokens: i64,
     non_success_tokens: i64,
     failure_tokens: i64,
     failure_cost: f64,
     non_success_cost: f64,
     cache_input_tokens: i64,
-    total_cost: f64,
+    pub(crate) total_cost: f64,
     first_response_byte_total_sample_count: i64,
     first_response_byte_total_sum_ms: f64,
     total_latency_sample_count: i64,
@@ -7668,6 +7668,27 @@ async fn query_live_upstream_account_activity_aggregate_rows(
     use_attempt_fallback: bool,
     exclude_invocation_ids: DashboardActivityExcludedInvocationIdsFilter<'_>,
 ) -> Result<Vec<UpstreamAccountActivityAggregateRow>, ApiError> {
+    query_live_upstream_account_activity_aggregate_rows_with_telemetry(
+        pool,
+        source_scope,
+        range,
+        use_attempt_fallback,
+        exclude_invocation_ids,
+        "internal",
+        "legacy_exact",
+    )
+    .await
+}
+
+async fn query_live_upstream_account_activity_aggregate_rows_with_telemetry(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    use_attempt_fallback: bool,
+    exclude_invocation_ids: DashboardActivityExcludedInvocationIdsFilter<'_>,
+    route: &'static str,
+    purpose: &'static str,
+) -> Result<Vec<UpstreamAccountActivityAggregateRow>, ApiError> {
     let started_at = Instant::now();
     let upstream_account_id_sql = if use_attempt_fallback {
         invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations")
@@ -7827,8 +7848,17 @@ async fn query_live_upstream_account_activity_aggregate_rows(
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
     if elapsed_ms >= 1_000 {
         tracing::warn!(
+            route,
+            builder = "account_activity_exact",
             endpoint = "/api/stats/upstream-account-activity",
             operation = "live_account_aggregate",
+            aggregation_mode = "exact_fallback",
+            purpose,
+            fallback_reason = match purpose {
+                "coverage_hole" => "v2_coverage_hole",
+                "boundary_tail" => "boundary_tail",
+                _ => "legacy_exact",
+            },
             ?source_scope,
             start = %range.start,
             end = %range.end,
@@ -7838,6 +7868,364 @@ async fn query_live_upstream_account_activity_aggregate_rows(
         );
     }
     Ok(rows)
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct AccountActivityRangeBuildTelemetry {
+    pub(crate) covered_hour_count: usize,
+    pub(crate) fallback_hour_count: usize,
+    pub(crate) boundary_tail_count: usize,
+    pub(crate) rollup_row_count: usize,
+    pub(crate) raw_fallback_range_count: usize,
+}
+
+pub(crate) struct AccountActivityRangeBuild {
+    pub(crate) rows: Vec<UpstreamAccountActivityAggregateRow>,
+    pub(crate) telemetry: AccountActivityRangeBuildTelemetry,
+}
+
+fn merge_account_activity_rows(
+    target: &mut UpstreamAccountActivityAggregateRow,
+    source: UpstreamAccountActivityAggregateRow,
+) {
+    merge_latest_optional_timestamp(
+        &mut target.latest_conversation_created_at,
+        source.latest_conversation_created_at,
+    );
+    merge_latest_optional_timestamp(&mut target.last_invocation_at, source.last_invocation_at);
+    target.request_count += source.request_count;
+    target.success_count += source.success_count;
+    target.failure_count += source.failure_count;
+    target.non_success_count += source.non_success_count;
+    target.total_tokens += source.total_tokens;
+    target.success_tokens += source.success_tokens;
+    target.non_success_tokens += source.non_success_tokens;
+    target.failure_tokens += source.failure_tokens;
+    target.failure_cost += source.failure_cost;
+    target.non_success_cost += source.non_success_cost;
+    target.cache_input_tokens += source.cache_input_tokens;
+    target.total_cost += source.total_cost;
+    target.first_response_byte_total_sample_count += source.first_response_byte_total_sample_count;
+    target.first_response_byte_total_sum_ms += source.first_response_byte_total_sum_ms;
+    target.total_latency_sample_count += source.total_latency_sample_count;
+    target.total_latency_sum_ms += source.total_latency_sum_ms;
+    merge_latest_timed_metric(
+        &mut target.latest_first_response_byte_total_at,
+        &mut target.latest_first_response_byte_total_ms,
+        source.latest_first_response_byte_total_at,
+        source.latest_first_response_byte_total_ms,
+    );
+    merge_latest_timed_metric(
+        &mut target.latest_avg_total_at,
+        &mut target.latest_avg_total_ms,
+        source.latest_avg_total_at,
+        source.latest_avg_total_ms,
+    );
+}
+
+async fn query_account_activity_v2_rollup_rows(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    bucket_epochs: &[i64],
+) -> Result<Vec<UpstreamAccountActivityAggregateRow>, ApiError> {
+    if bucket_epochs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            CASE WHEN upstream_account_id = -1 THEN NULL ELSE upstream_account_id END AS upstream_account_id,
+            activity_v2_latest_unkeyed_conversation_at AS latest_conversation_created_at,
+            activity_v2_last_invocation_at AS last_invocation_at,
+            activity_v2_request_count AS request_count,
+            activity_v2_success_count AS success_count,
+            activity_v2_failure_count AS failure_count,
+            activity_v2_non_success_count AS non_success_count,
+            activity_v2_total_tokens AS total_tokens,
+            activity_v2_success_tokens AS success_tokens,
+            activity_v2_non_success_tokens AS non_success_tokens,
+            activity_v2_failure_tokens AS failure_tokens,
+            activity_v2_failure_cost AS failure_cost,
+            activity_v2_non_success_cost AS non_success_cost,
+            activity_v2_cache_input_tokens AS cache_input_tokens,
+            activity_v2_total_cost AS total_cost,
+            activity_v2_first_response_sample_count AS first_response_byte_total_sample_count,
+            activity_v2_first_response_sum_ms AS first_response_byte_total_sum_ms,
+            activity_v2_total_latency_sample_count AS total_latency_sample_count,
+            activity_v2_total_latency_sum_ms AS total_latency_sum_ms,
+            activity_v2_latest_first_response_at AS latest_first_response_byte_total_at,
+            activity_v2_latest_first_response_ms AS latest_first_response_byte_total_ms,
+            activity_v2_latest_total_latency_at AS latest_avg_total_at,
+            activity_v2_latest_total_latency_ms AS latest_avg_total_ms
+        FROM upstream_account_stats_hourly
+        WHERE bucket_start_epoch IN (
+        "#,
+    );
+    {
+        let mut separated = query.separated(", ");
+        for bucket_epoch in bucket_epochs {
+            separated.push_bind(*bucket_epoch);
+        }
+    }
+    query.push(")");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    Ok(query
+        .build_query_as::<UpstreamAccountActivityAggregateRow>()
+        .fetch_all(pool)
+        .await?)
+}
+
+#[derive(Debug, FromRow)]
+struct AccountActivityConversationRollupRow {
+    upstream_account_id: Option<i64>,
+    latest_conversation_created_at: Option<String>,
+}
+
+async fn query_account_activity_conversation_rollup_rows(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    bucket_epochs: &[i64],
+) -> Result<Vec<AccountActivityConversationRollupRow>, ApiError> {
+    if bucket_epochs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        WITH active_keys AS (
+            SELECT DISTINCT source, upstream_account_key, upstream_account_id, prompt_cache_key
+            FROM prompt_cache_upstream_account_hourly
+            WHERE bucket_start_epoch IN (
+        "#,
+    );
+    {
+        let mut separated = query.separated(", ");
+        for bucket_epoch in bucket_epochs {
+            separated.push_bind(*bucket_epoch);
+        }
+    }
+    query.push(")");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(
+        r#"
+        ), conversation_starts AS (
+            SELECT
+                active.upstream_account_key,
+                active.upstream_account_id,
+                active.prompt_cache_key,
+                MIN(all_rows.first_seen_at) AS conversation_created_at
+            FROM active_keys AS active
+            JOIN prompt_cache_upstream_account_hourly AS all_rows
+             ON all_rows.upstream_account_key = active.upstream_account_key
+             AND all_rows.prompt_cache_key = active.prompt_cache_key
+        "#,
+    );
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND all_rows.source = active.source");
+    }
+    query.push(
+        r#"
+            GROUP BY active.upstream_account_key, active.upstream_account_id, active.prompt_cache_key
+        )
+        SELECT
+            upstream_account_id,
+            MAX(conversation_created_at) AS latest_conversation_created_at
+        FROM conversation_starts
+        GROUP BY upstream_account_key, upstream_account_id
+        "#,
+    );
+    Ok(query
+        .build_query_as::<AccountActivityConversationRollupRow>()
+        .fetch_all(pool)
+        .await?)
+}
+
+async fn load_account_activity_v2_covered_hours(
+    pool: &Pool<Sqlite>,
+    start_epoch: i64,
+    end_epoch: i64,
+) -> Result<HashSet<i64>, ApiError> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT bucket_start_epoch
+        FROM hourly_rollup_materialized_buckets
+        WHERE target = ?1
+          AND source = ?2
+          AND bucket_start_epoch >= ?3
+          AND bucket_start_epoch < ?4
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2)
+    .bind(HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE)
+    .bind(start_epoch)
+    .bind(end_epoch)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .collect())
+}
+
+pub(crate) async fn load_upstream_account_activity_range_rows(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    route: &'static str,
+) -> Result<AccountActivityRangeBuild, ApiError> {
+    let started_at = Instant::now();
+    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
+    let live_start = range.start.max(retention_cutoff);
+    if live_start >= range.end {
+        return Ok(AccountActivityRangeBuild {
+            rows: Vec::new(),
+            telemetry: AccountActivityRangeBuildTelemetry::default(),
+        });
+    }
+
+    let full_start_epoch = ceil_hour_epoch(live_start.timestamp());
+    let full_end_epoch = align_bucket_epoch(range.end.timestamp(), 3_600, 0);
+    let covered =
+        load_account_activity_v2_covered_hours(&state.pool, full_start_epoch, full_end_epoch)
+            .await?;
+    let all_full_hours = (full_start_epoch..full_end_epoch)
+        .step_by(3_600)
+        .collect::<Vec<_>>();
+    let covered_hours = all_full_hours
+        .iter()
+        .copied()
+        .filter(|hour| covered.contains(hour))
+        .collect::<Vec<_>>();
+    let uncovered_hours = all_full_hours
+        .iter()
+        .copied()
+        .filter(|hour| !covered.contains(hour))
+        .collect::<Vec<_>>();
+
+    let mut exact_ranges = Vec::new();
+    let full_start = Utc
+        .timestamp_opt(full_start_epoch, 0)
+        .single()
+        .ok_or_else(|| ApiError::from(anyhow!("invalid account activity full-hour start")))?;
+    let full_end = Utc
+        .timestamp_opt(full_end_epoch, 0)
+        .single()
+        .ok_or_else(|| ApiError::from(anyhow!("invalid account activity full-hour end")))?;
+    if full_start_epoch >= full_end_epoch {
+        push_exact_range(&mut exact_ranges, live_start, range.end)?;
+    } else {
+        push_exact_range(&mut exact_ranges, live_start, range.end.min(full_start))?;
+        push_exact_range(&mut exact_ranges, range.start.max(full_end), range.end)?;
+    }
+    let boundary_tail_count = exact_ranges.len();
+
+    let mut index = 0;
+    while index < uncovered_hours.len() {
+        let start_epoch = uncovered_hours[index];
+        let mut end_epoch = start_epoch + 3_600;
+        index += 1;
+        while index < uncovered_hours.len() && uncovered_hours[index] == end_epoch {
+            end_epoch += 3_600;
+            index += 1;
+        }
+        let start = Utc
+            .timestamp_opt(start_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid account activity fallback start")))?;
+        let end = Utc
+            .timestamp_opt(end_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid account activity fallback end")))?;
+        push_exact_range(&mut exact_ranges, start, end)?;
+    }
+
+    let rollup_rows =
+        query_account_activity_v2_rollup_rows(&state.pool, source_scope, &covered_hours).await?;
+    let rollup_row_count = rollup_rows.len();
+    let raw_fallback_range_count = exact_ranges.len();
+    let mut merged = HashMap::<Option<i64>, UpstreamAccountActivityAggregateRow>::new();
+    for row in rollup_rows {
+        match merged.entry(row.upstream_account_id) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(row);
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                merge_account_activity_rows(entry.get_mut(), row);
+            }
+        }
+    }
+    for conversation in
+        query_account_activity_conversation_rollup_rows(&state.pool, source_scope, &covered_hours)
+            .await?
+    {
+        if let Some(entry) = merged.get_mut(&conversation.upstream_account_id) {
+            merge_latest_optional_timestamp(
+                &mut entry.latest_conversation_created_at,
+                conversation.latest_conversation_created_at,
+            );
+        }
+    }
+    for (index, exact_range) in exact_ranges.into_iter().enumerate() {
+        let purpose = if index < boundary_tail_count {
+            "boundary_tail"
+        } else {
+            "coverage_hole"
+        };
+        for row in query_live_upstream_account_activity_aggregate_rows_with_telemetry(
+            &state.pool,
+            source_scope,
+            exact_range,
+            true,
+            DashboardActivityExcludedInvocationIdsFilter::None,
+            route,
+            purpose,
+        )
+        .await?
+        {
+            match merged.entry(row.upstream_account_id) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(row);
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    merge_account_activity_rows(entry.get_mut(), row);
+                }
+            }
+        }
+    }
+
+    let telemetry = AccountActivityRangeBuildTelemetry {
+        covered_hour_count: covered_hours.len(),
+        fallback_hour_count: uncovered_hours.len(),
+        boundary_tail_count,
+        rollup_row_count,
+        raw_fallback_range_count,
+    };
+    tracing::info!(
+        route,
+        builder = "account_activity_hourly_v2",
+        aggregation_mode = if uncovered_hours.is_empty() {
+            "rollup_plus_boundary"
+        } else {
+            "partial_rollup_with_exact_fallback"
+        },
+        covered_hour_count = telemetry.covered_hour_count,
+        fallback_hour_count = telemetry.fallback_hour_count,
+        boundary_tail_count = telemetry.boundary_tail_count,
+        rollup_row_count = telemetry.rollup_row_count,
+        raw_fallback_range_count = telemetry.raw_fallback_range_count,
+        fallback_reason = if uncovered_hours.is_empty() {
+            "none"
+        } else {
+            "v2_coverage_hole"
+        },
+        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "built upstream-account activity range"
+    );
+    Ok(AccountActivityRangeBuild {
+        rows: merged.into_values().collect(),
+        telemetry,
+    })
 }
 
 async fn query_live_upstream_account_prompt_cache_created_at_rows(
@@ -9845,6 +10233,8 @@ struct DashboardActivitySnapshotCacheOutcome {
     cache_entry_age_ms: u64,
     cache_entry_count: usize,
     in_flight_count: usize,
+    refresh_reason: &'static str,
+    selection_fingerprint: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -9852,6 +10242,7 @@ struct DashboardActivityBuildTelemetry {
     preview_read_mode: &'static str,
     candidate_preview_id_count: usize,
     hydrated_preview_row_count: usize,
+    account_aggregation: AccountActivityRangeBuildTelemetry,
 }
 
 impl Default for DashboardActivityBuildTelemetry {
@@ -9860,6 +10251,7 @@ impl Default for DashboardActivityBuildTelemetry {
             preview_read_mode: "none",
             candidate_preview_id_count: 0,
             hydrated_preview_row_count: 0,
+            account_aggregation: AccountActivityRangeBuildTelemetry::default(),
         }
     }
 }
@@ -11779,49 +12171,38 @@ async fn load_dashboard_activity_account_build_result(
     } else {
         None
     };
-    for row in query_live_upstream_account_activity_aggregate_rows(
-        &state.pool,
-        source_scope,
-        range,
-        true,
-        DashboardActivityExcludedInvocationIdsFilter::None,
-    )
-    .await?
-    {
+    let account_range_build = if range_name == "yesterday" {
+        AccountActivityRangeBuild {
+            rows: query_live_upstream_account_activity_aggregate_rows(
+                &state.pool,
+                source_scope,
+                range,
+                true,
+                DashboardActivityExcludedInvocationIdsFilter::None,
+            )
+            .await?,
+            telemetry: AccountActivityRangeBuildTelemetry {
+                raw_fallback_range_count: 1,
+                ..AccountActivityRangeBuildTelemetry::default()
+            },
+        }
+    } else {
+        load_upstream_account_activity_range_rows(
+            state,
+            source_scope,
+            range,
+            if builder_kind == DashboardActivityAccountBuilderKind::UpstreamAccount {
+                "upstream_account"
+            } else {
+                "dashboard"
+            },
+        )
+        .await?
+    };
+    let account_aggregation_telemetry = account_range_build.telemetry;
+    for row in account_range_build.rows {
         let entry = account_activity.entry(row.upstream_account_id).or_default();
-        merge_latest_optional_timestamp(
-            &mut entry.latest_conversation_created_at,
-            row.latest_conversation_created_at,
-        );
-        merge_latest_optional_timestamp(&mut entry.last_invocation_at, row.last_invocation_at);
-        entry.request_count += row.request_count;
-        entry.success_count += row.success_count;
-        entry.failure_count += row.failure_count;
-        entry.non_success_count += row.non_success_count;
-        entry.total_tokens += row.total_tokens;
-        entry.success_tokens += row.success_tokens;
-        entry.non_success_tokens += row.non_success_tokens;
-        entry.failure_tokens += row.failure_tokens;
-        entry.failure_cost += row.failure_cost;
-        entry.non_success_cost += row.non_success_cost;
-        entry.cache_input_tokens += row.cache_input_tokens;
-        entry.total_cost += row.total_cost;
-        entry.first_response_byte_total_sample_count += row.first_response_byte_total_sample_count;
-        entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
-        entry.total_latency_sample_count += row.total_latency_sample_count;
-        entry.total_latency_sum_ms += row.total_latency_sum_ms;
-        merge_latest_timed_metric(
-            &mut entry.latest_first_response_byte_total_at,
-            &mut entry.latest_first_response_byte_total_ms,
-            row.latest_first_response_byte_total_at,
-            row.latest_first_response_byte_total_ms,
-        );
-        merge_latest_timed_metric(
-            &mut entry.latest_avg_total_at,
-            &mut entry.latest_avg_total_ms,
-            row.latest_avg_total_at,
-            row.latest_avg_total_ms,
-        );
+        merge_upstream_account_activity_aggregate_row(entry, &row);
     }
     let usage_breakdown_build = load_usage_breakdown_rows_for_range(
         state,
@@ -11964,7 +12345,10 @@ async fn load_dashboard_activity_account_build_result(
             }
         }
     }
-    let mut build_telemetry = DashboardActivityBuildTelemetry::default();
+    let mut build_telemetry = DashboardActivityBuildTelemetry {
+        account_aggregation: account_aggregation_telemetry,
+        ..DashboardActivityBuildTelemetry::default()
+    };
     for row in
         query_live_upstream_account_activity_rate_rows(&state.pool, source_scope, range).await?
     {
@@ -11995,6 +12379,7 @@ async fn load_dashboard_activity_account_build_result(
             preview_read_mode: "bounded_per_account",
             candidate_preview_id_count: hydrated_rows.candidate_preview_id_count,
             hydrated_preview_row_count: hydrated_rows.hydrated_preview_row_count,
+            account_aggregation: account_aggregation_telemetry,
         };
         let mut recent_rows_by_account =
             HashMap::<Option<i64>, Vec<PromptCacheConversationInvocationPreviewResponse>>::new();
@@ -12168,6 +12553,8 @@ async fn load_dashboard_activity_snapshot_cached(
                 cache_entry_age_ms: 0,
                 cache_entry_count: 0,
                 in_flight_count: 0,
+                refresh_reason: "exact_uncached",
+                selection_fingerprint: 0,
             },
         ));
     }
@@ -12185,14 +12572,20 @@ async fn load_dashboard_activity_snapshot_cached(
     );
     let mut waited_on_in_flight = false;
     let mut max_waiter_count = 0_usize;
+    let mut saw_expired_entry = false;
     let cache_ttl = Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS);
     let cache_ttl_ms = DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS * 1_000;
+    let selection_fingerprint = dashboard_activity_selection_fingerprint(&selection);
 
     loop {
         let mut wait_on: Option<tokio::sync::watch::Receiver<bool>> = None;
         let mut flight_guard: Option<DashboardActivitySnapshotFlightGuard> = None;
         {
             let mut cache = state.dashboard_activity_snapshot_cache.lock().await;
+            saw_expired_entry |= cache
+                .entries
+                .get(&selection)
+                .is_some_and(|entry| entry.cached_at.elapsed() > cache_ttl);
             cache
                 .entries
                 .retain(|_, entry| entry.cached_at.elapsed() <= cache_ttl);
@@ -12217,6 +12610,8 @@ async fn load_dashboard_activity_snapshot_cached(
                         cache_entry_age_ms,
                         cache_entry_count,
                         in_flight_count,
+                        refresh_reason: "within_ttl",
+                        selection_fingerprint,
                     },
                 ));
             }
@@ -12296,6 +12691,12 @@ async fn load_dashboard_activity_snapshot_cached(
                     cache_entry_age_ms: 0,
                     cache_entry_count,
                     in_flight_count,
+                    refresh_reason: if saw_expired_entry {
+                        "ttl_expired"
+                    } else {
+                        "cache_absent_or_invalidated"
+                    },
+                    selection_fingerprint,
                 },
             )
         });
@@ -12475,10 +12876,20 @@ pub(crate) async fn fetch_dashboard_activity(
             cache_entry_age_ms = cache_outcome.cache_entry_age_ms,
             cache_entry_count = cache_outcome.cache_entry_count,
             in_flight_count = cache_outcome.in_flight_count,
+            refresh_reason = cache_outcome.refresh_reason,
+            invalidation_reason = if cache_outcome.refresh_reason == "cache_absent_or_invalidated" { "possible_explicit_invalidation" } else { "none" },
+            selection_fingerprint = cache_outcome.selection_fingerprint,
+            base_snapshot_age_ms = cache_outcome.cache_entry_age_ms,
             live_overlay_elapsed_ms,
             preview_read_mode = build_telemetry.preview_read_mode,
             candidate_preview_id_count = build_telemetry.candidate_preview_id_count,
             hydrated_preview_row_count = build_telemetry.hydrated_preview_row_count,
+            aggregation_mode = if build_telemetry.account_aggregation.fallback_hour_count == 0 { "rollup_plus_boundary" } else { "partial_rollup_with_exact_fallback" },
+            covered_hour_count = build_telemetry.account_aggregation.covered_hour_count,
+            fallback_hour_count = build_telemetry.account_aggregation.fallback_hour_count,
+            boundary_tail_count = build_telemetry.account_aggregation.boundary_tail_count,
+            rollup_row_count = build_telemetry.account_aggregation.rollup_row_count,
+            raw_fallback_range_count = build_telemetry.account_aggregation.raw_fallback_range_count,
             model_performance_available = response.summary.model_performance.available,
             elapsed_ms,
             "dashboard activity snapshot exceeded slow-path threshold"
@@ -12503,10 +12914,20 @@ pub(crate) async fn fetch_dashboard_activity(
             cache_entry_age_ms = cache_outcome.cache_entry_age_ms,
             cache_entry_count = cache_outcome.cache_entry_count,
             in_flight_count = cache_outcome.in_flight_count,
+            refresh_reason = cache_outcome.refresh_reason,
+            invalidation_reason = if cache_outcome.refresh_reason == "cache_absent_or_invalidated" { "possible_explicit_invalidation" } else { "none" },
+            selection_fingerprint = cache_outcome.selection_fingerprint,
+            base_snapshot_age_ms = cache_outcome.cache_entry_age_ms,
             live_overlay_elapsed_ms,
             preview_read_mode = build_telemetry.preview_read_mode,
             candidate_preview_id_count = build_telemetry.candidate_preview_id_count,
             hydrated_preview_row_count = build_telemetry.hydrated_preview_row_count,
+            aggregation_mode = if build_telemetry.account_aggregation.fallback_hour_count == 0 { "rollup_plus_boundary" } else { "partial_rollup_with_exact_fallback" },
+            covered_hour_count = build_telemetry.account_aggregation.covered_hour_count,
+            fallback_hour_count = build_telemetry.account_aggregation.fallback_hour_count,
+            boundary_tail_count = build_telemetry.account_aggregation.boundary_tail_count,
+            rollup_row_count = build_telemetry.account_aggregation.rollup_row_count,
+            raw_fallback_range_count = build_telemetry.account_aggregation.raw_fallback_range_count,
             model_performance_available = response.summary.model_performance.available,
             elapsed_ms,
             "dashboard activity snapshot completed"
@@ -13217,6 +13638,12 @@ pub(crate) async fn fetch_upstream_account_activity(
             preview_read_mode = build.build_telemetry.preview_read_mode,
             candidate_preview_id_count = build.build_telemetry.candidate_preview_id_count,
             hydrated_preview_row_count = build.build_telemetry.hydrated_preview_row_count,
+            aggregation_mode = if build.build_telemetry.account_aggregation.fallback_hour_count == 0 { "rollup_plus_boundary" } else { "partial_rollup_with_exact_fallback" },
+            covered_hour_count = build.build_telemetry.account_aggregation.covered_hour_count,
+            fallback_hour_count = build.build_telemetry.account_aggregation.fallback_hour_count,
+            boundary_tail_count = build.build_telemetry.account_aggregation.boundary_tail_count,
+            rollup_row_count = build.build_telemetry.account_aggregation.rollup_row_count,
+            raw_fallback_range_count = build.build_telemetry.account_aggregation.raw_fallback_range_count,
             elapsed_ms,
             "upstream account activity exceeded slow-path threshold"
         );
@@ -13231,6 +13658,12 @@ pub(crate) async fn fetch_upstream_account_activity(
             preview_read_mode = build.build_telemetry.preview_read_mode,
             candidate_preview_id_count = build.build_telemetry.candidate_preview_id_count,
             hydrated_preview_row_count = build.build_telemetry.hydrated_preview_row_count,
+            aggregation_mode = if build.build_telemetry.account_aggregation.fallback_hour_count == 0 { "rollup_plus_boundary" } else { "partial_rollup_with_exact_fallback" },
+            covered_hour_count = build.build_telemetry.account_aggregation.covered_hour_count,
+            fallback_hour_count = build.build_telemetry.account_aggregation.fallback_hour_count,
+            boundary_tail_count = build.build_telemetry.account_aggregation.boundary_tail_count,
+            rollup_row_count = build.build_telemetry.account_aggregation.rollup_row_count,
+            raw_fallback_range_count = build.build_telemetry.account_aggregation.raw_fallback_range_count,
             elapsed_ms,
             "upstream account activity completed"
         );

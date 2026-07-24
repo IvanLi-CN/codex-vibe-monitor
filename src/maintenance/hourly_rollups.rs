@@ -69,6 +69,7 @@ async fn sync_hourly_rollups_from_live_tables_once(pool: &Pool<Sqlite>) -> Resul
             break;
         }
     }
+    repair_live_invocation_account_activity_v2_once(pool).await?;
     Ok(())
 }
 
@@ -1104,6 +1105,7 @@ async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
             HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
             HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
             HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2,
             HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
             HOURLY_ROLLUP_TARGET_STICKY_KEYS,
         ] {
@@ -1118,7 +1120,13 @@ async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
                 pending_targets.push(target);
             }
         }
-        if can_shortcut_legacy_materialized_upstream_account_targets(&pending_targets) {
+        let account_activity_v2_pending =
+            pending_targets.contains(&HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2);
+        pending_targets
+            .retain(|target| *target != HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2);
+        if !account_activity_v2_pending
+            && can_shortcut_legacy_materialized_upstream_account_targets(&pending_targets)
+        {
             mark_materialized_upstream_account_archive_replayed_tx(tx, &archive_file.file_path)
                 .await?;
             mark_archive_batch_historical_rollups_materialized_tx(
@@ -1129,7 +1137,7 @@ async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
             .await?;
             continue;
         }
-        if pending_targets.is_empty() {
+        if pending_targets.is_empty() && !account_activity_v2_pending {
             mark_archive_batch_historical_rollups_materialized_tx(
                 tx,
                 HOURLY_ROLLUP_DATASET_INVOCATIONS,
@@ -1176,6 +1184,12 @@ async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
                 &archive_file.file_path,
             )
             .await?;
+            delete_hourly_rollup_archive_progress_tx(
+                tx,
+                INVOCATION_ACCOUNT_ACTIVITY_V2_ARCHIVE_PROGRESS_DATASET,
+                &archive_file.file_path,
+            )
+            .await?;
             continue;
         }
         let temp_path = PathBuf::from(format!(
@@ -1216,45 +1230,92 @@ async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
             }
         }
 
-        if pending_targets.is_empty() && blocked_targets.is_empty() {
-            archive_pool.close().await;
-            drop(temp_cleanup);
-            delete_hourly_rollup_archive_progress_tx(
+        if account_activity_v2_pending {
+            let account_activity_v2_cursor = load_hourly_rollup_archive_progress_tx(
                 tx,
-                INVOCATION_USAGE_BREAKDOWN_ARCHIVE_PROGRESS_DATASET,
+                INVOCATION_ACCOUNT_ACTIVITY_V2_ARCHIVE_PROGRESS_DATASET,
                 &archive_file.file_path,
             )
             .await?;
-            mark_archive_batch_historical_rollups_materialized_tx(
+            let replay = replay_invocation_archive_rows_into_hourly_rollups_tx_with_budget(
                 tx,
+                &archive_pool,
+                account_activity_v2_cursor,
+                &[HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2],
+                started_at,
+                max_elapsed,
+            )
+            .await?;
+            if replay.outcome == HistoricalRollupArchiveReplayOutcome::HitBudget {
+                if replay.cursor_id > account_activity_v2_cursor {
+                    save_hourly_rollup_archive_progress_tx(
+                        tx,
+                        INVOCATION_ACCOUNT_ACTIVITY_V2_ARCHIVE_PROGRESS_DATASET,
+                        &archive_file.file_path,
+                        replay.cursor_id,
+                    )
+                    .await?;
+                }
+                archive_pool.close().await;
+                summary.budget_consumed_batches += 1;
+                std::mem::forget(temp_cleanup);
+                break;
+            }
+            delete_hourly_rollup_archive_progress_tx(
+                tx,
+                INVOCATION_ACCOUNT_ACTIVITY_V2_ARCHIVE_PROGRESS_DATASET,
+                &archive_file.file_path,
+            )
+            .await?;
+            mark_hourly_rollup_archive_replayed_tx(
+                tx,
+                HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2,
                 HOURLY_ROLLUP_DATASET_INVOCATIONS,
                 &archive_file.file_path,
             )
             .await?;
-            continue;
+            tracing::debug!(
+                archive_replay_target = HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2,
+                file_path = archive_file.file_path,
+                materialized_batch_count = summary.materialized_batches,
+                blocked_target_count = blocked_targets.len(),
+                pending_target_count = pending_targets.len(),
+                "materialized account activity v2 archive rollup"
+            );
         }
+
         if pending_targets.is_empty() {
             archive_pool.close().await;
             drop(temp_cleanup);
-            delete_hourly_rollup_archive_progress_tx(
-                tx,
-                HOURLY_ROLLUP_DATASET_INVOCATIONS,
-                &archive_file.file_path,
-            )
-            .await?;
-            summary.blocked_batches += 1;
             summary.budget_consumed_batches += 1;
-            warn!(
-                dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
-                file_path = archive_file.file_path,
-                legacy_pruned_payload_mode = LEGACY_PRUNED_PAYLOAD_MODE_BLOCKED_PAYLOAD_REQUIRED,
-                archive_replay_target = "none",
-                pending_target_count = 0_usize,
-                blocked_target_count = blocked_targets.len(),
-                materialized_batch_count = summary.materialized_batches,
-                blocked_targets = ?blocked_targets,
-                "legacy archive batch contains pruned success details; keeping historical rollup materialization pending for keyed conversation targets"
-            );
+            if blocked_targets.is_empty() {
+                mark_archive_batch_historical_rollups_materialized_tx(
+                    tx,
+                    HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                    &archive_file.file_path,
+                )
+                .await?;
+                summary.materialized_batches += 1;
+            } else {
+                summary.blocked_batches += 1;
+                delete_hourly_rollup_archive_progress_tx(
+                    tx,
+                    HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                    &archive_file.file_path,
+                )
+                .await?;
+                warn!(
+                    dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                    file_path = archive_file.file_path,
+                    legacy_pruned_payload_mode =
+                        LEGACY_PRUNED_PAYLOAD_MODE_BLOCKED_PAYLOAD_REQUIRED,
+                    archive_replay_target = HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2,
+                    pending_target_count = 0_usize,
+                    blocked_target_count = blocked_targets.len(),
+                    blocked_targets = ?blocked_targets,
+                    "legacy archive account activity replay completed; keyed targets remain blocked"
+                );
+            }
             continue;
         }
 

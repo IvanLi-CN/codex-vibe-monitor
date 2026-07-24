@@ -2221,6 +2221,28 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             first_response_byte_total_sum_ms REAL NOT NULL DEFAULT 0,
             first_response_byte_total_max_ms REAL NOT NULL DEFAULT 0,
             first_response_byte_total_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+            activity_v2_request_count INTEGER NOT NULL DEFAULT 0,
+            activity_v2_success_count INTEGER NOT NULL DEFAULT 0,
+            activity_v2_failure_count INTEGER NOT NULL DEFAULT 0,
+            activity_v2_non_success_count INTEGER NOT NULL DEFAULT 0,
+            activity_v2_total_tokens INTEGER NOT NULL DEFAULT 0,
+            activity_v2_success_tokens INTEGER NOT NULL DEFAULT 0,
+            activity_v2_non_success_tokens INTEGER NOT NULL DEFAULT 0,
+            activity_v2_failure_tokens INTEGER NOT NULL DEFAULT 0,
+            activity_v2_failure_cost REAL NOT NULL DEFAULT 0,
+            activity_v2_non_success_cost REAL NOT NULL DEFAULT 0,
+            activity_v2_cache_input_tokens INTEGER NOT NULL DEFAULT 0,
+            activity_v2_total_cost REAL NOT NULL DEFAULT 0,
+            activity_v2_first_response_sample_count INTEGER NOT NULL DEFAULT 0,
+            activity_v2_first_response_sum_ms REAL NOT NULL DEFAULT 0,
+            activity_v2_total_latency_sample_count INTEGER NOT NULL DEFAULT 0,
+            activity_v2_total_latency_sum_ms REAL NOT NULL DEFAULT 0,
+            activity_v2_last_invocation_at TEXT,
+            activity_v2_latest_unkeyed_conversation_at TEXT,
+            activity_v2_latest_first_response_at TEXT,
+            activity_v2_latest_first_response_ms REAL,
+            activity_v2_latest_total_latency_at TEXT,
+            activity_v2_latest_total_latency_ms REAL,
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (bucket_start_epoch, source, upstream_account_id)
         )
@@ -2239,6 +2261,62 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     ] {
         if !upstream_account_stats_hourly_columns.contains(column) {
             added_upstream_account_stats_columns = true;
+            let statement =
+                format!("ALTER TABLE upstream_account_stats_hourly ADD COLUMN {column} {ty}");
+            sqlx::query(&statement)
+                .execute(pool)
+                .await
+                .with_context(|| {
+                    format!("failed to add upstream_account_stats_hourly column {column}")
+                })?;
+        }
+    }
+    for (column, ty) in [
+        ("activity_v2_request_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("activity_v2_success_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("activity_v2_failure_count", "INTEGER NOT NULL DEFAULT 0"),
+        (
+            "activity_v2_non_success_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("activity_v2_total_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("activity_v2_success_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        (
+            "activity_v2_non_success_tokens",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("activity_v2_failure_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("activity_v2_failure_cost", "REAL NOT NULL DEFAULT 0"),
+        ("activity_v2_non_success_cost", "REAL NOT NULL DEFAULT 0"),
+        (
+            "activity_v2_cache_input_tokens",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("activity_v2_total_cost", "REAL NOT NULL DEFAULT 0"),
+        (
+            "activity_v2_first_response_sample_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "activity_v2_first_response_sum_ms",
+            "REAL NOT NULL DEFAULT 0",
+        ),
+        (
+            "activity_v2_total_latency_sample_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "activity_v2_total_latency_sum_ms",
+            "REAL NOT NULL DEFAULT 0",
+        ),
+        ("activity_v2_last_invocation_at", "TEXT"),
+        ("activity_v2_latest_unkeyed_conversation_at", "TEXT"),
+        ("activity_v2_latest_first_response_at", "TEXT"),
+        ("activity_v2_latest_first_response_ms", "REAL"),
+        ("activity_v2_latest_total_latency_at", "TEXT"),
+        ("activity_v2_latest_total_latency_ms", "REAL"),
+    ] {
+        if !upstream_account_stats_hourly_columns.contains(column) {
             let statement =
                 format!("ALTER TABLE upstream_account_stats_hourly ADD COLUMN {column} {ty}");
             sqlx::query(&statement)
