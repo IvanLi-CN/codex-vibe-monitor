@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.47.8",
+  "base_stable_version": "2.47.7",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-24T07:17:07Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.47.8",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "65aadb379686c8ddcfcd945b7ac4fa3c4849cda2",
+  "pr_number": 691,
+  "pr_title": "feat(worktree): auto-restore dependencies",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.47.8",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.47.8",
+  "target_sha": "b8721383c6bf0681da25471631f8386ec3e153b0",
+  "type_label": "type:patch"
+}
