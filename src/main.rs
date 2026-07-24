@@ -343,6 +343,7 @@ const PROXY_FAILURE_INVOCATION_INTERRUPTED: &str = "proxy_interrupted";
 const PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED: &str = "pool_attempt_interrupted";
 const PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED: &str = "upstream_response_failed";
 const UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED: &str = "server_is_overloaded";
+const UPSTREAM_ERROR_CODE_RATE_LIMIT_EXCEEDED: &str = "rate_limit_exceeded";
 const PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT: &str = "pool_no_available_account";
 const PROXY_FAILURE_POOL_ROUTING_BLOCKED: &str = "pool_routing_blocked";
 const PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED: &str = "pool_assigned_account_blocked";

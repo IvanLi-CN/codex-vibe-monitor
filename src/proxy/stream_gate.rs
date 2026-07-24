@@ -1522,7 +1522,7 @@ pub(crate) fn classify_pool_initial_responses_sse_event(
     event_bytes: &[u8],
 ) -> PoolInitialResponsesSseEventDecision {
     let response_info = parse_stream_response_payload(event_bytes);
-    if response_info_is_retryable_server_overloaded(status, &response_info) {
+    if response_info_is_retryable_responses_overload(status, &response_info) {
         return PoolInitialResponsesSseEventDecision::RetrySameAccount {
             upstream_error_code: response_info.upstream_error_code,
             upstream_error_message: response_info.upstream_error_message,
@@ -1698,13 +1698,17 @@ pub(crate) fn gate_pool_initial_compact_response(
         .get("code")
         .and_then(|entry| entry.as_str())
         .map(str::to_string);
-    if !upstream_error_code_is_server_overloaded(upstream_error_code.as_deref()) {
+    let upstream_error_message = extract_upstream_error_message(&value);
+    if !upstream_error_is_retryable_responses_overload(
+        upstream_error_code.as_deref(),
+        upstream_error_message.as_deref(),
+    ) {
         return None;
     }
 
     Some(build_retryable_overload_gate_outcome(
         upstream_error_code,
-        extract_upstream_error_message(&value),
+        upstream_error_message,
         extract_upstream_request_id(&value),
     ))
 }

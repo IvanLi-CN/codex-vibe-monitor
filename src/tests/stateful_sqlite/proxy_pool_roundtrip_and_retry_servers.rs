@@ -270,6 +270,8 @@ struct PoolFirstChunkRetryUpstreamState {
 struct PoolResponseFailedRetryUpstreamState {
     attempts: Arc<StdMutex<HashMap<String, usize>>>,
     fail_before_success: Arc<HashMap<String, usize>>,
+    failure_code: &'static str,
+    failure_message: &'static str,
 }
 
 #[derive(Clone)]
@@ -685,12 +687,20 @@ async fn pool_response_failed_retry_upstream(
             .copied()
             .unwrap_or(0)
     {
-        let payload = [
-            "event: response.failed\n",
-            r#"data: {"type":"response.failed","response":{"id":"resp_overloaded_retry","model":"gpt-5.4","status":"failed","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}"#,
-            "\n\n",
-        ]
-        .concat();
+        let failed_event = serde_json::to_string(&json!({
+            "type": "response.failed",
+            "response": {
+                "id": "resp_overloaded_retry",
+                "model": "gpt-5.4",
+                "status": "failed",
+                "error": {
+                    "code": state.failure_code,
+                    "message": state.failure_message,
+                },
+            },
+        }))
+        .expect("serialize response.failed retry event");
+        let payload = format!("event: response.failed\ndata: {failed_event}\n\n");
         return (
             StatusCode::OK,
             [(
@@ -740,15 +750,23 @@ async fn pool_metadata_prefixed_response_failed_retry_upstream(
             .copied()
             .unwrap_or(0)
     {
-        let payload = [
-            "event: response.created\n",
-            r#"data: {"type":"response.created","response":{"id":"resp_overloaded_retry","model":"gpt-5.4","status":"in_progress"}}"#,
-            "\n\n",
-            "event: response.failed\n",
-            r#"data: {"type":"response.failed","response":{"id":"resp_overloaded_retry","model":"gpt-5.4","status":"failed","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}"#,
-            "\n\n",
-        ]
-        .concat();
+        let failed_event = serde_json::to_string(&json!({
+            "type": "response.failed",
+            "response": {
+                "id": "resp_overloaded_retry",
+                "model": "gpt-5.4",
+                "status": "failed",
+                "error": {
+                    "code": state.failure_code,
+                    "message": state.failure_message,
+                },
+            },
+        }))
+        .expect("serialize metadata-prefixed response.failed retry event");
+        let payload = format!(
+            "event: response.created\ndata: {{\"type\":\"response.created\",\"response\":{{\"id\":\"resp_overloaded_retry\",\"model\":\"gpt-5.4\",\"status\":\"in_progress\"}}}}\n\n\
+             event: response.failed\ndata: {failed_event}\n\n"
+        );
         return (
             StatusCode::OK,
             [(
@@ -814,12 +832,20 @@ async fn pool_large_metadata_prefixed_response_failed_retry_upstream(
             }))
             .expect("serialize oversized metadata-prefixed response.created payload")
         );
-        let failed = [
-            "event: response.failed\n",
-            r#"data: {"type":"response.failed","response":{"id":"resp_overloaded_retry","model":"gpt-5.4","status":"failed","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}"#,
-            "\n\n",
-        ]
-        .concat();
+        let failed_event = serde_json::to_string(&json!({
+            "type": "response.failed",
+            "response": {
+                "id": "resp_overloaded_retry",
+                "model": "gpt-5.4",
+                "status": "failed",
+                "error": {
+                    "code": state.failure_code,
+                    "message": state.failure_message,
+                },
+            },
+        }))
+        .expect("serialize large metadata-prefixed response.failed retry event");
+        let failed = format!("event: response.failed\ndata: {failed_event}\n\n");
         let chunks = stream::iter(vec![
             Ok::<_, Infallible>(Bytes::from(created)),
             Ok::<_, Infallible>(Bytes::from(failed)),
@@ -877,8 +903,8 @@ async fn pool_compact_overloaded_retry_upstream(
             StatusCode::OK,
             Json(json!({
                 "error": {
-                    "code": "server_is_overloaded",
-                    "message": "Our servers are currently overloaded. Please try again later.",
+                    "code": state.failure_code,
+                    "message": state.failure_message,
                     "request_id": format!("compact-overloaded-{attempt}"),
                 }
             })),
@@ -1731,6 +1757,8 @@ async fn spawn_pool_response_failed_retry_upstream(
         .with_state(PoolResponseFailedRetryUpstreamState {
             attempts: attempts.clone(),
             fail_before_success,
+            failure_code: UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED,
+            failure_message: "Our servers are currently overloaded. Please try again later.",
         });
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -1768,6 +1796,8 @@ pub(crate) async fn spawn_pool_metadata_prefixed_response_failed_retry_upstream(
         .with_state(PoolResponseFailedRetryUpstreamState {
             attempts: attempts.clone(),
             fail_before_success,
+            failure_code: UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED,
+            failure_message: "Our servers are currently overloaded. Please try again later.",
         });
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -1779,6 +1809,47 @@ pub(crate) async fn spawn_pool_metadata_prefixed_response_failed_retry_upstream(
         axum::serve(listener, app)
             .await
             .expect("metadata-prefixed response.failed retry upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
+pub(crate) async fn spawn_pool_metadata_prefixed_response_failed_retry_upstream_with_error(
+    fail_before_success: &[(&str, usize)],
+    failure_code: &'static str,
+    failure_message: &'static str,
+) -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let fail_before_success = Arc::new(
+        fail_before_success
+            .iter()
+            .map(|(authorization, failures)| ((*authorization).to_string(), *failures))
+            .collect::<HashMap<_, _>>(),
+    );
+    let app = Router::new()
+        .route(
+            "/v1/responses",
+            post(pool_metadata_prefixed_response_failed_retry_upstream),
+        )
+        .with_state(PoolResponseFailedRetryUpstreamState {
+            attempts: attempts.clone(),
+            fail_before_success,
+            failure_code,
+            failure_message,
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind custom response.failed retry upstream");
+    let addr = listener
+        .local_addr()
+        .expect("custom response.failed retry upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("custom response.failed retry upstream should run");
     });
     (format!("http://{addr}"), attempts, handle)
 }
@@ -1805,6 +1876,8 @@ pub(crate) async fn spawn_pool_large_metadata_prefixed_response_failed_retry_ups
         .with_state(PoolResponseFailedRetryUpstreamState {
             attempts: attempts.clone(),
             fail_before_success,
+            failure_code: UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED,
+            failure_message: "Our servers are currently overloaded. Please try again later.",
         });
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -1842,6 +1915,8 @@ pub(crate) async fn spawn_pool_compact_overloaded_retry_upstream(
         .with_state(PoolResponseFailedRetryUpstreamState {
             attempts: attempts.clone(),
             fail_before_success,
+            failure_code: UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED,
+            failure_message: "Our servers are currently overloaded. Please try again later.",
         });
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
