@@ -423,10 +423,10 @@ PR: include
 ![System settings routing defaults](./assets/system-settings-routing-defaults.png)
 
 PR: include
-![Group request compression follow override](./visual-evidence/2026-07-15-group-routing-follow-compression.png)
+![Group request compression follow override](./assets/2026-07-15-group-routing-follow-compression.png)
 
 PR: include
-![Effective routing rule request compression row](./visual-evidence/2026-07-15-effective-rule-request-compression.png)
+![Effective routing rule request compression row](./assets/2026-07-15-effective-rule-request-compression.png)
 
 PR: include
 ![Upstream account detail capability overview split](./assets/upstream-account-detail-capability-overview-split.png)
