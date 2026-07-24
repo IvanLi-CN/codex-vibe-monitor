@@ -1474,6 +1474,30 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .await
     .context("failed to ensure default pool_routing_settings row")?;
     ensure_upstream_account_capability_axis_split_migrated(pool).await?;
+    repair_responses_lite_image_tool_capability_observations(pool).await?;
+
+    Ok(())
+}
+
+async fn repair_responses_lite_image_tool_capability_observations(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET response_image_tool_capability = 'unknown',
+            response_image_tool_capability_observed_at = NULL,
+            response_image_tool_capability_reason = NULL,
+            updated_at = datetime('now')
+        WHERE response_image_tool_capability = 'unsupported'
+          AND lower(COALESCE(response_image_tool_capability_reason, '')) LIKE '%responses lite%'
+          AND lower(COALESCE(response_image_tool_capability_reason, '')) LIKE '%top-level tool type%'
+          AND lower(COALESCE(response_image_tool_capability_reason, '')) LIKE '%image_generation%'
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to repair Responses Lite image-tool capability observations")?;
 
     Ok(())
 }

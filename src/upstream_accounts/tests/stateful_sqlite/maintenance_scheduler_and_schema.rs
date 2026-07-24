@@ -3209,6 +3209,89 @@ async fn ensure_upstream_accounts_schema_resets_mixed_response_capability_once()
 }
 
 #[tokio::test]
+async fn ensure_upstream_accounts_schema_repairs_only_responses_lite_image_tool_misclassifications()
+{
+    let pool = SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("connect sqlite");
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("ensure schema");
+
+    let repaired_account_id = insert_oauth_account(&pool, "Responses Lite misclassification").await;
+    let retained_account_id = insert_oauth_account(&pool, "Actual unsupported image tool").await;
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET response_image_tool_capability = 'unsupported',
+            response_image_tool_capability_observed_at = '2026-07-24T00:00:00Z',
+            response_image_tool_capability_reason = ?2,
+            policy_response_image_tool_capability_override = 'supported'
+        WHERE id = ?1
+        "#,
+    )
+    .bind(repaired_account_id)
+    .bind("Responses Lite rejected top-level tool type image_generation")
+    .execute(&pool)
+    .await
+    .expect("seed Lite misclassification");
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET response_image_tool_capability = 'unsupported',
+            response_image_tool_capability_observed_at = '2026-07-24T00:00:00Z',
+            response_image_tool_capability_reason = 'unsupported tool: image_generation',
+            policy_response_image_tool_capability_override = 'unsupported'
+        WHERE id = ?1
+        "#,
+    )
+    .bind(retained_account_id)
+    .execute(&pool)
+    .await
+    .expect("seed actual unsupported capability");
+
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("repair Lite misclassification");
+
+    let repaired = load_upstream_account_row(&pool, repaired_account_id)
+        .await
+        .expect("load repaired account")
+        .expect("repaired account exists");
+    assert_eq!(
+        repaired.response_image_tool_capability.as_deref(),
+        Some("unknown")
+    );
+    assert_eq!(repaired.response_image_tool_capability_observed_at, None);
+    assert_eq!(repaired.response_image_tool_capability_reason, None);
+    assert_eq!(
+        repaired
+            .policy_response_image_tool_capability_override
+            .as_deref(),
+        Some("supported")
+    );
+
+    let retained = load_upstream_account_row(&pool, retained_account_id)
+        .await
+        .expect("load retained account")
+        .expect("retained account exists");
+    assert_eq!(
+        retained.response_image_tool_capability.as_deref(),
+        Some("unsupported")
+    );
+    assert_eq!(
+        retained.response_image_tool_capability_reason.as_deref(),
+        Some("unsupported tool: image_generation")
+    );
+    assert_eq!(
+        retained
+            .policy_response_image_tool_capability_override
+            .as_deref(),
+        Some("unsupported")
+    );
+}
+
+#[tokio::test]
 async fn ensure_upstream_accounts_schema_migrates_legacy_block_policy_to_no_new_priority() {
     let pool = SqlitePool::connect("sqlite::memory:")
         .await

@@ -384,3 +384,7 @@ PR: include
 - story_id_or_title: `Monitoring/PromptCacheConversationTable/DrawerOperations`
 - state: events tab open with the default `全部` filter, showing `affinityReset`, `stickyTargetCleared`, and one later `systemAuto stickyTargetChanged` event with `invokeId`
 - evidence_note: verifies the sibling `事件记录` tab, the lightweight `全部 / 路由相关 / 正向代理相关 / 请求改写相关` filter row, and the bug-fix sequence itself: clearing affinity removes the old sticky target, no stale revival event appears in between, and only the later fresh reassignment emits `Sticky 目标已切换` from `systemAuto`.
+
+## Image Tool Override Boundary
+
+Conversation `imageToolRewriteMode` remains a four-value inherited policy. Its help affordance must state that the modes rewrite Full Responses only; a Codex Responses Lite request retains client-owned tools unchanged, including `force_remove`.

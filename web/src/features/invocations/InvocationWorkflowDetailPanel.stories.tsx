@@ -846,6 +846,12 @@ const successfulWorkflowResponse: ApiInvocationWorkflowDetailResponse = {
           requestedServiceTier: "default",
           reasoningEffort: "high",
           imageIntent: "yes",
+          imageToolRewrite: {
+            protocol: "responses_lite",
+            mode: "force_add",
+            outcome: "skipped",
+            reason: "responses_lite_client_owned_tools",
+          },
           routing: {
             routeMode: "pool",
             proxyDisplayName: "tokyo-edge-02",
@@ -1221,6 +1227,34 @@ export const SuccessfulTokenCostAuditMobile: Story = {
       />
     </WorkflowPageSurface>
   ),
+};
+
+export const ResponsesLiteImageToolSkipped: Story = {
+  args: {
+    record: successfulWorkflowRecord,
+    size: "default",
+  },
+  decorators: [
+    (Story) => (
+      <>
+        <WorkflowFetchMock recordId={88} response={successfulWorkflowResponse} />
+        <Story />
+      </>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const request = canvas
+      .getAllByRole("button")
+      .find(
+        (candidate) =>
+          candidate.textContent?.includes("gpt-5.4") && candidate.textContent?.includes("http"),
+      );
+    if (!request) throw new Error("attempt request metric not found");
+    await userEvent.click(request);
+    await expect(canvas.getByText("responses_lite")).toBeVisible();
+    await expect(canvas.getByText("responses_lite_client_owned_tools")).toBeVisible();
+  },
 };
 
 export const TransientPending: Story = {

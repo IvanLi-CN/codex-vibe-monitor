@@ -263,6 +263,12 @@ function createWorkflowDetailResponse(): ApiInvocationWorkflowDetailResponse {
             requestedServiceTier: "priority",
             reasoningEffort: "high",
             compactionRequestKind: "remote_v2",
+            imageToolRewrite: {
+              protocol: "responses_lite",
+              mode: "force_add",
+              outcome: "skipped",
+              reason: "responses_lite_client_owned_tools",
+            },
             account: {
               id: 42,
               name: "pool-alpha@example.com",
@@ -708,6 +714,22 @@ describe("InvocationWorkflowDetailPanel", () => {
     expect(host?.textContent ?? "").not.toContain("remote_v2");
     expect(host?.textContent ?? "").not.toContain("HTTP gzip");
     expect(host?.textContent ?? "").not.toContain("5,430 ms");
+
+    const requestButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement &&
+        candidate.textContent?.includes("请求") &&
+        candidate.textContent?.includes("gpt-5.4") &&
+        candidate.textContent?.includes("http"),
+    );
+    expect(requestButton).not.toBeNull();
+    act(() => {
+      requestButton?.click();
+    });
+    await flushAsyncWork();
+    expect(host?.textContent ?? "").toContain("图片工具协议");
+    expect(host?.textContent ?? "").toContain("responses_lite");
+    expect(host?.textContent ?? "").toContain("responses_lite_client_owned_tools");
 
     const requestBodyButton = Array.from(host?.querySelectorAll("button") ?? []).find(
       (candidate): candidate is HTMLButtonElement =>

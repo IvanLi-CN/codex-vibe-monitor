@@ -685,3 +685,9 @@
 - 风险：上游请求不保证稳定携带 `prompt_cache_key`，仍可能出现正常缺失。
 - 开放问题：是否后续在 SQLite 增加独立 `prompt_cache_key` 列（本次不做）。
 - 假设：现有代理链路 payload 存储可承载新增上下文字段。
+
+## Responses Lite Image Tool Audit
+
+- Responses-family invocation payloads may carry optional `imageToolRewrite` with `protocol`, effective `mode`, `outcome`, and optional `reason`.
+- Workflow attempt request summaries forward the same object so invocation and per-attempt detail agree without a schema migration.
+- Lite skip is rendered as `protocol=responses_lite`, `outcome=skipped`, and `reason=responses_lite_client_owned_tools`; older records simply omit the object.

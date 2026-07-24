@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useState } from "react";
-import { expect, userEvent } from "storybook/test";
+import { expect, userEvent, within } from "storybook/test";
 import type { EffectiveRoutingRule, UpdateGroupAccountRoutingRulePayload } from "../../lib/api";
 import {
   buildDefaultStatusChangeReasonFieldSources,
@@ -43,6 +43,8 @@ const labels = {
   fieldPriority: "Priority",
   fieldFastMode: "FAST mode",
   fieldImageToolRewriteMode: "Image tools",
+  imageToolRewriteHint:
+    "These modes rewrite Full Responses only: fill when missing injects only after confirmed image intent, force add injects, and force remove strips the top-level image tool. Codex Responses Lite keeps client-owned tools unchanged.",
   fieldConcurrency: "Concurrency",
   fieldUpstream429: "Upstream 429 retry",
   fieldAvailableModels: "Available models",
@@ -532,6 +534,20 @@ export const EditableInherited: Story = {
     expect(
       canvasElement.querySelector<HTMLInputElement>('input[name="responsesFirstByteTimeoutSecs"]'),
     ).not.toBeNull();
+  },
+};
+
+export const EditableImageToolHelp: Story = {
+  render: () => <EditableRoutingRuleDemo initialRule={strictRule} />,
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body);
+    const help = documentScope.getByRole("button", {
+      name: "Image tools help",
+    });
+    await userEvent.click(help);
+    await expect(
+      documentScope.getByText(/Codex Responses Lite keeps client-owned tools unchanged/i),
+    ).toBeVisible();
   },
 };
 

@@ -27,3 +27,5 @@
 - 2026-07-22: Added sticky-affinity generation fencing so `clearAndResetAffinity` prevents stale in-flight success from reviving the old sticky target. Fresh reassignment after reset now emits one runtime `systemAuto stickyTargetChanged` event with `invokeId`, and Storybook evidence was tightened to show that exact sequence.
 - Upstream account bindings are operator-forced account assignments: they override sticky transfer policy only, not account health, quota, guard, concurrency, route-key, or forward-proxy readiness.
 - “切出” is a conversation-level permission to switch away from the original/sticky upstream account, preserving user-facing terminology from account settings without introducing a conversation-level cut-in permission.
+
+- 2026-07-24: Clarified the conversation image-tool override with a focusable help icon: Full Responses may be rewritten, while Responses Lite client-owned tools stay unchanged.

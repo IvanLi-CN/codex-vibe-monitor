@@ -17,7 +17,7 @@ import {
 } from "./GroupAccountRoutingRuleDialog";
 import { UpstreamAccountGroupNoteDialog } from "./UpstreamAccountGroupNoteDialog";
 
-type DialogHarnessProps = {
+type GroupSettingsStoryProps = {
   groupName: string;
   note: string;
   accountCount?: number;
@@ -212,7 +212,7 @@ const legacyAliasBindingNodes: ForwardProxyBindingNode[] = [
   },
 ];
 
-function DialogHarness({
+function GroupSettingsStory({
   note: initialNote,
   accountCount = 0,
   boundProxyKeys: initialBoundProxyKeys = [],
@@ -222,7 +222,7 @@ function DialogHarness({
   upstream429MaxRetries: initialUpstream429MaxRetries = 0,
   availableProxyNodes = defaultForwardProxyNodes,
   ...args
-}: DialogHarnessProps) {
+}: GroupSettingsStoryProps) {
   const [note, setNote] = useState(initialNote);
   const [concurrencyLimit, setConcurrencyLimit] = useState(
     apiConcurrencyLimitToSliderValue(args.concurrencyLimit ?? 0),
@@ -268,7 +268,7 @@ function DialogHarness({
     requestCompressionMixedGroupHint:
       "Mixed groups only apply this override when the final target account is an API key upstream.",
     imageToolRewriteHint:
-      "Keep original follows the account's own image capability. Fill when missing only injects image tools when image intent is confirmed; force add always injects; force remove always strips it.",
+      "These modes rewrite Full Responses only: fill when missing injects only after confirmed image intent, force add injects, and force remove strips the top-level image tool. Codex Responses Lite keeps client-owned tools unchanged.",
     concurrencyLimit: "Policy concurrency limit",
     concurrencyHint: "This route-policy limit overrides root defaults for matching group members.",
     currentValue: "Current",
@@ -315,154 +315,141 @@ function DialogHarness({
   };
 
   return (
-    <div className="min-h-screen bg-base-200 px-6 py-10 text-base-content">
-      <div className="mx-auto max-w-3xl rounded-2xl border border-base-300/70 bg-base-100 p-6">
-        <div className="mb-4 space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-base-content/45">
-            Shared Group Settings
-          </p>
-          <h1 className="text-2xl font-semibold">Upstream account group settings dialog</h1>
-          <p className="max-w-2xl text-sm leading-6 text-base-content/70">
-            This story focuses on the shared group note editor plus hard binding for forward proxy
-            nodes.
-          </p>
-        </div>
-        <UpstreamAccountGroupNoteDialog
-          open
-          {...args}
-          note={note}
-          concurrencyLimit={concurrencyLimit}
-          boundProxyKeys={boundProxyKeys}
-          nodeShuntEnabled={nodeShuntEnabled}
-          singleAccountRotationEnabled={singleAccountRotationEnabled}
-          upstream429RetryEnabled={upstream429RetryEnabled}
-          upstream429MaxRetries={upstream429MaxRetries}
-          availableProxyNodes={availableProxyNodes}
-          onNoteChange={setNote}
-          onConcurrencyLimitChange={setConcurrencyLimit}
-          onBoundProxyKeysChange={setBoundProxyKeys}
-          onNodeShuntEnabledChange={setNodeShuntEnabled}
-          onSingleAccountRotationEnabledChange={setSingleAccountRotationEnabled}
-          onUpstream429RetryEnabledChange={(value) => {
-            setUpstream429RetryEnabled(value);
-            if (value && upstream429MaxRetries <= 0) {
-              setUpstream429MaxRetries(1);
-            }
-          }}
-          onUpstream429MaxRetriesChange={setUpstream429MaxRetries}
-          onClose={() => undefined}
-          onSave={() => undefined}
-          title="Edit group settings"
-          existingDescription="This group already exists. Saving here updates the shared note and proxy bindings immediately."
-          draftDescription="This group is not populated yet. Saving here creates its shared settings in advance."
-          noteLabel="Group note"
-          notePlaceholder="Capture what this group is for, ownership, and any operational caveats."
-          concurrencyLimitLabel="Concurrency limit"
-          concurrencyLimitHint="Use 1-30 to cap fresh assignments for this group. The last slider step means unlimited."
-          concurrencyLimitCurrentLabel="Current"
-          concurrencyLimitUnlimitedLabel="Unlimited"
-          cancelLabel="Cancel"
-          saveLabel="Save group settings"
-          deleteLabel="Delete group"
-          deleteDisabledHint={
-            accountCount > 0
-              ? `Move the remaining ${accountCount} account(s) out before deleting this group.`
-              : undefined
+    <div className="min-h-screen bg-base-200 p-8 text-base-content">
+      <UpstreamAccountGroupNoteDialog
+        open
+        {...args}
+        note={note}
+        concurrencyLimit={concurrencyLimit}
+        boundProxyKeys={boundProxyKeys}
+        nodeShuntEnabled={nodeShuntEnabled}
+        singleAccountRotationEnabled={singleAccountRotationEnabled}
+        upstream429RetryEnabled={upstream429RetryEnabled}
+        upstream429MaxRetries={upstream429MaxRetries}
+        availableProxyNodes={availableProxyNodes}
+        onNoteChange={setNote}
+        onConcurrencyLimitChange={setConcurrencyLimit}
+        onBoundProxyKeysChange={setBoundProxyKeys}
+        onNodeShuntEnabledChange={setNodeShuntEnabled}
+        onSingleAccountRotationEnabledChange={setSingleAccountRotationEnabled}
+        onUpstream429RetryEnabledChange={(value) => {
+          setUpstream429RetryEnabled(value);
+          if (value && upstream429MaxRetries <= 0) {
+            setUpstream429MaxRetries(1);
           }
-          closeLabel="Close dialog"
-          existingBadgeLabel="Persisted group"
-          draftBadgeLabel="Draft group"
-          infoTabLabel="Group info"
-          routingTabLabel="Routing settings"
-          proxyTabLabel="Proxy nodes"
-          accountCountLabel="Accounts"
-          nodeShuntLabel="Node shunt strategy"
-          nodeShuntHint="Each selected node becomes an exclusive slot. Selecting 3 nodes means the group can provide 3 upstream accounts at the same time."
-          nodeShuntToggleLabel="Enable exclusive node slots"
-          nodeShuntWarning="Enable this strategy only after binding at least one node (including Direct)."
-          singleAccountRotationLabel="Single-account rotation load"
-          singleAccountRotationHint="Successful conversations stay on the same account. After upstream 429 retry is exhausted, only that conversation moves to the next reset-time candidate."
-          singleAccountRotationToggleLabel="Keep conversations on one account until final 429"
-          upstream429RetryLabel="Upstream 429 retry"
-          upstream429RetryHint="Choose 0 to disable retries. Positive values keep the same account after upstream 429 with a random 1-10 second delay."
-          upstream429RetryToggleLabel="Retry the same account after upstream 429"
-          upstream429RetryCountLabel="Retry count"
-          upstream429RetryCountOptions={[
-            { value: 1, label: "1 retry" },
-            { value: 2, label: "2 retries" },
-            { value: 3, label: "3 retries" },
-            { value: 4, label: "4 retries" },
-            { value: 5, label: "5 retries" },
-          ]}
-          routingPolicyLabel="Routing policy"
-          routingPolicyHint="Customize priority, FAST mode, model eligibility, cut-in/cut-out, policy concurrency, status-change triggers, and timeouts for this group."
-          routingPolicyEditor={
-            args.showRoutingPolicyEditor ? (
-              <GroupAccountRoutingRuleEditor
-                open
-                changedFieldsOnly
-                rule={{
-                  allowCutOut: true,
-                  allowCutIn: true,
-                  priorityTier: "normal",
-                  fastModeRewriteMode: "keep_original",
-                  imageToolRewriteMode: "keep_original",
-                  concurrencyLimit: 0,
-                  upstream429RetryEnabled: false,
-                  upstream429MaxRetries: 0,
-                  availableModels: ["gpt-5.5"],
-                  availableModelsDefined: true,
-                  statusChangeReasons: buildDefaultStatusChangeReasons(),
-                }}
-                effectiveTimeouts={{
-                  responsesFirstByteTimeoutSecs: 120,
-                  compactFirstByteTimeoutSecs: 300,
-                  responsesStreamTimeoutSecs: 300,
-                  compactStreamTimeoutSecs: 300,
-                }}
-                timeoutFieldSources={{
-                  responsesFirstByteTimeoutSecs: "root",
-                  compactFirstByteTimeoutSecs: "root",
-                  responsesStreamTimeoutSecs: "root",
-                  compactStreamTimeoutSecs: "root",
-                }}
-                labels={routingPolicyLabels}
-                availableModelOptions={["gpt-5.5", "gpt-5.5-pro", "gpt-5.4"]}
-              />
-            ) : undefined
-          }
-          proxyBindingsLabel="Bound proxy nodes"
-          proxyBindingsHint="Leave empty to keep automatic routing. Selected nodes are used as a hard-bound pool for this group."
-          proxyBindingsAutomaticLabel="No nodes bound. This group uses automatic routing."
-          proxyBindingsLoadingLabel="Loading proxy nodes…"
-          proxyBindingsEmptyLabel="No proxy nodes available."
-          proxyBindingsMissingLabel="Missing"
-          proxyBindingsUnavailableLabel="Unavailable"
-          proxyBindingsChartLabel="24h request trend"
-          proxyBindingsChartSuccessLabel="Success"
-          proxyBindingsChartFailureLabel="Failure"
-          proxyBindingsChartEmptyLabel="No 24h data"
-          proxyBindingsChartTotalLabel="Total requests"
-          proxyBindingsChartAriaLabel="Last 24h request volume chart"
-          proxyBindingsChartInteractionHint="Hover or tap for details. Focus the chart and use arrow keys to switch points."
-          proxyBindingsChartLocaleTag="en-US"
-          accountCount={accountCount}
-          deleting={args.deleting}
-          onDelete={() => undefined}
-        />
-      </div>
+        }}
+        onUpstream429MaxRetriesChange={setUpstream429MaxRetries}
+        onClose={() => undefined}
+        onSave={() => undefined}
+        title="Edit group settings"
+        existingDescription="This group already exists. Saving here updates the shared note and proxy bindings immediately."
+        draftDescription="This group is not populated yet. Saving here creates its shared settings in advance."
+        noteLabel="Group note"
+        notePlaceholder="Capture what this group is for, ownership, and any operational caveats."
+        concurrencyLimitLabel="Concurrency limit"
+        concurrencyLimitHint="Use 1-30 to cap fresh assignments for this group. The last slider step means unlimited."
+        concurrencyLimitCurrentLabel="Current"
+        concurrencyLimitUnlimitedLabel="Unlimited"
+        cancelLabel="Cancel"
+        saveLabel="Save group settings"
+        deleteLabel="Delete group"
+        deleteDisabledHint={
+          accountCount > 0
+            ? `Move the remaining ${accountCount} account(s) out before deleting this group.`
+            : undefined
+        }
+        closeLabel="Close dialog"
+        existingBadgeLabel="Persisted group"
+        draftBadgeLabel="Draft group"
+        infoTabLabel="Group info"
+        routingTabLabel="Routing settings"
+        proxyTabLabel="Proxy nodes"
+        accountCountLabel="Accounts"
+        nodeShuntLabel="Node shunt strategy"
+        nodeShuntHint="Each selected node becomes an exclusive slot. Selecting 3 nodes means the group can provide 3 upstream accounts at the same time."
+        nodeShuntToggleLabel="Enable exclusive node slots"
+        nodeShuntWarning="Enable this strategy only after binding at least one node (including Direct)."
+        singleAccountRotationLabel="Single-account rotation load"
+        singleAccountRotationHint="Successful conversations stay on the same account. After upstream 429 retry is exhausted, only that conversation moves to the next reset-time candidate."
+        singleAccountRotationToggleLabel="Keep conversations on one account until final 429"
+        upstream429RetryLabel="Upstream 429 retry"
+        upstream429RetryHint="Choose 0 to disable retries. Positive values keep the same account after upstream 429 with a random 1-10 second delay."
+        upstream429RetryToggleLabel="Retry the same account after upstream 429"
+        upstream429RetryCountLabel="Retry count"
+        upstream429RetryCountOptions={[
+          { value: 1, label: "1 retry" },
+          { value: 2, label: "2 retries" },
+          { value: 3, label: "3 retries" },
+          { value: 4, label: "4 retries" },
+          { value: 5, label: "5 retries" },
+        ]}
+        routingPolicyLabel="Routing policy"
+        routingPolicyHint="Customize priority, FAST mode, model eligibility, cut-in/cut-out, policy concurrency, status-change triggers, and timeouts for this group."
+        routingPolicyEditor={
+          args.showRoutingPolicyEditor ? (
+            <GroupAccountRoutingRuleEditor
+              open
+              changedFieldsOnly
+              rule={{
+                allowCutOut: true,
+                allowCutIn: true,
+                priorityTier: "normal",
+                fastModeRewriteMode: "keep_original",
+                imageToolRewriteMode: "keep_original",
+                concurrencyLimit: 0,
+                upstream429RetryEnabled: false,
+                upstream429MaxRetries: 0,
+                availableModels: ["gpt-5.5"],
+                availableModelsDefined: true,
+                statusChangeReasons: buildDefaultStatusChangeReasons(),
+              }}
+              effectiveTimeouts={{
+                responsesFirstByteTimeoutSecs: 120,
+                compactFirstByteTimeoutSecs: 300,
+                responsesStreamTimeoutSecs: 300,
+                compactStreamTimeoutSecs: 300,
+              }}
+              timeoutFieldSources={{
+                responsesFirstByteTimeoutSecs: "root",
+                compactFirstByteTimeoutSecs: "root",
+                responsesStreamTimeoutSecs: "root",
+                compactStreamTimeoutSecs: "root",
+              }}
+              labels={routingPolicyLabels}
+              availableModelOptions={["gpt-5.5", "gpt-5.5-pro", "gpt-5.4"]}
+            />
+          ) : undefined
+        }
+        proxyBindingsLabel="Bound proxy nodes"
+        proxyBindingsHint="Leave empty to keep automatic routing. Selected nodes are used as a hard-bound pool for this group."
+        proxyBindingsAutomaticLabel="No nodes bound. This group uses automatic routing."
+        proxyBindingsLoadingLabel="Loading proxy nodes…"
+        proxyBindingsEmptyLabel="No proxy nodes available."
+        proxyBindingsMissingLabel="Missing"
+        proxyBindingsUnavailableLabel="Unavailable"
+        proxyBindingsChartLabel="24h request trend"
+        proxyBindingsChartSuccessLabel="Success"
+        proxyBindingsChartFailureLabel="Failure"
+        proxyBindingsChartEmptyLabel="No 24h data"
+        proxyBindingsChartTotalLabel="Total requests"
+        proxyBindingsChartAriaLabel="Last 24h request volume chart"
+        proxyBindingsChartInteractionHint="Hover or tap for details. Focus the chart and use arrow keys to switch points."
+        proxyBindingsChartLocaleTag="en-US"
+        accountCount={accountCount}
+        deleting={args.deleting}
+        onDelete={() => undefined}
+      />
     </div>
   );
 }
 
 const meta = {
   title: "Account Pool/Components/Upstream Account Group Settings Dialog",
-  component: DialogHarness,
+  component: GroupSettingsStory,
   tags: ["autodocs"],
   parameters: {
     layout: "fullscreen",
   },
-  render: (args) => <DialogHarness {...args} />,
   args: {
     groupName: "production",
     note: "Primary team group for premium traffic and shared routing policies.",
@@ -479,7 +466,7 @@ const meta = {
     upstream429MaxRetries: 0,
     availableProxyNodes: defaultForwardProxyNodes,
   },
-} satisfies Meta<typeof DialogHarness>;
+} satisfies Meta<typeof GroupSettingsStory>;
 
 export default meta;
 
@@ -542,6 +529,11 @@ export const RoutingPolicyInlineEditor: Story = {
     await expect(canvas.getByText(/Preferred usage/i)).toBeInTheDocument();
     await expect(canvas.getByText(/Available models/i)).toBeInTheDocument();
     await expect(canvas.getByText(/Request path timeouts/i)).toBeInTheDocument();
+    const help = canvas.getByRole("button", { name: "Image tools help" });
+    await userEvent.click(help);
+    await expect(
+      canvas.getByText(/Codex Responses Lite keeps client-owned tools unchanged/i),
+    ).toBeVisible();
   },
 };
 
@@ -679,7 +671,7 @@ export const SettingsSaveSyncRefresh: Story = {
       }, []);
 
       return (
-        <DialogHarness
+        <GroupSettingsStory
           {...args}
           groupName="settings-sync"
           note="Starts stale and empty, then repaints in place once the refreshed proxy catalog lands."

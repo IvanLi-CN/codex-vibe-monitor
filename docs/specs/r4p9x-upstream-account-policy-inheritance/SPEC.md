@@ -191,6 +191,10 @@ The image-tool layer remains separate from the system-tag signal model:
 - `force_add` always injects image tools
 - `force_remove` always strips image tools
 - `/v1/responses` and `/v1/responses/compact` may rewrite request bodies to satisfy the final account's rewrite mode
+- Responses Lite is identified only by `X-OpenAI-Internal-Codex-Responses-Lite: true`; model names and body shape are not protocol signals
+- every Lite image-tool rewrite mode is read-only: CVM must not modify `input.additional_tools`, inject a top-level image tool, or alter `tool_choice`
+- a Lite validation message containing `responses lite`, `top-level tool type`, and `image_generation` is a request-shape error, not evidence that the upstream account lacks image-tool capability
+- startup repair resets only historical observed `unsupported` entries matching that exact signature; it retains any manual capability override
 - `/v1/images/generations` and `/v1/images/edits` classify as `direct_image`, only filter by capability, and do not rewrite the body
 - successful image-intent requests learn `imageToolCapability=supported`
 - explicit unsupported image responses learn `imageToolCapability=unsupported`

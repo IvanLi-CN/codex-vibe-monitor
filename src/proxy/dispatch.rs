@@ -1233,6 +1233,13 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     .await;
                 let error_message = format!("[{}] {}", err.failure_kind, err.message);
                 let pool_proxy_display_name = resolve_invocation_proxy_display_name(None);
+                let image_tool_rewrite = err.account.as_ref().and_then(|account| {
+                    image_tool_rewrite_audit(
+                        capture_target,
+                        is_openai_responses_lite_request(&headers),
+                        account.image_tool_rewrite_mode,
+                    )
+                });
                 let record = ProxyCaptureRecord {
                     invoke_id,
                     occurred_at,
@@ -1249,133 +1256,141 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     },
                     error_message: Some(error_message),
                     failure_kind: Some(err.failure_kind.to_string()),
-                    payload: Some(build_proxy_payload_summary(ProxyPayloadSummary {
-                        target: capture_target,
-                        status: err.status,
-                        is_stream: request_info.is_stream,
-                        request_contains_encrypted_content: request_info.contains_encrypted_content,
-                        response_contains_encrypted_content: false,
-                        compaction_request_kind: request_info.compaction_request_kind,
-                        compaction_response_kind: None,
-                        image_intent: request_info.image_intent.as_deref(),
-                        request_model: request_info.model.as_deref(),
-                        requested_service_tier: request_info.requested_service_tier.as_deref(),
-                        billing_service_tier: billing_service_tier.as_deref(),
-                        reasoning_effort: request_info.reasoning_effort.as_deref(),
-                        response_model: None,
-                        usage_missing_reason: None,
-                        request_parse_error: request_info.parse_error.as_deref(),
-                        request_compression_algorithm: None,
-                        request_compression_mode: None,
-                        request_compression_logical_body_bytes: None,
-                        request_compression_transmitted_body_bytes: None,
-                        request_compression_transmission_complete: None,
-                        failure_kind: Some(err.failure_kind),
-                        requester_ip: requester_ip.as_deref(),
-                        request_user_agent: request_chain_metadata.user_agent.as_deref(),
-                        request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
-                        request_forwarded: request_chain_metadata.forwarded.as_deref(),
-                        request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
-                        upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
-                        route_mode: INVOCATION_ROUTE_MODE_POOL,
-                        sticky_key: sticky_key.as_deref(),
-                        prompt_cache_key: prompt_cache_key.as_deref(),
-                        prompt_cache_key_attribution_source: request_info
-                            .prompt_cache_key_attribution_source
-                            .as_deref(),
-                        client_fingerprint: client_attribution_context.fingerprint.as_deref(),
-                        client_header_fingerprints: Some(
-                            &client_attribution_context.header_fingerprints,
-                        )
-                        .filter(|fingerprints| !fingerprints.is_empty()),
-                        upstream_account_id: err.account.as_ref().map(|account| account.account_id),
-                        upstream_account_name: err
-                            .account
-                            .as_ref()
-                            .map(|account| account.display_name.as_str()),
-                        upstream_account_kind: payload_summary_upstream_account_kind(
-                            err.account.as_ref(),
-                        ),
-                        upstream_base_url_host: payload_summary_upstream_base_url_host(
-                            err.account.as_ref(),
-                        ),
-                        oauth_account_header_attached: oauth_account_header_attached_for_account(
-                            err.account.as_ref(),
-                        ),
-                        oauth_account_id_shape: oauth_account_id_shape_for_account(
-                            err.account.as_ref(),
-                        ),
-                        oauth_forwarded_header_count: err
-                            .oauth_responses_debug
-                            .as_ref()
-                            .map(|debug| debug.forwarded_header_names.len()),
-                        oauth_forwarded_header_names: err
-                            .oauth_responses_debug
-                            .as_ref()
-                            .map(|debug| debug.forwarded_header_names.as_slice()),
-                        oauth_fingerprint_version: err
-                            .oauth_responses_debug
-                            .as_ref()
-                            .and_then(|debug| debug.fingerprint_version),
-                        oauth_forwarded_header_fingerprints: err
-                            .oauth_responses_debug
-                            .as_ref()
-                            .and_then(|debug| debug.forwarded_header_fingerprints.as_ref()),
-                        oauth_prompt_cache_header_forwarded: err
-                            .oauth_responses_debug
-                            .as_ref()
-                            .map(|debug| debug.prompt_cache_header_forwarded),
-                        oauth_request_body_prefix_fingerprint: err
-                            .oauth_responses_debug
-                            .as_ref()
-                            .and_then(|debug| debug.request_body_prefix_fingerprint.as_deref()),
-                        oauth_request_body_prefix_bytes: err
-                            .oauth_responses_debug
-                            .as_ref()
-                            .and_then(|debug| debug.request_body_prefix_bytes),
-                        oauth_request_body_snapshot_kind: err
-                            .oauth_responses_debug
-                            .as_ref()
-                            .and_then(|debug| debug.request_body_snapshot_kind),
-                        oauth_responses_body_mode: err
-                            .oauth_responses_debug
-                            .as_ref()
-                            .and_then(|debug| debug.responses_body_mode),
-                        oauth_responses_rewrite: err
-                            .oauth_responses_debug
-                            .as_ref()
-                            .map(|debug| &debug.rewrite),
-                        service_tier: None,
-                        stream_terminal_event: None,
-                        upstream_error_code: err.upstream_error_code.as_deref(),
-                        upstream_error_message: err.upstream_error_message.as_deref(),
-                        downstream_status_code: Some(err.status),
-                        downstream_error_message: Some(err.message.as_str()),
-                        upstream_request_id: err.upstream_request_id.as_deref(),
-                        response_content_encoding: None,
-                        stream_failure_origin: None,
-                        upstream_read_error_kind: None,
-                        content_encoding_chain: None,
-                        forwarded_chunk_count: None,
-                        forwarded_bytes: None,
-                        usage_observed: None,
-                        downstream_close_phase: None,
-                        downstream_write_error_kind: None,
-                        last_upstream_chunk_gap_ms: None,
-                        upstream_approx_upload_bytes: None,
-                        upstream_approx_download_bytes: None,
-                        proxy_display_name: pool_proxy_display_name.as_deref(),
-                        proxy_weight_delta: None,
-                        pool_attempt_count: Some(err.attempt_summary.pool_attempt_count),
-                        pool_distinct_account_count: Some(
-                            err.attempt_summary.pool_distinct_account_count,
-                        ),
-                        pool_attempt_terminal_reason: err
-                            .attempt_summary
-                            .pool_attempt_terminal_reason
-                            .as_deref(),
-                        blocked_binding: err.blocked_binding.as_ref(),
-                    })),
+                    payload: Some(with_image_tool_rewrite_payload_summary(
+                        build_proxy_payload_summary(ProxyPayloadSummary {
+                            target: capture_target,
+                            status: err.status,
+                            is_stream: request_info.is_stream,
+                            request_contains_encrypted_content: request_info
+                                .contains_encrypted_content,
+                            response_contains_encrypted_content: false,
+                            compaction_request_kind: request_info.compaction_request_kind,
+                            compaction_response_kind: None,
+                            image_intent: request_info.image_intent.as_deref(),
+                            request_model: request_info.model.as_deref(),
+                            requested_service_tier: request_info.requested_service_tier.as_deref(),
+                            billing_service_tier: billing_service_tier.as_deref(),
+                            reasoning_effort: request_info.reasoning_effort.as_deref(),
+                            response_model: None,
+                            usage_missing_reason: None,
+                            request_parse_error: request_info.parse_error.as_deref(),
+                            request_compression_algorithm: None,
+                            request_compression_mode: None,
+                            request_compression_logical_body_bytes: None,
+                            request_compression_transmitted_body_bytes: None,
+                            request_compression_transmission_complete: None,
+                            failure_kind: Some(err.failure_kind),
+                            requester_ip: requester_ip.as_deref(),
+                            request_user_agent: request_chain_metadata.user_agent.as_deref(),
+                            request_x_forwarded_for: request_chain_metadata
+                                .x_forwarded_for
+                                .as_deref(),
+                            request_forwarded: request_chain_metadata.forwarded.as_deref(),
+                            request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
+                            upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
+                            route_mode: INVOCATION_ROUTE_MODE_POOL,
+                            sticky_key: sticky_key.as_deref(),
+                            prompt_cache_key: prompt_cache_key.as_deref(),
+                            prompt_cache_key_attribution_source: request_info
+                                .prompt_cache_key_attribution_source
+                                .as_deref(),
+                            client_fingerprint: client_attribution_context.fingerprint.as_deref(),
+                            client_header_fingerprints: Some(
+                                &client_attribution_context.header_fingerprints,
+                            )
+                            .filter(|fingerprints| !fingerprints.is_empty()),
+                            upstream_account_id: err
+                                .account
+                                .as_ref()
+                                .map(|account| account.account_id),
+                            upstream_account_name: err
+                                .account
+                                .as_ref()
+                                .map(|account| account.display_name.as_str()),
+                            upstream_account_kind: payload_summary_upstream_account_kind(
+                                err.account.as_ref(),
+                            ),
+                            upstream_base_url_host: payload_summary_upstream_base_url_host(
+                                err.account.as_ref(),
+                            ),
+                            oauth_account_header_attached:
+                                oauth_account_header_attached_for_account(err.account.as_ref()),
+                            oauth_account_id_shape: oauth_account_id_shape_for_account(
+                                err.account.as_ref(),
+                            ),
+                            oauth_forwarded_header_count: err
+                                .oauth_responses_debug
+                                .as_ref()
+                                .map(|debug| debug.forwarded_header_names.len()),
+                            oauth_forwarded_header_names: err
+                                .oauth_responses_debug
+                                .as_ref()
+                                .map(|debug| debug.forwarded_header_names.as_slice()),
+                            oauth_fingerprint_version: err
+                                .oauth_responses_debug
+                                .as_ref()
+                                .and_then(|debug| debug.fingerprint_version),
+                            oauth_forwarded_header_fingerprints: err
+                                .oauth_responses_debug
+                                .as_ref()
+                                .and_then(|debug| debug.forwarded_header_fingerprints.as_ref()),
+                            oauth_prompt_cache_header_forwarded: err
+                                .oauth_responses_debug
+                                .as_ref()
+                                .map(|debug| debug.prompt_cache_header_forwarded),
+                            oauth_request_body_prefix_fingerprint: err
+                                .oauth_responses_debug
+                                .as_ref()
+                                .and_then(|debug| debug.request_body_prefix_fingerprint.as_deref()),
+                            oauth_request_body_prefix_bytes: err
+                                .oauth_responses_debug
+                                .as_ref()
+                                .and_then(|debug| debug.request_body_prefix_bytes),
+                            oauth_request_body_snapshot_kind: err
+                                .oauth_responses_debug
+                                .as_ref()
+                                .and_then(|debug| debug.request_body_snapshot_kind),
+                            oauth_responses_body_mode: err
+                                .oauth_responses_debug
+                                .as_ref()
+                                .and_then(|debug| debug.responses_body_mode),
+                            oauth_responses_rewrite: err
+                                .oauth_responses_debug
+                                .as_ref()
+                                .map(|debug| &debug.rewrite),
+                            service_tier: None,
+                            stream_terminal_event: None,
+                            upstream_error_code: err.upstream_error_code.as_deref(),
+                            upstream_error_message: err.upstream_error_message.as_deref(),
+                            downstream_status_code: Some(err.status),
+                            downstream_error_message: Some(err.message.as_str()),
+                            upstream_request_id: err.upstream_request_id.as_deref(),
+                            response_content_encoding: None,
+                            stream_failure_origin: None,
+                            upstream_read_error_kind: None,
+                            content_encoding_chain: None,
+                            forwarded_chunk_count: None,
+                            forwarded_bytes: None,
+                            usage_observed: None,
+                            downstream_close_phase: None,
+                            downstream_write_error_kind: None,
+                            last_upstream_chunk_gap_ms: None,
+                            upstream_approx_upload_bytes: None,
+                            upstream_approx_download_bytes: None,
+                            proxy_display_name: pool_proxy_display_name.as_deref(),
+                            proxy_weight_delta: None,
+                            pool_attempt_count: Some(err.attempt_summary.pool_attempt_count),
+                            pool_distinct_account_count: Some(
+                                err.attempt_summary.pool_distinct_account_count,
+                            ),
+                            pool_attempt_terminal_reason: err
+                                .attempt_summary
+                                .pool_attempt_terminal_reason
+                                .as_deref(),
+                            blocked_binding: err.blocked_binding.as_ref(),
+                        }),
+                        image_tool_rewrite.as_ref(),
+                    )),
                     raw_response: response_envelope.body_text.clone(),
                     response_body_preview_enabled: true,
                     req_raw,
@@ -1633,6 +1648,13 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     request_info.requested_service_tier = final_requested_service_tier
         .clone()
         .or(request_info.requested_service_tier);
+    let image_tool_rewrite = pool_account.as_ref().and_then(|account| {
+        image_tool_rewrite_audit(
+            capture_target,
+            is_openai_responses_lite_request(&headers),
+            account.image_tool_rewrite_mode,
+        )
+    });
     let mut req_raw_pending = Some(spawn_raw_payload_file_write(
         state.as_ref(),
         &invoke_id,
@@ -1931,6 +1953,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let selected_proxy_for_task = selected_proxy.clone();
     let selected_proxy_display_name_for_task = selected_proxy_display_name.clone();
     let pool_account_for_task = pool_account.clone();
+    let image_tool_rewrite_for_task = image_tool_rewrite.clone();
     let oauth_responses_debug_for_task = oauth_responses_debug.clone();
     let downstream_request_observer_for_task = downstream_request_observer.clone();
     let attempt_already_recorded_for_task = attempt_already_recorded;
@@ -2842,184 +2865,188 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             || pure_downstream_closed
             || !upstream_status.is_success())
         .then_some(&request_chain_metadata_for_task);
-        let payload = build_proxy_payload_summary(ProxyPayloadSummary {
-            target: capture_target,
-            status: upstream_status,
-            is_stream: request_info_for_task.is_stream,
-            request_contains_encrypted_content: request_info_for_task.contains_encrypted_content,
-            response_contains_encrypted_content: response_info.contains_encrypted_content,
-            compaction_request_kind: request_info_for_task.compaction_request_kind,
-            compaction_response_kind: resolve_compaction_response_kind_for_payload(
-                capture_target,
-                response_info.compaction_response_kind,
-            ),
-            image_intent: request_info_for_task.image_intent.as_deref(),
-            request_model: request_info_for_task.model.as_deref(),
-            requested_service_tier: request_info_for_task.requested_service_tier.as_deref(),
-            billing_service_tier: billing_service_tier.as_deref(),
-            reasoning_effort: request_info_for_task.reasoning_effort.as_deref(),
-            response_model: response_info.model.as_deref(),
-            usage_missing_reason: response_info.usage_missing_reason.as_deref(),
-            request_parse_error: request_info_for_task.parse_error.as_deref(),
-            request_compression_algorithm: if pool_account_for_task.is_none() {
-                direct_http_approx_for_task
-                    .request_compression
+        let payload = with_image_tool_rewrite_payload_summary(
+            build_proxy_payload_summary(ProxyPayloadSummary {
+                target: capture_target,
+                status: upstream_status,
+                is_stream: request_info_for_task.is_stream,
+                request_contains_encrypted_content: request_info_for_task
+                    .contains_encrypted_content,
+                response_contains_encrypted_content: response_info.contains_encrypted_content,
+                compaction_request_kind: request_info_for_task.compaction_request_kind,
+                compaction_response_kind: resolve_compaction_response_kind_for_payload(
+                    capture_target,
+                    response_info.compaction_response_kind,
+                ),
+                image_intent: request_info_for_task.image_intent.as_deref(),
+                request_model: request_info_for_task.model.as_deref(),
+                requested_service_tier: request_info_for_task.requested_service_tier.as_deref(),
+                billing_service_tier: billing_service_tier.as_deref(),
+                reasoning_effort: request_info_for_task.reasoning_effort.as_deref(),
+                response_model: response_info.model.as_deref(),
+                usage_missing_reason: response_info.usage_missing_reason.as_deref(),
+                request_parse_error: request_info_for_task.parse_error.as_deref(),
+                request_compression_algorithm: if pool_account_for_task.is_none() {
+                    direct_http_approx_for_task
+                        .request_compression
+                        .as_ref()
+                        .map(|value| value.algorithm.as_str())
+                } else {
+                    None
+                },
+                request_compression_mode: if pool_account_for_task.is_none() {
+                    direct_http_approx_for_task
+                        .request_compression
+                        .as_ref()
+                        .map(|value| value.mode.as_str())
+                } else {
+                    None
+                },
+                request_compression_logical_body_bytes: if pool_account_for_task.is_none() {
+                    direct_http_approx_for_task
+                        .request_compression
+                        .as_ref()
+                        .map(|value| value.logical_body_bytes)
+                } else {
+                    None
+                },
+                request_compression_transmitted_body_bytes: if pool_account_for_task.is_none() {
+                    direct_http_approx_for_task
+                        .request_compression
+                        .as_ref()
+                        .map(|value| value.transmitted_body_bytes)
+                } else {
+                    None
+                },
+                request_compression_transmission_complete: pool_account_for_task
+                    .is_none()
+                    .then_some(direct_http_approx_for_task.request_transmission_complete),
+                failure_kind,
+                requester_ip: requester_ip_for_task.as_deref(),
+                request_user_agent: request_chain_metadata_for_payload
+                    .and_then(|metadata| metadata.user_agent.as_deref()),
+                request_x_forwarded_for: request_chain_metadata_for_payload
+                    .and_then(|metadata| metadata.x_forwarded_for.as_deref()),
+                request_forwarded: request_chain_metadata_for_payload
+                    .and_then(|metadata| metadata.forwarded.as_deref()),
+                request_x_real_ip: request_chain_metadata_for_payload
+                    .and_then(|metadata| metadata.x_real_ip.as_deref()),
+                upstream_scope: if pool_account_for_task.is_some() {
+                    INVOCATION_UPSTREAM_SCOPE_INTERNAL
+                } else {
+                    INVOCATION_UPSTREAM_SCOPE_EXTERNAL
+                },
+                route_mode: if pool_account_for_task.is_some() {
+                    INVOCATION_ROUTE_MODE_POOL
+                } else {
+                    INVOCATION_ROUTE_MODE_FORWARD_PROXY
+                },
+                sticky_key: sticky_key_for_task.as_deref(),
+                prompt_cache_key: prompt_cache_key_for_task.as_deref(),
+                prompt_cache_key_attribution_source: request_info_for_task
+                    .prompt_cache_key_attribution_source
+                    .as_deref(),
+                client_fingerprint: client_attribution_context_for_task.fingerprint.as_deref(),
+                client_header_fingerprints: Some(
+                    &client_attribution_context_for_task.header_fingerprints,
+                )
+                .filter(|fingerprints| !fingerprints.is_empty()),
+                upstream_account_id: pool_account_for_task
                     .as_ref()
-                    .map(|value| value.algorithm.as_str())
-            } else {
-                None
-            },
-            request_compression_mode: if pool_account_for_task.is_none() {
-                direct_http_approx_for_task
-                    .request_compression
+                    .map(|account| account.account_id),
+                upstream_account_name: pool_account_for_task
                     .as_ref()
-                    .map(|value| value.mode.as_str())
-            } else {
-                None
-            },
-            request_compression_logical_body_bytes: if pool_account_for_task.is_none() {
-                direct_http_approx_for_task
-                    .request_compression
+                    .map(|account| account.display_name.as_str()),
+                upstream_account_kind: payload_summary_upstream_account_kind(
+                    pool_account_for_task.as_ref(),
+                ),
+                upstream_base_url_host: payload_summary_upstream_base_url_host(
+                    pool_account_for_task.as_ref(),
+                ),
+                oauth_account_header_attached: oauth_account_header_attached_for_account(
+                    pool_account_for_task.as_ref(),
+                ),
+                oauth_account_id_shape: oauth_account_id_shape_for_account(
+                    pool_account_for_task.as_ref(),
+                ),
+                oauth_forwarded_header_count: oauth_responses_debug_for_task
                     .as_ref()
-                    .map(|value| value.logical_body_bytes)
-            } else {
-                None
-            },
-            request_compression_transmitted_body_bytes: if pool_account_for_task.is_none() {
-                direct_http_approx_for_task
-                    .request_compression
+                    .map(|debug| debug.forwarded_header_names.len()),
+                oauth_forwarded_header_names: oauth_responses_debug_for_task
                     .as_ref()
-                    .map(|value| value.transmitted_body_bytes)
-            } else {
-                None
-            },
-            request_compression_transmission_complete: pool_account_for_task
-                .is_none()
-                .then_some(direct_http_approx_for_task.request_transmission_complete),
-            failure_kind,
-            requester_ip: requester_ip_for_task.as_deref(),
-            request_user_agent: request_chain_metadata_for_payload
-                .and_then(|metadata| metadata.user_agent.as_deref()),
-            request_x_forwarded_for: request_chain_metadata_for_payload
-                .and_then(|metadata| metadata.x_forwarded_for.as_deref()),
-            request_forwarded: request_chain_metadata_for_payload
-                .and_then(|metadata| metadata.forwarded.as_deref()),
-            request_x_real_ip: request_chain_metadata_for_payload
-                .and_then(|metadata| metadata.x_real_ip.as_deref()),
-            upstream_scope: if pool_account_for_task.is_some() {
-                INVOCATION_UPSTREAM_SCOPE_INTERNAL
-            } else {
-                INVOCATION_UPSTREAM_SCOPE_EXTERNAL
-            },
-            route_mode: if pool_account_for_task.is_some() {
-                INVOCATION_ROUTE_MODE_POOL
-            } else {
-                INVOCATION_ROUTE_MODE_FORWARD_PROXY
-            },
-            sticky_key: sticky_key_for_task.as_deref(),
-            prompt_cache_key: prompt_cache_key_for_task.as_deref(),
-            prompt_cache_key_attribution_source: request_info_for_task
-                .prompt_cache_key_attribution_source
-                .as_deref(),
-            client_fingerprint: client_attribution_context_for_task.fingerprint.as_deref(),
-            client_header_fingerprints: Some(
-                &client_attribution_context_for_task.header_fingerprints,
-            )
-            .filter(|fingerprints| !fingerprints.is_empty()),
-            upstream_account_id: pool_account_for_task
-                .as_ref()
-                .map(|account| account.account_id),
-            upstream_account_name: pool_account_for_task
-                .as_ref()
-                .map(|account| account.display_name.as_str()),
-            upstream_account_kind: payload_summary_upstream_account_kind(
-                pool_account_for_task.as_ref(),
-            ),
-            upstream_base_url_host: payload_summary_upstream_base_url_host(
-                pool_account_for_task.as_ref(),
-            ),
-            oauth_account_header_attached: oauth_account_header_attached_for_account(
-                pool_account_for_task.as_ref(),
-            ),
-            oauth_account_id_shape: oauth_account_id_shape_for_account(
-                pool_account_for_task.as_ref(),
-            ),
-            oauth_forwarded_header_count: oauth_responses_debug_for_task
-                .as_ref()
-                .map(|debug| debug.forwarded_header_names.len()),
-            oauth_forwarded_header_names: oauth_responses_debug_for_task
-                .as_ref()
-                .map(|debug| debug.forwarded_header_names.as_slice()),
-            oauth_fingerprint_version: oauth_responses_debug_for_task
-                .as_ref()
-                .and_then(|debug| debug.fingerprint_version),
-            oauth_forwarded_header_fingerprints: oauth_responses_debug_for_task
-                .as_ref()
-                .and_then(|debug| debug.forwarded_header_fingerprints.as_ref()),
-            oauth_prompt_cache_header_forwarded: oauth_responses_debug_for_task
-                .as_ref()
-                .map(|debug| debug.prompt_cache_header_forwarded),
-            oauth_request_body_prefix_fingerprint: oauth_responses_debug_for_task
-                .as_ref()
-                .and_then(|debug| debug.request_body_prefix_fingerprint.as_deref()),
-            oauth_request_body_prefix_bytes: oauth_responses_debug_for_task
-                .as_ref()
-                .and_then(|debug| debug.request_body_prefix_bytes),
-            oauth_request_body_snapshot_kind: oauth_responses_debug_for_task
-                .as_ref()
-                .and_then(|debug| debug.request_body_snapshot_kind),
-            oauth_responses_body_mode: oauth_responses_debug_for_task
-                .as_ref()
-                .and_then(|debug| debug.responses_body_mode),
-            oauth_responses_rewrite: oauth_responses_debug_for_task
-                .as_ref()
-                .map(|debug| &debug.rewrite),
-            service_tier: response_info.service_tier.as_deref(),
-            stream_terminal_event: response_info.stream_terminal_event.as_deref(),
-            upstream_error_code: response_info.upstream_error_code.as_deref(),
-            upstream_error_message: response_info.upstream_error_message.as_deref(),
-            downstream_status_code: if downstream_closed {
-                Some(upstream_status)
-            } else {
-                None
-            },
-            downstream_error_message: downstream_error_message.as_deref(),
-            upstream_request_id: response_info.upstream_request_id.as_deref(),
-            response_content_encoding: Some(response_content_encoding.as_str()),
-            stream_failure_origin,
-            upstream_read_error_kind,
-            content_encoding_chain: Some(response_content_encoding.as_str()),
-            forwarded_chunk_count: Some(forwarded_chunks),
-            forwarded_bytes: Some(forwarded_bytes),
-            usage_observed: Some(usage_observed),
-            downstream_close_phase,
-            downstream_write_error_kind,
-            last_upstream_chunk_gap_ms,
-            upstream_approx_upload_bytes: pool_account_for_task
-                .is_none()
-                .then_some(direct_http_approx_for_task.approx_upload_bytes),
-            upstream_approx_download_bytes: pool_account_for_task.is_none().then_some(
-                direct_http_approx_for_task
-                    .approx_download_bytes_before_response_body
-                    .saturating_add(forwarded_bytes),
-            ),
-            proxy_display_name: selected_proxy_display_name.as_deref(),
-            proxy_weight_delta: if selected_proxy_for_task.is_some() {
-                proxy_attempt_update.delta()
-            } else {
-                None
-            },
-            pool_attempt_count: pool_account_for_task
-                .as_ref()
-                .map(|_| pending_pool_attempt_summary.pool_attempt_count),
-            pool_distinct_account_count: pool_account_for_task
-                .as_ref()
-                .map(|_| pending_pool_attempt_summary.pool_distinct_account_count),
-            pool_attempt_terminal_reason: pool_account_for_task
-                .as_ref()
-                .and(pending_pool_attempt_terminal_reason.as_deref()),
-            blocked_binding: None,
-        });
+                    .map(|debug| debug.forwarded_header_names.as_slice()),
+                oauth_fingerprint_version: oauth_responses_debug_for_task
+                    .as_ref()
+                    .and_then(|debug| debug.fingerprint_version),
+                oauth_forwarded_header_fingerprints: oauth_responses_debug_for_task
+                    .as_ref()
+                    .and_then(|debug| debug.forwarded_header_fingerprints.as_ref()),
+                oauth_prompt_cache_header_forwarded: oauth_responses_debug_for_task
+                    .as_ref()
+                    .map(|debug| debug.prompt_cache_header_forwarded),
+                oauth_request_body_prefix_fingerprint: oauth_responses_debug_for_task
+                    .as_ref()
+                    .and_then(|debug| debug.request_body_prefix_fingerprint.as_deref()),
+                oauth_request_body_prefix_bytes: oauth_responses_debug_for_task
+                    .as_ref()
+                    .and_then(|debug| debug.request_body_prefix_bytes),
+                oauth_request_body_snapshot_kind: oauth_responses_debug_for_task
+                    .as_ref()
+                    .and_then(|debug| debug.request_body_snapshot_kind),
+                oauth_responses_body_mode: oauth_responses_debug_for_task
+                    .as_ref()
+                    .and_then(|debug| debug.responses_body_mode),
+                oauth_responses_rewrite: oauth_responses_debug_for_task
+                    .as_ref()
+                    .map(|debug| &debug.rewrite),
+                service_tier: response_info.service_tier.as_deref(),
+                stream_terminal_event: response_info.stream_terminal_event.as_deref(),
+                upstream_error_code: response_info.upstream_error_code.as_deref(),
+                upstream_error_message: response_info.upstream_error_message.as_deref(),
+                downstream_status_code: if downstream_closed {
+                    Some(upstream_status)
+                } else {
+                    None
+                },
+                downstream_error_message: downstream_error_message.as_deref(),
+                upstream_request_id: response_info.upstream_request_id.as_deref(),
+                response_content_encoding: Some(response_content_encoding.as_str()),
+                stream_failure_origin,
+                upstream_read_error_kind,
+                content_encoding_chain: Some(response_content_encoding.as_str()),
+                forwarded_chunk_count: Some(forwarded_chunks),
+                forwarded_bytes: Some(forwarded_bytes),
+                usage_observed: Some(usage_observed),
+                downstream_close_phase,
+                downstream_write_error_kind,
+                last_upstream_chunk_gap_ms,
+                upstream_approx_upload_bytes: pool_account_for_task
+                    .is_none()
+                    .then_some(direct_http_approx_for_task.approx_upload_bytes),
+                upstream_approx_download_bytes: pool_account_for_task.is_none().then_some(
+                    direct_http_approx_for_task
+                        .approx_download_bytes_before_response_body
+                        .saturating_add(forwarded_bytes),
+                ),
+                proxy_display_name: selected_proxy_display_name.as_deref(),
+                proxy_weight_delta: if selected_proxy_for_task.is_some() {
+                    proxy_attempt_update.delta()
+                } else {
+                    None
+                },
+                pool_attempt_count: pool_account_for_task
+                    .as_ref()
+                    .map(|_| pending_pool_attempt_summary.pool_attempt_count),
+                pool_distinct_account_count: pool_account_for_task
+                    .as_ref()
+                    .map(|_| pending_pool_attempt_summary.pool_distinct_account_count),
+                pool_attempt_terminal_reason: pool_account_for_task
+                    .as_ref()
+                    .and(pending_pool_attempt_terminal_reason.as_deref()),
+                blocked_binding: None,
+            }),
+            image_tool_rewrite_for_task.as_ref(),
+        );
 
         let record = ProxyCaptureRecord {
             invoke_id: invoke_id_for_task,

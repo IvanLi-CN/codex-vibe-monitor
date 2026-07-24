@@ -3512,6 +3512,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                       fieldImageToolRewriteMode: t(
                         "accountPool.upstreamAccounts.effectiveRule.fieldImageToolRewriteMode",
                       ),
+                      imageToolRewriteHint: t(
+                        "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint",
+                      ),
                       timeoutSectionTitle: t(
                         "accountPool.upstreamAccounts.routing.timeout.sectionTitle",
                       ),

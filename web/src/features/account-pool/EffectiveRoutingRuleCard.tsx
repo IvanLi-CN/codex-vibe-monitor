@@ -17,6 +17,7 @@ import {
   CommandList,
   CommandSeparator,
 } from "../../components/ui/command";
+import { InfoTooltip } from "../../components/ui/info-tooltip";
 import { Input } from "../../components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
 import { Switch } from "../../components/ui/switch";
@@ -208,6 +209,7 @@ interface EffectiveRoutingRuleCardProps {
     fieldPriority?: string;
     fieldFastMode?: string;
     fieldImageToolRewriteMode?: string;
+    imageToolRewriteHint?: string;
     fieldRequestCompression?: string;
     fieldConcurrency?: string;
     fieldUpstream429?: string;
@@ -268,6 +270,15 @@ const defaultFieldSources: FieldSourceMap = {
   availableModels: "root",
   systemDeniedModels: "root",
 };
+
+function PolicyFieldLabel({ label, hint }: { label: string; hint?: string }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span>{label}</span>
+      {hint ? <InfoTooltip label={`${label} help`} content={hint} /> : null}
+    </span>
+  );
+}
 
 function defaultRule(rule?: EffectiveRoutingRule | null): EffectiveRoutingRule {
   return (
@@ -1147,7 +1158,16 @@ export function EffectiveRoutingRuleCard({
                 return (
                   <div key={row.label} className="border-b border-base-300/60 last:border-b-0">
                     <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-3">
-                      <span className="font-medium text-base-content/80">{row.label}</span>
+                      <span className="font-medium text-base-content/80">
+                        <PolicyFieldLabel
+                          label={row.label}
+                          hint={
+                            row.key === "imageToolRewriteMode"
+                              ? labels.imageToolRewriteHint
+                              : undefined
+                          }
+                        />
+                      </span>
                       {row.displayValueBadges ? (
                         <ValueBadgeList
                           field={row.displayField}
@@ -1204,7 +1224,16 @@ export function EffectiveRoutingRuleCard({
                     {expanded && row.field ? (
                       <div className="border-t border-base-300/50 bg-base-100/55 px-3 py-3">
                         <div className="grid grid-cols-1 gap-y-2 sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-x-3">
-                          <p className="text-sm font-semibold text-base-content">{row.label}</p>
+                          <p className="text-sm font-semibold text-base-content">
+                            <PolicyFieldLabel
+                              label={row.label}
+                              hint={
+                                row.key === "imageToolRewriteMode"
+                                  ? labels.imageToolRewriteHint
+                                  : undefined
+                              }
+                            />
+                          </p>
                           <div className="min-w-0 sm:col-span-3">{row.displayEditor}</div>
                           {busy ? (
                             <p className="text-xs text-base-content/60 sm:col-start-2 sm:col-span-3">
