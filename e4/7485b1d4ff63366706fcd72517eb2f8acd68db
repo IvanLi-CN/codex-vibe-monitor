@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.47.6",
+  "base_stable_version": "2.47.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-24T04:44:50Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.47.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8cd173242dca99e29e1516bceaa88e56755d72bb",
+  "pr_number": 689,
+  "pr_title": "feat(account-pool): make group routing policies responsive",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.47.6",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.47.6",
+  "target_sha": "e47485b1d4ff63366706fcd72517eb2f8acd68db",
+  "type_label": "type:patch"
+}
