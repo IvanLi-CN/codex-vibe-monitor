@@ -840,6 +840,12 @@ pub(crate) fn schedule_proxy_capture_follow_up_after_terminal_enqueue(
             .subscription_hub
             .has_active_topic_name_sync("quota.current")
     {
+        let subscription_hub = state.subscription_hub.clone();
+        tokio::spawn(async move {
+            subscription_hub
+                .mark_topic_name_dirty("quota.current")
+                .await;
+        });
         return;
     }
 
