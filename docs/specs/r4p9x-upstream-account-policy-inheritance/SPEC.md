@@ -434,3 +434,35 @@ PR: include
 
 PR: include
 ![Upstream account detail capability overview split](./assets/upstream-account-detail-capability-overview-split.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `Account Pool/Components/Effective Routing Rule Card / Editable Image Tool Help`
+  state: account image-tool policy help open
+  requested_viewport: none
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the real effective-rule card exposes the Full Responses-only policy boundary through the image-tool help affordance.
+  PR: include
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: fixture-only routing policy data
+  submission_gate: approved
+  image:
+  ![Account image-tool policy help](./assets/responses-lite-image-tool-help-account.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `Account Pool/Components/Upstream Account Group Settings Dialog / Routing Policy Inline Editor`
+  state: group routing settings image-tool help open
+  requested_viewport: none
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the actual group settings dialog renders the same Lite client-owned-tools boundary beside the image-tool selector.
+  PR: include
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: fixture-only group policy data
+  submission_gate: approved
+  image:
+  ![Group image-tool policy help](./assets/responses-lite-image-tool-help-group.png)

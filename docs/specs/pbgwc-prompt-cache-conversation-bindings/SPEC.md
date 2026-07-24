@@ -385,6 +385,22 @@ PR: include
 - state: events tab open with the default `全部` filter, showing `affinityReset`, `stickyTargetCleared`, and one later `systemAuto stickyTargetChanged` event with `invokeId`
 - evidence_note: verifies the sibling `事件记录` tab, the lightweight `全部 / 路由相关 / 正向代理相关 / 请求改写相关` filter row, and the bug-fix sequence itself: clearing affinity removes the old sticky target, no stale revival event appears in between, and only the later fresh reassignment emits `Sticky 目标已切换` from `systemAuto`.
 
+- source_type: storybook_canvas
+  story_id_or_title: `Monitoring/PromptCacheConversationTable / Drawer Binding And Timeouts`
+  state: conversation settings image-tool help open
+  requested_viewport: none
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the actual conversation settings drawer retains the four inherited policy values while explaining that Lite client-owned tools remain unchanged.
+  PR: include
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: fixture-only conversation data
+  submission_gate: approved
+  image:
+  ![Conversation image-tool policy help](./assets/responses-lite-image-tool-help-conversation.png)
+
 ## Image Tool Override Boundary
 
 Conversation `imageToolRewriteMode` remains a four-value inherited policy. Its help affordance must state that the modes rewrite Full Responses only; a Codex Responses Lite request retains client-owned tools unchanged, including `force_remove`.
