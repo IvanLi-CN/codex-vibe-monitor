@@ -576,6 +576,9 @@ pub(crate) async fn broadcast_proxy_capture_follow_up(
             .has_active_topic_name("quota.current")
             .await
     {
+        subscription_hub
+            .mark_topic_name_dirty("quota.current")
+            .await;
         return;
     }
 
