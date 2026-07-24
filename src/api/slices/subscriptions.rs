@@ -50,8 +50,19 @@ fn subscription_calendar_rollover_delay(topic: &SubscriptionTopic) -> Duration {
     };
     let reporting_tz = parse_reporting_tz(Some(time_zone.as_str()))
         .unwrap_or_else(|_| "Asia/Shanghai".parse().expect("default timezone is valid"));
-    let now = Utc::now();
-    let next_midnight = start_of_local_day(now, reporting_tz) + ChronoDuration::days(1);
+    subscription_calendar_rollover_delay_at(topic, Utc::now(), reporting_tz)
+}
+
+fn subscription_calendar_rollover_delay_at(
+    topic: &SubscriptionTopic,
+    now: DateTime<Utc>,
+    reporting_tz: Tz,
+) -> Duration {
+    let SubscriptionTopic::SummaryCurrent { .. } = topic else {
+        return Duration::from_secs(1);
+    };
+    let tomorrow = now.with_timezone(&reporting_tz).date_naive() + ChronoDuration::days(1);
+    let next_midnight = local_midnight_utc(tomorrow, reporting_tz);
     (next_midnight - now)
         .to_std()
         .unwrap_or_else(|_| Duration::from_millis(1))
@@ -3150,6 +3161,26 @@ mod tests {
                 subscription_calendar_rollover_delay(&topic) <= Duration::from_secs(24 * 60 * 60)
             );
         }
+    }
+
+    #[test]
+    fn closed_summary_rollover_uses_next_local_midnight_across_dst() {
+        let topic = SubscriptionTopic::SummaryCurrent {
+            window: "previous7d".to_string(),
+            time_zone: "America/New_York".to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let reporting_tz = parse_reporting_tz(Some("America/New_York")).expect("valid timezone");
+        let before_fall_back = Utc
+            .with_ymd_and_hms(2026, 11, 1, 5, 30, 0)
+            .single()
+            .expect("valid UTC instant");
+
+        assert_eq!(
+            subscription_calendar_rollover_delay_at(&topic, before_fall_back, reporting_tz),
+            Duration::from_secs(23 * 60 * 60 + 30 * 60)
+        );
     }
 
     #[tokio::test]
