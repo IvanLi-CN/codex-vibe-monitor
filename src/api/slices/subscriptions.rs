@@ -25,6 +25,25 @@ const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration =
 const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_millis(500);
 const SUMMARY_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
 
+fn subscription_calendar_anchor(topic: &SubscriptionTopic) -> Option<String> {
+    let SubscriptionTopic::SummaryCurrent {
+        window, time_zone, ..
+    } = topic
+    else {
+        return None;
+    };
+    if !matches!(window.as_str(), "yesterday" | "previous7d") {
+        return None;
+    }
+    let reporting_tz = parse_reporting_tz(Some(time_zone.as_str())).ok()?;
+    Some(
+        Utc::now()
+            .with_timezone(&reporting_tz)
+            .date_naive()
+            .to_string(),
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SubscriptionTopicDescriptor {
@@ -135,6 +154,7 @@ struct CachedSubscriptionTopic {
     summary_pending_event_count: u64,
     summary_retry_backoff_ms: u64,
     latest_live_snapshot: Option<DashboardActivityLiveSnapshot>,
+    calendar_anchor: Option<String>,
     snapshot_payload: Value,
     snapshot_bytes: usize,
     replay_events: VecDeque<ReplayableTopicEvent>,
@@ -730,6 +750,8 @@ impl SubscriptionHub {
         let topic_key = topic.cache_key()?;
         if let Some(existing) = self.state.lock().await.topics.get(&topic_key).cloned()
             && !existing.dirty
+            && (!topic.is_closed_summary_topic()
+                || existing.calendar_anchor == subscription_calendar_anchor(&topic))
         {
             return Ok(existing);
         }
@@ -827,6 +849,7 @@ impl SubscriptionHub {
                     .topics
                     .get(&topic_key)
                     .and_then(|entry| entry.latest_live_snapshot.clone()),
+                calendar_anchor: subscription_calendar_anchor(&topic),
                 snapshot_payload: payload.clone(),
                 snapshot_bytes: payload_bytes,
                 replay_events: guard
@@ -1216,9 +1239,15 @@ impl SubscriptionHub {
         };
 
         let started = Instant::now();
-        let result = self
-            .refresh_topic_if_active(state.clone(), topic.clone(), true)
-            .await;
+        let result = match state.sqlite_batch_writer.flush_now(&state.pool).await {
+            Ok(()) => {
+                self.refresh_topic_if_active(state.clone(), topic.clone(), true)
+                    .await
+            }
+            Err(err) => Err(ApiError::from(anyhow!(
+                "summary topic prerequisite flush failed: {err}"
+            ))),
+        };
         let elapsed_ms = started.elapsed().as_millis() as u64;
         let mut retry_delay = None;
         let mut coalesced_event_count = event_count;
@@ -3061,6 +3090,7 @@ mod tests {
             summary_pending_event_count: 0,
             summary_retry_backoff_ms: 0,
             latest_live_snapshot: None,
+            calendar_anchor: None,
             snapshot_payload: json!({ "cursor": cursor }),
             snapshot_bytes: 32,
             replay_events,
