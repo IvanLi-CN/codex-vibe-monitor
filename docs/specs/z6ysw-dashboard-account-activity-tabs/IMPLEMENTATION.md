@@ -77,6 +77,8 @@
 - 已补齐 rollout repair：`dashboard / upstream-account` 共享的 `usage_breakdown` builder 不再把 `upstream_account_usage_breakdown_hourly` 误当成“历史 materialized archive 必然已 replay”的 legacy target；bootstrap 会把缺真实 breakdown rows 的旧 archive batch 重新标成 pending，由 historical rollup materialization 回补，而不是把 `7d` 精度问题静默留在线上。
 - 已补齐 legacy pruned archive fallback 收口：`upstream_account_usage_breakdown_hourly` 从 full-payload-required target 集合拆出，裁剪 payload 的历史 batch 会结构化 replay 并写入 breakdown replay marker，读侧健康路径不再因该 target 缺口反复打开 archive fallback；新增 telemetry 区分 `structured_rollup_unknown_reasoning` 与 `blocked_payload_required`。
 - 已实现账号活动 v2 hourly rollup：`upstream_account_stats_hourly` 新增独立 v2 聚合字段与 replay target，Dashboard full 和 upstream-account 共用“covered full hours rollup + uncovered contiguous hours exact fallback + boundary exact tail” builder。live 与 archive repair 使用独立 cursor，marker 完成前不消费默认零值；缓存继续保持稳定 selection + 5 秒 TTL，并新增 refresh/invalidation reason、selection fingerprint 与 coverage telemetry。
+- 已实现：Summary `non_success_tokens` 复用同一账号活动 v2 coverage planner，完整小时从 `activity_v2_non_success_tokens` 汇总，边界/缺口使用有界 scalar exact tail，移除健康路径对整窗账号活动 raw aggregate 的依赖。
+- 已实现：Dashboard 与 Summary topic 刷新均以连接级 owner subscriber lease 为门控；无 active owner subscriber 时缓存只标记 dirty，重连时重新构建 fresh snapshot。Dashboard 的 5 秒 TTL 未改变，日志新增 `refresh_reason`、`invalidation_reason`、`active_subscriber_count`、`selection_fingerprint` 与 `base_snapshot_age_ms`。
 
 ## Remaining Gaps
 

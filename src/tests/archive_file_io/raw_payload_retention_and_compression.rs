@@ -1726,10 +1726,9 @@ async fn finish_summary_quota_broadcast_idle_flushes_pending_tail_when_shutdown_
             broadcast_running: state.proxy_summary_quota_broadcast_running.as_ref(),
             shutdown: &state.shutdown,
             pool: &state.pool,
-            hourly_rollup_sync_lock: state.hourly_rollup_sync_lock.as_ref(),
             broadcaster: &state.broadcaster,
             broadcast_state_cache: state.broadcast_state_cache.as_ref(),
-            invocation_max_days: state.config.invocation_max_days,
+            subscription_hub: state.subscription_hub.as_ref(),
             invoke_id: "idle-shutdown-tail",
         },
         1,
@@ -1748,17 +1747,12 @@ async fn finish_summary_quota_broadcast_idle_flushes_pending_tail_when_shutdown_
     );
 
     let mut saw_quota = false;
-    let mut summary_windows = HashSet::new();
-    let expected_summary_windows = summary_broadcast_specs().len();
     for _ in 0..8 {
         let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("timed out waiting for shutdown idle-tail broadcast event")
             .expect("broadcast channel should stay open");
         match payload {
-            BroadcastPayload::Summary { window, .. } => {
-                summary_windows.insert(window);
-            }
             BroadcastPayload::Quota { snapshot } => {
                 saw_quota = true;
                 assert_eq!(snapshot.total_requests, 9);
@@ -1769,7 +1763,7 @@ async fn finish_summary_quota_broadcast_idle_flushes_pending_tail_when_shutdown_
             | BroadcastPayload::DashboardActivityLive { .. } => {}
         }
 
-        if saw_quota && summary_windows.len() == expected_summary_windows {
+        if saw_quota {
             break;
         }
     }
@@ -1777,11 +1771,6 @@ async fn finish_summary_quota_broadcast_idle_flushes_pending_tail_when_shutdown_
     assert!(
         saw_quota,
         "shutdown idle-tail flush should emit the latest quota snapshot"
-    );
-    assert_eq!(
-        summary_windows.len(),
-        expected_summary_windows,
-        "shutdown idle-tail flush should emit every summary window"
     );
 }
 
@@ -1794,6 +1783,10 @@ async fn persist_and_broadcast_proxy_capture_flushes_follow_up_when_shutdown_beg
     .await;
     let now_local = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
     seed_quota_snapshot(&state.pool, &now_local).await;
+    let _quota_lease = state
+        .subscription_hub
+        .register_test_topic_name("quota.current")
+        .await;
 
     let mut rx = state.broadcaster.subscribe();
     let invoke_id = "shutdown-tail-broadcast";
@@ -1808,8 +1801,6 @@ async fn persist_and_broadcast_proxy_capture_flushes_follow_up_when_shutdown_beg
 
     let mut saw_record = false;
     let mut saw_quota = false;
-    let mut summary_windows = HashSet::new();
-    let expected_summary_windows = summary_broadcast_specs().len();
     for _ in 0..16 {
         let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
@@ -1821,9 +1812,6 @@ async fn persist_and_broadcast_proxy_capture_flushes_follow_up_when_shutdown_beg
                     .into_iter()
                     .any(|record| record.invoke_id == invoke_id);
             }
-            BroadcastPayload::Summary { window, .. } => {
-                summary_windows.insert(window);
-            }
             BroadcastPayload::Quota { snapshot } => {
                 saw_quota = true;
                 assert_eq!(snapshot.total_requests, 9);
@@ -1833,7 +1821,7 @@ async fn persist_and_broadcast_proxy_capture_flushes_follow_up_when_shutdown_beg
             | BroadcastPayload::DashboardActivityLive { .. } => {}
         }
 
-        if saw_record && saw_quota && summary_windows.len() == expected_summary_windows {
+        if saw_record && saw_quota {
             break;
         }
     }
@@ -1845,11 +1833,6 @@ async fn persist_and_broadcast_proxy_capture_flushes_follow_up_when_shutdown_beg
     assert!(
         saw_quota,
         "shutdown tail path should flush the latest quota snapshot"
-    );
-    assert_eq!(
-        summary_windows.len(),
-        expected_summary_windows,
-        "shutdown tail path should flush every summary window"
     );
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
@@ -1868,6 +1851,10 @@ async fn persist_and_broadcast_runtime_terminal_schedules_follow_up_after_flush(
     .await;
     let now_local = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
     seed_quota_snapshot(&state.pool, &now_local).await;
+    let _quota_lease = state
+        .subscription_hub
+        .register_test_topic_name("quota.current")
+        .await;
 
     let mut rx = state.broadcaster.subscribe();
     let invoke_id = "runtime-terminal-follow-up";
@@ -1880,8 +1867,6 @@ async fn persist_and_broadcast_runtime_terminal_schedules_follow_up_after_flush(
 
     let mut saw_record = false;
     let mut saw_quota = false;
-    let mut summary_windows = HashSet::new();
-    let expected_summary_windows = summary_broadcast_specs().len();
     for _ in 0..16 {
         let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
@@ -1893,9 +1878,6 @@ async fn persist_and_broadcast_runtime_terminal_schedules_follow_up_after_flush(
                     .into_iter()
                     .any(|record| record.invoke_id == invoke_id);
             }
-            BroadcastPayload::Summary { window, .. } => {
-                summary_windows.insert(window);
-            }
             BroadcastPayload::Quota { snapshot } => {
                 saw_quota = true;
                 assert_eq!(snapshot.total_requests, 9);
@@ -1905,7 +1887,7 @@ async fn persist_and_broadcast_runtime_terminal_schedules_follow_up_after_flush(
             | BroadcastPayload::DashboardActivityLive { .. } => {}
         }
 
-        if saw_record && saw_quota && summary_windows.len() == expected_summary_windows {
+        if saw_record && saw_quota {
             break;
         }
     }
@@ -1917,11 +1899,6 @@ async fn persist_and_broadcast_runtime_terminal_schedules_follow_up_after_flush(
     assert!(
         saw_quota,
         "runtime terminal path should broadcast quota after terminal sqlite flush"
-    );
-    assert_eq!(
-        summary_windows.len(),
-        expected_summary_windows,
-        "runtime terminal path should broadcast every summary window after terminal sqlite flush"
     );
 }
 

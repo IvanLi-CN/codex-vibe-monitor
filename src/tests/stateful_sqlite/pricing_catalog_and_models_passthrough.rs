@@ -1343,13 +1343,17 @@ async fn proxy_capture_target_persists_record_on_redirect_rewrite_error() {
 }
 
 #[tokio::test]
-async fn proxy_capture_persist_and_broadcast_emits_records_summary_and_quota() {
+async fn proxy_capture_persist_and_broadcast_emits_records_and_dashboard_live() {
     let state = test_state_with_openai_base(
         Url::parse("https://example-upstream.invalid/").expect("valid upstream base url"),
     )
     .await;
     let now_local = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
     seed_quota_snapshot(&state.pool, &now_local).await;
+    let _dashboard_lease = state
+        .subscription_hub
+        .register_test_topic_name("dashboard.activity.current")
+        .await;
 
     let mut rx = state.broadcaster.subscribe();
     let invoke_id = "proxy-sse-broadcast-success";
@@ -1363,10 +1367,7 @@ async fn proxy_capture_persist_and_broadcast_emits_records_summary_and_quota() {
 
     let mut saw_record = false;
     let mut captured_record: Option<ApiInvocation> = None;
-    let mut saw_quota = false;
     let mut saw_dashboard_live = false;
-    let mut summary_windows = HashSet::new();
-    let expected_summary_windows = summary_broadcast_specs().len();
     for _ in 0..16 {
         let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
@@ -1382,14 +1383,7 @@ async fn proxy_capture_persist_and_broadcast_emits_records_summary_and_quota() {
                     captured_record = Some(record);
                 }
             }
-            BroadcastPayload::Summary { window, summary } => {
-                summary_windows.insert(window.clone());
-                if window == "all" {
-                    assert_eq!(summary.total_count, 1);
-                }
-            }
             BroadcastPayload::Quota { snapshot } => {
-                saw_quota = true;
                 assert_eq!(snapshot.total_requests, 9);
             }
             BroadcastPayload::DashboardActivityLive { .. } => {
@@ -1398,25 +1392,15 @@ async fn proxy_capture_persist_and_broadcast_emits_records_summary_and_quota() {
             BroadcastPayload::Version { .. } | BroadcastPayload::PoolAttempts { .. } => {}
         }
 
-        if saw_record
-            && saw_quota
-            && saw_dashboard_live
-            && summary_windows.len() == expected_summary_windows
-        {
+        if saw_record && saw_dashboard_live {
             break;
         }
     }
 
     assert!(saw_record, "records payload should be broadcast");
-    assert!(saw_quota, "quota payload should be broadcast");
     assert!(
         saw_dashboard_live,
         "live dashboard snapshot should be scheduled after the record mutation"
-    );
-    assert_eq!(
-        summary_windows.len(),
-        expected_summary_windows,
-        "all summary windows should be broadcast"
     );
     let record = captured_record.expect("target records payload should include invoke id");
     assert_eq!(record.endpoint.as_deref(), Some("/v1/responses"));
@@ -1515,96 +1499,6 @@ async fn proxy_capture_persist_and_broadcast_skips_follow_up_without_subscribers
             .load(Ordering::Acquire),
         "no-subscriber path should keep the summary/quota worker idle"
     );
-}
-
-#[tokio::test]
-async fn broadcast_summary_if_changed_skips_duplicate_payloads() {
-    let state = test_state_with_openai_base(
-        Url::parse("https://example-upstream.invalid/").expect("valid upstream base url"),
-    )
-    .await;
-    let mut rx = state.broadcaster.subscribe();
-    let first = StatsResponse {
-        total_count: 1,
-        success_count: 1,
-        failure_count: 0,
-        total_cost: 0.5,
-        total_tokens: 42,
-        usage_breakdown: None,
-        in_progress_conversation_count: Some(3),
-        in_progress_retry_conversation_count: Some(0),
-        in_progress_avg_wait_ms: None,
-        in_progress_phase_counts: None,
-        non_success_cost: None,
-        non_success_tokens: None,
-        maintenance: None,
-    };
-
-    assert!(
-        broadcast_summary_if_changed(
-            &state.broadcaster,
-            state.broadcast_state_cache.as_ref(),
-            "1d",
-            first.clone(),
-        )
-        .await
-        .expect("first summary broadcast should succeed")
-    );
-
-    let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-        .await
-        .expect("timed out waiting for first summary payload")
-        .expect("broadcast should stay open");
-    match payload {
-        BroadcastPayload::Summary { window, summary } => {
-            assert_eq!(window, "1d");
-            assert_eq!(summary, first);
-        }
-        other => panic!("unexpected payload: {other:?}"),
-    }
-
-    assert!(
-        !broadcast_summary_if_changed(
-            &state.broadcaster,
-            state.broadcast_state_cache.as_ref(),
-            "1d",
-            first.clone(),
-        )
-        .await
-        .expect("duplicate summary broadcast should succeed")
-    );
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), rx.recv())
-            .await
-            .is_err()
-    );
-
-    let updated = StatsResponse {
-        total_count: 2,
-        ..first
-    };
-    assert!(
-        broadcast_summary_if_changed(
-            &state.broadcaster,
-            state.broadcast_state_cache.as_ref(),
-            "1d",
-            updated.clone(),
-        )
-        .await
-        .expect("changed summary broadcast should succeed")
-    );
-
-    let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-        .await
-        .expect("timed out waiting for updated summary payload")
-        .expect("broadcast should stay open");
-    match payload {
-        BroadcastPayload::Summary { window, summary } => {
-            assert_eq!(window, "1d");
-            assert_eq!(summary, updated);
-        }
-        other => panic!("unexpected payload: {other:?}"),
-    }
 }
 
 #[tokio::test]

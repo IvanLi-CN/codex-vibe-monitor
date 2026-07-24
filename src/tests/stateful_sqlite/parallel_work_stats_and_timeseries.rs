@@ -10162,73 +10162,6 @@ async fn summary_hourly_backed_since_omits_pre_cutoff_partial_archived_hours() {
 }
 
 #[tokio::test]
-async fn collect_summary_snapshots_uses_hourly_backed_duration_windows() {
-    let mut config = test_config();
-    config.openai_upstream_base_url =
-        Url::parse("https://api.openai.com/").expect("valid upstream base url");
-    config.invocation_max_days = 7;
-    let state = test_state_from_config(config, true).await;
-
-    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
-        - ChronoDuration::days(10))
-    .and_hms_opt(8, 0, 0)
-    .expect("valid archived local hour");
-    let bucket_start = local_naive_to_utc(archived_hour_local, Shanghai);
-    let archived_occurred_at = format_naive(
-        archived_hour_local
-            .checked_add_signed(ChronoDuration::minutes(45))
-            .expect("archived local time"),
-    );
-    seed_invocation_archive_batch(
-        &state.pool,
-        &state.config,
-        "summary-broadcast-hourly-window",
-        &[(
-            1_i64,
-            "summary-broadcast-archived-row",
-            archived_occurred_at.as_str(),
-            SOURCE_PROXY,
-            "success",
-            25_i64,
-            0.25_f64,
-            Some(250.0),
-        )],
-    )
-    .await;
-    insert_invocation_hourly_rollup_bucket(
-        &state.pool,
-        bucket_start,
-        SOURCE_PROXY,
-        1,
-        1,
-        0,
-        25,
-        0.25,
-    )
-    .await;
-
-    let summaries = collect_summary_snapshots(&state.pool, state.config.invocation_max_days)
-        .await
-        .expect("collect summary snapshots");
-
-    let month = summaries
-        .iter()
-        .find(|summary| summary.window == "1mo")
-        .expect("1mo summary should be present");
-    assert_eq!(month.summary.total_count, 1);
-    assert_eq!(month.summary.success_count, 1);
-    assert_eq!(month.summary.failure_count, 0);
-    assert_eq!(month.summary.total_tokens, 25);
-    assert_f64_close(month.summary.total_cost, 0.25);
-
-    let day = summaries
-        .iter()
-        .find(|summary| summary.window == "1d")
-        .expect("1d summary should be present");
-    assert_eq!(day.summary.total_count, 0);
-}
-
-#[tokio::test]
 async fn timeseries_hourly_backed_omits_pre_cutoff_partial_archived_hours() {
     let mut config = test_config();
     config.openai_upstream_base_url =
@@ -14987,6 +14920,10 @@ async fn dashboard_activity_subscription_live_overlay_updates_cached_snapshot_wi
         .await
         .expect("prepare dashboard activity subscription snapshot");
     let initial_payload = extract_subscription_snapshot_payload(initial_prepared);
+    let _dashboard_lease = state
+        .subscription_hub
+        .register_test_topic_name("dashboard.activity.current")
+        .await;
     let initial_accounts = initial_payload
         .get("accounts")
         .and_then(Value::as_array)
@@ -15171,7 +15108,7 @@ async fn dashboard_activity_subscription_live_overlay_updates_cached_snapshot_wi
         .handle_internal_broadcast(
             state.clone(),
             BroadcastPayload::DashboardActivityLive {
-                snapshot: live_snapshot,
+                snapshot: Box::new(live_snapshot),
             },
         )
         .await;
@@ -15228,6 +15165,10 @@ async fn dashboard_activity_subscription_terminal_refresh_is_deferred_until_ttl(
         .await
         .expect("prepare initial dashboard activity subscription snapshot");
     let initial_payload = extract_subscription_snapshot_payload(initial_prepared);
+    let _dashboard_lease = state
+        .subscription_hub
+        .register_test_topic_name("dashboard.activity.current")
+        .await;
     assert_eq!(
         initial_payload
             .get("summary")
@@ -15769,6 +15710,89 @@ async fn account_activity_v2_partial_merge_reads_only_covered_hours_from_rollup(
     assert_eq!(account.success_count, 2);
     assert_eq!(account.total_tokens, 300);
     assert_f64_close(account.total_cost, 0.30);
+}
+
+#[tokio::test]
+async fn summary_non_success_tokens_includes_unreplayed_live_tail_in_covered_hour() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let bucket_epoch = align_bucket_epoch(Utc::now().timestamp(), 3_600, 0) - 2 * 3_600;
+    let occurred_at = Utc
+        .timestamp_opt(bucket_epoch + 10 * 60, 0)
+        .single()
+        .expect("covered invocation time");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, payload, raw_response
+        )
+        VALUES ('unreplayed-non-success', ?1, ?2, 'failed', 7, ?3, '{}')
+        "#,
+    )
+    .bind(format_naive(
+        occurred_at.with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind(r#"{"upstreamAccountId":42}"#)
+    .execute(&state.pool)
+    .await
+    .expect("insert unreplayed invocation");
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_account_stats_hourly (
+            bucket_start_epoch, source, upstream_account_id,
+            activity_v2_non_success_tokens
+        )
+        VALUES (?1, ?2, 42, 3)
+        "#,
+    )
+    .bind(bucket_epoch)
+    .bind(SOURCE_PROXY)
+    .execute(&state.pool)
+    .await
+    .expect("insert covered v2 non-success rollup");
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_materialized_buckets (
+            target, bucket_start_epoch, source, materialized_at
+        )
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2)
+    .bind(bucket_epoch)
+    .bind(HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE)
+    .execute(&state.pool)
+    .await
+    .expect("mark covered v2 hour");
+
+    let value = load_non_success_tokens_snapshot(
+        state.as_ref(),
+        InvocationSourceScope::ProxyOnly,
+        None,
+        ExactUtcRange {
+            start: Utc
+                .timestamp_opt(bucket_epoch, 0)
+                .single()
+                .expect("range start"),
+            end: Utc
+                .timestamp_opt(bucket_epoch + 3_600, 0)
+                .single()
+                .expect("range end"),
+        },
+        SummaryRangeBuildTelemetry::new(
+            SummaryBuildRoute::Http,
+            &SummaryWindow::Duration(ChronoDuration::days(1)),
+            Some("1d"),
+        ),
+    )
+    .await
+    .expect("load non-success tokens")
+    .expect("non-success tokens should be available");
+
+    assert_eq!(value, 10);
 }
 
 #[tokio::test]

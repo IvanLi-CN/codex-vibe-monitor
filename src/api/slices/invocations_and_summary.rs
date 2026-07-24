@@ -5644,7 +5644,7 @@ pub(crate) struct SummaryRangeBuildTelemetry {
 }
 
 impl SummaryRangeBuildTelemetry {
-    fn new(
+    pub(crate) fn new(
         route: SummaryBuildRoute,
         window: &SummaryWindow,
         requested_window: Option<&str>,
@@ -6082,6 +6082,17 @@ pub(crate) async fn load_in_progress_summary_snapshot(
                 phase_counts.decrement_phase_name(row.live_phase.as_deref());
                 phase_counts.increment_phase_name(runtime_phase);
             }
+            if runtime_record_ttfb_differs(runtime_record.t_upstream_ttfb_ms, row.upstream_ttfb_ms)
+            {
+                db_ttfb_sum = (db_ttfb_sum
+                    - normalized_wait_ms(row.upstream_ttfb_ms).unwrap_or_default())
+                .max(0.0)
+                    + normalized_wait_ms(runtime_record.t_upstream_ttfb_ms).unwrap_or_default();
+                avg_wait_sample_count =
+                    avg_wait_sample_count.saturating_sub(i64::from(
+                        normalized_wait_ms(row.upstream_ttfb_ms).is_some(),
+                    )) + i64::from(normalized_wait_ms(runtime_record.t_upstream_ttfb_ms).is_some());
+            }
             continue;
         }
         db_in_progress_count = db_in_progress_count.saturating_sub(1);
@@ -6229,6 +6240,149 @@ pub(crate) fn summary_live_augmentation_policy(
     }
 }
 
+async fn query_account_activity_v2_non_success_tokens(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    bucket_epochs: &[i64],
+) -> Result<i64, ApiError> {
+    if bucket_epochs.is_empty() {
+        return Ok(0);
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT COALESCE(SUM(COALESCE(activity_v2_non_success_tokens, 0)), 0) \
+         FROM upstream_account_stats_hourly WHERE bucket_start_epoch IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for bucket_epoch in bucket_epochs {
+            separated.push_bind(*bucket_epoch);
+        }
+    }
+    query.push(")");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND upstream_account_id = ")
+            .push_bind(upstream_account_id);
+    }
+    Ok(query.build_query_scalar::<i64>().fetch_one(pool).await?)
+}
+
+async fn query_non_success_tokens_exact_tail(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    range: ExactUtcRange,
+) -> Result<i64, ApiError> {
+    let normalized_status_sql = INVOCATION_STATUS_NORMALIZED_SQL;
+    let resolved_failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
+    let non_success_sql = format!(
+        "({normalized_status_sql} = 'interrupted' OR \
+         ({normalized_status_sql} NOT IN ('running', 'pending') \
+          AND ({resolved_failure_class_sql}) <> 'none'))"
+    );
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
+        "SELECT COALESCE(SUM(CASE WHEN {non_success_sql} THEN COALESCE(total_tokens, 0) ELSE 0 END), 0) \
+         FROM codex_invocations WHERE occurred_at >= "
+    ));
+    query
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(range.end));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(" = ")
+            .push_bind(upstream_account_id);
+    }
+    Ok(query.build_query_scalar::<i64>().fetch_one(pool).await?)
+}
+
+async fn query_non_success_tokens_unreplayed_live_tail(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    covered_hours: &[i64],
+    repair_cursor: i64,
+) -> Result<i64, ApiError> {
+    if covered_hours.is_empty() {
+        return Ok(0);
+    }
+    let normalized_status_sql = INVOCATION_STATUS_NORMALIZED_SQL;
+    let resolved_failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
+    let non_success_sql = format!(
+        "({normalized_status_sql} = 'interrupted' OR \
+         ({normalized_status_sql} NOT IN ('running', 'pending') \
+          AND ({resolved_failure_class_sql}) <> 'none'))"
+    );
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
+        "SELECT COALESCE(SUM(CASE WHEN {non_success_sql} THEN COALESCE(total_tokens, 0) ELSE 0 END), 0) \
+         FROM codex_invocations WHERE id > "
+    ));
+    query.push_bind(repair_cursor).push(" AND (");
+    for (index, bucket_epoch) in covered_hours.iter().enumerate() {
+        let start = Utc
+            .timestamp_opt(*bucket_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid covered-hour start epoch")))?;
+        let end = start + ChronoDuration::hours(1);
+        if index > 0 {
+            query.push(" OR ");
+        }
+        query
+            .push("(occurred_at >= ")
+            .push_bind(db_occurred_at_lower_bound(start))
+            .push(" AND occurred_at < ")
+            .push_bind(db_occurred_at_upper_bound(end))
+            .push(")");
+    }
+    query.push(")");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(" = ")
+            .push_bind(upstream_account_id);
+    }
+    Ok(query.build_query_scalar::<i64>().fetch_one(pool).await?)
+}
+
+fn summary_non_success_tokens_lock_fallback(
+    telemetry: SummaryRangeBuildTelemetry,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    range: ExactUtcRange,
+    stage: &'static str,
+) -> Result<Option<i64>, ApiError> {
+    tracing::warn!(
+        route = telemetry.route_label(),
+        builder = "summary_non_success_tokens",
+        ?source_scope,
+        upstream_account_id,
+        window_kind = telemetry.window_kind,
+        window_name = telemetry.window_name,
+        aggregation_mode = "fallback",
+        archive_overlap_strategy = "fallback",
+        live_row_scan_mode = "fallback",
+        live_id_overlap_scan_mode = "none",
+        stage,
+        start = %range.start,
+        end = %range.end,
+        "summary non-success token augmentation skipped because sqlite is locked"
+    );
+    Ok(None)
+}
+
 pub(crate) async fn load_non_success_tokens_snapshot(
     state: &AppState,
     source_scope: InvocationSourceScope,
@@ -6237,66 +6391,193 @@ pub(crate) async fn load_non_success_tokens_snapshot(
     telemetry: SummaryRangeBuildTelemetry,
 ) -> Result<Option<i64>, ApiError> {
     let started_at = Instant::now();
-    let live_rows = match query_live_upstream_account_activity_aggregate_rows(
-        &state.pool,
-        source_scope,
-        range,
-        false,
-        DashboardActivityExcludedInvocationIdsFilter::None,
-    )
-    .await
-    {
-        Ok(rows) => rows,
-        Err(err) => {
-            if let ApiError::Internal(ref internal) = err
-                && crate::is_sqlite_lock_error(internal)
-            {
-                tracing::warn!(
-                    route = telemetry.route_label(),
-                    builder = "summary_non_success_tokens",
-                    ?source_scope,
-                    upstream_account_id,
-                    window_kind = telemetry.window_kind,
-                    window_name = telemetry.window_name,
-                    aggregation_mode = "fallback",
-                    archive_overlap_strategy = "fallback",
-                    live_group_row_count = 0_usize,
-                    archive_group_row_count = 0_usize,
-                    live_row_scan_mode = "none",
-                    live_id_overlap_scan_mode = "fallback",
-                    start = %range.start,
-                    end = %range.end,
-                    "summary non-success token aggregate skipped because sqlite is locked"
-                );
-                return Ok(None);
-            }
-            return Err(err);
-        }
-    };
-    let live_group_row_count = live_rows.len();
-    let live_tokens = live_rows
-        .into_iter()
-        .filter(|row| {
-            upstream_account_id.is_none_or(|account_id| row.upstream_account_id == Some(account_id))
-        })
-        .map(|row| row.non_success_tokens)
-        .sum::<i64>();
-
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
-    if range.start >= retention_cutoff {
-        let elapsed_ms = started_at.elapsed().as_millis() as u64;
-        emit_summary_range_builder_telemetry(
-            telemetry,
-            "summary_non_success_tokens",
+    let live_range = ExactUtcRange {
+        start: range.start.max(retention_cutoff),
+        end: range.end,
+    };
+    let mut live_tokens = 0_i64;
+    let mut live_group_row_count = 0_usize;
+    let mut covered_hour_count = 0_usize;
+    let mut boundary_tail_count = 0_usize;
+    let mut fallback_hour_count = 0_usize;
+    let mut live_row_scan_mode = "none";
+    let historical_live_end = range.end.min(retention_cutoff);
+    if range.start < historical_live_end {
+        let historical_tokens = match query_non_success_tokens_exact_tail(
+            &state.pool,
             source_scope,
             upstream_account_id,
-            "aggregate_only",
-            "aggregate_merge",
+            ExactUtcRange {
+                start: range.start,
+                end: historical_live_end,
+            },
+        )
+        .await
+        {
+            Ok(tokens) => tokens,
+            Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
+                return summary_non_success_tokens_lock_fallback(
+                    telemetry,
+                    source_scope,
+                    upstream_account_id,
+                    range,
+                    "historical_exact_tail",
+                );
+            }
+            Err(err) => return Err(err),
+        };
+        live_tokens += historical_tokens;
+        live_row_scan_mode = "fallback";
+    }
+    if live_range.start < live_range.end {
+        let plan = match plan_account_activity_range(state, live_range).await {
+            Ok(plan) => plan,
+            Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
+                return summary_non_success_tokens_lock_fallback(
+                    telemetry,
+                    source_scope,
+                    upstream_account_id,
+                    range,
+                    "coverage_planner",
+                );
+            }
+            Err(err) => return Err(err),
+        };
+        covered_hour_count = plan.covered_hours.len();
+        fallback_hour_count = plan.uncovered_hours.len();
+        boundary_tail_count = plan.boundary_tail_count;
+        let rollup_tokens = match query_account_activity_v2_non_success_tokens(
+            &state.pool,
+            source_scope,
+            upstream_account_id,
+            &plan.covered_hours,
+        )
+        .await
+        {
+            Ok(tokens) => tokens,
+            Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
+                return summary_non_success_tokens_lock_fallback(
+                    telemetry,
+                    source_scope,
+                    upstream_account_id,
+                    range,
+                    "hourly_rollup",
+                );
+            }
+            Err(err) => return Err(err),
+        };
+        live_tokens += rollup_tokens;
+        live_group_row_count = plan.covered_hours.len();
+        let repair_cursor = match load_hourly_rollup_live_progress(
+            &state.pool,
+            INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_CURSOR_DATASET,
+        )
+        .await
+        {
+            Ok(cursor) => cursor,
+            Err(err) => {
+                if crate::is_sqlite_lock_error(&err) {
+                    return summary_non_success_tokens_lock_fallback(
+                        telemetry,
+                        source_scope,
+                        upstream_account_id,
+                        range,
+                        "v2_repair_cursor",
+                    );
+                }
+                return Err(err.into());
+            }
+        };
+        let unreplayed_live_tail = match query_non_success_tokens_unreplayed_live_tail(
+            &state.pool,
+            source_scope,
+            upstream_account_id,
+            &plan.covered_hours,
+            repair_cursor,
+        )
+        .await
+        {
+            Ok(tokens) => tokens,
+            Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
+                return summary_non_success_tokens_lock_fallback(
+                    telemetry,
+                    source_scope,
+                    upstream_account_id,
+                    range,
+                    "unreplayed_live_tail",
+                );
+            }
+            Err(err) => return Err(err),
+        };
+        live_tokens += unreplayed_live_tail;
+        if unreplayed_live_tail != 0 {
+            tracing::debug!(
+                route = telemetry.route_label(),
+                builder = "summary_non_success_tokens",
+                purpose = "unreplayed_live_tail",
+                repair_cursor,
+                covered_hour_count = plan.covered_hours.len(),
+                "summary non-success token rollup included unreplayed live tail"
+            );
+        }
+        for (index, exact_range) in plan.exact_ranges.into_iter().enumerate() {
+            let exact_tokens = match query_non_success_tokens_exact_tail(
+                &state.pool,
+                source_scope,
+                upstream_account_id,
+                exact_range,
+            )
+            .await
+            {
+                Ok(tokens) => tokens,
+                Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
+                    return summary_non_success_tokens_lock_fallback(
+                        telemetry,
+                        source_scope,
+                        upstream_account_id,
+                        range,
+                        "exact_tail",
+                    );
+                }
+                Err(err) => return Err(err),
+            };
+            live_tokens += exact_tokens;
+            live_row_scan_mode = "fallback";
+            if index >= boundary_tail_count {
+                tracing::debug!(
+                    route = telemetry.route_label(),
+                    builder = "summary_non_success_tokens",
+                    purpose = "coverage_hole",
+                    source_scope = ?source_scope,
+                    start = %exact_range.start,
+                    end = %exact_range.end,
+                    "summary non-success token exact fallback covered an hourly hole"
+                );
+            }
+        }
+    }
+
+    if range.start >= retention_cutoff {
+        let elapsed_ms = started_at.elapsed().as_millis() as u64;
+        tracing::debug!(
+            route = telemetry.route_label(),
+            builder = "summary_non_success_tokens",
+            ?source_scope,
+            upstream_account_id,
+            window_kind = telemetry.window_kind,
+            window_name = telemetry.window_name,
+            aggregation_mode = "rollup_plus_boundary",
+            archive_overlap_strategy = "aggregate_merge",
+            covered_hour_count,
+            fallback_hour_count,
+            boundary_tail_count,
             live_group_row_count,
-            0,
-            "none",
-            "none",
+            archive_group_row_count = 0_usize,
+            live_row_scan_mode,
+            live_id_overlap_scan_mode = "none",
             elapsed_ms,
+            "summary non-success token rollup completed"
         );
         return Ok(Some(live_tokens));
     }
@@ -6321,8 +6602,8 @@ pub(crate) async fn load_non_success_tokens_snapshot(
                 archive_overlap_strategy = "fallback",
                 live_group_row_count,
                 archive_group_row_count = 0_usize,
-                live_row_scan_mode = "none",
-                live_id_overlap_scan_mode = "fallback",
+                live_row_scan_mode,
+                live_id_overlap_scan_mode = "none",
                 start = %range.start,
                 end = %range.end,
                 "summary archive aggregate overlap merge skipped because sqlite is locked"
@@ -6343,8 +6624,8 @@ pub(crate) async fn load_non_success_tokens_snapshot(
             "fallback",
             live_group_row_count,
             archive_group_row_count,
+            live_row_scan_mode,
             "none",
-            "fallback",
             elapsed_ms,
         );
         return Ok(None);
@@ -6363,11 +6644,11 @@ pub(crate) async fn load_non_success_tokens_snapshot(
         "summary_non_success_tokens",
         source_scope,
         upstream_account_id,
-        "aggregate_only",
+        "rollup_plus_boundary",
         "aggregate_merge",
         live_group_row_count,
         archive_group_row_count,
-        "none",
+        live_row_scan_mode,
         "none",
         elapsed_ms,
     );
@@ -6435,24 +6716,42 @@ pub(crate) struct UpstreamAccountInProgressSummary {
     in_progress_count: i64,
     retry_count: i64,
     phase_counts: InvocationPhaseCountsResponse,
+    wait_sum_ms: f64,
+    wait_sample_count: i64,
 }
 
 impl UpstreamAccountInProgressSummary {
-    fn add(&mut self, retry: bool, phase: Option<&str>) {
+    fn add(&mut self, retry: bool, phase: Option<&str>, wait_ms: Option<f64>) {
         self.in_progress_count += 1;
         if retry {
             self.retry_count += 1;
         }
         self.phase_counts.increment_phase_name(phase);
+        if let Some(wait_ms) = wait_ms.filter(|value| value.is_finite() && *value >= 0.0) {
+            self.wait_sum_ms += wait_ms;
+            self.wait_sample_count += 1;
+        }
     }
 
-    fn subtract(&mut self, retry: bool, phase: Option<&str>) {
+    fn subtract(&mut self, retry: bool, phase: Option<&str>, wait_ms: Option<f64>) {
         self.in_progress_count = self.in_progress_count.saturating_sub(1);
         if retry {
             self.retry_count = self.retry_count.saturating_sub(1);
         }
         self.phase_counts.decrement_phase_name(phase);
+        if let Some(wait_ms) = wait_ms.filter(|value| value.is_finite() && *value >= 0.0) {
+            self.wait_sum_ms = (self.wait_sum_ms - wait_ms).max(0.0);
+            self.wait_sample_count = self.wait_sample_count.saturating_sub(1);
+        }
     }
+}
+
+fn normalized_wait_ms(value: Option<f64>) -> Option<f64> {
+    value.filter(|value| value.is_finite() && *value >= 0.0)
+}
+
+fn runtime_record_ttfb_differs(left: Option<f64>, right: Option<f64>) -> bool {
+    normalized_wait_ms(left) != normalized_wait_ms(right)
 }
 
 #[derive(Debug, Default)]
@@ -8073,19 +8372,25 @@ async fn load_account_activity_v2_covered_hours(
     .collect())
 }
 
-pub(crate) async fn load_upstream_account_activity_range_rows(
+struct AccountActivityRangePlan {
+    covered_hours: Vec<i64>,
+    uncovered_hours: Vec<i64>,
+    exact_ranges: Vec<ExactUtcRange>,
+    boundary_tail_count: usize,
+}
+
+async fn plan_account_activity_range(
     state: &AppState,
-    source_scope: InvocationSourceScope,
     range: ExactUtcRange,
-    route: &'static str,
-) -> Result<AccountActivityRangeBuild, ApiError> {
-    let started_at = Instant::now();
+) -> Result<AccountActivityRangePlan, ApiError> {
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
     let live_start = range.start.max(retention_cutoff);
     if live_start >= range.end {
-        return Ok(AccountActivityRangeBuild {
-            rows: Vec::new(),
-            telemetry: AccountActivityRangeBuildTelemetry::default(),
+        return Ok(AccountActivityRangePlan {
+            covered_hours: Vec::new(),
+            uncovered_hours: Vec::new(),
+            exact_ranges: Vec::new(),
+            boundary_tail_count: 0,
         });
     }
 
@@ -8108,7 +8413,6 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
         .filter(|hour| !covered.contains(hour))
         .collect::<Vec<_>>();
 
-    let mut exact_ranges = Vec::new();
     let full_start = Utc
         .timestamp_opt(full_start_epoch, 0)
         .single()
@@ -8117,11 +8421,12 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
         .timestamp_opt(full_end_epoch, 0)
         .single()
         .ok_or_else(|| ApiError::from(anyhow!("invalid account activity full-hour end")))?;
+    let mut exact_ranges = Vec::new();
     if full_start_epoch >= full_end_epoch {
         push_exact_range(&mut exact_ranges, live_start, range.end)?;
     } else {
         push_exact_range(&mut exact_ranges, live_start, range.end.min(full_start))?;
-        push_exact_range(&mut exact_ranges, range.start.max(full_end), range.end)?;
+        push_exact_range(&mut exact_ranges, live_start.max(full_end), range.end)?;
     }
     let boundary_tail_count = exact_ranges.len();
 
@@ -8145,10 +8450,37 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
         push_exact_range(&mut exact_ranges, start, end)?;
     }
 
+    Ok(AccountActivityRangePlan {
+        covered_hours,
+        uncovered_hours,
+        exact_ranges,
+        boundary_tail_count,
+    })
+}
+
+pub(crate) async fn load_upstream_account_activity_range_rows(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    route: &'static str,
+) -> Result<AccountActivityRangeBuild, ApiError> {
+    let started_at = Instant::now();
+    let plan = plan_account_activity_range(state, range).await?;
+    if plan.covered_hours.is_empty()
+        && plan.uncovered_hours.is_empty()
+        && plan.exact_ranges.is_empty()
+    {
+        return Ok(AccountActivityRangeBuild {
+            rows: Vec::new(),
+            telemetry: AccountActivityRangeBuildTelemetry::default(),
+        });
+    }
+
     let rollup_rows =
-        query_account_activity_v2_rollup_rows(&state.pool, source_scope, &covered_hours).await?;
+        query_account_activity_v2_rollup_rows(&state.pool, source_scope, &plan.covered_hours)
+            .await?;
     let rollup_row_count = rollup_rows.len();
-    let raw_fallback_range_count = exact_ranges.len();
+    let raw_fallback_range_count = plan.exact_ranges.len();
     let mut merged = HashMap::<Option<i64>, UpstreamAccountActivityAggregateRow>::new();
     for row in rollup_rows {
         match merged.entry(row.upstream_account_id) {
@@ -8160,9 +8492,12 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
             }
         }
     }
-    for conversation in
-        query_account_activity_conversation_rollup_rows(&state.pool, source_scope, &covered_hours)
-            .await?
+    for conversation in query_account_activity_conversation_rollup_rows(
+        &state.pool,
+        source_scope,
+        &plan.covered_hours,
+    )
+    .await?
     {
         if let Some(entry) = merged.get_mut(&conversation.upstream_account_id) {
             merge_latest_optional_timestamp(
@@ -8171,8 +8506,8 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
             );
         }
     }
-    for (index, exact_range) in exact_ranges.into_iter().enumerate() {
-        let purpose = if index < boundary_tail_count {
+    for (index, exact_range) in plan.exact_ranges.into_iter().enumerate() {
+        let purpose = if index < plan.boundary_tail_count {
             "boundary_tail"
         } else {
             "coverage_hole"
@@ -8200,16 +8535,16 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
     }
 
     let telemetry = AccountActivityRangeBuildTelemetry {
-        covered_hour_count: covered_hours.len(),
-        fallback_hour_count: uncovered_hours.len(),
-        boundary_tail_count,
+        covered_hour_count: plan.covered_hours.len(),
+        fallback_hour_count: plan.uncovered_hours.len(),
+        boundary_tail_count: plan.boundary_tail_count,
         rollup_row_count,
         raw_fallback_range_count,
     };
     tracing::info!(
         route,
         builder = "account_activity_hourly_v2",
-        aggregation_mode = if uncovered_hours.is_empty() {
+        aggregation_mode = if plan.uncovered_hours.is_empty() {
             "rollup_plus_boundary"
         } else {
             "partial_rollup_with_exact_fallback"
@@ -8219,7 +8554,7 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
         boundary_tail_count = telemetry.boundary_tail_count,
         rollup_row_count = telemetry.rollup_row_count,
         raw_fallback_range_count = telemetry.raw_fallback_range_count,
-        fallback_reason = if uncovered_hours.is_empty() {
+        fallback_reason = if plan.uncovered_hours.is_empty() {
             "none"
         } else {
             "v2_coverage_hole"
@@ -9885,6 +10220,7 @@ pub(crate) async fn query_upstream_account_in_progress_counts_from_runtime(
         occurred_at: String,
         upstream_account_id: Option<i64>,
         retry_count: i64,
+        upstream_ttfb_ms: Option<f64>,
         live_phase: Option<String>,
     }
 
@@ -9901,7 +10237,7 @@ pub(crate) async fn query_upstream_account_in_progress_counts_from_runtime(
         .push(resolved_upstream_account_id_sql.as_str())
         .push(" AS upstream_account_id, ")
         .push(retry_sql.as_str())
-        .push(" AS retry_count, ");
+        .push(" AS retry_count, live.upstream_ttfb_ms AS upstream_ttfb_ms, ");
     db_key_query.push(invocation_live_phase_sql("inv")).push(
         " AS live_phase \
          FROM invocation_in_progress_live live \
@@ -9919,17 +10255,23 @@ pub(crate) async fn query_upstream_account_in_progress_counts_from_runtime(
         .await?;
     let mut counts = HashMap::<Option<i64>, UpstreamAccountInProgressSummary>::new();
     for row in &db_rows {
-        counts
-            .entry(row.upstream_account_id)
-            .or_default()
-            .add(row.retry_count > 0, row.live_phase.as_deref());
+        counts.entry(row.upstream_account_id).or_default().add(
+            row.retry_count > 0,
+            row.live_phase.as_deref(),
+            row.upstream_ttfb_ms,
+        );
     }
     let db_runtime_keys = db_rows
         .into_iter()
         .map(|row| {
             (
                 (row.invoke_id, row.occurred_at),
-                (row.upstream_account_id, row.retry_count > 0, row.live_phase),
+                (
+                    row.upstream_account_id,
+                    row.retry_count > 0,
+                    row.live_phase,
+                    row.upstream_ttfb_ms,
+                ),
             )
         })
         .collect::<HashMap<_, _>>();
@@ -9955,17 +10297,20 @@ pub(crate) async fn query_upstream_account_in_progress_counts_from_runtime(
             .live_phase
             .as_deref()
             .or_else(|| runtime_invocation_live_phase(&record));
-        if let Some((db_upstream_account_id, db_is_retry, db_phase)) = db_runtime_keys.get(&key) {
+        if let Some((db_upstream_account_id, db_is_retry, db_phase, db_wait_ms)) =
+            db_runtime_keys.get(&key)
+        {
             let runtime_is_retry = runtime_record_is_retry(&record);
             let upstream_account_id = record.upstream_account_id.or(*db_upstream_account_id);
             if *db_upstream_account_id != upstream_account_id {
                 if let Some(entry) = counts.get_mut(db_upstream_account_id) {
-                    entry.subtract(*db_is_retry, db_phase.as_deref());
+                    entry.subtract(*db_is_retry, db_phase.as_deref(), *db_wait_ms);
                 }
-                counts
-                    .entry(upstream_account_id)
-                    .or_default()
-                    .add(runtime_is_retry, runtime_phase);
+                counts.entry(upstream_account_id).or_default().add(
+                    runtime_is_retry,
+                    runtime_phase,
+                    record.t_upstream_ttfb_ms,
+                );
                 runtime_overlay_row_count += 1;
             } else {
                 let entry = counts.entry(upstream_account_id).or_default();
@@ -9977,13 +10322,25 @@ pub(crate) async fn query_upstream_account_in_progress_counts_from_runtime(
                     entry.phase_counts.increment_phase_name(runtime_phase);
                     runtime_overlay_row_count += 1;
                 }
+                if runtime_record_ttfb_differs(record.t_upstream_ttfb_ms, *db_wait_ms) {
+                    entry.wait_sum_ms = (entry.wait_sum_ms
+                        - normalized_wait_ms(*db_wait_ms).unwrap_or_default())
+                    .max(0.0)
+                        + normalized_wait_ms(record.t_upstream_ttfb_ms).unwrap_or_default();
+                    entry.wait_sample_count = entry
+                        .wait_sample_count
+                        .saturating_sub(i64::from(normalized_wait_ms(*db_wait_ms).is_some()))
+                        + i64::from(normalized_wait_ms(record.t_upstream_ttfb_ms).is_some());
+                    runtime_overlay_row_count += 1;
+                }
             }
             continue;
         }
-        counts
-            .entry(record.upstream_account_id)
-            .or_default()
-            .add(runtime_record_is_retry(&record), runtime_phase);
+        counts.entry(record.upstream_account_id).or_default().add(
+            runtime_record_is_retry(&record),
+            runtime_phase,
+            record.t_upstream_ttfb_ms,
+        );
         runtime_overlay_row_count += 1;
     }
     if runtime_overlay_row_count > 0 {
@@ -10066,6 +10423,8 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
                 in_progress_invocation_count: summary.in_progress_count,
                 in_progress_phase_counts: summary.phase_counts,
                 retry_invocation_count: summary.retry_count,
+                in_progress_wait_sum_ms: summary.wait_sum_ms,
+                in_progress_wait_sample_count: summary.wait_sample_count,
                 upload_bytes_per_second: rate.upload_bytes_per_second,
                 download_bytes_per_second: rate.download_bytes_per_second,
                 network_live_bucket: live_buckets.get(&upstream_account_id).cloned(),
@@ -10089,6 +10448,8 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
             in_progress_invocation_count: 0,
             in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
             retry_invocation_count: 0,
+            in_progress_wait_sum_ms: 0.0,
+            in_progress_wait_sample_count: 0,
             upload_bytes_per_second: rate.upload_bytes_per_second,
             download_bytes_per_second: rate.download_bytes_per_second,
             network_live_bucket: live_buckets.get(&upstream_account_id).cloned(),
@@ -10099,9 +10460,13 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
     let mut in_progress_phase_counts = InvocationPhaseCountsResponse::default();
     let mut in_progress_invocation_count = 0;
     let mut retry_invocation_count = 0;
+    let mut in_progress_wait_sum_ms = 0.0;
+    let mut in_progress_wait_sample_count = 0;
     for account in &accounts {
         in_progress_invocation_count += account.in_progress_invocation_count;
         retry_invocation_count += account.retry_invocation_count;
+        in_progress_wait_sum_ms += account.in_progress_wait_sum_ms;
+        in_progress_wait_sample_count += account.in_progress_wait_sample_count;
         in_progress_phase_counts.queued += account.in_progress_phase_counts.queued;
         in_progress_phase_counts.requesting += account.in_progress_phase_counts.requesting;
         in_progress_phase_counts.responding += account.in_progress_phase_counts.responding;
@@ -10113,6 +10478,8 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
         in_progress_invocation_count,
         in_progress_phase_counts,
         retry_invocation_count,
+        in_progress_wait_sum_ms,
+        in_progress_wait_sample_count,
         network_live_bucket: Some(
             load_dashboard_network_live_bucket_point(
                 pool,
@@ -10141,6 +10508,8 @@ fn dashboard_live_snapshot_in_progress_counts(
                     in_progress_count: account.in_progress_invocation_count,
                     retry_count: account.retry_invocation_count,
                     phase_counts: account.in_progress_phase_counts,
+                    wait_sum_ms: account.in_progress_wait_sum_ms,
+                    wait_sample_count: account.in_progress_wait_sample_count,
                 },
             )
         })
@@ -11281,6 +11650,8 @@ async fn overlay_dashboard_activity_live_accounts(
                     in_progress_invocation_count: 0,
                     in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
                     retry_invocation_count: 0,
+                    in_progress_wait_sum_ms: 0.0,
+                    in_progress_wait_sample_count: 0,
                     upload_bytes_per_second: 0.0,
                     download_bytes_per_second: 0.0,
                     network_live_bucket: None,
@@ -12664,6 +13035,15 @@ async fn load_dashboard_activity_snapshot_cached(
         let db_build_elapsed_ms = build_started_at.elapsed().as_millis() as u64;
 
         let mut cache = state.dashboard_activity_snapshot_cache.lock().await;
+        let refresh_reason =
+            cache
+                .invalidation_reasons
+                .remove(&selection)
+                .unwrap_or(if saw_expired_entry {
+                    "ttl_expired"
+                } else {
+                    "initial_build"
+                });
         let in_flight = cache.in_flight.remove(&selection);
         if let Some(guard) = flight_guard.as_mut() {
             guard.disarm();
@@ -12696,11 +13076,7 @@ async fn load_dashboard_activity_snapshot_cached(
                     cache_entry_age_ms: 0,
                     cache_entry_count,
                     in_flight_count,
-                    refresh_reason: if saw_expired_entry {
-                        "ttl_expired"
-                    } else {
-                        "cache_absent_or_invalidated"
-                    },
+                    refresh_reason,
                     selection_fingerprint,
                 },
             )
@@ -12856,6 +13232,10 @@ pub(crate) async fn fetch_dashboard_activity(
         accounts,
     };
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    let active_subscriber_count = state
+        .subscription_hub
+        .active_topic_subscriber_count("dashboard.activity.current")
+        .await;
     let builder = if params.include_accounts {
         "dashboard_full"
     } else {
@@ -12871,6 +13251,7 @@ pub(crate) async fn fetch_dashboard_activity(
             include_recent,
             recent_limit,
             live_revision,
+            active_subscriber_count,
             account_count,
             build_scope = dashboard_activity_build_scope(params.include_accounts, include_recent),
             cache_hit_or_miss = cache_outcome.cache_hit_or_miss,
@@ -12882,7 +13263,7 @@ pub(crate) async fn fetch_dashboard_activity(
             cache_entry_count = cache_outcome.cache_entry_count,
             in_flight_count = cache_outcome.in_flight_count,
             refresh_reason = cache_outcome.refresh_reason,
-            invalidation_reason = if cache_outcome.refresh_reason == "cache_absent_or_invalidated" { "possible_explicit_invalidation" } else { "none" },
+            invalidation_reason = if cache_outcome.refresh_reason == "scheduled_terminal_refresh" { "scheduled_terminal_refresh" } else { "none" },
             selection_fingerprint = cache_outcome.selection_fingerprint,
             base_snapshot_age_ms = cache_outcome.cache_entry_age_ms,
             live_overlay_elapsed_ms,
@@ -12909,6 +13290,7 @@ pub(crate) async fn fetch_dashboard_activity(
             include_recent,
             recent_limit,
             live_revision,
+            active_subscriber_count,
             account_count,
             build_scope = dashboard_activity_build_scope(params.include_accounts, include_recent),
             cache_hit_or_miss = cache_outcome.cache_hit_or_miss,
@@ -12920,7 +13302,7 @@ pub(crate) async fn fetch_dashboard_activity(
             cache_entry_count = cache_outcome.cache_entry_count,
             in_flight_count = cache_outcome.in_flight_count,
             refresh_reason = cache_outcome.refresh_reason,
-            invalidation_reason = if cache_outcome.refresh_reason == "cache_absent_or_invalidated" { "possible_explicit_invalidation" } else { "none" },
+            invalidation_reason = if cache_outcome.refresh_reason == "scheduled_terminal_refresh" { "scheduled_terminal_refresh" } else { "none" },
             selection_fingerprint = cache_outcome.selection_fingerprint,
             base_snapshot_age_ms = cache_outcome.cache_entry_age_ms,
             live_overlay_elapsed_ms,
