@@ -6,3 +6,4 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 
 bash "$repo_root/scripts/install-hooks.sh"
 bash "$repo_root/scripts/sync-worktree-resources.sh"
+bash "$repo_root/scripts/worktree-setup.sh"

@@ -8,14 +8,38 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -z "$repo_root" ]; then
   exit 0
 fi
+repo_root="$(cd "$repo_root" && pwd)"
 cd "$repo_root"
 
 sync_script="$repo_root/scripts/sync-worktree-resources.sh"
+setup_script="$repo_root/scripts/worktree-setup.sh"
+
+is_linked_worktree() {
+  common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+  if [ -z "$common_dir" ]; then
+    return 1
+  fi
+
+  case "$common_dir" in
+    /*) ;;
+    *) common_dir="$repo_root/$common_dir" ;;
+  esac
+
+  source_root="$(cd "$(dirname "$common_dir")" 2>/dev/null && pwd || true)"
+  [ -n "$source_root" ] && [ "$repo_root" != "$source_root" ]
+}
 
 if [ "$hook_name" = "post-checkout" ]; then
   if [ -x "$sync_script" ]; then
     "$sync_script" "$@"
   fi
+
+  if is_linked_worktree && [ -x "$setup_script" ]; then
+    if ! "$setup_script"; then
+      printf '[worktree-bootstrap] dependency setup failed; checkout continues. Run `bun run worktree:bootstrap` to retry.\n' >&2
+    fi
+  fi
+
   exit 0
 fi
 

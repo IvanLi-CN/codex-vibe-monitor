@@ -4,7 +4,14 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-vibe-monitor-worktree-bootstrap.XXXXXX")"
 tmp_dir="$(cd "$tmp_dir" && pwd)"
-trap 'rm -rf "$tmp_dir"' EXIT
+
+cleanup() {
+  if [ -n "${fixture_repo:-}" ] && [ -n "${worktree_dir:-}" ] && [ -d "$fixture_repo" ]; then
+    git -C "$fixture_repo" worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
 
 copy_repo() {
   src="$1"
@@ -72,8 +79,29 @@ write_fake_bun() {
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\t%s\n' "$(pwd)" "$*" >> "${BUN_INSTALL_LOG:?}"
+surface=repo
+case "$(basename "$(pwd)")" in
+  web|docs-site) surface="$(basename "$(pwd)")" ;;
+esac
+if [ "${FAKE_BUN_FAIL_SURFACE:-}" = "$surface" ]; then
+  exit 11
+fi
 EOF_FAKE
   chmod +x "$bin_dir/bun"
+}
+
+write_fake_cargo() {
+  bin_dir="$1"
+  mkdir -p "$bin_dir"
+  cat > "$bin_dir/cargo" <<'EOF_FAKE'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\t%s\n' "$(pwd)" "$*" >> "${CARGO_FETCH_LOG:?}"
+if [ "${FAKE_CARGO_FAIL:-0}" = '1' ]; then
+  exit 12
+fi
+EOF_FAKE
+  chmod +x "$bin_dir/cargo"
 }
 
 fixture_repo="$tmp_dir/fixture"
@@ -82,6 +110,17 @@ init_repo "$fixture_repo"
 
 printf 'PRIMARY_SECRET=from-primary\n' > "$fixture_repo/.env.local"
 write_fake_lefthook "$fixture_repo"
+
+fake_bin="$tmp_dir/fake-bin"
+bun_install_log="$tmp_dir/bun-install.log"
+cargo_fetch_log="$tmp_dir/cargo-fetch.log"
+write_fake_bun "$fake_bin"
+write_fake_cargo "$fake_bin"
+export PATH="$fake_bin:$PATH"
+export BUN_INSTALL_LOG="$bun_install_log"
+export CARGO_FETCH_LOG="$cargo_fetch_log"
+: > "$bun_install_log"
+: > "$cargo_fetch_log"
 
 install_output="$(bash "$fixture_repo/scripts/install-hooks.sh" 2>&1)"
 assert_file_contains <(printf '%s' "$install_output") 'installed shared hooks'
@@ -95,10 +134,25 @@ assert_file_contains "$hooks_dir/post-checkout" '# managed by codex-vibe-monitor
 worktree_dir="$tmp_dir/linked"
 git -C "$fixture_repo" worktree add --detach "$worktree_dir" HEAD >/dev/null
 assert_equal_file "$fixture_repo/.env.local" "$worktree_dir/.env.local"
+assert_file_contains "$bun_install_log" "$worktree_dir"$'\t''install --frozen-lockfile'
+assert_file_contains "$bun_install_log" "$worktree_dir/web"$'\t''install --frozen-lockfile'
+assert_file_contains "$bun_install_log" "$worktree_dir/docs-site"$'\t''install --frozen-lockfile'
+assert_file_contains "$cargo_fetch_log" "$worktree_dir"$'\t''fetch --locked'
 
 printf 'TARGET_SECRET=keep-me\n' > "$worktree_dir/.env.local"
 git -C "$worktree_dir" checkout --detach HEAD >/dev/null 2>&1
 assert_file_contains "$worktree_dir/.env.local" 'TARGET_SECRET=keep-me'
+
+: > "$bun_install_log"
+: > "$cargo_fetch_log"
+(
+  cd "$fixture_repo"
+  "$hooks_dir/post-checkout" HEAD HEAD 1 >/dev/null 2>&1
+)
+if [ -s "$bun_install_log" ] || [ -s "$cargo_fetch_log" ]; then
+  printf 'primary worktree post-checkout must not install dependencies\n' >&2
+  exit 1
+fi
 
 rm -rf "$worktree_dir/node_modules"
 (
@@ -118,23 +172,41 @@ mkdir -p "$(dirname "$commit_editmsg_path")"
 assert_file_contains "$worktree_dir/.lefthook-run.log" 'run commit-msg'
 assert_file_contains "$worktree_dir/.lefthook-run.log" "$commit_editmsg_path"
 
-bash "$worktree_dir/scripts/worktree-bootstrap.sh" >/dev/null
-assert_file_contains "$worktree_dir/.env.local" 'TARGET_SECRET=keep-me'
-if [ -e "$worktree_dir/node_modules" ] || [ -e "$worktree_dir/web/node_modules" ] || [ -e "$worktree_dir/docs-site/node_modules" ]; then
-  printf 'worktree bootstrap must not install dependency directories\n' >&2
-  exit 1
-fi
-
-fake_bun_dir="$tmp_dir/fake-bun"
-bun_install_log="$tmp_dir/bun-install.log"
-write_fake_bun "$fake_bun_dir"
 (
   cd "$worktree_dir"
-  PATH="$fake_bun_dir:$PATH" BUN_INSTALL_LOG="$bun_install_log" bash scripts/worktree-setup.sh >/dev/null
+  bash scripts/worktree-bootstrap.sh >/dev/null
 )
-assert_file_contains "$bun_install_log" "$worktree_dir"$'\t''install'
-assert_file_contains "$bun_install_log" "$worktree_dir/web"$'\t''install'
-assert_file_contains "$bun_install_log" "$worktree_dir/docs-site"$'\t''install'
+assert_file_contains "$worktree_dir/.env.local" 'TARGET_SECRET=keep-me'
+
+: > "$bun_install_log"
+: > "$cargo_fetch_log"
+failure_output="$tmp_dir/failure-output.log"
+if (
+  cd "$worktree_dir"
+  FAKE_BUN_FAIL_SURFACE=web FAKE_CARGO_FAIL=1 \
+    "$hooks_dir/post-checkout" HEAD HEAD 1 > "$failure_output" 2>&1
+); then
+  assert_file_contains "$failure_output" 'dependency setup failed'
+else
+  printf 'post-checkout dependency failures must not fail the hook\n' >&2
+  exit 1
+fi
+assert_file_contains "$bun_install_log" "$worktree_dir"$'\t''install --frozen-lockfile'
+assert_file_contains "$bun_install_log" "$worktree_dir/web"$'\t''install --frozen-lockfile'
+assert_file_contains "$bun_install_log" "$worktree_dir/docs-site"$'\t''install --frozen-lockfile'
+assert_file_contains "$cargo_fetch_log" "$worktree_dir"$'\t''fetch --locked'
+assert_file_contains "$failure_output" 'web Bun dependencies'
+assert_file_contains "$failure_output" 'Rust dependencies'
+
+if (
+  cd "$worktree_dir"
+  FAKE_BUN_FAIL_SURFACE=web FAKE_CARGO_FAIL=1 \
+    bash scripts/worktree-bootstrap.sh > "$failure_output" 2>&1
+); then
+  printf 'manual worktree bootstrap must report dependency failures\n' >&2
+  exit 1
+fi
+assert_file_contains "$failure_output" 'dependency setup failed'
 
 rm -f "$fixture_repo/scripts/run-lefthook-hook.sh" \
   "$fixture_repo/scripts/sync-worktree-resources.sh" \
