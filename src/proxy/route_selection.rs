@@ -300,8 +300,8 @@ pub(crate) fn pool_account_supports_live_request_body(
             target,
             ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
         )
-    }) && account.image_tool_rewrite_mode
-        != crate::ImageToolRewriteMode::KeepOriginal;
+    }) && !is_openai_responses_lite_request(headers)
+        && account.image_tool_rewrite_mode != crate::ImageToolRewriteMode::KeepOriginal;
 
     if headers.contains_key(header::CONTENT_ENCODING)
         || fast_mode_rewrite_required

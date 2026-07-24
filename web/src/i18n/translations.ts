@@ -640,7 +640,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.save": "Apply group policy",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteMode": "Image tools",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint":
-      "Keep original follows the account's own image capability. Fill when missing only injects image tools when image intent is confirmed; force add always injects; force remove always strips it.",
+      "These modes rewrite Full Responses only: fill when missing injects only after confirmed image intent, force add injects, and force remove strips the top-level image tool. Codex Responses Lite keeps client-owned tools unchanged.",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolKeepOriginal": "Keep original",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolFillMissing":
       "Fill when missing",
@@ -3293,7 +3293,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.save": "应用分组策略",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteMode": "图片工具",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint":
-      "保持原样会依据账号自身图片能力；缺少时补充只在已确认图片意图时注入图片工具；强制补充会无条件注入；强制去掉会无条件移除。",
+      "这些模式只改写 Full Responses：缺少时补充仅在确认图片意图后注入，强制补充会注入，强制去掉会移除顶层图片工具。Codex Responses Lite 的工具由客户端控制并保持原样。",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolKeepOriginal": "保持原样",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolFillMissing": "缺少时补充",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceAdd": "强制补充",

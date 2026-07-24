@@ -1983,12 +1983,22 @@ pub(crate) fn chat_completions_capability_negative_signal(message: &str) -> bool
 
 pub(crate) fn response_image_tool_capability_negative_signal(message: &str) -> bool {
     let normalized = message.to_ascii_lowercase();
+    if is_responses_lite_top_level_image_tool_shape_error(&normalized) {
+        return false;
+    }
     if !capability_support_failure_signal(&normalized) {
         return false;
     }
     normalized.contains("image_generation")
         || normalized.contains("image generation")
         || normalized.contains("gpt-image-")
+}
+
+pub(crate) fn is_responses_lite_top_level_image_tool_shape_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("responses lite")
+        && normalized.contains("top-level tool type")
+        && normalized.contains("image_generation")
 }
 
 pub(crate) fn image_endpoint_capability_negative_signal(message: &str) -> bool {
@@ -3057,6 +3067,47 @@ pub(crate) fn request_entry_openai_json_tools_contain_image_generation(value: &V
         })
 }
 
+pub(crate) fn is_openai_responses_lite_request(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-openai-internal-codex-responses-lite")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
+}
+
+pub(crate) fn image_tool_rewrite_audit(
+    target: ProxyCaptureTarget,
+    responses_lite: bool,
+    mode: crate::ImageToolRewriteMode,
+) -> Option<Value> {
+    if !matches!(
+        target,
+        ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
+    ) {
+        return None;
+    }
+
+    let (protocol, outcome, reason) = if responses_lite {
+        (
+            "responses_lite",
+            "skipped",
+            Some("responses_lite_client_owned_tools"),
+        )
+    } else if mode == crate::ImageToolRewriteMode::KeepOriginal {
+        ("responses_full", "no_change", None)
+    } else {
+        ("responses_full", "applied", None)
+    };
+    let mut audit = serde_json::json!({
+        "protocol": protocol,
+        "mode": mode.as_str(),
+        "outcome": outcome,
+    });
+    if let Some(reason) = reason {
+        audit["reason"] = Value::String(reason.to_string());
+    }
+    Some(audit)
+}
+
 pub(crate) fn request_entry_openai_json_tool_choice_selects_image_generation(
     value: &Value,
 ) -> bool {
@@ -3164,6 +3215,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     content_encoding: Option<&str>,
     fast_mode_rewrite_mode: TagFastModeRewriteMode,
     image_tool_rewrite_mode: crate::ImageToolRewriteMode,
+    responses_lite: bool,
 ) -> Result<PreparedPoolRequestBody, PoolRequestBodyPreparationError> {
     let capture_target = capture_target_for_request(original_uri.path(), method);
     let default_image_intent = match capture_target {
@@ -3180,8 +3232,8 @@ pub(crate) async fn prepare_pool_request_body_for_account(
             target,
             ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
         )
-    }) && image_tool_rewrite_mode
-        != crate::ImageToolRewriteMode::KeepOriginal;
+    }) && !responses_lite
+        && image_tool_rewrite_mode != crate::ImageToolRewriteMode::KeepOriginal;
     let rewrite_required = fast_mode_rewrite_required || image_tool_rewrite_required;
 
     let Some(snapshot) = body.cloned() else {
@@ -3267,10 +3319,11 @@ pub(crate) async fn prepare_pool_request_body_for_account(
         false
     };
     let original_image_intent = infer_image_intent_from_request_body(target, &value);
-    let image_rewritten = if matches!(
-        target,
-        ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
-    ) {
+    let image_rewritten = if !responses_lite
+        && matches!(
+            target,
+            ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
+        ) {
         rewrite_openai_responses_image_tools(
             &mut value,
             image_tool_rewrite_mode,
@@ -3812,6 +3865,15 @@ mod tests {
         assert_eq!(
             classify_response_image_tool_capability_observation(
                 StatusCode::BAD_REQUEST,
+                Some(
+                    "Responses Lite rejected top-level tool type image_generation; use input.additional_tools",
+                ),
+            ),
+            CapabilitySupport::Unknown
+        );
+        assert_eq!(
+            classify_response_image_tool_capability_observation(
+                StatusCode::BAD_REQUEST,
                 Some("request body is invalid"),
             ),
             CapabilitySupport::Unknown
@@ -3823,6 +3885,20 @@ mod tests {
             ),
             CapabilitySupport::Unknown
         );
+    }
+
+    #[test]
+    fn image_tool_rewrite_audit_marks_lite_tools_as_client_owned() {
+        let audit = image_tool_rewrite_audit(
+            ProxyCaptureTarget::Responses,
+            true,
+            crate::ImageToolRewriteMode::ForceAdd,
+        )
+        .expect("Responses requests should have an image-tool rewrite audit");
+        assert_eq!(audit["protocol"], "responses_lite");
+        assert_eq!(audit["mode"], "force_add");
+        assert_eq!(audit["outcome"], "skipped");
+        assert_eq!(audit["reason"], "responses_lite_client_owned_tools");
     }
 
     #[test]

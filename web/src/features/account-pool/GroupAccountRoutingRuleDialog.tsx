@@ -9,6 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../../components/ui/dialog";
+import { InfoTooltip } from "../../components/ui/info-tooltip";
 import { Input } from "../../components/ui/input";
 import { SelectField } from "../../components/ui/select-field";
 import { Switch } from "../../components/ui/switch";
@@ -86,6 +87,7 @@ type ResponsivePolicyOption<T extends string> = {
 type ResponsivePolicySelectProps<T extends string> = {
   compact: boolean;
   label: string;
+  helpContent?: string;
   name: string;
   value: T;
   options: readonly ResponsivePolicyOption<T>[];
@@ -96,6 +98,7 @@ type ResponsivePolicySelectProps<T extends string> = {
 function ResponsivePolicySelect<T extends string>({
   compact,
   label,
+  helpContent,
   name,
   value,
   options,
@@ -104,20 +107,29 @@ function ResponsivePolicySelect<T extends string>({
 }: ResponsivePolicySelectProps<T>) {
   if (compact) {
     return (
-      <SelectField
-        label={label}
-        name={name}
-        value={value}
-        disabled={disabled}
-        options={options}
-        onValueChange={(nextValue) => onValueChange(nextValue as T)}
-      />
+      <div className="field">
+        <div className="field-label flex items-center gap-1">
+          <span>{label}</span>
+          {helpContent ? <InfoTooltip label={`${label} help`} content={helpContent} /> : null}
+        </div>
+        <SelectField
+          name={name}
+          value={value}
+          disabled={disabled}
+          aria-label={label}
+          options={options}
+          onValueChange={(nextValue) => onValueChange(nextValue as T)}
+        />
+      </div>
     );
   }
 
   return (
     <div className="field">
-      <span className="field-label">{label}</span>
+      <div className="field-label flex items-center gap-1">
+        <span>{label}</span>
+        {helpContent ? <InfoTooltip label={`${label} help`} content={helpContent} /> : null}
+      </div>
       <PolicyInlineOptionGroup<T>
         ariaLabel={label}
         value={value}
@@ -602,14 +614,10 @@ export function GroupAccountRoutingRuleEditor({
       />
 
       <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
-        {labels.imageToolRewriteHint ? (
-          <p className="mb-3 text-xs leading-5 text-base-content/65">
-            {labels.imageToolRewriteHint}
-          </p>
-        ) : null}
         <ResponsivePolicySelect
           compact={isCompactViewport}
           label={labels.imageToolRewriteMode}
+          helpContent={labels.imageToolRewriteHint}
           name="groupImageToolRewriteMode"
           value={draft.imageToolRewriteMode}
           disabled={busy}

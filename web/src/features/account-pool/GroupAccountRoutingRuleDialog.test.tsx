@@ -304,6 +304,34 @@ describe("GroupAccountRoutingRuleDialog", () => {
     );
   });
 
+  it("keeps the Lite clarification inside a focusable image-tool help icon", () => {
+    render(
+      <GroupAccountRoutingRuleDialog
+        open
+        title="Group policy"
+        description="Shared routing policy"
+        submitLabel="Apply group policy"
+        rule={defaultRule}
+        onClose={() => undefined}
+        onSubmit={() => undefined}
+        labels={{
+          ...labels,
+          imageToolRewriteHint:
+            "Full Responses only. Codex Responses Lite keeps client-owned tools unchanged.",
+        }}
+      />,
+    );
+
+    const help = document.querySelector('button[aria-label="Image tools help"]');
+    expect(help).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      (help as HTMLButtonElement).focus();
+    });
+    expect(document.body.textContent).toContain(
+      "Codex Responses Lite keeps client-owned tools unchanged.",
+    );
+  });
+
   it("saves upstream 429 retry as a single 0..5 selector where 0 disables retry", () => {
     const onSubmit = vi.fn();
     render(

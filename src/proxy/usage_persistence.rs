@@ -2371,6 +2371,23 @@ pub(crate) fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> S
     serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
 }
 
+pub(crate) fn with_image_tool_rewrite_payload_summary(
+    payload: String,
+    image_tool_rewrite: Option<&Value>,
+) -> String {
+    let Some(image_tool_rewrite) = image_tool_rewrite else {
+        return payload;
+    };
+    let Ok(mut value) = serde_json::from_str::<Value>(&payload) else {
+        return payload;
+    };
+    let Some(object) = value.as_object_mut() else {
+        return payload;
+    };
+    object.insert("imageToolRewrite".to_string(), image_tool_rewrite.clone());
+    serde_json::to_string(&value).unwrap_or(payload)
+}
+
 pub(crate) fn invocation_status_is_in_flight(status: Option<&str>) -> bool {
     matches!(
         status

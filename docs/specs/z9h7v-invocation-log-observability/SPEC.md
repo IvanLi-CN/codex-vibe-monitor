@@ -680,8 +680,30 @@
   image:
   ![Upstream attempt event link](./assets/upstream-account-attempt-event-link-storybook.jpg)
 
+- source_type: storybook_canvas
+  story_id_or_title: `Invocations/InvocationWorkflowDetailPanel / Responses Lite Image Tool Skipped`
+  state: Lite attempt request detail expanded
+  requested_viewport: none
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the workflow attempt request detail exposes the effective Lite audit as `responses_lite`, `force_add`, `skipped`, and `responses_lite_client_owned_tools`.
+  PR: include
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: fixture-only invocation data
+  submission_gate: approved
+  image:
+  ![Responses Lite image-tool rewrite audit](./assets/responses-lite-image-tool-rewrite-audit.png)
+
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
 - 风险：上游请求不保证稳定携带 `prompt_cache_key`，仍可能出现正常缺失。
 - 开放问题：是否后续在 SQLite 增加独立 `prompt_cache_key` 列（本次不做）。
 - 假设：现有代理链路 payload 存储可承载新增上下文字段。
+
+## Responses Lite Image Tool Audit
+
+- Responses-family invocation payloads may carry optional `imageToolRewrite` with `protocol`, effective `mode`, `outcome`, and optional `reason`.
+- Workflow attempt request summaries forward the same object so invocation and per-attempt detail agree without a schema migration.
+- Lite skip is rendered as `protocol=responses_lite`, `outcome=skipped`, and `reason=responses_lite_client_owned_tools`; older records simply omit the object.

@@ -3065,6 +3065,9 @@ export function PromptCacheConversationHistoryDrawer({
             fieldPriority: t("accountPool.upstreamAccounts.effectiveRule.fieldPriority"),
             fieldFastMode: t("live.conversations.drawer.policy.fastMode"),
             fieldImageToolRewriteMode: t("live.conversations.drawer.policy.imageTool"),
+            imageToolRewriteHint: t(
+              "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint",
+            ),
             fieldConcurrency: t("accountPool.upstreamAccounts.effectiveRule.fieldConcurrency"),
             fieldUpstream429: t("accountPool.upstreamAccounts.effectiveRule.fieldUpstream429"),
             fieldAvailableModels: t("live.conversations.drawer.policy.availableModels"),

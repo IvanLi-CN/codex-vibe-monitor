@@ -2239,6 +2239,17 @@ export const DrawerBindingAndTimeouts: Story = {
     await expect(documentScope.queryByText(/优先级|Priority/i)).not.toBeInTheDocument();
     await expect(documentScope.queryByText(/切入|Cut in/i)).not.toBeInTheDocument();
 
+    const imageToolHelp = documentScope
+      .getAllByRole("button", { name: /图片工具 help|Image tool help/i })
+      .find((button) => button.closest(".border-t") != null);
+    if (!imageToolHelp) {
+      throw new Error("missing expanded image tool help");
+    }
+    await userEvent.click(imageToolHelp);
+    await expect(
+      documentScope.getByText(/Codex Responses Lite 的工具由客户端控制并保持原样/i),
+    ).toBeVisible();
+
     await expect(
       documentScope.getByRole("button", {
         name: /清除对话覆盖: FAST 模式|Clear conversation override: FAST mode/i,

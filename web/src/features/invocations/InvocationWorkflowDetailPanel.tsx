@@ -1613,6 +1613,7 @@ function AttemptDetail({
   if (!attempt) return null;
   const labels = buildPayloadViewerLabels(isZh);
   const requestSummary = readRecord(attempt.requestSummary);
+  const imageToolRewrite = readRecord(requestSummary?.imageToolRewrite);
   const responseSummary = readRecord(attempt.responseSummary);
   const usageAudit = readAttemptUsageAudit(responseSummary?.usage);
   const requestBodyParsed = requestBodyState.data?.bodyText
@@ -1748,6 +1749,12 @@ function AttemptDetail({
       },
       { key: "imageIntent", label: isZh ? "图像工具意图" : "Image Intent", monospace: false },
       { key: "transport", label: isZh ? "传输" : "Transport", monospace: false },
+    ]),
+    ...buildStructuredItems(imageToolRewrite, localeTag, isZh, [
+      { key: "protocol", label: isZh ? "图片工具协议" : "Image Tool Protocol", monospace: false },
+      { key: "mode", label: isZh ? "图片工具策略" : "Image Tool Policy", monospace: false },
+      { key: "outcome", label: isZh ? "图片工具结果" : "Image Tool Outcome", monospace: false },
+      { key: "reason", label: isZh ? "图片工具原因" : "Image Tool Reason", monospace: false },
     ]),
     ...buildStructuredItems(requestBodyParsed, localeTag, isZh, [
       { key: "model", label: isZh ? "请求体模型" : "Body Model", monospace: false },

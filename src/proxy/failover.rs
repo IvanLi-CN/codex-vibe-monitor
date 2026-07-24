@@ -1351,6 +1351,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     .and_then(|value| value.to_str().ok()),
                 account.fast_mode_rewrite_mode,
                 account.image_tool_rewrite_mode,
+                is_openai_responses_lite_request(headers),
             )
             .await
             {

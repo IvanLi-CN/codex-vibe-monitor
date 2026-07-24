@@ -60,3 +60,5 @@
 - 2026-07-21: 修复健康与事件 `attemptId` 定位回归：账号详情只保留“请求 tab -> target attempt”路径，删除 records tab 中隐藏的 `InvocationTable` / anchored locate dead path，并将 owner-facing 焦点反馈收口为滚动入视区、展开诊断、下一次抽屉内交互后 1.5 秒延迟消退的高亮合同。
 - 2026-07-21: 修复 Records 响应体面板打开后把整条详情布局顶宽的问题；展开详情、workflow detail 与结构化 payload viewer 统一限制外层宽度，并将 SSE/NDJSON 超宽内容的横向滚动下沉到单个事件/行卡片内部，补充对应 Storybook 回归证据。
 - 2026-07-22: 账号详情 attempts API 改为返回 workflow-compatible `workflowEntry` 与 `invocationRecord`，前端直接复用调用详情 attempt 卡；旧账号详情不显示 Token/成本的限制被“仅最终成功 attempt 显示 usage”规则 supersede。
+
+- 2026-07-24: Added Responses Lite image-tool rewrite audit fields to invocation payload and workflow attempt request detail, making skipped client-owned tools visible next to the effective policy.

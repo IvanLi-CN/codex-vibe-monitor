@@ -3838,7 +3838,8 @@ fn build_attempt_request_summary(
                     .eq_ignore_ascii_case(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS),
         ),
     );
-    json!({
+    let image_tool_rewrite = payload_clone(payload, &["imageToolRewrite"]);
+    let mut summary = json!({
         "endpoint": attempt.endpoint.clone(),
         "routeMode": record.route_mode.clone(),
         "transport": record.transport.clone(),
@@ -3875,7 +3876,11 @@ fn build_attempt_request_summary(
             "detailLevel": record.detail_level.clone(),
             "detailPruneReason": record.detail_prune_reason.clone(),
         },
-    })
+    });
+    if let Some(image_tool_rewrite) = image_tool_rewrite {
+        summary["imageToolRewrite"] = image_tool_rewrite;
+    }
+    summary
 }
 
 fn build_attempt_response_summary(
