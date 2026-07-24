@@ -30,6 +30,15 @@ The legacy rewrite policy operated on the Full Responses top-level tool contract
 4. Persist `imageToolRewrite` audit data on invocation and workflow-attempt request summaries. Lite uses `responses_lite`, `skipped`, and `responses_lite_client_owned_tools`.
 5. Do not learn `unsupported` from an error matching `responses lite`, `top-level tool type`, and `image_generation`; repair only already-observed rows with that exact signature and retain manual overrides.
 
+## Error and Retry Boundary
+
+Responses Lite protocol detection and upstream error retry classification are separate concerns. A successful HTTP status can still carry a terminal `response.failed` event, so the proxy must inspect the structured upstream error before deciding whether to forward or retry.
+
+- `server_is_overloaded` remains an explicitly retryable transient overload.
+- `rate_limit_exceeded` enters the same-account Responses retry budget only when the accompanying message explicitly describes a concurrency limit being exceeded (or too many concurrent requests).
+- A generic RPM, quota, billing, or account-rate-limit message remains a normal upstream failure; it must not be inferred to be an account-level concurrency condition or silently converted into the overload cooldown path.
+- The same narrow classifier is used for streamed `/v1/responses` and JSON `/v1/responses/compact`, preserving the existing same-account retry budget before route failover.
+
 ## Guardrails
 
 - Do not infer Lite from `gpt-5.6` or any model identifier.
