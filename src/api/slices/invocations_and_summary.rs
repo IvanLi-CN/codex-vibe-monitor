@@ -6305,6 +6305,32 @@ async fn query_non_success_tokens_exact_tail(
     Ok(query.build_query_scalar::<i64>().fetch_one(pool).await?)
 }
 
+fn summary_non_success_tokens_lock_fallback(
+    telemetry: SummaryRangeBuildTelemetry,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    range: ExactUtcRange,
+    stage: &'static str,
+) -> Result<Option<i64>, ApiError> {
+    tracing::warn!(
+        route = telemetry.route_label(),
+        builder = "summary_non_success_tokens",
+        ?source_scope,
+        upstream_account_id,
+        window_kind = telemetry.window_kind,
+        window_name = telemetry.window_name,
+        aggregation_mode = "fallback",
+        archive_overlap_strategy = "fallback",
+        live_row_scan_mode = "fallback",
+        live_id_overlap_scan_mode = "none",
+        stage,
+        start = %range.start,
+        end = %range.end,
+        "summary non-success token augmentation skipped because sqlite is locked"
+    );
+    Ok(None)
+}
+
 pub(crate) async fn load_non_success_tokens_snapshot(
     state: &AppState,
     source_scope: InvocationSourceScope,
@@ -6326,7 +6352,7 @@ pub(crate) async fn load_non_success_tokens_snapshot(
     let mut live_row_scan_mode = "none";
     let historical_live_end = range.end.min(retention_cutoff);
     if range.start < historical_live_end {
-        live_tokens += query_non_success_tokens_exact_tail(
+        let historical_tokens = match query_non_success_tokens_exact_tail(
             &state.pool,
             source_scope,
             upstream_account_id,
@@ -6335,30 +6361,84 @@ pub(crate) async fn load_non_success_tokens_snapshot(
                 end: historical_live_end,
             },
         )
-        .await?;
+        .await
+        {
+            Ok(tokens) => tokens,
+            Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
+                return summary_non_success_tokens_lock_fallback(
+                    telemetry,
+                    source_scope,
+                    upstream_account_id,
+                    range,
+                    "historical_exact_tail",
+                );
+            }
+            Err(err) => return Err(err),
+        };
+        live_tokens += historical_tokens;
         live_row_scan_mode = "fallback";
     }
     if live_range.start < live_range.end {
-        let plan = plan_account_activity_range(state, live_range).await?;
+        let plan = match plan_account_activity_range(state, live_range).await {
+            Ok(plan) => plan,
+            Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
+                return summary_non_success_tokens_lock_fallback(
+                    telemetry,
+                    source_scope,
+                    upstream_account_id,
+                    range,
+                    "coverage_planner",
+                );
+            }
+            Err(err) => return Err(err),
+        };
         covered_hour_count = plan.covered_hours.len();
         fallback_hour_count = plan.uncovered_hours.len();
         boundary_tail_count = plan.boundary_tail_count;
-        live_tokens += query_account_activity_v2_non_success_tokens(
+        let rollup_tokens = match query_account_activity_v2_non_success_tokens(
             &state.pool,
             source_scope,
             upstream_account_id,
             &plan.covered_hours,
         )
-        .await?;
+        .await
+        {
+            Ok(tokens) => tokens,
+            Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
+                return summary_non_success_tokens_lock_fallback(
+                    telemetry,
+                    source_scope,
+                    upstream_account_id,
+                    range,
+                    "hourly_rollup",
+                );
+            }
+            Err(err) => return Err(err),
+        };
+        live_tokens += rollup_tokens;
         live_group_row_count = plan.covered_hours.len();
         for (index, exact_range) in plan.exact_ranges.into_iter().enumerate() {
-            live_tokens += query_non_success_tokens_exact_tail(
+            let exact_tokens = match query_non_success_tokens_exact_tail(
                 &state.pool,
                 source_scope,
                 upstream_account_id,
                 exact_range,
             )
-            .await?;
+            .await
+            {
+                Ok(tokens) => tokens,
+                Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
+                    return summary_non_success_tokens_lock_fallback(
+                        telemetry,
+                        source_scope,
+                        upstream_account_id,
+                        range,
+                        "exact_tail",
+                    );
+                }
+                Err(err) => return Err(err),
+            };
+            live_tokens += exact_tokens;
             live_row_scan_mode = "fallback";
             if index >= boundary_tail_count {
                 tracing::debug!(
