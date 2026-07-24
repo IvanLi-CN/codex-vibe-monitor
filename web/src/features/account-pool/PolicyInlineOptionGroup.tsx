@@ -8,7 +8,7 @@ interface PolicyInlineOption<T extends string | number> {
 interface PolicyInlineOptionGroupProps<T extends string | number> {
   ariaLabel: string;
   value: T;
-  options: Array<PolicyInlineOption<T>>;
+  options: readonly PolicyInlineOption<T>[];
   disabled?: boolean;
   onChange: (value: T) => void;
 }
@@ -47,6 +47,7 @@ export function PolicyInlineOptionGroup<T extends string | number>({
           disabled={disabled}
           className="policy-inline-radio-item"
           data-active={option.value === value}
+          data-disabled={disabled}
           onClick={() => onChange(option.value)}
         >
           {option.label}
