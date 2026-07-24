@@ -74,6 +74,26 @@ function render(ui: React.ReactNode) {
   });
 }
 
+function setCompactViewport(matches: boolean) {
+  const originalMatchMedia = window.matchMedia;
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: vi.fn(() => ({
+      matches,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+    })),
+  });
+  return () => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: originalMatchMedia,
+    });
+  };
+}
+
 const labels = {
   allowCutOut: "Cut out is not blocked",
   allowCutIn: "Cut in is not blocked",
@@ -164,6 +184,86 @@ const defaultRule: GroupAccountRoutingRule = {
 };
 
 describe("GroupAccountRoutingRuleDialog", () => {
+  it("uses inline radio groups for discrete routing policies on desktop", () => {
+    const restoreViewport = setCompactViewport(false);
+    const onSubmit = vi.fn();
+    try {
+      render(
+        <GroupAccountRoutingRuleDialog
+          open
+          title="Group policy"
+          description="Shared routing policy"
+          submitLabel="Apply group policy"
+          rule={defaultRule}
+          onClose={() => undefined}
+          onSubmit={onSubmit}
+          labels={labels}
+        />,
+      );
+
+      const policyLabels = ["Preferred usage", "Fast mode", "Image tools", "Request compression"];
+      for (const label of policyLabels) {
+        expect(document.querySelector(`[role="radiogroup"][aria-label="${label}"]`)).toBeInstanceOf(
+          HTMLElement,
+        );
+        expect(document.querySelector(`[role="combobox"][aria-label="${label}"]`)).toBeNull();
+      }
+
+      const fastModeGroup = document.querySelector(
+        '[role="radiogroup"][aria-label="Fast mode"]',
+      ) as HTMLElement | null;
+      const forceAdd = Array.from(
+        fastModeGroup?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [],
+      ).find((button) => button.textContent?.trim() === "Force add");
+      expect(forceAdd).toBeInstanceOf(HTMLButtonElement);
+      act(() => {
+        forceAdd?.click();
+      });
+
+      const submit = Array.from(document.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Apply group policy",
+      );
+      expect(submit).toBeInstanceOf(HTMLButtonElement);
+      act(() => {
+        submit?.click();
+      });
+
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({ fastModeRewriteMode: "force_add" }),
+      );
+    } finally {
+      restoreViewport();
+    }
+  });
+
+  it("keeps discrete routing policies as selects on compact viewports", () => {
+    const restoreViewport = setCompactViewport(true);
+    try {
+      render(
+        <GroupAccountRoutingRuleDialog
+          open
+          title="Group policy"
+          description="Shared routing policy"
+          submitLabel="Apply group policy"
+          rule={defaultRule}
+          onClose={() => undefined}
+          onSubmit={() => undefined}
+          labels={labels}
+        />,
+      );
+
+      const policyLabels = ["Preferred usage", "Fast mode", "Image tools", "Request compression"];
+      for (const label of policyLabels) {
+        expect(document.querySelector(`[role="combobox"][aria-label="${label}"]`)).toBeInstanceOf(
+          HTMLButtonElement,
+        );
+        expect(document.querySelector(`[role="radiogroup"][aria-label="${label}"]`)).toBeNull();
+      }
+    } finally {
+      restoreViewport();
+    }
+  });
+
   it("submits the default image tool rewrite mode", () => {
     const onSubmit = vi.fn();
     render(

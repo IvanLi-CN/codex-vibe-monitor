@@ -352,6 +352,7 @@ Visual evidence is captured from stable Storybook scenarios for:
 - Upstream Accounts grouped roster opening the shared group routing policy dialog with the same flat status-change reason toggle tiles
 - Upstream account detail Routing tab showing page-level status-change reason toggle tiles plus the panel-level account reset action inside the full drawer context
 - Group settings Routing tab showing the embedded routing-policy upstream 429 retry count as the same integrated `0..5` selector used by account detail, with `0` representing no retry, in both desktop and narrow layouts
+- Group settings Routing tab rendering priority, FAST mode, image-tool rewrite, and request compression as inline radio groups on desktop, while retaining compact Select controls at widths of `768px` and below
 - Dashboard upstream-account quick policy chips showing explicit Fast rewrite labels for `force_add` and `keep_original`
 - system settings page showing the global request compression defaults and request-path timeouts with `zstd` + `best` persisted after save
 - group routing policy dialog showing the API-key-only request compression override row with mixed-group helper copy and `follow`
@@ -407,6 +408,12 @@ PR: include
 ![Group routing tab upstream 429 retry selector mobile](./assets/group-retry-selector-enabled-mobile.png)
 
 PR: include
+![Group routing policy desktop inline selectors](./assets/group-routing-desktop-inline-selectors.png)
+
+PR: include
+![Group routing policy mobile selectors](./assets/group-routing-mobile-selectors.png)
+
+PR: include
 ![Fast rewrite quick policy force add chip](./assets/fast-policy-force-fast-chip.png)
 
 PR: include
@@ -416,10 +423,10 @@ PR: include
 ![System settings routing defaults](./assets/system-settings-routing-defaults.png)
 
 PR: include
-![Group request compression follow override](./visual-evidence/2026-07-15-group-routing-follow-compression.png)
+![Group request compression follow override](./assets/2026-07-15-group-routing-follow-compression.png)
 
 PR: include
-![Effective routing rule request compression row](./visual-evidence/2026-07-15-effective-rule-request-compression.png)
+![Effective routing rule request compression row](./assets/2026-07-15-effective-rule-request-compression.png)
 
 PR: include
 ![Upstream account detail capability overview split](./assets/upstream-account-detail-capability-overview-split.png)

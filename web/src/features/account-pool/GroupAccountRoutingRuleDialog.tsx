@@ -12,6 +12,7 @@ import {
 import { Input } from "../../components/ui/input";
 import { SelectField } from "../../components/ui/select-field";
 import { Switch } from "../../components/ui/switch";
+import { useCompactViewport } from "../../hooks/useCompactViewport";
 import type {
   EffectiveRoutingTimeoutFieldSources,
   GroupAccountRoutingRule,
@@ -76,6 +77,57 @@ type GroupAccountRoutingRuleDraft = {
   timeoutOverrides: RoutingTimeoutOverrideDraft;
   timeoutOverrideEnabledFields: RoutingTimeoutOverrideEnabledState;
 };
+
+type ResponsivePolicyOption<T extends string> = {
+  value: T;
+  label: string;
+};
+
+type ResponsivePolicySelectProps<T extends string> = {
+  compact: boolean;
+  label: string;
+  name: string;
+  value: T;
+  options: readonly ResponsivePolicyOption<T>[];
+  disabled: boolean;
+  onValueChange: (value: T) => void;
+};
+
+function ResponsivePolicySelect<T extends string>({
+  compact,
+  label,
+  name,
+  value,
+  options,
+  disabled,
+  onValueChange,
+}: ResponsivePolicySelectProps<T>) {
+  if (compact) {
+    return (
+      <SelectField
+        label={label}
+        name={name}
+        value={value}
+        disabled={disabled}
+        options={options}
+        onValueChange={(nextValue) => onValueChange(nextValue as T)}
+      />
+    );
+  }
+
+  return (
+    <div className="field">
+      <span className="field-label">{label}</span>
+      <PolicyInlineOptionGroup<T>
+        ariaLabel={label}
+        value={value}
+        options={options}
+        disabled={disabled}
+        onChange={onValueChange}
+      />
+    </div>
+  );
+}
 
 function normalizeRetryCount(value?: number | null): number {
   if (!Number.isFinite(value ?? NaN)) return 0;
@@ -493,6 +545,7 @@ export function GroupAccountRoutingRuleEditor({
     }));
   }, [availableModelOptions, draft.availableModels, labels]);
   const trimmedModelInput = draft.availableModelInput.trim();
+  const isCompactViewport = useCompactViewport();
   const canAddCustomModel =
     trimmedModelInput.length > 0 && !draft.availableModels.includes(trimmedModelInput);
   const appendAvailableModel = (model: string) => {
@@ -508,8 +561,8 @@ export function GroupAccountRoutingRuleEditor({
 
   return (
     <div className={className ?? "space-y-5"}>
-      <SelectField
-        className="field"
+      <ResponsivePolicySelect
+        compact={isCompactViewport}
         label={labels.priorityTier}
         name="groupPriorityTier"
         value={draft.priorityTier}
@@ -528,8 +581,8 @@ export function GroupAccountRoutingRuleEditor({
         }
       />
 
-      <SelectField
-        className="field"
+      <ResponsivePolicySelect
+        compact={isCompactViewport}
         label={labels.fastModeRewriteMode}
         name="groupFastModeRewriteMode"
         value={draft.fastModeRewriteMode}
@@ -554,7 +607,8 @@ export function GroupAccountRoutingRuleEditor({
             {labels.imageToolRewriteHint}
           </p>
         ) : null}
-        <SelectField
+        <ResponsivePolicySelect
+          compact={isCompactViewport}
           label={labels.imageToolRewriteMode}
           name="groupImageToolRewriteMode"
           value={draft.imageToolRewriteMode}
@@ -585,7 +639,8 @@ export function GroupAccountRoutingRuleEditor({
             {labels.requestCompressionMixedGroupHint}
           </p>
         ) : null}
-        <SelectField
+        <ResponsivePolicySelect
+          compact={isCompactViewport}
           label={labels.requestCompressionAlgorithm}
           name="groupRequestCompressionAlgorithm"
           value={draft.requestCompressionAlgorithm}

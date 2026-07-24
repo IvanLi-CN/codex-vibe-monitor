@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useState } from "react";
+import { expect, userEvent, within } from "storybook/test";
 import type { GroupAccountRoutingRule, PoolRoutingTimeoutSettings } from "../../lib/api";
 import {
   buildDefaultStatusChangeReasons,
@@ -217,6 +218,46 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
+
+export const DesktopInlineSelectors: Story = {
+  parameters: {
+    viewport: { defaultViewport: "desktop1280" },
+  },
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body);
+    for (const label of ["Preferred usage", "Fast mode", "Image tools", "Request compression"]) {
+      await expect(documentScope.getByRole("radiogroup", { name: label })).toBeInTheDocument();
+      await expect(documentScope.queryByRole("combobox", { name: label })).not.toBeInTheDocument();
+    }
+
+    const fastMode = documentScope.getByRole("radiogroup", { name: "Fast mode" });
+    await userEvent.click(within(fastMode).getByRole("radio", { name: "Force add" }));
+    await expect(within(fastMode).getByRole("radio", { name: "Force add" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+  },
+};
+
+export const Mobile390SelectSelectors: Story = {
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+  },
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body);
+    for (const label of ["Preferred usage", "Fast mode", "Image tools", "Request compression"]) {
+      await expect(documentScope.getByRole("combobox", { name: label })).toBeInTheDocument();
+      await expect(
+        documentScope.queryByRole("radiogroup", { name: label }),
+      ).not.toBeInTheDocument();
+    }
+
+    const prioritySelect = documentScope.getByRole("combobox", { name: "Preferred usage" });
+    await userEvent.click(prioritySelect);
+    await userEvent.click(documentScope.getByRole("option", { name: "Fallback only" }));
+    await expect(prioritySelect).toHaveTextContent("Fallback only");
+  },
+};
 
 export const ForceRemoveImageTool: Story = {
   args: {
