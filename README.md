@@ -230,21 +230,19 @@ bun install
 bun run hooks:install
 ```
 
-之后新建 linked worktree 时，shared Git `post-checkout` hook 会自动补齐缺失的 `.env.local`。如果需要手动重跑轻量 bootstrap，可执行：
+之后新建或切换 linked worktree 时，shared Git `post-checkout` hook 会自动补齐缺失的 `.env.local`，并尝试恢复当前 checkout 所需的依赖。主 worktree 的普通 checkout 不会触发依赖安装。如果需要手动重跑完整 bootstrap，可执行：
 
 ```bash
 bun run worktree:bootstrap
 ```
 
-该 bootstrap 只会复制 `scripts/worktree-sync.paths` 中声明的缺失本地资源；当前首版仅同步 `.env.local`，不会覆盖已有本地文件，也不会复制或安装 `node_modules`、数据库文件或 `.codex/xray-forward` 一类运行态目录。
+该 bootstrap 会复制 `scripts/worktree-sync.paths` 中声明的缺失本地资源，并使用锁定文件恢复 repo root、`web/`、`docs-site/` 的 Bun 依赖以及 Rust crate 缓存。它不会覆盖已有本地文件，也不会复制 `node_modules`、数据库文件或 `.codex/xray-forward` 一类运行态目录。
 
-如果需要把当前 worktree 初始化成完整开发环境，显式执行：
+安装分为 repo root、`web`、`docs-site` 三项 `bun install --frozen-lockfile` 和一项 `cargo fetch --locked`，每项失败后仍会继续执行其余项。自动 `post-checkout` 会告警但不阻断 checkout；手动 bootstrap 会在存在失败时返回非零，便于脚本或 CI 发现问题。若需只执行依赖安装，可使用：
 
 ```bash
 bun run worktree:setup
 ```
-
-`worktree:setup` 会依次安装 repo root、`web/` 与 `docs-site/` 的 Bun 依赖。依赖安装不会由 `post-checkout` 自动触发，避免 checkout 依赖网络或长时间阻塞。
 
 ## 第一次部署最该先确认的配置
 

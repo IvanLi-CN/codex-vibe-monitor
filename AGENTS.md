@@ -14,8 +14,8 @@
 - `cargo run` — start the backend (reads `.env.local`, listens on `127.0.0.1:8080`).
 - `bun install` — install repo-level tooling for hooks, worktree bootstrap, and docs checks.
 - `bun run hooks:install` — install shared Git hooks for every linked worktree in this repository.
-- `bun run worktree:bootstrap` — manually rerun the copy-missing-only local config sync for the current worktree.
-- `bun run worktree:setup` — explicitly install root, `web/`, and `docs-site/` Bun dependencies for the current worktree.
+- `bun run worktree:bootstrap` — manually rerun local resource sync and dependency recovery for the current worktree.
+- `bun run worktree:setup` — install root, `web/`, `docs-site/`, and Rust dependencies with locked dependency metadata.
 - `cd web && bun install` — install SPA dependencies once per setup.
 - `cd web && bun run dev -- --host 127.0.0.1 --port 60080` — run the front-end dev server with proxy to the backend.
 - `cd web && bun run build` — produce production assets for `web/dist`.
@@ -75,6 +75,6 @@ Use non-blocking runtime management for long-lived services, but do not require 
 ## Security & Configuration Tips
 
 - Store authentication cookies and secrets in `.env.local`; the file is ignored—never commit credentials.
-- Worktree bootstrap only copies missing resources declared in `scripts/worktree-sync.paths`; the current contract syncs `.env.local` from the primary worktree into new linked worktrees, never overwrites existing local files, and never copies dependency or runtime directories. Dependency installation is explicit via `bun run worktree:setup`, not automatic from `post-checkout`.
+- Worktree bootstrap copies missing resources declared in `scripts/worktree-sync.paths` and recovers dependencies in linked worktrees. It syncs `.env.local` from the primary worktree without overwriting existing local files, never copies dependency or runtime directories, and uses `bun install --frozen-lockfile` plus `cargo fetch --locked`. Automatic dependency failures warn and do not block checkout; manual `bun run worktree:bootstrap` returns non-zero when any recovery step fails.
 - SQLite files default to `codex_vibe_monitor.db` in the repo root; add alternate paths via `DATABASE_PATH` if running in containers.
 - SSE and HTTP clients depend on stable polling; monitor logs (`RUST_LOG=info cargo run`) when adjusting concurrency or timeouts.
