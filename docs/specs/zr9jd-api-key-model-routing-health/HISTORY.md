@@ -9,6 +9,7 @@
 - 2026-07-24：落地模型路由状态表、结构化模型事件、读取/reset API、候选降权与健康事件面板；页面级证据锁定为 mock-only `ui_demo`，组件交互由 Storybook 覆盖。
 - 2026-07-25：审查收口统一模型错误分类，阻止 API Key 动态错误写入永久静态拒绝标签；补齐 sticky 复用冷却检查、WebSocket 多轮模型归属、并发时序保护与 retention dry-run 计数。
 - 2026-07-25：全量测试发现并修复通用 4xx failover 回放重复写入首块响应体的问题；最终 Rust、Web、Storybook、构建与文档门禁均通过。
+- 2026-07-25：按反馈将模型路由健康卡片统一为固定桌面列轨道并压缩间距；Storybook 增加 provider、只读与错误状态，组件证据改用稳定边界截取并覆盖移动端无溢出。
 
 ## Key Reasons / Replacements
 
