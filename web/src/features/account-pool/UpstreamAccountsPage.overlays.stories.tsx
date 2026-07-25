@@ -410,6 +410,8 @@ export const DetailDrawerApiKeyEventImpact: Story = {
     await expect(impacts).toHaveLength(2);
     await expect(within(impacts[0]).getAllByTestId("account-event-impact-chip")).toHaveLength(2);
     await expect(within(impacts[1]).getAllByTestId("account-event-impact-chip")).toHaveLength(2);
+    await expect(impacts[0].parentElement).toHaveAttribute("data-testid", "account-event-meta");
+    await expect(impacts[1].parentElement).toHaveAttribute("data-testid", "account-event-meta");
     await expect(impacts[0]).toHaveTextContent(/影响范围.*账号|impact scope.*account/i);
     await expect(impacts[0]).toHaveTextContent(/受影响模型.*全部|affected models.*all/i);
     await expect(impacts[1]).toHaveTextContent(/影响范围.*模型|impact scope.*model/i);

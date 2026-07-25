@@ -3839,7 +3839,10 @@ function SharedUpstreamAccountDetailDrawerInner({
                         <div className="space-y-2">
                           {selectedRecentActions.map((actionEvent) => (
                             <div key={actionEvent.id} className="surface-subtle rounded-[1rem] p-3">
-                              <div className="flex flex-wrap items-center gap-2">
+                              <div
+                                className="flex flex-wrap items-center gap-2"
+                                data-testid="account-event-meta"
+                              >
                                 <Badge variant="secondary">
                                   {accountActionLabel(actionEvent.action) ??
                                     t("accountPool.upstreamAccounts.latestAction.unknown")}
@@ -3856,54 +3859,53 @@ function SharedUpstreamAccountDetailDrawerInner({
                                 {Number.isFinite(actionEvent.httpStatus ?? NaN) ? (
                                   <Badge variant="secondary">{`HTTP ${actionEvent.httpStatus}`}</Badge>
                                 ) : null}
+                                {hasAccountFailureImpact(actionEvent) ? (
+                                  <dl className="contents" data-testid="account-event-impact">
+                                    <Badge
+                                      variant="secondary"
+                                      className="max-w-full min-w-0 gap-1.5 whitespace-normal px-2.5 py-1"
+                                      data-testid="account-event-impact-chip"
+                                    >
+                                      <dt className="font-normal text-base-content/55">
+                                        {t(
+                                          "accountPool.upstreamAccounts.recentActions.impact.scope",
+                                        )}
+                                      </dt>
+                                      <dd className="font-semibold text-base-content/90">
+                                        {t(
+                                          hasModelRoutingTransition(actionEvent)
+                                            ? "accountPool.upstreamAccounts.recentActions.impact.scopeModel"
+                                            : "accountPool.upstreamAccounts.recentActions.impact.scopeAccount",
+                                        )}
+                                      </dd>
+                                    </Badge>
+                                    <Badge
+                                      variant="error"
+                                      className="max-w-full min-w-0 gap-1.5 whitespace-normal px-2.5 py-1"
+                                      data-testid="account-event-impact-chip"
+                                    >
+                                      <dt className="font-normal opacity-75">
+                                        {t(
+                                          "accountPool.upstreamAccounts.recentActions.impact.affectedModels",
+                                        )}
+                                      </dt>
+                                      <dd className="min-w-0 break-all font-semibold">
+                                        {hasModelRoutingTransition(actionEvent)
+                                          ? (actionEvent.model ??
+                                            t(
+                                              "accountPool.upstreamAccounts.recentActions.impact.unknownModel",
+                                            ))
+                                          : t(
+                                              "accountPool.upstreamAccounts.recentActions.impact.allModels",
+                                            )}
+                                      </dd>
+                                    </Badge>
+                                  </dl>
+                                ) : null}
                                 <span className="text-xs text-base-content/55">
                                   {formatDateTime(actionEvent.occurredAt)}
                                 </span>
                               </div>
-                              {hasAccountFailureImpact(actionEvent) ? (
-                                <dl
-                                  className="mt-2 flex flex-wrap gap-1.5"
-                                  data-testid="account-event-impact"
-                                >
-                                  <Badge
-                                    variant="secondary"
-                                    className="max-w-full min-w-0 gap-1.5 whitespace-normal px-2.5 py-1"
-                                    data-testid="account-event-impact-chip"
-                                  >
-                                    <dt className="font-normal text-base-content/55">
-                                      {t("accountPool.upstreamAccounts.recentActions.impact.scope")}
-                                    </dt>
-                                    <dd className="font-semibold text-base-content/90">
-                                      {t(
-                                        hasModelRoutingTransition(actionEvent)
-                                          ? "accountPool.upstreamAccounts.recentActions.impact.scopeModel"
-                                          : "accountPool.upstreamAccounts.recentActions.impact.scopeAccount",
-                                      )}
-                                    </dd>
-                                  </Badge>
-                                  <Badge
-                                    variant="error"
-                                    className="max-w-full min-w-0 gap-1.5 whitespace-normal px-2.5 py-1"
-                                    data-testid="account-event-impact-chip"
-                                  >
-                                    <dt className="font-normal opacity-75">
-                                      {t(
-                                        "accountPool.upstreamAccounts.recentActions.impact.affectedModels",
-                                      )}
-                                    </dt>
-                                    <dd className="min-w-0 break-all font-semibold">
-                                      {hasModelRoutingTransition(actionEvent)
-                                        ? (actionEvent.model ??
-                                          t(
-                                            "accountPool.upstreamAccounts.recentActions.impact.unknownModel",
-                                          ))
-                                        : t(
-                                            "accountPool.upstreamAccounts.recentActions.impact.allModels",
-                                          )}
-                                    </dd>
-                                  </Badge>
-                                </dl>
-                              ) : null}
                               {actionEvent.reasonMessage ? (
                                 <p className="mt-2 text-sm leading-6 text-base-content/75">
                                   {actionEvent.reasonMessage}
