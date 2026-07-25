@@ -1188,6 +1188,56 @@ fn parse_stream_response_payload_extracts_terminal_failure_details() {
 }
 
 #[test]
+fn stream_response_parser_recognizes_only_strict_successful_completion() {
+    let mut parser = StreamResponsePayloadChunkParser::default();
+    parser.ingest_bytes(b"event: response.completed\n");
+    assert!(!parser.successful_terminal_seen());
+    parser.ingest_bytes(
+        b"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n",
+    );
+    assert!(parser.successful_terminal_seen());
+    assert!(parser.finish().successful_terminal_seen);
+
+    let mut eof_parser = StreamResponsePayloadChunkParser::default();
+    eof_parser.ingest_bytes(b"event: response.completed\n");
+    eof_parser.ingest_bytes(
+        b"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}",
+    );
+    assert!(eof_parser.successful_terminal_seen());
+
+    for payload in [
+        [
+            "event: response.completed",
+            r#"data: {"type":"response.completed","response":{"status":"failed"}}"#,
+        ]
+        .join("\n"),
+        [
+            "event: response.completed",
+            r#"data: {"type":"response.failed","response":{"status":"completed"}}"#,
+        ]
+        .join("\n"),
+        [
+            "event: response.completed",
+            r#"data: {"type":"response.completed","response":{}}"#,
+        ]
+        .join("\n"),
+        [
+            "event: response.completed",
+            r#"data: {"type":"response.completed","response":{"status":"completed"}"#,
+        ]
+        .join("\n"),
+    ] {
+        let mut parser = StreamResponsePayloadChunkParser::default();
+        parser.ingest_bytes(payload.as_bytes());
+        parser.flush_pending_line();
+        assert!(
+            !parser.successful_terminal_seen(),
+            "invalid terminal payload must not establish success: {payload}"
+        );
+    }
+}
+
+#[test]
 fn estimate_proxy_cost_subtracts_cached_tokens_from_base_input_rate() {
     let catalog = PricingCatalog {
         version: "unit-test".to_string(),

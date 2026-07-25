@@ -1067,6 +1067,7 @@ pub(crate) struct StreamResponsePayloadParser {
     contains_encrypted_content: bool,
     compaction_response_kind: Option<CompactionKind>,
     stream_terminal_event: Option<String>,
+    successful_terminal_seen: bool,
     upstream_error_code: Option<String>,
     upstream_error_message: Option<String>,
     upstream_request_id: Option<String>,
@@ -1132,6 +1133,9 @@ impl StreamResponsePayloadParser {
                         self.stream_terminal_event = Some(candidate);
                     }
                 }
+                if stream_payload_indicates_successful_completion(event_name.as_deref(), &value) {
+                    self.successful_terminal_seen = true;
+                }
                 if self.upstream_error_code.is_none() {
                     self.upstream_error_code = extract_upstream_error_code(&value);
                 }
@@ -1178,6 +1182,7 @@ impl StreamResponsePayloadParser {
 pub(crate) struct StreamResponsePayloadParseOutcome {
     pub(crate) response_info: ResponseCaptureInfo,
     pub(crate) saw_stream_fields: bool,
+    pub(crate) successful_terminal_seen: bool,
 }
 
 pub(crate) struct StreamResponsePayloadChunkParser {
@@ -1272,15 +1277,50 @@ impl StreamResponsePayloadChunkParser {
         }
     }
 
+    pub(crate) fn successful_terminal_seen(&self) -> bool {
+        self.parser.successful_terminal_seen || self.pending_line_is_successful_terminal()
+    }
+
+    fn pending_line_is_successful_terminal(&self) -> bool {
+        if self.discarding_oversized_line || self.line_buffer.is_empty() {
+            return false;
+        }
+        let decoded = String::from_utf8_lossy(&self.line_buffer);
+        let payload = decoded
+            .trim()
+            .strip_prefix("data:")
+            .map(str::trim)
+            .filter(|payload| !payload.is_empty() && *payload != "[DONE]");
+        payload
+            .and_then(|payload| serde_json::from_str::<Value>(payload).ok())
+            .is_some_and(|value| {
+                stream_payload_indicates_successful_completion(
+                    self.parser.pending_event_name.as_deref(),
+                    &value,
+                )
+            })
+    }
+
+    pub(crate) fn flush_pending_line(&mut self) {
+        if self.discarding_oversized_line {
+            self.parser.parse_error_seen = true;
+        } else {
+            self.flush_line();
+        }
+    }
+
     pub(crate) fn finish(mut self) -> StreamResponsePayloadParseOutcome {
         if self.discarding_oversized_line {
             self.parser.parse_error_seen = true;
         } else {
             self.flush_line();
         }
+        let saw_stream_fields = self.parser.saw_stream_fields;
+        let successful_terminal_seen = self.parser.successful_terminal_seen;
         StreamResponsePayloadParseOutcome {
-            saw_stream_fields: self.parser.saw_stream_fields,
             response_info: self.parser.finish(),
+            saw_stream_fields,
+            successful_terminal_seen,
         }
     }
 }
@@ -1360,6 +1400,27 @@ pub(crate) fn stream_payload_indicates_failure(event_name: Option<&str>, value: 
             .pointer("/response/status")
             .and_then(|entry| entry.as_str())
             .is_some_and(|status| status.eq_ignore_ascii_case("failed"))
+}
+
+pub(crate) fn stream_payload_indicates_successful_completion(
+    event_name: Option<&str>,
+    value: &Value,
+) -> bool {
+    let payload_type = value.get("type").and_then(|entry| entry.as_str());
+    let event_is_completed = match (event_name, payload_type) {
+        (Some(event_name), Some(payload_type)) => {
+            event_name == "response.completed" && payload_type == "response.completed"
+        }
+        (Some(event_name), None) => event_name == "response.completed",
+        (None, Some(payload_type)) => payload_type == "response.completed",
+        (None, None) => false,
+    };
+
+    event_is_completed
+        && value
+            .pointer("/response/status")
+            .and_then(|entry| entry.as_str())
+            .is_some_and(|status| status == "completed")
 }
 
 pub(crate) fn extract_upstream_error_object(value: &Value) -> Option<&Value> {

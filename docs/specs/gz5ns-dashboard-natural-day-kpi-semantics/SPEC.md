@@ -117,7 +117,7 @@
 ### 契约文档（按 Kind 拆分）
 
 - `None`
-- Future-only status note: 新写入的 `pure_downstream_closed` 调用对外显示为独立状态 `warning_success`（警告成功），但统计口径按 success-like 处理；历史 `failed/client_abort` 存量不回补、不重解释。
+- Future-only status note: 严格合法的 `response.completed` 已送达下游后，后续 EOF、上游读取异常或普通 body release 不得把调用标为 `warning_success`、`downstream_closed` 或服务失败；调用保持 `success`。终态送达前的下游断开仍记录为 `client_abort/downstream_closed`，但若上游随后完成则 `upstreamOutcome=completed` 且号池 attempt 成功。历史记录不回填、不重算或重解释。
 
 ## 验收标准（Acceptance Criteria）
 

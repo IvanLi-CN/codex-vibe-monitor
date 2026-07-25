@@ -2405,6 +2405,46 @@ pub(crate) fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> S
     serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
 }
 
+pub(crate) fn with_proxy_stream_terminal_diagnostics(
+    payload: String,
+    upstream_outcome: Option<&str>,
+    post_terminal_upstream_read_error_kind: Option<&str>,
+    post_terminal_upstream_read_error_message: Option<&str>,
+    post_terminal_downstream_write_error_kind: Option<&str>,
+    post_terminal_downstream_write_error_message: Option<&str>,
+) -> String {
+    let Ok(mut value) = serde_json::from_str::<Value>(&payload) else {
+        return payload;
+    };
+    let Some(object) = value.as_object_mut() else {
+        return payload;
+    };
+    for (key, entry) in [
+        ("upstreamOutcome", upstream_outcome),
+        (
+            "postTerminalUpstreamReadErrorKind",
+            post_terminal_upstream_read_error_kind,
+        ),
+        (
+            "postTerminalUpstreamReadErrorMessage",
+            post_terminal_upstream_read_error_message,
+        ),
+        (
+            "postTerminalDownstreamWriteErrorKind",
+            post_terminal_downstream_write_error_kind,
+        ),
+        (
+            "postTerminalDownstreamWriteErrorMessage",
+            post_terminal_downstream_write_error_message,
+        ),
+    ] {
+        if let Some(entry) = entry {
+            object.insert(key.to_string(), Value::String(entry.to_string()));
+        }
+    }
+    serde_json::to_string(&value).unwrap_or(payload)
+}
+
 pub(crate) fn with_image_tool_rewrite_payload_summary(
     payload: String,
     image_tool_rewrite: Option<&Value>,

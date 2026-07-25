@@ -2207,7 +2207,12 @@ async fn pool_openai_v1_responses_network_marks_after_first_byte_downstream_clos
 
     wait_for_codex_invocations(&state.pool, 1).await;
     let (row, payload) = load_latest_invocation_payload_row(state.as_ref()).await;
-    assert_eq!(row.status.as_deref(), Some("warning_success"));
+    assert_eq!(row.status.as_deref(), Some("http_200"));
+    assert!(
+        row.error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("[downstream_closed]"))
+    );
     assert_eq!(
         row.failure_kind.as_deref(),
         Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
@@ -2216,6 +2221,7 @@ async fn pool_openai_v1_responses_network_marks_after_first_byte_downstream_clos
         payload["streamFailureOrigin"].as_str(),
         Some("downstream_write")
     );
+    assert_eq!(payload["upstreamOutcome"].as_str(), Some("completed"));
     assert_eq!(
         payload["downstreamClosePhase"].as_str(),
         Some("after_first_byte")
@@ -2262,8 +2268,179 @@ async fn pool_openai_v1_responses_network_marks_after_first_byte_downstream_clos
         payload["requestForwarded"].as_str(),
         Some("for=198.51.100.10;proto=https;host=example.test")
     );
+    let attempt = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+        r#"
+        SELECT status, failure_kind, error_message
+        FROM pool_upstream_request_attempts
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load downstream-close pool attempt");
+    assert_eq!(attempt.0, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS);
+    assert!(attempt.1.is_none());
+    assert!(attempt.2.is_none());
 
     server_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_responses_keeps_success_after_completed_then_upstream_read_error() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": true,
+        "input": "hello",
+    }))
+    .expect("serialize post-terminal error request");
+    let response = tokio::time::timeout(
+        Duration::from_secs(5),
+        proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri(
+                "/v1/responses?mode=completed-stream-error"
+                    .parse()
+                    .expect("valid uri"),
+            ),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(request_body),
+        ),
+    )
+    .await
+    .expect("post-terminal upstream response should start");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = tokio::time::timeout(
+        Duration::from_secs(5),
+        to_bytes(response.into_body(), usize::MAX),
+    )
+    .await
+    .expect("post-terminal response body should close")
+    .expect("post-terminal upstream error must not reach downstream");
+    assert!(String::from_utf8_lossy(&body).contains("response.completed"));
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let (row, payload) = load_latest_invocation_payload_row(state.as_ref()).await;
+    assert_eq!(row.status.as_deref(), Some("success"));
+    assert!(row.error_message.is_none());
+    assert!(row.failure_kind.is_none());
+    assert_eq!(payload["upstreamOutcome"].as_str(), Some("completed"));
+    assert!(payload["streamFailureOrigin"].is_null());
+    assert!(payload["upstreamReadErrorKind"].is_null());
+    assert!(payload["postTerminalUpstreamReadErrorKind"].is_string());
+    assert!(
+        payload["postTerminalUpstreamReadErrorMessage"]
+            .as_str()
+            .is_some_and(|message| message.contains("upstream stream error"))
+    );
+    let failure_class = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT failure_class FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind(&row.invoke_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load persisted post-terminal failure class");
+    assert_eq!(failure_class.as_deref(), Some("none"));
+
+    let attempt = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+        r#"
+        SELECT status, failure_kind, error_message
+        FROM pool_upstream_request_attempts
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load post-terminal pool attempt");
+    assert_eq!(attempt.0, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS);
+    assert!(attempt.1.is_none());
+    assert!(attempt.2.is_none());
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_responses_ignores_body_drop_after_completed_was_forwarded() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": true,
+        "input": "hello",
+    }))
+    .expect("serialize post-terminal body-drop request");
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/responses?mode=slow-success"
+                .parse()
+                .expect("valid uri"),
+        ),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(request_body),
+    )
+    .await;
+
+    let mut body = response.into_body().into_data_stream();
+    let mut received = Vec::new();
+    while let Some(chunk) = body.next().await {
+        let chunk = chunk.expect("read response body through completed");
+        received.extend_from_slice(&chunk);
+        if received
+            .windows("response.completed".len())
+            .any(|window| window == b"response.completed")
+        {
+            break;
+        }
+    }
+    assert!(String::from_utf8_lossy(&received).contains("response.completed"));
+    drop(body);
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let (row, payload) = load_latest_invocation_payload_row(state.as_ref()).await;
+    assert_eq!(row.status.as_deref(), Some("success"));
+    assert!(row.error_message.is_none());
+    assert!(row.failure_kind.is_none());
+    assert_eq!(payload["upstreamOutcome"].as_str(), Some("completed"));
+    assert!(payload["downstreamErrorMessage"].is_null());
+    assert!(payload["downstreamWriteErrorKind"].is_null());
+    assert!(payload["postTerminalDownstreamWriteErrorKind"].is_null());
+
     upstream_handle.abort();
 }
 

@@ -3114,6 +3114,41 @@ async fn test_upstream_responses_slow_success_stream() -> impl IntoResponse {
     )
 }
 
+async fn test_upstream_responses_completed_then_stream_error() -> impl IntoResponse {
+    let completed = concat!(
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_post_terminal_error\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15}}}\n\n",
+    );
+    let chunks = stream::unfold(0u8, move |state| async move {
+        match state {
+            0 => Some((
+                Ok::<_, std::io::Error>(Bytes::from_static(completed.as_bytes())),
+                1,
+            )),
+            1 => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Some((
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionReset,
+                        "synthetic post-terminal upstream reset",
+                    )),
+                    2,
+                ))
+            }
+            _ => None,
+        }
+    });
+
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        )],
+        Body::from_stream(chunks),
+    )
+}
+
 async fn test_upstream_responses_large_stream() -> impl IntoResponse {
     let large_delta = "x".repeat(RAW_RESPONSE_PREVIEW_LIMIT + 8 * 1024);
     let first = concat!(
@@ -3330,6 +3365,13 @@ async fn test_upstream_responses(uri: Uri) -> Response {
         .is_some_and(|query| query.contains("mode=slow-success"))
     {
         test_upstream_responses_slow_success_stream()
+            .await
+            .into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=completed-stream-error"))
+    {
+        test_upstream_responses_completed_then_stream_error()
             .await
             .into_response()
     } else if uri
