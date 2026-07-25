@@ -2687,8 +2687,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         state_for_task.as_ref(),
                         &reservation_key_for_task,
                     );
-                    if response_info_is_retryable_server_overloaded(upstream_status, &response_info)
-                    {
+                    if response_info_is_retryable_responses_overload(
+                        upstream_status,
+                        &response_info,
+                    ) {
                         record_pool_route_retryable_overload_failure_for_attempt(
                             &state_for_task.pool,
                             account.account_id,

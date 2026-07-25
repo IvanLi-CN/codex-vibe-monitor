@@ -26,6 +26,11 @@
 - 已实现：`stats.summary.current` 与 `/api/stats/summary` 现共享同一套内部 summary range builder；open-range `usage_breakdown` 与 `non_success_tokens` 已改为 live/archive aggregate merge，不再经 `full_range_preview_rows(limit=None)` 或 live-id overlap 全窗扫描构建。
 - 已实现：owner-facing `previous7d` summary 已从 pure SSE 消费边界移除；当前应用里它与 `yesterday` 一样只走 `fetchSummary(...)` 的 closed-range HTTP exact path，本地下一个午夜再做 day-boundary refresh。
 - 已实现：startup historical-rollup backfill 会优先清理“缺 `upstream_account_usage_breakdown_hourly` replay marker”的 invocation archive backlog；priority pass 每轮最多处理 `2` 个 archive batch、最多消耗 `6s`，并与永久 blocked 的 `prompt_cache_*` / `sticky_key` backlog 分开判责。
+- 已实现：SubscriptionHub 现在按连接级 owner topic lease 维护 active subscriber 引用计数；无 owner subscriber 的 topic 不刷新缓存而标记 dirty，重新订阅时清空旧 replay 连续性并生成 fresh snapshot。内部 broadcaster receiver 不再作为 owner 订阅判据。
+- 已实现：open-range `stats.summary.current` 的 Dashboard live snapshot 直接 overlay `in-progress / retry / phase / avg wait`，字段未变化时不推进 cursor；terminal Records 按固定 `500ms` deadline 合并 totals refresh，失败保留 last-good payload，并使用 `500ms -> 1s -> 2s -> 5s` 有界退避。
+- 已实现：proxy terminal follow-up 不再构建或广播五个 legacy Summary 窗口；只在存在真实 `quota.current` owner subscriber 时保留 quota follow-up，避免无消费者的请求尾部重算 SQLite。
+- 已实现：summary `non_success_tokens` 的 live 部分复用账号活动 hourly v2 coverage，完整小时读 rollup、边界与 coverage hole 走 scalar exact tail；健康路径不再调用整窗账号活动 raw aggregate。
+- 已实现：Dashboard 5 秒 TTL 语义不变，刷新 telemetry 现在区分 `initial_build`、`ttl_expired`、`scheduled_terminal_refresh`，并记录 `active_subscriber_count`、`coalesced_event_count`、`build_source`、`refresh_outcome` 与 last-good age。
 
 ## Migrated consumers
 
@@ -49,6 +54,7 @@
 - 已移除：健康态 timer reconcile / 页面私有 fallback。
 - 已移除：`records` 事件驱动 `dashboard.activity`、working conversations、summary、timeseries、parallel-work、prompt-cache 的额外重拉链路。
 - 保留：闭合历史窗口、非订阅页面与任务型专用 SSE 的既有语义。
+- 保留：兼容的 closed-range Summary topic 只允许初次 exact snapshot，不参与 Records/live 增量重建。
 
 ## Verification
 

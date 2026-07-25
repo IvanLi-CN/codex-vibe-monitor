@@ -4,6 +4,8 @@
 
 ## Decision Trace
 
+- 2026-07-24：线上复查确认 `summary_topic today` 的残留慢读来自 `non_success_tokens` 与 terminal Summary 重算风暴，而不是账号活动 v2 rollup 本身。本轮让 Summary 当前态走 live overlay + 固定 `500ms` terminal coalescer，`non_success_tokens` 复用 hourly v2 rollup；Dashboard 保持 `5s` TTL，仅补真实订阅门控、dirty reconnect 与刷新原因 telemetry。
+- 2026-07-24：proxy terminal follow-up 删除五个无生产消费者的 legacy Summary 窗口构建；quota follow-up 仅在真实 `quota.current` owner subscriber 存在时运行，避免没有订阅者时继续消耗数据库预算。
 - 2026-07-24：线上 `v2.47.1` 复查把 Dashboard full 的主要 CPU 热点收敛到 `live_account_aggregate` 整窗 raw 重算。账号活动因此增加独立 v2 hourly coverage：完整小时只在 marker 已完成时读 rollup，缺口按连续小时 exact fallback，边界小时保持 exact；5 秒 snapshot cache 语义不变，TTL 主动刷新与 selection 抖动改由 reason/fingerprint telemetry 区分。
 - 2026-07-23：线上 `v2.46.6` 复查确认 7d/previous7d 残留热点不再是 raw preview 或 raw aggregate，而是 pruned legacy archive 的 `upstream_account_usage_breakdown_hourly` marker 永久缺失。新的约束是 breakdown target 可在裁剪 payload 上结构化 replay，`reasoning_effort` 缺失归空/unknown；prompt cache 与 sticky key 仍必须 blocked，避免误造不可恢复的 keyed 维度。
 - 2026-07-22：确认旧的 `full_range_preview_rows` 已退出健康主链后，7d 残留热点进一步收缩到 `usage_breakdown` 自身；因此冻结新的实现约束为“补内部 `model + reasoning` hourly breakdown rollup，并让 summary / dashboard / upstream-account 共用同一 `rollup + exact tail + archive hole fallback` builder”，而不是继续在各路 handler 上重复 raw aggregate 优化。

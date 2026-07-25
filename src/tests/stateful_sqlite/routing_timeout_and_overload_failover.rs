@@ -1511,6 +1511,216 @@ async fn pool_openai_v1_responses_retries_same_account_on_server_overloaded_befo
     upstream_handle.abort();
 }
 
+#[test]
+fn pool_responses_classify_account_concurrency_rate_limit_as_retryable_overload() {
+    let payload = br#"event: response.failed
+data: {"type":"response.failed","response":{"id":"resp_concurrency_retry","model":"gpt-5.6-sol","status":"failed","error":{"code":"rate_limit_exceeded","message":"Concurrency limit exceeded for account, please retry later"}}}
+
+"#;
+
+    let decision = classify_pool_initial_responses_sse_event(StatusCode::OK, payload);
+    match decision {
+        PoolInitialResponsesSseEventDecision::RetrySameAccount {
+            upstream_error_code,
+            upstream_error_message,
+            ..
+        } => {
+            assert_eq!(upstream_error_code.as_deref(), Some("rate_limit_exceeded"));
+            assert_eq!(
+                upstream_error_message.as_deref(),
+                Some("Concurrency limit exceeded for account, please retry later")
+            );
+        }
+        PoolInitialResponsesSseEventDecision::ContinueMetadata
+        | PoolInitialResponsesSseEventDecision::Forward => {
+            panic!("account concurrency limit should enter the existing same-account retry path")
+        }
+    }
+
+    let generic_rate_limit_payload = br#"event: response.failed
+data: {"type":"response.failed","response":{"id":"resp_generic_rate_limit","model":"gpt-5.6-sol","status":"failed","error":{"code":"rate_limit_exceeded","message":"Requests per minute limit exceeded, please retry later"}}}
+
+"#;
+    assert!(matches!(
+        classify_pool_initial_responses_sse_event(StatusCode::OK, generic_rate_limit_payload),
+        PoolInitialResponsesSseEventDecision::Forward
+    ));
+
+    let reached_payload = br#"event: response.failed
+data: {"type":"response.failed","response":{"id":"resp_concurrency_reached","model":"gpt-5.6-sol","status":"failed","error":{"code":"rate_limit_exceeded","message":"Concurrent request limit reached, please retry later"}}}
+
+"#;
+    assert!(matches!(
+        classify_pool_initial_responses_sse_event(StatusCode::OK, reached_payload),
+        PoolInitialResponsesSseEventDecision::RetrySameAccount { .. }
+    ));
+}
+
+#[test]
+fn pool_responses_compact_gate_classifies_account_concurrency_rate_limit() {
+    let payload = Bytes::from_static(
+        br#"{"error":{"code":"rate_limit_exceeded","message":"Concurrency limit exceeded for account, please retry later"}}"#,
+    );
+    let headers = HeaderMap::new();
+    let outcome = gate_pool_initial_compact_response(StatusCode::OK, &headers, Some(&payload));
+    match outcome {
+        Some(PoolInitialResponseGateOutcome::RetrySameAccount {
+            upstream_error_code,
+            upstream_error_message,
+            ..
+        }) => {
+            assert_eq!(upstream_error_code.as_deref(), Some("rate_limit_exceeded"));
+            assert_eq!(
+                upstream_error_message.as_deref(),
+                Some("Concurrency limit exceeded for account, please retry later")
+            );
+        }
+        Some(PoolInitialResponseGateOutcome::Forward { .. }) | None => {
+            panic!("compact account concurrency limit should enter the same-account retry path")
+        }
+    }
+
+    let generic_payload = Bytes::from_static(
+        br#"{"error":{"code":"rate_limit_exceeded","message":"Requests per minute limit exceeded, please retry later"}}"#,
+    );
+    assert!(
+        gate_pool_initial_compact_response(StatusCode::OK, &headers, Some(&generic_payload))
+            .is_none()
+    );
+}
+
+#[test]
+fn pool_responses_route_failure_keeps_generic_rate_limit_out_of_overload_class() {
+    assert!(route_http_failure_is_retryable_responses_overload(
+        StatusCode::OK,
+        "[upstream_response_failed] rate_limit_exceeded: Concurrency limit exceeded for account, please retry later",
+    ));
+    assert!(!route_http_failure_is_retryable_responses_overload(
+        StatusCode::OK,
+        "[upstream_response_failed] rate_limit_exceeded: Requests per minute limit exceeded, please retry later",
+    ));
+    assert!(!route_http_failure_is_retryable_responses_overload(
+        StatusCode::TOO_MANY_REQUESTS,
+        "[upstream_response_failed] rate_limit_exceeded: Concurrency limit exceeded for account, please retry later",
+    ));
+    assert!(!route_http_failure_is_retryable_responses_overload(
+        StatusCode::OK,
+        "[upstream_response_failed] rate_limit_exceeded: Concurrent request limit is active, please retry later",
+    ));
+    assert!(route_http_failure_is_retryable_responses_overload(
+        StatusCode::OK,
+        "[upstream_response_failed] rate_limit_exceeded: Concurrent request limit reached, please retry later",
+    ));
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_retries_same_account_on_account_concurrency_limit() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRouteRow {
+        distinct_account_index: i64,
+        status: String,
+    }
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_metadata_prefixed_response_failed_retry_upstream_with_error(
+            &[("Bearer route-one", 3)],
+            UPSTREAM_ERROR_CODE_RATE_LIMIT_EXCEEDED,
+            "Concurrency limit exceeded for account, please retry later",
+        )
+        .await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Concurrency Retry Route",
+        "route-one",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5.6-sol","stream":true,"input":"hello","stickyKey":"sticky-concurrency-retry-001"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read concurrency retry response body");
+    let response_payload: Value =
+        serde_json::from_slice(&body).expect("decode concurrency retry success body");
+    assert_eq!(response_payload["ok"].as_bool(), Some(true));
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 4).await;
+    let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
+        r#"
+        SELECT distinct_account_index, status
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load concurrency retry attempt rows");
+    assert_eq!(attempt_rows.len(), 4);
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.distinct_account_index)
+            .collect::<Vec<_>>(),
+        vec![1, 1, 1, 1]
+    );
+    assert_eq!(
+        attempt_rows
+            .iter()
+            .map(|row| row.status.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        ]
+    );
+
+    let account_action: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+        r#"
+        SELECT last_action, last_action_reason_code, cooldown_until
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load concurrency retry account state");
+    assert_eq!(account_action.0.as_deref(), Some("route_recovered"));
+    assert!(account_action.1.is_none());
+    assert!(account_action.2.is_none());
+
+    let attempts = attempts.lock().expect("lock concurrency retry attempts");
+    assert_eq!(attempts.get("Bearer route-one").copied(), Some(4));
+    drop(attempts);
+
+    upstream_handle.abort();
+}
+
 #[tokio::test]
 async fn pool_openai_v1_responses_retries_after_metadata_prefix_exceeds_preview_limit() {
     #[derive(Debug, sqlx::FromRow)]

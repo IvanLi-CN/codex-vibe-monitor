@@ -16,6 +16,8 @@
 - 对请求收尾里的同一实体写入，要优先消除“重复唯一键探测 + 紧跟二次更新”“先重算 rollup 再补 timing 再重算一次”这类单请求内自我放大；SQLite 压力常常不是来自单条大 SQL，而是来自几条语义重复的写语句连发。
 - 对 owner-facing 聚合读路径，同样要先消除“整窗扫明细再丢弃大部分结果”和“同参请求因 cache key 掺入 runtime 抖动而无法合并”这两类读放大；它们会和写侧单写者争用同一 SQLite 预算，并以 `database is locked` 的形式回灌到前台。
 - 对 summary open-range 这类总览接口，`usage_breakdown` 与 `non_success_tokens` 不能再为了 account/model 维度或 archive overlap 去扫整窗 raw preview rows、也不能先枚举整段 live invocation id 再和 archive 去重；这类明细必须优先落到 live aggregate + archive aggregate merge，否则 7d overview 会在看似“只读总览”时重新制造数据库压力。
+- Summary topic 还要区分当前态与累计态：live/in-progress 字段应直接由内存 overlay 更新，terminal 只安排固定 deadline 的 totals refresh；不要让每条 terminal event 都重新构建 summary，尤其不要为无 owner subscriber 的 topic 执行 refresh。没有 owner subscriber 时应标记 dirty，重新订阅后再生成 fresh snapshot。
+- `stats.summary.current` 的 open-range terminal refresh 如果失败，应保留 last-good payload，并以有界退避重试；初始 snapshot 失败仍应保持初始化失败语义。这样可以避免锁压力下发布字段缺失 payload，同时让后续健康事件恢复累计 totals。
 - 当 owner-facing breakdown 需要 `model + reasoning` 粒度时，账号 totals/hourly 级 rollup 不够用；必须补独立的 breakdown rollup（例如 `upstream_account_usage_breakdown_hourly`）并走 `full-hour rollup + exact boundary tail + archive-hole fallback`，否则“只差一个 breakdown”就会把 7d/previous7d 重新打回整段 raw aggregate。
 - 对新增 rollup target 的 rollout，还要显式处理“老 archive batch 已 materialized、但新 target 从未 replay”这一迁移态。不要把新 target 直接塞进旧的 materialized shortcut；正确做法是只保留已验证安全的 legacy target shortcut，并把缺新 rollup rows 的历史 batch reopen 到 backfill backlog，否则既会漏数，又会让 telemetry 误报为 healthy。
 - 对已裁剪 payload 的 legacy archive，要逐个 target 判断是否真的需要完整 payload。`usage_breakdown` 这类可由结构化列和保留的最小 payload 回放的 target 应允许 materialize，并把不可恢复的 `reasoning_effort` 归入空/unknown；`prompt_cache_*`、`sticky_key` 这类 keyed target 仍应保持 blocked，避免为了清慢读而制造错误维度。

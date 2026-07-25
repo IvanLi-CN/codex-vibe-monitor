@@ -1741,7 +1741,32 @@ pub(crate) fn upstream_error_code_is_server_overloaded(code: Option<&str>) -> bo
     code.is_some_and(|value| value.eq_ignore_ascii_case(UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED))
 }
 
-pub(crate) fn route_http_failure_is_retryable_server_overloaded(
+fn upstream_error_message_indicates_concurrency_limit(message: Option<&str>) -> bool {
+    let normalized = message.unwrap_or_default().to_ascii_lowercase();
+    let has_concurrency_term =
+        normalized.contains("concurrency") || normalized.contains("concurrent");
+    let has_limit_term = normalized.contains("limit") || normalized.contains("request");
+    let has_exhaustion_term = normalized.contains("exceed")
+        || normalized.contains("too many")
+        || normalized.contains("maximum")
+        || normalized.contains("reached")
+        || normalized.contains("hit");
+    has_concurrency_term && has_limit_term && has_exhaustion_term
+}
+
+pub(crate) fn upstream_error_is_retryable_responses_overload(
+    code: Option<&str>,
+    message: Option<&str>,
+) -> bool {
+    if upstream_error_code_is_server_overloaded(code) {
+        return true;
+    }
+
+    code.is_some_and(|value| value.eq_ignore_ascii_case(UPSTREAM_ERROR_CODE_RATE_LIMIT_EXCEEDED))
+        && upstream_error_message_indicates_concurrency_limit(message)
+}
+
+pub(crate) fn route_http_failure_is_retryable_responses_overload(
     status: StatusCode,
     error_message: &str,
 ) -> bool {
@@ -1749,18 +1774,26 @@ pub(crate) fn route_http_failure_is_retryable_server_overloaded(
         return false;
     }
 
-    let normalized = error_message.to_ascii_lowercase();
-    normalized.contains(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
-        && normalized.contains(UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED)
+    let prefix = format!("[{}] ", PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED);
+    let Some(details) = error_message.strip_prefix(prefix.as_str()) else {
+        return false;
+    };
+    let (code, message) = details
+        .split_once(": ")
+        .map_or((details, None), |(code, message)| (code, Some(message)));
+    upstream_error_is_retryable_responses_overload(Some(code.trim()), message.map(str::trim))
 }
 
-pub(crate) fn response_info_is_retryable_server_overloaded(
+pub(crate) fn response_info_is_retryable_responses_overload(
     status: StatusCode,
     response_info: &ResponseCaptureInfo,
 ) -> bool {
     status == StatusCode::OK
         && response_info.stream_terminal_event.is_some()
-        && upstream_error_code_is_server_overloaded(response_info.upstream_error_code.as_deref())
+        && upstream_error_is_retryable_responses_overload(
+            response_info.upstream_error_code.as_deref(),
+            response_info.upstream_error_message.as_deref(),
+        )
 }
 
 pub(crate) fn extract_unsupported_model_from_route_error(

@@ -535,7 +535,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         )
         .await?;
     }
-    if route_http_failure_is_retryable_server_overloaded(status, error_message) {
+    if route_http_failure_is_retryable_responses_overload(status, error_message) {
         return record_pool_route_retryable_overload_failure_inner(
             pool,
             account_id,

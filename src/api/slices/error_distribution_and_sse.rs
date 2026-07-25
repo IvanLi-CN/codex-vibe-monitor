@@ -1629,38 +1629,6 @@ pub(crate) async fn latest_quota_snapshot(
     Ok(Json(snapshot))
 }
 
-pub(crate) async fn broadcast_summary_if_changed(
-    broadcaster: &broadcast::Sender<BroadcastPayload>,
-    cache: &Mutex<BroadcastStateCache>,
-    window: &str,
-    summary: StatsResponse,
-) -> Result<bool, broadcast::error::SendError<BroadcastPayload>> {
-    if broadcaster.receiver_count() == 0 {
-        return Ok(false);
-    }
-
-    let mut cache = cache.lock().await;
-    if cache
-        .summaries
-        .get(window)
-        .is_some_and(|current| current == &summary)
-    {
-        return Ok(false);
-    }
-
-    match broadcaster.send(BroadcastPayload::Summary {
-        window: window.to_string(),
-        summary: summary.clone(),
-    }) {
-        Ok(_) => {
-            cache.summaries.insert(window.to_string(), summary);
-            Ok(true)
-        }
-        Err(_err) if broadcaster.receiver_count() == 0 => Ok(false),
-        Err(err) => Err(err),
-    }
-}
-
 pub(crate) async fn broadcast_quota_if_changed(
     broadcaster: &broadcast::Sender<BroadcastPayload>,
     cache: &Mutex<BroadcastStateCache>,
@@ -1855,6 +1823,8 @@ mod tests {
             in_progress_invocation_count: 0,
             in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
             retry_invocation_count: 0,
+            in_progress_wait_sum_ms: 0.0,
+            in_progress_wait_sample_count: 0,
             network_live_bucket: None,
             network_realtime_rate: Some(DashboardNetworkRealtimeRateResponse {
                 sample_start: "2026-07-19T18:03:59.000Z".to_string(),
@@ -2064,7 +2034,6 @@ pub(crate) async fn get_versions(
 
 #[derive(Debug, Default)]
 pub(crate) struct BroadcastStateCache {
-    pub(crate) summaries: HashMap<String, StatsResponse>,
     pub(crate) quota: Option<QuotaSnapshotResponse>,
 }
 
@@ -2079,6 +2048,10 @@ pub(crate) struct DashboardActivityLiveAccount {
     pub(crate) in_progress_invocation_count: i64,
     pub(crate) in_progress_phase_counts: InvocationPhaseCountsResponse,
     pub(crate) retry_invocation_count: i64,
+    #[serde(skip)]
+    pub(crate) in_progress_wait_sum_ms: f64,
+    #[serde(skip)]
+    pub(crate) in_progress_wait_sample_count: i64,
     pub(crate) upload_bytes_per_second: f64,
     pub(crate) download_bytes_per_second: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2093,6 +2066,10 @@ pub(crate) struct DashboardActivityLiveSnapshot {
     pub(crate) in_progress_invocation_count: i64,
     pub(crate) in_progress_phase_counts: InvocationPhaseCountsResponse,
     pub(crate) retry_invocation_count: i64,
+    #[serde(skip)]
+    pub(crate) in_progress_wait_sum_ms: f64,
+    #[serde(skip)]
+    pub(crate) in_progress_wait_sample_count: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) network_live_bucket: Option<DashboardNetworkTimeseriesPointResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2158,6 +2135,8 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
                 in_progress_invocation_count: 0,
                 in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
                 retry_invocation_count: 0,
+                in_progress_wait_sum_ms: 0.0,
+                in_progress_wait_sample_count: 0,
                 upload_bytes_per_second: 0.0,
                 download_bytes_per_second: 0.0,
                 network_live_bucket: None,
@@ -2179,9 +2158,13 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
     let mut phase_counts = InvocationPhaseCountsResponse::default();
     let mut in_progress_invocation_count = 0;
     let mut retry_invocation_count = 0;
+    let mut in_progress_wait_sum_ms = 0.0;
+    let mut in_progress_wait_sample_count = 0;
     for account in &accounts {
         in_progress_invocation_count += account.in_progress_invocation_count;
         retry_invocation_count += account.retry_invocation_count;
+        in_progress_wait_sum_ms += account.in_progress_wait_sum_ms;
+        in_progress_wait_sample_count += account.in_progress_wait_sample_count;
         phase_counts.queued += account.in_progress_phase_counts.queued;
         phase_counts.requesting += account.in_progress_phase_counts.requesting;
         phase_counts.responding += account.in_progress_phase_counts.responding;
@@ -2192,6 +2175,8 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
         in_progress_invocation_count,
         in_progress_phase_counts: phase_counts,
         retry_invocation_count,
+        in_progress_wait_sum_ms,
+        in_progress_wait_sample_count,
         network_live_bucket: None,
         network_realtime_rate: None,
         accounts,
@@ -2199,7 +2184,11 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
 }
 
 pub(crate) fn schedule_dashboard_activity_live_snapshot(state: &AppState) {
-    if state.broadcaster.receiver_count() == 0 || state.shutdown.is_cancelled() {
+    if state.shutdown.is_cancelled()
+        || !state
+            .subscription_hub
+            .has_active_dashboard_activity_live_topic_sync()
+    {
         return;
     }
     let worker_start_seq = state
@@ -2219,6 +2208,7 @@ pub(crate) fn schedule_dashboard_activity_live_snapshot(state: &AppState) {
     let pool = state.pool.clone();
     let proxy_runtime_invocations = state.proxy_runtime_invocations.clone();
     let dashboard_network_speed_cache = state.dashboard_network_speed_cache.clone();
+    let subscription_hub = state.subscription_hub.clone();
     let broadcaster = state.broadcaster.clone();
     let shutdown = state.shutdown.clone();
     tokio::spawn(async move {
@@ -2234,7 +2224,10 @@ pub(crate) fn schedule_dashboard_activity_live_snapshot(state: &AppState) {
             }
 
             let sent_seq = latest_seq.load(Ordering::Acquire);
-            if broadcaster.receiver_count() > 0 {
+            if subscription_hub
+                .has_active_dashboard_activity_live_topic()
+                .await
+            {
                 let started = Instant::now();
                 match capture_dashboard_activity_live_snapshot_from_runtime(
                     &pool,
@@ -2246,7 +2239,9 @@ pub(crate) fn schedule_dashboard_activity_live_snapshot(state: &AppState) {
                     Ok(snapshot) => {
                         let revision = snapshot.revision;
                         if let Err(err) =
-                            broadcaster.send(BroadcastPayload::DashboardActivityLive { snapshot })
+                            broadcaster.send(BroadcastPayload::DashboardActivityLive {
+                                snapshot: Box::new(snapshot),
+                            })
                         {
                             warn!(
                                 ?err,
@@ -2299,16 +2294,12 @@ pub(crate) enum BroadcastPayload {
         records: Vec<ApiInvocation>,
     },
     DashboardActivityLive {
-        snapshot: DashboardActivityLiveSnapshot,
+        snapshot: Box<DashboardActivityLiveSnapshot>,
     },
     #[serde(rename = "pool_attempts")]
     PoolAttempts {
         invoke_id: String,
         attempts: Vec<ApiPoolUpstreamRequestAttempt>,
-    },
-    Summary {
-        window: String,
-        summary: StatsResponse,
     },
     Quota {
         snapshot: Box<QuotaSnapshotResponse>,

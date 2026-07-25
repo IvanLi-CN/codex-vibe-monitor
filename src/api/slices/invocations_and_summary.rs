@@ -3491,17 +3491,40 @@ fn build_request_client_snapshot(payload: Option<&Value>) -> Value {
     })
 }
 
-fn build_response_header_snapshot(record: &ApiInvocation, payload: Option<&Value>) -> Value {
+fn build_response_header_snapshot(
+    record: &ApiInvocation,
+    attempt: Option<&InvocationWorkflowAttemptRow>,
+    payload: Option<&Value>,
+    allow_invocation_level_fields: bool,
+) -> Value {
+    let content_encoding = allow_invocation_level_fields
+        .then(|| {
+            record
+                .response_content_encoding
+                .clone()
+                .or_else(|| payload_string(payload, &["responseContentEncoding"]))
+        })
+        .flatten();
+    let content_encoding_chain = allow_invocation_level_fields
+        .then(|| payload_string(payload, &["contentEncodingChain"]))
+        .flatten();
+    let upstream_request_id = attempt
+        .and_then(|attempt| attempt.upstream_request_id.clone())
+        .or_else(|| {
+            allow_invocation_level_fields
+                .then(|| {
+                    record
+                        .upstream_request_id
+                        .clone()
+                        .or_else(|| payload_string(payload, &["upstreamRequestId"]))
+                })
+                .flatten()
+        });
+
     json!({
-        "contentEncoding": record
-            .response_content_encoding
-            .clone()
-            .or_else(|| payload_string(payload, &["responseContentEncoding"])),
-        "contentEncodingChain": payload_string(payload, &["contentEncodingChain"]),
-        "upstreamRequestId": record
-            .upstream_request_id
-            .clone()
-            .or_else(|| payload_string(payload, &["upstreamRequestId"])),
+        "contentEncoding": content_encoding,
+        "contentEncodingChain": content_encoding_chain,
+        "upstreamRequestId": upstream_request_id,
         "cvmInvokeId": Some(record.invoke_id.clone()),
     })
 }
@@ -3888,48 +3911,88 @@ fn build_attempt_response_summary(
     attempt: &InvocationWorkflowAttemptRow,
     payload: Option<&Value>,
     usage_cost_audit: Option<&InvocationCostAudit>,
+    is_final_attempt: bool,
 ) -> Value {
+    let invocation_failure_kind = is_final_attempt
+        .then_some(record.failure_kind.as_ref())
+        .flatten();
+    let invocation_error_message = is_final_attempt
+        .then_some(record.error_message.as_ref())
+        .flatten();
+    let invocation_downstream_error_message = is_final_attempt
+        .then_some(record.downstream_error_message.as_ref())
+        .flatten();
+    let invocation_upstream_request_id = is_final_attempt
+        .then_some(record.upstream_request_id.as_ref())
+        .flatten();
+    let invocation_response_content_encoding = is_final_attempt
+        .then(|| record.response_content_encoding.clone())
+        .flatten();
+    let invocation_response_payload = is_final_attempt.then_some(payload).flatten();
+    let response_body_capture_size = if is_final_attempt {
+        record.response_raw_size
+    } else {
+        attempt.upstream_response_body_bytes
+    };
+    let response_body_capture_truncated = if is_final_attempt {
+        record.response_raw_truncated.unwrap_or_default() != 0
+    } else {
+        false
+    };
+    let response_body_capture_truncated_reason = if is_final_attempt {
+        record.response_raw_truncated_reason.clone()
+    } else {
+        None
+    };
+    let response_body_capture_detail_level = if is_final_attempt {
+        Some(record.detail_level.clone())
+    } else {
+        Some("attempt_metrics".to_string())
+    };
+
     json!({
         "status": attempt.status.clone(),
         "phase": attempt.phase.clone(),
         "httpStatus": attempt.http_status,
-        "compactionResponseKind": record.compaction_response_kind.clone(),
-        "failureKind": attempt.failure_kind.as_ref().or(record.failure_kind.as_ref()),
-        "errorMessage": attempt.error_message.as_ref().or(record.error_message.as_ref()),
+        "compactionResponseKind": is_final_attempt.then(|| record.compaction_response_kind.clone()).flatten(),
+        "failureKind": attempt.failure_kind.as_ref().or(invocation_failure_kind),
+        "errorMessage": attempt.error_message.as_ref().or(invocation_error_message),
         "downstreamErrorMessage": attempt
             .downstream_error_message
             .as_ref()
-            .or(record.downstream_error_message.as_ref()),
-        "upstreamRequestId": attempt.upstream_request_id.as_ref().or(record.upstream_request_id.as_ref()),
-        "upstreamErrorCode": record.upstream_error_code.clone(),
-        "upstreamErrorMessage": record.upstream_error_message.clone(),
-        "streamTerminalEvent": record.stream_terminal_event.clone(),
-        "responseContentEncoding": record.response_content_encoding.clone(),
-        "serviceTier": record.service_tier.clone(),
-        "billingServiceTier": record.billing_service_tier.clone(),
-        "headers": build_response_header_snapshot(record, payload),
-        "delivery": build_response_delivery_snapshot(payload),
+            .or(invocation_downstream_error_message),
+        "upstreamRequestId": attempt.upstream_request_id.as_ref().or(invocation_upstream_request_id),
+        "upstreamErrorCode": is_final_attempt.then(|| record.upstream_error_code.clone()).flatten(),
+        "upstreamErrorMessage": is_final_attempt.then(|| record.upstream_error_message.clone()).flatten(),
+        "streamTerminalEvent": is_final_attempt.then(|| record.stream_terminal_event.clone()).flatten(),
+        "responseContentEncoding": invocation_response_content_encoding,
+        "serviceTier": is_final_attempt.then(|| record.service_tier.clone()).flatten(),
+        "billingServiceTier": is_final_attempt.then(|| record.billing_service_tier.clone()).flatten(),
+        "headers": build_response_header_snapshot(record, Some(attempt), payload, is_final_attempt),
+        "delivery": build_response_delivery_snapshot(invocation_response_payload),
         "compactSupport": {
             "status": attempt.compact_support_status.clone(),
             "reason": attempt.compact_support_reason.clone(),
         },
         "latencyMs": {
-            "connect": attempt.connect_latency_ms.or(record.t_upstream_connect_ms),
-            "firstByte": attempt.first_byte_latency_ms.or(record.t_upstream_ttfb_ms),
-            "stream": attempt.stream_latency_ms.or(record.t_upstream_stream_ms),
-            "requestRead": record.t_req_read_ms,
-            "requestParse": record.t_req_parse_ms,
-            "responseParse": record.t_resp_parse_ms,
-            "persist": record.t_persist_ms,
-            "total": record.t_total_ms,
+            "connect": attempt.connect_latency_ms.or_else(|| is_final_attempt.then_some(record.t_upstream_connect_ms).flatten()),
+            "firstByte": attempt.first_byte_latency_ms.or_else(|| is_final_attempt.then_some(record.t_upstream_ttfb_ms).flatten()),
+            "stream": attempt.stream_latency_ms.or_else(|| is_final_attempt.then_some(record.t_upstream_stream_ms).flatten()),
+            "requestRead": is_final_attempt.then_some(record.t_req_read_ms).flatten(),
+            "requestParse": is_final_attempt.then_some(record.t_req_parse_ms).flatten(),
+            "responseParse": is_final_attempt.then_some(record.t_resp_parse_ms).flatten(),
+            "persist": is_final_attempt.then_some(record.t_persist_ms).flatten(),
+            "total": is_final_attempt.then_some(record.t_total_ms).flatten(),
         },
         "responseBodyCapture": {
-            "availableAtInvocationLevel": record.response_raw_path.is_some(),
-            "size": record.response_raw_size,
-            "truncated": record.response_raw_truncated.unwrap_or_default() != 0,
-            "truncatedReason": record.response_raw_truncated_reason.clone(),
-            "detailLevel": record.detail_level.clone(),
-            "detailPruneReason": record.detail_prune_reason.clone(),
+            "availableAtInvocationLevel": is_final_attempt && record.response_raw_path.is_some(),
+            "size": response_body_capture_size,
+            "truncated": response_body_capture_truncated,
+            "truncatedReason": response_body_capture_truncated_reason,
+            "detailLevel": response_body_capture_detail_level,
+            "detailPruneReason": is_final_attempt.then(|| record.detail_prune_reason.clone()).flatten(),
+            "unavailableReason": (!is_final_attempt)
+                .then_some("non_final_attempt_response_body_not_captured"),
         },
         "usage": usage_cost_audit.map(|audit| build_invocation_usage_summary(record, audit)),
     })
@@ -3940,7 +4003,21 @@ fn build_workflow_attempt_from_row(
     attempt: &InvocationWorkflowAttemptRow,
     payload: Option<&Value>,
     usage_cost_audit: Option<&InvocationCostAudit>,
+    is_final_attempt: bool,
 ) -> InvocationWorkflowAttempt {
+    let invocation_failure_kind = is_final_attempt
+        .then(|| record.failure_kind.clone())
+        .flatten();
+    let invocation_error_message = is_final_attempt
+        .then(|| record.error_message.clone())
+        .flatten();
+    let invocation_downstream_error_message = is_final_attempt
+        .then(|| record.downstream_error_message.clone())
+        .flatten();
+    let invocation_upstream_request_id = is_final_attempt
+        .then(|| record.upstream_request_id.clone())
+        .flatten();
+
     InvocationWorkflowAttempt {
         synthetic: false,
         attempt_id: attempt.attempt_id.clone(),
@@ -3970,32 +4047,46 @@ fn build_workflow_attempt_from_row(
         phase: attempt.phase.clone(),
         http_status: attempt.http_status,
         downstream_http_status: attempt.downstream_http_status,
-        failure_kind: attempt
-            .failure_kind
-            .clone()
-            .or_else(|| record.failure_kind.clone()),
-        error_message: attempt
-            .error_message
-            .clone()
-            .or_else(|| record.error_message.clone()),
+        failure_kind: attempt.failure_kind.clone().or(invocation_failure_kind),
+        error_message: attempt.error_message.clone().or(invocation_error_message),
         downstream_error_message: attempt
             .downstream_error_message
             .clone()
-            .or_else(|| record.downstream_error_message.clone()),
-        connect_latency_ms: attempt.connect_latency_ms.or(record.t_upstream_connect_ms),
-        first_byte_latency_ms: attempt.first_byte_latency_ms.or(record.t_upstream_ttfb_ms),
-        stream_latency_ms: attempt.stream_latency_ms.or(record.t_upstream_stream_ms),
+            .or(invocation_downstream_error_message),
+        connect_latency_ms: attempt.connect_latency_ms.or_else(|| {
+            is_final_attempt
+                .then_some(record.t_upstream_connect_ms)
+                .flatten()
+        }),
+        first_byte_latency_ms: attempt.first_byte_latency_ms.or_else(|| {
+            is_final_attempt
+                .then_some(record.t_upstream_ttfb_ms)
+                .flatten()
+        }),
+        stream_latency_ms: attempt.stream_latency_ms.or_else(|| {
+            is_final_attempt
+                .then_some(record.t_upstream_stream_ms)
+                .flatten()
+        }),
         upstream_request_id: attempt
             .upstream_request_id
             .clone()
-            .or_else(|| record.upstream_request_id.clone()),
+            .or(invocation_upstream_request_id),
         request_summary: parse_summary_json_or_fallback(
             attempt.request_summary_json.as_deref(),
             || build_attempt_request_summary(record, attempt, payload),
         ),
         response_summary: parse_summary_json_or_fallback(
             attempt.response_summary_json.as_deref(),
-            || build_attempt_response_summary(record, attempt, payload, usage_cost_audit),
+            || {
+                build_attempt_response_summary(
+                    record,
+                    attempt,
+                    payload,
+                    usage_cost_audit,
+                    is_final_attempt,
+                )
+            },
         ),
     }
 }
@@ -4060,7 +4151,7 @@ fn build_synthetic_workflow_attempt(
         "responseContentEncoding": record.response_content_encoding.clone(),
         "serviceTier": record.service_tier.clone(),
         "billingServiceTier": record.billing_service_tier.clone(),
-        "headers": build_response_header_snapshot(record, payload),
+        "headers": build_response_header_snapshot(record, None, payload, true),
         "delivery": build_response_delivery_snapshot(payload),
         "latencyMs": {
             "connect": record.t_upstream_connect_ms,
@@ -4391,27 +4482,6 @@ fn build_workflow_attempt_timeline_entry(
     }
 }
 
-fn suppress_invocation_level_response_body_for_account_retry(
-    attempt: &mut InvocationWorkflowAttempt,
-    attempt_row: &InvocationWorkflowAttemptRow,
-) {
-    let Some(Value::Object(response_summary)) = attempt.response_summary.as_mut() else {
-        return;
-    };
-
-    let mut capture = serde_json::Map::new();
-    capture.insert("availableAtInvocationLevel".to_string(), Value::Bool(false));
-    if let Some(size) = attempt_row.upstream_response_body_bytes {
-        capture.insert("size".to_string(), json!(size));
-    }
-    capture.insert("detailLevel".to_string(), json!("attempt_metrics"));
-    capture.insert(
-        "unavailableReason".to_string(),
-        json!("non_final_attempt_response_body_not_captured"),
-    );
-    response_summary.insert("responseBodyCapture".to_string(), Value::Object(capture));
-}
-
 pub(crate) async fn hydrate_upstream_account_attempt_workflow_entries(
     state: &AppState,
     records: &mut [ApiPoolUpstreamRequestAttempt],
@@ -4475,26 +4545,15 @@ pub(crate) async fn hydrate_upstream_account_attempt_workflow_entries(
         let workflow_entries = real_attempt_rows
             .into_iter()
             .filter_map(|attempt_row| {
-                let mut attempt = build_workflow_attempt_from_row(
+                let attempt = build_workflow_attempt_from_row(
                     &record,
                     attempt_row,
                     payload_value.as_ref(),
                     (last_success_attempt_index == Some(attempt_row.attempt_index))
                         .then_some(usage_cost_audit.as_ref())
                         .flatten(),
+                    final_attempt_index == Some(attempt_row.attempt_index),
                 );
-                if final_attempt_index != Some(attempt_row.attempt_index)
-                    && attempt_row
-                        .response_summary_json
-                        .as_deref()
-                        .map(str::trim)
-                        .is_none_or(str::is_empty)
-                {
-                    suppress_invocation_level_response_body_for_account_retry(
-                        &mut attempt,
-                        attempt_row,
-                    );
-                }
                 let attempt_id = attempt.attempt_id.clone()?;
                 Some((attempt_id, build_workflow_attempt_timeline_entry(attempt)))
             })
@@ -4711,7 +4770,13 @@ pub(crate) async fn fetch_invocation_workflow_detail(
         pseudo_attempt_rows
             .last()
             .map(|attempt| {
-                build_workflow_attempt_from_row(&record, attempt, payload_value.as_ref(), None)
+                build_workflow_attempt_from_row(
+                    &record,
+                    attempt,
+                    payload_value.as_ref(),
+                    None,
+                    false,
+                )
             })
             .unwrap_or_else(|| {
                 build_synthetic_workflow_attempt(&record, payload_value.as_ref(), None)
@@ -4728,6 +4793,10 @@ pub(crate) async fn fetch_invocation_workflow_detail(
             )]
         }
     } else {
+        let final_attempt_index = real_attempt_rows
+            .iter()
+            .map(|attempt| attempt.attempt_index)
+            .max();
         real_attempt_rows
             .iter()
             .map(|attempt| {
@@ -4738,6 +4807,7 @@ pub(crate) async fn fetch_invocation_workflow_detail(
                     (last_success_attempt_index == Some(attempt.attempt_index))
                         .then_some(usage_cost_audit.as_ref())
                         .flatten(),
+                    final_attempt_index == Some(attempt.attempt_index),
                 )
             })
             .collect::<Vec<_>>()
@@ -5644,7 +5714,7 @@ pub(crate) struct SummaryRangeBuildTelemetry {
 }
 
 impl SummaryRangeBuildTelemetry {
-    fn new(
+    pub(crate) fn new(
         route: SummaryBuildRoute,
         window: &SummaryWindow,
         requested_window: Option<&str>,
@@ -6082,6 +6152,17 @@ pub(crate) async fn load_in_progress_summary_snapshot(
                 phase_counts.decrement_phase_name(row.live_phase.as_deref());
                 phase_counts.increment_phase_name(runtime_phase);
             }
+            if runtime_record_ttfb_differs(runtime_record.t_upstream_ttfb_ms, row.upstream_ttfb_ms)
+            {
+                db_ttfb_sum = (db_ttfb_sum
+                    - normalized_wait_ms(row.upstream_ttfb_ms).unwrap_or_default())
+                .max(0.0)
+                    + normalized_wait_ms(runtime_record.t_upstream_ttfb_ms).unwrap_or_default();
+                avg_wait_sample_count =
+                    avg_wait_sample_count.saturating_sub(i64::from(
+                        normalized_wait_ms(row.upstream_ttfb_ms).is_some(),
+                    )) + i64::from(normalized_wait_ms(runtime_record.t_upstream_ttfb_ms).is_some());
+            }
             continue;
         }
         db_in_progress_count = db_in_progress_count.saturating_sub(1);
@@ -6229,6 +6310,149 @@ pub(crate) fn summary_live_augmentation_policy(
     }
 }
 
+async fn query_account_activity_v2_non_success_tokens(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    bucket_epochs: &[i64],
+) -> Result<i64, ApiError> {
+    if bucket_epochs.is_empty() {
+        return Ok(0);
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT COALESCE(SUM(COALESCE(activity_v2_non_success_tokens, 0)), 0) \
+         FROM upstream_account_stats_hourly WHERE bucket_start_epoch IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for bucket_epoch in bucket_epochs {
+            separated.push_bind(*bucket_epoch);
+        }
+    }
+    query.push(")");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND upstream_account_id = ")
+            .push_bind(upstream_account_id);
+    }
+    Ok(query.build_query_scalar::<i64>().fetch_one(pool).await?)
+}
+
+async fn query_non_success_tokens_exact_tail(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    range: ExactUtcRange,
+) -> Result<i64, ApiError> {
+    let normalized_status_sql = INVOCATION_STATUS_NORMALIZED_SQL;
+    let resolved_failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
+    let non_success_sql = format!(
+        "({normalized_status_sql} = 'interrupted' OR \
+         ({normalized_status_sql} NOT IN ('running', 'pending') \
+          AND ({resolved_failure_class_sql}) <> 'none'))"
+    );
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
+        "SELECT COALESCE(SUM(CASE WHEN {non_success_sql} THEN COALESCE(total_tokens, 0) ELSE 0 END), 0) \
+         FROM codex_invocations WHERE occurred_at >= "
+    ));
+    query
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(range.end));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(" = ")
+            .push_bind(upstream_account_id);
+    }
+    Ok(query.build_query_scalar::<i64>().fetch_one(pool).await?)
+}
+
+async fn query_non_success_tokens_unreplayed_live_tail(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    covered_hours: &[i64],
+    repair_cursor: i64,
+) -> Result<i64, ApiError> {
+    if covered_hours.is_empty() {
+        return Ok(0);
+    }
+    let normalized_status_sql = INVOCATION_STATUS_NORMALIZED_SQL;
+    let resolved_failure_class_sql = INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
+    let non_success_sql = format!(
+        "({normalized_status_sql} = 'interrupted' OR \
+         ({normalized_status_sql} NOT IN ('running', 'pending') \
+          AND ({resolved_failure_class_sql}) <> 'none'))"
+    );
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
+        "SELECT COALESCE(SUM(CASE WHEN {non_success_sql} THEN COALESCE(total_tokens, 0) ELSE 0 END), 0) \
+         FROM codex_invocations WHERE id > "
+    ));
+    query.push_bind(repair_cursor).push(" AND (");
+    for (index, bucket_epoch) in covered_hours.iter().enumerate() {
+        let start = Utc
+            .timestamp_opt(*bucket_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid covered-hour start epoch")))?;
+        let end = start + ChronoDuration::hours(1);
+        if index > 0 {
+            query.push(" OR ");
+        }
+        query
+            .push("(occurred_at >= ")
+            .push_bind(db_occurred_at_lower_bound(start))
+            .push(" AND occurred_at < ")
+            .push_bind(db_occurred_at_upper_bound(end))
+            .push(")");
+    }
+    query.push(")");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(" = ")
+            .push_bind(upstream_account_id);
+    }
+    Ok(query.build_query_scalar::<i64>().fetch_one(pool).await?)
+}
+
+fn summary_non_success_tokens_lock_fallback(
+    telemetry: SummaryRangeBuildTelemetry,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    range: ExactUtcRange,
+    stage: &'static str,
+) -> Result<Option<i64>, ApiError> {
+    tracing::warn!(
+        route = telemetry.route_label(),
+        builder = "summary_non_success_tokens",
+        ?source_scope,
+        upstream_account_id,
+        window_kind = telemetry.window_kind,
+        window_name = telemetry.window_name,
+        aggregation_mode = "fallback",
+        archive_overlap_strategy = "fallback",
+        live_row_scan_mode = "fallback",
+        live_id_overlap_scan_mode = "none",
+        stage,
+        start = %range.start,
+        end = %range.end,
+        "summary non-success token augmentation skipped because sqlite is locked"
+    );
+    Ok(None)
+}
+
 pub(crate) async fn load_non_success_tokens_snapshot(
     state: &AppState,
     source_scope: InvocationSourceScope,
@@ -6237,66 +6461,193 @@ pub(crate) async fn load_non_success_tokens_snapshot(
     telemetry: SummaryRangeBuildTelemetry,
 ) -> Result<Option<i64>, ApiError> {
     let started_at = Instant::now();
-    let live_rows = match query_live_upstream_account_activity_aggregate_rows(
-        &state.pool,
-        source_scope,
-        range,
-        false,
-        DashboardActivityExcludedInvocationIdsFilter::None,
-    )
-    .await
-    {
-        Ok(rows) => rows,
-        Err(err) => {
-            if let ApiError::Internal(ref internal) = err
-                && crate::is_sqlite_lock_error(internal)
-            {
-                tracing::warn!(
-                    route = telemetry.route_label(),
-                    builder = "summary_non_success_tokens",
-                    ?source_scope,
-                    upstream_account_id,
-                    window_kind = telemetry.window_kind,
-                    window_name = telemetry.window_name,
-                    aggregation_mode = "fallback",
-                    archive_overlap_strategy = "fallback",
-                    live_group_row_count = 0_usize,
-                    archive_group_row_count = 0_usize,
-                    live_row_scan_mode = "none",
-                    live_id_overlap_scan_mode = "fallback",
-                    start = %range.start,
-                    end = %range.end,
-                    "summary non-success token aggregate skipped because sqlite is locked"
-                );
-                return Ok(None);
-            }
-            return Err(err);
-        }
-    };
-    let live_group_row_count = live_rows.len();
-    let live_tokens = live_rows
-        .into_iter()
-        .filter(|row| {
-            upstream_account_id.is_none_or(|account_id| row.upstream_account_id == Some(account_id))
-        })
-        .map(|row| row.non_success_tokens)
-        .sum::<i64>();
-
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
-    if range.start >= retention_cutoff {
-        let elapsed_ms = started_at.elapsed().as_millis() as u64;
-        emit_summary_range_builder_telemetry(
-            telemetry,
-            "summary_non_success_tokens",
+    let live_range = ExactUtcRange {
+        start: range.start.max(retention_cutoff),
+        end: range.end,
+    };
+    let mut live_tokens = 0_i64;
+    let mut live_group_row_count = 0_usize;
+    let mut covered_hour_count = 0_usize;
+    let mut boundary_tail_count = 0_usize;
+    let mut fallback_hour_count = 0_usize;
+    let mut live_row_scan_mode = "none";
+    let historical_live_end = range.end.min(retention_cutoff);
+    if range.start < historical_live_end {
+        let historical_tokens = match query_non_success_tokens_exact_tail(
+            &state.pool,
             source_scope,
             upstream_account_id,
-            "aggregate_only",
-            "aggregate_merge",
+            ExactUtcRange {
+                start: range.start,
+                end: historical_live_end,
+            },
+        )
+        .await
+        {
+            Ok(tokens) => tokens,
+            Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
+                return summary_non_success_tokens_lock_fallback(
+                    telemetry,
+                    source_scope,
+                    upstream_account_id,
+                    range,
+                    "historical_exact_tail",
+                );
+            }
+            Err(err) => return Err(err),
+        };
+        live_tokens += historical_tokens;
+        live_row_scan_mode = "fallback";
+    }
+    if live_range.start < live_range.end {
+        let plan = match plan_account_activity_range(state, live_range).await {
+            Ok(plan) => plan,
+            Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
+                return summary_non_success_tokens_lock_fallback(
+                    telemetry,
+                    source_scope,
+                    upstream_account_id,
+                    range,
+                    "coverage_planner",
+                );
+            }
+            Err(err) => return Err(err),
+        };
+        covered_hour_count = plan.covered_hours.len();
+        fallback_hour_count = plan.uncovered_hours.len();
+        boundary_tail_count = plan.boundary_tail_count;
+        let rollup_tokens = match query_account_activity_v2_non_success_tokens(
+            &state.pool,
+            source_scope,
+            upstream_account_id,
+            &plan.covered_hours,
+        )
+        .await
+        {
+            Ok(tokens) => tokens,
+            Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
+                return summary_non_success_tokens_lock_fallback(
+                    telemetry,
+                    source_scope,
+                    upstream_account_id,
+                    range,
+                    "hourly_rollup",
+                );
+            }
+            Err(err) => return Err(err),
+        };
+        live_tokens += rollup_tokens;
+        live_group_row_count = plan.covered_hours.len();
+        let repair_cursor = match load_hourly_rollup_live_progress(
+            &state.pool,
+            INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_CURSOR_DATASET,
+        )
+        .await
+        {
+            Ok(cursor) => cursor,
+            Err(err) => {
+                if crate::is_sqlite_lock_error(&err) {
+                    return summary_non_success_tokens_lock_fallback(
+                        telemetry,
+                        source_scope,
+                        upstream_account_id,
+                        range,
+                        "v2_repair_cursor",
+                    );
+                }
+                return Err(err.into());
+            }
+        };
+        let unreplayed_live_tail = match query_non_success_tokens_unreplayed_live_tail(
+            &state.pool,
+            source_scope,
+            upstream_account_id,
+            &plan.covered_hours,
+            repair_cursor,
+        )
+        .await
+        {
+            Ok(tokens) => tokens,
+            Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
+                return summary_non_success_tokens_lock_fallback(
+                    telemetry,
+                    source_scope,
+                    upstream_account_id,
+                    range,
+                    "unreplayed_live_tail",
+                );
+            }
+            Err(err) => return Err(err),
+        };
+        live_tokens += unreplayed_live_tail;
+        if unreplayed_live_tail != 0 {
+            tracing::debug!(
+                route = telemetry.route_label(),
+                builder = "summary_non_success_tokens",
+                purpose = "unreplayed_live_tail",
+                repair_cursor,
+                covered_hour_count = plan.covered_hours.len(),
+                "summary non-success token rollup included unreplayed live tail"
+            );
+        }
+        for (index, exact_range) in plan.exact_ranges.into_iter().enumerate() {
+            let exact_tokens = match query_non_success_tokens_exact_tail(
+                &state.pool,
+                source_scope,
+                upstream_account_id,
+                exact_range,
+            )
+            .await
+            {
+                Ok(tokens) => tokens,
+                Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
+                    return summary_non_success_tokens_lock_fallback(
+                        telemetry,
+                        source_scope,
+                        upstream_account_id,
+                        range,
+                        "exact_tail",
+                    );
+                }
+                Err(err) => return Err(err),
+            };
+            live_tokens += exact_tokens;
+            live_row_scan_mode = "fallback";
+            if index >= boundary_tail_count {
+                tracing::debug!(
+                    route = telemetry.route_label(),
+                    builder = "summary_non_success_tokens",
+                    purpose = "coverage_hole",
+                    source_scope = ?source_scope,
+                    start = %exact_range.start,
+                    end = %exact_range.end,
+                    "summary non-success token exact fallback covered an hourly hole"
+                );
+            }
+        }
+    }
+
+    if range.start >= retention_cutoff {
+        let elapsed_ms = started_at.elapsed().as_millis() as u64;
+        tracing::debug!(
+            route = telemetry.route_label(),
+            builder = "summary_non_success_tokens",
+            ?source_scope,
+            upstream_account_id,
+            window_kind = telemetry.window_kind,
+            window_name = telemetry.window_name,
+            aggregation_mode = "rollup_plus_boundary",
+            archive_overlap_strategy = "aggregate_merge",
+            covered_hour_count,
+            fallback_hour_count,
+            boundary_tail_count,
             live_group_row_count,
-            0,
-            "none",
-            "none",
+            archive_group_row_count = 0_usize,
+            live_row_scan_mode,
+            live_id_overlap_scan_mode = "none",
             elapsed_ms,
+            "summary non-success token rollup completed"
         );
         return Ok(Some(live_tokens));
     }
@@ -6321,8 +6672,8 @@ pub(crate) async fn load_non_success_tokens_snapshot(
                 archive_overlap_strategy = "fallback",
                 live_group_row_count,
                 archive_group_row_count = 0_usize,
-                live_row_scan_mode = "none",
-                live_id_overlap_scan_mode = "fallback",
+                live_row_scan_mode,
+                live_id_overlap_scan_mode = "none",
                 start = %range.start,
                 end = %range.end,
                 "summary archive aggregate overlap merge skipped because sqlite is locked"
@@ -6343,8 +6694,8 @@ pub(crate) async fn load_non_success_tokens_snapshot(
             "fallback",
             live_group_row_count,
             archive_group_row_count,
+            live_row_scan_mode,
             "none",
-            "fallback",
             elapsed_ms,
         );
         return Ok(None);
@@ -6363,11 +6714,11 @@ pub(crate) async fn load_non_success_tokens_snapshot(
         "summary_non_success_tokens",
         source_scope,
         upstream_account_id,
-        "aggregate_only",
+        "rollup_plus_boundary",
         "aggregate_merge",
         live_group_row_count,
         archive_group_row_count,
-        "none",
+        live_row_scan_mode,
         "none",
         elapsed_ms,
     );
@@ -6435,24 +6786,42 @@ pub(crate) struct UpstreamAccountInProgressSummary {
     in_progress_count: i64,
     retry_count: i64,
     phase_counts: InvocationPhaseCountsResponse,
+    wait_sum_ms: f64,
+    wait_sample_count: i64,
 }
 
 impl UpstreamAccountInProgressSummary {
-    fn add(&mut self, retry: bool, phase: Option<&str>) {
+    fn add(&mut self, retry: bool, phase: Option<&str>, wait_ms: Option<f64>) {
         self.in_progress_count += 1;
         if retry {
             self.retry_count += 1;
         }
         self.phase_counts.increment_phase_name(phase);
+        if let Some(wait_ms) = wait_ms.filter(|value| value.is_finite() && *value >= 0.0) {
+            self.wait_sum_ms += wait_ms;
+            self.wait_sample_count += 1;
+        }
     }
 
-    fn subtract(&mut self, retry: bool, phase: Option<&str>) {
+    fn subtract(&mut self, retry: bool, phase: Option<&str>, wait_ms: Option<f64>) {
         self.in_progress_count = self.in_progress_count.saturating_sub(1);
         if retry {
             self.retry_count = self.retry_count.saturating_sub(1);
         }
         self.phase_counts.decrement_phase_name(phase);
+        if let Some(wait_ms) = wait_ms.filter(|value| value.is_finite() && *value >= 0.0) {
+            self.wait_sum_ms = (self.wait_sum_ms - wait_ms).max(0.0);
+            self.wait_sample_count = self.wait_sample_count.saturating_sub(1);
+        }
     }
+}
+
+fn normalized_wait_ms(value: Option<f64>) -> Option<f64> {
+    value.filter(|value| value.is_finite() && *value >= 0.0)
+}
+
+fn runtime_record_ttfb_differs(left: Option<f64>, right: Option<f64>) -> bool {
+    normalized_wait_ms(left) != normalized_wait_ms(right)
 }
 
 #[derive(Debug, Default)]
@@ -8073,19 +8442,25 @@ async fn load_account_activity_v2_covered_hours(
     .collect())
 }
 
-pub(crate) async fn load_upstream_account_activity_range_rows(
+struct AccountActivityRangePlan {
+    covered_hours: Vec<i64>,
+    uncovered_hours: Vec<i64>,
+    exact_ranges: Vec<ExactUtcRange>,
+    boundary_tail_count: usize,
+}
+
+async fn plan_account_activity_range(
     state: &AppState,
-    source_scope: InvocationSourceScope,
     range: ExactUtcRange,
-    route: &'static str,
-) -> Result<AccountActivityRangeBuild, ApiError> {
-    let started_at = Instant::now();
+) -> Result<AccountActivityRangePlan, ApiError> {
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
     let live_start = range.start.max(retention_cutoff);
     if live_start >= range.end {
-        return Ok(AccountActivityRangeBuild {
-            rows: Vec::new(),
-            telemetry: AccountActivityRangeBuildTelemetry::default(),
+        return Ok(AccountActivityRangePlan {
+            covered_hours: Vec::new(),
+            uncovered_hours: Vec::new(),
+            exact_ranges: Vec::new(),
+            boundary_tail_count: 0,
         });
     }
 
@@ -8108,7 +8483,6 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
         .filter(|hour| !covered.contains(hour))
         .collect::<Vec<_>>();
 
-    let mut exact_ranges = Vec::new();
     let full_start = Utc
         .timestamp_opt(full_start_epoch, 0)
         .single()
@@ -8117,11 +8491,12 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
         .timestamp_opt(full_end_epoch, 0)
         .single()
         .ok_or_else(|| ApiError::from(anyhow!("invalid account activity full-hour end")))?;
+    let mut exact_ranges = Vec::new();
     if full_start_epoch >= full_end_epoch {
         push_exact_range(&mut exact_ranges, live_start, range.end)?;
     } else {
         push_exact_range(&mut exact_ranges, live_start, range.end.min(full_start))?;
-        push_exact_range(&mut exact_ranges, range.start.max(full_end), range.end)?;
+        push_exact_range(&mut exact_ranges, live_start.max(full_end), range.end)?;
     }
     let boundary_tail_count = exact_ranges.len();
 
@@ -8145,10 +8520,37 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
         push_exact_range(&mut exact_ranges, start, end)?;
     }
 
+    Ok(AccountActivityRangePlan {
+        covered_hours,
+        uncovered_hours,
+        exact_ranges,
+        boundary_tail_count,
+    })
+}
+
+pub(crate) async fn load_upstream_account_activity_range_rows(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    route: &'static str,
+) -> Result<AccountActivityRangeBuild, ApiError> {
+    let started_at = Instant::now();
+    let plan = plan_account_activity_range(state, range).await?;
+    if plan.covered_hours.is_empty()
+        && plan.uncovered_hours.is_empty()
+        && plan.exact_ranges.is_empty()
+    {
+        return Ok(AccountActivityRangeBuild {
+            rows: Vec::new(),
+            telemetry: AccountActivityRangeBuildTelemetry::default(),
+        });
+    }
+
     let rollup_rows =
-        query_account_activity_v2_rollup_rows(&state.pool, source_scope, &covered_hours).await?;
+        query_account_activity_v2_rollup_rows(&state.pool, source_scope, &plan.covered_hours)
+            .await?;
     let rollup_row_count = rollup_rows.len();
-    let raw_fallback_range_count = exact_ranges.len();
+    let raw_fallback_range_count = plan.exact_ranges.len();
     let mut merged = HashMap::<Option<i64>, UpstreamAccountActivityAggregateRow>::new();
     for row in rollup_rows {
         match merged.entry(row.upstream_account_id) {
@@ -8160,9 +8562,12 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
             }
         }
     }
-    for conversation in
-        query_account_activity_conversation_rollup_rows(&state.pool, source_scope, &covered_hours)
-            .await?
+    for conversation in query_account_activity_conversation_rollup_rows(
+        &state.pool,
+        source_scope,
+        &plan.covered_hours,
+    )
+    .await?
     {
         if let Some(entry) = merged.get_mut(&conversation.upstream_account_id) {
             merge_latest_optional_timestamp(
@@ -8171,8 +8576,8 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
             );
         }
     }
-    for (index, exact_range) in exact_ranges.into_iter().enumerate() {
-        let purpose = if index < boundary_tail_count {
+    for (index, exact_range) in plan.exact_ranges.into_iter().enumerate() {
+        let purpose = if index < plan.boundary_tail_count {
             "boundary_tail"
         } else {
             "coverage_hole"
@@ -8200,16 +8605,16 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
     }
 
     let telemetry = AccountActivityRangeBuildTelemetry {
-        covered_hour_count: covered_hours.len(),
-        fallback_hour_count: uncovered_hours.len(),
-        boundary_tail_count,
+        covered_hour_count: plan.covered_hours.len(),
+        fallback_hour_count: plan.uncovered_hours.len(),
+        boundary_tail_count: plan.boundary_tail_count,
         rollup_row_count,
         raw_fallback_range_count,
     };
     tracing::info!(
         route,
         builder = "account_activity_hourly_v2",
-        aggregation_mode = if uncovered_hours.is_empty() {
+        aggregation_mode = if plan.uncovered_hours.is_empty() {
             "rollup_plus_boundary"
         } else {
             "partial_rollup_with_exact_fallback"
@@ -8219,7 +8624,7 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
         boundary_tail_count = telemetry.boundary_tail_count,
         rollup_row_count = telemetry.rollup_row_count,
         raw_fallback_range_count = telemetry.raw_fallback_range_count,
-        fallback_reason = if uncovered_hours.is_empty() {
+        fallback_reason = if plan.uncovered_hours.is_empty() {
             "none"
         } else {
             "v2_coverage_hole"
@@ -9885,6 +10290,7 @@ pub(crate) async fn query_upstream_account_in_progress_counts_from_runtime(
         occurred_at: String,
         upstream_account_id: Option<i64>,
         retry_count: i64,
+        upstream_ttfb_ms: Option<f64>,
         live_phase: Option<String>,
     }
 
@@ -9901,7 +10307,7 @@ pub(crate) async fn query_upstream_account_in_progress_counts_from_runtime(
         .push(resolved_upstream_account_id_sql.as_str())
         .push(" AS upstream_account_id, ")
         .push(retry_sql.as_str())
-        .push(" AS retry_count, ");
+        .push(" AS retry_count, live.upstream_ttfb_ms AS upstream_ttfb_ms, ");
     db_key_query.push(invocation_live_phase_sql("inv")).push(
         " AS live_phase \
          FROM invocation_in_progress_live live \
@@ -9919,17 +10325,23 @@ pub(crate) async fn query_upstream_account_in_progress_counts_from_runtime(
         .await?;
     let mut counts = HashMap::<Option<i64>, UpstreamAccountInProgressSummary>::new();
     for row in &db_rows {
-        counts
-            .entry(row.upstream_account_id)
-            .or_default()
-            .add(row.retry_count > 0, row.live_phase.as_deref());
+        counts.entry(row.upstream_account_id).or_default().add(
+            row.retry_count > 0,
+            row.live_phase.as_deref(),
+            row.upstream_ttfb_ms,
+        );
     }
     let db_runtime_keys = db_rows
         .into_iter()
         .map(|row| {
             (
                 (row.invoke_id, row.occurred_at),
-                (row.upstream_account_id, row.retry_count > 0, row.live_phase),
+                (
+                    row.upstream_account_id,
+                    row.retry_count > 0,
+                    row.live_phase,
+                    row.upstream_ttfb_ms,
+                ),
             )
         })
         .collect::<HashMap<_, _>>();
@@ -9955,17 +10367,20 @@ pub(crate) async fn query_upstream_account_in_progress_counts_from_runtime(
             .live_phase
             .as_deref()
             .or_else(|| runtime_invocation_live_phase(&record));
-        if let Some((db_upstream_account_id, db_is_retry, db_phase)) = db_runtime_keys.get(&key) {
+        if let Some((db_upstream_account_id, db_is_retry, db_phase, db_wait_ms)) =
+            db_runtime_keys.get(&key)
+        {
             let runtime_is_retry = runtime_record_is_retry(&record);
             let upstream_account_id = record.upstream_account_id.or(*db_upstream_account_id);
             if *db_upstream_account_id != upstream_account_id {
                 if let Some(entry) = counts.get_mut(db_upstream_account_id) {
-                    entry.subtract(*db_is_retry, db_phase.as_deref());
+                    entry.subtract(*db_is_retry, db_phase.as_deref(), *db_wait_ms);
                 }
-                counts
-                    .entry(upstream_account_id)
-                    .or_default()
-                    .add(runtime_is_retry, runtime_phase);
+                counts.entry(upstream_account_id).or_default().add(
+                    runtime_is_retry,
+                    runtime_phase,
+                    record.t_upstream_ttfb_ms,
+                );
                 runtime_overlay_row_count += 1;
             } else {
                 let entry = counts.entry(upstream_account_id).or_default();
@@ -9977,13 +10392,25 @@ pub(crate) async fn query_upstream_account_in_progress_counts_from_runtime(
                     entry.phase_counts.increment_phase_name(runtime_phase);
                     runtime_overlay_row_count += 1;
                 }
+                if runtime_record_ttfb_differs(record.t_upstream_ttfb_ms, *db_wait_ms) {
+                    entry.wait_sum_ms = (entry.wait_sum_ms
+                        - normalized_wait_ms(*db_wait_ms).unwrap_or_default())
+                    .max(0.0)
+                        + normalized_wait_ms(record.t_upstream_ttfb_ms).unwrap_or_default();
+                    entry.wait_sample_count = entry
+                        .wait_sample_count
+                        .saturating_sub(i64::from(normalized_wait_ms(*db_wait_ms).is_some()))
+                        + i64::from(normalized_wait_ms(record.t_upstream_ttfb_ms).is_some());
+                    runtime_overlay_row_count += 1;
+                }
             }
             continue;
         }
-        counts
-            .entry(record.upstream_account_id)
-            .or_default()
-            .add(runtime_record_is_retry(&record), runtime_phase);
+        counts.entry(record.upstream_account_id).or_default().add(
+            runtime_record_is_retry(&record),
+            runtime_phase,
+            record.t_upstream_ttfb_ms,
+        );
         runtime_overlay_row_count += 1;
     }
     if runtime_overlay_row_count > 0 {
@@ -10066,6 +10493,8 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
                 in_progress_invocation_count: summary.in_progress_count,
                 in_progress_phase_counts: summary.phase_counts,
                 retry_invocation_count: summary.retry_count,
+                in_progress_wait_sum_ms: summary.wait_sum_ms,
+                in_progress_wait_sample_count: summary.wait_sample_count,
                 upload_bytes_per_second: rate.upload_bytes_per_second,
                 download_bytes_per_second: rate.download_bytes_per_second,
                 network_live_bucket: live_buckets.get(&upstream_account_id).cloned(),
@@ -10089,6 +10518,8 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
             in_progress_invocation_count: 0,
             in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
             retry_invocation_count: 0,
+            in_progress_wait_sum_ms: 0.0,
+            in_progress_wait_sample_count: 0,
             upload_bytes_per_second: rate.upload_bytes_per_second,
             download_bytes_per_second: rate.download_bytes_per_second,
             network_live_bucket: live_buckets.get(&upstream_account_id).cloned(),
@@ -10099,9 +10530,13 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
     let mut in_progress_phase_counts = InvocationPhaseCountsResponse::default();
     let mut in_progress_invocation_count = 0;
     let mut retry_invocation_count = 0;
+    let mut in_progress_wait_sum_ms = 0.0;
+    let mut in_progress_wait_sample_count = 0;
     for account in &accounts {
         in_progress_invocation_count += account.in_progress_invocation_count;
         retry_invocation_count += account.retry_invocation_count;
+        in_progress_wait_sum_ms += account.in_progress_wait_sum_ms;
+        in_progress_wait_sample_count += account.in_progress_wait_sample_count;
         in_progress_phase_counts.queued += account.in_progress_phase_counts.queued;
         in_progress_phase_counts.requesting += account.in_progress_phase_counts.requesting;
         in_progress_phase_counts.responding += account.in_progress_phase_counts.responding;
@@ -10113,6 +10548,8 @@ pub(crate) async fn query_dashboard_activity_live_snapshot_from_runtime(
         in_progress_invocation_count,
         in_progress_phase_counts,
         retry_invocation_count,
+        in_progress_wait_sum_ms,
+        in_progress_wait_sample_count,
         network_live_bucket: Some(
             load_dashboard_network_live_bucket_point(
                 pool,
@@ -10141,6 +10578,8 @@ fn dashboard_live_snapshot_in_progress_counts(
                     in_progress_count: account.in_progress_invocation_count,
                     retry_count: account.retry_invocation_count,
                     phase_counts: account.in_progress_phase_counts,
+                    wait_sum_ms: account.in_progress_wait_sum_ms,
+                    wait_sample_count: account.in_progress_wait_sample_count,
                 },
             )
         })
@@ -11281,6 +11720,8 @@ async fn overlay_dashboard_activity_live_accounts(
                     in_progress_invocation_count: 0,
                     in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
                     retry_invocation_count: 0,
+                    in_progress_wait_sum_ms: 0.0,
+                    in_progress_wait_sample_count: 0,
                     upload_bytes_per_second: 0.0,
                     download_bytes_per_second: 0.0,
                     network_live_bucket: None,
@@ -12664,6 +13105,15 @@ async fn load_dashboard_activity_snapshot_cached(
         let db_build_elapsed_ms = build_started_at.elapsed().as_millis() as u64;
 
         let mut cache = state.dashboard_activity_snapshot_cache.lock().await;
+        let refresh_reason =
+            cache
+                .invalidation_reasons
+                .remove(&selection)
+                .unwrap_or(if saw_expired_entry {
+                    "ttl_expired"
+                } else {
+                    "initial_build"
+                });
         let in_flight = cache.in_flight.remove(&selection);
         if let Some(guard) = flight_guard.as_mut() {
             guard.disarm();
@@ -12696,11 +13146,7 @@ async fn load_dashboard_activity_snapshot_cached(
                     cache_entry_age_ms: 0,
                     cache_entry_count,
                     in_flight_count,
-                    refresh_reason: if saw_expired_entry {
-                        "ttl_expired"
-                    } else {
-                        "cache_absent_or_invalidated"
-                    },
+                    refresh_reason,
                     selection_fingerprint,
                 },
             )
@@ -12856,6 +13302,10 @@ pub(crate) async fn fetch_dashboard_activity(
         accounts,
     };
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    let active_subscriber_count = state
+        .subscription_hub
+        .active_topic_subscriber_count("dashboard.activity.current")
+        .await;
     let builder = if params.include_accounts {
         "dashboard_full"
     } else {
@@ -12871,6 +13321,7 @@ pub(crate) async fn fetch_dashboard_activity(
             include_recent,
             recent_limit,
             live_revision,
+            active_subscriber_count,
             account_count,
             build_scope = dashboard_activity_build_scope(params.include_accounts, include_recent),
             cache_hit_or_miss = cache_outcome.cache_hit_or_miss,
@@ -12882,7 +13333,7 @@ pub(crate) async fn fetch_dashboard_activity(
             cache_entry_count = cache_outcome.cache_entry_count,
             in_flight_count = cache_outcome.in_flight_count,
             refresh_reason = cache_outcome.refresh_reason,
-            invalidation_reason = if cache_outcome.refresh_reason == "cache_absent_or_invalidated" { "possible_explicit_invalidation" } else { "none" },
+            invalidation_reason = if cache_outcome.refresh_reason == "scheduled_terminal_refresh" { "scheduled_terminal_refresh" } else { "none" },
             selection_fingerprint = cache_outcome.selection_fingerprint,
             base_snapshot_age_ms = cache_outcome.cache_entry_age_ms,
             live_overlay_elapsed_ms,
@@ -12909,6 +13360,7 @@ pub(crate) async fn fetch_dashboard_activity(
             include_recent,
             recent_limit,
             live_revision,
+            active_subscriber_count,
             account_count,
             build_scope = dashboard_activity_build_scope(params.include_accounts, include_recent),
             cache_hit_or_miss = cache_outcome.cache_hit_or_miss,
@@ -12920,7 +13372,7 @@ pub(crate) async fn fetch_dashboard_activity(
             cache_entry_count = cache_outcome.cache_entry_count,
             in_flight_count = cache_outcome.in_flight_count,
             refresh_reason = cache_outcome.refresh_reason,
-            invalidation_reason = if cache_outcome.refresh_reason == "cache_absent_or_invalidated" { "possible_explicit_invalidation" } else { "none" },
+            invalidation_reason = if cache_outcome.refresh_reason == "scheduled_terminal_refresh" { "scheduled_terminal_refresh" } else { "none" },
             selection_fingerprint = cache_outcome.selection_fingerprint,
             base_snapshot_age_ms = cache_outcome.cache_entry_age_ms,
             live_overlay_elapsed_ms,
@@ -14800,6 +15252,7 @@ mod invocation_cost_audit_tests {
                     None,
                     (last_success_attempt_index == Some(attempt.attempt_index))
                         .then_some(&usage_cost_audit),
+                    attempt.attempt_index == 3,
                 )
             })
             .collect::<Vec<_>>();
@@ -14823,6 +15276,91 @@ mod invocation_cost_audit_tests {
         assert_eq!(
             final_response_summary["usage"]["audit"]["reason"].as_str(),
             Some(INVOCATION_COST_AUDIT_REASON_PRICE_VERSION_CHANGED)
+        );
+    }
+
+    #[test]
+    fn non_final_attempt_response_summary_does_not_reuse_invocation_level_response_details() {
+        let mut record = sample_invocation(Some(0));
+        record.response_raw_path = Some("response-body.json".to_string());
+        record.response_raw_size = Some(181_382);
+        record.response_content_encoding = Some("identity".to_string());
+        record.upstream_request_id = Some("W1scc2SS".to_string());
+
+        let mut attempt = sample_attempt_row(1, "failed");
+        attempt.upstream_request_id = Some("H3HxTB12".to_string());
+        attempt.upstream_response_body_bytes = Some(98);
+
+        let response_summary = build_attempt_response_summary(&record, &attempt, None, None, false);
+
+        assert_eq!(
+            response_summary["responseBodyCapture"]["availableAtInvocationLevel"],
+            Value::Bool(false)
+        );
+        assert_eq!(response_summary["responseBodyCapture"]["size"], json!(98));
+        assert_eq!(
+            response_summary["responseBodyCapture"]["detailLevel"],
+            json!("attempt_metrics")
+        );
+        assert_eq!(
+            response_summary["responseBodyCapture"]["unavailableReason"],
+            json!("non_final_attempt_response_body_not_captured")
+        );
+        assert_eq!(
+            response_summary["headers"]["upstreamRequestId"],
+            json!("H3HxTB12")
+        );
+        assert!(response_summary["headers"]["contentEncoding"].is_null());
+        assert!(response_summary["responseContentEncoding"].is_null());
+    }
+
+    #[test]
+    fn workflow_attempt_mapping_scopes_invocation_response_capture_to_final_attempt() {
+        let mut record = sample_invocation(Some(0));
+        record.response_raw_path = Some("response-body.json".to_string());
+        record.response_raw_size = Some(181_382);
+        record.response_content_encoding = Some("identity".to_string());
+        record.upstream_request_id = Some("W1scc2SS".to_string());
+
+        let mut first_attempt = sample_attempt_row(1, "failed");
+        first_attempt.upstream_request_id = Some("H3HxTB12".to_string());
+        first_attempt.upstream_response_body_bytes = Some(98);
+        let mut final_attempt = sample_attempt_row(2, "success");
+        final_attempt.upstream_request_id = Some("W1scc2SS".to_string());
+        final_attempt.upstream_response_body_bytes = Some(181_382);
+
+        let first = build_workflow_attempt_from_row(&record, &first_attempt, None, None, false);
+        let final_attempt =
+            build_workflow_attempt_from_row(&record, &final_attempt, None, None, true);
+
+        assert_eq!(
+            first.response_summary.as_ref().expect("first summary")["headers"]["upstreamRequestId"],
+            json!("H3HxTB12")
+        );
+        assert_eq!(
+            first.response_summary.as_ref().expect("first summary")["responseBodyCapture"]["size"],
+            json!(98)
+        );
+        assert_eq!(
+            final_attempt
+                .response_summary
+                .as_ref()
+                .expect("final summary")["headers"]["upstreamRequestId"],
+            json!("W1scc2SS")
+        );
+        assert_eq!(
+            final_attempt
+                .response_summary
+                .as_ref()
+                .expect("final summary")["responseBodyCapture"]["size"],
+            json!(181_382)
+        );
+        assert_eq!(
+            final_attempt
+                .response_summary
+                .as_ref()
+                .expect("final summary")["responseBodyCapture"]["availableAtInvocationLevel"],
+            Value::Bool(true)
         );
     }
 }

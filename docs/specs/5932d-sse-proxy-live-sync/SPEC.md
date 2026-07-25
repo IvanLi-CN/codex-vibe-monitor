@@ -60,6 +60,8 @@
 - 服务端对主应用 topic 只发送 `SubscriptionEventEnvelope::Snapshot | Replay | Live`；覆盖范围内不再向前端暴露 “收到 `records` 后自己回源” 这一合同。
 - 覆盖范围内页面首屏不得先发 HTTP bootstrap；可见数据 hydration 必须等待 topic `snapshot` 或可恢复的 `replay` 完成。
 - `stats.summary.current` 只服务 open-range owner-facing 当前态；`yesterday`、`previous7d` 等闭区间 summary 在当前应用里不得建立 pure SSE 订阅，必须继续走 HTTP exact path。
+- Summary open-range topic 的当前态由 live overlay 直接更新，terminal Records 只按固定 `500ms` deadline 合并累计 totals 刷新；刷新失败保留 last-good snapshot，并按有界退避重试。
+- topic 刷新是否运行必须依据连接级 owner subscriber 引用计数；没有 owner subscriber 时只标记缓存 dirty，重新订阅时生成 fresh snapshot，不回放失去连续权威性的旧 ring。
 - 健康连接状态下，覆盖范围内页面不得触发后台 HTTP reconcile、`subscribeToSseOpen` resync fetch、定时拉取校准或页面私有 fallback。
 - 恢复规则只允许二选一：
   - client cursor 仍在该 topic replay 窗口内，且 `schemaEpoch` 一致、gap 连续、回放批次未超预算时，发送 `replay`
@@ -156,6 +158,7 @@
   - 非订阅页面
   - 调试与手动读取
 - owner-facing summary 的边界固定为：`today / 1d / 7d` 等 open-range 继续走 topic，`yesterday / previous7d` 通过 `fetchSummary(...)` 走 exact HTTP。
+- closed-range Summary topic 即使保留兼容请求，也不因 Records 或 live 广播触发重建；后端保留 `summary_delivery_mode` 与 closed-window misuse telemetry 以识别遗留消费者。
 - 但主应用订阅类 UI 在健康态与恢复态都不能再依赖这些 HTTP 端点完成“当前态校准”。
 
 ## 验收标准（Acceptance Criteria）
