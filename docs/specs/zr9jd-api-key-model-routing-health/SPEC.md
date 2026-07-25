@@ -78,6 +78,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - Given a generic account-level event has a request model, When the health tab renders it, Then the UI states that all models on the account are affected without displaying the request model or an empty model-route transition.
 - Given a model-routing event has an affected model, When the health tab renders it, Then the UI names that model and states that other models on the account are unaffected.
 - Given a model-routing event carries route transition fields, When the health tab renders it, Then the UI names the affected model, states that other models are unaffected, and shows the concrete route transition.
+- Given a successful or informational account event has no routing failure, When the health tab renders it, Then the UI omits impact text instead of claiming that all models are affected.
 - Given a model is in a degraded or cooling state, When reset is called, Then only that model becomes `available/normal`, its ETA is cleared, and a structured reset event appears.
 - Given no call for a model for seven days, When model retention runs, Then that model state is removed.
 - Given the health tab is rendered on desktop or mobile, Then model status, change time, ETA, failure summary, and reset action remain readable without overflow.

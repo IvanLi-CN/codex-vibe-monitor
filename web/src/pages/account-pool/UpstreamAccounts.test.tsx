@@ -2399,6 +2399,51 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     expect(document.body.textContent).not.toContain("gpt-5.6-terra");
   });
 
+  it("omits impact text for informational account events", async () => {
+    mockAccountsPage({
+      detail: {
+        recentActions: [
+          {
+            id: 72,
+            occurredAt: "2026-03-16T02:07:00.000Z",
+            action: "account_updated",
+            source: "manual",
+            result: "success",
+            reasonCode: "account_updated",
+            reasonMessage: "Settings saved",
+            createdAt: "2026-03-16T02:07:00.000Z",
+          },
+        ],
+      },
+    });
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+      root?.render(
+        <ThemeProvider>
+          <I18nProvider>
+            <SystemNotificationProvider>
+              <MemoryRouter>
+                <SharedUpstreamAccountDetailDrawer
+                  open
+                  accountId={5}
+                  initialTab="healthEvents"
+                  onClose={vi.fn()}
+                />
+              </MemoryRouter>
+            </SystemNotificationProvider>
+          </I18nProvider>
+        </ThemeProvider>,
+      );
+    });
+
+    await flushAsync();
+    expect(document.body.textContent).toContain("Settings saved");
+    expect(document.body.textContent).not.toMatch(/影响：|Impact:/);
+  });
+
   it("opens the blocked-binding working conversation filter from a health event", async () => {
     mockAccountsPage({
       detail: {

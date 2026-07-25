@@ -162,6 +162,18 @@ function hasModelRoutingImpact(event: UpstreamAccountActionEvent): boolean {
   );
 }
 
+function hasAccountFailureImpact(event: UpstreamAccountActionEvent): boolean {
+  const action = event.action.trim().toLowerCase();
+  return (
+    event.result?.trim().toLowerCase() === "failed" ||
+    (event.httpStatus != null && event.httpStatus >= 400) ||
+    Boolean(event.failureKind?.trim()) ||
+    ["failed", "failure", "unavailable", "cooldown", "blocked"].some((marker) =>
+      action.includes(marker),
+    )
+  );
+}
+
 const DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE = "count:50";
 const DIRECT_PROXY_KEY = "__direct__";
 const STICKY_CONVERSATION_SELECTION_OPTIONS = [
@@ -3848,17 +3860,23 @@ function SharedUpstreamAccountDetailDrawerInner({
                                   {formatDateTime(actionEvent.occurredAt)}
                                 </span>
                               </div>
-                              <p className="mt-2 break-words text-sm font-medium leading-6 text-base-content/85">
-                                {hasModelRoutingImpact(actionEvent)
-                                  ? actionEvent.model
-                                    ? t("accountPool.upstreamAccounts.recentActions.impactModel", {
-                                        model: actionEvent.model,
-                                      })
-                                    : t(
-                                        "accountPool.upstreamAccounts.recentActions.impactModelUnknown",
-                                      )
-                                  : t("accountPool.upstreamAccounts.recentActions.impactAccount")}
-                              </p>
+                              {hasModelRoutingImpact(actionEvent) ||
+                              hasAccountFailureImpact(actionEvent) ? (
+                                <p className="mt-2 break-words text-sm font-medium leading-6 text-base-content/85">
+                                  {hasModelRoutingImpact(actionEvent)
+                                    ? actionEvent.model
+                                      ? t(
+                                          "accountPool.upstreamAccounts.recentActions.impactModel",
+                                          {
+                                            model: actionEvent.model,
+                                          },
+                                        )
+                                      : t(
+                                          "accountPool.upstreamAccounts.recentActions.impactModelUnknown",
+                                        )
+                                    : t("accountPool.upstreamAccounts.recentActions.impactAccount")}
+                                </p>
+                              ) : null}
                               {actionEvent.reasonMessage ? (
                                 <p className="mt-2 text-sm leading-6 text-base-content/75">
                                   {actionEvent.reasonMessage}
