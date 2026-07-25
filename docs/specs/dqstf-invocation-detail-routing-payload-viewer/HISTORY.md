@@ -26,3 +26,4 @@
 - 2026-07-20: unavailable payload reason 统一映射为人类可读文案；UI 不再直接暴露 `missing_body`、`raw_file_missing` 等内部 reason code。
 - 2026-07-20: mock-only Web Demo 为 `demo-invocation-9002` 补齐 Dashboard 路由级 workflow detail / request-body / response-body 夹具，页面级最终证据切回真实 `#/dashboard/invocations/:invokeId` 抽屉，而不是只依赖 Storybook 组件画布。
 - 2026-07-25: workflow detail 的响应 fallback 按最终真实出站 attempt 隔离；非最终重试只展示自身状态、响应头摘要与响应体字节指标，调用级 raw response 仅允许绑定最终尝试，避免 502 重试卡片伪装成后续成功响应。
+- 2026-07-25: 本修复的视觉证据仅用于聊天中的 Storybook 验收；preferred evidence section 使用 `PR: none`，避免在没有截图提交授权时向 PR 发布图片链接。

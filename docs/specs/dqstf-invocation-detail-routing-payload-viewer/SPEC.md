@@ -123,47 +123,7 @@ Dashboard / Live / Records 三处调用详情曾经以“摘要字段 + 局部�
   - 裁定返回体态：系统裁定块展开后切换到 `返回体`，证明详情页显示的是实际下发给调用方的 JSON body，而非 `missing_body` 或空占位。
   - unavailable 回放态：`请求体` lazy fetch 完成后，界面必须从 loading 收口到人类可读提示 `该记录没有保留可展示的载荷。`，而不是无限 loading 或直接暴露内部 `missing_body` reason。
 
-PR: include
-![Dashboard 调用详情 attempt 请求体 unavailable 路由证据](./assets/workflow-detail-dashboard-attempt-request-body-unavailable.png)
-
-PR: include
-![Pre-dispatch blocked workflow 概览态](./assets/workflow-detail-blocked-overview.png)
-
-PR: include
-![Pre-dispatch blocked workflow 请求体详情态](./assets/workflow-detail-blocked-request-body.png)
-
-PR: include
-![Pre-dispatch blocked workflow 请求体 unavailable 回放态](./assets/workflow-detail-blocked-request-body-unavailable.png)
-
-PR: include
-![Pre-dispatch blocked workflow 裁定返回体态](./assets/workflow-detail-blocked-final-body.png)
-
-PR: include
-![调用详情概览时间线](./assets/workflow-detail-overview.png)
-
-PR: include
-![调用详情暗色概览时间线](./assets/workflow-detail-dark-theme-overview.png)
-
-PR: include
-![调用详情亮色概览时间线](./assets/workflow-detail-light-theme-overview.png)
-
-PR: include
-![调用详情尝试子详情目录](./assets/workflow-detail-attempt-subpages-overview.png)
-
-PR: include
-![调用详情请求头视图](./assets/workflow-detail-request-headers.png)
-
-PR: include
-![调用详情请求体视图](./assets/workflow-detail-attempt-request.png)
-
-PR: include
-![调用详情响应头视图](./assets/workflow-detail-response-headers.png)
-
-PR: include
-![调用详情响应体视图](./assets/workflow-detail-response-body.png)
-
-PR: include
-![调用详情响应体子页](./assets/workflow-detail-attempt-subpages-response-body.png)
+PR: none
 
 ## References
 
