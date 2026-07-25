@@ -2590,7 +2590,7 @@ async fn get_upstream_account_omits_recent_actions_by_default_and_loads_them_on_
         "#,
     )
     .bind(account_id)
-    .bind("2026-06-25 11:29:00")
+    .bind("2026-06-25T11:29:20Z")
     .bind("route_cooldown_started")
     .bind("call")
     .bind("Recent actions gated")
@@ -2598,7 +2598,7 @@ async fn get_upstream_account_omits_recent_actions_by_default_and_loads_them_on_
     .bind("upstream unavailable")
     .bind("upstream_http_5xx")
     .bind("reused-invocation-model-impact")
-    .bind("2026-06-25 11:29:00")
+    .bind("2026-06-25T11:29:20Z")
     .execute(&state.pool)
     .await
     .expect("insert invocation-linked upstream account event")

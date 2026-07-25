@@ -3119,26 +3119,28 @@ pub(crate) async fn load_upstream_account_detail_with_options(
                 COALESCE(
                     event.model,
                     attempts.request_model,
-                    NULLIF(TRIM(CASE
-                        WHEN json_valid(invocation.payload)
-                            THEN CAST(json_extract(invocation.payload, '$.requestModel') AS TEXT)
-                    END), ''),
-                    NULLIF(TRIM(invocation.model), ''),
                     (
                         SELECT COALESCE(
                             NULLIF(TRIM(CASE
-                                WHEN json_valid(invocation.payload)
-                                    THEN CAST(json_extract(invocation.payload, '$.requestModel') AS TEXT)
+                                WHEN json_valid(fallback_invocation.payload)
+                                    THEN CAST(json_extract(fallback_invocation.payload, '$.requestModel') AS TEXT)
                             END), ''),
-                            NULLIF(TRIM(invocation.model), '')
+                            NULLIF(TRIM(fallback_invocation.model), '')
                         )
-                        FROM codex_invocations invocation
-                        WHERE invocation.invoke_id = event.invoke_id
-                          AND (
-                              SELECT COUNT(*)
-                              FROM codex_invocations candidate
-                              WHERE candidate.invoke_id = event.invoke_id
-                          ) = 1
+                        FROM codex_invocations fallback_invocation
+                        WHERE fallback_invocation.invoke_id = event.invoke_id
+                          AND ABS(
+                                julianday(fallback_invocation.occurred_at) -
+                                julianday(COALESCE(attempts.occurred_at, event.occurred_at))
+                              ) = (
+                                SELECT MIN(ABS(
+                                    julianday(candidate.occurred_at) -
+                                    julianday(COALESCE(attempts.occurred_at, event.occurred_at))
+                                ))
+                                FROM codex_invocations candidate
+                                WHERE candidate.invoke_id = event.invoke_id
+                              )
+                        ORDER BY fallback_invocation.id DESC
                         LIMIT 1
                     )
                 ) AS model,
@@ -3148,35 +3150,32 @@ pub(crate) async fn load_upstream_account_detail_with_options(
                 event.model_route_priority_after,
                 event.model_route_failure_count,
                 event.model_route_cooldown_until,
-                COALESCE(
-                    CASE
-                        WHEN json_valid(invocation.payload)
-                         AND json_type(invocation.payload, '$.blockedBinding') = 'object'
-                            THEN json_extract(invocation.payload, '$.blockedBinding')
-                    END,
-                    (
-                        SELECT CASE
-                            WHEN json_valid(fallback_invocation.payload)
-                             AND json_type(fallback_invocation.payload, '$.blockedBinding') = 'object'
-                                THEN json_extract(fallback_invocation.payload, '$.blockedBinding')
-                        END
-                        FROM codex_invocations fallback_invocation
-                        WHERE fallback_invocation.invoke_id = event.invoke_id
-                          AND (
-                              SELECT COUNT(*)
-                              FROM codex_invocations candidate
-                              WHERE candidate.invoke_id = event.invoke_id
-                          ) = 1
-                        LIMIT 1
-                    )
+                (
+                    SELECT CASE
+                        WHEN json_valid(fallback_invocation.payload)
+                         AND json_type(fallback_invocation.payload, '$.blockedBinding') = 'object'
+                            THEN json_extract(fallback_invocation.payload, '$.blockedBinding')
+                    END
+                    FROM codex_invocations fallback_invocation
+                    WHERE fallback_invocation.invoke_id = event.invoke_id
+                      AND ABS(
+                            julianday(fallback_invocation.occurred_at) -
+                            julianday(COALESCE(attempts.occurred_at, event.occurred_at))
+                          ) = (
+                            SELECT MIN(ABS(
+                                julianday(candidate.occurred_at) -
+                                julianday(COALESCE(attempts.occurred_at, event.occurred_at))
+                            ))
+                            FROM codex_invocations candidate
+                            WHERE candidate.invoke_id = event.invoke_id
+                          )
+                    ORDER BY fallback_invocation.id DESC
+                    LIMIT 1
                 ) AS blocked_binding_json,
                 event.created_at
             FROM pool_upstream_account_events event
             INNER JOIN pool_upstream_accounts account ON account.id = event.account_id
             LEFT JOIN pool_upstream_request_attempts attempts ON attempts.id = event.attempt_id
-            LEFT JOIN codex_invocations invocation
-                ON invocation.invoke_id = event.invoke_id
-               AND invocation.occurred_at = COALESCE(attempts.occurred_at, event.occurred_at)
             WHERE event.account_id = ?1
             ORDER BY event.occurred_at DESC, event.id DESC
             LIMIT 20
