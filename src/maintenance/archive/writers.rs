@@ -17,6 +17,7 @@ pub(crate) struct PoolUpstreamRequestAttemptArchiveRow {
     upstream_base_url_host: Option<String>,
     group_name_snapshot: Option<String>,
     proxy_binding_key_snapshot: Option<String>,
+    request_model: Option<String>,
     upstream_account_id: Option<i64>,
     upstream_route_key: Option<String>,
     attempt_index: i64,
@@ -111,6 +112,7 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_direct(
         ("compact_support_reason", "TEXT"),
         ("group_name_snapshot", "TEXT"),
         ("proxy_binding_key_snapshot", "TEXT"),
+        ("request_model", "TEXT"),
         ("routing_source", "TEXT"),
         ("request_summary_json", "TEXT"),
         ("response_summary_json", "TEXT"),
@@ -339,6 +341,7 @@ pub(crate) async fn archive_pool_upstream_request_attempt_rows_into_month_batch(
                 .push_bind(&row.upstream_base_url_host)
                 .push_bind(&row.group_name_snapshot)
                 .push_bind(&row.proxy_binding_key_snapshot)
+                .push_bind(&row.request_model)
                 .push_bind(row.upstream_account_id)
                 .push_bind(&row.upstream_route_key)
                 .push_bind(row.attempt_index)

@@ -1438,7 +1438,8 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         };
                     attempt_count += 1;
                     attempt_index = attempt_count as i64;
-                    attempt_started_at = shanghai_now_string();
+                    attempt_started_at =
+                        format_naive_precise(Utc::now().with_timezone(&Shanghai).naive_local());
                     let outbound_request_body = build_pool_upstream_request_body(
                         &prepared_request_body,
                         account.request_compression_algorithm,
@@ -1523,6 +1524,11 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     .await;
                     pending_attempt_record = if let Some(trace) = trace_context.as_ref() {
                         let mut attempt_trace = trace.clone();
+                        if attempt_trace.request_model.is_none() {
+                            attempt_trace.request_model = runtime_snapshot_context
+                                .as_ref()
+                                .and_then(|context| context.request_info.model.clone());
+                        }
                         attempt_trace.upstream_base_url_host = account
                             .upstream_base_url
                             .host_str()
@@ -2299,12 +2305,18 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     };
                     attempt_count += 1;
                     attempt_index = attempt_count as i64;
-                    attempt_started_at = shanghai_now_string();
+                    attempt_started_at =
+                        format_naive_precise(Utc::now().with_timezone(&Shanghai).naive_local());
                     record_account_selected(state.as_ref(), account.account_id).await;
                     let group_name_snapshot =
                         normalize_pool_attempt_group_name(account.group_name.clone());
                     pending_attempt_record = if let Some(trace) = trace_context.as_ref() {
                         let mut attempt_trace = trace.clone();
+                        if attempt_trace.request_model.is_none() {
+                            attempt_trace.request_model = runtime_snapshot_context
+                                .as_ref()
+                                .and_then(|context| context.request_info.model.clone());
+                        }
                         attempt_trace.upstream_base_url_host = account
                             .upstream_base_url
                             .host_str()
@@ -2410,7 +2422,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
 
             let connect_latency_ms = elapsed_ms(connect_started);
             let status = response.status();
-            if status == StatusCode::BAD_REQUEST
+            if matches!(status, StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND)
                 || status == StatusCode::TOO_MANY_REQUESTS
                 || status == StatusCode::PAYLOAD_TOO_LARGE
                 || status.is_server_error()
@@ -2494,10 +2506,24 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 let route_error_message = upstream_error_code
                     .as_deref()
                     .map_or_else(|| message.clone(), |code| format!("{code}: {message}"));
-                let unsupported_model_bad_request =
-                    extract_unsupported_model_from_route_error(status, &route_error_message)
-                        .is_some();
-                if status == StatusCode::BAD_REQUEST && !unsupported_model_bad_request {
+                let requested_model_for_failure = requested_model.as_deref().or_else(|| {
+                    trace_context
+                        .as_ref()
+                        .and_then(|trace| trace.request_model.as_deref())
+                });
+                let explicit_model_failure = requested_model_for_failure.map_or_else(
+                    || is_explicit_model_failure(status, Some(&route_error_message)),
+                    |model| {
+                        is_explicit_model_failure_for_model(
+                            status,
+                            Some(&route_error_message),
+                            Some(model),
+                        )
+                    },
+                );
+                if matches!(status, StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND)
+                    && !explicit_model_failure
+                {
                     let first_byte_latency_ms = connect_latency_ms;
                     if let Some(guard) = early_phase_cleanup_guard.as_mut() {
                         guard.mark_first_byte_observed(first_byte_latency_ms);
@@ -2520,28 +2546,28 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             response_builder = response_builder.header(name, value);
                         }
                     }
-                    let response =
-                        response_builder
-                            .body(Body::empty())
-                            .map_err(|err| PoolUpstreamError {
-                                account: Some(account.clone()),
-                                status: StatusCode::INTERNAL_SERVER_ERROR,
-                                message: format!("failed to build proxy response: {err}"),
-                                canonical_error_message: None,
-                                failure_kind: PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
-                                blocked_binding: None,
-                                connect_latency_ms,
-                                upstream_error_code: None,
-                                upstream_error_message: None,
-                                downstream_error_message: None,
-                                upstream_request_id: upstream_request_id.clone(),
-                                proxy_binding_key_snapshot: proxy_binding_key_snapshot.clone(),
-                                oauth_responses_debug: oauth_responses_debug.clone(),
-                                attempt_summary: PoolAttemptSummary::default(),
-                                requested_service_tier: attempted_requested_service_tier.clone(),
-                                request_body_for_capture: attempted_request_body_for_capture
-                                    .clone(),
-                            })?;
+                    let response = response_builder
+                        // The caller prepends `first_chunk` to this response body. Keep the
+                        // body empty here so buffered 4xx payloads are not emitted twice.
+                        .body(Body::empty())
+                        .map_err(|err| PoolUpstreamError {
+                            account: Some(account.clone()),
+                            status: StatusCode::INTERNAL_SERVER_ERROR,
+                            message: format!("failed to build proxy response: {err}"),
+                            canonical_error_message: None,
+                            failure_kind: PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+                            blocked_binding: None,
+                            connect_latency_ms,
+                            upstream_error_code: None,
+                            upstream_error_message: None,
+                            downstream_error_message: None,
+                            upstream_request_id: upstream_request_id.clone(),
+                            proxy_binding_key_snapshot: proxy_binding_key_snapshot.clone(),
+                            oauth_responses_debug: oauth_responses_debug.clone(),
+                            attempt_summary: PoolAttemptSummary::default(),
+                            requested_service_tier: attempted_requested_service_tier.clone(),
+                            request_body_for_capture: attempted_request_body_for_capture.clone(),
+                        })?;
                     let first_chunk = error_body_bytes.filter(|bytes| !bytes.is_empty());
 
                     let mut deferred_early_phase_cleanup_guard = None;

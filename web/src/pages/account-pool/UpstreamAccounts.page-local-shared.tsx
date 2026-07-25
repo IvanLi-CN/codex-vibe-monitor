@@ -30,6 +30,7 @@ import { Spinner } from "../../components/ui/spinner";
 import { Switch } from "../../components/ui/switch";
 import { AccountDetailDrawerShell } from "../../features/account-pool/AccountDetailDrawerShell";
 import { EffectiveRoutingRuleCard } from "../../features/account-pool/EffectiveRoutingRuleCard";
+import { ModelRoutingHealthPanel } from "../../features/account-pool/ModelRoutingHealthPanel";
 import {
   MotherAccountBadge,
   MotherAccountToggle,
@@ -62,6 +63,7 @@ import type {
   UpstreamAccountSummary,
   UpstreamCapabilityState,
 } from "../../lib/api";
+import { resetUpstreamAccountModelRouting } from "../../lib/api";
 import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
 import {
   type AccountDraft,
@@ -997,6 +999,8 @@ function SharedUpstreamAccountDetailDrawerInner({
     routing: null,
     accountMessages: {},
   }));
+  const [modelRoutingResetting, setModelRoutingResetting] = useState<string | null>(null);
+  const [modelRoutingError, setModelRoutingError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<BusyActionState>(() => ({
     routing: false,
     accountActions: new Set(),
@@ -1078,6 +1082,12 @@ function SharedUpstreamAccountDetailDrawerInner({
   }
   const activeDraftSessionKey =
     open && accountId != null ? `${draftSessionVersion}:${accountId}` : null;
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: drawer session identity intentionally resets transient model routing state.
+  useEffect(() => {
+    setModelRoutingResetting(null);
+    setModelRoutingError(null);
+  }, [activeDraftSessionKey]);
 
   selectedIdRef.current = selectedId;
   routeAccountIdRef.current = accountId;
@@ -1714,6 +1724,26 @@ function SharedUpstreamAccountDetailDrawerInner({
     selectedDetail?.lastError ?? selected?.lastError,
   );
   const selectedRecentActions = selectedDetail?.recentActions ?? [];
+  const modelRoutingStates = selectedDetail?.modelRoutingStates ?? [];
+  const resetModelRouting = useCallback(
+    async (model: string) => {
+      if (!writesEnabled || !selectedDetail || modelRoutingResetting) return;
+      const accountId = selectedDetail.id;
+      setModelRoutingResetting(model);
+      setModelRoutingError(null);
+      try {
+        await resetUpstreamAccountModelRouting(accountId, model);
+        await loadDetail(accountId, { silent: true, includeRecentActions: true });
+      } catch (error) {
+        if (selectedIdRef.current === accountId) {
+          setModelRoutingError(error instanceof Error ? error.message : String(error));
+        }
+      } finally {
+        setModelRoutingResetting(null);
+      }
+    },
+    [loadDetail, modelRoutingResetting, selectedDetail, writesEnabled],
+  );
   const openBlockedBindingWorkingConversations = useCallback(
     (event: {
       blockedBinding?: {
@@ -3758,6 +3788,16 @@ function SharedUpstreamAccountDetailDrawerInner({
                     </CardContent>
                   </Card>
 
+                  {selectedDetail.kind === "api_key_codex" ? (
+                    <ModelRoutingHealthPanel
+                      states={modelRoutingStates}
+                      error={modelRoutingError}
+                      resettingModel={modelRoutingResetting}
+                      writesEnabled={writesEnabled}
+                      onReset={(model) => void resetModelRouting(model)}
+                    />
+                  ) : null}
+
                   <Card>
                     <CardHeader>
                       <CardTitle>{t("accountPool.upstreamAccounts.recentActions.title")}</CardTitle>
@@ -3791,6 +3831,12 @@ function SharedUpstreamAccountDetailDrawerInner({
                                 {Number.isFinite(actionEvent.httpStatus ?? NaN) ? (
                                   <Badge variant="secondary">{`HTTP ${actionEvent.httpStatus}`}</Badge>
                                 ) : null}
+                                {actionEvent.model ? (
+                                  <Badge variant="info">
+                                    {t("accountPool.upstreamAccounts.modelRouting.model")}:{" "}
+                                    {actionEvent.model}
+                                  </Badge>
+                                ) : null}
                                 <span className="text-xs text-base-content/55">
                                   {formatDateTime(actionEvent.occurredAt)}
                                 </span>
@@ -3798,6 +3844,22 @@ function SharedUpstreamAccountDetailDrawerInner({
                               {actionEvent.reasonMessage ? (
                                 <p className="mt-2 text-sm leading-6 text-base-content/75">
                                   {actionEvent.reasonMessage}
+                                </p>
+                              ) : null}
+                              {actionEvent.model ? (
+                                <p className="mt-2 break-words text-xs leading-5 text-base-content/65">
+                                  {t("accountPool.upstreamAccounts.modelRouting.transition")}:{" "}
+                                  {actionEvent.modelRouteStateBefore ?? "-"} -&gt;{" "}
+                                  {actionEvent.modelRouteStateAfter ?? "-"}
+                                  {" / "}
+                                  {actionEvent.modelRoutePriorityBefore ?? "-"} -&gt;{" "}
+                                  {actionEvent.modelRoutePriorityAfter ?? "-"}
+                                  {actionEvent.modelRouteFailureCount != null
+                                    ? ` / ${t("accountPool.upstreamAccounts.modelRouting.failures")}: ${actionEvent.modelRouteFailureCount}`
+                                    : ""}
+                                  {actionEvent.modelRouteCooldownUntil
+                                    ? ` / ${t("accountPool.upstreamAccounts.modelRouting.recoveryAt")}: ${formatDateTime(actionEvent.modelRouteCooldownUntil)}`
+                                    : ""}
                                 </p>
                               ) : null}
                               {actionEvent.blockedBinding ? (

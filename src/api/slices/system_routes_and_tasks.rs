@@ -611,14 +611,15 @@ pub(crate) fn summarize_retention_run_for_system_task(
     summary: &RetentionRunSummary,
 ) -> (String, String) {
     let brief = format!(
-        "compressed={} archived_invocations={} pruned_details={} orphan_raw_removed={}",
+        "compressed={} archived_invocations={} pruned_details={} model_routes_pruned={} orphan_raw_removed={}",
         summary.raw_files_compressed,
         summary.invocation_rows_archived,
         summary.invocation_details_pruned,
+        summary.model_route_rows_pruned,
         summary.orphan_raw_files_removed
     );
     let detail = format!(
-        "dry_run={} raw_candidates={} raw_compressed={} raw_bytes_before={} raw_bytes_after={} details_pruned={} invocation_rows_archived={} forward_proxy_attempt_rows_archived={} pool_attempt_rows_archived={} quota_rows_archived={} archive_batches_touched={} archive_batches_deleted={} raw_files_removed={} orphan_raw_files_removed={}",
+        "dry_run={} raw_candidates={} raw_compressed={} raw_bytes_before={} raw_bytes_after={} details_pruned={} invocation_rows_archived={} forward_proxy_attempt_rows_archived={} pool_attempt_rows_archived={} quota_rows_archived={} archive_batches_touched={} archive_batches_deleted={} raw_files_removed={} model_routes_pruned={} orphan_raw_files_removed={}",
         summary.dry_run,
         summary.raw_files_compression_candidates,
         summary.raw_files_compressed,
@@ -632,6 +633,7 @@ pub(crate) fn summarize_retention_run_for_system_task(
         summary.archive_batches_touched,
         summary.archive_batches_deleted,
         summary.raw_files_removed,
+        summary.model_route_rows_pruned,
         summary.orphan_raw_files_removed
     );
     (brief, detail)

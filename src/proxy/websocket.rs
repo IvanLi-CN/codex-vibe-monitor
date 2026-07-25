@@ -190,11 +190,12 @@ pub(crate) async fn proxy_openai_v1_ws_common(
         sticky_key: sticky_key.clone(),
         requester_ip,
         upstream_base_url_host: None,
+        request_model: requested_model.clone(),
     };
 
     let downstream_subprotocol = requested_websocket_subprotocol(&headers);
     let requires_response_create_first_frame =
-        websocket_requires_response_create_first_frame(original_uri.path());
+        websocket_should_wait_for_initial_model(original_uri.path(), requested_model.as_deref());
     let ws = match downstream_subprotocol.clone() {
         Some(protocol) => ws.protocols([protocol]),
         None => ws,
@@ -230,6 +231,7 @@ pub(crate) async fn proxy_openai_v1_ws_common(
                 downstream_subprotocol,
                 trace,
                 proxy_request_permit,
+                None,
             )
             .await;
         }
@@ -238,6 +240,14 @@ pub(crate) async fn proxy_openai_v1_ws_common(
 
 pub(crate) fn websocket_requires_response_create_first_frame(path: &str) -> bool {
     path == "/v1/responses" || path.starts_with("/v1/responses/")
+}
+
+pub(crate) fn websocket_should_wait_for_initial_model(
+    path: &str,
+    requested_model: Option<&str>,
+) -> bool {
+    websocket_requires_response_create_first_frame(path)
+        || (path == "/v1/realtime" && requested_model.is_none())
 }
 
 pub(crate) struct PreparedUpstreamWebSocket {
@@ -745,7 +755,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
             attempt_index as i64,
             attempt_index as i64,
             0,
-            shanghai_now_string().as_str(),
+            format_naive_precise(Utc::now().with_timezone(&Shanghai).naive_local()).as_str(),
         )
         .await,
     );
@@ -1054,7 +1064,7 @@ pub(crate) async fn proxy_websocket_tunnel(
     downstream: WebSocket,
     prepared: PreparedUpstreamWebSocket,
     _proxy_request_permit: ProxyRequestConcurrencyPermit,
-    initial_downstream_message: Option<AxumWsMessage>,
+    initial_downstream_messages: Vec<AxumWsMessage>,
 ) {
     let PreparedUpstreamWebSocket {
         upstream,
@@ -1075,14 +1085,25 @@ pub(crate) async fn proxy_websocket_tunnel(
     let mut failure_kind_override: Option<&'static str> = None;
     let mut upstream_route_failure: Option<String> = None;
     let mut mark_account_ws_unsupported_after_close = false;
-    let mut usage_tracker = WsUsageTracker::new(account, trace, prompt_cache_key);
+    let mut usage_tracker = WsUsageTracker::new(
+        account,
+        trace,
+        prompt_cache_key,
+        pending_attempt_record
+            .as_ref()
+            .and_then(|pending| pending.attempt_id),
+        pending_attempt_record.as_ref().and_then(|pending| {
+            parse_to_utc_datetime(&pending.started_at).map(|started| started.to_rfc3339())
+        }),
+    );
     let mut active_turn_waiting_terminal = false;
     let mut saw_terminal_upstream_event = false;
     let mut drain_upstream_after_downstream_close = false;
-    let mut pending_first_downstream_message = initial_downstream_message;
+    let mut pending_downstream_messages =
+        std::collections::VecDeque::from(initial_downstream_messages);
 
     loop {
-        if let Some(message) = pending_first_downstream_message.take() {
+        if let Some(message) = pending_downstream_messages.pop_front() {
             let close_seen = matches!(message, AxumWsMessage::Close(_));
             if ws_message_starts_response_create_turn(&message) {
                 active_turn_waiting_terminal = true;
@@ -1110,9 +1131,20 @@ pub(crate) async fn proxy_websocket_tunnel(
                     }
                     Ok(false) => {}
                     Err(err) => {
-                        failure = Some(format!(
-                            "failed to inspect websocket payload routing constraint: {err}"
-                        ));
+                        let message = err.to_string();
+                        if message.starts_with("websocket model route is cooling down for ") {
+                            failure = Some(message);
+                            let _ = downstream_tx
+                                .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                                    code: axum::extract::ws::close_code::AGAIN,
+                                    reason: "model_route_unavailable; retry".into(),
+                                })))
+                                .await;
+                        } else {
+                            failure = Some(format!(
+                                "failed to inspect websocket payload routing constraint: {message}"
+                            ));
+                        }
                         break;
                     }
                 }
@@ -1171,9 +1203,22 @@ pub(crate) async fn proxy_websocket_tunnel(
                                 }
                                 Ok(false) => {}
                                 Err(err) => {
-                                    failure = Some(format!(
-                                        "failed to inspect websocket payload routing constraint: {err}"
-                                    ));
+                                    let message = err.to_string();
+                                    if message.starts_with("websocket model route is cooling down for ") {
+                                        failure = Some(message);
+                                        let _ = downstream_tx
+                                            .send(AxumWsMessage::Close(Some(
+                                                axum::extract::ws::CloseFrame {
+                                                    code: axum::extract::ws::close_code::AGAIN,
+                                                    reason: "model_route_unavailable; retry".into(),
+                                                },
+                                            )))
+                                            .await;
+                                    } else {
+                                        failure = Some(format!(
+                                            "failed to inspect websocket payload routing constraint: {message}"
+                                        ));
+                                    }
                                     break;
                                 }
                             }
@@ -1437,7 +1482,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
     requested_model: Option<String>,
     header_prompt_cache_key: Option<String>,
     required_subprotocol: Option<String>,
-    trace: PoolUpstreamAttemptTraceContext,
+    mut trace: PoolUpstreamAttemptTraceContext,
     proxy_request_permit: ProxyRequestConcurrencyPermit,
 ) {
     let first_downstream_message =
@@ -1494,35 +1539,62 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
         return;
     }
 
-    let payload_inspection =
-        match inspect_ws_initial_response_create_message(&first_downstream_message) {
-            Ok(inspection) => inspection,
-            Err(reason) => {
-                warn!(
-                    proxy_request_id,
-                    reason, "websocket first downstream frame rejected"
-                );
-                record_ws_pre_upstream_failure(
-                    state.as_ref(),
-                    &trace,
-                    PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
-                    reason,
-                )
+    let payload_inspection = match inspect_ws_request_payload(
+        ws_message_payload_bytes(&first_downstream_message).unwrap_or_default(),
+    ) {
+        Some(inspection) if inspection.event_type.as_deref() == Some("response.create") => {
+            inspection
+        }
+        Some(_) | None if original_uri.path() == "/v1/realtime" => {
+            // Realtime clients commonly begin with session.update or conversation.item.create
+            // before the first response.create. Prepare a model-agnostic upstream immediately so
+            // setup acknowledgements are not blocked while preserving the first frame.
+            proxy_websocket_tunnel_immediate_prepare(
+                state,
+                downstream,
+                proxy_request_id,
+                original_uri,
+                headers,
+                runtime_timeouts,
+                sticky_key,
+                requested_model,
+                header_prompt_cache_key,
+                required_subprotocol,
+                trace,
+                proxy_request_permit,
+                Some(first_downstream_message),
+            )
+            .await;
+            return;
+        }
+        Some(_) | None => {
+            let reason = "websocket first frame must be response.create";
+            warn!(
+                proxy_request_id,
+                reason, "websocket first downstream frame rejected"
+            );
+            record_ws_pre_upstream_failure(
+                state.as_ref(),
+                &trace,
+                PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                reason,
+            )
+            .await;
+            let _ = downstream
+                .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                    code: axum::extract::ws::close_code::ERROR,
+                    reason: reason.into(),
+                })))
                 .await;
-                let _ = downstream
-                    .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
-                        code: axum::extract::ws::close_code::ERROR,
-                        reason: reason.into(),
-                    })))
-                    .await;
-                return;
-            }
-        };
+            return;
+        }
+    };
 
     let requested_model = payload_inspection
         .requested_model
         .clone()
         .or(requested_model);
+    trace.request_model = requested_model.clone();
     let prompt_cache_key = payload_inspection
         .prompt_cache_key
         .clone()
@@ -1596,7 +1668,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
         downstream,
         prepared,
         proxy_request_permit,
-        Some(first_downstream_message),
+        vec![first_downstream_message],
     )
     .await;
 }
@@ -1623,21 +1695,38 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
     requested_model: Option<String>,
     header_prompt_cache_key: Option<String>,
     required_subprotocol: Option<String>,
-    trace: PoolUpstreamAttemptTraceContext,
+    mut trace: PoolUpstreamAttemptTraceContext,
     proxy_request_permit: ProxyRequestConcurrencyPermit,
+    initial_downstream_message: Option<AxumWsMessage>,
 ) {
+    let initial_inspection = initial_downstream_message
+        .as_ref()
+        .and_then(|message| ws_message_payload_bytes(message))
+        .and_then(inspect_ws_request_payload);
+    let requested_model = initial_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.requested_model.clone())
+        .or(requested_model);
+    let prompt_cache_key = initial_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.prompt_cache_key.clone())
+        .or(header_prompt_cache_key);
+    let request_contains_encrypted_content = initial_inspection
+        .as_ref()
+        .is_some_and(|inspection| inspection.contains_encrypted_content);
+    trace.request_model = requested_model.clone();
     debug!(
         proxy_request_id,
         requested_model = ?requested_model,
-        prompt_cache_key_present = header_prompt_cache_key.is_some(),
+        prompt_cache_key_present = prompt_cache_key.is_some(),
         path = %original_uri.path(),
         "websocket passthrough prepare without response.create first frame"
     );
     let (binding_constraint, owner_auto_guard_active, conversation_override) =
         match load_via_pool_effective_routing(
             state.as_ref(),
-            header_prompt_cache_key.as_deref(),
-            false,
+            prompt_cache_key.as_deref(),
+            request_contains_encrypted_content,
         )
         .await
         {
@@ -1660,7 +1749,7 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
         &runtime_timeouts,
         sticky_key.as_deref(),
         requested_model.as_deref(),
-        header_prompt_cache_key.as_deref(),
+        prompt_cache_key.as_deref(),
         binding_constraint,
         conversation_override,
         owner_auto_guard_active,
@@ -1688,7 +1777,14 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
             return;
         }
     };
-    proxy_websocket_tunnel(state, downstream, prepared, proxy_request_permit, None).await;
+    proxy_websocket_tunnel(
+        state,
+        downstream,
+        prepared,
+        proxy_request_permit,
+        initial_downstream_message.into_iter().collect(),
+    )
+    .await;
 }
 
 pub(crate) struct WsUsageTracker {
@@ -1697,6 +1793,8 @@ pub(crate) struct WsUsageTracker {
     prompt_cache_key: Option<String>,
     ordinal: u64,
     request_contains_encrypted_content: bool,
+    attempt_id: Option<i64>,
+    request_started_at: Option<String>,
 }
 
 impl WsUsageTracker {
@@ -1704,6 +1802,8 @@ impl WsUsageTracker {
         account: PoolResolvedAccount,
         trace: PoolUpstreamAttemptTraceContext,
         prompt_cache_key: Option<String>,
+        attempt_id: Option<i64>,
+        request_started_at: Option<String>,
     ) -> Self {
         Self {
             account,
@@ -1711,11 +1811,33 @@ impl WsUsageTracker {
             prompt_cache_key,
             ordinal: 0,
             request_contains_encrypted_content: false,
+            attempt_id,
+            request_started_at,
         }
     }
 
     async fn observe_upstream_text(&mut self, state: &AppState, text: &str) {
         let Some(event) = parse_ws_usage_event(text) else {
+            if ws_terminal_event_is_failure_without_usage(text)
+                && let Some(attempt_id) = self.attempt_id
+                && let Err(err) = record_model_route_failure_from_attempt_with_start(
+                    &state.pool,
+                    self.account.account_id,
+                    attempt_id,
+                    StatusCode::BAD_REQUEST,
+                    Some(text),
+                    Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED),
+                    self.request_started_at.as_deref(),
+                )
+                .await
+            {
+                warn!(
+                    invoke_id = %self.trace.invoke_id,
+                    account_id = self.account.account_id,
+                    error = %err,
+                    "failed to record websocket model route terminal failure"
+                );
+            }
             return;
         };
         self.ordinal = self.ordinal.saturating_add(1);
@@ -1728,6 +1850,8 @@ impl WsUsageTracker {
             event,
             self.request_contains_encrypted_content,
             text,
+            self.attempt_id,
+            self.request_started_at.as_deref(),
         )
         .await
         {
@@ -1867,6 +1991,24 @@ pub(crate) fn ws_event_type_has_billable_usage(event_type: &str) -> bool {
     )
 }
 
+fn ws_terminal_event_is_failure_without_usage(text: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return false;
+    };
+    let Some(event_type) = value.get("type").and_then(Value::as_str) else {
+        return false;
+    };
+    if event_type == "response.failed" {
+        return true;
+    }
+    event_type == "response.done"
+        && !value
+            .pointer("/response/status")
+            .or_else(|| value.get("status"))
+            .and_then(Value::as_str)
+            .is_some_and(|status| status.eq_ignore_ascii_case("completed"))
+}
+
 pub(crate) fn websocket_upstream_error_marks_account_ws_unsupported(
     err: &tungstenite::Error,
 ) -> bool {
@@ -1933,7 +2075,10 @@ pub(crate) fn inspect_ws_request_payload(bytes: &[u8]) -> Option<WsRequestPayloa
     let value = serde_json::from_slice::<Value>(bytes).ok()?;
     Some(WsRequestPayloadInspection {
         event_type: extract_nonempty_json_string(&value, &["/type"]),
-        requested_model: extract_nonempty_json_string(&value, &["/model", "/response/model"]),
+        requested_model: extract_nonempty_json_string(
+            &value,
+            &["/model", "/response/model", "/session/model"],
+        ),
         previous_response_id: extract_nonempty_json_string(
             &value,
             &[
@@ -1999,6 +2144,39 @@ pub(crate) async fn apply_ws_downstream_payload_guard(
     usage_tracker: &mut WsUsageTracker,
     payload_bytes: &[u8],
 ) -> Result<bool> {
+    if let Some(inspection) = inspect_ws_request_payload(payload_bytes) {
+        if let Some(model) = inspection.requested_model.as_deref() {
+            usage_tracker.trace.request_model = Some(model.to_string());
+            update_pool_upstream_request_attempt_model(
+                &state.pool,
+                usage_tracker.attempt_id,
+                Some(model),
+            )
+            .await?;
+        }
+        if inspection.event_type.as_deref() == Some("response.create") {
+            let requested_model = inspection
+                .requested_model
+                .clone()
+                .or_else(|| usage_tracker.trace.request_model.clone());
+            usage_tracker.request_started_at = Some(Utc::now().to_rfc3339());
+            observe_model_route_seen(
+                &state.pool,
+                usage_tracker.account.account_id,
+                requested_model.as_deref(),
+            )
+            .await?;
+            if let Some(model) = requested_model.as_deref()
+                && model_route_penalty(&state.pool, usage_tracker.account.account_id, Some(model))
+                    .await?
+                    == ModelRoutePenalty::Excluded
+            {
+                return Err(anyhow!(
+                    "websocket model route is cooling down for {model}; retry after cooldown"
+                ));
+            }
+        }
+    }
     let outcome = inspect_ws_request_payload_guard(
         state,
         &usage_tracker.account,
@@ -2035,6 +2213,8 @@ pub(crate) async fn persist_ws_usage_event(
     event: WsUsageEvent,
     request_contains_encrypted_content: bool,
     raw_event: &str,
+    attempt_id: Option<i64>,
+    request_started_at: Option<&str>,
 ) -> Result<()> {
     let proxy_settings = state.proxy_model_settings.read().await.clone();
     let model = event.model.as_deref();
@@ -2143,6 +2323,28 @@ pub(crate) async fn persist_ws_usage_event(
     let is_completed_terminal_event = ws_usage_event_is_completed_success(&event);
     let is_failed_terminal_event = !is_completed_terminal_event;
     let failure_kind = ws_terminal_event_failure_kind(&event);
+    if let Some(attempt_id) = attempt_id {
+        if is_completed_terminal_event {
+            record_model_route_success_from_attempt(
+                &state.pool,
+                account.account_id,
+                attempt_id,
+                request_started_at,
+            )
+            .await?;
+        } else {
+            record_model_route_failure_from_attempt_with_start(
+                &state.pool,
+                account.account_id,
+                attempt_id,
+                StatusCode::BAD_REQUEST,
+                Some(raw_event),
+                failure_kind,
+                request_started_at,
+            )
+            .await?;
+        }
+    }
     if is_completed_terminal_event
         && let Some(prompt_cache_key) = websocket_effective_prompt_cache_key(prompt_cache_key)
         && (request_contains_encrypted_content || event.contains_encrypted_content)
@@ -3230,6 +3432,22 @@ mod websocket_tests {
     }
 
     #[test]
+    fn realtime_without_query_model_waits_for_initial_model_but_query_model_stays_live() {
+        assert!(websocket_should_wait_for_initial_model(
+            "/v1/realtime",
+            None
+        ));
+        assert!(!websocket_should_wait_for_initial_model(
+            "/v1/realtime",
+            Some("gpt-5-realtime")
+        ));
+        assert!(websocket_should_wait_for_initial_model(
+            "/v1/responses",
+            None
+        ));
+    }
+
+    #[test]
     fn websocket_effective_prompt_cache_key_ignores_sticky_only_context() {
         let trace = PoolUpstreamAttemptTraceContext {
             invoke_id: "pool-ws-sticky-only".to_string(),
@@ -3238,10 +3456,13 @@ mod websocket_tests {
             sticky_key: Some("sticky-only-key".to_string()),
             requester_ip: None,
             upstream_base_url_host: None,
+            request_model: None,
         };
         let usage_tracker = WsUsageTracker::new(
             api_key_account(Url::parse("https://api.example.test").expect("valid base")),
             trace,
+            None,
+            None,
             None,
         );
 

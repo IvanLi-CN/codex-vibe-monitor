@@ -76,6 +76,10 @@ pub(crate) const UPSTREAM_ACCOUNT_ACTION_ROUTE_RECOVERED: &str = "route_recovere
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED: &str = "route_cooldown_started";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_ROUTE_RETRYABLE_FAILURE: &str = "route_retryable_failure";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE: &str = "route_hard_unavailable";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_DEGRADED: &str = "model_route_degraded";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_COOLDOWN: &str = "model_route_cooldown";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_RECOVERED: &str = "model_route_recovered";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_RESET: &str = "model_route_reset";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_STATUS_CHANGE_SUPPRESSED: &str =
     "status_change_suppressed";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED: &str = "sync_succeeded";
@@ -1705,6 +1709,28 @@ pub(crate) struct UpstreamAccountDetail {
     pub(crate) last_refreshed_at: Option<String>,
     pub(crate) history: Vec<UpstreamAccountHistoryPoint>,
     pub(crate) recent_actions: Vec<UpstreamAccountActionEvent>,
+    pub(crate) model_routing_states: Vec<ModelRoutingState>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModelRoutingState {
+    pub(crate) model: String,
+    pub(crate) state: String,
+    pub(crate) priority: String,
+    pub(crate) failure_count: i64,
+    pub(crate) changed_at: Option<String>,
+    pub(crate) last_seen_at: String,
+    pub(crate) last_failure_at: Option<String>,
+    pub(crate) last_failure_kind: Option<String>,
+    pub(crate) last_failure_message: Option<String>,
+    pub(crate) cooldown_until: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ResetModelRoutingRequest {
+    pub(crate) model: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1728,6 +1754,13 @@ pub(crate) struct UpstreamAccountActionEvent {
     pub(crate) invoke_id: Option<String>,
     pub(crate) attempt_id: Option<String>,
     pub(crate) sticky_key: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) model_route_state_before: Option<String>,
+    pub(crate) model_route_state_after: Option<String>,
+    pub(crate) model_route_priority_before: Option<String>,
+    pub(crate) model_route_priority_after: Option<String>,
+    pub(crate) model_route_failure_count: Option<i64>,
+    pub(crate) model_route_cooldown_until: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) blocked_binding: Option<BlockedBindingDiagnostic>,
     pub(crate) created_at: String,

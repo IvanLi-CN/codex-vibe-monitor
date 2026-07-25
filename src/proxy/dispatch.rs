@@ -1071,6 +1071,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         sticky_key: sticky_key.clone(),
         requester_ip: requester_ip.clone(),
         upstream_base_url_host: None,
+        request_model: request_info.model.clone(),
     });
     let t_req_parse_ms = elapsed_ms(req_parse_started);
     let upstream_body_bytes = Bytes::from(upstream_body);
@@ -2631,7 +2632,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     .as_deref()
                     .map(crate::ImageIntent::from_str)
                     .unwrap_or(crate::ImageIntent::Unknown);
-                let route_result = if pool_route_success || pure_downstream_closed {
+                let route_result = if pool_route_success {
                     consume_pool_routing_reservation(
                         state_for_task.as_ref(),
                         &reservation_key_for_task,
@@ -2651,6 +2652,12 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         account.sticky_affinity_generation,
                     )
                     .await
+                } else if pure_downstream_closed {
+                    release_pool_routing_reservation(
+                        state_for_task.as_ref(),
+                        &reservation_key_for_task,
+                    );
+                    Ok(())
                 } else if had_stream_error {
                     let route_message = error_message
                         .as_deref()

@@ -5,6 +5,7 @@ import { demoModel, demoNow } from "./model";
 const DEMO_INVOCATION_REQUEST_BODY_SIZE = 8_681_416;
 const DEMO_INVOCATION_REQUEST_BODY_TRANSMITTED_BYTES = 3_039_648;
 const DEMO_INVOCATION_RESPONSE_BODY_SIZE = 138_649;
+const demoResetModelRoutes = new Set<string>();
 const DEMO_INVOCATION_RESPONSE_BODY_TEXT = JSON.stringify(
   {
     id: "resp_demo_9002",
@@ -72,6 +73,33 @@ type DemoProxyNode = {
 
 function demoAccounts(): DemoAccount[] {
   return demoModel.snapshot.accounts as DemoAccount[];
+}
+
+function demoModelRoutingStates(accountId: number) {
+  const reset = demoResetModelRoutes.has(`${accountId}:gpt-5.4-mini`);
+  return [
+    {
+      model: "gpt-5.5",
+      state: "available",
+      priority: "normal",
+      failureCount: 0,
+      changedAt: demoNow(),
+      lastSeenAt: demoNow(),
+      cooldownUntil: null,
+    },
+    {
+      model: "gpt-5.4-mini",
+      state: reset ? "available" : "cooling_down",
+      priority: reset ? "normal" : "excluded",
+      failureCount: reset ? 0 : 5,
+      changedAt: demoNow(),
+      lastSeenAt: demoNow(),
+      lastFailureAt: reset ? null : new Date(Date.parse(demoNow()) - 75_000).toISOString(),
+      lastFailureKind: reset ? null : "model_unavailable",
+      lastFailureMessage: reset ? null : "Model-specific quota exhausted in the demo fixture.",
+      cooldownUntil: reset ? null : new Date(Date.parse(demoNow()) + 45_000).toISOString(),
+    },
+  ];
 }
 
 function demoForwardProxyNodes(): DemoProxyNode[] {
@@ -1464,10 +1492,11 @@ function accountEvents() {
   ] as const;
   return templates.map(([action, result, reasonCode, reasonMessage, httpStatus], index) => {
     const account = accounts[index] ?? accounts[0];
+    const modelRouteEvent = account.kind === "api_key_codex" && index % 3 === 1;
     const proxyKey = account.boundProxyKeys?.[0] ?? null;
     return {
       id: 7100 + index,
-      action,
+      action: modelRouteEvent ? "model_route_cooldown" : action,
       source: index % 2 === 0 ? "maintenance_scheduler" : "operator",
       result,
       accountDisplayName: account.displayName,
@@ -1483,6 +1512,15 @@ function accountEvents() {
       reasonCode,
       reasonMessage,
       httpStatus,
+      model: modelRouteEvent ? "gpt-5.4-mini" : null,
+      modelRouteStateBefore: modelRouteEvent ? "degraded" : null,
+      modelRouteStateAfter: modelRouteEvent ? "cooling_down" : null,
+      modelRoutePriorityBefore: modelRouteEvent ? "demoted" : null,
+      modelRoutePriorityAfter: modelRouteEvent ? "excluded" : null,
+      modelRouteFailureCount: modelRouteEvent ? 5 : null,
+      modelRouteCooldownUntil: modelRouteEvent
+        ? new Date(Date.parse(demoNow()) + 45_000).toISOString()
+        : null,
       failureKind:
         reasonCode === "transport_failure"
           ? "upstream_timeout"
@@ -2478,6 +2516,14 @@ export async function handleDemoRequest(request: Request) {
       hasMore: false,
       nextCursor: null,
     });
+  if (
+    /^\/api\/pool\/upstream-accounts\/\d+\/model-routing$/.test(pathname) &&
+    request.method === "GET"
+  ) {
+    const accountId = Number(pathname.split("/").at(-2));
+    const account = demoAccounts().find((item) => item.id === accountId) ?? demoAccounts()[0];
+    return json(account.kind === "api_key_codex" ? demoModelRoutingStates(accountId) : []);
+  }
   if (/^\/api\/pool\/upstream-accounts\/\d+$/.test(pathname) && request.method === "GET") {
     const accountId = Number(pathname.split("/").at(-1));
     const account = demoAccounts().find((item) => item.id === accountId) ?? demoAccounts()[0];
@@ -2499,6 +2545,7 @@ export async function handleDemoRequest(request: Request) {
       recentActions: accountEvents()
         .filter((event) => event.accountDisplayName === account.displayName)
         .slice(0, 4),
+      modelRoutingStates: account.kind === "api_key_codex" ? demoModelRoutingStates(accountId) : [],
     });
   }
 
@@ -2513,6 +2560,24 @@ export async function handleDemoRequest(request: Request) {
       return json(demoModel.updateSettings(pathname, body));
     if (pathname === "/api/pool/upstream-accounts")
       return json(demoModel.createAccount(), { status: 201 });
+    if (/^\/api\/pool\/upstream-accounts\/\d+\/model-routing\/reset$/.test(pathname)) {
+      const accountId = Number(pathname.split("/").at(-3));
+      const model =
+        body && typeof body === "object" && typeof (body as { model?: unknown }).model === "string"
+          ? (body as { model: string }).model
+          : "gpt-5.4-mini";
+      demoResetModelRoutes.add(`${accountId}:${model}`);
+      demoModel.record(`模拟恢复账号 ${accountId} 的模型 ${model}`);
+      return json({
+        model,
+        state: "available",
+        priority: "normal",
+        failureCount: 0,
+        changedAt: demoNow(),
+        lastSeenAt: demoNow(),
+        cooldownUntil: null,
+      });
+    }
     demoModel.record(`模拟 ${request.method} ${pathname.split("/").slice(-1)[0]}`);
     return json({ ok: true, simulated: true, updatedAt: demoNow() });
   }
@@ -2520,4 +2585,7 @@ export async function handleDemoRequest(request: Request) {
   return json({ error: `Unhandled demo API route: ${pathname}` }, { status: 501 });
 }
 
-export const apiHandlers = [http.all(/\/api\/.*/, ({ request }) => handleDemoRequest(request))];
+export const apiHandlers = [
+  http.get("/favicon.ico", () => new HttpResponse(null, { status: 204 })),
+  http.all(/\/api\/.*/, ({ request }) => handleDemoRequest(request)),
+];

@@ -31,6 +31,7 @@ pub(crate) fn compare_pool_routing_candidate_scores(
                 .then_with(|| {
                     lhs.route_binding_failure_penalty
                         .cmp(&rhs.route_binding_failure_penalty)
+                        .then_with(|| lhs.model_route_penalty.cmp(&rhs.model_route_penalty))
                 })
                 .then_with(|| lhs.routing_priority_rank.cmp(&rhs.routing_priority_rank))
                 .then_with(|| lhs.eligibility.rank().cmp(&rhs.eligibility.rank()))
@@ -106,6 +107,7 @@ pub(crate) fn build_pool_routing_candidate_score(
     PoolRoutingCandidateScore {
         eligibility,
         route_binding_failure_penalty: 0,
+        model_route_penalty: 0,
         routing_priority_rank: routing_priority_rank(Some(effective_rule)),
         capacity_lane,
         dispatch_state,
@@ -732,6 +734,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         None
     };
     let sticky_source_id = sticky_route.as_ref().map(|route| route.account_id);
+    let sticky_model_penalties = load_model_route_penalties(
+        &state.pool,
+        &sticky_source_id.into_iter().collect::<Vec<_>>(),
+        requested_model,
+    )
+    .await?;
     let sticky_source_rule = if let Some(route) = sticky_route.as_ref() {
         let mut rule =
             load_effective_routing_rule_for_account(&state.pool, route.account_id).await?;
@@ -819,6 +827,17 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             let sticky_route_is_excluded_by_route_key = sticky_route_key
                 .as_deref()
                 .is_some_and(|route_key| excluded_upstream_route_keys.contains(route_key));
+            let sticky_model_penalty = if sticky_route_matches_binding
+                && sticky_route_matches_required
+                && !sticky_source_transport_decode_escape
+            {
+                sticky_model_penalties
+                    .get(&row.id)
+                    .copied()
+                    .unwrap_or(ModelRoutePenalty::Normal)
+            } else {
+                ModelRoutePenalty::Normal
+            };
             if !sticky_route_matches_binding {
                 if is_account_rate_limited_for_routing(&row, sticky_snapshot_exhausted)
                     || is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now)
@@ -838,6 +857,10 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                     saw_non_routing_candidate = true;
                 }
             } else if sticky_source_transport_decode_escape {
+                saw_degraded_candidate = true;
+            } else if sticky_model_penalty == ModelRoutePenalty::Excluded {
+                // A sticky account whose requested model is cooling down is still a
+                // model-level degraded candidate, not an unavailable account.
                 saw_degraded_candidate = true;
             } else if is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now) {
                 if sticky_source_rule.as_ref().is_none_or(|rule| {
@@ -919,6 +942,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                 now,
                             )
                             .await?;
+                            evaluation.score.model_route_penalty =
+                                sticky_model_penalty.score() as u8;
                             if let Some(mut account) = evaluation.resolved_account.take() {
                                 account.routing_source = PoolRoutingSelectionSource::StickyReuse;
                                 if !excluded_upstream_route_keys
@@ -931,7 +956,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                             &route_binding_failure_penalties,
                                         )
                                         .await;
-                                    if route_binding_failure_penalty > 0 {
+                                    if route_binding_failure_penalty > 0
+                                        || sticky_model_penalty != ModelRoutePenalty::Normal
+                                    {
                                         if sticky_source_cut_out_guard_applies {
                                             return Ok(PoolAccountResolution::Resolved(
                                                 account.with_sticky_affinity_generation(
@@ -1080,6 +1107,15 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 candidate.active_sticky_conversations.saturating_sub(1);
         }
     }
+    let model_route_penalties = load_model_route_penalties(
+        &state.pool,
+        &candidates
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>(),
+        requested_model,
+    )
+    .await?;
     let mut candidate_effective_rules = load_effective_routing_rules_for_accounts(
         &state.pool,
         &candidates
@@ -1228,6 +1264,14 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 continue;
             }
         };
+        let model_penalty = model_route_penalties
+            .get(&row.id)
+            .copied()
+            .unwrap_or(ModelRoutePenalty::Normal);
+        if model_penalty == ModelRoutePenalty::Excluded {
+            saw_degraded_candidate = true;
+            continue;
+        }
         let mut evaluation = evaluate_live_pool_candidate(
             state,
             &row,
@@ -1240,6 +1284,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             now,
         )
         .await?;
+        evaluation.score.model_route_penalty = model_penalty.score() as u8;
         match evaluation.score.eligibility {
             PoolRoutingCandidateEligibility::Assignable
             | PoolRoutingCandidateEligibility::SoftDegraded

@@ -477,6 +477,10 @@ pub(crate) fn format_naive(dt: NaiveDateTime) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
+pub(crate) fn format_naive_precise(dt: NaiveDateTime) -> String {
+    dt.format("%Y-%m-%d %H:%M:%S%.f").to_string()
+}
+
 pub(crate) fn parse_reporting_tz(time_zone: Option<&str>) -> Result<Tz> {
     let tz_name = time_zone.unwrap_or("Asia/Shanghai");
     tz_name
@@ -4501,6 +4505,12 @@ pub(crate) fn format_utc_iso_precise(dt: DateTime<Utc>) -> String {
 pub(crate) fn parse_to_utc_datetime(s: &str) -> Option<DateTime<Utc>> {
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
         return Some(dt.with_timezone(&Utc));
+    }
+    if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f") {
+        if let Some(loc) = Shanghai.from_local_datetime(&naive).single() {
+            return Some(loc.with_timezone(&Utc));
+        }
+        return Some(Utc.from_utc_datetime(&naive));
     }
     if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
         if let Some(loc) = Shanghai.from_local_datetime(&naive).single() {

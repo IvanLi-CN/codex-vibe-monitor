@@ -650,6 +650,13 @@ pub(crate) async fn list_upstream_account_action_events_from_params(
             event.invoke_id,
             attempts.attempt_public_id,
             event.sticky_key,
+            event.model,
+            event.model_route_state_before,
+            event.model_route_state_after,
+            event.model_route_priority_before,
+            event.model_route_priority_after,
+            event.model_route_failure_count,
+            event.model_route_cooldown_until,
             event.created_at
         FROM pool_upstream_account_events event
         INNER JOIN pool_upstream_accounts account ON account.id = event.account_id
@@ -1416,6 +1423,49 @@ pub(crate) async fn get_upstream_account(
     .map_err(internal_error_tuple)?
     .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
     Ok(Json(detail))
+}
+
+pub(crate) async fn get_upstream_account_model_routing(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<Vec<ModelRoutingState>>, (StatusCode, String)> {
+    let Some(detail) = load_upstream_account_detail_with_actual_usage_options(
+        state.as_ref(),
+        id,
+        LoadUpstreamAccountDetailOptions {
+            include_recent_actions: false,
+        },
+    )
+    .await
+    .map_err(internal_error_tuple)?
+    else {
+        return Err((StatusCode::NOT_FOUND, "account not found".to_string()));
+    };
+    Ok(Json(detail.model_routing_states))
+}
+
+pub(crate) async fn reset_upstream_account_model_routing(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+    Json(payload): Json<ResetModelRoutingRequest>,
+) -> Result<Json<ModelRoutingState>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    let Some(state) = reset_model_route(&state.pool, id, &payload.model)
+        .await
+        .map_err(internal_error_tuple)?
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "API Key model route not found".to_string(),
+        ));
+    };
+    Ok(Json(state))
 }
 
 #[derive(Debug, Default, Deserialize)]

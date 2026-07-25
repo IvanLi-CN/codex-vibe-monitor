@@ -1064,6 +1064,7 @@ impl PoolRoutingCandidateDispatchState {
 pub(crate) struct PoolRoutingCandidateScore {
     pub(crate) eligibility: PoolRoutingCandidateEligibility,
     pub(crate) route_binding_failure_penalty: i64,
+    pub(crate) model_route_penalty: u8,
     pub(crate) routing_priority_rank: u8,
     pub(crate) capacity_lane: PoolRoutingCandidateCapacityLane,
     pub(crate) dispatch_state: PoolRoutingCandidateDispatchState,

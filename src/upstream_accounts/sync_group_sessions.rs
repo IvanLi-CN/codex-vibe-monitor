@@ -788,6 +788,13 @@ pub(crate) fn build_action_event_from_row(
         invoke_id: row.invoke_id.clone(),
         attempt_id: row.attempt_public_id.clone(),
         sticky_key: row.sticky_key.clone(),
+        model: row.model.clone(),
+        model_route_state_before: row.model_route_state_before.clone(),
+        model_route_state_after: row.model_route_state_after.clone(),
+        model_route_priority_before: row.model_route_priority_before.clone(),
+        model_route_priority_after: row.model_route_priority_after.clone(),
+        model_route_failure_count: row.model_route_failure_count,
+        model_route_cooldown_until: row.model_route_cooldown_until.clone(),
         blocked_binding: parse_blocked_binding_json(row.blocked_binding_json.as_deref()),
         created_at: row.created_at.clone(),
     }

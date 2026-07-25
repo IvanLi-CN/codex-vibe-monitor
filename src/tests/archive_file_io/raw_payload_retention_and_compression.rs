@@ -2017,6 +2017,7 @@ async fn finalize_pool_upstream_request_attempt_updates_pending_row_in_place() {
         sticky_key: Some("sticky-pending".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
 
     let pending = begin_pool_upstream_request_attempt(
@@ -2136,6 +2137,7 @@ async fn begin_pool_upstream_request_attempt_with_scope_persists_group_and_proxy
         sticky_key: Some("sticky-scope".to_string()),
         requester_ip: Some("192.168.31.9".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
 
     let pending = begin_pool_upstream_request_attempt_with_scope(
@@ -2187,6 +2189,7 @@ async fn finalize_pool_upstream_request_attempt_fallback_preserves_scope_snapsho
         routing_source: None,
         requester_ip: Some("192.168.31.10".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
         group_name_snapshot: Some("prod".to_string()),
         proxy_binding_key_snapshot: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
         upstream_account_id: account_id,
@@ -2266,6 +2269,7 @@ async fn insert_pool_upstream_terminal_attempt_skips_pre_dispatch_pseudo_attempt
         sticky_key: Some("sticky-terminal-scoped".to_string()),
         requester_ip: Some("192.168.31.11".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
 
     insert_pool_upstream_terminal_attempt(
@@ -2348,6 +2352,7 @@ async fn insert_pool_upstream_terminal_attempt_skips_oauth_pre_dispatch_pseudo_a
         sticky_key: Some("sticky-terminal-oauth".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
 
     insert_pool_upstream_terminal_attempt(
@@ -2411,6 +2416,7 @@ async fn broadcast_pool_upstream_attempts_snapshot_emits_pending_attempts() {
         sticky_key: Some("sticky-broadcast".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let _pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -2470,6 +2476,7 @@ async fn advance_pool_upstream_request_attempt_phase_buffers_progress_without_im
         sticky_key: Some("sticky-phase-advance".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -2546,6 +2553,7 @@ async fn fetch_invocation_pool_attempts_returns_live_pending_attempts_without_pa
         sticky_key: Some("sticky-live-fetch".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let _sticky_pending = begin_pool_upstream_request_attempt_with_scope_and_routing_source(
         &state.pool,
@@ -2618,6 +2626,7 @@ async fn insert_and_broadcast_pool_upstream_terminal_attempt_skips_pre_dispatch_
         sticky_key: Some("sticky-terminal".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let final_error = PoolUpstreamError {
         account: None,
@@ -2684,6 +2693,7 @@ async fn recover_orphaned_pool_upstream_request_attempts_marks_pending_rows_term
         sticky_key: Some("sticky-recovery".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
 
     let pending = begin_pool_upstream_request_attempt(
@@ -2803,6 +2813,7 @@ async fn recover_orphaned_pool_upstream_request_attempts_keeps_startup_sequence_
         sticky_key: Some("sticky-startup-recovery".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -2927,6 +2938,7 @@ async fn recover_orphaned_pool_upstream_request_attempts_recovers_terminal_invoc
         sticky_key: Some("sticky-startup-success".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -3177,6 +3189,7 @@ async fn pool_early_phase_orphan_cleanup_guard_recovers_dropped_sending_request_
         sticky_key: Some("sticky-guard".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -3295,6 +3308,7 @@ async fn recover_guard_dropped_pool_early_phase_orphan_without_persisted_attempt
         routing_source: None,
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
         group_name_snapshot: None,
         proxy_binding_key_snapshot: None,
         upstream_account_id: account_id,
@@ -3388,6 +3402,7 @@ async fn recover_guard_dropped_pool_early_phase_orphan_skips_streaming_response_
         sticky_key: Some("sticky-guard-streaming".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -3498,6 +3513,7 @@ async fn recover_guard_dropped_pool_early_phase_orphan_recovers_attempt_after_in
         sticky_key: Some("sticky-guard-final".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -3642,6 +3658,7 @@ async fn recover_guard_dropped_pool_early_phase_orphan_skips_post_first_byte_ter
         sticky_key: Some("sticky-guard-post-first-byte".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -3752,6 +3769,7 @@ async fn recover_guard_dropped_pool_early_phase_orphan_recovers_post_first_byte_
         sticky_key: Some("sticky-guard-post-first-byte-recover".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -3891,6 +3909,7 @@ async fn recover_guard_dropped_pool_terminal_invocation_orphan_repairs_running_i
         sticky_key: Some("sticky-guard-final-attempt".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -4110,6 +4129,7 @@ async fn pool_invocation_cleanup_guard_recovers_running_invocation_during_retry_
         sticky_key: Some("sticky-request-drop-backoff".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -4273,6 +4293,7 @@ async fn recover_guard_dropped_pool_early_phase_orphan_rolls_back_attempt_when_i
         sticky_key: Some("sticky-guard-atomic".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -4406,6 +4427,7 @@ async fn recover_guard_dropped_pool_early_phase_orphan_clears_pool_routing_reser
         sticky_key: Some("sticky-guard-reservation".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -4522,6 +4544,7 @@ async fn pool_early_phase_orphan_cleanup_guard_disarm_keeps_invocation_running_w
         routing_source: None,
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
         group_name_snapshot: None,
         proxy_binding_key_snapshot: None,
         upstream_account_id: account_id,
@@ -4585,6 +4608,7 @@ async fn finalize_deferred_pool_early_phase_cleanup_guard_after_terminal_invocat
         routing_source: None,
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
         group_name_snapshot: None,
         proxy_binding_key_snapshot: None,
         upstream_account_id: 18,
@@ -4648,6 +4672,7 @@ async fn complete_deferred_pool_early_phase_cleanup_guard_marks_terminal_and_dis
         routing_source: None,
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
         group_name_snapshot: None,
         proxy_binding_key_snapshot: None,
         upstream_account_id: 17,
@@ -4734,6 +4759,7 @@ async fn attempt_completion_preserves_synthetic_runtime_until_request_cleanup() 
         routing_source: None,
         requester_ip: None,
         upstream_base_url_host: None,
+        request_model: None,
         group_name_snapshot: None,
         proxy_binding_key_snapshot: None,
         upstream_account_id: 19,
@@ -4808,6 +4834,7 @@ async fn send_pool_request_with_failover_defers_armed_guard_when_pending_attempt
         sticky_key: Some("sticky-guard-deferred".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let runtime_snapshot = PoolAttemptRuntimeSnapshotContext {
         capture_target: ProxyCaptureTarget::Responses,
@@ -4947,6 +4974,7 @@ async fn send_pool_request_with_failover_disarms_guard_after_streaming_phase_is_
         sticky_key: Some("sticky-guard-streaming-phase-persisted".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let runtime_snapshot = PoolAttemptRuntimeSnapshotContext {
         capture_target: ProxyCaptureTarget::Responses,
@@ -5071,6 +5099,7 @@ async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_stre
         sticky_key: Some("sticky-guard-streaming-phase".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let runtime_snapshot = PoolAttemptRuntimeSnapshotContext {
         capture_target: ProxyCaptureTarget::Responses,
@@ -5400,6 +5429,7 @@ async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_earl
             sticky_key: Some("sticky-sweeper".to_string()),
             requester_ip: Some("192.168.31.6".to_string()),
             upstream_base_url_host: None,
+            request_model: None,
         };
         let pending = begin_pool_upstream_request_attempt(
             &state.pool,
@@ -5654,6 +5684,7 @@ async fn recover_stale_pool_early_phase_orphans_runtime_skips_active_live_attemp
         sticky_key: Some("sticky-active-live-attempt".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -5795,6 +5826,7 @@ async fn recover_stale_pool_early_phase_orphans_runtime_rolls_back_attempts_when
         sticky_key: Some("sticky-sweeper-atomic".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -5933,6 +5965,7 @@ async fn recover_stale_pool_early_phase_orphans_runtime_recovers_stale_attempts_
         sticky_key: Some("sticky-sweeper-finalized".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -6101,6 +6134,7 @@ async fn recover_stale_pool_early_phase_orphans_runtime_clears_pool_routing_rese
         sticky_key: Some("sticky-sweeper-reservation".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -6227,6 +6261,7 @@ async fn recover_stale_pool_early_phase_orphans_runtime_records_route_failures_f
             sticky_key: Some("sticky-sweeper-multi-attempt".to_string()),
             requester_ip: Some("192.168.31.6".to_string()),
             upstream_base_url_host: None,
+            request_model: None,
         },
         first_account_id,
         "route-primary",
@@ -6253,6 +6288,7 @@ async fn recover_stale_pool_early_phase_orphans_runtime_records_route_failures_f
             sticky_key: Some("sticky-sweeper-multi-attempt".to_string()),
             requester_ip: Some("192.168.31.6".to_string()),
             upstream_base_url_host: None,
+            request_model: None,
         },
         second_account_id,
         "route-secondary",
@@ -6372,6 +6408,7 @@ async fn recover_stale_pool_upstream_request_attempt_candidates_rechecks_phase_b
         sticky_key: Some("sticky-sweeper-race".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -6500,6 +6537,7 @@ async fn recover_stale_pool_upstream_request_attempt_candidates_rechecks_attempt
         sticky_key: Some("sticky-sweeper-race-attempt-progress".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -6637,6 +6675,7 @@ async fn recover_stale_pool_upstream_request_attempt_candidates_rechecks_invocat
         sticky_key: Some("sticky-sweeper-race-invocation-progress".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
+        request_model: None,
     };
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
@@ -6767,6 +6806,7 @@ async fn recover_stale_pool_upstream_request_attempt_candidates_batches_large_ca
             sticky_key: Some(format!("sticky-candidate-batch-{index}")),
             requester_ip: Some("192.168.31.6".to_string()),
             upstream_base_url_host: None,
+            request_model: None,
         };
         let pending = begin_pool_upstream_request_attempt(
             &state.pool,
@@ -6891,6 +6931,7 @@ async fn send_pool_request_with_failover_returns_owner_unavailable_for_encrypted
             sticky_key: Some("encrypted-owner-unavailable-request-key".to_string()),
             requester_ip: None,
             upstream_base_url_host: None,
+            request_model: None,
         }),
         Some(PoolAttemptRuntimeSnapshotContext {
             capture_target: ProxyCaptureTarget::Responses,

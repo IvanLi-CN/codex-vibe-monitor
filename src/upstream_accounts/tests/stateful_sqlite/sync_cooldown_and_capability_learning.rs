@@ -1,6 +1,575 @@
 use super::*;
 use serde_json::json;
 
+#[test]
+fn explicit_model_failure_recognizes_standard_not_found_and_rate_limit_shapes() {
+    assert!(is_explicit_model_failure(
+        StatusCode::NOT_FOUND,
+        Some(r#"{"code":"model_not_found","message":"model gpt-5.5 does not exist"}"#),
+    ));
+    assert!(!is_explicit_model_failure_for_model(
+        StatusCode::NOT_FOUND,
+        Some("model gpt-5.4 does not exist"),
+        Some("gpt-5.5"),
+    ));
+    assert!(is_explicit_model_failure_for_model(
+        StatusCode::NOT_FOUND,
+        Some("model gpt-5.5 does not exist"),
+        Some("gpt-5.5"),
+    ));
+    assert!(is_explicit_model_failure(
+        StatusCode::TOO_MANY_REQUESTS,
+        Some("rate limit reached for gpt-5.5"),
+    ));
+    assert!(!is_explicit_model_failure(
+        StatusCode::TOO_MANY_REQUESTS,
+        Some("rate limit reached for this account"),
+    ));
+    assert!(!is_explicit_model_failure(
+        StatusCode::TOO_MANY_REQUESTS,
+        Some("project model rate limit exceeded"),
+    ));
+    assert!(!is_explicit_model_failure(
+        StatusCode::TOO_MANY_REQUESTS,
+        Some("organization model quota exceeded"),
+    ));
+    assert!(!is_explicit_model_failure(
+        StatusCode::TOO_MANY_REQUESTS,
+        Some("account model limit reached"),
+    ));
+    assert!(!is_explicit_model_failure(
+        StatusCode::TOO_MANY_REQUESTS,
+        Some("rate limit reached for IP 203.0.113.1"),
+    ));
+    assert!(!is_explicit_model_failure(
+        StatusCode::TOO_MANY_REQUESTS,
+        Some("rate limit reached for endpoint /v1/responses"),
+    ));
+    assert!(!is_explicit_model_failure_for_model(
+        StatusCode::TOO_MANY_REQUESTS,
+        Some("rate limit reached for gpt-5.4"),
+        Some("gpt-5.5"),
+    ));
+    assert!(is_explicit_model_failure_for_model(
+        StatusCode::TOO_MANY_REQUESTS,
+        Some("rate limit reached for gpt-5.5"),
+        Some("gpt-5.5"),
+    ));
+    assert!(!is_explicit_model_failure_for_model(
+        StatusCode::TOO_MANY_REQUESTS,
+        Some("rate limit reached for model gpt-5.4"),
+        Some("gpt-5.5"),
+    ));
+    assert!(!is_explicit_model_failure_for_model(
+        StatusCode::TOO_MANY_REQUESTS,
+        Some("rate limit reached for gpt-5.5 quota"),
+        Some("gpt-5.5"),
+    ));
+    assert!(is_explicit_model_failure_for_model(
+        StatusCode::TOO_MANY_REQUESTS,
+        Some("model rate limit exceeded"),
+        Some("gpt-5.5"),
+    ));
+    assert!(!is_explicit_model_failure_for_model(
+        StatusCode::BAD_REQUEST,
+        Some("unsupported model: gpt-5.4"),
+        Some("gpt-5.5"),
+    ));
+    assert!(is_explicit_model_failure_for_model(
+        StatusCode::BAD_REQUEST,
+        Some("unsupported model: gpt-5.5"),
+        Some("gpt-5.5"),
+    ));
+    assert!(is_explicit_model_failure_for_model(
+        StatusCode::BAD_REQUEST,
+        Some("unsupported model: foo"),
+        Some("foo"),
+    ));
+    assert!(is_explicit_model_failure_for_model(
+        StatusCode::BAD_REQUEST,
+        Some("unsupported_model: pool upstream responded with 400: unsupported model: foo"),
+        Some("foo"),
+    ));
+}
+
+#[test]
+fn model_route_failure_messages_are_sanitized_before_persistence() {
+    let raw = format!("\u{0000}{}", "upstream model failure ".repeat(40));
+    let sanitized = sanitize_account_action_message(&raw).expect("non-empty sanitized message");
+    assert!(sanitized.len() <= 240);
+    assert!(!sanitized.chars().any(char::is_control));
+}
+
+#[tokio::test]
+async fn stale_model_failure_does_not_overwrite_newer_success() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Stale model health",
+        "stale-model-health-key",
+        None,
+        Some("https://stale-model-health.example.com/backend-api/codex"),
+    )
+    .await;
+
+    async fn attempt(state: &AppState, account_id: i64, model: &str, started_at: &str) -> i64 {
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, started_at, status) VALUES (?1, ?2, '/v1/responses', 'pool', ?3, ?4, 'route', 1, 1, 0, ?5, 'failed')",
+        )
+        .bind(format!("stale-model-{model}-{started_at}"))
+        .bind(format_utc_iso(Utc::now()))
+        .bind(model)
+        .bind(account_id)
+        .bind(started_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert stale model attempt")
+        .last_insert_rowid()
+    }
+
+    let now = Utc::now();
+    let old_started = format_utc_iso(now - chrono::Duration::seconds(5));
+    let newer_started = format_utc_iso(now - chrono::Duration::seconds(1));
+    let old_attempt = attempt(&state, account_id, "gpt-stale", &old_started).await;
+    let newer_attempt = attempt(&state, account_id, "gpt-stale", &newer_started).await;
+
+    record_model_route_success_from_attempt(
+        &state.pool,
+        account_id,
+        newer_attempt,
+        Some(&newer_started),
+    )
+    .await
+    .expect("record newer model success");
+    record_model_route_failure_from_attempt(
+        &state.pool,
+        account_id,
+        old_attempt,
+        StatusCode::BAD_REQUEST,
+        Some("model unavailable"),
+        Some("model_unavailable"),
+    )
+    .await
+    .expect("ignore stale model failure");
+
+    let route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load stale model route")
+        .into_iter()
+        .find(|route| route.model == "gpt-stale")
+        .expect("stale model route exists");
+    assert_eq!(route.failure_count, 0);
+    assert_eq!(route.state, MODEL_ROUTE_STATE_AVAILABLE);
+    assert!(route.last_failure_at.is_none());
+}
+
+#[tokio::test]
+async fn observing_model_after_retention_window_resets_dynamic_health() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Expired model observation",
+        "expired-model-observation-key",
+        None,
+        Some("https://expired-model-observation.example.com/backend-api/codex"),
+    )
+    .await;
+    let old = format_utc_iso(Utc::now() - ChronoDuration::days(8));
+    let cooldown_until = format_utc_iso(Utc::now() + ChronoDuration::seconds(30));
+    sqlx::query(
+        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until) VALUES (?1, 'gpt-expired-observation', 'cooling_down', 'excluded', 5, ?2, ?2, ?2, ?2, ?2, 'model_unavailable', 'model unavailable', ?3)",
+    )
+    .bind(account_id)
+    .bind(&old)
+    .bind(&cooldown_until)
+    .execute(&state.pool)
+    .await
+    .expect("seed expired observation route");
+
+    observe_model_route_seen(&state.pool, account_id, Some("gpt-expired-observation"))
+        .await
+        .expect("observe expired model route");
+
+    let route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load refreshed model route")
+        .into_iter()
+        .find(|route| route.model == "gpt-expired-observation")
+        .expect("refreshed model route exists");
+    assert_eq!(route.state, MODEL_ROUTE_STATE_AVAILABLE);
+    assert_eq!(route.priority, MODEL_ROUTE_PRIORITY_NORMAL);
+    assert_eq!(route.failure_count, 0);
+    assert!(route.last_failure_at.is_none());
+    assert!(route.last_failure_kind.is_none());
+    assert!(route.last_failure_message.is_none());
+    assert!(route.cooldown_until.is_none());
+}
+
+#[tokio::test]
+async fn precise_attempt_start_preserves_same_second_model_success() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Precise model health",
+        "precise-model-health-key",
+        None,
+        Some("https://precise-model-health.example.com/backend-api/codex"),
+    )
+    .await;
+    let base_epoch = Utc::now().timestamp();
+    let failure_at = Utc
+        .timestamp_opt(base_epoch, 100_000_000)
+        .single()
+        .expect("failure timestamp");
+    let request_started_at_utc = Utc
+        .timestamp_opt(base_epoch, 200_000_000)
+        .single()
+        .expect("request timestamp");
+    let failure_at = format_naive_precise(failure_at.with_timezone(&Shanghai).naive_local());
+    let request_started_at = format_naive_precise(
+        request_started_at_utc
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    sqlx::query(
+        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_failure_at, last_failure_kind, last_failure_message) VALUES (?1, 'gpt-precise', 'degraded', 'demoted', 1, ?2, ?2, ?2, ?2, 'model_unavailable', 'model unavailable')",
+    )
+    .bind(account_id)
+    .bind(&failure_at)
+    .execute(&state.pool)
+    .await
+    .expect("seed precise model route");
+    let attempt_id = sqlx::query(
+        "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, started_at, status) VALUES ('precise-model-health', ?1, '/v1/responses', 'pool', 'gpt-precise', ?2, 'route', 1, 1, 0, ?3, 'failed')",
+    )
+    .bind(format_utc_iso(Utc::now()))
+    .bind(account_id)
+    .bind(&request_started_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert precise model attempt")
+    .last_insert_rowid();
+
+    record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
+        &state.pool,
+        account_id,
+        request_started_at_utc,
+        None,
+        None,
+        "/v1/responses",
+        ImageIntent::Unknown,
+        Some(attempt_id),
+    )
+    .await
+    .expect("record same-second model success");
+
+    let route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load precise model route")
+        .into_iter()
+        .find(|route| route.model == "gpt-precise")
+        .expect("precise model route exists");
+    assert_eq!(route.state, MODEL_ROUTE_STATE_AVAILABLE);
+    assert_eq!(route.failure_count, 0);
+}
+
+#[tokio::test]
+async fn manual_model_route_reset_fences_in_flight_failure() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Reset fence model health",
+        "reset-fence-model-health-key",
+        None,
+        Some("https://reset-fence-model-health.example.com/backend-api/codex"),
+    )
+    .await;
+    observe_model_route_seen(&state.pool, account_id, Some("gpt-reset-fence"))
+        .await
+        .expect("observe reset fence model");
+
+    let attempt_started_at = format_utc_iso(Utc::now() - chrono::Duration::seconds(2));
+    let attempt_id = sqlx::query(
+        "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, started_at, status) VALUES ('reset-fence-model-health', ?1, '/v1/responses', 'pool', 'gpt-reset-fence', ?2, 'route', 1, 1, 0, ?3, 'failed')",
+    )
+    .bind(format_utc_iso(Utc::now()))
+    .bind(account_id)
+    .bind(&attempt_started_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert reset fence model attempt")
+    .last_insert_rowid();
+
+    let traffic_before_reset = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT last_seen_at, last_success_at FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = 'gpt-reset-fence'",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load reset fence timestamps before reset");
+
+    reset_model_route(&state.pool, account_id, "gpt-reset-fence")
+        .await
+        .expect("reset model route")
+        .expect("reset model route exists");
+    record_model_route_failure_from_attempt(
+        &state.pool,
+        account_id,
+        attempt_id,
+        StatusCode::BAD_REQUEST,
+        Some("model unavailable"),
+        Some("model_unavailable"),
+    )
+    .await
+    .expect("record in-flight model failure");
+
+    let route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load reset fence route")
+        .into_iter()
+        .find(|item| item.model == "gpt-reset-fence")
+        .expect("reset fence route exists");
+    assert_eq!(route.state, MODEL_ROUTE_STATE_AVAILABLE);
+    assert_eq!(route.priority, MODEL_ROUTE_PRIORITY_NORMAL);
+    assert_eq!(route.failure_count, 0);
+    assert!(route.last_failure_at.is_none());
+
+    let traffic_after_reset = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT last_seen_at, last_success_at FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = 'gpt-reset-fence'",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load reset fence timestamps after reset");
+    assert_eq!(traffic_after_reset, traffic_before_reset);
+}
+
+#[tokio::test]
+async fn api_key_model_route_health_isolated_and_resettable() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Model health account",
+        "model-health-key",
+        None,
+        Some("https://model-health.example.com/backend-api/codex"),
+    )
+    .await;
+
+    async fn attempt(state: &AppState, account_id: i64, model: &str) -> i64 {
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, status) VALUES (?1, ?2, '/v1/responses', 'pool', ?3, ?4, 'route', 1, 1, 0, 'failed')",
+        )
+        .bind(format!("model-health-{model}"))
+        .bind(format_utc_iso(Utc::now()))
+        .bind(model)
+        .bind(account_id)
+        .execute(&state.pool)
+        .await
+        .expect("insert model attempt")
+        .last_insert_rowid()
+    }
+
+    let attempt_a = attempt(&state, account_id, "gpt-5.5").await;
+    for _ in 0..5 {
+        record_model_route_failure_from_attempt(
+            &state.pool,
+            account_id,
+            attempt_a,
+            StatusCode::BAD_REQUEST,
+            Some("unsupported model: gpt-5.5"),
+            Some("model_unavailable"),
+        )
+        .await
+        .expect("record model-specific failure");
+    }
+    let states = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load model routing states");
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0].model, "gpt-5.5");
+    assert_eq!(states[0].state, MODEL_ROUTE_STATE_COOLING_DOWN);
+    assert_eq!(states[0].priority, MODEL_ROUTE_PRIORITY_EXCLUDED);
+    assert_eq!(
+        model_route_penalty(&state.pool, account_id, Some("gpt-5.5"))
+            .await
+            .unwrap(),
+        ModelRoutePenalty::Excluded
+    );
+
+    let attempt_b = attempt(&state, account_id, "gpt-5.4").await;
+    record_model_route_success_from_attempt(&state.pool, account_id, attempt_b, None)
+        .await
+        .expect("record independent model success");
+    assert_eq!(
+        model_route_penalty(&state.pool, account_id, Some("gpt-5.4"))
+            .await
+            .unwrap(),
+        ModelRoutePenalty::Normal
+    );
+
+    reset_model_route(&state.pool, account_id, "gpt-5.5")
+        .await
+        .expect("reset model route")
+        .expect("model route exists");
+    let reset = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load reset state")
+        .into_iter()
+        .find(|item| item.model == "gpt-5.5")
+        .expect("reset model state exists");
+    assert_eq!(reset.state, MODEL_ROUTE_STATE_AVAILABLE);
+    assert_eq!(reset.priority, MODEL_ROUTE_PRIORITY_NORMAL);
+    assert_eq!(reset.failure_count, 0);
+    let event_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_account_events WHERE account_id = ?1 AND model = 'gpt-5.5'",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count model events");
+    assert!(event_count >= 2);
+}
+
+#[tokio::test]
+async fn concurrent_model_failures_reach_cooldown_threshold_without_lost_updates() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Concurrent model health",
+        "concurrent-model-health-key",
+        None,
+        Some("https://concurrent-model-health.example.com/backend-api/codex"),
+    )
+    .await;
+    let attempt_id = sqlx::query(
+        "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, status) VALUES ('concurrent-model-health', ?1, '/v1/responses', 'pool', 'gpt-concurrent', ?2, 'route', 1, 1, 0, 'failed')",
+    )
+    .bind(format_utc_iso(Utc::now()))
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("insert concurrent model attempt")
+    .last_insert_rowid();
+
+    let failure = || {
+        record_model_route_failure_from_attempt(
+            &state.pool,
+            account_id,
+            attempt_id,
+            StatusCode::BAD_REQUEST,
+            Some("model unavailable"),
+            Some("model_unavailable"),
+        )
+    };
+    let results = tokio::join!(failure(), failure(), failure(), failure(), failure());
+    for result in [results.0, results.1, results.2, results.3, results.4] {
+        result.expect("record concurrent model failure");
+    }
+
+    let route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load concurrent route")
+        .into_iter()
+        .find(|state| state.model == "gpt-concurrent")
+        .expect("concurrent route exists");
+    assert_eq!(route.failure_count, MODEL_ROUTE_FAILURE_THRESHOLD);
+    assert_eq!(route.state, MODEL_ROUTE_STATE_COOLING_DOWN);
+    assert_eq!(route.priority, MODEL_ROUTE_PRIORITY_EXCLUDED);
+}
+
+#[tokio::test]
+async fn sparse_model_failures_keep_count_until_cooldown_threshold() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Sparse model health",
+        "sparse-model-health-key",
+        None,
+        Some("https://sparse-model-health.example.com/backend-api/codex"),
+    )
+    .await;
+    let old = format_utc_iso(Utc::now() - ChronoDuration::seconds(45));
+    sqlx::query(
+        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_failure_at, last_failure_kind, last_failure_message) VALUES (?1, 'gpt-sparse', 'degraded', 'demoted', 4, ?2, ?2, ?3, ?2, 'model_unavailable', 'model unavailable')",
+    )
+    .bind(account_id)
+    .bind(&old)
+    .bind(format_utc_iso(Utc::now()))
+    .execute(&state.pool)
+    .await
+    .expect("seed sparse model route");
+    let attempt_id = sqlx::query(
+        "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, status) VALUES ('sparse-model-health', ?1, '/v1/responses', 'pool', 'gpt-sparse', ?2, 'route', 1, 1, 0, 'failed')",
+    )
+    .bind(format_utc_iso(Utc::now()))
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("insert sparse model attempt")
+    .last_insert_rowid();
+
+    record_model_route_failure_from_attempt(
+        &state.pool,
+        account_id,
+        attempt_id,
+        StatusCode::BAD_REQUEST,
+        Some("model unavailable"),
+        Some("model_unavailable"),
+    )
+    .await
+    .expect("record sparse model failure");
+
+    let route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load sparse model route")
+        .into_iter()
+        .find(|route| route.model == "gpt-sparse")
+        .expect("sparse model route exists");
+    assert_eq!(route.failure_count, MODEL_ROUTE_FAILURE_THRESHOLD);
+    assert_eq!(route.state, MODEL_ROUTE_STATE_COOLING_DOWN);
+    assert_eq!(route.priority, MODEL_ROUTE_PRIORITY_EXCLUDED);
+}
+
+#[tokio::test]
+async fn expired_model_cooldown_reports_transition_at_expiry() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Expired model health",
+        "expired-model-health-key",
+        None,
+        Some("https://expired-model-health.example.com/backend-api/codex"),
+    )
+    .await;
+    let cooldown_until = format_utc_iso(Utc::now() - ChronoDuration::seconds(5));
+    let changed_at = format_utc_iso(Utc::now() - ChronoDuration::seconds(20));
+    sqlx::query(
+        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, changed_at, last_seen_at, last_failure_at, cooldown_until) VALUES (?1, 'gpt-expired', 'cooling_down', 'excluded', 5, ?2, ?3, ?2, ?4)",
+    )
+    .bind(account_id)
+    .bind(&changed_at)
+    .bind(format_utc_iso(Utc::now()))
+    .bind(&cooldown_until)
+    .execute(&state.pool)
+    .await
+    .expect("seed expired model route");
+
+    let route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load expired model route")
+        .into_iter()
+        .find(|route| route.model == "gpt-expired")
+        .expect("expired model route exists");
+    assert_eq!(route.state, MODEL_ROUTE_STATE_DEGRADED);
+    assert_eq!(route.priority, MODEL_ROUTE_PRIORITY_DEMOTED);
+    assert_eq!(
+        route.changed_at.as_deref().and_then(parse_to_utc_datetime),
+        parse_to_utc_datetime(&cooldown_until),
+    );
+    assert!(route.cooldown_until.is_none());
+}
+
 #[tokio::test]
 async fn current_quota_route_failure_survives_informational_account_updates() {
     let pool = test_pool().await;
@@ -312,6 +881,82 @@ async fn record_pool_route_success_does_not_clear_newer_route_failure_state() {
             .expect("load sticky route after stale success")
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn model_success_is_recorded_when_account_success_is_stale() {
+    let pool = test_pool().await;
+    let account_id = insert_api_key_account(&pool, "Stale Account Success Model Recovery").await;
+    let request_started_at_utc = Utc::now() - ChronoDuration::seconds(5);
+    let request_started_at = format_naive_precise(
+        request_started_at_utc
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let attempt_id = sqlx::query(
+        "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, started_at, status) VALUES ('stale-account-success-model', ?1, '/v1/responses', 'pool', 'gpt-stale-account-success', ?2, 'route', 1, 1, 0, ?3, 'failed')",
+    )
+    .bind(format_utc_iso(Utc::now()))
+    .bind(account_id)
+    .bind(&request_started_at)
+    .execute(&pool)
+    .await
+    .expect("insert stale account success attempt")
+    .last_insert_rowid();
+
+    let model_failure_at = format_naive_precise(
+        (request_started_at_utc - ChronoDuration::seconds(1))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    sqlx::query(
+        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_failure_at, last_failure_kind, last_failure_message) VALUES (?1, 'gpt-stale-account-success', 'degraded', 'demoted', 1, ?2, ?2, ?3, ?2, 'model_unavailable', 'model unavailable')",
+    )
+    .bind(account_id)
+    .bind(&model_failure_at)
+    .bind(format_utc_iso(Utc::now()))
+    .execute(&pool)
+    .await
+    .expect("seed stale account success model failure");
+    seed_hard_unavailable_route_failure(
+        &pool,
+        account_id,
+        UPSTREAM_ACCOUNT_STATUS_ERROR,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+        Some(429),
+    )
+    .await;
+
+    record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
+        &pool,
+        account_id,
+        request_started_at_utc,
+        None,
+        None,
+        "/v1/responses",
+        ImageIntent::Unknown,
+        Some(attempt_id),
+    )
+    .await
+    .expect("record stale account success");
+
+    let route = load_model_routing_states(&pool, account_id)
+        .await
+        .expect("load stale account success model route")
+        .into_iter()
+        .find(|route| route.model == "gpt-stale-account-success")
+        .expect("stale account success model route exists");
+    assert_eq!(route.state, MODEL_ROUTE_STATE_AVAILABLE);
+    assert_eq!(route.priority, MODEL_ROUTE_PRIORITY_NORMAL);
+    assert_eq!(route.failure_count, 0);
+    assert!(route.last_failure_at.is_none());
+
+    let account = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load stale account success account")
+        .expect("stale account success account exists");
+    assert_eq!(account.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
 }
 
 #[tokio::test]
@@ -3462,6 +4107,7 @@ fn retry_original_node_candidates_sort_after_sendable_candidates_even_when_prior
     let retry_original = PoolRoutingCandidateScore {
         eligibility: PoolRoutingCandidateEligibility::SoftDegraded,
         route_binding_failure_penalty: 0,
+        model_route_penalty: 0,
         routing_priority_rank: 0,
         capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
         dispatch_state: PoolRoutingCandidateDispatchState::RetryOriginalNode,
@@ -3476,6 +4122,7 @@ fn retry_original_node_candidates_sort_after_sendable_candidates_even_when_prior
     let ready_after_migration = PoolRoutingCandidateScore {
         eligibility: PoolRoutingCandidateEligibility::SoftDegraded,
         route_binding_failure_penalty: 0,
+        model_route_penalty: 0,
         routing_priority_rank: 2,
         capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
         dispatch_state: PoolRoutingCandidateDispatchState::ReadyAfterMigration,
@@ -3503,6 +4150,7 @@ fn overflow_candidates_sort_after_primary_candidates_even_when_priority_is_highe
     let overflow = PoolRoutingCandidateScore {
         eligibility: PoolRoutingCandidateEligibility::Assignable,
         route_binding_failure_penalty: 0,
+        model_route_penalty: 0,
         routing_priority_rank: 0,
         capacity_lane: PoolRoutingCandidateCapacityLane::Overflow,
         dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
@@ -3517,6 +4165,7 @@ fn overflow_candidates_sort_after_primary_candidates_even_when_priority_is_highe
     let primary = PoolRoutingCandidateScore {
         eligibility: PoolRoutingCandidateEligibility::Assignable,
         route_binding_failure_penalty: 0,
+        model_route_penalty: 0,
         routing_priority_rank: 2,
         capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
         dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
@@ -3544,6 +4193,7 @@ fn reset_proximity_sorts_before_usage_pressure_after_priority_gates() {
     let closer_secondary_reset = PoolRoutingCandidateScore {
         eligibility: PoolRoutingCandidateEligibility::Assignable,
         route_binding_failure_penalty: 0,
+        model_route_penalty: 0,
         routing_priority_rank: 1,
         capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
         dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
@@ -3558,6 +4208,7 @@ fn reset_proximity_sorts_before_usage_pressure_after_priority_gates() {
     let farther_secondary_reset = PoolRoutingCandidateScore {
         eligibility: PoolRoutingCandidateEligibility::Assignable,
         route_binding_failure_penalty: 0,
+        model_route_penalty: 0,
         routing_priority_rank: 1,
         capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
         dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
@@ -3582,6 +4233,7 @@ fn reset_proximity_places_missing_reset_after_known_reset() {
     let known_reset = PoolRoutingCandidateScore {
         eligibility: PoolRoutingCandidateEligibility::Assignable,
         route_binding_failure_penalty: 0,
+        model_route_penalty: 0,
         routing_priority_rank: 1,
         capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
         dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
@@ -3596,6 +4248,7 @@ fn reset_proximity_places_missing_reset_after_known_reset() {
     let missing_reset = PoolRoutingCandidateScore {
         eligibility: PoolRoutingCandidateEligibility::Assignable,
         route_binding_failure_penalty: 0,
+        model_route_penalty: 0,
         routing_priority_rank: 1,
         capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
         dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
@@ -3620,6 +4273,7 @@ fn reset_proximity_does_not_change_default_sort_when_rotation_is_disabled() {
     let closer_secondary_reset = PoolRoutingCandidateScore {
         eligibility: PoolRoutingCandidateEligibility::Assignable,
         route_binding_failure_penalty: 0,
+        model_route_penalty: 0,
         routing_priority_rank: 1,
         capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
         dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
@@ -3634,6 +4288,7 @@ fn reset_proximity_does_not_change_default_sort_when_rotation_is_disabled() {
     let lower_pressure = PoolRoutingCandidateScore {
         eligibility: PoolRoutingCandidateEligibility::Assignable,
         route_binding_failure_penalty: 0,
+        model_route_penalty: 0,
         routing_priority_rank: 1,
         capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
         dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,

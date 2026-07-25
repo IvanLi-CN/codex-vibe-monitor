@@ -1183,6 +1183,7 @@ pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) upstream_base_url_host: Option<String>,
     pub(crate) group_name_snapshot: Option<String>,
     pub(crate) proxy_binding_key_snapshot: Option<String>,
+    pub(crate) request_model: Option<String>,
     pub(crate) upstream_account_id: i64,
     pub(crate) upstream_route_key: String,
     pub(crate) attempt_index: i64,
@@ -1223,6 +1224,7 @@ pub(crate) struct PoolUpstreamAttemptTraceContext {
     pub(crate) sticky_key: Option<String>,
     pub(crate) requester_ip: Option<String>,
     pub(crate) upstream_base_url_host: Option<String>,
+    pub(crate) request_model: Option<String>,
 }
 
 #[derive(Debug, Clone)]

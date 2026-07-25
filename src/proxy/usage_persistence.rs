@@ -290,6 +290,7 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
                 upstream_base_url_host,
                 group_name_snapshot,
                 proxy_binding_key_snapshot,
+                request_model,
                 upstream_account_id,
                 upstream_route_key,
                 attempt_index,
@@ -320,7 +321,7 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
                 compact_support_reason
             )
             VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39
             )
             "#,
         )
@@ -334,6 +335,7 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
         .bind(trace.upstream_base_url_host.as_deref())
         .bind(group_name_snapshot)
         .bind(proxy_binding_key_snapshot)
+        .bind(trace.request_model.as_deref())
         .bind(upstream_account_id)
         .bind(upstream_route_key)
         .bind(attempt_index)
@@ -460,6 +462,23 @@ pub(crate) async fn begin_pool_upstream_request_attempt(
     .await
 }
 
+pub(crate) async fn update_pool_upstream_request_attempt_model(
+    pool: &Pool<Sqlite>,
+    attempt_id: Option<i64>,
+    model: Option<&str>,
+) -> Result<()> {
+    let Some(attempt_id) = attempt_id else {
+        return Ok(());
+    };
+    let model = model.map(str::trim).filter(|value| !value.is_empty());
+    sqlx::query("UPDATE pool_upstream_request_attempts SET request_model = ?1 WHERE id = ?2")
+        .bind(model)
+        .bind(attempt_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub(crate) async fn begin_pool_upstream_request_attempt_with_scope(
     pool: &Pool<Sqlite>,
     trace: &PoolUpstreamAttemptTraceContext,
@@ -538,7 +557,20 @@ pub(crate) async fn begin_pool_upstream_request_attempt_with_scope_and_routing_s
     )
     .await
     {
-        Ok(attempt_id) => Some(attempt_id),
+        Ok(attempt_id) => {
+            if let Err(err) =
+                observe_model_route_seen(pool, upstream_account_id, trace.request_model.as_deref())
+                    .await
+            {
+                warn!(
+                    account_id = upstream_account_id,
+                    model = ?trace.request_model,
+                    error = %err,
+                    "failed to observe model route at attempt start"
+                );
+            }
+            Some(attempt_id)
+        }
         Err(err) => {
             warn!(
                 invoke_id = trace.invoke_id,
@@ -560,6 +592,7 @@ pub(crate) async fn begin_pool_upstream_request_attempt_with_scope_and_routing_s
         upstream_base_url_host: trace.upstream_base_url_host.clone(),
         group_name_snapshot: group_name_snapshot.map(ToOwned::to_owned),
         proxy_binding_key_snapshot: proxy_binding_key_snapshot.map(ToOwned::to_owned),
+        request_model: trace.request_model.clone(),
         upstream_account_id,
         upstream_route_key: upstream_route_key.to_string(),
         attempt_index,
@@ -1834,6 +1867,7 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
         sticky_key: pending.sticky_key.clone(),
         requester_ip: pending.requester_ip.clone(),
         upstream_base_url_host: pending.upstream_base_url_host.clone(),
+        request_model: pending.request_model.clone(),
     };
     if let Some(attempt_id) = pending.attempt_id {
         let result = sqlx::query(

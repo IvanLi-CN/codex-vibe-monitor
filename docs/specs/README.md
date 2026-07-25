@@ -40,6 +40,7 @@
 | v3fum | Dashboard 上游账号网速与活动总览 Network Tab                              | active    | `v3fum-dashboard-network-speed/SPEC.md`                    | `v3fum-dashboard-network-speed/IMPLEMENTATION.md`                    | topic anchor: dashboard / network speed / runtime cache     |
 | m9p2w | Installable PWA 运行时与 Dashboard 概览离线快照                           | active    | `m9p2w-installable-pwa-runtime/SPEC.md`                    | `m9p2w-installable-pwa-runtime/IMPLEMENTATION.md`                    | topic anchor: pwa / app shell / overview snapshots          |
 | f2w7m | 请求记录筛选范围控件与诊断维度增强                                        | active    | `f2w7m-records-filter-range-diagnostics/SPEC.md`           | `f2w7m-records-filter-range-diagnostics/IMPLEMENTATION.md`           | topic anchor: records / filters / diagnostics               |
+| zr9jd | API Key 上游按模型路由健康管理                                            | active    | `zr9jd-api-key-model-routing-health/SPEC.md`               | `zr9jd-api-key-model-routing-health/IMPLEMENTATION.md`               | topic anchor: API Key / model routing / health              |
 
 ## Archived Sources
 
