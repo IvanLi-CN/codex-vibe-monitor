@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
+import { I18nProvider } from "../../i18n";
 import type { ModelRoutingState } from "../../lib/api";
 import { ModelRoutingHealthPanel } from "./ModelRoutingHealthPanel";
 
@@ -42,7 +43,19 @@ const states: ModelRoutingState[] = [
 const meta = {
   title: "Account Pool/ModelRoutingHealthPanel",
   component: ModelRoutingHealthPanel,
+  tags: ["autodocs"],
   parameters: { layout: "fullscreen" },
+  decorators: [
+    (Story) => (
+      <I18nProvider>
+        <div className="bg-base-200 px-6 py-8 text-base-content">
+          <div className="mx-auto max-w-[1440px]">
+            <Story />
+          </div>
+        </div>
+      </I18nProvider>
+    ),
+  ],
   args: { states, writesEnabled: true, onReset: fn() },
 } satisfies Meta<typeof ModelRoutingHealthPanel>;
 
@@ -61,5 +74,16 @@ export const ResetCoolingModel: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByTestId("model-routing-reset-o4-mini"));
     await expect(args.onReset).toHaveBeenCalledWith("o4-mini");
+  },
+};
+
+export const ReadOnly: Story = {
+  args: { states, writesEnabled: false },
+};
+
+export const ErrorState: Story = {
+  args: {
+    states,
+    error: "模型路由状态刷新失败，请稍后重试。",
   },
 };

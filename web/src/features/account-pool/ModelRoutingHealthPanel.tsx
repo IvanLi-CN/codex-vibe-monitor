@@ -31,10 +31,10 @@ function formatDateTime(value?: string | null) {
 function DetailValue({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="min-w-0">
-      <p className="text-xs font-semibold uppercase tracking-[0.08em] text-base-content/55">
+      <p className="text-xs font-semibold uppercase tracking-[0.06em] text-base-content/55">
         {label}
       </p>
-      <div className="mt-1 text-sm text-base-content/85">{children}</div>
+      <div className="mt-0.5 text-sm leading-5 text-base-content/85">{children}</div>
     </div>
   );
 }
@@ -81,13 +81,13 @@ export function ModelRoutingHealthPanel({
             return (
               <div
                 key={route.model}
-                className="surface-subtle grid gap-3 rounded-[1rem] p-4 md:grid-cols-[minmax(0,1.4fr)_repeat(3,minmax(0,1fr))_auto] md:items-center"
+                className="surface-subtle grid gap-2 rounded-lg px-3 py-2.5 lg:grid-cols-[minmax(0,1.4fr)_minmax(7rem,.8fr)_minmax(7rem,.8fr)_minmax(11rem,1fr)_minmax(13rem,1.1fr)] lg:items-center"
               >
                 <div className="min-w-0">
-                  <p className="truncate font-mono text-sm font-semibold text-base-content">
+                  <p className="truncate font-mono text-sm font-semibold leading-5 text-base-content">
                     {route.model}
                   </p>
-                  <p className="mt-1 text-xs text-base-content/60">
+                  <p className="mt-0.5 text-xs leading-4 text-base-content/60">
                     {t("accountPool.upstreamAccounts.modelRouting.lastSeen")}:{" "}
                     {formatDateTime(route.lastSeenAt)}
                   </p>
@@ -103,9 +103,9 @@ export function ModelRoutingHealthPanel({
                 <DetailValue label={t("accountPool.upstreamAccounts.modelRouting.changedAt")}>
                   {formatDateTime(route.changedAt)}
                 </DetailValue>
-                <div className="flex flex-wrap items-center justify-start gap-2 md:justify-end">
+                <div className="flex min-w-0 flex-wrap items-center justify-start gap-1.5 lg:justify-end">
                   {route.cooldownUntil ? (
-                    <span className="text-xs text-warning">
+                    <span className="text-xs leading-4 tabular-nums text-warning">
                       {t("accountPool.upstreamAccounts.modelRouting.recoveryAt")}:{" "}
                       {formatDateTime(route.cooldownUntil)}
                     </span>
@@ -126,7 +126,7 @@ export function ModelRoutingHealthPanel({
                   ) : null}
                 </div>
                 {!isAvailable && route.failureCount > 0 ? (
-                  <div className="grid gap-2 sm:grid-cols-3 md:col-span-full">
+                  <div className="grid gap-2 sm:grid-cols-3 lg:col-span-full">
                     <DetailValue label={t("accountPool.upstreamAccounts.modelRouting.failures")}>
                       {route.failureCount}
                     </DetailValue>
@@ -141,7 +141,7 @@ export function ModelRoutingHealthPanel({
                   </div>
                 ) : null}
                 {route.lastFailureMessage ? (
-                  <p className="break-words text-xs leading-5 text-base-content/65 md:col-span-full">
+                  <p className="break-words text-xs leading-4 text-base-content/65 lg:col-span-full">
                     {t("accountPool.upstreamAccounts.modelRouting.failure")}:{" "}
                     {route.lastFailureMessage}
                   </p>
