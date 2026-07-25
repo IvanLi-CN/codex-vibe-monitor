@@ -3158,6 +3158,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             upstream_base_url_host TEXT,
             group_name_snapshot TEXT,
             proxy_binding_key_snapshot TEXT,
+            request_model TEXT,
             upstream_account_id INTEGER,
             upstream_route_key TEXT,
             attempt_index INTEGER NOT NULL,
@@ -3318,6 +3319,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("compact_support_reason", "TEXT"),
         ("group_name_snapshot", "TEXT"),
         ("proxy_binding_key_snapshot", "TEXT"),
+        ("request_model", "TEXT"),
         ("request_summary_json", "TEXT"),
         ("response_summary_json", "TEXT"),
     ] {

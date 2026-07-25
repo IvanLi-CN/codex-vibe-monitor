@@ -396,156 +396,159 @@ async fn proxy_openai_v1_responses_live_first_failover_restores_full_retry_budge
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_live_first_unsupported_model_bad_request_fails_over() {
-    async fn unsupported_model_live_first_upstream(
-        attempts: Arc<StdMutex<HashMap<String, usize>>>,
-        headers: HeaderMap,
-    ) -> Response {
-        let authorization = headers
-            .get(http_header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
-        let attempt = {
-            let mut attempts = attempts
-                .lock()
-                .expect("lock live-first unsupported-model attempts");
-            let entry = attempts.entry(authorization.clone()).or_insert(0);
-            *entry += 1;
-            *entry
-        };
-        if authorization == "Bearer upstream-primary" {
-            return (
-                StatusCode::BAD_REQUEST,
+#[test]
+fn proxy_openai_v1_live_first_unsupported_model_bad_request_fails_over() {
+    run_future_with_large_stack(async move {
+        async fn unsupported_model_live_first_upstream(
+            attempts: Arc<StdMutex<HashMap<String, usize>>>,
+            headers: HeaderMap,
+        ) -> Response {
+            let authorization = headers
+                .get(http_header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            let attempt = {
+                let mut attempts = attempts
+                    .lock()
+                    .expect("lock live-first unsupported-model attempts");
+                let entry = attempts.entry(authorization.clone()).or_insert(0);
+                *entry += 1;
+                *entry
+            };
+            if authorization == "Bearer upstream-primary" {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": {
+                            "code": "unsupported_model",
+                            "message": "unsupported model: gpt-5.5",
+                        },
+                        "attempt": attempt,
+                    })),
+                )
+                    .into_response();
+            }
+            (
+                StatusCode::OK,
                 Json(json!({
-                    "error": {
-                        "code": "unsupported_model",
-                        "message": "unsupported model: gpt-5.5",
-                    },
+                    "ok": true,
+                    "authorization": authorization,
                     "attempt": attempt,
                 })),
             )
-                .into_response();
+                .into_response()
         }
-        (
-            StatusCode::OK,
-            Json(json!({
-                "ok": true,
-                "authorization": authorization,
-                "attempt": attempt,
-            })),
-        )
-            .into_response()
-    }
 
-    let attempts = Arc::new(StdMutex::new(HashMap::new()));
-    let app = Router::new().route(
-        "/v1/chat/completions",
-        post({
-            let attempts = attempts.clone();
-            move |headers| unsupported_model_live_first_upstream(attempts.clone(), headers)
-        }),
-    );
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind live-first unsupported-model upstream");
-    let addr = listener
-        .local_addr()
-        .expect("live-first unsupported-model upstream addr");
-    let upstream_handle = tokio::spawn(async move {
-        axum::serve(listener, app)
+        let attempts = Arc::new(StdMutex::new(HashMap::new()));
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post({
+                let attempts = attempts.clone();
+                move |headers| unsupported_model_live_first_upstream(attempts.clone(), headers)
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("live-first unsupported-model upstream should run");
-    });
-    let mut config = test_config();
-    config.openai_proxy_request_read_timeout = Duration::from_millis(260);
-    config.openai_upstream_base_url =
-        Url::parse(&format!("http://{addr}")).expect("valid upstream base url");
+            .expect("bind live-first unsupported-model upstream");
+        let addr = listener
+            .local_addr()
+            .expect("live-first unsupported-model upstream addr");
+        let upstream_handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("live-first unsupported-model upstream should run");
+        });
+        let mut config = test_config();
+        config.openai_proxy_request_read_timeout = Duration::from_millis(260);
+        config.openai_upstream_base_url =
+            Url::parse(&format!("http://{addr}")).expect("valid upstream base url");
 
-    let state = test_state_from_config_with_pool_no_available_wait(
-        config,
-        true,
-        PoolNoAvailableWaitSettings {
-            timeout: Duration::from_millis(80),
-            poll_interval: Duration::from_millis(10),
-            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
-        },
-    )
-    .await;
-    {
-        let mut settings = state.proxy_model_settings.write().await;
-        settings.websocket_enabled = true;
-        settings.upstream_websocket_default_enabled = true;
-    }
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
-    let secondary_id =
-        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
-    let first_chunk = format!(
-        "{{\"model\":\"gpt-5.5\",\"input\":\"{}",
-        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
-    );
-    tokio::spawn(async move {
-        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
-        tokio::time::sleep(Duration::from_millis(130)).await;
-        let _ = tx.send(Ok(Bytes::from_static(b"\"}"))).await;
-    });
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
-        .await
-        .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        6343,
-        &"/v1/chat/completions".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect("live-first unsupported-model request should fail over");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read live-first unsupported-model response");
-    let payload: Value =
-        serde_json::from_slice(&body).expect("decode live-first unsupported-model response");
-    assert_eq!(payload["authorization"], "Bearer upstream-secondary");
-
-    wait_for_pool_upstream_request_attempts(&state.pool, 2).await;
-    wait_for_pool_attempt_status(
-        &state.pool,
-        1,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
-    )
-    .await;
-    wait_for_pool_attempt_status(&state.pool, 2, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+        let state = test_state_from_config_with_pool_no_available_wait(
+            config,
+            true,
+            PoolNoAvailableWaitSettings {
+                timeout: Duration::from_millis(80),
+                poll_interval: Duration::from_millis(10),
+                retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+            },
+        )
         .await;
+        {
+            let mut settings = state.proxy_model_settings.write().await;
+            settings.websocket_enabled = true;
+            settings.upstream_websocket_default_enabled = true;
+        }
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let primary_id =
+            insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+        let secondary_id =
+            insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
 
-    let attempts = attempts
-        .lock()
-        .expect("lock live-first unsupported-model attempts");
-    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
-    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
-    drop(attempts);
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+        let first_chunk = format!(
+            "{{\"model\":\"gpt-5.5\",\"input\":\"{}",
+            "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+        );
+        tokio::spawn(async move {
+            let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+            tokio::time::sleep(Duration::from_millis(130)).await;
+            let _ = tx.send(Ok(Bytes::from_static(b"\"}"))).await;
+        });
 
-    let primary_tags = sqlx::query_scalar::<_, String>(
-        r#"
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            6343,
+            &"/v1/chat/completions".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+            runtime_timeouts,
+            None,
+        )
+        .await
+        .expect("live-first unsupported-model request should fail over");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read live-first unsupported-model response");
+        let payload: Value =
+            serde_json::from_slice(&body).expect("decode live-first unsupported-model response");
+        assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+
+        wait_for_pool_upstream_request_attempts(&state.pool, 2).await;
+        wait_for_pool_attempt_status(
+            &state.pool,
+            1,
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+        )
+        .await;
+        wait_for_pool_attempt_status(&state.pool, 2, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+            .await;
+
+        {
+            let attempts = attempts
+                .lock()
+                .expect("lock live-first unsupported-model attempts");
+            assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+            assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+        }
+
+        let primary_tags = sqlx::query_scalar::<_, String>(
+            r#"
         SELECT tag.system_key
         FROM pool_tags tag
         JOIN pool_upstream_account_tags link ON link.tag_id = tag.id
@@ -553,24 +556,32 @@ async fn proxy_openai_v1_live_first_unsupported_model_bad_request_fails_over() {
           AND tag.system_key IS NOT NULL
         ORDER BY tag.system_key ASC
         "#,
-    )
-    .bind(primary_id)
-    .fetch_all(&state.pool)
-    .await
-    .expect("load live-first primary system tags");
-    assert!(
-        primary_tags
-            .iter()
-            .any(|tag| tag == "unsupported_model:gpt-5.5"),
-        "primary account should learn unsupported model tag: {primary_tags:?}",
-    );
-    assert_eq!(
-        load_test_sticky_route_account_id(&state.pool, "sticky-unsupported-model-failover").await,
-        None,
-    );
-    assert_ne!(primary_id, secondary_id);
+        )
+        .bind(primary_id)
+        .fetch_all(&state.pool)
+        .await
+        .expect("load live-first primary system tags");
+        assert!(
+            !primary_tags
+                .iter()
+                .any(|tag| tag == "unsupported_model:gpt-5.5")
+        );
+        let primary_model_route = load_model_routing_states(&state.pool, primary_id)
+            .await
+            .expect("load primary model route")
+            .into_iter()
+            .find(|route| route.model == "gpt-5.5")
+            .expect("primary model route should be learned dynamically");
+        assert_eq!(primary_model_route.failure_count, 1);
+        assert_eq!(
+            load_test_sticky_route_account_id(&state.pool, "sticky-unsupported-model-failover")
+                .await,
+            None,
+        );
+        assert_ne!(primary_id, secondary_id);
 
-    upstream_handle.abort();
+        upstream_handle.abort();
+    });
 }
 
 #[tokio::test]
@@ -1672,6 +1683,7 @@ async fn websocket_prepare_preserves_encrypted_owner_lock() {
             sticky_key: Some(prompt_cache_key.to_string()),
             requester_ip: None,
             upstream_base_url_host: None,
+            request_model: None,
         },
         None,
     )
@@ -1782,6 +1794,7 @@ async fn websocket_prepare_rate_limited_owner_returns_owner_unavailable() {
             sticky_key: Some(prompt_cache_key.to_string()),
             requester_ip: None,
             upstream_base_url_host: None,
+            request_model: None,
         },
         None,
     )
@@ -3429,6 +3442,7 @@ async fn websocket_prepare_does_not_treat_sticky_key_as_prompt_cache_key() {
             sticky_key: trace_sticky_key,
             requester_ip: None,
             upstream_base_url_host: None,
+            request_model: None,
         },
         None,
     )
@@ -3859,100 +3873,103 @@ async fn proxy_openai_v1_header_sticky_stream_same_value_short_circuits_blocked_
     assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_header_sticky_stream_waits_for_body_sticky_override_before_failing() {
-    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(80),
-        Duration::from_millis(20),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    let replacement_id =
-        insert_test_pool_api_key_account(&state, "Replacement", "upstream-replacement").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
-    let sticky_seen_at = format_utc_iso(Utc::now());
-    upsert_test_sticky_route_at(
-        &state.pool,
-        "header-stale-sticky",
-        blocked_id,
-        &sticky_seen_at,
-    )
-    .await;
-    upsert_test_sticky_route_at(
-        &state.pool,
-        "body-live-sticky",
-        replacement_id,
-        &sticky_seen_at,
-    )
-    .await;
+#[test]
+fn proxy_openai_v1_header_sticky_stream_waits_for_body_sticky_override_before_failing() {
+    run_future_with_large_stack(async move {
+        let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(20),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let blocked_id =
+            insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
+        let replacement_id =
+            insert_test_pool_api_key_account(&state, "Replacement", "upstream-replacement").await;
+        set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+        let sticky_seen_at = format_utc_iso(Utc::now());
+        upsert_test_sticky_route_at(
+            &state.pool,
+            "header-stale-sticky",
+            blocked_id,
+            &sticky_seen_at,
+        )
+        .await;
+        upsert_test_sticky_route_at(
+            &state.pool,
+            "body-live-sticky",
+            replacement_id,
+            &sticky_seen_at,
+        )
+        .await;
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
-    tokio::spawn(async move {
-        let _ = tx
-            .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
-            .await;
-        tokio::time::sleep(Duration::from_millis(170)).await;
-        let _ = tx
-            .send(Ok(Bytes::from_static(
-                b"\"messages\":[],\"stickyKey\":\"body-live-sticky\"}",
-            )))
-            .await;
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+        tokio::spawn(async move {
+            let _ = tx
+                .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
+                .await;
+            tokio::time::sleep(Duration::from_millis(170)).await;
+            let _ = tx
+                .send(Ok(Bytes::from_static(
+                    b"\"messages\":[],\"stickyKey\":\"body-live-sticky\"}",
+                )))
+                .await;
+        });
+
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let started = Instant::now();
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            6242,
+            &"/v1/chat/completions".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    HeaderName::from_static("x-sticky-key"),
+                    HeaderValue::from_static("header-stale-sticky"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+            runtime_timeouts,
+            None,
+        )
+        .await
+        .expect("via-pool request should succeed");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed >= Duration::from_millis(140),
+            "request should wait for the body sticky override before resolving, elapsed={elapsed:?}"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read via-pool response");
+        let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+        assert_eq!(payload["authorization"], "Bearer upstream-replacement");
+        wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+        assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+
+        let attempts = attempts.lock().expect("lock attempts");
+        assert_eq!(attempts.get("Bearer upstream-blocked").copied(), None);
+        assert_eq!(
+            attempts.get("Bearer upstream-replacement").copied(),
+            Some(1)
+        );
+
+        upstream_handle.abort();
     });
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
-        .await
-        .expect("resolve pool runtime timeouts");
-    let started = Instant::now();
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        6242,
-        &"/v1/chat/completions".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                HeaderName::from_static("x-sticky-key"),
-                HeaderValue::from_static("header-stale-sticky"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect("via-pool request should succeed");
-    let elapsed = started.elapsed();
-
-    assert!(
-        elapsed >= Duration::from_millis(140),
-        "request should wait for the body sticky override before resolving, elapsed={elapsed:?}"
-    );
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read via-pool response");
-    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
-    assert_eq!(payload["authorization"], "Bearer upstream-replacement");
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
-
-    let attempts = attempts.lock().expect("lock attempts");
-    assert_eq!(attempts.get("Bearer upstream-blocked").copied(), None);
-    assert_eq!(
-        attempts.get("Bearer upstream-replacement").copied(),
-        Some(1)
-    );
-
-    upstream_handle.abort();
 }
 
 #[tokio::test]
@@ -4634,101 +4651,103 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_pre_resolved_account_aft
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_header_sticky_stream_body_override_beats_rate_limited_header() {
-    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(80),
-        Duration::from_millis(20),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let rate_limited_id =
-        insert_test_pool_api_key_account(&state, "Rate Limited", "upstream-rate-limited").await;
-    let replacement_id =
-        insert_test_pool_api_key_account(&state, "Replacement", "upstream-replacement").await;
-    set_test_account_rate_limited_cooldown(&state.pool, rate_limited_id, 120).await;
-    let sticky_seen_at = format_utc_iso(Utc::now());
-    upsert_test_sticky_route_at(
-        &state.pool,
-        "header-rate-limited-sticky",
-        rate_limited_id,
-        &sticky_seen_at,
-    )
-    .await;
-    upsert_test_sticky_route_at(
-        &state.pool,
-        "body-live-sticky",
-        replacement_id,
-        &sticky_seen_at,
-    )
-    .await;
+#[test]
+fn proxy_openai_v1_header_sticky_stream_body_override_beats_rate_limited_header() {
+    run_future_with_large_stack(async move {
+        let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(20),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let rate_limited_id =
+            insert_test_pool_api_key_account(&state, "Rate Limited", "upstream-rate-limited").await;
+        let replacement_id =
+            insert_test_pool_api_key_account(&state, "Replacement", "upstream-replacement").await;
+        set_test_account_rate_limited_cooldown(&state.pool, rate_limited_id, 120).await;
+        let sticky_seen_at = format_utc_iso(Utc::now());
+        upsert_test_sticky_route_at(
+            &state.pool,
+            "header-rate-limited-sticky",
+            rate_limited_id,
+            &sticky_seen_at,
+        )
+        .await;
+        upsert_test_sticky_route_at(
+            &state.pool,
+            "body-live-sticky",
+            replacement_id,
+            &sticky_seen_at,
+        )
+        .await;
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
-    tokio::spawn(async move {
-        let _ = tx
-            .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
-            .await;
-        tokio::time::sleep(Duration::from_millis(170)).await;
-        let _ = tx
-            .send(Ok(Bytes::from_static(
-                b"\"messages\":[],\"stickyKey\":\"body-live-sticky\"}",
-            )))
-            .await;
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+        tokio::spawn(async move {
+            let _ = tx
+                .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
+                .await;
+            tokio::time::sleep(Duration::from_millis(170)).await;
+            let _ = tx
+                .send(Ok(Bytes::from_static(
+                    b"\"messages\":[],\"stickyKey\":\"body-live-sticky\"}",
+                )))
+                .await;
+        });
+
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let started = Instant::now();
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            6245,
+            &"/v1/chat/completions".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    HeaderName::from_static("x-sticky-key"),
+                    HeaderValue::from_static("header-rate-limited-sticky"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+            runtime_timeouts,
+            None,
+        )
+        .await
+        .expect("via-pool request should succeed");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed >= Duration::from_millis(140),
+            "request should wait for the body sticky override before resolving, elapsed={elapsed:?}"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read via-pool response");
+        let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+        assert_eq!(payload["authorization"], "Bearer upstream-replacement");
+        wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+        assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+
+        let attempts = attempts.lock().expect("lock attempts");
+        assert_eq!(attempts.get("Bearer upstream-rate-limited").copied(), None);
+        assert_eq!(
+            attempts.get("Bearer upstream-replacement").copied(),
+            Some(1)
+        );
+
+        upstream_handle.abort();
     });
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
-        .await
-        .expect("resolve pool runtime timeouts");
-    let started = Instant::now();
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        6245,
-        &"/v1/chat/completions".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                HeaderName::from_static("x-sticky-key"),
-                HeaderValue::from_static("header-rate-limited-sticky"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect("via-pool request should succeed");
-    let elapsed = started.elapsed();
-
-    assert!(
-        elapsed >= Duration::from_millis(140),
-        "request should wait for the body sticky override before resolving, elapsed={elapsed:?}"
-    );
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read via-pool response");
-    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
-    assert_eq!(payload["authorization"], "Bearer upstream-replacement");
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
-
-    let attempts = attempts.lock().expect("lock attempts");
-    assert_eq!(attempts.get("Bearer upstream-rate-limited").copied(), None);
-    assert_eq!(
-        attempts.get("Bearer upstream-replacement").copied(),
-        Some(1)
-    );
-
-    upstream_handle.abort();
 }
 
 #[test]
@@ -6148,312 +6167,327 @@ async fn assert_live_first_waits_for_image_intent_before_filtered_resolution(
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_live_first_waits_for_full_model_before_filtered_resolution() {
-    let mut config = test_config();
-    config.openai_proxy_request_read_timeout = Duration::from_millis(260);
-    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
-    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+#[test]
+fn proxy_openai_v1_live_first_waits_for_full_model_before_filtered_resolution() {
+    run_future_with_large_stack(async move {
+        let mut config = test_config();
+        config.openai_proxy_request_read_timeout = Duration::from_millis(260);
+        let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+        config.openai_upstream_base_url =
+            Url::parse(&upstream_base).expect("valid upstream base url");
 
-    let state = test_state_from_config_with_pool_no_available_wait(
-        config,
-        true,
-        PoolNoAvailableWaitSettings {
-            timeout: Duration::from_millis(120),
-            poll_interval: Duration::from_millis(10),
-            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
-        },
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let primary_id =
-        insert_test_pool_api_key_account(&state, "Primary GPT-4.1 only", "upstream-primary").await;
-    insert_test_pool_api_key_account(&state, "Fallback GPT-5.5", "upstream-fallback").await;
-    sqlx::query(
-        "UPDATE pool_upstream_accounts SET policy_available_models_json = ?2 WHERE id = ?1",
-    )
-    .bind(primary_id)
-    .bind(r#"["gpt-4.1"]"#)
-    .execute(&state.pool)
-    .await
-    .expect("restrict primary account model policy");
-
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
-    let first_chunk = format!(
-        "{{\"input\":\"{}",
-        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
-    );
-    tokio::spawn(async move {
-        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
-        tokio::time::sleep(Duration::from_millis(130)).await;
-        let _ = tx
-            .send(Ok(Bytes::from_static(b"\",\"model\":\"gpt-5.5\"}")))
-            .await;
-    });
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
-        .await
-        .expect("resolve pool runtime timeouts");
-    let started = Instant::now();
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        6342,
-        &"/v1/chat/completions".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect("via-pool request should succeed after reading the full model");
-    let elapsed = started.elapsed();
-
-    assert!(
-        elapsed >= Duration::from_millis(100),
-        "model-constrained request should wait for the delayed model field, elapsed={elapsed:?}"
-    );
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read via-pool response");
-    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
-    assert_eq!(payload["authorization"], "Bearer upstream-fallback");
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-
-    let attempts = attempts.lock().expect("lock attempts");
-    assert_eq!(attempts.get("Bearer upstream-primary").copied(), None);
-    assert_eq!(attempts.get("Bearer upstream-fallback").copied(), Some(1));
-
-    upstream_handle.abort();
-}
-
-#[tokio::test]
-async fn proxy_openai_v1_live_first_ignores_nested_prefix_model_before_top_level_model() {
-    let mut config = test_config();
-    config.openai_proxy_request_read_timeout = Duration::from_millis(260);
-    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
-    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
-
-    let state = test_state_from_config_with_pool_no_available_wait(
-        config,
-        true,
-        PoolNoAvailableWaitSettings {
-            timeout: Duration::from_millis(120),
-            poll_interval: Duration::from_millis(10),
-            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
-        },
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let primary_id =
-        insert_test_pool_api_key_account(&state, "Primary GPT-4.1 only", "upstream-primary").await;
-    insert_test_pool_api_key_account(&state, "Fallback GPT-5.5", "upstream-fallback").await;
-    sqlx::query(
-        "UPDATE pool_upstream_accounts SET policy_available_models_json = ?2 WHERE id = ?1",
-    )
-    .bind(primary_id)
-    .bind(r#"["gpt-4.1"]"#)
-    .execute(&state.pool)
-    .await
-    .expect("restrict primary account model policy");
-
-    let nested_prefix = format!(
-        "{{\"input\":\"{{\\\"model\\\":\\\"gpt-4o\\\"}}{}",
-        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
-    );
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
-    tokio::spawn(async move {
-        let _ = tx.send(Ok(Bytes::from(nested_prefix))).await;
-        tokio::time::sleep(Duration::from_millis(130)).await;
-        let _ = tx
-            .send(Ok(Bytes::from_static(b"\",\"model\":\"gpt-5.5\"}")))
-            .await;
-    });
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
-        .await
-        .expect("resolve pool runtime timeouts");
-    let started = Instant::now();
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        6344,
-        &"/v1/chat/completions".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect("via-pool request should wait for the top-level model");
-    let elapsed = started.elapsed();
-
-    assert!(
-        elapsed >= Duration::from_millis(100),
-        "nested prefix model should not trigger early routing, elapsed={elapsed:?}"
-    );
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read via-pool response");
-    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
-    assert_eq!(payload["authorization"], "Bearer upstream-fallback");
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-
-    let attempts = attempts.lock().expect("lock attempts");
-    assert_eq!(attempts.get("Bearer upstream-primary").copied(), None);
-    assert_eq!(attempts.get("Bearer upstream-fallback").copied(), Some(1));
-
-    upstream_handle.abort();
-}
-
-#[tokio::test]
-async fn proxy_openai_v1_header_sticky_stream_body_override_beats_blocked_policy_header() {
-    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(80),
-        Duration::from_millis(20),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    let replacement_id =
-        insert_test_pool_api_key_account(&state, "Replacement", "upstream-replacement").await;
-    sqlx::query("UPDATE pool_upstream_accounts SET group_name = NULL WHERE id = ?1")
-        .bind(blocked_id)
+        let state = test_state_from_config_with_pool_no_available_wait(
+            config,
+            true,
+            PoolNoAvailableWaitSettings {
+                timeout: Duration::from_millis(120),
+                poll_interval: Duration::from_millis(10),
+                retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+            },
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let primary_id =
+            insert_test_pool_api_key_account(&state, "Primary GPT-4.1 only", "upstream-primary")
+                .await;
+        insert_test_pool_api_key_account(&state, "Fallback GPT-5.5", "upstream-fallback").await;
+        sqlx::query(
+            "UPDATE pool_upstream_accounts SET policy_available_models_json = ?2 WHERE id = ?1",
+        )
+        .bind(primary_id)
+        .bind(r#"["gpt-4.1"]"#)
         .execute(&state.pool)
         .await
-        .expect("clear blocked group");
+        .expect("restrict primary account model policy");
 
-    let now_iso = format_utc_iso(Utc::now());
-    let disallow_cut_out_tag_id: i64 = sqlx::query_scalar(
-        r#"
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+        let first_chunk = format!(
+            "{{\"input\":\"{}",
+            "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+        );
+        tokio::spawn(async move {
+            let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+            tokio::time::sleep(Duration::from_millis(130)).await;
+            let _ = tx
+                .send(Ok(Bytes::from_static(b"\",\"model\":\"gpt-5.5\"}")))
+                .await;
+        });
+
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let started = Instant::now();
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            6342,
+            &"/v1/chat/completions".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+            runtime_timeouts,
+            None,
+        )
+        .await
+        .expect("via-pool request should succeed after reading the full model");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed >= Duration::from_millis(100),
+            "model-constrained request should wait for the delayed model field, elapsed={elapsed:?}"
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read via-pool response");
+        let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+        assert_eq!(payload["authorization"], "Bearer upstream-fallback");
+        wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+
+        {
+            let attempts = attempts.lock().expect("lock attempts");
+            assert_eq!(attempts.get("Bearer upstream-primary").copied(), None);
+            assert_eq!(attempts.get("Bearer upstream-fallback").copied(), Some(1));
+        }
+
+        upstream_handle.abort();
+    });
+}
+
+#[test]
+fn proxy_openai_v1_live_first_ignores_nested_prefix_model_before_top_level_model() {
+    run_future_with_large_stack(async move {
+        let mut config = test_config();
+        config.openai_proxy_request_read_timeout = Duration::from_millis(260);
+        let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+        config.openai_upstream_base_url =
+            Url::parse(&upstream_base).expect("valid upstream base url");
+
+        let state = test_state_from_config_with_pool_no_available_wait(
+            config,
+            true,
+            PoolNoAvailableWaitSettings {
+                timeout: Duration::from_millis(120),
+                poll_interval: Duration::from_millis(10),
+                retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+            },
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let primary_id =
+            insert_test_pool_api_key_account(&state, "Primary GPT-4.1 only", "upstream-primary")
+                .await;
+        insert_test_pool_api_key_account(&state, "Fallback GPT-5.5", "upstream-fallback").await;
+        sqlx::query(
+            "UPDATE pool_upstream_accounts SET policy_available_models_json = ?2 WHERE id = ?1",
+        )
+        .bind(primary_id)
+        .bind(r#"["gpt-4.1"]"#)
+        .execute(&state.pool)
+        .await
+        .expect("restrict primary account model policy");
+
+        let nested_prefix = format!(
+            "{{\"input\":\"{{\\\"model\\\":\\\"gpt-4o\\\"}}{}",
+            "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+        tokio::spawn(async move {
+            let _ = tx.send(Ok(Bytes::from(nested_prefix))).await;
+            tokio::time::sleep(Duration::from_millis(130)).await;
+            let _ = tx
+                .send(Ok(Bytes::from_static(b"\",\"model\":\"gpt-5.5\"}")))
+                .await;
+        });
+
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let started = Instant::now();
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            6344,
+            &"/v1/chat/completions".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+            runtime_timeouts,
+            None,
+        )
+        .await
+        .expect("via-pool request should wait for the top-level model");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed >= Duration::from_millis(100),
+            "nested prefix model should not trigger early routing, elapsed={elapsed:?}"
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read via-pool response");
+        let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+        assert_eq!(payload["authorization"], "Bearer upstream-fallback");
+        wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+
+        {
+            let attempts = attempts.lock().expect("lock attempts");
+            assert_eq!(attempts.get("Bearer upstream-primary").copied(), None);
+            assert_eq!(attempts.get("Bearer upstream-fallback").copied(), Some(1));
+        }
+
+        upstream_handle.abort();
+    });
+}
+
+#[test]
+fn proxy_openai_v1_header_sticky_stream_body_override_beats_blocked_policy_header() {
+    run_future_with_large_stack(async move {
+        let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(20),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let blocked_id =
+            insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
+        let replacement_id =
+            insert_test_pool_api_key_account(&state, "Replacement", "upstream-replacement").await;
+        sqlx::query("UPDATE pool_upstream_accounts SET group_name = NULL WHERE id = ?1")
+            .bind(blocked_id)
+            .execute(&state.pool)
+            .await
+            .expect("clear blocked group");
+
+        let now_iso = format_utc_iso(Utc::now());
+        let disallow_cut_out_tag_id: i64 = sqlx::query_scalar(
+            r#"
         INSERT INTO pool_tags (
             name,
             allow_cut_out, allow_cut_in, created_at, updated_at
         ) VALUES (?1, 0, 1, ?2, ?2)
         RETURNING id
         "#,
-    )
-    .bind("via-pool-no-cut-out")
-    .bind(&now_iso)
-    .fetch_one(&state.pool)
-    .await
-    .expect("insert no-cut-out tag");
-    sqlx::query(
-        r#"
+        )
+        .bind("via-pool-no-cut-out")
+        .bind(&now_iso)
+        .fetch_one(&state.pool)
+        .await
+        .expect("insert no-cut-out tag");
+        sqlx::query(
+            r#"
         INSERT INTO pool_upstream_account_tags (
             account_id, tag_id, created_at, updated_at
         ) VALUES (?1, ?2, ?3, ?3)
         "#,
-    )
-    .bind(blocked_id)
-    .bind(disallow_cut_out_tag_id)
-    .bind(&now_iso)
-    .execute(&state.pool)
-    .await
-    .expect("attach no-cut-out tag");
+        )
+        .bind(blocked_id)
+        .bind(disallow_cut_out_tag_id)
+        .bind(&now_iso)
+        .execute(&state.pool)
+        .await
+        .expect("attach no-cut-out tag");
 
-    let sticky_seen_at = format_utc_iso(Utc::now());
-    upsert_test_sticky_route_at(
-        &state.pool,
-        "header-blocked-policy-sticky",
-        blocked_id,
-        &sticky_seen_at,
-    )
-    .await;
-    upsert_test_sticky_route_at(
-        &state.pool,
-        "body-live-sticky",
-        replacement_id,
-        &sticky_seen_at,
-    )
-    .await;
+        let sticky_seen_at = format_utc_iso(Utc::now());
+        upsert_test_sticky_route_at(
+            &state.pool,
+            "header-blocked-policy-sticky",
+            blocked_id,
+            &sticky_seen_at,
+        )
+        .await;
+        upsert_test_sticky_route_at(
+            &state.pool,
+            "body-live-sticky",
+            replacement_id,
+            &sticky_seen_at,
+        )
+        .await;
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
-    tokio::spawn(async move {
-        let _ = tx
-            .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
-            .await;
-        tokio::time::sleep(Duration::from_millis(170)).await;
-        let _ = tx
-            .send(Ok(Bytes::from_static(
-                b"\"messages\":[],\"stickyKey\":\"body-live-sticky\"}",
-            )))
-            .await;
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+        tokio::spawn(async move {
+            let _ = tx
+                .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
+                .await;
+            tokio::time::sleep(Duration::from_millis(170)).await;
+            let _ = tx
+                .send(Ok(Bytes::from_static(
+                    b"\"messages\":[],\"stickyKey\":\"body-live-sticky\"}",
+                )))
+                .await;
+        });
+
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let started = Instant::now();
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            6246,
+            &"/v1/chat/completions".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    HeaderName::from_static("x-sticky-key"),
+                    HeaderValue::from_static("header-blocked-policy-sticky"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+            runtime_timeouts,
+            None,
+        )
+        .await
+        .expect("via-pool request should succeed");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed >= Duration::from_millis(140),
+            "request should wait for the body sticky override before resolving, elapsed={elapsed:?}"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read via-pool response");
+        let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+        assert_eq!(payload["authorization"], "Bearer upstream-replacement");
+        wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+        assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+
+        let attempts = attempts.lock().expect("lock attempts");
+        assert_eq!(attempts.get("Bearer upstream-blocked").copied(), None);
+        assert_eq!(
+            attempts.get("Bearer upstream-replacement").copied(),
+            Some(1)
+        );
+
+        upstream_handle.abort();
     });
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
-        .await
-        .expect("resolve pool runtime timeouts");
-    let started = Instant::now();
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        6246,
-        &"/v1/chat/completions".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                HeaderName::from_static("x-sticky-key"),
-                HeaderValue::from_static("header-blocked-policy-sticky"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect("via-pool request should succeed");
-    let elapsed = started.elapsed();
-
-    assert!(
-        elapsed >= Duration::from_millis(140),
-        "request should wait for the body sticky override before resolving, elapsed={elapsed:?}"
-    );
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read via-pool response");
-    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
-    assert_eq!(payload["authorization"], "Bearer upstream-replacement");
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
-
-    let attempts = attempts.lock().expect("lock attempts");
-    assert_eq!(attempts.get("Bearer upstream-blocked").copied(), None);
-    assert_eq!(
-        attempts.get("Bearer upstream-replacement").copied(),
-        Some(1)
-    );
-
-    upstream_handle.abort();
 }
 
 #[tokio::test]
@@ -6521,100 +6555,104 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_too_large_before_pool
     assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_header_sticky_stream_waits_after_body_reroute_needs_account() {
-    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(220),
-        Duration::from_millis(10),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let initial_id = insert_test_pool_api_key_account(&state, "Initial", "upstream-initial").await;
-    let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+#[test]
+fn proxy_openai_v1_header_sticky_stream_waits_after_body_reroute_needs_account() {
+    run_future_with_large_stack(async move {
+        let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            Duration::from_millis(220),
+            Duration::from_millis(10),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let initial_id =
+            insert_test_pool_api_key_account(&state, "Initial", "upstream-initial").await;
+        let delayed_id =
+            insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
+        set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
-    let (body_reroute_tx, body_reroute_rx) = tokio::sync::oneshot::channel::<()>();
-    tokio::spawn(async move {
-        let _ = tx
-            .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
-            .await;
-        tokio::time::sleep(Duration::from_millis(170)).await;
-        let _ = body_reroute_tx.send(());
-        let _ = tx
-            .send(Ok(Bytes::from_static(
-                b"\"messages\":[],\"stickyKey\":\"body-reroute-sticky\"}",
-            )))
-            .await;
-    });
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+        let (body_reroute_tx, body_reroute_rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let _ = tx
+                .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
+                .await;
+            tokio::time::sleep(Duration::from_millis(170)).await;
+            let _ = body_reroute_tx.send(());
+            let _ = tx
+                .send(Ok(Bytes::from_static(
+                    b"\"messages\":[],\"stickyKey\":\"body-reroute-sticky\"}",
+                )))
+                .await;
+        });
 
-    let pool = state.pool.clone();
-    let initial_block_task = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        set_test_account_status(&pool, initial_id, "needs_reauth").await;
-    });
+        let pool = state.pool.clone();
+        let initial_block_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            set_test_account_status(&pool, initial_id, "needs_reauth").await;
+        });
 
-    let pool = state.pool.clone();
-    let delayed_release_task = tokio::spawn(async move {
-        body_reroute_rx
+        let pool = state.pool.clone();
+        let delayed_release_task = tokio::spawn(async move {
+            body_reroute_rx
+                .await
+                .expect("body reroute signal should arrive");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            set_test_account_status(&pool, delayed_id, "active").await;
+        });
+
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
             .await
-            .expect("body reroute signal should arrive");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        set_test_account_status(&pool, delayed_id, "active").await;
+            .expect("resolve pool runtime timeouts");
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            7242,
+            &"/v1/chat/completions".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    HeaderName::from_static("x-sticky-key"),
+                    HeaderValue::from_static("header-reroute-sticky"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+            runtime_timeouts,
+            None,
+        )
+        .await
+        .expect("via-pool request should succeed");
+
+        initial_block_task
+            .await
+            .expect("initial account block task should join");
+        delayed_release_task
+            .await
+            .expect("delayed account release task should join");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read via-pool response");
+        let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+        assert_eq!(payload["authorization"], "Bearer upstream-delayed");
+        wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+        assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+
+        let attempts = attempts.lock().expect("lock attempts");
+        assert_eq!(attempts.get("Bearer upstream-initial").copied(), None);
+        assert_eq!(attempts.get("Bearer upstream-delayed").copied(), Some(1));
+
+        upstream_handle.abort();
     });
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
-        .await
-        .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        7242,
-        &"/v1/chat/completions".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                HeaderName::from_static("x-sticky-key"),
-                HeaderValue::from_static("header-reroute-sticky"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect("via-pool request should succeed");
-
-    initial_block_task
-        .await
-        .expect("initial account block task should join");
-    delayed_release_task
-        .await
-        .expect("delayed account release task should join");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read via-pool response");
-    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
-    assert_eq!(payload["authorization"], "Bearer upstream-delayed");
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
-
-    let attempts = attempts.lock().expect("lock attempts");
-    assert_eq!(attempts.get("Bearer upstream-initial").copied(), None);
-    assert_eq!(attempts.get("Bearer upstream-delayed").copied(), Some(1));
-
-    upstream_handle.abort();
 }
 
 #[tokio::test]

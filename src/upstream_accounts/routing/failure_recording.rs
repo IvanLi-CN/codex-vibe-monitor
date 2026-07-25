@@ -101,6 +101,23 @@ async fn record_pool_route_success_inner(
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
     let request_started_at_iso = format_utc_iso(request_started_at_utc);
+    let model_request_started_at_iso = format_naive_precise(
+        request_started_at_utc
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    // Model recovery is independently fenced by the attempt timestamp, so it
+    // must still run when a newer account-level failure makes the account
+    // update stale.
+    if let Some(attempt_id) = attempt_id {
+        record_model_route_success_from_attempt(
+            pool,
+            account_id,
+            attempt_id,
+            Some(&model_request_started_at_iso),
+        )
+        .await?;
+    }
     let update_result = sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
@@ -530,8 +547,38 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         .await;
     }
 
-    if let Some(model) = extract_unsupported_model_from_route_error(status, error_message) {
+    let explicit_model_failure = if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+        match attempt_id {
+            Some(attempt_id) => {
+                attempt_has_explicit_model_failure(pool, attempt_id, status, Some(error_message))
+                    .await?
+            }
+            None => is_explicit_model_failure(status, Some(error_message)),
+        }
+    } else {
+        false
+    };
+    if account_kind != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+        && let Some(model) = extract_unsupported_model_from_route_error(status, error_message)
+    {
         ensure_account_has_unsupported_model_tag(pool, account_id, &model).await?;
+    }
+    if let Some(attempt_id) = attempt_id {
+        record_model_route_failure_from_attempt(
+            pool,
+            account_id,
+            attempt_id,
+            status,
+            Some(error_message),
+            Some(
+                classify_pool_account_http_failure(account_kind, status, error_message)
+                    .failure_kind,
+            ),
+        )
+        .await?;
+    }
+    if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX && explicit_model_failure {
+        return Ok(());
     }
 
     let classification = classify_pool_account_http_failure(account_kind, status, error_message);

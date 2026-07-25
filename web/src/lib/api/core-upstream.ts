@@ -307,8 +307,28 @@ export interface UpstreamAccountActionEvent {
   invokeId?: string | null;
   attemptId?: string | null;
   stickyKey?: string | null;
+  model?: string | null;
+  modelRouteStateBefore?: string | null;
+  modelRouteStateAfter?: string | null;
+  modelRoutePriorityBefore?: string | null;
+  modelRoutePriorityAfter?: string | null;
+  modelRouteFailureCount?: number | null;
+  modelRouteCooldownUntil?: string | null;
   blockedBinding?: BlockedBindingDiagnostic | null;
   createdAt: string;
+}
+
+export interface ModelRoutingState {
+  model: string;
+  state: string;
+  priority: string;
+  failureCount: number;
+  changedAt?: string | null;
+  lastSeenAt: string;
+  lastFailureAt?: string | null;
+  lastFailureKind?: string | null;
+  lastFailureMessage?: string | null;
+  cooldownUntil?: string | null;
 }
 
 export interface UpstreamAccountDetail extends UpstreamAccountSummary {
@@ -319,6 +339,7 @@ export interface UpstreamAccountDetail extends UpstreamAccountSummary {
   lastRefreshedAt?: string | null;
   history: UpstreamAccountHistoryPoint[];
   recentActions?: UpstreamAccountActionEvent[];
+  modelRoutingStates?: ModelRoutingState[];
 }
 
 export interface UpstreamAccountActionEventListResponse {
@@ -1365,8 +1386,44 @@ function normalizeUpstreamAccountActionEvent(raw: unknown): UpstreamAccountActio
     invokeId: typeof payload.invokeId === "string" ? payload.invokeId : null,
     attemptId,
     stickyKey: typeof payload.stickyKey === "string" ? payload.stickyKey : null,
+    model: typeof payload.model === "string" ? payload.model : null,
+    modelRouteStateBefore:
+      typeof payload.modelRouteStateBefore === "string" ? payload.modelRouteStateBefore : null,
+    modelRouteStateAfter:
+      typeof payload.modelRouteStateAfter === "string" ? payload.modelRouteStateAfter : null,
+    modelRoutePriorityBefore:
+      typeof payload.modelRoutePriorityBefore === "string"
+        ? payload.modelRoutePriorityBefore
+        : null,
+    modelRoutePriorityAfter:
+      typeof payload.modelRoutePriorityAfter === "string" ? payload.modelRoutePriorityAfter : null,
+    modelRouteFailureCount: normalizeFiniteNumber(payload.modelRouteFailureCount) ?? null,
+    modelRouteCooldownUntil:
+      typeof payload.modelRouteCooldownUntil === "string" ? payload.modelRouteCooldownUntil : null,
     blockedBinding: normalizeBlockedBindingDiagnostic(payload.blockedBinding),
     createdAt,
+  };
+}
+
+function normalizeModelRoutingState(raw: unknown): ModelRoutingState | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const model = typeof payload.model === "string" ? payload.model.trim() : "";
+  const state = typeof payload.state === "string" ? payload.state : "available";
+  const priority = typeof payload.priority === "string" ? payload.priority : "normal";
+  const lastSeenAt = typeof payload.lastSeenAt === "string" ? payload.lastSeenAt : "";
+  if (!model || !lastSeenAt) return null;
+  return {
+    model,
+    state,
+    priority,
+    failureCount: Math.max(0, Math.trunc(normalizeFiniteNumber(payload.failureCount) ?? 0)),
+    changedAt: typeof payload.changedAt === "string" ? payload.changedAt : null,
+    lastSeenAt,
+    lastFailureAt: typeof payload.lastFailureAt === "string" ? payload.lastFailureAt : null,
+    lastFailureKind: typeof payload.lastFailureKind === "string" ? payload.lastFailureKind : null,
+    lastFailureMessage:
+      typeof payload.lastFailureMessage === "string" ? payload.lastFailureMessage : null,
+    cooldownUntil: typeof payload.cooldownUntil === "string" ? payload.cooldownUntil : null,
   };
 }
 
@@ -1391,6 +1448,11 @@ function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
       ? payload.recentActions
           .map(normalizeUpstreamAccountActionEvent)
           .filter((item): item is UpstreamAccountActionEvent => item != null)
+      : [],
+    modelRoutingStates: Array.isArray(payload.modelRoutingStates)
+      ? payload.modelRoutingStates
+          .map(normalizeModelRoutingState)
+          .filter((item): item is ModelRoutingState => item != null)
       : [],
   };
 }
@@ -2148,6 +2210,23 @@ export async function fetchUpstreamAccountDetail(
     },
   );
   return normalizeUpstreamAccountDetail(response);
+}
+
+export async function resetUpstreamAccountModelRouting(
+  accountId: number,
+  model: string,
+): Promise<ModelRoutingState> {
+  const response = await fetchJson<unknown>(
+    `/api/pool/upstream-accounts/${accountId}/model-routing/reset`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model }),
+    },
+  );
+  const normalized = normalizeModelRoutingState(response);
+  if (!normalized) throw new Error("Request failed: invalid model routing response");
+  return normalized;
 }
 
 export async function createOauthLoginSession(

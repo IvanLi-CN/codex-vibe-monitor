@@ -3116,6 +3116,13 @@ pub(crate) async fn load_upstream_account_detail_with_options(
                 event.invoke_id,
                 attempts.attempt_public_id,
                 event.sticky_key,
+                event.model,
+                event.model_route_state_before,
+                event.model_route_state_after,
+                event.model_route_priority_before,
+                event.model_route_priority_after,
+                event.model_route_failure_count,
+                event.model_route_cooldown_until,
                 CASE
                     WHEN json_valid(invocation.payload)
                      AND json_type(invocation.payload, '$.blockedBinding') = 'object'
@@ -3167,6 +3174,7 @@ pub(crate) async fn load_upstream_account_detail_with_options(
             .iter()
             .map(build_action_event_from_row)
             .collect(),
+        model_routing_states: load_model_routing_states(pool, row.id).await?,
     }))
 }
 

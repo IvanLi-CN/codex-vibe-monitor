@@ -795,6 +795,13 @@ pub(crate) struct UpstreamAccountActionEventRow {
     pub(crate) invoke_id: Option<String>,
     pub(crate) attempt_public_id: Option<String>,
     pub(crate) sticky_key: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) model_route_state_before: Option<String>,
+    pub(crate) model_route_state_after: Option<String>,
+    pub(crate) model_route_priority_before: Option<String>,
+    pub(crate) model_route_priority_after: Option<String>,
+    pub(crate) model_route_failure_count: Option<i64>,
+    pub(crate) model_route_cooldown_until: Option<String>,
     pub(crate) blocked_binding_json: Option<String>,
     pub(crate) created_at: String,
 }

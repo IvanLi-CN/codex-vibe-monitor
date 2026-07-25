@@ -349,6 +349,7 @@ pub(crate) fn build_via_pool_attempt_trace_context(
         sticky_key,
         requester_ip: None,
         upstream_base_url_host: None,
+        request_model: None,
     }
 }
 
@@ -621,6 +622,24 @@ pub(crate) async fn header_sticky_account_matches_request_requirements(
         .is_none_or(|requested_model| {
             account_accepts_requested_model(Some(requested_model), &effective_rule)
         });
+    let model_route_allowed = if let Some(model) = requested_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let penalties = load_model_route_penalties(&state.pool, &[account.account_id], Some(model))
+            .await
+            .map_err(|err| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("failed to load model route health for sticky account: {err}"),
+                )
+            })?;
+        penalties
+            .get(&account.account_id)
+            .is_none_or(|penalty| *penalty == ModelRoutePenalty::Normal)
+    } else {
+        true
+    };
     let image_matches = account_accepts_request_capabilities(
         capability_requirements,
         account.response_endpoint_capability,
@@ -628,7 +647,7 @@ pub(crate) async fn header_sticky_account_matches_request_requirements(
         account.image_endpoint_capability,
         account.response_image_tool_capability,
     );
-    Ok(model_matches && image_matches)
+    Ok(model_matches && model_route_allowed && image_matches)
 }
 
 pub(crate) async fn finalize_tracked_live_first_pool_attempt(
@@ -725,6 +744,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     headers: &HeaderMap,
     body: Body,
     prompt_cache_key: Option<&str>,
+    request_image_intent: crate::ImageIntent,
     handshake_timeout: Duration,
     responses_total_timeout: Option<Duration>,
     responses_total_timeout_started_at: Option<Instant>,
@@ -871,7 +891,8 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         });
                     }
                 };
-            let attempt_started_at = shanghai_now_string();
+            let attempt_started_at =
+                format_naive_precise(Utc::now().with_timezone(&Shanghai).naive_local());
             let group_name_snapshot = normalize_pool_attempt_group_name(account.group_name.clone());
             let proxy_binding_key_snapshot =
                 live_first_proxy_binding_key_snapshot(state.as_ref(), Some(&selected_proxy)).await;
@@ -1095,7 +1116,8 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         });
                     }
                 };
-            let attempt_started_at = shanghai_now_string();
+            let attempt_started_at =
+                format_naive_precise(Utc::now().with_timezone(&Shanghai).naive_local());
             let group_name_snapshot = normalize_pool_attempt_group_name(account.group_name.clone());
             let proxy_binding_key_snapshot =
                 live_first_proxy_binding_key_snapshot(state.as_ref(), Some(&selected_proxy)).await;
@@ -1186,7 +1208,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
 
     let connect_latency_ms = elapsed_ms(connect_started);
     let status = response.status();
-    if status == StatusCode::BAD_REQUEST
+    if matches!(status, StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND)
         || status == StatusCode::TOO_MANY_REQUESTS
         || status == StatusCode::PAYLOAD_TOO_LARGE
         || status.is_server_error()
@@ -1259,9 +1281,17 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         let route_error_message = upstream_error_code
             .as_deref()
             .map_or_else(|| message.clone(), |code| format!("{code}: {message}"));
-        let unsupported_model_bad_request =
-            extract_unsupported_model_from_route_error(status, &route_error_message).is_some();
-        if status == StatusCode::BAD_REQUEST && !unsupported_model_bad_request {
+        let requested_model_for_failure =
+            trace_context.and_then(|trace| trace.request_model.as_deref());
+        let explicit_model_failure = requested_model_for_failure.map_or_else(
+            || is_explicit_model_failure(status, Some(&route_error_message)),
+            |model| {
+                is_explicit_model_failure_for_model(status, Some(&route_error_message), Some(model))
+            },
+        );
+        if matches!(status, StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND)
+            && !explicit_model_failure
+        {
             let first_byte_latency_ms = connect_latency_ms;
             if let Some(guard) = deferred_early_phase_cleanup_guard.as_mut() {
                 guard.mark_first_byte_observed(first_byte_latency_ms);
@@ -1386,7 +1416,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         } else {
             // Live-first records the initial failure before the replay/failover path can spend
             // the group 429 retry budget. Keep sticky intact until failover records the final 429.
-            record_pool_route_http_failure(
+            record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
                 &state.pool,
                 account.account_id,
                 &account.kind,
@@ -1396,6 +1426,11 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 status,
                 &route_error_message,
                 None,
+                original_uri.path(),
+                request_image_intent,
+                pending_attempt_record
+                    .as_ref()
+                    .and_then(|pending| pending.attempt_id),
             )
             .await
         };
@@ -1820,7 +1855,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                 .or(sticky_key);
             let replay_requested_model = extract_model_from_replay_snapshot(&snapshot)
                 .await
-                .or(requested_model);
+                .or(requested_model.clone());
             let replay_prompt_cache_key = extract_prompt_cache_key_from_replay_snapshot(&snapshot)
                 .await
                 .or(prompt_cache_key);
@@ -1879,13 +1914,16 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                         },
                         POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
                     )
-                } else if (first_error.status == StatusCode::BAD_REQUEST
-                    && extract_unsupported_model_from_route_error(
-                        first_error.status,
-                        &first_error.message,
-                    )
-                    .is_some())
-                    || pool_upstream_error_is_rate_limited(&first_error)
+                } else if requested_model.as_deref().map_or_else(
+                    || is_explicit_model_failure(first_error.status, Some(&first_error.message)),
+                    |model| {
+                        is_explicit_model_failure_for_model(
+                            first_error.status,
+                            Some(&first_error.message),
+                            Some(model),
+                        )
+                    },
+                ) || pool_upstream_error_is_rate_limited(&first_error)
                 {
                     (
                         None,
@@ -3071,10 +3109,13 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         )
                         .await
                         .map_err(|(status, message)| plain_proxy_error(status, message))?;
+                        // Model health is keyed by the exact request model. A prompt-cache
+                        // binding alone is not enough to start a live-first attempt because the
+                        // model may appear after the bounded prefix probe; wait for the replay
+                        // snapshot in that case so the persisted attempt can carry the model.
                         let live_first_requirements_known =
                             live_first_image_intent_known(capture_target, request_image_intent)
-                                && (live_requested_model.is_some()
-                                    || prompt_cache_binding_constraint.is_some());
+                                && live_requested_model.is_some();
                         if live_first_requirements_known {
                             let resolution = if prompt_cache_binding_constraint.is_some()
                                 || conversation_override.is_some()
@@ -3127,11 +3168,13 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     live_body_sticky_key.as_deref(),
                                 )
                                 .await?;
-                            let pool_attempt_trace_context = build_via_pool_attempt_trace_context(
-                                proxy_request_id,
-                                original_uri.path(),
-                                live_body_sticky_key.clone(),
-                            );
+                            let mut pool_attempt_trace_context =
+                                build_via_pool_attempt_trace_context(
+                                    proxy_request_id,
+                                    original_uri.path(),
+                                    live_body_sticky_key.clone(),
+                                );
+                            pool_attempt_trace_context.request_model = live_requested_model.clone();
 
                             if pool_account_supports_live_request_body(
                                 &initial_account,
@@ -3147,6 +3190,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     &headers,
                                     replayable_body.body,
                                     live_prompt_cache_key.as_deref(),
+                                    request_image_intent,
                                     handshake_timeout,
                                     responses_total_timeout,
                                     live_responses_total_timeout_started_at,
@@ -3492,6 +3536,18 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     }
                                     drop(proxy_request_permit_for_task.take());
                                     let stream_latency_ms = elapsed_ms(stream_started_at);
+                                    let response_info = response_parse_buffer.into_response_info(
+                                        ProxyCaptureTarget::Responses,
+                                        upstream_content_encoding_for_task.as_deref(),
+                                    );
+                                    let had_logical_stream_failure =
+                                        response_info.stream_terminal_event.is_some();
+                                    let logical_stream_failure_message = had_logical_stream_failure
+                                        .then(|| {
+                                            format_upstream_response_failed_message(&response_info)
+                                        });
+                                    let response_contains_encrypted_content =
+                                        response_info.contains_encrypted_content;
 
                                     if let Some(message) = stream_error_message.as_deref() {
                                         release_pool_routing_reservation(
@@ -3514,6 +3570,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             warn!(account_id = account.account_id, error = %route_err, "failed to record pool stream error");
                                         }
                                     } else if pool_route_response_status_is_success(upstream_status)
+                                        && !had_logical_stream_failure
                                     {
                                         consume_pool_routing_reservation(
                                             state_for_record.as_ref(),
@@ -3538,13 +3595,6 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         {
                                             warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
                                         }
-                                        let response_contains_encrypted_content =
-                                            response_parse_buffer
-                                                .into_response_info(
-                                                    ProxyCaptureTarget::Responses,
-                                                    upstream_content_encoding_for_task.as_deref(),
-                                                )
-                                                .contains_encrypted_content;
                                         if let Some(prompt_cache_key) =
                                             prompt_cache_key_for_record.as_deref()
                                             && (request_contains_encrypted_content_for_task
@@ -3586,10 +3636,15 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     }
                                         }
                                     } else {
-                                        let route_http_failure_message = format!(
-                                            "pool upstream responded with {}",
-                                            upstream_status.as_u16()
-                                        );
+                                        let route_http_failure_message =
+                                            logical_stream_failure_message.clone().unwrap_or_else(
+                                                || {
+                                                    format!(
+                                                        "pool upstream responded with {}",
+                                                        upstream_status.as_u16()
+                                                    )
+                                                },
+                                            );
                                         release_pool_routing_reservation(
                                             state_for_record.as_ref(),
                                             &reservation_key_for_record,
@@ -3622,9 +3677,11 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         pending_pool_attempt_record_for_task.as_ref(),
                                         if stream_error_message.is_some() {
                                             POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
-                                        } else if !pool_route_response_status_is_success(
-                                            upstream_status,
-                                        ) {
+                                        } else if had_logical_stream_failure
+                                            || !pool_route_response_status_is_success(
+                                                upstream_status,
+                                            )
+                                        {
                                             POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
                                         } else {
                                             POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
@@ -3637,13 +3694,21 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         },
                                         stream_error_message
                                             .as_ref()
-                                            .map(|_| PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
-                                        stream_error_message.as_deref().or_else(|| {
-                                            (!pool_route_response_status_is_success(
-                                                upstream_status,
-                                            ))
-                                            .then_some("upstream HTTP failure")
-                                        }),
+                                            .map(|_| PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
+                                            .or_else(|| {
+                                                had_logical_stream_failure.then_some(
+                                                    PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+                                                )
+                                            }),
+                                        stream_error_message
+                                            .as_deref()
+                                            .or(logical_stream_failure_message.as_deref())
+                                            .or_else(|| {
+                                                (!pool_route_response_status_is_success(
+                                                    upstream_status,
+                                                ))
+                                                .then_some("upstream HTTP failure")
+                                            }),
                                         None,
                                         Some(t_upstream_connect_ms),
                                         Some(t_upstream_ttfb_ms),
@@ -4192,6 +4257,14 @@ pub(crate) fn proxy_openai_v1_via_pool(
             }
             drop(proxy_request_permit_for_task.take());
             let stream_latency_ms = elapsed_ms(stream_started_at);
+            let response_info = response_parse_buffer.into_response_info(
+                ProxyCaptureTarget::Responses,
+                upstream_content_encoding_for_task.as_deref(),
+            );
+            let had_logical_stream_failure = response_info.stream_terminal_event.is_some();
+            let logical_stream_failure_message = had_logical_stream_failure
+                .then(|| format_upstream_response_failed_message(&response_info));
+            let response_contains_encrypted_content = response_info.contains_encrypted_content;
 
             if let Some(message) = stream_error_message.as_deref() {
                 release_pool_routing_reservation(
@@ -4212,7 +4285,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                 {
                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool stream error");
                 }
-            } else if pool_route_response_status_is_success(upstream_status) {
+            } else if pool_route_response_status_is_success(upstream_status)
+                && !had_logical_stream_failure
+            {
                 consume_pool_routing_reservation(
                     state_for_record.as_ref(),
                     &reservation_key_for_record,
@@ -4236,12 +4311,6 @@ pub(crate) fn proxy_openai_v1_via_pool(
                 {
                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
                 }
-                let response_contains_encrypted_content = response_parse_buffer
-                    .into_response_info(
-                        ProxyCaptureTarget::Responses,
-                        upstream_content_encoding_for_task.as_deref(),
-                    )
-                    .contains_encrypted_content;
                 if let Some(prompt_cache_key) = prompt_cache_key_for_record.as_deref()
                     && (request_contains_encrypted_content_for_task
                         || response_contains_encrypted_content)
@@ -4283,7 +4352,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                 }
             } else {
                 let route_http_failure_message =
-                    format!("pool upstream responded with {}", upstream_status.as_u16());
+                    logical_stream_failure_message.clone().unwrap_or_else(|| {
+                        format!("pool upstream responded with {}", upstream_status.as_u16())
+                    });
                 release_pool_routing_reservation(
                     state_for_record.as_ref(),
                     &reservation_key_for_record,
@@ -4315,7 +4386,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                 pending_pool_attempt_record_for_task.as_ref(),
                 if stream_error_message.is_some() {
                     POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
-                } else if !pool_route_response_status_is_success(upstream_status) {
+                } else if had_logical_stream_failure
+                    || !pool_route_response_status_is_success(upstream_status)
+                {
                     POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
                 } else {
                     POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
@@ -4328,11 +4401,17 @@ pub(crate) fn proxy_openai_v1_via_pool(
                 },
                 stream_error_message
                     .as_ref()
-                    .map(|_| PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
-                stream_error_message.as_deref().or_else(|| {
-                    (!pool_route_response_status_is_success(upstream_status))
-                        .then_some("upstream HTTP failure")
-                }),
+                    .map(|_| PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
+                    .or_else(|| {
+                        had_logical_stream_failure.then_some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+                    }),
+                stream_error_message
+                    .as_deref()
+                    .or(logical_stream_failure_message.as_deref())
+                    .or_else(|| {
+                        (!pool_route_response_status_is_success(upstream_status))
+                            .then_some("upstream HTTP failure")
+                    }),
                 None,
                 Some(t_upstream_connect_ms),
                 Some(t_upstream_ttfb_ms),

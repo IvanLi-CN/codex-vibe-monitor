@@ -679,6 +679,72 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_integer_column(pool, "pool_upstream_account_events", "attempt_id")
         .await
         .context("failed to ensure pool_upstream_account_events.attempt_id")?;
+    for column in [
+        "model",
+        "model_route_state_before",
+        "model_route_state_after",
+        "model_route_priority_before",
+        "model_route_priority_after",
+        "model_route_cooldown_until",
+    ] {
+        ensure_nullable_text_column(pool, "pool_upstream_account_events", column)
+            .await
+            .with_context(|| format!("failed to ensure pool_upstream_account_events.{column}"))?;
+    }
+    ensure_nullable_integer_column(
+        pool,
+        "pool_upstream_account_events",
+        "model_route_failure_count",
+    )
+    .await
+    .context("failed to ensure pool_upstream_account_events.model_route_failure_count")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pool_upstream_account_model_routes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            model TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'available',
+            priority TEXT NOT NULL DEFAULT 'normal',
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            streak_started_at TEXT,
+            changed_at TEXT,
+            last_seen_at TEXT NOT NULL,
+            last_success_at TEXT,
+            last_failure_at TEXT,
+            last_failure_kind TEXT,
+            last_failure_message TEXT,
+            cooldown_until TEXT,
+            UNIQUE(account_id, model),
+            FOREIGN KEY(account_id) REFERENCES pool_upstream_accounts(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_upstream_account_model_routes table existence")?;
+    ensure_nullable_text_column(pool, "pool_upstream_account_model_routes", "reset_fence_at")
+        .await
+        .context("failed to ensure pool_upstream_account_model_routes.reset_fence_at")?;
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_model_routes_account_seen
+        ON pool_upstream_account_model_routes (account_id, last_seen_at DESC, model COLLATE NOCASE)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure model route account index")?;
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_model_routes_cooldown
+        ON pool_upstream_account_model_routes (state, cooldown_until)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure model route cooldown index")?;
 
     sqlx::query(
         r#"

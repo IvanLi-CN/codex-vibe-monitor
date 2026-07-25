@@ -2452,11 +2452,17 @@ async fn pool_route_fails_over_on_unsupported_model_bad_request() {
     .await
     .expect("load primary account system tags");
     assert!(
-        primary_tags
+        !primary_tags
             .iter()
-            .any(|tag| tag == "unsupported_model:gpt-5.5"),
-        "primary account should learn unsupported model tag: {primary_tags:?}",
+            .any(|tag| tag == "unsupported_model:gpt-5.5")
     );
+    let primary_model_route = load_model_routing_states(&state.pool, primary_id)
+        .await
+        .expect("load primary model route")
+        .into_iter()
+        .find(|route| route.model == "gpt-5.5")
+        .expect("primary model route should be learned dynamically");
+    assert_eq!(primary_model_route.failure_count, 1);
     assert_eq!(
         load_test_sticky_route_account_id(&state.pool, "sticky-unsupported-model-failover").await,
         Some(secondary_id)
