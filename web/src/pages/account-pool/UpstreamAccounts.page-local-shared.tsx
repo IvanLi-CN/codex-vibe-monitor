@@ -3883,8 +3883,11 @@ function SharedUpstreamAccountDetailDrawerInner({
                               ) : null}
                               {hasModelRoutingTransition(actionEvent) ? (
                                 <p className="mt-2 break-words text-xs leading-5 text-base-content/65">
-                                  {t("accountPool.upstreamAccounts.modelRouting.transition")}:{" "}
-                                  {actionEvent.modelRouteStateBefore ?? "-"} -&gt;{" "}
+                                  {t("accountPool.upstreamAccounts.modelRouting.transition")}
+                                  {!hasAccountFailureImpact(actionEvent) && actionEvent.model
+                                    ? ` (${actionEvent.model})`
+                                    : ""}
+                                  : {actionEvent.modelRouteStateBefore ?? "-"} -&gt;{" "}
                                   {actionEvent.modelRouteStateAfter ?? "-"}
                                   {" / "}
                                   {actionEvent.modelRoutePriorityBefore ?? "-"} -&gt;{" "}

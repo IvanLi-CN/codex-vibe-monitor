@@ -2490,6 +2490,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     });
 
     await flushAsync();
+    expect(document.body.textContent).toContain("gpt-5.4-mini");
     expect(document.body.textContent).toMatch(/cooling_down.*available.*excluded.*normal/);
     expect(document.body.textContent).not.toMatch(/影响：|Impact:/);
   });

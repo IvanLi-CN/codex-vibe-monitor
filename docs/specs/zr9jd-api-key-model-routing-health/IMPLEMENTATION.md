@@ -38,7 +38,7 @@
 - The model-routing Storybook story enables its own color-contrast axe rule; light-theme metadata and cooldown text use the stronger local semantic tokens while the global palette debt remains unchanged.
 - Storybook visual evidence: component-boundary desktop/mobile captures passed `require_margin` normalization.
 - Storybook `MixedStates` play coverage: each failure context exposes one summary label and the upstream failure message once.
-- Account-event request-model fallback stateful test and impact-scope RTL + Storybook interaction coverage: passed; the UI assertions also verify that request-model labels remain absent, informational events do not claim a failure impact, and recovery transitions do not claim an active model impact.
+- Account-event request-model fallback stateful test and impact-scope RTL + Storybook interaction coverage: passed; the UI assertions also verify that request-model labels remain absent, informational events do not claim a failure impact, and recovery transitions name their model without claiming an active impact.
 - Mock-only `ui_demo` desktop 1440x1000 capture and mobile 390x844 browser viewport (375x812 page capture): account/model impact scopes and route transition are visible without request-model labels or horizontal overflow.
 - `bun run check:bun-first` and `bun run lint:docs`: passed.
 - `bun run lint:web`: passed with the repository's existing 88 warnings and 1 informational diagnostic; no errors remain in the changed files.
