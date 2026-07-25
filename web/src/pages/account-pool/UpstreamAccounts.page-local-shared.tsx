@@ -3844,16 +3844,21 @@ function SharedUpstreamAccountDetailDrawerInner({
                                 {Number.isFinite(actionEvent.httpStatus ?? NaN) ? (
                                   <Badge variant="secondary">{`HTTP ${actionEvent.httpStatus}`}</Badge>
                                 ) : null}
-                                <Badge variant="secondary">
-                                  {t("accountPool.upstreamAccounts.recentActions.impactScope")}:{" "}
-                                  {hasModelRoutingImpact(actionEvent)
-                                    ? t("accountPool.upstreamAccounts.recentActions.impactModel")
-                                    : t("accountPool.upstreamAccounts.recentActions.impactAccount")}
-                                </Badge>
                                 <span className="text-xs text-base-content/55">
                                   {formatDateTime(actionEvent.occurredAt)}
                                 </span>
                               </div>
+                              <p className="mt-2 break-words text-sm font-medium leading-6 text-base-content/85">
+                                {hasModelRoutingImpact(actionEvent)
+                                  ? actionEvent.model
+                                    ? t("accountPool.upstreamAccounts.recentActions.impactModel", {
+                                        model: actionEvent.model,
+                                      })
+                                    : t(
+                                        "accountPool.upstreamAccounts.recentActions.impactModelUnknown",
+                                      )
+                                  : t("accountPool.upstreamAccounts.recentActions.impactAccount")}
+                              </p>
                               {actionEvent.reasonMessage ? (
                                 <p className="mt-2 text-sm leading-6 text-base-content/75">
                                   {actionEvent.reasonMessage}

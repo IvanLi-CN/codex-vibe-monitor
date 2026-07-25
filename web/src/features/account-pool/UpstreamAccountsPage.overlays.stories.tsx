@@ -407,10 +407,14 @@ export const DetailDrawerApiKeyEventImpact: Story = {
     });
     await expect(within(dialog).queryByText(/请求模型|request model/i)).not.toBeInTheDocument();
     await expect(
-      await within(dialog).findByText(/影响范围.*整个账号|impact scope.*entire account/i),
+      await within(dialog).findByText(
+        /影响：此账号的全部模型均受影响|impact: all models on this account are affected/i,
+      ),
     ).toBeVisible();
     await expect(
-      within(dialog).getByText(/影响范围.*仅此模型|impact scope.*this model only/i),
+      within(dialog).getByText(
+        /影响：仅 gpt-5\.4-mini；此账号的其他模型不受影响|impact: gpt-5\.4-mini only; other models on this account are unaffected/i,
+      ),
     ).toBeVisible();
     await expect(
       within(dialog).getByText(/degraded.*cooling_down.*demoted.*excluded/i),
