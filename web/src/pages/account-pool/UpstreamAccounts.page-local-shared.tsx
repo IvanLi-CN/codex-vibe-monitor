@@ -3861,20 +3861,54 @@ function SharedUpstreamAccountDetailDrawerInner({
                                 </span>
                               </div>
                               {hasAccountFailureImpact(actionEvent) ? (
-                                <p className="mt-2 break-words text-sm font-medium leading-6 text-base-content/85">
-                                  {hasModelRoutingTransition(actionEvent)
-                                    ? actionEvent.model
-                                      ? t(
-                                          "accountPool.upstreamAccounts.recentActions.impactModel",
-                                          {
-                                            model: actionEvent.model,
-                                          },
-                                        )
-                                      : t(
-                                          "accountPool.upstreamAccounts.recentActions.impactModelUnknown",
-                                        )
-                                    : t("accountPool.upstreamAccounts.recentActions.impactAccount")}
-                                </p>
+                                <dl
+                                  className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1.5 text-xs leading-5"
+                                  data-testid="account-event-impact"
+                                >
+                                  <div className="inline-flex min-w-0 items-baseline gap-2">
+                                    <dt className="text-base-content/55">
+                                      {t("accountPool.upstreamAccounts.recentActions.impact.scope")}
+                                    </dt>
+                                    <dd className="font-semibold text-base-content/90">
+                                      {t(
+                                        hasModelRoutingTransition(actionEvent)
+                                          ? "accountPool.upstreamAccounts.recentActions.impact.scopeModel"
+                                          : "accountPool.upstreamAccounts.recentActions.impact.scopeAccount",
+                                      )}
+                                    </dd>
+                                  </div>
+                                  <div className="inline-flex min-w-0 items-baseline gap-2">
+                                    <dt className="text-base-content/55">
+                                      {t(
+                                        "accountPool.upstreamAccounts.recentActions.impact.affectedModels",
+                                      )}
+                                    </dt>
+                                    <dd className="min-w-0 break-all font-semibold tone-ink-error">
+                                      {hasModelRoutingTransition(actionEvent)
+                                        ? (actionEvent.model ??
+                                          t(
+                                            "accountPool.upstreamAccounts.recentActions.impact.unknownModel",
+                                          ))
+                                        : t(
+                                            "accountPool.upstreamAccounts.recentActions.impact.allModels",
+                                          )}
+                                    </dd>
+                                  </div>
+                                  {hasModelRoutingTransition(actionEvent) ? (
+                                    <div className="inline-flex min-w-0 items-baseline gap-2">
+                                      <dt className="text-base-content/55">
+                                        {t(
+                                          "accountPool.upstreamAccounts.recentActions.impact.otherModels",
+                                        )}
+                                      </dt>
+                                      <dd className="font-semibold tone-ink-success">
+                                        {t(
+                                          "accountPool.upstreamAccounts.recentActions.impact.normal",
+                                        )}
+                                      </dd>
+                                    </div>
+                                  ) : null}
+                                </dl>
                               ) : null}
                               {actionEvent.reasonMessage ? (
                                 <p className="mt-2 text-sm leading-6 text-base-content/75">

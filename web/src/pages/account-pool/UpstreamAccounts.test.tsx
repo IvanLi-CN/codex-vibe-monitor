@@ -2393,9 +2393,10 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     expect(document.body.textContent).toContain("4V7MYPJG");
     expect(document.body.textContent).not.toMatch(/请求 ID: invk_action_001/);
     expect(document.body.textContent).not.toMatch(/请求模型|Request model/);
-    expect(document.body.textContent).toMatch(
-      /影响：此账号的全部模型均受影响|Impact: all models on this account are affected/,
-    );
+    const impact = document.querySelector('[data-testid="account-event-impact"]');
+    expect(impact?.textContent).toMatch(/影响范围.*账号|Impact scope.*Account/);
+    expect(impact?.textContent).toMatch(/受影响模型.*全部|Affected models.*All/);
+    expect(impact?.textContent).not.toMatch(/其他模型|Other models/);
     expect(document.body.textContent).not.toContain("gpt-5.6-terra");
   });
 
@@ -2441,7 +2442,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
 
     await flushAsync();
     expect(document.body.textContent).toContain("Settings saved");
-    expect(document.body.textContent).not.toMatch(/影响：|Impact:/);
+    expect(document.querySelector('[data-testid="account-event-impact"]')).toBeNull();
   });
 
   it("shows a model recovery transition without claiming an active impact", async () => {
@@ -2492,7 +2493,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     await flushAsync();
     expect(document.body.textContent).toContain("gpt-5.4-mini");
     expect(document.body.textContent).toMatch(/cooling_down.*available.*excluded.*normal/);
-    expect(document.body.textContent).not.toMatch(/影响：|Impact:/);
+    expect(document.querySelector('[data-testid="account-event-impact"]')).toBeNull();
   });
 
   it("opens the blocked-binding working conversation filter from a health event", async () => {

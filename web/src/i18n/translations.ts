@@ -1434,12 +1434,14 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.recentActions.description":
       "Latest call and sync actions for this account.",
     "accountPool.upstreamAccounts.recentActions.empty": "No recent account events yet.",
-    "accountPool.upstreamAccounts.recentActions.impactAccount":
-      "Impact: all models on this account are affected",
-    "accountPool.upstreamAccounts.recentActions.impactModel":
-      "Impact: {{model}} only; other models on this account are unaffected",
-    "accountPool.upstreamAccounts.recentActions.impactModelUnknown":
-      "Impact: one model only; its name is unavailable, and other models on this account are unaffected",
+    "accountPool.upstreamAccounts.recentActions.impact.scope": "Impact scope",
+    "accountPool.upstreamAccounts.recentActions.impact.scopeAccount": "Account",
+    "accountPool.upstreamAccounts.recentActions.impact.scopeModel": "Model",
+    "accountPool.upstreamAccounts.recentActions.impact.affectedModels": "Affected models",
+    "accountPool.upstreamAccounts.recentActions.impact.allModels": "All",
+    "accountPool.upstreamAccounts.recentActions.impact.otherModels": "Other models",
+    "accountPool.upstreamAccounts.recentActions.impact.normal": "Normal",
+    "accountPool.upstreamAccounts.recentActions.impact.unknownModel": "Unknown",
     "accountPool.upstreamAccounts.duplicate.badge": "Duplicate",
     "accountPool.upstreamAccounts.duplicate.warningTitle":
       "{{name}} was saved, but the upstream identity looks duplicated.",
@@ -4073,11 +4075,14 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.recentActions.title": "最近账号事件",
     "accountPool.upstreamAccounts.recentActions.description": "展示这条账号最近的调用与同步动作。",
     "accountPool.upstreamAccounts.recentActions.empty": "暂时还没有最近事件。",
-    "accountPool.upstreamAccounts.recentActions.impactAccount": "影响：此账号的全部模型均受影响",
-    "accountPool.upstreamAccounts.recentActions.impactModel":
-      "影响：仅 {{model}}；此账号的其他模型不受影响",
-    "accountPool.upstreamAccounts.recentActions.impactModelUnknown":
-      "影响：仅一个模型，但模型名称缺失；此账号的其他模型不受影响",
+    "accountPool.upstreamAccounts.recentActions.impact.scope": "影响范围",
+    "accountPool.upstreamAccounts.recentActions.impact.scopeAccount": "账号",
+    "accountPool.upstreamAccounts.recentActions.impact.scopeModel": "模型",
+    "accountPool.upstreamAccounts.recentActions.impact.affectedModels": "受影响模型",
+    "accountPool.upstreamAccounts.recentActions.impact.allModels": "全部",
+    "accountPool.upstreamAccounts.recentActions.impact.otherModels": "其他模型",
+    "accountPool.upstreamAccounts.recentActions.impact.normal": "正常",
+    "accountPool.upstreamAccounts.recentActions.impact.unknownModel": "未知",
     "accountPool.upstreamAccounts.duplicate.badge": "重复账号",
     "accountPool.upstreamAccounts.duplicate.warningTitle":
       "{{name}} 已保存，但检测到上游身份重复。",

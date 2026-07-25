@@ -58,7 +58,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - reset 只清除指定 API Key 账号的指定模型动态状态，恢复 `available/normal`，并记录 `manual_reset` 事件。
 - 健康页只展示近七天真实调用出现的模型；OAuth 账号不展示模型路由状态卡。
 - 账号事件优先使用事件自身模型；缺失时从关联的上游尝试或调用记录回填请求模型。请求模型只说明触发事件的流量上下文，不改变事件原有的账号级或模型级影响边界。
-- 健康事件不展示请求模型。带模型路由状态/优先级/冷却字段的事件必须明确写出受影响模型，并说明该账号其他模型不受影响；认证、网络、通用 5xx 等账号级事件必须明确说明该账号全部模型均受影响。
+- 健康事件不展示请求模型。影响信息禁止使用自然语言整句，统一使用结构化字段：模型级事件展示“影响范围=模型、受影响模型=<模型名>、其他模型=正常”；认证、网络、通用 5xx 等账号级事件展示“影响范围=账号、受影响模型=全部”。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -75,10 +75,10 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - Given one API Key has model A and B, When A reaches cooldown, Then B remains eligible and the account is not globally cooled down by A's model error.
 - Given a generic authentication, transport, or 5xx failure, When it is recorded, Then existing account-level health behavior remains unchanged.
 - Given an account event is linked to an attempt or invocation with a known request model, When event detail or the global event list is read, Then the event exposes that request model even if the event row itself has no model.
-- Given a generic account-level event has a request model, When the health tab renders it, Then the UI states that all models on the account are affected without displaying the request model or an empty model-route transition.
-- Given a model-routing event has an affected model, When the health tab renders it, Then the UI names that model and states that other models on the account are unaffected.
-- Given a model-routing event carries route transition fields, When the health tab renders it, Then the UI names the affected model, states that other models are unaffected, and shows the concrete route transition.
-- Given a successful, informational, recovered, or reset event has no active routing failure, When the health tab renders it, Then the UI omits impact text instead of claiming an active impact; model recovery/reset events still identify the affected model in their routing transition.
+- Given a generic account-level event has a request model, When the health tab renders it, Then the UI exposes structured impact fields `scope=account` and `affected models=all` without displaying the request model or an empty model-route transition.
+- Given a model-routing event has an affected model, When the health tab renders it, Then the UI exposes structured impact fields `scope=model`, `affected model=<name>`, and `other models=normal` without a natural-language impact sentence.
+- Given a model-routing event carries route transition fields, When the health tab renders it, Then the UI identifies the affected model through the structured impact fields and shows the concrete route transition.
+- Given a successful, informational, recovered, or reset event has no active routing failure, When the health tab renders it, Then the UI omits the impact fields instead of claiming an active impact; model recovery/reset events still identify the affected model in their routing transition.
 - Given a model is in a degraded or cooling state, When reset is called, Then only that model becomes `available/normal`, its ETA is cleared, and a structured reset event appears.
 - Given no call for a model for seven days, When model retention runs, Then that model state is removed.
 - Given the health tab is rendered on desktop or mobile, Then model status, change time, ETA, failure summary, and reset action remain readable without overflow.
@@ -129,7 +129,7 @@ PR: none
 页面级视觉证据=存在
 页面级聊天回图=已展示
 页面级 requested_viewport=desktop 1440x1000; mobile 390x844
-页面级 capture_scope=API Key 账号详情“健康与事件”，账号级事件明确说明全部模型受影响，模型级事件明确写出受影响模型及其他模型不受影响；不展示请求模型
+页面级 capture_scope=API Key 账号详情“健康与事件”，账号级与模型级影响均使用结构化字段，不使用自然语言影响句；不展示请求模型
 
 PR: none
 ![桌面账号事件模型影响](assets/account-event-impact-desktop.png)

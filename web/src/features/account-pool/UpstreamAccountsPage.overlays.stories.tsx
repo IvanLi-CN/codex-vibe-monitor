@@ -406,16 +406,16 @@ export const DetailDrawerApiKeyEventImpact: Story = {
       expect(requestLog.some((entry) => entry.includes("includeRecentActions=true"))).toBe(true);
     });
     await expect(within(dialog).queryByText(/请求模型|request model/i)).not.toBeInTheDocument();
-    await expect(
-      await within(dialog).findByText(
-        /影响：此账号的全部模型均受影响|impact: all models on this account are affected/i,
-      ),
-    ).toBeVisible();
-    await expect(
-      within(dialog).getByText(
-        /影响：仅 gpt-5\.4-mini；此账号的其他模型不受影响|impact: gpt-5\.4-mini only; other models on this account are unaffected/i,
-      ),
-    ).toBeVisible();
+    const impacts = await within(dialog).findAllByTestId("account-event-impact");
+    await expect(impacts).toHaveLength(2);
+    await expect(impacts[0]).toHaveTextContent(/影响范围.*账号|impact scope.*account/i);
+    await expect(impacts[0]).toHaveTextContent(/受影响模型.*全部|affected models.*all/i);
+    await expect(impacts[1]).toHaveTextContent(/影响范围.*模型|impact scope.*model/i);
+    await expect(impacts[1]).toHaveTextContent(
+      /受影响模型.*gpt-5\.4-mini|affected models.*gpt-5\.4-mini/i,
+    );
+    await expect(impacts[1]).toHaveTextContent(/其他模型.*正常|other models.*normal/i);
+    await expect(within(dialog).queryByText(/影响：|impact:/i)).not.toBeInTheDocument();
     await expect(
       within(dialog).getByText(/degraded.*cooling_down.*demoted.*excluded/i),
     ).toBeVisible();
