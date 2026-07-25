@@ -2397,6 +2397,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     expect(impact?.textContent).toMatch(/影响范围.*账号|Impact scope.*Account/);
     expect(impact?.textContent).toMatch(/受影响模型.*全部|Affected models.*All/);
     expect(impact?.textContent).not.toMatch(/其他模型|Other models/);
+    expect(impact?.querySelectorAll('[data-testid="account-event-impact-chip"]')).toHaveLength(2);
     expect(document.body.textContent).not.toContain("gpt-5.6-terra");
   });
 

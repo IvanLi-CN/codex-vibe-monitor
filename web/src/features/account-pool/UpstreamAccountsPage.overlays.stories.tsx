@@ -408,6 +408,8 @@ export const DetailDrawerApiKeyEventImpact: Story = {
     await expect(within(dialog).queryByText(/请求模型|request model/i)).not.toBeInTheDocument();
     const impacts = await within(dialog).findAllByTestId("account-event-impact");
     await expect(impacts).toHaveLength(2);
+    await expect(within(impacts[0]).getAllByTestId("account-event-impact-chip")).toHaveLength(2);
+    await expect(within(impacts[1]).getAllByTestId("account-event-impact-chip")).toHaveLength(2);
     await expect(impacts[0]).toHaveTextContent(/影响范围.*账号|impact scope.*account/i);
     await expect(impacts[0]).toHaveTextContent(/受影响模型.*全部|affected models.*all/i);
     await expect(impacts[1]).toHaveTextContent(/影响范围.*模型|impact scope.*model/i);

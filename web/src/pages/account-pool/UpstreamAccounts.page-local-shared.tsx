@@ -3862,11 +3862,15 @@ function SharedUpstreamAccountDetailDrawerInner({
                               </div>
                               {hasAccountFailureImpact(actionEvent) ? (
                                 <dl
-                                  className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1.5 text-xs leading-5"
+                                  className="mt-2 flex flex-wrap gap-1.5"
                                   data-testid="account-event-impact"
                                 >
-                                  <div className="inline-flex min-w-0 items-baseline gap-2">
-                                    <dt className="text-base-content/55">
+                                  <Badge
+                                    variant="secondary"
+                                    className="max-w-full min-w-0 gap-1.5 whitespace-normal px-2.5 py-1"
+                                    data-testid="account-event-impact-chip"
+                                  >
+                                    <dt className="font-normal text-base-content/55">
                                       {t("accountPool.upstreamAccounts.recentActions.impact.scope")}
                                     </dt>
                                     <dd className="font-semibold text-base-content/90">
@@ -3876,14 +3880,18 @@ function SharedUpstreamAccountDetailDrawerInner({
                                           : "accountPool.upstreamAccounts.recentActions.impact.scopeAccount",
                                       )}
                                     </dd>
-                                  </div>
-                                  <div className="inline-flex min-w-0 items-baseline gap-2">
-                                    <dt className="text-base-content/55">
+                                  </Badge>
+                                  <Badge
+                                    variant="error"
+                                    className="max-w-full min-w-0 gap-1.5 whitespace-normal px-2.5 py-1"
+                                    data-testid="account-event-impact-chip"
+                                  >
+                                    <dt className="font-normal opacity-75">
                                       {t(
                                         "accountPool.upstreamAccounts.recentActions.impact.affectedModels",
                                       )}
                                     </dt>
-                                    <dd className="min-w-0 break-all font-semibold tone-ink-error">
+                                    <dd className="min-w-0 break-all font-semibold">
                                       {hasModelRoutingTransition(actionEvent)
                                         ? (actionEvent.model ??
                                           t(
@@ -3893,7 +3901,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                                             "accountPool.upstreamAccounts.recentActions.impact.allModels",
                                           )}
                                     </dd>
-                                  </div>
+                                  </Badge>
                                 </dl>
                               ) : null}
                               {actionEvent.reasonMessage ? (
