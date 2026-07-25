@@ -13,7 +13,7 @@
 - `pool_upstream_account_model_routes` stores exact `account_id + model` state with seven-day retention, failure windows, cooldown ETA, last success/failure and last-seen timestamps.
 - API Key model-specific errors are isolated in `failure_recording.rs`; OAuth, authentication, transport and generic upstream failures retain account-level behavior. Fresh and sticky candidate selection applies model demotion/exclusion without changing static model rules.
 - `GET /model-routing` and `POST /model-routing/reset` expose the model state and reset contract. Structured account events include model, before/after state and priority, failure count and cooldown ETA.
-- The account detail health/events tab renders mixed model states, cooldown ETA, failure summaries, recent model event fields and a single-model reset action. Storybook covers available, degraded, cooling, empty, read-only, error and reset interaction states; the model rows use one desktop column track and compact spacing, while mobile stacks without horizontal overflow. Storybook canvas provides the component-level desktop/mobile evidence.
+- The account detail health/events tab renders mixed model states, cooldown ETA, failure summaries, recent model event fields and a single-model reset action. Storybook covers available, degraded, cooling, empty, read-only, error and reset interaction states; the model rows use one desktop column track and compact spacing, while failure context keeps the summary ahead of three aligned metadata fields and mobile stacks without horizontal overflow. Storybook canvas provides the component-level desktop/mobile evidence.
 
 ## Implementation map
 
@@ -34,6 +34,7 @@
 - `cd web && bun run build`: passed.
 - Storybook canvas DOM checks: desktop model columns share identical tracks/left edges; mobile `scrollWidth` equals `clientWidth`.
 - Storybook visual evidence: component-boundary desktop/mobile captures passed `require_margin` normalization.
+- Storybook `MixedStates` play coverage: each failure context exposes one summary label and the upstream failure message once.
 - `bun run check:bun-first` and `bun run lint:docs`: passed.
 - `bun run lint:web`: passed with the repository's existing 88 warnings and 1 informational diagnostic; no errors remain in the changed files.
 - `spec_drift_check.sh --base-ref origin/main --spec-path docs/specs/zr9jd-api-key-model-routing-health/SPEC.md`: passed with no drift.

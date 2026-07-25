@@ -125,26 +125,37 @@ export function ModelRoutingHealthPanel({
                     </Button>
                   ) : null}
                 </div>
-                {!isAvailable && route.failureCount > 0 ? (
-                  <div className="grid gap-2 sm:grid-cols-3 lg:col-span-full">
-                    <DetailValue label={t("accountPool.upstreamAccounts.modelRouting.failures")}>
-                      {route.failureCount}
-                    </DetailValue>
-                    <DetailValue label={t("accountPool.upstreamAccounts.modelRouting.failureKind")}>
-                      {route.lastFailureKind ?? "-"}
-                    </DetailValue>
-                    <DetailValue
-                      label={t("accountPool.upstreamAccounts.modelRouting.lastFailureAt")}
-                    >
-                      {formatDateTime(route.lastFailureAt)}
-                    </DetailValue>
+                {!isAvailable && (route.failureCount > 0 || route.lastFailureMessage) ? (
+                  <div className="mt-1 grid gap-x-3 gap-y-2 border-t border-base-300/60 pt-2.5 sm:grid-cols-2 lg:col-span-full lg:grid-cols-[minmax(0,1.4fr)_minmax(7rem,.8fr)_minmax(7rem,.8fr)_minmax(11rem,1fr)_minmax(13rem,1.1fr)]">
+                    <div className="min-w-0 sm:col-span-2 lg:col-span-2">
+                      <DetailValue label={t("accountPool.upstreamAccounts.modelRouting.failure")}>
+                        <p className="break-words text-sm leading-5 text-base-content/80">
+                          {route.lastFailureMessage ?? "-"}
+                        </p>
+                      </DetailValue>
+                    </div>
+                    <div className="min-w-0 lg:col-start-3">
+                      <DetailValue label={t("accountPool.upstreamAccounts.modelRouting.failures")}>
+                        <span className="font-mono tabular-nums">{route.failureCount}</span>
+                      </DetailValue>
+                    </div>
+                    <div className="min-w-0 lg:col-start-4">
+                      <DetailValue
+                        label={t("accountPool.upstreamAccounts.modelRouting.failureKind")}
+                      >
+                        <span className="break-all font-mono text-xs">
+                          {route.lastFailureKind ?? "-"}
+                        </span>
+                      </DetailValue>
+                    </div>
+                    <div className="min-w-0 lg:col-start-5">
+                      <DetailValue
+                        label={t("accountPool.upstreamAccounts.modelRouting.lastFailureAt")}
+                      >
+                        <span className="tabular-nums">{formatDateTime(route.lastFailureAt)}</span>
+                      </DetailValue>
+                    </div>
                   </div>
-                ) : null}
-                {route.lastFailureMessage ? (
-                  <p className="break-words text-xs leading-4 text-base-content/65 lg:col-span-full">
-                    {t("accountPool.upstreamAccounts.modelRouting.failure")}:{" "}
-                    {route.lastFailureMessage}
-                  </p>
                 ) : null}
               </div>
             );

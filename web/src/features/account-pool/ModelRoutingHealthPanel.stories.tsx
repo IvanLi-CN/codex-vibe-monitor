@@ -62,7 +62,17 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const MixedStates: Story = {};
+export const MixedStates: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getAllByText("失败摘要", { exact: true })).toHaveLength(2);
+    await expect(
+      canvas.getByText("The requested model is temporarily unavailable upstream.", {
+        exact: true,
+      }),
+    ).toBeVisible();
+  },
+};
 
 export const Empty: Story = {
   args: { states: [] },
