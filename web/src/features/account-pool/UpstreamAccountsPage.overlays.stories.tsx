@@ -414,7 +414,7 @@ export const DetailDrawerApiKeyEventImpact: Story = {
     await expect(impacts[1]).toHaveTextContent(
       /受影响模型.*gpt-5\.4-mini|affected models.*gpt-5\.4-mini/i,
     );
-    await expect(impacts[1]).toHaveTextContent(/其他模型.*正常|other models.*normal/i);
+    await expect(impacts[1]).not.toHaveTextContent(/其他模型|other models/i);
     await expect(within(dialog).queryByText(/影响：|impact:/i)).not.toBeInTheDocument();
     await expect(
       within(dialog).getByText(/degraded.*cooling_down.*demoted.*excluded/i),

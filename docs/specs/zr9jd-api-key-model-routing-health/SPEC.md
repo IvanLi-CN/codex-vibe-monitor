@@ -58,7 +58,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - reset 只清除指定 API Key 账号的指定模型动态状态，恢复 `available/normal`，并记录 `manual_reset` 事件。
 - 健康页只展示近七天真实调用出现的模型；OAuth 账号不展示模型路由状态卡。
 - 账号事件优先使用事件自身模型；缺失时从关联的上游尝试或调用记录回填请求模型。请求模型只说明触发事件的流量上下文，不改变事件原有的账号级或模型级影响边界。
-- 健康事件不展示请求模型。影响信息禁止使用自然语言整句，统一使用结构化字段：模型级事件展示“影响范围=模型、受影响模型=<模型名>、其他模型=正常”；认证、网络、通用 5xx 等账号级事件展示“影响范围=账号、受影响模型=全部”。
+- 健康事件不展示请求模型。影响信息禁止使用自然语言整句，统一使用结构化字段：模型级事件只展示“影响范围=模型、受影响模型=<模型名>”；认证、网络、通用 5xx 等账号级事件展示“影响范围=账号、受影响模型=全部”。事件不得推断或展示其他模型的当前状态。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -76,7 +76,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - Given a generic authentication, transport, or 5xx failure, When it is recorded, Then existing account-level health behavior remains unchanged.
 - Given an account event is linked to an attempt or invocation with a known request model, When event detail or the global event list is read, Then the event exposes that request model even if the event row itself has no model.
 - Given a generic account-level event has a request model, When the health tab renders it, Then the UI exposes structured impact fields `scope=account` and `affected models=all` without displaying the request model or an empty model-route transition.
-- Given a model-routing event has an affected model, When the health tab renders it, Then the UI exposes structured impact fields `scope=model`, `affected model=<name>`, and `other models=normal` without a natural-language impact sentence.
+- Given a model-routing event has an affected model, When the health tab renders it, Then the UI exposes only the structured impact fields `scope=model` and `affected model=<name>` without a natural-language impact sentence or any claim about other models.
 - Given a model-routing event carries route transition fields, When the health tab renders it, Then the UI identifies the affected model through the structured impact fields and shows the concrete route transition.
 - Given a successful, informational, recovered, or reset event has no active routing failure, When the health tab renders it, Then the UI omits the impact fields instead of claiming an active impact; model recovery/reset events still identify the affected model in their routing transition.
 - Given a model is in a degraded or cooling state, When reset is called, Then only that model becomes `available/normal`, its ETA is cleared, and a structured reset event appears.

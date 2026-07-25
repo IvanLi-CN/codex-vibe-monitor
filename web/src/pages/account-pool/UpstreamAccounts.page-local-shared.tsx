@@ -3894,20 +3894,6 @@ function SharedUpstreamAccountDetailDrawerInner({
                                           )}
                                     </dd>
                                   </div>
-                                  {hasModelRoutingTransition(actionEvent) ? (
-                                    <div className="inline-flex min-w-0 items-baseline gap-2">
-                                      <dt className="text-base-content/55">
-                                        {t(
-                                          "accountPool.upstreamAccounts.recentActions.impact.otherModels",
-                                        )}
-                                      </dt>
-                                      <dd className="font-semibold tone-ink-success">
-                                        {t(
-                                          "accountPool.upstreamAccounts.recentActions.impact.normal",
-                                        )}
-                                      </dd>
-                                    </div>
-                                  ) : null}
                                 </dl>
                               ) : null}
                               {actionEvent.reasonMessage ? (

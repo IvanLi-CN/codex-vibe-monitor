@@ -1439,8 +1439,6 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.recentActions.impact.scopeModel": "Model",
     "accountPool.upstreamAccounts.recentActions.impact.affectedModels": "Affected models",
     "accountPool.upstreamAccounts.recentActions.impact.allModels": "All",
-    "accountPool.upstreamAccounts.recentActions.impact.otherModels": "Other models",
-    "accountPool.upstreamAccounts.recentActions.impact.normal": "Normal",
     "accountPool.upstreamAccounts.recentActions.impact.unknownModel": "Unknown",
     "accountPool.upstreamAccounts.duplicate.badge": "Duplicate",
     "accountPool.upstreamAccounts.duplicate.warningTitle":
@@ -4080,8 +4078,6 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.recentActions.impact.scopeModel": "模型",
     "accountPool.upstreamAccounts.recentActions.impact.affectedModels": "受影响模型",
     "accountPool.upstreamAccounts.recentActions.impact.allModels": "全部",
-    "accountPool.upstreamAccounts.recentActions.impact.otherModels": "其他模型",
-    "accountPool.upstreamAccounts.recentActions.impact.normal": "正常",
     "accountPool.upstreamAccounts.recentActions.impact.unknownModel": "未知",
     "accountPool.upstreamAccounts.duplicate.badge": "重复账号",
     "accountPool.upstreamAccounts.duplicate.warningTitle":
