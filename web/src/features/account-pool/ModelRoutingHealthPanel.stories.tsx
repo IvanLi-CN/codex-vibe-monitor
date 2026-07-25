@@ -44,7 +44,13 @@ const meta = {
   title: "Account Pool/ModelRoutingHealthPanel",
   component: ModelRoutingHealthPanel,
   tags: ["autodocs"],
-  parameters: { layout: "fullscreen" },
+  parameters: {
+    layout: "fullscreen",
+    a11y: {
+      options: { rules: { "color-contrast": { enabled: true } } },
+      config: { rules: [{ id: "color-contrast", enabled: true }] },
+    },
+  },
   decorators: [
     (Story) => (
       <I18nProvider>
@@ -66,6 +72,7 @@ export const MixedStates: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getAllByText("失败摘要", { exact: true })).toHaveLength(2);
+    await expect(canvasElement.querySelectorAll("dt")).toHaveLength(17);
     await expect(
       canvas.getByText("The requested model is temporarily unavailable upstream.", {
         exact: true,

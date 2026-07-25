@@ -33,6 +33,8 @@
 - `cd web && bun run test-storybook --run`: 8 files passed, 16 passed.
 - `cd web && bun run build`: passed.
 - Storybook canvas DOM checks: desktop model columns share identical tracks/left edges; mobile `scrollWidth` equals `clientWidth`.
+- Mobile hardening checks: reset actions render at 44px touch height below `lg`, desktop remains 32px, and the panel exposes `dl/dt/dd` field semantics without changing grid tracks.
+- The model-routing Storybook story enables its own color-contrast axe rule; light-theme metadata and cooldown text use the stronger local semantic tokens while the global palette debt remains unchanged.
 - Storybook visual evidence: component-boundary desktop/mobile captures passed `require_margin` normalization.
 - Storybook `MixedStates` play coverage: each failure context exposes one summary label and the upstream failure message once.
 - `bun run check:bun-first` and `bun run lint:docs`: passed.
