@@ -105,6 +105,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "group_name")
         .await
         .context("failed to ensure pool_upstream_accounts.group_name")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "deleted_at")
+        .await
+        .context("failed to ensure pool_upstream_accounts.deleted_at")?;
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "verified_email")
         .await
         .context("failed to ensure pool_upstream_accounts.verified_email")?;

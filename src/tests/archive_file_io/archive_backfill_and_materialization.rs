@@ -547,6 +547,18 @@ async fn cleanup_expired_invocation_archive_batches_removes_manifest_rows() {
     .execute(&pool)
     .await
     .expect("insert expired invocation archive manifest row");
+    sqlx::query("UPDATE long_term_stats_state SET status = 'ready' WHERE id = 1")
+        .execute(&pool)
+        .await
+        .expect("mark long-term stats ready for cleanup fixture");
+    sqlx::query(
+        "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path) VALUES (?1, 'codex_invocations', ?2)",
+    )
+    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+    .bind(archive_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("mark long-term archive replay complete");
 
     let deleted = cleanup_expired_archive_batches(&pool, &config, false)
         .await
@@ -4821,6 +4833,10 @@ async fn prune_archive_batches_removes_expired_segments_and_legacy_batches() {
     .execute(&pool)
     .await
     .expect("insert expired segment manifest");
+    sqlx::query("UPDATE long_term_stats_state SET status = 'empty' WHERE id = 1")
+        .execute(&pool)
+        .await
+        .expect("mark long-term stats as ready for legacy prune fixture");
 
     let legacy_path = archive_batch_file_path(&config, "codex_invocations", "2024-12")
         .expect("resolve legacy batch path");
@@ -4849,6 +4865,19 @@ async fn prune_archive_batches_removes_expired_segments_and_legacy_batches() {
     .execute(&pool)
     .await
     .expect("insert legacy archive manifest");
+    for archive_path in [
+        segment_path.to_string_lossy().to_string(),
+        legacy_path.to_string_lossy().to_string(),
+    ] {
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path) VALUES (?1, 'codex_invocations', ?2)",
+        )
+        .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+        .bind(archive_path)
+        .execute(&pool)
+        .await
+        .expect("mark legacy prune archive replay complete");
+    }
 
     let summary = prune_archive_batches(&pool, &config, false)
         .await

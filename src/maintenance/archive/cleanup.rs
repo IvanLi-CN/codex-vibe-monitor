@@ -327,6 +327,30 @@ pub(crate) async fn cleanup_expired_archive_batches(
     .await?
     .into_iter()
     .collect::<HashSet<_>>();
+    let long_term_stats_status =
+        sqlx::query_scalar::<_, String>("SELECT status FROM long_term_stats_state WHERE id = 1")
+            .fetch_optional(pool)
+            .await?;
+    let long_term_stats_archive_files = if long_term_stats_status
+        .as_deref()
+        .is_some_and(|status| matches!(status, "ready" | "empty"))
+    {
+        sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT file_path
+            FROM hourly_rollup_archive_replay
+            WHERE target = ?1
+              AND dataset = 'codex_invocations'
+            "#,
+        )
+        .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .collect::<HashSet<_>>()
+    } else {
+        HashSet::new()
+    };
 
     let mut eligible_candidates = Vec::new();
     for candidate in candidates {
@@ -339,6 +363,14 @@ pub(crate) async fn cleanup_expired_archive_batches(
             && (candidate.historical_rollups_materialized_at.is_none()
                 || !materialized_pool_upstream_cache_files.contains(&candidate.file_path)
                 || !materialized_pool_upstream_hourly_files.contains(&candidate.file_path))
+        {
+            continue;
+        }
+        if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
+            && (!long_term_stats_status
+                .as_deref()
+                .is_some_and(|status| matches!(status, "ready" | "empty"))
+                || !long_term_stats_archive_files.contains(&candidate.file_path))
         {
             continue;
         }

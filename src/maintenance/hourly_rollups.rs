@@ -2214,6 +2214,11 @@ pub(crate) fn build_invocation_routes(router: Router<Arc<AppState>>) -> Router<A
 pub(crate) fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router
         .route("/api/stats", get(fetch_stats))
+        .route(
+            "/api/stats/long-term/overview",
+            get(fetch_long_term_overview),
+        )
+        .route("/api/stats/long-term/series", get(fetch_long_term_series))
         .route("/api/stats/summary", get(fetch_summary))
         .route(
             "/api/stats/dashboard-activity",

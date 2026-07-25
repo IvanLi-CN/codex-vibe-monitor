@@ -3446,6 +3446,7 @@ pub(crate) fn usage_snapshot_test_config(base_url: &str, user_agent: &str) -> Ap
         pool_upstream_request_attempts_archive_ttl_days:
             DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS,
         quota_snapshot_full_days: DEFAULT_QUOTA_SNAPSHOT_FULL_DAYS,
+        long_term_stats_hourly_retention_days: DEFAULT_LONG_TERM_STATS_HOURLY_RETENTION_DAYS,
         upstream_accounts_oauth_client_id: DEFAULT_UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID.to_string(),
         upstream_accounts_oauth_issuer: Url::parse(DEFAULT_UPSTREAM_ACCOUNTS_OAUTH_ISSUER)
             .expect("valid oauth issuer"),

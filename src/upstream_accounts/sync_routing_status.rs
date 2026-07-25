@@ -456,7 +456,7 @@ pub(crate) async fn load_account_routing_policy_override_map(
             policy_responses_stream_timeout_secs,
             policy_compact_stream_timeout_secs
         FROM pool_upstream_accounts
-        WHERE id IN (
+        WHERE COALESCE(deleted_at, '') = '' AND id IN (
         "#,
     );
     {

@@ -104,6 +104,7 @@ mod db_pressure;
 mod external_api;
 mod forward_proxy;
 mod http_stream_tracking;
+mod long_term_stats;
 mod maintenance;
 #[expect(
     clippy::too_many_arguments,
@@ -140,6 +141,7 @@ pub(crate) use config::*;
 use external_api::*;
 use forward_proxy::*;
 use http_stream_tracking::*;
+pub(crate) use long_term_stats::*;
 pub(crate) use maintenance::*;
 pub(crate) use pricing::*;
 use proxy::*;
@@ -285,6 +287,7 @@ fn proxy_raw_async_writer_limit(_config: &AppConfig) -> usize {
     DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS
 }
 const ENV_QUOTA_SNAPSHOT_FULL_DAYS: &str = "QUOTA_SNAPSHOT_FULL_DAYS";
+const ENV_LONG_TERM_STATS_HOURLY_RETENTION_DAYS: &str = "LONG_TERM_STATS_HOURLY_RETENTION_DAYS";
 const ENV_PROXY_RAW_COMPRESSION: &str = "PROXY_RAW_COMPRESSION";
 const ENV_PROXY_RAW_IMMEDIATE_GZIP_BYTES: &str = "PROXY_RAW_IMMEDIATE_GZIP_BYTES";
 const ENV_PROXY_RAW_HOT_SECS: &str = "PROXY_RAW_HOT_SECS";
@@ -313,6 +316,8 @@ const DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS: u64 = 30;
 const DEFAULT_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS: u64 = 180;
 const DEFAULT_POOL_UPSTREAM_RESPONSES_TOTAL_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_QUOTA_SNAPSHOT_FULL_DAYS: u64 = 30;
+const DEFAULT_LONG_TERM_STATS_HOURLY_RETENTION_DAYS: u64 = 400;
+const MIN_LONG_TERM_STATS_HOURLY_RETENTION_DAYS: u64 = 366;
 const ARCHIVE_STATUS_COMPLETED: &str = "completed";
 const ARCHIVE_LAYOUT_LEGACY_MONTH: &str = "legacy_month";
 const ARCHIVE_LAYOUT_SEGMENT_V1: &str = "segment_v1";

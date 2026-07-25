@@ -922,7 +922,7 @@ pub(crate) async fn load_account_routing_candidates(
     );
     query
         .push_bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
-        .push(" AND account.enabled = 1");
+        .push(" AND account.enabled = 1 AND COALESCE(account.deleted_at, '') = ''");
     if !excluded_ids.is_empty() {
         query.push(" AND account.id NOT IN (");
         {
@@ -1031,6 +1031,7 @@ pub(crate) async fn load_account_routing_candidate(
             ) AS active_sticky_conversations
         FROM pool_upstream_accounts account
         WHERE account.id = ?1
+          AND COALESCE(account.deleted_at, '') = ''
         "#,
     )
     .bind(account_id)

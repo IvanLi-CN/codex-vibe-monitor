@@ -376,6 +376,34 @@ function buildStatsRequestHandler(scenario: StatsScenario = "default") {
       return jsonResponse(fixtures.buildParallelWorkForRange(range, bucket, getBrowserTimeZone()));
     }
 
+    if (url.pathname === "/api/stats/long-term/overview") {
+      return jsonResponse({
+        status: "empty",
+        statisticsStartDate: null,
+        processedRows: 0,
+        totalRows: 0,
+        timezone: "Asia/Shanghai",
+        range: url.searchParams.get("range") ?? "7d",
+        global: { calls: 0, tokens: null, tokenSamples: 0, cost: null, costSamples: 0 },
+        daily: [],
+        models: [],
+        upstreams: [],
+      });
+    }
+
+    if (url.pathname === "/api/stats/long-term/series") {
+      return jsonResponse({
+        status: "empty",
+        statisticsStartDate: null,
+        processedRows: 0,
+        totalRows: 0,
+        timezone: "Asia/Shanghai",
+        range: url.searchParams.get("range") ?? "7d",
+        dimension: url.searchParams.get("dimension") ?? "model",
+        series: [],
+      });
+    }
+
     return undefined;
   };
 }
@@ -555,7 +583,7 @@ export const EvidenceSevenDayRechartsPage: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByTestId("stats-range-select-trigger"));
-    await userEvent.click(within(document.body).getByText("最近 7 天"));
+    await userEvent.click(within(document.body).getByRole("option", { name: "最近 7 天" }));
     await expect(canvas.getByTestId("stats-range-select-trigger")).toHaveTextContent("最近 7 天");
     await expect(canvas.queryByTestId("parallel-work-conversation-gantt")).toBeNull();
     await waitFor(() => {

@@ -1136,6 +1136,7 @@ pub(crate) async fn load_conflicting_display_name_id(
         SELECT id
         FROM pool_upstream_accounts
         WHERE lower(trim(display_name)) = lower(trim(?1))
+          AND deleted_at IS NULL
           AND (?2 IS NULL OR id != ?2)
         ORDER BY id ASC
         LIMIT 1
@@ -1283,6 +1284,7 @@ pub(crate) async fn load_conflicting_display_name_rows(
             ) AS plan_type
         FROM pool_upstream_accounts account
         WHERE lower(trim(account.display_name)) = lower(trim(?1))
+          AND account.deleted_at IS NULL
           AND (?2 IS NULL OR account.id != ?2)
         ORDER BY account.id ASC
         "#,
@@ -2438,7 +2440,8 @@ pub(crate) async fn load_upstream_account_groups(
                 TRIM(group_name) AS group_name,
                 COUNT(*) AS account_count
             FROM pool_upstream_accounts
-            WHERE group_name IS NOT NULL AND TRIM(group_name) <> ''
+            WHERE deleted_at IS NULL
+              AND group_name IS NOT NULL AND TRIM(group_name) <> ''
             GROUP BY TRIM(group_name)
         ),
         catalog_groups AS (
@@ -2598,7 +2601,7 @@ pub(crate) async fn load_upstream_account_summaries_for_query(
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} FROM pool_upstream_accounts"
     ));
-    query.push(" WHERE 1 = 1");
+    query.push(" WHERE COALESCE(deleted_at, '') = ''");
 
     if params.group_ungrouped.unwrap_or(false) {
         query.push(" AND (NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL");

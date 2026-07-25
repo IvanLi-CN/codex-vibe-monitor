@@ -228,7 +228,9 @@ pub(crate) async fn load_model_route_penalties(
          WHERE accounts.kind = ",
     );
     query.push_bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX);
-    query.push(" AND routes.model = ").push_bind(model);
+    query
+        .push(" AND COALESCE(accounts.deleted_at, '') = '' AND routes.model = ")
+        .push_bind(model);
     query
         .push(" AND routes.last_seen_at >= ")
         .push_bind(cutoff_string());
