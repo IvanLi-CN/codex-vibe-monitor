@@ -48,6 +48,7 @@
 - `cd web && bun run test -- src/features/invocations/InvocationWorkflowDetailPanel.test.tsx`: 1 file passed，8 tests passed，覆盖非最终尝试不会 lazy-fetch 调用级响应体。
 - `cd web && bun run build`: passed。
 - Chrome + Storybook `RetriedAttemptResponseBodyUnavailable` 验证：H3HxTB12 显示 `HTTP 502`、`98 B`、`attempt_metrics`，W1scc2SS 显示 `HTTP 200`、`181,382 B`，控制台无 error/warn。
+- Stateful SQLite owner-guard 回归测试改为通过 `spawn_blocking` 等待大栈 worker，避免在 Tokio 测试 runtime 内同步 join 导致 mock upstream 饿死并误报 502；覆盖模块 70 tests 及目标三例的 20 轮循环均通过。
 - Chrome + Storybook `BlockedPoolWorkflowMissingArchivedRequestBody` 验证：`请求体` lazy fetch 最终显示 `该记录没有保留可展示的载荷。`，且页面文本不再包含内部 `missing_body` reason。
 - Chrome + mock-only Web Demo Dashboard 路由验证：`#/dashboard/invocations/demo-invocation-9002?demoScene=operational&demoTheme=dark` 内的 attempt `qPvNNAK8` 展开 `请求体` 后，界面显示 `请求体不可用：该记录没有保留可展示的载荷。`，且保留请求/响应指标、压缩信息与 `归档 未存档`。
 - 本地截图验证已补充 `workflow-detail-dashboard-attempt-request-body-unavailable.png`，并写回 spec `## Visual Evidence` 作为页面级最终证据；Storybook 截图继续只承担组件级回归证据。
