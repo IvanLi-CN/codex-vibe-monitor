@@ -194,7 +194,14 @@ describe("demo MSW handlers", () => {
       items: Array<{ id: number; groupName: string | null; boundProxyKeys: string[] }>;
     };
     const events = (await eventsResponse.json()) as {
-      items: Array<{ accountDisplayName: string; forwardProxyKey: string | null }>;
+      items: Array<{
+        action: string;
+        result: string;
+        failureKind: string | null;
+        model: string | null;
+        accountDisplayName: string;
+        forwardProxyKey: string | null;
+      }>;
     };
     const tasks = (await tasksResponse.json()) as { items: Array<{ status: string }> };
     const selectedRecord = records.records.find((record) => record.upstreamAccountId === 101);
@@ -204,6 +211,11 @@ describe("demo MSW handlers", () => {
     expect(accounts.items.some((account) => account.groupName === "production")).toBe(true);
     expect(accounts.items.some((account) => account.groupName === null)).toBe(true);
     expect(events.items).toHaveLength(15);
+    expect(events.items.find((event) => event.action === "model_route_cooldown")).toMatchObject({
+      result: "failed",
+      failureKind: "model",
+      model: "gpt-5.4-mini",
+    });
     expect(tasks.items.map((item) => item.status)).toEqual(
       expect.arrayContaining(["success", "running", "failed"]),
     );

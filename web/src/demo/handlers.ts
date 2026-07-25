@@ -1498,7 +1498,7 @@ function accountEvents() {
       id: 7100 + index,
       action: modelRouteEvent ? "model_route_cooldown" : action,
       source: index % 2 === 0 ? "maintenance_scheduler" : "operator",
-      result,
+      result: modelRouteEvent ? "failed" : result,
       accountDisplayName: account.displayName,
       accountGroupName: account.groupName,
       forwardProxyKey: proxyKey,
@@ -1509,9 +1509,11 @@ function accountEvents() {
           : proxyKey === "demo-frankfurt"
             ? "198.51.100.32"
             : "198.51.100.33",
-      reasonCode,
-      reasonMessage,
-      httpStatus,
+      reasonCode: modelRouteEvent ? "model_route" : reasonCode,
+      reasonMessage: modelRouteEvent
+        ? "The requested model is temporarily unavailable upstream."
+        : reasonMessage,
+      httpStatus: modelRouteEvent ? 429 : httpStatus,
       model:
         account.kind === "api_key_codex"
           ? modelRouteEvent
@@ -1526,8 +1528,9 @@ function accountEvents() {
       modelRouteCooldownUntil: modelRouteEvent
         ? new Date(Date.parse(demoNow()) + 45_000).toISOString()
         : null,
-      failureKind:
-        reasonCode === "transport_failure"
+      failureKind: modelRouteEvent
+        ? "model"
+        : reasonCode === "transport_failure"
           ? "upstream_timeout"
           : reasonCode === "reauth_required"
             ? "upstream_auth_rejected"
