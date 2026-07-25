@@ -426,8 +426,24 @@ export const DetailDrawerApiKeyEventImpact: Story = {
       within(dialog).queryByText(/operator|maintenance_scheduler/i),
     ).not.toBeInTheDocument();
     await expect(
-      within(dialog).getByText(/degraded.*cooling_down.*demoted.*excluded/i),
+      within(dialog).getByText(
+        /降权.*冷却中.*降权.*排除|Degraded.*Cooling down.*Demoted.*Excluded/i,
+      ),
     ).toBeVisible();
+    await expect(within(dialog).getByText(/上游服务异常|Upstream service failure/i)).toBeVisible();
+    await expect(
+      within(dialog).getByText(/上游额度或周限已耗尽|Upstream quota or weekly cap was exhausted/i),
+    ).toBeVisible();
+    await expect(
+      within(dialog).queryByText(
+        /mark_unavailable|model_route|degraded|cooling_down|demoted|excluded/i,
+      ),
+    ).not.toBeInTheDocument();
+    await expect(
+      within(dialog).queryByText(
+        /The upstream request timed out|The requested model is temporarily unavailable/i,
+      ),
+    ).not.toBeInTheDocument();
     await expect(within(dialog).queryByText(/-.*->.*-/)).not.toBeInTheDocument();
   },
 };

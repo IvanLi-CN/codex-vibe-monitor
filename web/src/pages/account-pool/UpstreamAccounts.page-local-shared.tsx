@@ -985,7 +985,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   onInitialDeleteConfirmHandled,
   onClose,
 }: SharedUpstreamAccountDetailDrawerProps) {
-  const { t, locale } = useTranslation();
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const isCompactViewport = useCompactViewport();
   const { openUpstreamAccount } = useUpstreamAccountDetailRoute();
@@ -1856,19 +1856,31 @@ function SharedUpstreamAccountDetailDrawerInner({
     if (!action) return null;
     const key = `accountPool.upstreamAccounts.latestAction.actions.${action}`;
     const translated = t(key);
-    return translated === key ? action : translated;
+    return translated === key ? t("accountPool.upstreamAccounts.latestAction.unknown") : translated;
   };
   const accountActionSourceLabel = (source?: string | null) => {
     if (!source) return null;
     const key = `accountPool.upstreamAccounts.latestAction.sources.${source}`;
     const translated = t(key);
-    return translated === key ? source : translated;
+    return translated === key ? t("accountPool.upstreamAccounts.latestAction.unknown") : translated;
   };
   const accountActionReasonLabel = (reason?: string | null) => {
     if (!reason) return null;
     const key = `accountPool.upstreamAccounts.latestAction.reasons.${reason}`;
     const translated = t(key);
-    return translated === key ? reason : translated;
+    return translated === key ? t("accountPool.upstreamAccounts.latestAction.unknown") : translated;
+  };
+  const accountModelRouteStateLabel = (state?: string | null) => {
+    if (!state) return "-";
+    const key = `accountPool.upstreamAccounts.modelRouting.states.${state}`;
+    const translated = t(key);
+    return translated === key ? t("accountPool.upstreamAccounts.latestAction.unknown") : translated;
+  };
+  const accountModelRoutePriorityLabel = (priority?: string | null) => {
+    if (!priority) return "-";
+    const key = `accountPool.upstreamAccounts.modelRouting.priorities.${priority}`;
+    const translated = t(key);
+    return translated === key ? t("accountPool.upstreamAccounts.latestAction.unknown") : translated;
   };
   const formatDuplicateReasons = (duplicateInfo?: UpstreamAccountDuplicateInfo | null) => {
     const reasons = duplicateInfo?.reasons ?? [];
@@ -3906,22 +3918,23 @@ function SharedUpstreamAccountDetailDrawerInner({
                                   {formatDateTime(actionEvent.occurredAt)}
                                 </span>
                               </div>
-                              {actionEvent.reasonMessage ? (
-                                <p className="mt-2 text-sm leading-6 text-base-content/75">
-                                  {actionEvent.reasonMessage}
-                                </p>
-                              ) : null}
                               {hasModelRoutingTransition(actionEvent) ? (
                                 <p className="mt-2 break-words text-xs leading-5 text-base-content/65">
                                   {t("accountPool.upstreamAccounts.modelRouting.transition")}
                                   {!hasAccountFailureImpact(actionEvent) && actionEvent.model
                                     ? ` (${actionEvent.model})`
                                     : ""}
-                                  : {actionEvent.modelRouteStateBefore ?? "-"} -&gt;{" "}
-                                  {actionEvent.modelRouteStateAfter ?? "-"}
+                                  : {accountModelRouteStateLabel(actionEvent.modelRouteStateBefore)}
+                                  {" -> "}
+                                  {accountModelRouteStateLabel(actionEvent.modelRouteStateAfter)}
                                   {" / "}
-                                  {actionEvent.modelRoutePriorityBefore ?? "-"} -&gt;{" "}
-                                  {actionEvent.modelRoutePriorityAfter ?? "-"}
+                                  {accountModelRoutePriorityLabel(
+                                    actionEvent.modelRoutePriorityBefore,
+                                  )}
+                                  {" -> "}
+                                  {accountModelRoutePriorityLabel(
+                                    actionEvent.modelRoutePriorityAfter,
+                                  )}
                                   {actionEvent.modelRouteFailureCount != null
                                     ? ` / ${t("accountPool.upstreamAccounts.modelRouting.failures")}: ${actionEvent.modelRouteFailureCount}`
                                     : ""}
@@ -3935,8 +3948,12 @@ function SharedUpstreamAccountDetailDrawerInner({
                                   <Badge variant="info">
                                     {actionEvent.blockedBinding.constraintSource ===
                                     "encryptedSessionOwner"
-                                      ? "加密 owner 约束"
-                                      : "单账号显式绑定"}
+                                      ? t(
+                                          "accountPool.upstreamAccounts.recentActions.blockedBinding.encryptedSessionOwner",
+                                        )
+                                      : t(
+                                          "accountPool.upstreamAccounts.recentActions.blockedBinding.explicitAccount",
+                                        )}
                                   </Badge>
                                   <Button
                                     type="button"
@@ -3947,9 +3964,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                                       openBlockedBindingWorkingConversations(actionEvent)
                                     }
                                   >
-                                    {locale === "zh"
-                                      ? "打开受影响会话"
-                                      : "Open affected conversations"}
+                                    {t(
+                                      "accountPool.upstreamAccounts.recentActions.blockedBinding.openConversations",
+                                    )}
                                   </Button>
                                 </div>
                               ) : null}
@@ -3965,7 +3982,10 @@ function SharedUpstreamAccountDetailDrawerInner({
                               ) : actionEvent.invokeId ? (
                                 <p className="mt-2 break-all font-mono text-xs text-base-content/55">
                                   {t("accountPool.upstreamAccounts.latestAction.fields.invokeId")}:{" "}
-                                  {actionEvent.invokeId}（历史事件未关联尝试）
+                                  {actionEvent.invokeId}{" "}
+                                  {t(
+                                    "accountPool.upstreamAccounts.recentActions.historicalEventUnlinkedAttempt",
+                                  )}
                                 </p>
                               ) : null}
                             </div>

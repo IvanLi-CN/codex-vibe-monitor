@@ -2401,6 +2401,8 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     expect(impact?.parentElement?.getAttribute("data-testid")).toBe("account-event-meta");
     expect(document.body.textContent).toMatch(/调用|Call/);
     expect(document.body.textContent).not.toMatch(/operator|maintenance_scheduler/);
+    expect(document.body.textContent).toMatch(/上游服务异常|Upstream service failure/);
+    expect(document.body.textContent).not.toContain("Service temporarily unavailable");
     expect(document.body.textContent).not.toContain("gpt-5.6-terra");
   });
 
@@ -2412,7 +2414,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
             id: 72,
             occurredAt: "2026-03-16T02:07:00.000Z",
             action: "account_updated",
-            source: "manual",
+            source: "account_update",
             result: "success",
             reasonCode: "account_updated",
             reasonMessage: "Settings saved",
@@ -2445,7 +2447,8 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     });
 
     await flushAsync();
-    expect(document.body.textContent).toContain("Settings saved");
+    expect(document.body.textContent).toMatch(/账号设置已更新|Account settings were updated/);
+    expect(document.body.textContent).not.toContain("Settings saved");
     expect(document.querySelector('[data-testid="account-event-impact"]')).toBeNull();
   });
 
@@ -2459,7 +2462,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
             action: "model_route_recovered",
             source: "call",
             result: "recovered",
-            reasonCode: "model_route",
+            reasonCode: "sync_ok",
             model: "gpt-5.4-mini",
             modelRouteStateBefore: "cooling_down",
             modelRouteStateAfter: "available",
@@ -2496,7 +2499,10 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
 
     await flushAsync();
     expect(document.body.textContent).toContain("gpt-5.4-mini");
-    expect(document.body.textContent).toMatch(/cooling_down.*available.*excluded.*normal/);
+    expect(document.body.textContent).toMatch(
+      /冷却中.*可用.*排除.*正常|Cooling down.*Available.*Excluded.*Normal/,
+    );
+    expect(document.body.textContent).not.toMatch(/cooling_down|model_route/);
     expect(document.querySelector('[data-testid="account-event-impact"]')).toBeNull();
   });
 
@@ -2549,7 +2555,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     });
 
     await flushAsync();
-    expect(document.body.textContent).toContain("加密 owner 约束");
+    expect(document.body.textContent).toMatch(/加密 owner 约束|Encrypted owner constraint/);
 
     const openButton = document.body.querySelector(
       '[data-testid="upstream-account-recent-action-open-blocked-binding"]',

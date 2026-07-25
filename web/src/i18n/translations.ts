@@ -1407,6 +1407,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.reasons.account_updated":
       "Account settings were updated",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error": "Sync failed",
+    "accountPool.upstreamAccounts.latestAction.reasons.egress_throttled": "Egress rate limited",
     "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_exhausted":
       "Latest usage snapshot already shows an exhausted limit window",
     "accountPool.upstreamAccounts.latestAction.reasons.quota_still_exhausted":
@@ -1430,6 +1431,10 @@ const baseTranslations = {
       "Upstream quota or weekly cap was exhausted",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_5xx":
       "Upstream service failure",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_rejected":
+      "Upstream rejected the request",
+    "accountPool.upstreamAccounts.latestAction.reasons.pool_assigned_account_blocked":
+      "Bound account is unavailable",
     "accountPool.upstreamAccounts.recentActions.title": "Recent account events",
     "accountPool.upstreamAccounts.recentActions.description":
       "Latest call and sync actions for this account.",
@@ -1438,6 +1443,14 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.recentActions.impact.scopeAccount": "Account",
     "accountPool.upstreamAccounts.recentActions.impact.scopeModel": "Model",
     "accountPool.upstreamAccounts.recentActions.impact.affectedModels": "Affected models",
+    "accountPool.upstreamAccounts.recentActions.blockedBinding.encryptedSessionOwner":
+      "Encrypted owner constraint",
+    "accountPool.upstreamAccounts.recentActions.blockedBinding.explicitAccount":
+      "Explicit account binding",
+    "accountPool.upstreamAccounts.recentActions.blockedBinding.openConversations":
+      "Open affected conversations",
+    "accountPool.upstreamAccounts.recentActions.historicalEventUnlinkedAttempt":
+      "(historical event not linked to an attempt)",
     "accountPool.upstreamAccounts.recentActions.impact.allModels": "All",
     "accountPool.upstreamAccounts.recentActions.impact.unknownModel": "Unknown",
     "accountPool.upstreamAccounts.duplicate.badge": "Duplicate",
@@ -4052,6 +4065,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.reasons.sync_ok": "同步完成",
     "accountPool.upstreamAccounts.latestAction.reasons.account_updated": "账号设置已更新",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error": "同步失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.egress_throttled": "出口正在限流",
     "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_exhausted":
       "最新额度快照已经显示限制窗口耗尽",
     "accountPool.upstreamAccounts.latestAction.reasons.quota_still_exhausted":
@@ -4070,6 +4084,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_429_quota_exhausted":
       "上游额度或周限已耗尽",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_5xx": "上游服务异常",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_rejected": "上游拒绝请求",
+    "accountPool.upstreamAccounts.latestAction.reasons.pool_assigned_account_blocked":
+      "绑定账号当前不可用",
     "accountPool.upstreamAccounts.recentActions.title": "最近账号事件",
     "accountPool.upstreamAccounts.recentActions.description": "展示这条账号最近的调用与同步动作。",
     "accountPool.upstreamAccounts.recentActions.empty": "暂时还没有最近事件。",
@@ -4077,6 +4094,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.recentActions.impact.scopeAccount": "账号",
     "accountPool.upstreamAccounts.recentActions.impact.scopeModel": "模型",
     "accountPool.upstreamAccounts.recentActions.impact.affectedModels": "受影响模型",
+    "accountPool.upstreamAccounts.recentActions.blockedBinding.encryptedSessionOwner":
+      "加密 owner 约束",
+    "accountPool.upstreamAccounts.recentActions.blockedBinding.explicitAccount": "单账号显式绑定",
+    "accountPool.upstreamAccounts.recentActions.blockedBinding.openConversations": "打开受影响会话",
+    "accountPool.upstreamAccounts.recentActions.historicalEventUnlinkedAttempt":
+      "（历史事件未关联尝试）",
     "accountPool.upstreamAccounts.recentActions.impact.allModels": "全部",
     "accountPool.upstreamAccounts.recentActions.impact.unknownModel": "未知",
     "accountPool.upstreamAccounts.duplicate.badge": "重复账号",

@@ -1462,7 +1462,7 @@ function accountEvents() {
       null,
     ],
     [
-      "mark_unavailable",
+      "route_cooldown_started",
       "failed",
       "transport_failure",
       "Simulated timeout while checking upstream health.",
@@ -1509,7 +1509,7 @@ function accountEvents() {
           : proxyKey === "demo-frankfurt"
             ? "198.51.100.32"
             : "198.51.100.33",
-      reasonCode: modelRouteEvent ? "model_route" : reasonCode,
+      reasonCode: modelRouteEvent ? "upstream_http_429_quota_exhausted" : reasonCode,
       reasonMessage: modelRouteEvent
         ? "The requested model is temporarily unavailable upstream."
         : reasonMessage,
@@ -1550,7 +1550,7 @@ function accountEvents() {
     events.unshift({
       ...apiKeyModelEvent,
       id: 7199,
-      action: "mark_unavailable",
+      action: "route_cooldown_started",
       reasonCode: "transport_failure",
       reasonMessage: "The upstream request timed out before the first response chunk.",
       httpStatus: 503,

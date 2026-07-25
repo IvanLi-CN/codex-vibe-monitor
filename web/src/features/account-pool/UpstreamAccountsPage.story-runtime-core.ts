@@ -1695,7 +1695,7 @@ export function createApiKeyAccount(
         occurredAt: "2026-07-25T10:03:18.000Z",
         action: "model_route_cooldown",
         source: "call",
-        reasonCode: "model_route",
+        reasonCode: "upstream_http_429_quota_exhausted",
         reasonMessage: "The requested model is temporarily unavailable upstream.",
         httpStatus: 429,
         failureKind: "model",
