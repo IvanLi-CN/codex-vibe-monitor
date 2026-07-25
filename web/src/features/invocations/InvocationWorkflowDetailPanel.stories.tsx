@@ -2,7 +2,11 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ReactNode, useEffect } from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
-import type { ApiInvocation, ApiInvocationWorkflowDetailResponse } from "../../lib/api";
+import type {
+  ApiInvocation,
+  ApiInvocationWorkflowDetailResponse,
+  ApiInvocationWorkflowTimelineEntry,
+} from "../../lib/api";
 import { FullPageStorySurface } from "../../storybook/storybookPageHelpers";
 import { InvocationWorkflowDetailPanel } from "./InvocationWorkflowDetailPanel";
 import {
@@ -381,6 +385,114 @@ const failedWorkflowResponse: ApiInvocationWorkflowDetailResponse = {
   partial: false,
   partialReason: null,
 };
+
+function createRetriedWorkflowResponse(): ApiInvocationWorkflowDetailResponse {
+  const firstAttemptEntry = failedWorkflowResponse.timeline.find(
+    (entry) => entry.kind === "attempt",
+  );
+  const finalFailureEntry = failedWorkflowResponse.timeline.find(
+    (entry) => entry.kind === "systemFinalFailure",
+  );
+  if (!firstAttemptEntry?.attempt || !finalFailureEntry) {
+    throw new Error("retry workflow fixture must contain an attempt and final failure");
+  }
+
+  const firstAttempt: ApiInvocationWorkflowTimelineEntry = {
+    ...firstAttemptEntry,
+    blockId: "attempt-h3hxtb12",
+    title: "Attempt 1",
+    subtitle: "pool-alpha@example.com",
+    status: "http_failure",
+    attempt: {
+      ...firstAttemptEntry.attempt,
+      attemptId: "H3HxTB12",
+      status: "http_failure",
+      phase: "failed",
+      httpStatus: 502,
+      failureKind: "upstream_http_5xx",
+      errorMessage: "pool upstream responded with 502",
+      downstreamErrorMessage: "pool upstream responded with 502",
+      upstreamRequestId: "H3HxTB12",
+      responseSummary: {
+        ...(firstAttemptEntry.attempt.responseSummary ?? {}),
+        status: "http_failure",
+        phase: "failed",
+        httpStatus: 502,
+        failureKind: "upstream_http_5xx",
+        errorMessage: "pool upstream responded with 502",
+        downstreamErrorMessage: "pool upstream responded with 502",
+        responseContentEncoding: null,
+        headers: {
+          contentEncoding: null,
+          upstreamRequestId: "H3HxTB12",
+        },
+        responseBodyCapture: {
+          availableAtInvocationLevel: false,
+          size: 98,
+          detailLevel: "attempt_metrics",
+          unavailableReason: "non_final_attempt_response_body_not_captured",
+        },
+      },
+    },
+  };
+
+  const finalAttempt: ApiInvocationWorkflowTimelineEntry = {
+    ...firstAttemptEntry,
+    blockId: "attempt-w1scc2ss",
+    occurredAt: "2026-07-15T13:56:08Z",
+    title: "Attempt 2",
+    subtitle: "pool-beta@example.com",
+    status: "success",
+    attempt: {
+      ...firstAttemptEntry.attempt,
+      attemptId: "W1scc2SS",
+      occurredAt: "2026-07-15T13:56:08Z",
+      attemptIndex: 2,
+      upstreamAccountId: 43,
+      upstreamAccountName: "pool-beta@example.com",
+      status: "success",
+      phase: "completed",
+      httpStatus: 200,
+      failureKind: null,
+      errorMessage: null,
+      downstreamErrorMessage: null,
+      upstreamRequestId: "W1scc2SS",
+      responseSummary: {
+        ...(firstAttemptEntry.attempt.responseSummary ?? {}),
+        status: "success",
+        phase: "completed",
+        httpStatus: 200,
+        failureKind: null,
+        errorMessage: null,
+        downstreamErrorMessage: null,
+        responseContentEncoding: "identity",
+        headers: {
+          contentEncoding: "identity",
+          upstreamRequestId: "W1scc2SS",
+        },
+        responseBodyCapture: {
+          availableAtInvocationLevel: true,
+          size: 181_382,
+          detailLevel: "full",
+        },
+      },
+    },
+  };
+
+  return {
+    ...failedWorkflowResponse,
+    hero: {
+      ...failedWorkflowResponse.hero,
+      timelineAttemptCount: 2,
+      poolAttemptCount: 2,
+      upstreamAccountId: 43,
+      upstreamAccountName: "pool-beta@example.com",
+    },
+    timeline: [failedWorkflowResponse.timeline[0], firstAttempt, finalAttempt, finalFailureEntry],
+  };
+}
+
+const retriedWorkflowResponse = createRetriedWorkflowResponse();
 
 const blockedWorkflowRecord: ApiInvocation = {
   ...failedWorkflowRecord,
@@ -991,6 +1103,49 @@ export const FailedPoolWorkflow: Story = {
       </>
     ),
   ],
+};
+
+export const RetriedAttemptResponseBodyUnavailable: Story = {
+  args: {
+    record: failedWorkflowRecord,
+    size: "default",
+  },
+  decorators: [
+    (Story) => (
+      <>
+        <WorkflowFetchMock recordId={77} response={retriedWorkflowResponse} />
+        <Story />
+      </>
+    ),
+  ],
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "A retried workflow keeps the first 502 attempt bound to its own response headers and metrics. The final response body is only available on the W1scc2SS attempt.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => {
+      expect(canvasElement.textContent ?? "").toContain("H3HxTB12");
+      expect(canvasElement.textContent ?? "").toContain("98 B");
+    });
+    const nonFinalResponseBodyButton = (
+      await canvas.findAllByRole("button", {
+        name: /响应体/i,
+      })
+    ).find((button) => button.textContent?.includes("98 B"));
+    if (!nonFinalResponseBodyButton) {
+      throw new Error("non-final response body action not found");
+    }
+    await userEvent.click(nonFinalResponseBodyButton);
+    await waitFor(() => {
+      expect(canvasElement.textContent ?? "").toContain("该重试不是最终响应，未绑定调用级响应体。");
+    });
+    expect(nonFinalResponseBodyButton.textContent ?? "").not.toContain("181,382 B");
+  },
 };
 
 export const FailedPoolWorkflowPage: Story = {

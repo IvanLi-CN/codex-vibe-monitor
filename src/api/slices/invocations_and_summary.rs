@@ -3491,17 +3491,40 @@ fn build_request_client_snapshot(payload: Option<&Value>) -> Value {
     })
 }
 
-fn build_response_header_snapshot(record: &ApiInvocation, payload: Option<&Value>) -> Value {
+fn build_response_header_snapshot(
+    record: &ApiInvocation,
+    attempt: Option<&InvocationWorkflowAttemptRow>,
+    payload: Option<&Value>,
+    allow_invocation_level_fields: bool,
+) -> Value {
+    let content_encoding = allow_invocation_level_fields
+        .then(|| {
+            record
+                .response_content_encoding
+                .clone()
+                .or_else(|| payload_string(payload, &["responseContentEncoding"]))
+        })
+        .flatten();
+    let content_encoding_chain = allow_invocation_level_fields
+        .then(|| payload_string(payload, &["contentEncodingChain"]))
+        .flatten();
+    let upstream_request_id = attempt
+        .and_then(|attempt| attempt.upstream_request_id.clone())
+        .or_else(|| {
+            allow_invocation_level_fields
+                .then(|| {
+                    record
+                        .upstream_request_id
+                        .clone()
+                        .or_else(|| payload_string(payload, &["upstreamRequestId"]))
+                })
+                .flatten()
+        });
+
     json!({
-        "contentEncoding": record
-            .response_content_encoding
-            .clone()
-            .or_else(|| payload_string(payload, &["responseContentEncoding"])),
-        "contentEncodingChain": payload_string(payload, &["contentEncodingChain"]),
-        "upstreamRequestId": record
-            .upstream_request_id
-            .clone()
-            .or_else(|| payload_string(payload, &["upstreamRequestId"])),
+        "contentEncoding": content_encoding,
+        "contentEncodingChain": content_encoding_chain,
+        "upstreamRequestId": upstream_request_id,
         "cvmInvokeId": Some(record.invoke_id.clone()),
     })
 }
@@ -3888,48 +3911,88 @@ fn build_attempt_response_summary(
     attempt: &InvocationWorkflowAttemptRow,
     payload: Option<&Value>,
     usage_cost_audit: Option<&InvocationCostAudit>,
+    is_final_attempt: bool,
 ) -> Value {
+    let invocation_failure_kind = is_final_attempt
+        .then_some(record.failure_kind.as_ref())
+        .flatten();
+    let invocation_error_message = is_final_attempt
+        .then_some(record.error_message.as_ref())
+        .flatten();
+    let invocation_downstream_error_message = is_final_attempt
+        .then_some(record.downstream_error_message.as_ref())
+        .flatten();
+    let invocation_upstream_request_id = is_final_attempt
+        .then_some(record.upstream_request_id.as_ref())
+        .flatten();
+    let invocation_response_content_encoding = is_final_attempt
+        .then(|| record.response_content_encoding.clone())
+        .flatten();
+    let invocation_response_payload = is_final_attempt.then_some(payload).flatten();
+    let response_body_capture_size = if is_final_attempt {
+        record.response_raw_size
+    } else {
+        attempt.upstream_response_body_bytes
+    };
+    let response_body_capture_truncated = if is_final_attempt {
+        record.response_raw_truncated.unwrap_or_default() != 0
+    } else {
+        false
+    };
+    let response_body_capture_truncated_reason = if is_final_attempt {
+        record.response_raw_truncated_reason.clone()
+    } else {
+        None
+    };
+    let response_body_capture_detail_level = if is_final_attempt {
+        Some(record.detail_level.clone())
+    } else {
+        Some("attempt_metrics".to_string())
+    };
+
     json!({
         "status": attempt.status.clone(),
         "phase": attempt.phase.clone(),
         "httpStatus": attempt.http_status,
-        "compactionResponseKind": record.compaction_response_kind.clone(),
-        "failureKind": attempt.failure_kind.as_ref().or(record.failure_kind.as_ref()),
-        "errorMessage": attempt.error_message.as_ref().or(record.error_message.as_ref()),
+        "compactionResponseKind": is_final_attempt.then(|| record.compaction_response_kind.clone()).flatten(),
+        "failureKind": attempt.failure_kind.as_ref().or(invocation_failure_kind),
+        "errorMessage": attempt.error_message.as_ref().or(invocation_error_message),
         "downstreamErrorMessage": attempt
             .downstream_error_message
             .as_ref()
-            .or(record.downstream_error_message.as_ref()),
-        "upstreamRequestId": attempt.upstream_request_id.as_ref().or(record.upstream_request_id.as_ref()),
-        "upstreamErrorCode": record.upstream_error_code.clone(),
-        "upstreamErrorMessage": record.upstream_error_message.clone(),
-        "streamTerminalEvent": record.stream_terminal_event.clone(),
-        "responseContentEncoding": record.response_content_encoding.clone(),
-        "serviceTier": record.service_tier.clone(),
-        "billingServiceTier": record.billing_service_tier.clone(),
-        "headers": build_response_header_snapshot(record, payload),
-        "delivery": build_response_delivery_snapshot(payload),
+            .or(invocation_downstream_error_message),
+        "upstreamRequestId": attempt.upstream_request_id.as_ref().or(invocation_upstream_request_id),
+        "upstreamErrorCode": is_final_attempt.then(|| record.upstream_error_code.clone()).flatten(),
+        "upstreamErrorMessage": is_final_attempt.then(|| record.upstream_error_message.clone()).flatten(),
+        "streamTerminalEvent": is_final_attempt.then(|| record.stream_terminal_event.clone()).flatten(),
+        "responseContentEncoding": invocation_response_content_encoding,
+        "serviceTier": is_final_attempt.then(|| record.service_tier.clone()).flatten(),
+        "billingServiceTier": is_final_attempt.then(|| record.billing_service_tier.clone()).flatten(),
+        "headers": build_response_header_snapshot(record, Some(attempt), payload, is_final_attempt),
+        "delivery": build_response_delivery_snapshot(invocation_response_payload),
         "compactSupport": {
             "status": attempt.compact_support_status.clone(),
             "reason": attempt.compact_support_reason.clone(),
         },
         "latencyMs": {
-            "connect": attempt.connect_latency_ms.or(record.t_upstream_connect_ms),
-            "firstByte": attempt.first_byte_latency_ms.or(record.t_upstream_ttfb_ms),
-            "stream": attempt.stream_latency_ms.or(record.t_upstream_stream_ms),
-            "requestRead": record.t_req_read_ms,
-            "requestParse": record.t_req_parse_ms,
-            "responseParse": record.t_resp_parse_ms,
-            "persist": record.t_persist_ms,
-            "total": record.t_total_ms,
+            "connect": attempt.connect_latency_ms.or_else(|| is_final_attempt.then_some(record.t_upstream_connect_ms).flatten()),
+            "firstByte": attempt.first_byte_latency_ms.or_else(|| is_final_attempt.then_some(record.t_upstream_ttfb_ms).flatten()),
+            "stream": attempt.stream_latency_ms.or_else(|| is_final_attempt.then_some(record.t_upstream_stream_ms).flatten()),
+            "requestRead": is_final_attempt.then_some(record.t_req_read_ms).flatten(),
+            "requestParse": is_final_attempt.then_some(record.t_req_parse_ms).flatten(),
+            "responseParse": is_final_attempt.then_some(record.t_resp_parse_ms).flatten(),
+            "persist": is_final_attempt.then_some(record.t_persist_ms).flatten(),
+            "total": is_final_attempt.then_some(record.t_total_ms).flatten(),
         },
         "responseBodyCapture": {
-            "availableAtInvocationLevel": record.response_raw_path.is_some(),
-            "size": record.response_raw_size,
-            "truncated": record.response_raw_truncated.unwrap_or_default() != 0,
-            "truncatedReason": record.response_raw_truncated_reason.clone(),
-            "detailLevel": record.detail_level.clone(),
-            "detailPruneReason": record.detail_prune_reason.clone(),
+            "availableAtInvocationLevel": is_final_attempt && record.response_raw_path.is_some(),
+            "size": response_body_capture_size,
+            "truncated": response_body_capture_truncated,
+            "truncatedReason": response_body_capture_truncated_reason,
+            "detailLevel": response_body_capture_detail_level,
+            "detailPruneReason": is_final_attempt.then(|| record.detail_prune_reason.clone()).flatten(),
+            "unavailableReason": (!is_final_attempt)
+                .then_some("non_final_attempt_response_body_not_captured"),
         },
         "usage": usage_cost_audit.map(|audit| build_invocation_usage_summary(record, audit)),
     })
@@ -3940,7 +4003,21 @@ fn build_workflow_attempt_from_row(
     attempt: &InvocationWorkflowAttemptRow,
     payload: Option<&Value>,
     usage_cost_audit: Option<&InvocationCostAudit>,
+    is_final_attempt: bool,
 ) -> InvocationWorkflowAttempt {
+    let invocation_failure_kind = is_final_attempt
+        .then(|| record.failure_kind.clone())
+        .flatten();
+    let invocation_error_message = is_final_attempt
+        .then(|| record.error_message.clone())
+        .flatten();
+    let invocation_downstream_error_message = is_final_attempt
+        .then(|| record.downstream_error_message.clone())
+        .flatten();
+    let invocation_upstream_request_id = is_final_attempt
+        .then(|| record.upstream_request_id.clone())
+        .flatten();
+
     InvocationWorkflowAttempt {
         synthetic: false,
         attempt_id: attempt.attempt_id.clone(),
@@ -3970,32 +4047,46 @@ fn build_workflow_attempt_from_row(
         phase: attempt.phase.clone(),
         http_status: attempt.http_status,
         downstream_http_status: attempt.downstream_http_status,
-        failure_kind: attempt
-            .failure_kind
-            .clone()
-            .or_else(|| record.failure_kind.clone()),
-        error_message: attempt
-            .error_message
-            .clone()
-            .or_else(|| record.error_message.clone()),
+        failure_kind: attempt.failure_kind.clone().or(invocation_failure_kind),
+        error_message: attempt.error_message.clone().or(invocation_error_message),
         downstream_error_message: attempt
             .downstream_error_message
             .clone()
-            .or_else(|| record.downstream_error_message.clone()),
-        connect_latency_ms: attempt.connect_latency_ms.or(record.t_upstream_connect_ms),
-        first_byte_latency_ms: attempt.first_byte_latency_ms.or(record.t_upstream_ttfb_ms),
-        stream_latency_ms: attempt.stream_latency_ms.or(record.t_upstream_stream_ms),
+            .or(invocation_downstream_error_message),
+        connect_latency_ms: attempt.connect_latency_ms.or_else(|| {
+            is_final_attempt
+                .then_some(record.t_upstream_connect_ms)
+                .flatten()
+        }),
+        first_byte_latency_ms: attempt.first_byte_latency_ms.or_else(|| {
+            is_final_attempt
+                .then_some(record.t_upstream_ttfb_ms)
+                .flatten()
+        }),
+        stream_latency_ms: attempt.stream_latency_ms.or_else(|| {
+            is_final_attempt
+                .then_some(record.t_upstream_stream_ms)
+                .flatten()
+        }),
         upstream_request_id: attempt
             .upstream_request_id
             .clone()
-            .or_else(|| record.upstream_request_id.clone()),
+            .or(invocation_upstream_request_id),
         request_summary: parse_summary_json_or_fallback(
             attempt.request_summary_json.as_deref(),
             || build_attempt_request_summary(record, attempt, payload),
         ),
         response_summary: parse_summary_json_or_fallback(
             attempt.response_summary_json.as_deref(),
-            || build_attempt_response_summary(record, attempt, payload, usage_cost_audit),
+            || {
+                build_attempt_response_summary(
+                    record,
+                    attempt,
+                    payload,
+                    usage_cost_audit,
+                    is_final_attempt,
+                )
+            },
         ),
     }
 }
@@ -4060,7 +4151,7 @@ fn build_synthetic_workflow_attempt(
         "responseContentEncoding": record.response_content_encoding.clone(),
         "serviceTier": record.service_tier.clone(),
         "billingServiceTier": record.billing_service_tier.clone(),
-        "headers": build_response_header_snapshot(record, payload),
+        "headers": build_response_header_snapshot(record, None, payload, true),
         "delivery": build_response_delivery_snapshot(payload),
         "latencyMs": {
             "connect": record.t_upstream_connect_ms,
@@ -4391,27 +4482,6 @@ fn build_workflow_attempt_timeline_entry(
     }
 }
 
-fn suppress_invocation_level_response_body_for_account_retry(
-    attempt: &mut InvocationWorkflowAttempt,
-    attempt_row: &InvocationWorkflowAttemptRow,
-) {
-    let Some(Value::Object(response_summary)) = attempt.response_summary.as_mut() else {
-        return;
-    };
-
-    let mut capture = serde_json::Map::new();
-    capture.insert("availableAtInvocationLevel".to_string(), Value::Bool(false));
-    if let Some(size) = attempt_row.upstream_response_body_bytes {
-        capture.insert("size".to_string(), json!(size));
-    }
-    capture.insert("detailLevel".to_string(), json!("attempt_metrics"));
-    capture.insert(
-        "unavailableReason".to_string(),
-        json!("non_final_attempt_response_body_not_captured"),
-    );
-    response_summary.insert("responseBodyCapture".to_string(), Value::Object(capture));
-}
-
 pub(crate) async fn hydrate_upstream_account_attempt_workflow_entries(
     state: &AppState,
     records: &mut [ApiPoolUpstreamRequestAttempt],
@@ -4475,26 +4545,15 @@ pub(crate) async fn hydrate_upstream_account_attempt_workflow_entries(
         let workflow_entries = real_attempt_rows
             .into_iter()
             .filter_map(|attempt_row| {
-                let mut attempt = build_workflow_attempt_from_row(
+                let attempt = build_workflow_attempt_from_row(
                     &record,
                     attempt_row,
                     payload_value.as_ref(),
                     (last_success_attempt_index == Some(attempt_row.attempt_index))
                         .then_some(usage_cost_audit.as_ref())
                         .flatten(),
+                    final_attempt_index == Some(attempt_row.attempt_index),
                 );
-                if final_attempt_index != Some(attempt_row.attempt_index)
-                    && attempt_row
-                        .response_summary_json
-                        .as_deref()
-                        .map(str::trim)
-                        .is_none_or(str::is_empty)
-                {
-                    suppress_invocation_level_response_body_for_account_retry(
-                        &mut attempt,
-                        attempt_row,
-                    );
-                }
                 let attempt_id = attempt.attempt_id.clone()?;
                 Some((attempt_id, build_workflow_attempt_timeline_entry(attempt)))
             })
@@ -4711,7 +4770,13 @@ pub(crate) async fn fetch_invocation_workflow_detail(
         pseudo_attempt_rows
             .last()
             .map(|attempt| {
-                build_workflow_attempt_from_row(&record, attempt, payload_value.as_ref(), None)
+                build_workflow_attempt_from_row(
+                    &record,
+                    attempt,
+                    payload_value.as_ref(),
+                    None,
+                    false,
+                )
             })
             .unwrap_or_else(|| {
                 build_synthetic_workflow_attempt(&record, payload_value.as_ref(), None)
@@ -4728,6 +4793,10 @@ pub(crate) async fn fetch_invocation_workflow_detail(
             )]
         }
     } else {
+        let final_attempt_index = real_attempt_rows
+            .iter()
+            .map(|attempt| attempt.attempt_index)
+            .max();
         real_attempt_rows
             .iter()
             .map(|attempt| {
@@ -4738,6 +4807,7 @@ pub(crate) async fn fetch_invocation_workflow_detail(
                     (last_success_attempt_index == Some(attempt.attempt_index))
                         .then_some(usage_cost_audit.as_ref())
                         .flatten(),
+                    final_attempt_index == Some(attempt.attempt_index),
                 )
             })
             .collect::<Vec<_>>()
@@ -15182,6 +15252,7 @@ mod invocation_cost_audit_tests {
                     None,
                     (last_success_attempt_index == Some(attempt.attempt_index))
                         .then_some(&usage_cost_audit),
+                    attempt.attempt_index == 3,
                 )
             })
             .collect::<Vec<_>>();
@@ -15205,6 +15276,91 @@ mod invocation_cost_audit_tests {
         assert_eq!(
             final_response_summary["usage"]["audit"]["reason"].as_str(),
             Some(INVOCATION_COST_AUDIT_REASON_PRICE_VERSION_CHANGED)
+        );
+    }
+
+    #[test]
+    fn non_final_attempt_response_summary_does_not_reuse_invocation_level_response_details() {
+        let mut record = sample_invocation(Some(0));
+        record.response_raw_path = Some("response-body.json".to_string());
+        record.response_raw_size = Some(181_382);
+        record.response_content_encoding = Some("identity".to_string());
+        record.upstream_request_id = Some("W1scc2SS".to_string());
+
+        let mut attempt = sample_attempt_row(1, "failed");
+        attempt.upstream_request_id = Some("H3HxTB12".to_string());
+        attempt.upstream_response_body_bytes = Some(98);
+
+        let response_summary = build_attempt_response_summary(&record, &attempt, None, None, false);
+
+        assert_eq!(
+            response_summary["responseBodyCapture"]["availableAtInvocationLevel"],
+            Value::Bool(false)
+        );
+        assert_eq!(response_summary["responseBodyCapture"]["size"], json!(98));
+        assert_eq!(
+            response_summary["responseBodyCapture"]["detailLevel"],
+            json!("attempt_metrics")
+        );
+        assert_eq!(
+            response_summary["responseBodyCapture"]["unavailableReason"],
+            json!("non_final_attempt_response_body_not_captured")
+        );
+        assert_eq!(
+            response_summary["headers"]["upstreamRequestId"],
+            json!("H3HxTB12")
+        );
+        assert!(response_summary["headers"]["contentEncoding"].is_null());
+        assert!(response_summary["responseContentEncoding"].is_null());
+    }
+
+    #[test]
+    fn workflow_attempt_mapping_scopes_invocation_response_capture_to_final_attempt() {
+        let mut record = sample_invocation(Some(0));
+        record.response_raw_path = Some("response-body.json".to_string());
+        record.response_raw_size = Some(181_382);
+        record.response_content_encoding = Some("identity".to_string());
+        record.upstream_request_id = Some("W1scc2SS".to_string());
+
+        let mut first_attempt = sample_attempt_row(1, "failed");
+        first_attempt.upstream_request_id = Some("H3HxTB12".to_string());
+        first_attempt.upstream_response_body_bytes = Some(98);
+        let mut final_attempt = sample_attempt_row(2, "success");
+        final_attempt.upstream_request_id = Some("W1scc2SS".to_string());
+        final_attempt.upstream_response_body_bytes = Some(181_382);
+
+        let first = build_workflow_attempt_from_row(&record, &first_attempt, None, None, false);
+        let final_attempt =
+            build_workflow_attempt_from_row(&record, &final_attempt, None, None, true);
+
+        assert_eq!(
+            first.response_summary.as_ref().expect("first summary")["headers"]["upstreamRequestId"],
+            json!("H3HxTB12")
+        );
+        assert_eq!(
+            first.response_summary.as_ref().expect("first summary")["responseBodyCapture"]["size"],
+            json!(98)
+        );
+        assert_eq!(
+            final_attempt
+                .response_summary
+                .as_ref()
+                .expect("final summary")["headers"]["upstreamRequestId"],
+            json!("W1scc2SS")
+        );
+        assert_eq!(
+            final_attempt
+                .response_summary
+                .as_ref()
+                .expect("final summary")["responseBodyCapture"]["size"],
+            json!(181_382)
+        );
+        assert_eq!(
+            final_attempt
+                .response_summary
+                .as_ref()
+                .expect("final summary")["responseBodyCapture"]["availableAtInvocationLevel"],
+            Value::Bool(true)
         );
     }
 }

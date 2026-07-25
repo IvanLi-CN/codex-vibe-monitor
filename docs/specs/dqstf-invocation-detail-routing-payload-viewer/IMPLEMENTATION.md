@@ -4,8 +4,8 @@
 
 - Canonical spec: `docs/specs/dqstf-invocation-detail-routing-payload-viewer/SPEC.md`
 - Implementation summary: 调用详情继续使用统一工作流视图；当前真相已收紧为 `attempt = 真实开始向上游 dispatch`，pre-dispatch pool 终态统一表现为 `路由决定 + 系统裁定`，本地裁定返回体回放真实下游 body。
-- Branch: `th/fix-invocation-payload-loading`
-- Base: `main@1bd0ae7d63ce9123a8c8311c934c842ae99dcffa`
+- Branch: `th/fix-attempt-response-detail-isolation`
+- Base: `origin/main@5cc11b2c`
 
 ## Implemented Coverage
 
@@ -23,6 +23,7 @@
 - 尝试块进一步改成显式子页面目录：默认展开首个尝试块，并直接展示 `概览 + 7 个尝试子详情页` 的入口矩阵，避免请求 / 响应细节继续藏在两级按钮后面。
 - 路由块详情固定为 `请求 / 请求头 / 请求体` 三个分区；其中 `请求体` 直接复用调用级 request-body 读取路径，不在 attempt 表复制 raw body。
 - 调用详情的 lazy payload loader 现在统一使用 request/response sequence guard：点击 `请求体` / `响应体` 后，异步完成必须以最近一次请求为准收口到 `ready` 或 `error`，不能再因 effect 自清理把已成功返回的结果永久丢成 `loading`。
+- workflow detail 聚合层现在按真实出站 attempt 的最大 `attempt_index` 判定最终尝试；非最终尝试的响应头、错误上下文、延迟 fallback 与响应体 capture 均保持 attempt 级边界，不再回退到调用级最终响应。
 - mock-only Web Demo 现在为 `demo-invocation-9002` 补齐 `/api/invocations/:id/workflow-detail`、`/request-body` 和 `/response-body` 路由级夹具；Dashboard 可直接从分享路由回放真实 attempt 卡片，并稳定复现“请求体未存档但不再卡 loading”的 owner-facing 证据面。
 - 本地生成的终态错误响应改为复用共享 envelope，同时驱动 HTTP 下游返回与 `ProxyCaptureRecord` 持久化；`systemFinalFailure.responseBody` 对 503/429/同类本地裁定现在回放真实 JSON body，不再落 `"{}"` / `missing_body` 假空体。
 - pre-dispatch pool 失败、budget terminal、websocket pre-upstream owner-guard 等本地终态不再前向写入 `pool_upstream_request_attempts`；真实出站调用的 attempt 主路径保持不变。
@@ -43,6 +44,10 @@
 - `cd web && bun run test src/features/dashboard/DashboardInvocationDetailDrawer.test.tsx`: 1 file passed，9 tests passed。
 - `cd web && bun run demo:build`: passed。
 - `cd web && bun run build-storybook`: passed。
+- `cargo test invocation_cost_audit_tests -- --nocapture`: 5 tests passed，覆盖非最终尝试的响应头/响应体隔离及最终尝试映射。
+- `cd web && bun run test -- src/features/invocations/InvocationWorkflowDetailPanel.test.tsx`: 1 file passed，8 tests passed，覆盖非最终尝试不会 lazy-fetch 调用级响应体。
+- `cd web && bun run build`: passed。
+- Chrome + Storybook `RetriedAttemptResponseBodyUnavailable` 验证：H3HxTB12 显示 `HTTP 502`、`98 B`、`attempt_metrics`，W1scc2SS 显示 `HTTP 200`、`181,382 B`，控制台无 error/warn。
 - Chrome + Storybook `BlockedPoolWorkflowMissingArchivedRequestBody` 验证：`请求体` lazy fetch 最终显示 `该记录没有保留可展示的载荷。`，且页面文本不再包含内部 `missing_body` reason。
 - Chrome + mock-only Web Demo Dashboard 路由验证：`#/dashboard/invocations/demo-invocation-9002?demoScene=operational&demoTheme=dark` 内的 attempt `qPvNNAK8` 展开 `请求体` 后，界面显示 `请求体不可用：该记录没有保留可展示的载荷。`，且保留请求/响应指标、压缩信息与 `归档 未存档`。
 - 本地截图验证已补充 `workflow-detail-dashboard-attempt-request-body-unavailable.png`，并写回 spec `## Visual Evidence` 作为页面级最终证据；Storybook 截图继续只承担组件级回归证据。

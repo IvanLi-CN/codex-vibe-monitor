@@ -69,6 +69,8 @@ Dashboard / Live / Records 三处调用详情曾经以“摘要字段 + 局部�
 - 尝试级结构化详情允许通过 `request_summary_json` / `response_summary_json` 保存，必要时可回退为运行时重建。
 - 除尝试外的时间线动作允许以 `timeline_json` 保存在 `codex_invocations` 上；缺失时，工作流详情接口必须基于调用级记录与尝试记录进行 best-effort reconstruction，并显式标记是否为 partial / reconstructed。
 - 当前契约下，请求体完整原文只保证在调用级记录存在；尝试级接口默认暴露结构化摘要，而不是再次复制完整 request body。
+- 响应体完整原文同样只保证在调用级记录存在，且只允许绑定到最终真实尝试或系统最终裁定；非最终尝试必须显示自己的状态、响应头摘要与上游响应体字节指标，响应体回放明确为 unavailable，不得把调用级最终响应体或最终响应头 fallback 到该尝试。
+- 运行时重建尝试响应摘要时，只能使用该尝试的列和明确持久化的 `response_summary_json`；调用级 `response_raw_*`、`responseContentEncoding`、最终 `upstreamRequestId` 与 delivery snapshot 仅可用于最终尝试/系统最终裁定。
 - 本地生成的终态裁定响应必须复用单一共享 envelope，同时驱动实际 HTTP 下游返回与调用级持久化；`systemFinalFailure.responseBody` 必须回放真实下发 body，不得再落 `"{}"`、`missing_body` 等占位假空体，除非历史记录从未持久化真实 body。
 
 ### Payload 识别与渲染
@@ -95,6 +97,7 @@ Dashboard / Live / Records 三处调用详情曾经以“摘要字段 + 局部�
 - 新的 pre-dispatch pool 失败时间线只展示 `路由决定 + 系统裁定`，`hero.timelineAttemptCount = 0`。
 - 真实出站调用仍按顺序展示辅助块、尝试块和失败场景下的系统裁定块；同一时刻仅展开一个块，展开区保持紧凑。
 - 点击尝试块后，默认展示概览，并可通过次级操作进入请求 / 响应；点击路由块后，默认展示概览，并可通过次级操作进入 `请求 / 请求头 / 请求体`；点击失败裁定块后，默认展示概览，并可通过次级操作进入 `裁定 / 返回体`。
+- 对包含重试的调用，非最终 Attempt 的响应详情不得显示最终 Attempt 的响应体大小、响应头或 lazy response-body 内容；如果没有尝试级原文，应明确显示 `non_final_attempt_response_body_not_captured` 对应的 unavailable 状态。
 - 历史 pseudo-attempt 在纠偏后不得再显示为 Attempt；若旧记录从未持久化真实 body，允许继续显示 unavailable。
 - JSON、NDJSON、SSE JSON data 均显示可折叠、高亮、键盘可操作的结构化视图。
 - 纯文本、解析失败内容和超长无空格文本保持可读并自动换行。
