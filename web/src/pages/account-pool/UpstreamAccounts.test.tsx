@@ -2345,7 +2345,26 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
   });
 
   it("labels a linked health event with its upstream attempt id", async () => {
-    mockAccountsPage();
+    mockAccountsPage({
+      detail: {
+        recentActions: [
+          {
+            id: 71,
+            occurredAt: "2026-03-16T02:06:00.000Z",
+            action: "route_cooldown_started",
+            source: "call",
+            reasonCode: "upstream_http_5xx",
+            reasonMessage: "Service temporarily unavailable",
+            httpStatus: 503,
+            failureKind: "upstream_http_5xx",
+            invokeId: "invk_action_001",
+            attemptId: "4V7MYPJG",
+            model: "gpt-5.6-terra",
+            createdAt: "2026-03-16T02:06:00.000Z",
+          },
+        ],
+      },
+    });
 
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -2373,6 +2392,10 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     expect(document.body.textContent).toMatch(/上游尝试 ID|Upstream attempt ID/);
     expect(document.body.textContent).toContain("4V7MYPJG");
     expect(document.body.textContent).not.toMatch(/请求 ID: invk_action_001/);
+    expect(document.body.textContent).toMatch(/请求模型|Request model/);
+    expect(document.body.textContent).toContain("gpt-5.6-terra");
+    expect(document.body.textContent).toMatch(/影响范围|Impact scope/);
+    expect(document.body.textContent).toMatch(/整个账号|Entire account/);
   });
 
   it("opens the blocked-binding working conversation filter from a health event", async () => {

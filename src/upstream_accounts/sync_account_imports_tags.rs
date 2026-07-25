@@ -3116,7 +3116,7 @@ pub(crate) async fn load_upstream_account_detail_with_options(
                 event.invoke_id,
                 attempts.attempt_public_id,
                 event.sticky_key,
-                event.model,
+                COALESCE(event.model, attempts.request_model, invocation.model) AS model,
                 event.model_route_state_before,
                 event.model_route_state_after,
                 event.model_route_priority_before,

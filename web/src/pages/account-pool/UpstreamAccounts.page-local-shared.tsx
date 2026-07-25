@@ -58,6 +58,7 @@ import type {
   ForwardProxyBindingNode,
   StickyKeyConversationSelection,
   UpdateGroupAccountRoutingRulePayload,
+  UpstreamAccountActionEvent,
   UpstreamAccountDetail,
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
@@ -149,6 +150,17 @@ export {
   UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS,
   withBulkSyncSnapshotStatus,
 };
+
+function hasModelRoutingImpact(event: UpstreamAccountActionEvent): boolean {
+  return (
+    event.modelRouteStateBefore != null ||
+    event.modelRouteStateAfter != null ||
+    event.modelRoutePriorityBefore != null ||
+    event.modelRoutePriorityAfter != null ||
+    event.modelRouteFailureCount != null ||
+    event.modelRouteCooldownUntil != null
+  );
+}
 
 const DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE = "count:50";
 const DIRECT_PROXY_KEY = "__direct__";
@@ -1675,13 +1687,14 @@ function SharedUpstreamAccountDetailDrawerInner({
     if (
       !open ||
       accountId == null ||
+      selectedId !== accountId ||
       detailTab !== "healthEvents" ||
       isDetailRecentActionsHydrated
     ) {
       return;
     }
     void loadDetail(accountId, { silent: true, includeRecentActions: true });
-  }, [accountId, detailTab, isDetailRecentActionsHydrated, loadDetail, open]);
+  }, [accountId, detailTab, isDetailRecentActionsHydrated, loadDetail, open, selectedId]);
   const handleDetailDrawerClose = useCallback(() => {
     onClose();
   }, [onClose]);
@@ -3833,10 +3846,16 @@ function SharedUpstreamAccountDetailDrawerInner({
                                 ) : null}
                                 {actionEvent.model ? (
                                   <Badge variant="info">
-                                    {t("accountPool.upstreamAccounts.modelRouting.model")}:{" "}
+                                    {t("accountPool.upstreamAccounts.recentActions.requestModel")}:{" "}
                                     {actionEvent.model}
                                   </Badge>
                                 ) : null}
+                                <Badge variant="secondary">
+                                  {t("accountPool.upstreamAccounts.recentActions.impactScope")}:{" "}
+                                  {hasModelRoutingImpact(actionEvent)
+                                    ? t("accountPool.upstreamAccounts.recentActions.impactModel")
+                                    : t("accountPool.upstreamAccounts.recentActions.impactAccount")}
+                                </Badge>
                                 <span className="text-xs text-base-content/55">
                                   {formatDateTime(actionEvent.occurredAt)}
                                 </span>
@@ -3846,7 +3865,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                                   {actionEvent.reasonMessage}
                                 </p>
                               ) : null}
-                              {actionEvent.model ? (
+                              {hasModelRoutingImpact(actionEvent) ? (
                                 <p className="mt-2 break-words text-xs leading-5 text-base-content/65">
                                   {t("accountPool.upstreamAccounts.modelRouting.transition")}:{" "}
                                   {actionEvent.modelRouteStateBefore ?? "-"} -&gt;{" "}

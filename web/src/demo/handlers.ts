@@ -1443,7 +1443,7 @@ function forwardProxyBindingNodes() {
 function accountEvents() {
   if (demoModel.snapshot.scene === "empty") return [];
   const accounts = demoAccounts();
-  const templates = [
+  const templates: Array<readonly [string, string, string | null, string | null, number | null]> = [
     ["sync_succeeded", "success", null, null, null],
     ["usage_snapshot_updated", "success", null, null, null],
     ["forward_proxy_assigned", "success", null, null, null],
@@ -1489,8 +1489,8 @@ function accountEvents() {
     ],
     ["sync_succeeded", "success", null, null, null],
     ["routing_rule_updated", "success", null, null, null],
-  ] as const;
-  return templates.map(([action, result, reasonCode, reasonMessage, httpStatus], index) => {
+  ];
+  const events = templates.map(([action, result, reasonCode, reasonMessage, httpStatus], index) => {
     const account = accounts[index] ?? accounts[0];
     const modelRouteEvent = account.kind === "api_key_codex" && index % 3 === 1;
     const proxyKey = account.boundProxyKeys?.[0] ?? null;
@@ -1512,7 +1512,12 @@ function accountEvents() {
       reasonCode,
       reasonMessage,
       httpStatus,
-      model: modelRouteEvent ? "gpt-5.4-mini" : null,
+      model:
+        account.kind === "api_key_codex"
+          ? modelRouteEvent
+            ? "gpt-5.4-mini"
+            : "gpt-5.6-terra"
+          : null,
       modelRouteStateBefore: modelRouteEvent ? "degraded" : null,
       modelRouteStateAfter: modelRouteEvent ? "cooling_down" : null,
       modelRoutePriorityBefore: modelRouteEvent ? "demoted" : null,
@@ -1534,6 +1539,32 @@ function accountEvents() {
       createdAt: new Date(Date.parse(demoNow()) - (index + 1) * 4 * 60_000).toISOString(),
     };
   });
+  events.pop();
+  const apiKeyModelEvent = events.find(
+    (event) => event.accountDisplayName === "backup-key" && event.model === "gpt-5.4-mini",
+  );
+  if (apiKeyModelEvent) {
+    events.unshift({
+      ...apiKeyModelEvent,
+      id: 7199,
+      action: "mark_unavailable",
+      reasonCode: "transport_failure",
+      reasonMessage: "The upstream request timed out before the first response chunk.",
+      httpStatus: 503,
+      model: "gpt-5.6-terra",
+      modelRouteStateBefore: null,
+      modelRouteStateAfter: null,
+      modelRoutePriorityBefore: null,
+      modelRoutePriorityAfter: null,
+      modelRouteFailureCount: null,
+      modelRouteCooldownUntil: null,
+      failureKind: "upstream_timeout",
+      invokeId: "demo-account-scope-503",
+      occurredAt: new Date(Date.parse(demoNow()) - 2 * 60_000).toISOString(),
+      createdAt: new Date(Date.parse(demoNow()) - 2 * 60_000).toISOString(),
+    });
+  }
+  return events;
 }
 
 function systemTasks() {

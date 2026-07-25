@@ -12,8 +12,9 @@
 
 - `pool_upstream_account_model_routes` stores exact `account_id + model` state with seven-day retention, failure windows, cooldown ETA, last success/failure and last-seen timestamps.
 - API Key model-specific errors are isolated in `failure_recording.rs`; OAuth, authentication, transport and generic upstream failures retain account-level behavior. Fresh and sticky candidate selection applies model demotion/exclusion without changing static model rules.
-- `GET /model-routing` and `POST /model-routing/reset` expose the model state and reset contract. Structured account events include model, before/after state and priority, failure count and cooldown ETA.
-- The account detail health/events tab renders mixed model states, cooldown ETA, failure summaries, recent model event fields and a single-model reset action. Storybook covers available, degraded, cooling, empty, read-only, error and reset interaction states; the model rows use one desktop column track and compact spacing, while failure context keeps the summary ahead of three aligned metadata fields and mobile stacks without horizontal overflow. Storybook canvas provides the component-level desktop/mobile evidence.
+- `GET /model-routing` and `POST /model-routing/reset` expose the model state and reset contract. Structured account events include model, before/after state and priority, failure count and cooldown ETA. Event projections recover a missing request model from the linked upstream attempt or invocation for both account detail and global event-list reads.
+- The account detail health/events tab renders mixed model states, cooldown ETA, failure summaries, recent model event fields and a single-model reset action. Recent events label the request model separately from the impact scope: route-transition events affect only that model, while generic account failures affect the entire account and omit empty route transitions. Direct health-tab routes wait for the selected account before hydrating recent actions.
+- Storybook covers available, degraded, cooling, empty, read-only, error, reset interaction and request-model/impact-scope states; the model rows use one desktop column track and compact spacing, while failure context keeps the summary ahead of three aligned metadata fields and mobile stacks without horizontal overflow. Storybook canvas provides component evidence and mock-only `ui_demo` provides page-level desktop/mobile evidence.
 
 ## Implementation map
 
@@ -28,22 +29,24 @@
 - Targeted model routing state/reset and concurrent failure tests: passed.
 - `cargo fmt --check`: passed.
 - `cargo check`: passed.
-- `RUST_MIN_STACK=33554432 cargo test`: 1671 passed, 0 failed, 45 ignored. The full run also covers the known deep-future stack test through the existing 32 MiB stack helper.
-- `cd web && bun run test --run`: 131 files passed, 1282 passed, 6 skipped.
-- `cd web && bun run test-storybook --run`: 8 files passed, 16 passed.
+- `RUST_MIN_STACK=33554432 cargo test`: 1683 passed, 0 failed, 45 ignored. The full run also covers the known deep-future stack test through the existing 32 MiB stack helper.
+- `cd web && bun run test --run`: 131 files passed, 1283 passed, 6 skipped.
+- `cd web && bun run test-storybook --run`: 8 files passed, 17 passed.
 - `cd web && bun run build`: passed.
 - Storybook canvas DOM checks: desktop model columns share identical tracks/left edges; mobile `scrollWidth` equals `clientWidth`.
 - Mobile hardening checks: reset actions render at 44px touch height below `lg`, desktop remains 32px, and the panel exposes `dl/dt/dd` field semantics without changing grid tracks.
 - The model-routing Storybook story enables its own color-contrast axe rule; light-theme metadata and cooldown text use the stronger local semantic tokens while the global palette debt remains unchanged.
 - Storybook visual evidence: component-boundary desktop/mobile captures passed `require_margin` normalization.
 - Storybook `MixedStates` play coverage: each failure context exposes one summary label and the upstream failure message once.
+- Account-event request-model fallback stateful test and request-model/impact-scope RTL + Storybook interaction coverage: passed.
+- Mock-only `ui_demo` desktop 1440x1000 capture and mobile 390x844 browser viewport (375x812 page capture): request models, account/model impact scopes and route transition are visible without horizontal overflow.
 - `bun run check:bun-first` and `bun run lint:docs`: passed.
 - `bun run lint:web`: passed with the repository's existing 88 warnings and 1 informational diagnostic; no errors remain in the changed files.
 - `spec_drift_check.sh --base-ref origin/main --spec-path docs/specs/zr9jd-api-key-model-routing-health/SPEC.md`: passed with no drift.
 
 ## Delivery Status
 
-- Full quality gates, review convergence, and local signed-off commits are complete; the branch is ready for handoff. No push or PR was created under the locked local stop condition.
+- The implementation and its quality gates are complete. Delivery references are recorded in the specification when applicable.
 
 ## Related Changes
 

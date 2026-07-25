@@ -2477,7 +2477,36 @@ async fn get_upstream_account_omits_recent_actions_by_default_and_loads_them_on_
     let account_id =
         insert_test_pool_api_key_account(&state, "Recent actions gated", "upstream-gated").await;
 
-    sqlx::query(
+    let attempt_id = sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            invoke_id,
+            occurred_at,
+            endpoint,
+            route_mode,
+            upstream_account_id,
+            attempt_index,
+            distinct_account_index,
+            same_account_retry_index,
+            status,
+            request_model
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, 1, 1, 0, ?6, ?7)
+        "#,
+    )
+    .bind("recent-action-model-impact")
+    .bind("2026-06-25 11:30:00")
+    .bind("/v1/responses")
+    .bind("pool")
+    .bind(account_id)
+    .bind("failed")
+    .bind("gpt-5.6-terra")
+    .execute(&state.pool)
+    .await
+    .expect("insert upstream request attempt")
+    .last_insert_rowid();
+
+    let event_id = sqlx::query(
         r#"
         INSERT INTO pool_upstream_account_events (
             account_id,
@@ -2488,9 +2517,10 @@ async fn get_upstream_account_omits_recent_actions_by_default_and_loads_them_on_
             result,
             result_description,
             reason_code,
+            attempt_id,
             created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
         "#,
     )
     .bind(account_id)
@@ -2501,10 +2531,12 @@ async fn get_upstream_account_omits_recent_actions_by_default_and_loads_them_on_
     .bind("success")
     .bind("settings saved")
     .bind("account_updated")
+    .bind(attempt_id)
     .bind("2026-06-25 11:30:00")
     .execute(&state.pool)
     .await
-    .expect("insert upstream account event");
+    .expect("insert upstream account event")
+    .last_insert_rowid();
 
     let Json(default_detail) = get_upstream_account(
         State(state.clone()),
@@ -2523,7 +2555,7 @@ async fn get_upstream_account_omits_recent_actions_by_default_and_loads_them_on_
     );
 
     let Json(detail_with_recent_actions) = get_upstream_account(
-        State(state),
+        State(state.clone()),
         axum::extract::Path(account_id),
         axum::extract::Query(GetUpstreamAccountQuery {
             include_recent_actions: Some(true),
@@ -2552,6 +2584,45 @@ async fn get_upstream_account_omits_recent_actions_by_default_and_loads_them_on_
             .and_then(|item| item.get("action"))
             .and_then(serde_json::Value::as_str),
         Some("account_updated")
+    );
+    assert_eq!(
+        detail_with_recent_actions_json["recentActions"]
+            .as_array()
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("action").and_then(serde_json::Value::as_str)
+                        == Some("account_updated")
+                })
+            })
+            .and_then(|item| item.get("model"))
+            .and_then(serde_json::Value::as_str),
+        Some("gpt-5.6-terra"),
+        "account events must expose the model already captured by their linked attempt"
+    );
+
+    let Json(event_list) = list_upstream_account_action_events(
+        State(state),
+        axum::extract::Query(ListUpstreamAccountActionEventsQuery {
+            account: Some("Recent actions gated".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("load global upstream account event list");
+    let event_list_json =
+        serde_json::to_value(event_list).expect("serialize upstream account event list");
+    assert_eq!(
+        event_list_json["items"]
+            .as_array()
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("id").and_then(serde_json::Value::as_i64) == Some(event_id)
+                })
+            })
+            .and_then(|item| item.get("model"))
+            .and_then(serde_json::Value::as_str),
+        Some("gpt-5.6-terra"),
+        "global account event lists must expose the linked attempt model"
     );
 }
 
