@@ -65,7 +65,7 @@
 
 - Storybook覆盖=通过（`bun run test-storybook`：8 files / 16 tests passed）。
 - 视觉证据目标源=ui_demo；视觉证据=存在；空白裁剪=无需裁剪；聊天回图=已展示；证据落盘=已落盘。
-- 证据绑定sha=工作区当前 HEAD（提交前）；来源为 mock-only `demo:dev`，覆盖桌面与 390px 移动端。
+- 证据绑定sha=`c6e54e13`；来源为 mock-only `demo:dev`，覆盖桌面与 390px 移动端。
 - 桌面长期统计区（KPI、趋势图、上游图表、账号表）：`assets/long-term-stats-desktop-section.png`。
 - 移动端长期统计区（响应式 KPI 与范围选择）：`assets/long-term-stats-mobile-section.png`。
 - 移动端横向滚动与虚拟化账号表：`assets/long-term-stats-mobile-table.png`。
