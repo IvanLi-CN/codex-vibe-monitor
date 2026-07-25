@@ -653,11 +653,26 @@ pub(crate) async fn list_upstream_account_action_events_from_params(
             COALESCE(
                 event.model,
                 attempts.request_model,
+                NULLIF(TRIM(CASE
+                    WHEN json_valid(invocation.payload)
+                        THEN CAST(json_extract(invocation.payload, '$.requestModel') AS TEXT)
+                END), ''),
+                NULLIF(TRIM(invocation.model), ''),
                 (
-                    SELECT invocation.model
+                    SELECT COALESCE(
+                        NULLIF(TRIM(CASE
+                            WHEN json_valid(invocation.payload)
+                                THEN CAST(json_extract(invocation.payload, '$.requestModel') AS TEXT)
+                        END), ''),
+                        NULLIF(TRIM(invocation.model), '')
+                    )
                     FROM codex_invocations invocation
                     WHERE invocation.invoke_id = event.invoke_id
-                    ORDER BY invocation.id DESC
+                      AND (
+                          SELECT COUNT(*)
+                          FROM codex_invocations candidate
+                          WHERE candidate.invoke_id = event.invoke_id
+                      ) = 1
                     LIMIT 1
                 )
             ) AS model,
@@ -672,6 +687,9 @@ pub(crate) async fn list_upstream_account_action_events_from_params(
         FROM pool_upstream_account_events event
         INNER JOIN pool_upstream_accounts account ON account.id = event.account_id
         LEFT JOIN pool_upstream_request_attempts attempts ON attempts.id = event.attempt_id
+        LEFT JOIN codex_invocations invocation
+            ON invocation.invoke_id = event.invoke_id
+           AND invocation.occurred_at = COALESCE(attempts.occurred_at, event.occurred_at)
         {where_clause}
         ORDER BY event.occurred_at DESC, event.id DESC
         LIMIT ? OFFSET ?
