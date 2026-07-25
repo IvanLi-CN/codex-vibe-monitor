@@ -73,11 +73,13 @@ export const MixedStates: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getAllByText("失败摘要", { exact: true })).toHaveLength(2);
     await expect(canvasElement.querySelectorAll("dt")).toHaveLength(17);
+    await expect(canvas.getByText("模型不可用", { exact: true })).toBeVisible();
+    await expect(canvas.getByText("模型额度已耗尽", { exact: true })).toBeVisible();
     await expect(
-      canvas.getByText("The requested model is temporarily unavailable upstream.", {
+      canvas.queryByText("The requested model is temporarily unavailable upstream.", {
         exact: true,
       }),
-    ).toBeVisible();
+    ).not.toBeInTheDocument();
   },
 };
 
