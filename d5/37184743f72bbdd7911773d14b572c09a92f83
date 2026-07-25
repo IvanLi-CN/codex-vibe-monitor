@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.47.11",
+  "base_stable_version": "2.47.10",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-25T06:52:51Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.47.11",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "81481daead6e00f1ecbbea1796af87b866fdec35",
+  "pr_number": 694,
+  "pr_title": "fix(invocations): isolate retry response details",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.47.11",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.47.11",
+  "target_sha": "d537184743f72bbdd7911773d14b572c09a92f83",
+  "type_label": "type:patch"
+}
