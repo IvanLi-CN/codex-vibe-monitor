@@ -151,7 +151,7 @@ export {
   withBulkSyncSnapshotStatus,
 };
 
-function hasModelRoutingImpact(event: UpstreamAccountActionEvent): boolean {
+function hasModelRoutingTransition(event: UpstreamAccountActionEvent): boolean {
   return (
     event.modelRouteStateBefore != null ||
     event.modelRouteStateAfter != null ||
@@ -3860,10 +3860,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                                   {formatDateTime(actionEvent.occurredAt)}
                                 </span>
                               </div>
-                              {hasModelRoutingImpact(actionEvent) ||
-                              hasAccountFailureImpact(actionEvent) ? (
+                              {hasAccountFailureImpact(actionEvent) ? (
                                 <p className="mt-2 break-words text-sm font-medium leading-6 text-base-content/85">
-                                  {hasModelRoutingImpact(actionEvent)
+                                  {hasModelRoutingTransition(actionEvent)
                                     ? actionEvent.model
                                       ? t(
                                           "accountPool.upstreamAccounts.recentActions.impactModel",
@@ -3882,7 +3881,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                                   {actionEvent.reasonMessage}
                                 </p>
                               ) : null}
-                              {hasModelRoutingImpact(actionEvent) ? (
+                              {hasModelRoutingTransition(actionEvent) ? (
                                 <p className="mt-2 break-words text-xs leading-5 text-base-content/65">
                                   {t("accountPool.upstreamAccounts.modelRouting.transition")}:{" "}
                                   {actionEvent.modelRouteStateBefore ?? "-"} -&gt;{" "}

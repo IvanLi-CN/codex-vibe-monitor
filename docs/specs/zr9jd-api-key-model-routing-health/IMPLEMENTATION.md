@@ -30,7 +30,7 @@
 - `cargo fmt --check`: passed.
 - `cargo check`: passed.
 - `RUST_MIN_STACK=33554432 cargo test`: 1683 passed, 0 failed, 45 ignored. The full run also covers the known deep-future stack test through the existing 32 MiB stack helper.
-- `cd web && bun run test --run`: 131 files passed, 1284 passed, 6 skipped.
+- `cd web && bun run test --run`: 131 files passed, 1285 passed, 6 skipped.
 - `cd web && bun run test-storybook --run`: 8 files passed, 17 passed.
 - `cd web && bun run build`: passed.
 - Storybook canvas DOM checks: desktop model columns share identical tracks/left edges; mobile `scrollWidth` equals `clientWidth`.
@@ -38,7 +38,7 @@
 - The model-routing Storybook story enables its own color-contrast axe rule; light-theme metadata and cooldown text use the stronger local semantic tokens while the global palette debt remains unchanged.
 - Storybook visual evidence: component-boundary desktop/mobile captures passed `require_margin` normalization.
 - Storybook `MixedStates` play coverage: each failure context exposes one summary label and the upstream failure message once.
-- Account-event request-model fallback stateful test and impact-scope RTL + Storybook interaction coverage: passed; the UI assertions also verify that request-model labels remain absent and informational events do not claim a failure impact.
+- Account-event request-model fallback stateful test and impact-scope RTL + Storybook interaction coverage: passed; the UI assertions also verify that request-model labels remain absent, informational events do not claim a failure impact, and recovery transitions do not claim an active model impact.
 - Mock-only `ui_demo` desktop 1440x1000 capture and mobile 390x844 browser viewport (375x812 page capture): account/model impact scopes and route transition are visible without request-model labels or horizontal overflow.
 - `bun run check:bun-first` and `bun run lint:docs`: passed.
 - `bun run lint:web`: passed with the repository's existing 88 warnings and 1 informational diagnostic; no errors remain in the changed files.

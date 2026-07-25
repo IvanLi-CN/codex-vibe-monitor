@@ -2444,6 +2444,56 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     expect(document.body.textContent).not.toMatch(/影响：|Impact:/);
   });
 
+  it("shows a model recovery transition without claiming an active impact", async () => {
+    mockAccountsPage({
+      detail: {
+        recentActions: [
+          {
+            id: 73,
+            occurredAt: "2026-03-16T02:08:00.000Z",
+            action: "model_route_recovered",
+            source: "call",
+            result: "recovered",
+            reasonCode: "model_route",
+            model: "gpt-5.4-mini",
+            modelRouteStateBefore: "cooling_down",
+            modelRouteStateAfter: "available",
+            modelRoutePriorityBefore: "excluded",
+            modelRoutePriorityAfter: "normal",
+            modelRouteFailureCount: 0,
+            createdAt: "2026-03-16T02:08:00.000Z",
+          },
+        ],
+      },
+    });
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+      root?.render(
+        <ThemeProvider>
+          <I18nProvider>
+            <SystemNotificationProvider>
+              <MemoryRouter>
+                <SharedUpstreamAccountDetailDrawer
+                  open
+                  accountId={5}
+                  initialTab="healthEvents"
+                  onClose={vi.fn()}
+                />
+              </MemoryRouter>
+            </SystemNotificationProvider>
+          </I18nProvider>
+        </ThemeProvider>,
+      );
+    });
+
+    await flushAsync();
+    expect(document.body.textContent).toMatch(/cooling_down.*available.*excluded.*normal/);
+    expect(document.body.textContent).not.toMatch(/影响：|Impact:/);
+  });
+
   it("opens the blocked-binding working conversation filter from a health event", async () => {
     mockAccountsPage({
       detail: {
