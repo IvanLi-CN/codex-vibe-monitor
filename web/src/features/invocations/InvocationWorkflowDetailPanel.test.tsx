@@ -803,6 +803,110 @@ describe("InvocationWorkflowDetailPanel", () => {
     expect(host?.textContent ?? "").not.toContain("最终响应体：调用级存档。");
   });
 
+  it("does not lazy-fetch invocation response body for a non-final attempt", async () => {
+    const response = createWorkflowDetailResponse();
+    const firstAttemptEntry = response.timeline.find((entry) => entry.kind === "attempt");
+    if (!firstAttemptEntry?.attempt) {
+      throw new Error("workflow fixture must contain an attempt");
+    }
+
+    firstAttemptEntry.attempt = {
+      ...firstAttemptEntry.attempt,
+      attemptId: "H3HxTB12",
+      attemptIndex: 1,
+      upstreamRequestId: "H3HxTB12",
+      responseSummary: {
+        ...(firstAttemptEntry.attempt.responseSummary ?? {}),
+        responseContentEncoding: null,
+        headers: {
+          contentEncoding: null,
+          upstreamRequestId: "H3HxTB12",
+        },
+        responseBodyCapture: {
+          availableAtInvocationLevel: false,
+          size: 98,
+          detailLevel: "attempt_metrics",
+          unavailableReason: "non_final_attempt_response_body_not_captured",
+        },
+      },
+    };
+
+    const finalAttemptEntry = {
+      ...firstAttemptEntry,
+      blockId: "attempt-2",
+      occurredAt: "2026-07-15T13:56:08Z",
+      title: "Attempt 2",
+      subtitle: "pool-beta@example.com",
+      status: "success",
+      attempt: {
+        ...firstAttemptEntry.attempt,
+        attemptId: "W1scc2SS",
+        occurredAt: "2026-07-15T13:56:08Z",
+        attemptIndex: 2,
+        upstreamAccountId: 43,
+        upstreamAccountName: "pool-beta@example.com",
+        status: "success",
+        phase: "completed",
+        httpStatus: 200,
+        failureKind: null,
+        errorMessage: null,
+        downstreamErrorMessage: null,
+        upstreamRequestId: "W1scc2SS",
+        responseSummary: {
+          ...(firstAttemptEntry.attempt.responseSummary ?? {}),
+          status: "success",
+          phase: "completed",
+          httpStatus: 200,
+          failureKind: null,
+          errorMessage: null,
+          downstreamErrorMessage: null,
+          responseContentEncoding: "identity",
+          headers: {
+            contentEncoding: "identity",
+            upstreamRequestId: "W1scc2SS",
+          },
+          responseBodyCapture: {
+            availableAtInvocationLevel: true,
+            size: 181_382,
+            detailLevel: "full",
+          },
+        },
+      },
+    };
+    response.hero = {
+      ...response.hero,
+      timelineAttemptCount: 2,
+      poolAttemptCount: 2,
+      upstreamAccountId: 43,
+      upstreamAccountName: "pool-beta@example.com",
+    };
+    const firstAttemptIndex = response.timeline.indexOf(firstAttemptEntry);
+    response.timeline.splice(firstAttemptIndex + 1, 0, finalAttemptEntry);
+
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(response);
+    render(<InvocationWorkflowDetailPanel record={createRecord()} />);
+
+    await waitFor(() => (host?.textContent ?? "").includes("H3HxTB12"));
+
+    const nonFinalResponseBodyButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement &&
+        candidate.textContent?.includes("响应体") &&
+        candidate.textContent?.includes("98 B"),
+    );
+    expect(nonFinalResponseBodyButton).not.toBeNull();
+
+    act(() => {
+      nonFinalResponseBodyButton?.click();
+    });
+    await flushAsyncWork();
+
+    expect(apiMocks.fetchInvocationResponseBody).not.toHaveBeenCalled();
+    expect(host?.textContent ?? "").toContain("响应体不可用");
+    expect(host?.textContent ?? "").not.toContain("加载响应体…");
+    expect(nonFinalResponseBodyButton?.textContent ?? "").not.toContain("181,382 B");
+  });
+
   it("does not request workflow detail for transient records without a persisted id", async () => {
     render(<InvocationWorkflowDetailPanel record={createRecord({ id: 0 })} />);
 

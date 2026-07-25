@@ -51,6 +51,16 @@ where
         .expect("join large-stack test worker")
 }
 
+async fn run_future_with_large_stack_async<T, Fut>(future: Fut) -> T
+where
+    T: Send + 'static,
+    Fut: std::future::Future<Output = T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || run_future_with_large_stack(future))
+        .await
+        .expect("join large-stack test worker")
+}
+
 #[tokio::test]
 async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_sending() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
@@ -1324,7 +1334,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_encrypted_ow
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
         .await
         .expect("resolve pool runtime timeouts");
-    let response = run_future_with_large_stack({
+    let response = run_future_with_large_stack_async({
         let state = state.clone();
         async move {
             proxy_openai_v1_via_pool(
@@ -1349,7 +1359,8 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_encrypted_ow
             .await
             .expect_err("bodyless encrypted owner lock should not reroute to another account")
         }
-    });
+    })
+    .await;
 
     assert_encrypted_owner_blocked_proxy_error(
         &response,
@@ -1419,10 +1430,21 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_ret
         .await
         .expect("persist encrypted owner lock");
 
+    let (binding_constraint, owner_auto_guard_active) =
+        load_via_pool_effective_routing_constraint(state.as_ref(), Some(prompt_cache_key), false)
+            .await
+            .expect("load rate-limited encrypted owner routing constraint");
+    assert!(matches!(
+        binding_constraint,
+        Some(PromptCacheConversationBindingConstraint::UpstreamAccount(account_id))
+            if account_id == owner_account_id
+    ));
+    assert!(owner_auto_guard_active);
+
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
         .await
         .expect("resolve pool runtime timeouts");
-    let response = run_future_with_large_stack({
+    let response = run_future_with_large_stack_async({
         let state = state.clone();
         async move {
             proxy_openai_v1_via_pool(
@@ -1447,7 +1469,8 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_ret
             .await
             .expect_err("rate-limited encrypted owner lock should not reroute to another account")
         }
-    });
+    })
+    .await;
 
     assert_encrypted_owner_blocked_proxy_error(
         &response,
@@ -1540,10 +1563,21 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_same_account_binding_n
     .await
     .expect("persist same-account binding newer than owner");
 
+    let (binding_constraint, owner_auto_guard_active) =
+        load_via_pool_effective_routing_constraint(state.as_ref(), Some(prompt_cache_key), false)
+            .await
+            .expect("load same-account encrypted owner routing constraint");
+    assert!(matches!(
+        binding_constraint,
+        Some(PromptCacheConversationBindingConstraint::UpstreamAccount(account_id))
+            if account_id == owner_account_id
+    ));
+    assert!(owner_auto_guard_active);
+
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
         .await
         .expect("resolve pool runtime timeouts");
-    let response = run_future_with_large_stack({
+    let response = run_future_with_large_stack_async({
         let state = state.clone();
         async move {
             proxy_openai_v1_via_pool(
@@ -1568,7 +1602,8 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_same_account_binding_n
             .await
             .expect_err("same-account newer binding should still keep encrypted owner guard")
         }
-    });
+    })
+    .await;
 
     assert_encrypted_owner_blocked_proxy_error(
         &response,
