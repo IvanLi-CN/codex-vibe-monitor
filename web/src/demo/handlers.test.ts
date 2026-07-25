@@ -287,6 +287,26 @@ describe("demo MSW handlers", () => {
     expect(proxyHistory.nodes.every((node) => node.buckets.length > 0)).toBe(true);
   });
 
+  it("uses supported localized source values for account health events", async () => {
+    const response = await fetch(
+      "http://demo.invalid/api/pool/upstream-accounts/102?includeRecentActions=true",
+    );
+    const account = (await response.json()) as {
+      recentActions: Array<{ action: string; source: string }>;
+    };
+
+    expect(response.ok).toBe(true);
+    expect(account.recentActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ action: "mark_unavailable", source: "call" }),
+        expect.objectContaining({ action: "model_route_cooldown", source: "call" }),
+      ]),
+    );
+    expect(account.recentActions.map((event) => event.source)).not.toEqual(
+      expect.arrayContaining(["operator", "maintenance_scheduler"]),
+    );
+  });
+
   it("serves shareable dashboard invocation detail data for unavailable request-body playback", async () => {
     const [detailResponse, requestBodyResponse, responseBodyResponse] = await Promise.all([
       fetch("http://demo.invalid/api/invocations/9002/workflow-detail"),

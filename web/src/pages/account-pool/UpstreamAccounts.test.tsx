@@ -2399,6 +2399,8 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     expect(impact?.textContent).not.toMatch(/其他模型|Other models/);
     expect(impact?.querySelectorAll('[data-testid="account-event-impact-chip"]')).toHaveLength(2);
     expect(impact?.parentElement?.getAttribute("data-testid")).toBe("account-event-meta");
+    expect(document.body.textContent).toMatch(/调用|Call/);
+    expect(document.body.textContent).not.toMatch(/operator|maintenance_scheduler/);
     expect(document.body.textContent).not.toContain("gpt-5.6-terra");
   });
 

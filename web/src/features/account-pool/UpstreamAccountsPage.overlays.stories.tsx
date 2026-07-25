@@ -420,6 +420,11 @@ export const DetailDrawerApiKeyEventImpact: Story = {
     );
     await expect(impacts[1]).not.toHaveTextContent(/其他模型|other models/i);
     await expect(within(dialog).queryByText(/影响：|impact:/i)).not.toBeInTheDocument();
+    await expect(within(impacts[0].parentElement!).getByText(/^(调用|Call)$/)).toBeVisible();
+    await expect(within(impacts[1].parentElement!).getByText(/^(调用|Call)$/)).toBeVisible();
+    await expect(
+      within(dialog).queryByText(/operator|maintenance_scheduler/i),
+    ).not.toBeInTheDocument();
     await expect(
       within(dialog).getByText(/degraded.*cooling_down.*demoted.*excluded/i),
     ).toBeVisible();

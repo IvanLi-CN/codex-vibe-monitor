@@ -1497,7 +1497,7 @@ function accountEvents() {
     return {
       id: 7100 + index,
       action: modelRouteEvent ? "model_route_cooldown" : action,
-      source: index % 2 === 0 ? "maintenance_scheduler" : "operator",
+      source: index % 2 === 0 ? "sync_maintenance" : "call",
       result: modelRouteEvent ? "failed" : result,
       accountDisplayName: account.displayName,
       accountGroupName: account.groupName,
