@@ -58,7 +58,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - reset 只清除指定 API Key 账号的指定模型动态状态，恢复 `available/normal`，并记录 `manual_reset` 事件。
 - 健康页只展示近七天真实调用出现的模型；OAuth 账号不展示模型路由状态卡。
 - 账号事件优先使用事件自身模型；缺失时从关联的上游尝试或调用记录回填请求模型。请求模型只说明触发事件的流量上下文，不改变事件原有的账号级或模型级影响边界。
-- 健康事件必须分别展示“请求模型”与“影响范围”：带模型路由状态/优先级/冷却字段的事件标记为“仅此模型”，认证、网络、通用 5xx 等账号级事件标记为“整个账号”。
+- 健康事件只展示“影响范围”，不展示请求模型：带模型路由状态/优先级/冷却字段的事件标记为“仅此模型”，认证、网络、通用 5xx 等账号级事件标记为“整个账号”。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -75,7 +75,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - Given one API Key has model A and B, When A reaches cooldown, Then B remains eligible and the account is not globally cooled down by A's model error.
 - Given a generic authentication, transport, or 5xx failure, When it is recorded, Then existing account-level health behavior remains unchanged.
 - Given an account event is linked to an attempt or invocation with a known request model, When event detail or the global event list is read, Then the event exposes that request model even if the event row itself has no model.
-- Given a generic account-level event has a request model, When the health tab renders it, Then the UI labels the request model and “整个账号” impact without showing an empty model-route transition.
+- Given a generic account-level event has a request model, When the health tab renders it, Then the UI labels “整个账号” impact without displaying the request model or an empty model-route transition.
 - Given a model-routing event carries route transition fields, When the health tab renders it, Then the UI labels “仅此模型” impact and shows the concrete route transition.
 - Given a model is in a degraded or cooling state, When reset is called, Then only that model becomes `available/normal`, its ETA is cleared, and a structured reset event appears.
 - Given no call for a model for seven days, When model retention runs, Then that model state is removed.
@@ -127,7 +127,7 @@ PR: none
 页面级视觉证据=存在
 页面级聊天回图=已展示
 页面级 requested_viewport=desktop 1440x1000; mobile 390x844
-页面级 capture_scope=API Key 账号详情“健康与事件”，同时展示账号级与模型级事件的请求模型、影响范围和模型路由变更
+页面级 capture_scope=API Key 账号详情“健康与事件”，展示账号级与模型级事件的影响范围和模型路由变更，不展示请求模型
 
 PR: none
 ![桌面账号事件模型影响](assets/account-event-impact-desktop.png)

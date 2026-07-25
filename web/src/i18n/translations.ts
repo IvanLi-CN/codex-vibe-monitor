@@ -1434,7 +1434,6 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.recentActions.description":
       "Latest call and sync actions for this account.",
     "accountPool.upstreamAccounts.recentActions.empty": "No recent account events yet.",
-    "accountPool.upstreamAccounts.recentActions.requestModel": "Request model",
     "accountPool.upstreamAccounts.recentActions.impactScope": "Impact scope",
     "accountPool.upstreamAccounts.recentActions.impactAccount": "Entire account",
     "accountPool.upstreamAccounts.recentActions.impactModel": "This model only",
@@ -4071,7 +4070,6 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.recentActions.title": "最近账号事件",
     "accountPool.upstreamAccounts.recentActions.description": "展示这条账号最近的调用与同步动作。",
     "accountPool.upstreamAccounts.recentActions.empty": "暂时还没有最近事件。",
-    "accountPool.upstreamAccounts.recentActions.requestModel": "请求模型",
     "accountPool.upstreamAccounts.recentActions.impactScope": "影响范围",
     "accountPool.upstreamAccounts.recentActions.impactAccount": "整个账号",
     "accountPool.upstreamAccounts.recentActions.impactModel": "仅此模型",

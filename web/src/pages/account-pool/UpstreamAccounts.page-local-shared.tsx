@@ -3844,12 +3844,6 @@ function SharedUpstreamAccountDetailDrawerInner({
                                 {Number.isFinite(actionEvent.httpStatus ?? NaN) ? (
                                   <Badge variant="secondary">{`HTTP ${actionEvent.httpStatus}`}</Badge>
                                 ) : null}
-                                {actionEvent.model ? (
-                                  <Badge variant="info">
-                                    {t("accountPool.upstreamAccounts.recentActions.requestModel")}:{" "}
-                                    {actionEvent.model}
-                                  </Badge>
-                                ) : null}
                                 <Badge variant="secondary">
                                   {t("accountPool.upstreamAccounts.recentActions.impactScope")}:{" "}
                                   {hasModelRoutingImpact(actionEvent)

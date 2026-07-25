@@ -405,14 +405,9 @@ export const DetailDrawerApiKeyEventImpact: Story = {
       const requestLog = window.__storybookUpstreamAccountsController__?.getRequestLog() ?? [];
       expect(requestLog.some((entry) => entry.includes("includeRecentActions=true"))).toBe(true);
     });
-    await expect(
-      await within(dialog).findByText(/请求模型.*gpt-5\.6-terra|request model.*gpt-5\.6-terra/i),
-    ).toBeVisible();
+    await expect(within(dialog).queryByText(/请求模型|request model/i)).not.toBeInTheDocument();
     await expect(
       await within(dialog).findByText(/影响范围.*整个账号|impact scope.*entire account/i),
-    ).toBeVisible();
-    await expect(
-      within(dialog).getByText(/请求模型.*gpt-5\.4-mini|request model.*gpt-5\.4-mini/i),
     ).toBeVisible();
     await expect(
       within(dialog).getByText(/影响范围.*仅此模型|impact scope.*this model only/i),

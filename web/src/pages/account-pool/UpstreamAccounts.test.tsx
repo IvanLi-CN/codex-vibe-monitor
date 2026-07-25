@@ -2392,8 +2392,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     expect(document.body.textContent).toMatch(/上游尝试 ID|Upstream attempt ID/);
     expect(document.body.textContent).toContain("4V7MYPJG");
     expect(document.body.textContent).not.toMatch(/请求 ID: invk_action_001/);
-    expect(document.body.textContent).toMatch(/请求模型|Request model/);
-    expect(document.body.textContent).toContain("gpt-5.6-terra");
+    expect(document.body.textContent).not.toMatch(/请求模型|Request model/);
     expect(document.body.textContent).toMatch(/影响范围|Impact scope/);
     expect(document.body.textContent).toMatch(/整个账号|Entire account/);
   });
