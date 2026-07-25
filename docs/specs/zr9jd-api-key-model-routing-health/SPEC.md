@@ -110,16 +110,16 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 
 ## Visual Evidence
 
-Storybook覆盖=通过
-视觉证据目标源=storybook_canvas
+Storybook覆盖=通过（组件级）；页面级使用 ui_demo
+视觉证据目标源=ui_demo
 视觉证据=存在
-空白裁剪=已裁剪（`require_margin`；按组件边界截取并规范化外边距）
+空白裁剪=无需裁剪（`trim_only`；视口截图边缘无可安全裁剪空白）
 聊天回图=已展示
 证据落盘=已落盘
-证据绑定sha=27898fad
-requested_viewport=desktop 1280x720; mobile 390x844
-viewport_strategy=browser-resize-fallback（浏览器视口合成不稳定，使用 Storybook canvas 的 Playwright 视口回退）
-capture_scope=Storybook canvas 中账号详情“健康与事件”的模型路由健康面板组件边界
+证据绑定sha=bcd0b725
+requested_viewport=desktop 1440x1000; mobile 390x844
+viewport_strategy=ui-demo-source（Chrome viewport override）
+capture_scope=mock-only demo 中账号详情“健康与事件”页面视口
 
 PR: none
 ![桌面模型路由健康](assets/model-routing-desktop.png)
