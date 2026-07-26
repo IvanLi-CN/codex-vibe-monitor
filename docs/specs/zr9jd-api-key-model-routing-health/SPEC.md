@@ -116,15 +116,13 @@ Storybook覆盖=通过（组件级）；页面级使用 ui_demo
 空白裁剪=无需裁剪（`trim_only`；视口截图边缘无可安全裁剪空白）
 聊天回图=已展示
 证据落盘=已落盘
-证据绑定sha=bcd0b725
+证据绑定sha=9ca110d6
 requested_viewport=desktop 1440x1000; mobile 390x844
 viewport_strategy=ui-demo-source（Chrome viewport override）
 capture_scope=mock-only demo 中账号详情“健康与事件”页面视口
 
-PR: none
 ![桌面模型路由健康](assets/model-routing-desktop.png)
 
-PR: none
 ![移动模型路由健康](assets/model-routing-mobile.png)
 
 页面级视觉证据目标源=mock-only ui_demo
@@ -133,10 +131,10 @@ PR: none
 页面级 requested_viewport=desktop 1440x1000; mobile 390x844
 页面级 capture_scope=API Key 账号详情“健康与事件”，账号级与模型级影响均使用结构化字段，不使用自然语言影响句；不展示请求模型
 
-PR: none
+PR: include
 ![桌面账号事件模型影响](assets/account-event-impact-desktop.png)
 
-PR: none
+PR: include
 ![移动账号事件模型影响](assets/account-event-impact-mobile.png)
 
 ## Related PRs
