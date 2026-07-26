@@ -102,6 +102,7 @@ export function useLongTermStats(
       };
     }
     setIsSeriesLoading(true);
+    setSeries(null);
     setSeriesError(null);
     fetchLongTermStatsSeries(range, dimension, stableKeys)
       .then((next) => {

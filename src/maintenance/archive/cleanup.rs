@@ -371,6 +371,13 @@ pub(crate) async fn cleanup_expired_archive_batches(
         {
             continue;
         }
+        if candidate.dataset == "pool_upstream_request_attempts"
+            && !long_term_stats_status
+                .as_deref()
+                .is_some_and(|status| matches!(status, "ready" | "empty"))
+        {
+            continue;
+        }
         if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
             && (!long_term_stats_status
                 .as_deref()
@@ -912,6 +919,15 @@ pub(crate) async fn prune_legacy_archive_batches(
                 .is_some_and(|status| matches!(status, "ready" | "empty"))
                 || !long_term_stats_archive_files
                     .contains(&(candidate.file_path.clone(), candidate.sha256.clone())))
+        {
+            summary.skipped_unmaterialized_batches += 1;
+            continue;
+        }
+
+        if candidate.dataset == "pool_upstream_request_attempts"
+            && !long_term_stats_status
+                .as_deref()
+                .is_some_and(|status| matches!(status, "ready" | "empty"))
         {
             summary.skipped_unmaterialized_batches += 1;
             continue;

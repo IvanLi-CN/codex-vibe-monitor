@@ -3554,6 +3554,11 @@ async fn retention_archives_and_cleans_up_pool_upstream_request_attempts() {
     .await
     .expect("expire archive batch");
 
+    sqlx::query("UPDATE long_term_stats_state SET status = 'empty' WHERE id = 1")
+        .execute(&pool)
+        .await
+        .expect("mark long-term stats empty before attempt archive cleanup");
+
     let cleanup_summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("run pool attempt archive ttl cleanup");
