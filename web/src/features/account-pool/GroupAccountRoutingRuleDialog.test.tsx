@@ -110,6 +110,7 @@ const labels = {
   fastModeForceAdd: "Force add",
   fastModeForceRemove: "Force remove",
   imageToolRewriteMode: "Image tools",
+  codexImagegenRewriteMode: "Codex imagegen",
   imageToolKeepOriginal: "Keep original",
   imageToolFillMissing: "Fill when missing",
   imageToolForceAdd: "Force add",
@@ -127,6 +128,8 @@ const labels = {
     "Mixed groups only apply this override when the final target account is an API key upstream.",
   imageToolRewriteHint:
     "Keep original follows the account's own image capability. Fill when missing only injects image tools when image intent is confirmed; force add always injects; force remove always strips it.",
+  codexImagegenRewriteHint:
+    "Controls the Codex client imagegen namespace separately from hosted image tools.",
   concurrencyLimit: "Concurrency limit",
   concurrencyHint: "Use 1-30 to cap fresh assignments. The last slider step means unlimited.",
   currentValue: "Current",
@@ -176,6 +179,7 @@ const defaultRule: GroupAccountRoutingRule = {
   priorityTier: "normal",
   fastModeRewriteMode: "keep_original",
   imageToolRewriteMode: "keep_original",
+  codexImagegenRewriteMode: "keep_original",
   concurrencyLimit: 0,
   upstream429RetryEnabled: false,
   upstream429MaxRetries: 0,
@@ -293,6 +297,7 @@ describe("GroupAccountRoutingRuleDialog", () => {
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
         imageToolRewriteMode: "keep_original",
+        codexImagegenRewriteMode: "keep_original",
         priorityTier: "normal",
         fastModeRewriteMode: "keep_original",
       }),
@@ -301,6 +306,33 @@ describe("GroupAccountRoutingRuleDialog", () => {
       expect.not.objectContaining({
         availableModels: [],
       }),
+    );
+  });
+
+  it("preserves an inherited Codex imagegen policy as null", () => {
+    const onSubmit = vi.fn();
+    render(
+      <GroupAccountRoutingRuleDialog
+        open
+        title="Group policy"
+        description="Shared routing policy"
+        submitLabel="Apply group policy"
+        rule={{ ...defaultRule, codexImagegenRewriteMode: null }}
+        onClose={() => undefined}
+        onSubmit={onSubmit}
+        labels={labels}
+      />,
+    );
+
+    const submit = Array.from(document.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Apply group policy",
+    );
+    act(() => {
+      submit?.click();
+    });
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ codexImagegenRewriteMode: null }),
     );
   });
 
@@ -317,7 +349,7 @@ describe("GroupAccountRoutingRuleDialog", () => {
         labels={{
           ...labels,
           imageToolRewriteHint:
-            "Full Responses only. Codex Responses Lite keeps client-owned tools unchanged.",
+            "Hosted Full Responses only. Configure Codex Full and Lite imagegen separately.",
         }}
       />,
     );
@@ -328,7 +360,7 @@ describe("GroupAccountRoutingRuleDialog", () => {
       (help as HTMLButtonElement).focus();
     });
     expect(document.body.textContent).toContain(
-      "Codex Responses Lite keeps client-owned tools unchanged.",
+      "Configure Codex Full and Lite imagegen separately.",
     );
   });
 

@@ -33,3 +33,5 @@ Account-pool routing policy moved from isolated group/tag behavior to a layered 
 2026-06-12: Expanded the inherited routing surface with `availableModels`, added tag-level model intersection plus account/group override semantics, and folded `unsupported_model:*` discovery into generic `systemDeniedModels` so automatic routing and sticky migration both exclude unsupported requested models before scoring.
 
 2026-07-24: Locked image-tool rewrite to Full Responses. Codex Responses Lite owns client-side `input.additional_tools`, so every CVM mode is skipped, auditably persisted, and no Lite top-level-tool validation error can learn account capability.
+
+2026-07-26: Superseded the Lite skip-only boundary with the independent `codexImagegenRewriteMode`. Explicit Codex Full now receives the fixed `image_gen.imagegen` namespace in top-level tools; explicit Lite receives it through developer `additional_tools` plus the required execution contract. Hosted `image_generation` remains a separate policy and is removed for active Codex rewrites.

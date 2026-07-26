@@ -97,6 +97,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait(
         total_timeout_deadline,
         "",
         crate::ImageIntent::Unknown,
+        false,
     )
     .await
 }
@@ -114,7 +115,38 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_image_intent(
     endpoint: &str,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolutionWithWait> {
-    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent(
+    resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request(
+        state,
+        sticky_key,
+        requested_model,
+        excluded_ids,
+        excluded_upstream_route_keys,
+        required_upstream_route_key,
+        wait_for_no_available,
+        wait_deadline,
+        total_timeout_deadline,
+        endpoint,
+        image_intent,
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    requested_model: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    required_upstream_route_key: Option<&str>,
+    wait_for_no_available: bool,
+    wait_deadline: &mut Option<Instant>,
+    total_timeout_deadline: Option<Instant>,
+    endpoint: &str,
+    image_intent: crate::ImageIntent,
+    codex_imagegen_request: bool,
+) -> Result<PoolAccountResolutionWithWait> {
+    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request(
         state,
         sticky_key,
         requested_model,
@@ -122,11 +154,13 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_image_intent(
         excluded_upstream_route_keys,
         required_upstream_route_key,
         None,
+        None,
         wait_for_no_available,
         wait_deadline,
         total_timeout_deadline,
         endpoint,
         image_intent,
+        codex_imagegen_request,
     )
     .await
 }
@@ -157,6 +191,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
         total_timeout_deadline,
         "",
         crate::ImageIntent::Unknown,
+        false,
     )
     .await
 }
@@ -175,7 +210,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
     endpoint: &str,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolutionWithWait> {
-    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
+    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request(
         state,
         sticky_key,
         requested_model,
@@ -189,6 +224,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
         total_timeout_deadline,
         endpoint,
         image_intent,
+        false,
     )
     .await
 }
@@ -208,6 +244,41 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
     endpoint: &str,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolutionWithWait> {
+    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request(
+        state,
+        sticky_key,
+        requested_model,
+        excluded_ids,
+        excluded_upstream_route_keys,
+        required_upstream_route_key,
+        binding_constraint,
+        conversation_override,
+        wait_for_no_available,
+        wait_deadline,
+        total_timeout_deadline,
+        endpoint,
+        image_intent,
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    requested_model: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    required_upstream_route_key: Option<&str>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    conversation_override: Option<&ConversationRoutingOverride>,
+    wait_for_no_available: bool,
+    wait_deadline: &mut Option<Instant>,
+    total_timeout_deadline: Option<Instant>,
+    endpoint: &str,
+    image_intent: crate::ImageIntent,
+    codex_imagegen_request: bool,
+) -> Result<PoolAccountResolutionWithWait> {
     resolve_pool_account_for_request_with_wait_and_binding_constraint_internal(
         state,
         sticky_key,
@@ -222,6 +293,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
         total_timeout_deadline,
         endpoint,
         image_intent,
+        codex_imagegen_request,
     )
     .await
 }
@@ -240,6 +312,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
     total_timeout_deadline: Option<Instant>,
     endpoint: &str,
     image_intent: crate::ImageIntent,
+    codex_imagegen_request: bool,
 ) -> Result<PoolAccountResolutionWithWait> {
     let poll_interval = state.pool_no_available_wait.normalized_poll_interval();
 
@@ -249,7 +322,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
             return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
         }
         let resolution =
-            resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override(
+            resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request(
                 state,
                 sticky_key,
                 requested_model,
@@ -260,6 +333,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
                 conversation_override,
                 endpoint,
                 image_intent,
+                codex_imagegen_request,
             )
             .await?;
         if wait_for_no_available
@@ -384,7 +458,48 @@ pub(crate) async fn send_pool_request_with_failover(
     .await
 }
 
-pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
+pub(crate) fn send_pool_request_with_failover_and_binding_constraint<'a>(
+    state: Arc<AppState>,
+    proxy_request_id: u64,
+    method: Method,
+    original_uri: &'a Uri,
+    headers: &'a HeaderMap,
+    body: Option<PoolReplayBodySnapshot>,
+    handshake_timeout: Duration,
+    trace_context: Option<PoolUpstreamAttemptTraceContext>,
+    runtime_snapshot_context: Option<PoolAttemptRuntimeSnapshotContext>,
+    sticky_key: Option<&'a str>,
+    binding_constraint: Option<PromptCacheConversationBindingConstraint>,
+    conversation_override: Option<ConversationRoutingOverride>,
+    preferred_account: Option<PoolResolvedAccount>,
+    failover_progress: PoolFailoverProgress,
+    same_account_attempts: u8,
+) -> Pin<Box<dyn Future<Output = Result<PoolUpstreamResponse, PoolUpstreamError>> + Send + 'a>> {
+    // Keep this large state machine off the request task stack. The imagegen audit
+    // extends its state enough to overflow normal test and Axum worker stacks.
+    Box::pin(async move {
+        send_pool_request_with_failover_and_binding_constraint_inner(
+            state,
+            proxy_request_id,
+            method,
+            original_uri,
+            headers,
+            body,
+            handshake_timeout,
+            trace_context,
+            runtime_snapshot_context,
+            sticky_key,
+            binding_constraint,
+            conversation_override,
+            preferred_account,
+            failover_progress,
+            same_account_attempts,
+        )
+        .await
+    })
+}
+
+async fn send_pool_request_with_failover_and_binding_constraint_inner(
     state: Arc<AppState>,
     proxy_request_id: u64,
     method: Method,
@@ -402,6 +517,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
     same_account_attempts: u8,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
     let request_connection_scoped = connection_scoped_header_names(headers);
+    let codex_imagegen_request = codex_imagegen_protocol_from_headers(headers).is_some();
     let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
     let mut reservation_guard =
         PoolRoutingReservationDropGuard::new(state.clone(), reservation_key.clone());
@@ -482,6 +598,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
     let request_compression_level_preset = load_pool_routing_runtime_cache(state.as_ref())
         .await
         .map_err(|err| PoolUpstreamError {
+            codex_imagegen_rewrite: None,
             account: None,
             status: StatusCode::BAD_GATEWAY,
             message: format!("failed to load pool routing runtime cache: {err}"),
@@ -567,6 +684,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 "pool distinct-account retry budget exhausted".to_string()
             };
             let mut final_error = last_error.unwrap_or(PoolUpstreamError {
+                codex_imagegen_rewrite: None,
                 account: None,
                 status: StatusCode::BAD_GATEWAY,
                 message: terminal_message.clone(),
@@ -650,7 +768,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     }
                 });
             let route_scoped_overload_selection = overload_required_upstream_route_key.clone();
-            match resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
+            match resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request(
                 state.as_ref(),
                 sticky_key,
                 requested_model.as_deref(),
@@ -664,6 +782,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 total_timeout_deadline,
                 original_uri.path(),
                 image_intent,
+                codex_imagegen_request,
             )
             .await
             {
@@ -817,6 +936,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
                     {
                         last_error.unwrap_or(PoolUpstreamError {
+        codex_imagegen_rewrite: None,
                             account: None,
                             status: StatusCode::BAD_GATEWAY,
                             message: "no alternate upstream route is available after timeout"
@@ -900,6 +1020,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     }
                     if uses_timeout_route_failover && timeout_route_failover_pending {
                         let mut err = last_error.unwrap_or(PoolUpstreamError {
+        codex_imagegen_rewrite: None,
                             account: None,
                             status: StatusCode::BAD_GATEWAY,
                             message: "no alternate upstream route is available after timeout"
@@ -1080,6 +1201,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     }
                     let terminal_failure_kind = PROXY_FAILURE_POOL_ROUTING_BLOCKED;
                     let mut err = PoolUpstreamError {
+        codex_imagegen_rewrite: None,
                         account: None,
                         status: StatusCode::SERVICE_UNAVAILABLE,
                         message,
@@ -1124,6 +1246,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 }
                 Err(err) => {
                     return Err(PoolUpstreamError {
+        codex_imagegen_rewrite: None,
                         account: None,
                         status: StatusCode::BAD_GATEWAY,
                         message: format!("failed to resolve pool account: {err}"),
@@ -1162,6 +1285,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
         )
         .await
         .map_err(|err| PoolUpstreamError {
+            codex_imagegen_rewrite: None,
             account: Some(account.clone()),
             status: StatusCode::BAD_GATEWAY,
             message: format!("failed to resolve effective request-path timeouts: {err}"),
@@ -1205,6 +1329,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     Ok(url) => Some(url),
                     Err(err) => {
                         return Err(PoolUpstreamError {
+                            codex_imagegen_rewrite: None,
                             account: Some(account),
                             status: StatusCode::BAD_GATEWAY,
                             message: format!("failed to build pool upstream url: {err}"),
@@ -1351,7 +1476,8 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     .and_then(|value| value.to_str().ok()),
                 account.fast_mode_rewrite_mode,
                 account.image_tool_rewrite_mode,
-                is_openai_responses_lite_request(headers),
+                account.codex_imagegen_rewrite_mode,
+                codex_imagegen_protocol_from_headers(headers),
             )
             .await
             {
@@ -1359,6 +1485,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 Err(err) => {
                     release_pool_routing_reservation(state.as_ref(), &reservation_key);
                     return Err(PoolUpstreamError {
+                        codex_imagegen_rewrite: None,
                         account: Some(account.clone()),
                         status: err.status,
                         message: err.message,
@@ -1381,8 +1508,12 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
             let attempted_requested_service_tier =
                 prepared_request_body.requested_service_tier.clone();
             let attempted_requested_image_intent = prepared_request_body.requested_image_intent;
+            let attempted_requested_hosted_image_intent =
+                prepared_request_body.requested_hosted_image_intent;
             let attempted_request_body_for_capture =
                 prepared_request_body.request_body_for_capture.clone();
+            let attempted_codex_imagegen_rewrite =
+                prepared_request_body.codex_imagegen_rewrite.clone();
             let (
                 response,
                 oauth_responses_debug,
@@ -1411,6 +1542,8 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     &mut last_error,
                                     &mut preserve_sticky_owner_terminal_error,
                                     PoolUpstreamError {
+                                        codex_imagegen_rewrite: attempted_codex_imagegen_rewrite
+                                            .clone(),
                                         account: Some(account.clone()),
                                         status: StatusCode::BAD_GATEWAY,
                                         message: message.clone(),
@@ -1430,6 +1563,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                         request_body_for_capture:
                                             attempted_request_body_for_capture.clone(),
                                     },
+                                    attempted_codex_imagegen_rewrite.as_ref(),
                                 );
                                 release_pool_routing_reservation(state.as_ref(), &reservation_key);
                                 exhausted_accounts_all_rate_limited = false;
@@ -1452,6 +1586,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     .map_err(|err| {
                         release_pool_routing_reservation(state.as_ref(), &reservation_key);
                         PoolUpstreamError {
+                            codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
                             account: Some(account.clone()),
                             status: err.status,
                             message: err.message,
@@ -1566,6 +1701,21 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             invoke_id = %pending_attempt_record.invoke_id,
                             error = %err,
                             "failed to persist pool request compression metadata"
+                        );
+                    }
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                        && let Err(err) =
+                            annotate_pool_upstream_request_attempt_codex_imagegen_rewrite(
+                                &state.pool,
+                                pending_attempt_record,
+                                attempted_codex_imagegen_rewrite.as_ref(),
+                            )
+                            .await
+                    {
+                        warn!(
+                            invoke_id = %pending_attempt_record.invoke_id,
+                            error = %err,
+                            "failed to persist pool Codex imagegen rewrite audit"
                         );
                     }
                     let attempt_runtime_snapshot = runtime_snapshot_context.as_ref().map(|ctx| {
@@ -1830,6 +1980,8 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 &mut last_error,
                                 &mut preserve_sticky_owner_terminal_error,
                                 PoolUpstreamError {
+                                    codex_imagegen_rewrite: attempted_codex_imagegen_rewrite
+                                        .clone(),
                                     account: Some(account.clone()),
                                     status: if direct_image_handshake_timeout {
                                         StatusCode::GATEWAY_TIMEOUT
@@ -1855,6 +2007,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     request_body_for_capture: attempted_request_body_for_capture
                                         .clone(),
                                 },
+                                attempted_codex_imagegen_rewrite.as_ref(),
                             );
                             if direct_image_handshake_timeout {
                                 let mut final_error = last_error.take().expect(
@@ -1987,6 +2140,8 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 let final_error = build_pool_total_timeout_exhausted_error(
                                     total_timeout,
                                     Some(PoolUpstreamError {
+                                        codex_imagegen_rewrite: attempted_codex_imagegen_rewrite
+                                            .clone(),
                                         account: Some(account.clone()),
                                         status: StatusCode::BAD_GATEWAY,
                                         message: message.clone(),
@@ -2067,6 +2222,8 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 &mut last_error,
                                 &mut preserve_sticky_owner_terminal_error,
                                 PoolUpstreamError {
+                                    codex_imagegen_rewrite: attempted_codex_imagegen_rewrite
+                                        .clone(),
                                     account: Some(account.clone()),
                                     status: if direct_image_request {
                                         StatusCode::GATEWAY_TIMEOUT
@@ -2098,6 +2255,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     request_body_for_capture: attempted_request_body_for_capture
                                         .clone(),
                                 },
+                                attempted_codex_imagegen_rewrite.as_ref(),
                             );
                             if direct_image_request {
                                 let mut final_error = last_error.take().expect(
@@ -2149,6 +2307,8 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     &mut last_error,
                                     &mut preserve_sticky_owner_terminal_error,
                                     PoolUpstreamError {
+                                        codex_imagegen_rewrite: attempted_codex_imagegen_rewrite
+                                            .clone(),
                                         account: Some(account.clone()),
                                         status: StatusCode::BAD_GATEWAY,
                                         message: message.clone(),
@@ -2168,6 +2328,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                         request_body_for_capture:
                                             attempted_request_body_for_capture.clone(),
                                     },
+                                    attempted_codex_imagegen_rewrite.as_ref(),
                                 );
                                 release_pool_routing_reservation(state.as_ref(), &reservation_key);
                                 exhausted_accounts_all_rate_limited = false;
@@ -2186,6 +2347,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         {
                             oauth_bridge::CountedOauthUpstreamRequestBody::Bytes(
                                 snapshot.to_bytes().await.map_err(|err| PoolUpstreamError {
+        codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
                                     account: Some(account.clone()),
                                     status: StatusCode::BAD_GATEWAY,
                                     message: format!("failed to replay oauth request body: {err}"),
@@ -2224,6 +2386,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         {
                             oauth_bridge::CountedOauthUpstreamRequestBody::Bytes(
                                 snapshot.to_bytes().await.map_err(|err| PoolUpstreamError {
+        codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
                                     account: Some(account.clone()),
                                     status: StatusCode::BAD_GATEWAY,
                                     message: format!("failed to replay oauth request body: {err}"),
@@ -2257,6 +2420,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                     )
                                     .await
                                     .map_err(|err| PoolUpstreamError {
+        codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
                                         account: Some(account.clone()),
                                         status: StatusCode::BAD_GATEWAY,
                                         message: format!(
@@ -2340,6 +2504,21 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     } else {
                         None
                     };
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                        && let Err(err) =
+                            annotate_pool_upstream_request_attempt_codex_imagegen_rewrite(
+                                &state.pool,
+                                pending_attempt_record,
+                                attempted_codex_imagegen_rewrite.as_ref(),
+                            )
+                            .await
+                    {
+                        warn!(
+                            invoke_id = %pending_attempt_record.invoke_id,
+                            error = %err,
+                            "failed to persist pool Codex imagegen rewrite audit"
+                        );
+                    }
                     let attempt_runtime_snapshot = runtime_snapshot_context.as_ref().map(|ctx| {
                         let mut ctx = ctx.clone();
                         ctx.request_info.requested_service_tier =
@@ -2551,6 +2730,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         // body empty here so buffered 4xx payloads are not emitted twice.
                         .body(Body::empty())
                         .map_err(|err| PoolUpstreamError {
+                            codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
                             account: Some(account.clone()),
                             status: StatusCode::INTERNAL_SERVER_ERROR,
                             message: format!("failed to build proxy response: {err}"),
@@ -2632,7 +2812,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     let capability_requirements =
                         RequestCapabilityRequirements::from_endpoint_and_image_intent(
                             original_uri.path(),
-                            attempted_requested_image_intent,
+                            attempted_requested_hosted_image_intent,
                         );
                     if capability_requirements.response_endpoint
                         && classify_response_endpoint_capability_observation(
@@ -2759,6 +2939,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         ),
                         requested_service_tier: attempted_requested_service_tier,
                         request_body_for_capture: attempted_request_body_for_capture,
+                        codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
                     });
                 }
                 let http_failure_classification =
@@ -2915,7 +3096,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         &route_error_message,
                         trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
                         original_uri.path(),
-                        attempted_requested_image_intent,
+                        attempted_requested_hosted_image_intent,
                         pending_attempt_record
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
@@ -2948,6 +3129,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     &mut last_error,
                     &mut preserve_sticky_owner_terminal_error,
                     PoolUpstreamError {
+                        codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
                         account: Some(account.clone()),
                         status,
                         message: message.clone(),
@@ -2975,6 +3157,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         requested_service_tier: attempted_requested_service_tier.clone(),
                         request_body_for_capture: attempted_request_body_for_capture.clone(),
                     },
+                    attempted_codex_imagegen_rewrite.as_ref(),
                 );
                 if direct_image_request && failure_kind == PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
                 {
@@ -3105,6 +3288,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             let final_error = build_pool_total_timeout_exhausted_error(
                                 total_timeout,
                                 Some(PoolUpstreamError {
+                                    codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
                                     account: Some(account.clone()),
                                     status: StatusCode::BAD_GATEWAY,
                                     message: message.clone(),
@@ -3191,6 +3375,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             &mut last_error,
                             &mut preserve_sticky_owner_terminal_error,
                             PoolUpstreamError {
+                                codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
                                 account: Some(account.clone()),
                                 status: StatusCode::BAD_GATEWAY,
                                 message: message.clone(),
@@ -3219,6 +3404,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 request_body_for_capture: attempted_request_body_for_capture
                                     .clone(),
                             },
+                            attempted_codex_imagegen_rewrite.as_ref(),
                         );
                         exhausted_accounts_all_rate_limited = false;
                         if should_timeout_route_failover {
@@ -3462,6 +3648,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                             &mut last_error,
                             &mut preserve_sticky_owner_terminal_error,
                             PoolUpstreamError {
+                                codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
                                 account: Some(account.clone()),
                                 status: StatusCode::BAD_GATEWAY,
                                 message: message.clone(),
@@ -3490,6 +3677,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 request_body_for_capture: attempted_request_body_for_capture
                                     .clone(),
                             },
+                            attempted_codex_imagegen_rewrite.as_ref(),
                         );
                         exhausted_accounts_all_rate_limited = false;
                         disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
@@ -3590,6 +3778,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 attempt_summary: pool_attempt_summary(attempt_count, distinct_account_count, None),
                 requested_service_tier: attempted_requested_service_tier,
                 request_body_for_capture: attempted_request_body_for_capture,
+                codex_imagegen_rewrite: attempted_codex_imagegen_rewrite,
             });
         }
     }

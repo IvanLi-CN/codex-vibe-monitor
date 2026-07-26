@@ -640,7 +640,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.save": "Apply group policy",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteMode": "Image tools",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint":
-      "These modes rewrite Full Responses only: fill when missing injects only after confirmed image intent, force add injects, and force remove strips the top-level image tool. Codex Responses Lite keeps client-owned tools unchanged.",
+      "These modes rewrite hosted Full Responses tools only: fill when missing injects only after confirmed image intent, force add injects, and force remove strips the top-level image tool. Configure Codex Full and Lite imagegen separately.",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.codexImagegenRewriteMode":
+      "Codex imagegen",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.codexImagegenRewriteHint":
+      "Controls the Codex client imagegen namespace separately from hosted image tools. Full uses top-level tools; Lite uses developer additional tools.",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolKeepOriginal": "Keep original",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolFillMissing":
       "Fill when missing",
@@ -845,6 +849,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.fieldPriority": "Priority",
     "accountPool.upstreamAccounts.effectiveRule.fieldFastMode": "FAST mode",
     "accountPool.upstreamAccounts.effectiveRule.fieldImageToolRewriteMode": "Image tools",
+    "accountPool.upstreamAccounts.effectiveRule.fieldCodexImagegenRewriteMode": "Codex imagegen",
     "accountPool.upstreamAccounts.effectiveRule.fieldConcurrency": "Concurrency",
     "accountPool.upstreamAccounts.effectiveRule.fieldUpstream429": "Upstream 429 retry",
     "accountPool.upstreamAccounts.effectiveRule.fieldAvailableModels": "Available models",
@@ -1628,6 +1633,14 @@ const baseTranslations = {
     "settings.routing.requestCompressionLevelPresetLabel": "Compression level preset",
     "settings.routing.requestCompressionHint":
       "Follow reuses the downstream request encoding. Unsupported downstream encodings fail explicitly instead of falling back automatically.",
+    "settings.routing.codexImagegen.title": "Codex image generation",
+    "settings.routing.codexImagegen.description":
+      "Configure the Codex-only imagegen tool contract separately from the hosted Responses image tool.",
+    "settings.routing.codexImagegen.mode": "Codex imagegen rewrite mode",
+    "settings.routing.codexImagegen.keepOriginal": "Keep original",
+    "settings.routing.codexImagegen.fillMissing": "Fill missing",
+    "settings.routing.codexImagegen.forceAdd": "Force add",
+    "settings.routing.codexImagegen.forceRemove": "Force remove",
     "settings.routing.timeout.sectionTitle": "Request path timeouts (seconds)",
     "settings.routing.timeout.sectionDescription":
       "These global timeout defaults apply to API key upstream HTTP requests after request-body rewrite and before any group or account timeout override.",
@@ -2223,6 +2236,7 @@ const baseTranslations = {
     "live.conversations.drawer.policy.cutOutDeny": "Keep current upstream",
     "live.conversations.drawer.policy.fastMode": "FAST mode",
     "live.conversations.drawer.policy.imageTool": "Image tool",
+    "live.conversations.drawer.policy.codexImagegen": "Codex imagegen",
     "live.conversations.drawer.policy.proxy": "Proxy",
     "live.conversations.drawer.policy.proxyInherited": "Inherited proxy policy",
     "live.conversations.drawer.policy.proxyAddPlaceholder": "Add a proxy node",
@@ -3403,7 +3417,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.save": "应用分组策略",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteMode": "图片工具",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint":
-      "这些模式只改写 Full Responses：缺少时补充仅在确认图片意图后注入，强制补充会注入，强制去掉会移除顶层图片工具。Codex Responses Lite 的工具由客户端控制并保持原样。",
+      "这些模式只改写 hosted Full Responses 工具：缺少时补充仅在确认图片意图后注入，强制补充会注入，强制去掉会移除顶层图片工具。Codex Full 与 Lite imagegen 请单独配置。",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.codexImagegenRewriteMode":
+      "Codex imagegen",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.codexImagegenRewriteHint":
+      "与 hosted 图片工具分开控制 Codex 客户端 imagegen namespace：Full 使用顶层工具，Lite 使用 developer additional tools。",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolKeepOriginal": "保持原样",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolFillMissing": "缺少时补充",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceAdd": "强制补充",
@@ -3584,6 +3602,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.fastModeForceAdd": "强制补充",
     "accountPool.upstreamAccounts.effectiveRule.fastModeForceRemove": "强制去掉",
     "accountPool.upstreamAccounts.effectiveRule.fieldImageToolRewriteMode": "图片工具",
+    "accountPool.upstreamAccounts.effectiveRule.fieldCodexImagegenRewriteMode": "Codex imagegen",
     "accountPool.upstreamAccounts.effectiveRule.sourceTags": "规则来源 tag",
     "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle": "字段来源明细",
     "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutOut": "切出",
@@ -4325,6 +4344,14 @@ const baseTranslations = {
     "settings.routing.requestCompressionLevelPresetLabel": "压缩等级预设",
     "settings.routing.requestCompressionHint":
       "“跟随”会复用下游请求体编码；遇到不支持的下游编码时会显式失败，不会自动降级。",
+    "settings.routing.codexImagegen.title": "Codex 图片生成",
+    "settings.routing.codexImagegen.description":
+      "Codex 专用 imagegen 工具契约与 hosted Responses 图片工具分别配置。",
+    "settings.routing.codexImagegen.mode": "Codex imagegen 改写模式",
+    "settings.routing.codexImagegen.keepOriginal": "保持原样",
+    "settings.routing.codexImagegen.fillMissing": "仅补缺失",
+    "settings.routing.codexImagegen.forceAdd": "强制加入",
+    "settings.routing.codexImagegen.forceRemove": "强制移除",
     "settings.routing.timeout.sectionTitle": "请求链路超时（秒）",
     "settings.routing.timeout.sectionDescription":
       "这些全局超时默认值作用于 API Key 上游 HTTP 请求，请求体改写完成后生效；分组和账号仍可额外覆盖各自的超时字段。",
@@ -4897,6 +4924,7 @@ const baseTranslations = {
     "live.conversations.drawer.policy.cutOutDeny": "保持当前上游",
     "live.conversations.drawer.policy.fastMode": "FAST 模式",
     "live.conversations.drawer.policy.imageTool": "图片工具",
+    "live.conversations.drawer.policy.codexImagegen": "Codex imagegen",
     "live.conversations.drawer.policy.proxy": "代理",
     "live.conversations.drawer.policy.proxyInherited": "继承代理策略",
     "live.conversations.drawer.policy.proxyAddPlaceholder": "添加代理节点",

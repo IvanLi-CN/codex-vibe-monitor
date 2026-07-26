@@ -295,17 +295,25 @@ pub(crate) fn pool_account_supports_live_request_body(
     let fast_mode_rewrite_required = capture_target
         .is_some_and(|target| target.allows_fast_mode_rewrite())
         && account.fast_mode_rewrite_mode != TagFastModeRewriteMode::KeepOriginal;
+    let codex_imagegen_rewrite_required = capture_target.is_some_and(|target| {
+        matches!(
+            target,
+            ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
+        )
+    }) && codex_imagegen_protocol_from_headers(headers)
+        .is_some();
     let image_tool_rewrite_required = capture_target.is_some_and(|target| {
         matches!(
             target,
             ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
         )
-    }) && !is_openai_responses_lite_request(headers)
+    }) && codex_imagegen_protocol_from_headers(headers).is_none()
         && account.image_tool_rewrite_mode != crate::ImageToolRewriteMode::KeepOriginal;
 
     if headers.contains_key(header::CONTENT_ENCODING)
         || fast_mode_rewrite_required
         || image_tool_rewrite_required
+        || codex_imagegen_rewrite_required
         || account.request_compression_algorithm != RequestCompressionAlgorithm::Identity
     {
         return false;
@@ -605,9 +613,8 @@ pub(crate) async fn header_sticky_account_matches_request_requirements(
     requested_model: Option<&str>,
     endpoint: &str,
     image_intent: crate::ImageIntent,
+    codex_imagegen_request: bool,
 ) -> Result<bool, (StatusCode, String)> {
-    let capability_requirements =
-        RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
     let effective_rule = load_effective_routing_rule_for_account(&state.pool, account.account_id)
         .await
         .map_err(|err| {
@@ -616,6 +623,20 @@ pub(crate) async fn header_sticky_account_matches_request_requirements(
                 format!("failed to load effective routing rule for sticky account: {err}"),
             )
         })?;
+    let hosted_image_intent = if codex_imagegen_request
+        && effective_rule.codex_imagegen_rewrite_mode
+            != crate::CodexImagegenRewriteMode::KeepOriginal
+        && image_intent == crate::ImageIntent::Yes
+        && !requested_model.is_some_and(crate::is_openai_image_generation_model)
+    {
+        crate::ImageIntent::No
+    } else {
+        image_intent
+    };
+    let capability_requirements = RequestCapabilityRequirements::from_endpoint_and_image_intent(
+        endpoint,
+        hosted_image_intent,
+    );
     let model_matches = requested_model
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -761,6 +782,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     )
     .await
     .map_err(|err| PoolUpstreamError {
+        codex_imagegen_rewrite: None,
         account: Some(account.clone()),
         status: StatusCode::BAD_GATEWAY,
         message: format!("failed to resolve effective request-path timeouts: {err}"),
@@ -839,6 +861,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     Err(message) => {
                         release_pool_routing_reservation(state.as_ref(), &reservation_key);
                         return Err(PoolUpstreamError {
+                            codex_imagegen_rewrite: None,
                             account: Some(account.clone()),
                             status: StatusCode::BAD_GATEWAY,
                             message,
@@ -868,6 +891,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     Err(err) => {
                         release_pool_routing_reservation(state.as_ref(), &reservation_key);
                         return Err(PoolUpstreamError {
+                            codex_imagegen_rewrite: None,
                             account: Some(account.clone()),
                             status: StatusCode::BAD_GATEWAY,
                             message: format!("failed to build pool upstream url: {err}"),
@@ -1008,6 +1032,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         &mut deferred_early_phase_cleanup_guard,
                     );
                     return Err(PoolUpstreamError {
+                        codex_imagegen_rewrite: None,
                         account: Some(account.clone()),
                         status: StatusCode::BAD_GATEWAY,
                         message,
@@ -1059,6 +1084,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         &mut deferred_early_phase_cleanup_guard,
                     );
                     return Err(PoolUpstreamError {
+                        codex_imagegen_rewrite: None,
                         account: Some(account.clone()),
                         status: StatusCode::BAD_GATEWAY,
                         message,
@@ -1093,6 +1119,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     Err(message) => {
                         release_pool_routing_reservation(state.as_ref(), &reservation_key);
                         return Err(PoolUpstreamError {
+                            codex_imagegen_rewrite: None,
                             account: Some(account.clone()),
                             status: StatusCode::BAD_GATEWAY,
                             message,
@@ -1337,6 +1364,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 response_builder
                     .body(Body::empty())
                     .map_err(|err| PoolUpstreamError {
+                        codex_imagegen_rewrite: None,
                         account: Some(account.clone()),
                         status: StatusCode::INTERNAL_SERVER_ERROR,
                         message: format!("failed to build proxy response: {err}"),
@@ -1372,6 +1400,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 attempt_summary: pool_attempt_summary(1, 1, None),
                 requested_service_tier: attempted_requested_service_tier,
                 request_body_for_capture: attempted_request_body_for_capture,
+                codex_imagegen_rewrite: None,
             });
         }
         let http_failure_classification =
@@ -1469,6 +1498,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         )
         .await;
         return Err(PoolUpstreamError {
+            codex_imagegen_rewrite: None,
             account: Some(account),
             status,
             message: route_error_message,
@@ -1556,6 +1586,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 )
                 .await;
                 return Err(PoolUpstreamError {
+                    codex_imagegen_rewrite: None,
                     account: Some(account),
                     status: StatusCode::BAD_GATEWAY,
                     message,
@@ -1695,6 +1726,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         attempt_summary: PoolAttemptSummary::default(),
         requested_service_tier: attempted_requested_service_tier,
         request_body_for_capture: attempted_request_body_for_capture,
+        codex_imagegen_rewrite: None,
     })
 }
 
@@ -1737,6 +1769,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
             replay_cancel.cancel();
             release_pool_routing_reservation(state.as_ref(), &reservation_key);
             return Err(PoolUpstreamError {
+                codex_imagegen_rewrite: None,
                 account: Some(initial_account),
                 status: StatusCode::REQUEST_TIMEOUT,
                 message: format!(
@@ -1814,6 +1847,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                     ));
                 }
                 return Err(PoolUpstreamError {
+                    codex_imagegen_rewrite: None,
                     account: Some(initial_account),
                     status: StatusCode::REQUEST_TIMEOUT,
                     message: format!(
@@ -1880,6 +1914,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
             )
             .await
             .map_err(|(status, message)| PoolUpstreamError {
+                codex_imagegen_rewrite: None,
                 account: Some(initial_account.clone()),
                 status,
                 message,
@@ -2022,6 +2057,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
         PoolReplayBodyStatus::ReadError(err) => {
             release_pool_routing_reservation(state.as_ref(), &reservation_key);
             Err(PoolUpstreamError {
+                codex_imagegen_rewrite: None,
                 account: Some(initial_account),
                 status: err.status,
                 message: err.message,
@@ -2043,6 +2079,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
         PoolReplayBodyStatus::InternalError(message) => {
             release_pool_routing_reservation(state.as_ref(), &reservation_key);
             Err(PoolUpstreamError {
+                codex_imagegen_rewrite: None,
                 account: Some(initial_account),
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 message,
@@ -2109,7 +2146,7 @@ pub(crate) fn infer_request_image_intent(
             crate::ImageIntent::DirectImage
         }
         Some(target) => parsed_request_body
-            .map(|value| infer_image_intent_from_request_body(target, value))
+            .map(|value| infer_hosted_image_intent_from_request_body(target, value))
             .unwrap_or(crate::ImageIntent::Unknown),
         None => crate::ImageIntent::Unknown,
     }
@@ -2159,6 +2196,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
         let body_limit = state.config.openai_proxy_max_request_body_bytes;
         let pool_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
         let capture_target = capture_target_for_request(original_uri.path(), &method);
+        let codex_imagegen_request = codex_imagegen_protocol_from_headers(&headers).is_some();
         let handshake_timeout =
             proxy_upstream_send_timeout_for_capture_target(&runtime_timeouts, capture_target);
         let _pre_first_byte_timeout =
@@ -2322,7 +2360,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         owner_auto_guard_active,
                     ) = if let Some(sticky_key) = header_sticky_key.clone() {
                         let initial_header_sticky_resolution =
-                            resolve_pool_account_for_request_with_image_intent(
+                            resolve_pool_account_for_request_with_image_intent_and_codex_imagegen_request(
                                 state.as_ref(),
                                 Some(sticky_key.as_str()),
                                 None,
@@ -2330,6 +2368,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 &HashSet::new(),
                                 original_uri.path(),
                                 request_image_intent,
+                                codex_imagegen_request,
                             )
                             .await;
                         let state_for_wait = state.clone();
@@ -2354,7 +2393,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     );
                                 }
                                 let resolution =
-                                    resolve_pool_account_for_request_with_image_intent(
+                                    resolve_pool_account_for_request_with_image_intent_and_codex_imagegen_request(
                                         state_for_wait.as_ref(),
                                         Some(wait_task_sticky_key.as_str()),
                                         None,
@@ -2362,6 +2401,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         &excluded_upstream_route_keys,
                                         original_uri.path(),
                                         request_image_intent,
+                                        codex_imagegen_request,
                                     )
                                     .await;
                                 if matches!(
@@ -2900,7 +2940,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         let initial_account = if prompt_cache_binding_constraint.is_some()
                             || conversation_override.is_some()
                         {
-                            let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
+                            let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request(
                         state.as_ref(),
                         body_sticky_key.as_deref(),
                         requested_model.as_deref(),
@@ -2914,6 +2954,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
 	                        pre_attempt_total_timeout_deadline,
 	                        original_uri.path(),
 	                        request_image_intent,
+	                        codex_imagegen_request,
 	                    )
                     .await;
                             let (initial_account, updated_no_available_wait_deadline) =
@@ -2942,6 +2983,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     requested_model.as_deref(),
                                     original_uri.path(),
                                     request_image_intent,
+                                    codex_imagegen_request,
                                 )
                                 .await
                                 .map_err(|(status, message)| plain_proxy_error(status, message))?
@@ -2949,7 +2991,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     account
                                 } else {
                                     let resolution =
-                                    resolve_pool_account_for_request_with_wait_and_image_intent(
+                                    resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request(
                                         state.as_ref(),
                                         body_sticky_key.as_deref(),
                                         requested_model.as_deref(),
@@ -2961,6 +3003,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         pre_attempt_total_timeout_deadline,
                                         original_uri.path(),
                                         request_image_intent,
+                                        codex_imagegen_request,
                                     )
                                     .await;
                                     let (initial_account, updated_no_available_wait_deadline) =
@@ -2984,7 +3027,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 }
                             } else {
                                 let resolution =
-                                    resolve_pool_account_for_request_with_wait_and_image_intent(
+                                    resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request(
                                         state.as_ref(),
                                         body_sticky_key.as_deref(),
                                         requested_model.as_deref(),
@@ -2996,6 +3039,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         pre_attempt_total_timeout_deadline,
                                         original_uri.path(),
                                         request_image_intent,
+                                        codex_imagegen_request,
                                     )
                                     .await;
                                 let (initial_account, updated_no_available_wait_deadline) =
@@ -3019,7 +3063,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             }
                         } else {
                             let resolution =
-                                resolve_pool_account_for_request_with_wait_and_image_intent(
+                                resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request(
                                     state.as_ref(),
                                     body_sticky_key.as_deref(),
                                     requested_model.as_deref(),
@@ -3031,6 +3075,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     pre_attempt_total_timeout_deadline,
                                     original_uri.path(),
                                     request_image_intent,
+                                    codex_imagegen_request,
                                 )
                                 .await;
                             let (initial_account, updated_no_available_wait_deadline) =
@@ -3128,7 +3173,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             let resolution = if prompt_cache_binding_constraint.is_some()
                                 || conversation_override.is_some()
                             {
-                                resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
+                                resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request(
                             state.as_ref(),
                             live_body_sticky_key.as_deref(),
                             live_requested_model.as_deref(),
@@ -3142,10 +3187,11 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             pre_attempt_total_timeout_deadline,
                             original_uri.path(),
                             request_image_intent,
+                            codex_imagegen_request,
                         )
                         .await
                             } else {
-                                resolve_pool_account_for_request_with_wait_and_image_intent(
+                                resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request(
                                     state.as_ref(),
                                     live_body_sticky_key.as_deref(),
                                     live_requested_model.as_deref(),
@@ -3157,6 +3203,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     pre_attempt_total_timeout_deadline,
                                     original_uri.path(),
                                     request_image_intent,
+                                    codex_imagegen_request,
                                 )
                                 .await
                             };
@@ -3803,7 +3850,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         .await
                         .map_err(|(status, message)| plain_proxy_error(status, message))?;
                         let mut no_available_wait_deadline = None;
-                        let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override(
+                        let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request(
                     state.as_ref(),
                     body_sticky_key.as_deref(),
                     requested_model.as_deref(),
@@ -3817,6 +3864,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     pre_attempt_total_timeout_deadline,
                     original_uri.path(),
                     request_image_intent,
+                    codex_imagegen_request,
                 )
                 .await;
                         let (initial_account, no_available_wait_deadline) =

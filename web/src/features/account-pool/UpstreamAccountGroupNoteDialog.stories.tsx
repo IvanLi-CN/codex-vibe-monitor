@@ -252,6 +252,7 @@ function GroupSettingsStory({
     fastModeForceAdd: "Force add",
     fastModeForceRemove: "Force remove",
     imageToolRewriteMode: "Image tools",
+    codexImagegenRewriteMode: "Codex imagegen",
     imageToolKeepOriginal: "Keep original",
     imageToolFillMissing: "Fill when missing",
     imageToolForceAdd: "Force add",
@@ -268,7 +269,9 @@ function GroupSettingsStory({
     requestCompressionMixedGroupHint:
       "Mixed groups only apply this override when the final target account is an API key upstream.",
     imageToolRewriteHint:
-      "These modes rewrite Full Responses only: fill when missing injects only after confirmed image intent, force add injects, and force remove strips the top-level image tool. Codex Responses Lite keeps client-owned tools unchanged.",
+      "These modes rewrite hosted Full Responses tools only. Configure Codex Full and Lite imagegen separately.",
+    codexImagegenRewriteHint:
+      "Controls the Codex client imagegen namespace separately from hosted image tools.",
     concurrencyLimit: "Policy concurrency limit",
     concurrencyHint: "This route-policy limit overrides root defaults for matching group members.",
     currentValue: "Current",
@@ -396,6 +399,7 @@ function GroupSettingsStory({
                 priorityTier: "normal",
                 fastModeRewriteMode: "keep_original",
                 imageToolRewriteMode: "keep_original",
+                codexImagegenRewriteMode: "force_add",
                 concurrencyLimit: 0,
                 upstream429RetryEnabled: false,
                 upstream429MaxRetries: 0,
@@ -532,7 +536,7 @@ export const RoutingPolicyInlineEditor: Story = {
     const help = canvas.getByRole("button", { name: "Image tools help" });
     await userEvent.click(help);
     await expect(
-      canvas.getByText(/Codex Responses Lite keeps client-owned tools unchanged/i),
+      canvas.getByText(/Configure Codex Full and Lite imagegen separately/i),
     ).toBeVisible();
   },
 };

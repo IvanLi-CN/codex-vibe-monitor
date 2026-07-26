@@ -1147,6 +1147,37 @@ impl ImageToolRewriteMode {
     }
 }
 
+/// Controls the client-executed `image_gen.imagegen` tool advertised to Codex.
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CodexImagegenRewriteMode {
+    ForceRemove,
+    #[default]
+    KeepOriginal,
+    FillMissing,
+    ForceAdd,
+}
+
+impl CodexImagegenRewriteMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::ForceRemove => "force_remove",
+            Self::KeepOriginal => "keep_original",
+            Self::FillMissing => "fill_missing",
+            Self::ForceAdd => "force_add",
+        }
+    }
+
+    pub(crate) fn from_str(value: &str) -> Self {
+        match value.trim() {
+            "force_remove" => Self::ForceRemove,
+            "fill_missing" => Self::FillMissing,
+            "force_add" => Self::ForceAdd,
+            _ => Self::KeepOriginal,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RequestCompressionAlgorithm {
@@ -1407,6 +1438,7 @@ pub(crate) struct EffectiveRoutingRuleFieldSources {
     pub(crate) priority_tier: String,
     pub(crate) fast_mode_rewrite_mode: String,
     pub(crate) image_tool_rewrite_mode: String,
+    pub(crate) codex_imagegen_rewrite_mode: String,
     pub(crate) request_compression_algorithm: String,
     pub(crate) concurrency_limit: String,
     pub(crate) upstream_429_retry: String,
@@ -1447,6 +1479,7 @@ pub(crate) struct EffectiveRoutingRule {
     pub(crate) priority_tier: TagPriorityTier,
     pub(crate) fast_mode_rewrite_mode: TagFastModeRewriteMode,
     pub(crate) image_tool_rewrite_mode: ImageToolRewriteMode,
+    pub(crate) codex_imagegen_rewrite_mode: CodexImagegenRewriteMode,
     pub(crate) request_compression_algorithm: RequestCompressionAlgorithm,
     pub(crate) concurrency_limit: i64,
     pub(crate) upstream_429_retry_enabled: bool,
@@ -1481,6 +1514,10 @@ impl EffectiveRoutingRule {
         &self.field_sources.image_tool_rewrite_mode
     }
 
+    pub(crate) fn codex_imagegen_rewrite_mode_source(&self) -> &str {
+        &self.field_sources.codex_imagegen_rewrite_mode
+    }
+
     pub(crate) fn request_compression_algorithm_source(&self) -> &str {
         &self.field_sources.request_compression_algorithm
     }
@@ -1507,6 +1544,7 @@ pub(crate) struct ConversationRoutingOverride {
     pub(crate) allow_switch_upstream: Option<bool>,
     pub(crate) fast_mode_rewrite_mode: Option<TagFastModeRewriteMode>,
     pub(crate) image_tool_rewrite_mode: Option<ImageToolRewriteMode>,
+    pub(crate) codex_imagegen_rewrite_mode: Option<CodexImagegenRewriteMode>,
     pub(crate) available_models: Option<Vec<String>>,
     pub(crate) forward_proxy_key: Option<String>,
     pub(crate) forward_proxy_keys: Vec<String>,
@@ -1518,6 +1556,7 @@ impl ConversationRoutingOverride {
         self.allow_switch_upstream.is_some()
             || self.fast_mode_rewrite_mode.is_some()
             || self.image_tool_rewrite_mode.is_some()
+            || self.codex_imagegen_rewrite_mode.is_some()
             || self.available_models.is_some()
             || self.forward_proxy_key.is_some()
             || !self.forward_proxy_keys.is_empty()
@@ -1546,6 +1585,7 @@ pub(crate) struct GroupAccountRoutingRule {
     pub(crate) priority_tier: TagPriorityTier,
     pub(crate) fast_mode_rewrite_mode: TagFastModeRewriteMode,
     pub(crate) image_tool_rewrite_mode: ImageToolRewriteMode,
+    pub(crate) codex_imagegen_rewrite_mode: Option<CodexImagegenRewriteMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) request_compression_algorithm: Option<RequestCompressionAlgorithm>,
     pub(crate) concurrency_limit: i64,
@@ -1853,6 +1893,7 @@ pub(crate) struct PoolRoutingSettingsResponse {
     pub(crate) maintenance: PoolRoutingMaintenanceSettingsResponse,
     pub(crate) request_compression_algorithm: RequestCompressionAlgorithm,
     pub(crate) request_compression_level_preset: RequestCompressionLevelPreset,
+    pub(crate) codex_imagegen_rewrite_mode: CodexImagegenRewriteMode,
     pub(crate) timeouts: PoolRoutingTimeoutSettingsResponse,
 }
 
@@ -1875,6 +1916,8 @@ pub(crate) struct UpdatePoolRoutingSettingsRequest {
     pub(crate) request_compression_algorithm: Option<String>,
     #[serde(default)]
     pub(crate) request_compression_level_preset: Option<String>,
+    #[serde(default)]
+    pub(crate) codex_imagegen_rewrite_mode: Option<String>,
     #[serde(default)]
     pub(crate) timeouts: Option<UpdatePoolRoutingTimeoutSettingsRequest>,
 }
@@ -2763,6 +2806,8 @@ pub(crate) struct UpdateGroupAccountRoutingRuleRequest {
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     pub(crate) image_tool_rewrite_mode: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(crate) codex_imagegen_rewrite_mode: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
     pub(crate) request_compression_algorithm: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     pub(crate) concurrency_limit: OptionalField<i64>,
@@ -2795,6 +2840,13 @@ impl UpdateGroupAccountRoutingRuleRequest {
 
     pub(crate) fn image_tool_rewrite_mode_value(&self) -> Option<&str> {
         match &self.image_tool_rewrite_mode {
+            OptionalField::Value(value) => Some(value.as_str()),
+            OptionalField::Missing | OptionalField::Null => None,
+        }
+    }
+
+    pub(crate) fn codex_imagegen_rewrite_mode_value(&self) -> Option<&str> {
+        match &self.codex_imagegen_rewrite_mode {
             OptionalField::Value(value) => Some(value.as_str()),
             OptionalField::Missing | OptionalField::Null => None,
         }

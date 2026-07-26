@@ -544,6 +544,44 @@ pub(crate) fn infer_image_intent_from_request_body(
     target: ProxyCaptureTarget,
     value: &Value,
 ) -> ImageIntent {
+    infer_image_intent_from_request_body_with_codex_namespace(target, value, true)
+}
+
+/// Determines whether an upstream-hosted image capability is required. The Codex
+/// `image_gen.imagegen` namespace is executed by the Codex client, so advertising it
+/// must remain observable as image intent without affecting account capability routing.
+pub(crate) fn infer_hosted_image_intent_from_request_body(
+    target: ProxyCaptureTarget,
+    value: &Value,
+) -> ImageIntent {
+    infer_image_intent_from_request_body_with_codex_namespace(target, value, false)
+}
+
+fn infer_image_intent_from_request_body_with_codex_namespace(
+    target: ProxyCaptureTarget,
+    value: &Value,
+    include_codex_namespace: bool,
+) -> ImageIntent {
+    let input_contains_hosted_image_tool = value.get("input").is_some_and(|input| match input {
+        Value::Array(input) => input.iter().any(|item| {
+            item.get("type").and_then(Value::as_str) == Some("additional_tools")
+                && openai_json_tools_contain_image_generation(item.get("tools"))
+        }),
+        Value::Object(input) => {
+            openai_json_tools_contain_image_generation(input.get("additional_tools"))
+        }
+        _ => false,
+    });
+    let input_contains_codex_imagegen = value.get("input").is_some_and(|input| match input {
+        Value::Array(input) => input.iter().any(|item| {
+            item.get("type").and_then(Value::as_str) == Some("additional_tools")
+                && openai_json_tools_contain_codex_imagegen(item.get("tools"))
+        }),
+        Value::Object(input) => {
+            openai_json_tools_contain_codex_imagegen(input.get("additional_tools"))
+        }
+        _ => false,
+    });
     match target {
         ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits => {
             ImageIntent::DirectImage
@@ -556,6 +594,10 @@ pub(crate) fn infer_image_intent_from_request_body(
                 .is_some_and(is_openai_image_generation_model)
                 || openai_json_tools_contain_image_generation(value.get("tools"))
                 || openai_json_tool_choice_selects_image_generation(value.get("tool_choice"))
+                || input_contains_hosted_image_tool
+                || (include_codex_namespace
+                    && (openai_json_tools_contain_codex_imagegen(value.get("tools"))
+                        || input_contains_codex_imagegen))
             {
                 ImageIntent::Yes
             } else {
@@ -598,6 +640,26 @@ pub(crate) fn openai_json_tools_contain_image_generation(tools: Option<&Value>) 
         item.get("type")
             .and_then(|value| value.as_str())
             .is_some_and(|value| value.trim() == "image_generation")
+    })
+}
+
+pub(crate) fn openai_json_tools_contain_codex_imagegen(tools: Option<&Value>) -> bool {
+    let Some(Value::Array(items)) = tools else {
+        return false;
+    };
+    items.iter().any(|item| {
+        item.get("type").and_then(Value::as_str) == Some("image_gen.imagegen")
+            || (item.get("type").and_then(Value::as_str) == Some("namespace")
+                && item.get("name").and_then(Value::as_str) == Some("image_gen")
+                && item
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .is_some_and(|namespace_tools| {
+                        namespace_tools.iter().any(|tool| {
+                            tool.get("type").and_then(Value::as_str) == Some("function")
+                                && tool.get("name").and_then(Value::as_str) == Some("imagegen")
+                        })
+                    }))
     })
 }
 

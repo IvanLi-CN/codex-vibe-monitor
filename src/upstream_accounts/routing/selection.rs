@@ -540,6 +540,7 @@ pub(crate) async fn resolve_pool_account_for_request(
         None,
         "",
         crate::ImageIntent::Unknown,
+        false,
     )
     .await
 }
@@ -553,7 +554,30 @@ pub(crate) async fn resolve_pool_account_for_request_with_image_intent(
     endpoint: &str,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolution> {
-    resolve_pool_account_for_request_with_route_requirement_and_image_intent(
+    resolve_pool_account_for_request_with_image_intent_and_codex_imagegen_request(
+        state,
+        sticky_key,
+        requested_model,
+        excluded_ids,
+        excluded_upstream_route_keys,
+        endpoint,
+        image_intent,
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_pool_account_for_request_with_image_intent_and_codex_imagegen_request(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    requested_model: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    endpoint: &str,
+    image_intent: crate::ImageIntent,
+    codex_imagegen_request: bool,
+) -> Result<PoolAccountResolution> {
+    resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request(
         state,
         sticky_key,
         requested_model,
@@ -561,8 +585,10 @@ pub(crate) async fn resolve_pool_account_for_request_with_image_intent(
         excluded_upstream_route_keys,
         None,
         None,
+        None,
         endpoint,
         image_intent,
+        codex_imagegen_request,
     )
     .await
 }
@@ -586,6 +612,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_binding_constraint(
         None,
         "",
         crate::ImageIntent::Unknown,
+        false,
     )
     .await
 }
@@ -634,6 +661,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
         None,
         "",
         crate::ImageIntent::Unknown,
+        false,
     )
     .await
 }
@@ -649,7 +677,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_
     endpoint: &str,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolution> {
-    resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override(
+    resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request(
         state,
         sticky_key,
         requested_model,
@@ -660,6 +688,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_
         None,
         endpoint,
         image_intent,
+        false,
     )
     .await
 }
@@ -676,7 +705,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_
     endpoint: &str,
     image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolution> {
-    resolve_pool_account_for_request_with_route_requirement_internal(
+    resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request(
         state,
         sticky_key,
         requested_model,
@@ -687,6 +716,40 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_
         conversation_override,
         endpoint,
         image_intent,
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    requested_model: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    required_upstream_route_key: Option<&str>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    conversation_override: Option<&ConversationRoutingOverride>,
+    endpoint: &str,
+    image_intent: crate::ImageIntent,
+    codex_imagegen_request: bool,
+) -> Result<PoolAccountResolution> {
+    // This selection state machine is intentionally large. Keep it off callers'
+    // async task stacks, including the live-first request reader.
+    Box::pin(
+        resolve_pool_account_for_request_with_route_requirement_internal(
+            state,
+            sticky_key,
+            requested_model,
+            excluded_ids,
+            excluded_upstream_route_keys,
+            required_upstream_route_key,
+            binding_constraint,
+            conversation_override,
+            endpoint,
+            image_intent,
+            codex_imagegen_request,
+        ),
     )
     .await
 }
@@ -702,9 +765,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     conversation_override: Option<&ConversationRoutingOverride>,
     endpoint: &str,
     image_intent: crate::ImageIntent,
+    codex_imagegen_request: bool,
 ) -> Result<PoolAccountResolution> {
-    let capability_requirements =
-        RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
     let now = Utc::now();
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
     let mut saw_rate_limited_candidate = false;
@@ -868,7 +930,15 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                     (bypass_requested_model_filter && !conversation_available_models_override)
                         || account_accepts_requested_model(requested_model, rule)
                 }) && account_accepts_request_capabilities(
-                    capability_requirements,
+                    request_capability_requirements_after_codex_imagegen_rewrite(
+                        endpoint,
+                        image_intent,
+                        requested_model,
+                        codex_imagegen_request,
+                        sticky_source_rule
+                            .as_ref()
+                            .expect("sticky source rule should be loaded"),
+                    ),
                     effective_capability_support(
                         decode_capability_support(row.response_endpoint_capability.as_deref()),
                         decode_capability_override(
@@ -1199,7 +1269,13 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             continue;
         }
         if !account_accepts_request_capabilities(
-            capability_requirements,
+            request_capability_requirements_after_codex_imagegen_rewrite(
+                endpoint,
+                image_intent,
+                requested_model,
+                codex_imagegen_request,
+                effective_rule,
+            ),
             effective_capability_support(
                 decode_capability_support(row.response_endpoint_capability.as_deref()),
                 decode_capability_override(
@@ -1363,4 +1439,104 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     }
 
     Ok(PoolAccountResolution::NoCandidate)
+}
+
+fn request_capability_requirements_after_codex_imagegen_rewrite(
+    endpoint: &str,
+    image_intent: crate::ImageIntent,
+    requested_model: Option<&str>,
+    codex_imagegen_request: bool,
+    rule: &EffectiveRoutingRule,
+) -> RequestCapabilityRequirements {
+    let hosted_image_intent = if codex_imagegen_request
+        && rule.codex_imagegen_rewrite_mode != crate::CodexImagegenRewriteMode::KeepOriginal
+        && image_intent == crate::ImageIntent::Yes
+        && !requested_model.is_some_and(crate::is_openai_image_generation_model)
+    {
+        crate::ImageIntent::No
+    } else {
+        image_intent
+    };
+    RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, hosted_image_intent)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn effective_rule(
+        codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode,
+    ) -> EffectiveRoutingRule {
+        EffectiveRoutingRule {
+            allow_cut_out: true,
+            allow_cut_in: true,
+            priority_tier: TagPriorityTier::Normal,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: crate::ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode,
+            request_compression_algorithm: RequestCompressionAlgorithm::Identity,
+            concurrency_limit: 0,
+            upstream_429_retry_enabled: false,
+            upstream_429_max_retries: 0,
+            available_models: Vec::new(),
+            available_models_defined: false,
+            status_change_reasons: default_status_change_reasons(),
+            status_change_reason_field_sources: default_status_change_reason_field_sources("root"),
+            system_denied_models: Vec::new(),
+            source_tag_ids: Vec::new(),
+            source_tag_names: Vec::new(),
+            field_sources: EffectiveRoutingRuleFieldSources {
+                allow_cut_out: "root".to_string(),
+                allow_cut_in: "root".to_string(),
+                priority_tier: "root".to_string(),
+                fast_mode_rewrite_mode: "root".to_string(),
+                image_tool_rewrite_mode: "root".to_string(),
+                codex_imagegen_rewrite_mode: "root".to_string(),
+                request_compression_algorithm: "root".to_string(),
+                concurrency_limit: "root".to_string(),
+                upstream_429_retry: "root".to_string(),
+                available_models: "root".to_string(),
+                system_denied_models: "root".to_string(),
+            },
+            timeouts: RoutingTimeoutSettings::default(),
+            timeout_field_sources: RoutingTimeoutFieldSources {
+                responses_first_byte_timeout_secs: "root".to_string(),
+                compact_first_byte_timeout_secs: "root".to_string(),
+                image_first_byte_timeout_secs: "root".to_string(),
+                responses_stream_timeout_secs: "root".to_string(),
+                compact_stream_timeout_secs: "root".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn codex_non_default_rewrite_drops_hosted_image_tool_requirement() {
+        let keep_original = request_capability_requirements_after_codex_imagegen_rewrite(
+            "/v1/responses",
+            crate::ImageIntent::Yes,
+            Some("gpt-5.6-codex"),
+            true,
+            &effective_rule(crate::CodexImagegenRewriteMode::KeepOriginal),
+        );
+        let force_add = request_capability_requirements_after_codex_imagegen_rewrite(
+            "/v1/responses",
+            crate::ImageIntent::Yes,
+            Some("gpt-5.6-codex"),
+            true,
+            &effective_rule(crate::CodexImagegenRewriteMode::ForceAdd),
+        );
+
+        assert!(keep_original.response_image_tool);
+        assert!(!force_add.response_image_tool);
+        assert!(force_add.response_endpoint);
+
+        let image_model = request_capability_requirements_after_codex_imagegen_rewrite(
+            "/v1/responses",
+            crate::ImageIntent::Yes,
+            Some("gpt-image-1"),
+            true,
+            &effective_rule(crate::CodexImagegenRewriteMode::ForceAdd),
+        );
+        assert!(image_model.response_image_tool);
+    }
 }

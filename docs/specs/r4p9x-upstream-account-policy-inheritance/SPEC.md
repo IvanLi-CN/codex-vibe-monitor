@@ -179,6 +179,7 @@ Startup schema maintenance performs one capability-axis cutover:
 The image-tool layer remains separate from the system-tag signal model:
 
 - `imageToolRewriteMode` exists on group and account routing rules only
+- `codexImagegenRewriteMode` is an independent root -> group -> account -> conversation policy with `keep_original | fill_missing | force_add | force_remove`; root defaults to `keep_original`
 - account records persist a read-only `imageToolCapability`
 - `image intent` classification is runtime four-state: `yes`, `direct_image`, `no`, or `unknown`
 - `yes` routes only to image-compatible accounts
@@ -191,8 +192,10 @@ The image-tool layer remains separate from the system-tag signal model:
 - `force_add` always injects image tools
 - `force_remove` always strips image tools
 - `/v1/responses` and `/v1/responses/compact` may rewrite request bodies to satisfy the final account's rewrite mode
-- Responses Lite is identified only by `X-OpenAI-Internal-Codex-Responses-Lite: true`; model names and body shape are not protocol signals
-- every Lite image-tool rewrite mode is read-only: CVM must not modify `input.additional_tools`, inject a top-level image tool, or alter `tool_choice`
+- Codex Lite is identified only by `X-OpenAI-Internal-Codex-Responses-Lite: true`; Codex Full is identified only by `originator: Codex Desktop` or a `Codex Desktop/…` user agent. Model names, body shape, and session ids are not protocol signals.
+- For an identified Codex request with a non-default Codex policy, hosted `image_generation` and its matching `tool_choice` are removed before Codex imagegen handling.
+- Codex Full merges the fixed `image_gen.imagegen` namespace snapshot into top-level `tools`. Codex Lite normalizes `input` to an array, merges developer `additional_tools`, and enforces `reasoning.context=all_turns` plus `parallel_tool_calls=false`.
+- `fill_missing` adds the snapshot only when image intent is explicit and no same-name tool exists; `force_add` replaces a same-name conflicting schema; `force_remove` removes only Codex imagegen while retaining unrelated tools.
 - a Lite validation message containing `responses lite`, `top-level tool type`, and `image_generation` is a request-shape error, not evidence that the upstream account lacks image-tool capability
 - startup repair resets only historical observed `unsupported` entries matching that exact signature; it retains any manual capability override
 - `/v1/images/generations` and `/v1/images/edits` classify as `direct_image`, only filter by capability, and do not rewrite the body
@@ -233,6 +236,7 @@ Pool routing settings expose:
 
 - `requestCompressionAlgorithm`
 - `requestCompressionLevelPreset`
+- `codexImagegenRewriteMode`
 
 Account summaries and detail responses expose:
 
@@ -278,6 +282,8 @@ Capability override writes follow the same preserve / clear / set shape:
 - value: store one of `follow | identity | gzip | deflate | zstd`
 
 `requestCompressionLevelPreset` exists only on root pool-routing settings updates and accepts `fast | balanced | best`.
+
+`codexImagegenRewriteMode` follows the ordinary policy inheritance contract: group, account, and conversation fields are tri-state (`missing` preserves, `null` clears to inherit, a concrete mode overrides); root always stores a concrete mode.
 
 Timeout writes use the same preserve / clear / set contract, but per timeout field:
 
@@ -329,7 +335,7 @@ Legacy `unsupported_model:gpt-5.5` handling is treated as one instance of the ge
 - User-maintained tag policies, tag ordering, or tag routing dialogs are not reintroduced.
 - Historical custom tag strategies are not migrated onto groups or accounts.
 - Image capability is not an editable account control.
-- There is no separate image-only pool or tag-level image-tool field.
+- There is no separate image-only pool or tag-level image-tool field. `codexImagegenRewriteMode` controls advertisement of the Codex client executor only; it is not a hosted image capability or local executor.
 - `/v1/chat/completions` image intent detection is not covered.
 - Splitting text reasoning and image generation across two upstreams in the same Responses request is not introduced.
 - OAuth/API key credential behavior is unchanged apart from rejecting manual `tagIds`.

@@ -56,6 +56,10 @@ pub(crate) fn apply_conversation_routing_override(
         rule.image_tool_rewrite_mode = image_tool_rewrite_mode;
         rule.field_sources.image_tool_rewrite_mode = "conversation".to_string();
     }
+    if let Some(codex_imagegen_rewrite_mode) = override_policy.codex_imagegen_rewrite_mode {
+        rule.codex_imagegen_rewrite_mode = codex_imagegen_rewrite_mode;
+        rule.field_sources.codex_imagegen_rewrite_mode = "conversation".to_string();
+    }
     if let Some(available_models) = override_policy.available_models.as_ref() {
         rule.available_models = available_models.clone();
         rule.available_models_defined = true;
@@ -123,9 +127,14 @@ pub(crate) async fn load_effective_routing_rules_for_accounts(
         return Ok(HashMap::new());
     }
 
-    let root_request_compression = resolve_pool_request_compression_settings_from_row(
-        &load_pool_routing_settings(pool).await?,
-    );
+    let root_settings = load_pool_routing_settings(pool).await?;
+    let root_request_compression =
+        resolve_pool_request_compression_settings_from_row(&root_settings);
+    let root_codex_imagegen_rewrite_mode = root_settings
+        .codex_imagegen_rewrite_mode
+        .as_deref()
+        .map(CodexImagegenRewriteMode::from_str)
+        .unwrap_or(CodexImagegenRewriteMode::KeepOriginal);
     let tags_by_account = load_account_tag_map(pool, account_ids).await?;
     let group_names = account_group_map
         .values()
@@ -140,6 +149,7 @@ pub(crate) async fn load_effective_routing_rules_for_accounts(
     for (account_id, account_row) in account_group_map {
         let mut rule = build_effective_routing_rule(&[]);
         apply_root_request_compression_defaults(&mut rule, &root_request_compression);
+        apply_root_codex_imagegen_rewrite_mode(&mut rule, root_codex_imagegen_rewrite_mode);
         let normalized_group_name = normalize_optional_text(account_row.group_name.clone());
         let request_compression_override_enabled =
             account_row.kind.trim() == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX;
@@ -191,10 +201,16 @@ pub(crate) async fn load_effective_routing_rule_for_group(
     group_name: Option<&str>,
 ) -> Result<EffectiveRoutingRule> {
     let mut rule = build_effective_routing_rule(&[]);
-    let root_request_compression = resolve_pool_request_compression_settings_from_row(
-        &load_pool_routing_settings(pool).await?,
-    );
+    let root_settings = load_pool_routing_settings(pool).await?;
+    let root_request_compression =
+        resolve_pool_request_compression_settings_from_row(&root_settings);
+    let root_codex_imagegen_rewrite_mode = root_settings
+        .codex_imagegen_rewrite_mode
+        .as_deref()
+        .map(CodexImagegenRewriteMode::from_str)
+        .unwrap_or(CodexImagegenRewriteMode::KeepOriginal);
     apply_root_request_compression_defaults(&mut rule, &root_request_compression);
+    apply_root_codex_imagegen_rewrite_mode(&mut rule, root_codex_imagegen_rewrite_mode);
     let Some(group_name) = group_name
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -361,6 +377,7 @@ pub(crate) fn build_pool_resolved_account(
         upstream_429_max_retries: effective_rule.upstream_429_max_retries,
         fast_mode_rewrite_mode: effective_rule.fast_mode_rewrite_mode,
         image_tool_rewrite_mode: effective_rule.image_tool_rewrite_mode,
+        codex_imagegen_rewrite_mode: effective_rule.codex_imagegen_rewrite_mode,
         request_compression_algorithm: effective_rule.request_compression_algorithm,
         response_endpoint_capability: effective_capability_support(
             decode_capability_support(row.response_endpoint_capability.as_deref()),

@@ -35,3 +35,9 @@ pub(crate) fn normalize_upstream_image_tool_rewrite_mode(
 ) -> Result<ImageToolRewriteMode, (StatusCode, String)> {
     sync_mailbox_and_filters::normalize_image_tool_rewrite_mode(value)
 }
+
+pub(crate) fn normalize_codex_imagegen_rewrite_mode(
+    value: Option<&str>,
+) -> Result<CodexImagegenRewriteMode, (StatusCode, String)> {
+    sync_mailbox_and_filters::normalize_codex_imagegen_rewrite_mode(value)
+}

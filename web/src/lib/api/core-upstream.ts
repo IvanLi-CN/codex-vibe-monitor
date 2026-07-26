@@ -74,6 +74,7 @@ export type TagFastModeRewriteMode =
   | "fill_missing"
   | "force_add";
 export type ImageToolRewriteMode = "keep_original" | "fill_missing" | "force_add" | "force_remove";
+export type CodexImagegenRewriteMode = ImageToolRewriteMode;
 export type CapabilitySupport = "supported" | "unsupported" | "unknown";
 export type CapabilityOverride = Exclude<CapabilitySupport, "unknown">;
 export type ImageIntent = "yes" | "direct_image" | "no" | "unknown";
@@ -155,6 +156,7 @@ export interface PoolRoutingTimeoutSettings {
 
 export interface GroupAccountRoutingRule extends TagRoutingRule {
   imageToolRewriteMode?: ImageToolRewriteMode;
+  codexImagegenRewriteMode?: CodexImagegenRewriteMode | null;
   requestCompressionAlgorithm?: RequestCompressionAlgorithm;
   statusChangeReasons?: StatusChangeReasons;
   timeouts?: Partial<PoolRoutingTimeoutSettings>;
@@ -166,6 +168,7 @@ export interface EffectiveRoutingRuleFieldSources {
   priorityTier: EffectiveRoutingRuleSource;
   fastModeRewriteMode: EffectiveRoutingRuleSource;
   imageToolRewriteMode?: EffectiveRoutingRuleSource;
+  codexImagegenRewriteMode?: EffectiveRoutingRuleSource;
   requestCompressionAlgorithm?: EffectiveRoutingRuleSource;
   concurrencyLimit: EffectiveRoutingRuleSource;
   upstream429Retry: EffectiveRoutingRuleSource;
@@ -370,6 +373,7 @@ export interface UpdatePoolRoutingSettingsPayload {
   maintenance?: UpdatePoolRoutingMaintenanceSettingsPayload;
   requestCompressionAlgorithm?: RequestCompressionAlgorithm;
   requestCompressionLevelPreset?: RequestCompressionLevelPreset;
+  codexImagegenRewriteMode?: CodexImagegenRewriteMode;
   timeouts?: Partial<PoolRoutingTimeoutSettings>;
 }
 
@@ -380,6 +384,7 @@ export interface PoolRoutingSettings {
   maintenance?: PoolRoutingMaintenanceSettings;
   requestCompressionAlgorithm?: RequestCompressionAlgorithm;
   requestCompressionLevelPreset?: RequestCompressionLevelPreset;
+  codexImagegenRewriteMode?: CodexImagegenRewriteMode;
   timeouts?: PoolRoutingTimeoutSettings;
 }
 
@@ -839,6 +844,7 @@ export interface UpdateGroupAccountRoutingRulePayload {
   priorityTier?: NullableRoutingRuleValue<TagPriorityTier>;
   fastModeRewriteMode?: NullableRoutingRuleValue<TagFastModeRewriteMode>;
   imageToolRewriteMode?: NullableRoutingRuleValue<ImageToolRewriteMode>;
+  codexImagegenRewriteMode?: NullableRoutingRuleValue<CodexImagegenRewriteMode>;
   requestCompressionAlgorithm?: NullableRoutingRuleValue<RequestCompressionAlgorithm>;
   concurrencyLimit?: NullableRoutingRuleValue<number>;
   upstream429RetryEnabled?: NullableRoutingRuleValue<boolean>;
@@ -960,6 +966,11 @@ function normalizeImageToolRewriteMode(raw: unknown): ImageToolRewriteMode {
   return raw === "fill_missing" || raw === "force_add" || raw === "force_remove"
     ? raw
     : "keep_original";
+}
+
+function normalizeCodexImagegenRewriteMode(raw: unknown): CodexImagegenRewriteMode | null {
+  if (raw === null) return null;
+  return normalizeImageToolRewriteMode(raw);
 }
 
 function normalizeCapabilitySupport(raw: unknown): CapabilitySupport {
@@ -1089,6 +1100,9 @@ function normalizeGroupAccountRoutingRule(raw: unknown): GroupAccountRoutingRule
   return {
     ...payload,
     imageToolRewriteMode: normalizeImageToolRewriteMode(rawPayload.imageToolRewriteMode),
+    codexImagegenRewriteMode: normalizeCodexImagegenRewriteMode(
+      rawPayload.codexImagegenRewriteMode,
+    ),
     requestCompressionAlgorithm: normalizeOptionalRequestCompressionAlgorithm(
       rawPayload.requestCompressionAlgorithm,
     ),
@@ -1139,6 +1153,7 @@ export function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRul
       priorityTier: normalizeSource(rawSources.priorityTier),
       fastModeRewriteMode: normalizeSource(rawSources.fastModeRewriteMode),
       imageToolRewriteMode: normalizeSource(rawSources.imageToolRewriteMode),
+      codexImagegenRewriteMode: normalizeSource(rawSources.codexImagegenRewriteMode),
       requestCompressionAlgorithm: normalizeSource(rawSources.requestCompressionAlgorithm),
       concurrencyLimit: normalizeSource(rawSources.concurrencyLimit),
       upstream429Retry: normalizeSource(rawSources.upstream429Retry),

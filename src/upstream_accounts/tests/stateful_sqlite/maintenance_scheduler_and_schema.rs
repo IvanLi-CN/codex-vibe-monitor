@@ -295,6 +295,7 @@ fn test_effective_routing_rule(concurrency_limit: i64) -> EffectiveRoutingRule {
         priority_tier: TagPriorityTier::Normal,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        codex_imagegen_rewrite_mode: Default::default(),
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         concurrency_limit,
         upstream_429_retry_enabled: false,
@@ -312,6 +313,7 @@ fn test_effective_routing_rule(concurrency_limit: i64) -> EffectiveRoutingRule {
             priority_tier: "root".to_string(),
             fast_mode_rewrite_mode: "root".to_string(),
             image_tool_rewrite_mode: "root".to_string(),
+            codex_imagegen_rewrite_mode: "root".to_string(),
             request_compression_algorithm: "root".to_string(),
             concurrency_limit: "root".to_string(),
             upstream_429_retry: "root".to_string(),
@@ -5221,6 +5223,7 @@ async fn update_upstream_account_clears_individual_account_policy_override() {
                     priority_tier: OptionalField::Missing,
                     fast_mode_rewrite_mode: OptionalField::Missing,
                     image_tool_rewrite_mode: OptionalField::Missing,
+                    codex_imagegen_rewrite_mode: OptionalField::Missing,
                     request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
@@ -5306,6 +5309,7 @@ async fn update_upstream_account_patches_one_timeout_without_clearing_other_over
                     priority_tier: OptionalField::Missing,
                     fast_mode_rewrite_mode: OptionalField::Missing,
                     image_tool_rewrite_mode: OptionalField::Missing,
+                    codex_imagegen_rewrite_mode: OptionalField::Missing,
                     request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
@@ -5442,6 +5446,7 @@ async fn update_upstream_account_writes_positive_new_conversation_policy() {
                     priority_tier: OptionalField::Value("no_new".to_string()),
                     fast_mode_rewrite_mode: OptionalField::Missing,
                     image_tool_rewrite_mode: OptionalField::Missing,
+                    codex_imagegen_rewrite_mode: OptionalField::Missing,
                     request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
@@ -5519,6 +5524,7 @@ async fn update_upstream_account_preserves_priority_tier_when_omitted() {
                     priority_tier: OptionalField::Missing,
                     fast_mode_rewrite_mode: OptionalField::Missing,
                     image_tool_rewrite_mode: OptionalField::Missing,
+                    codex_imagegen_rewrite_mode: OptionalField::Missing,
                     request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
@@ -5579,6 +5585,7 @@ async fn update_upstream_account_accepts_no_new_priority_write() {
                     priority_tier: OptionalField::Value("no_new".to_string()),
                     fast_mode_rewrite_mode: OptionalField::Missing,
                     image_tool_rewrite_mode: OptionalField::Missing,
+                    codex_imagegen_rewrite_mode: OptionalField::Missing,
                     request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
@@ -5656,6 +5663,7 @@ async fn update_upstream_account_does_not_change_priority_tier_when_omitted() {
                     priority_tier: OptionalField::Missing,
                     fast_mode_rewrite_mode: OptionalField::Missing,
                     image_tool_rewrite_mode: OptionalField::Missing,
+                    codex_imagegen_rewrite_mode: OptionalField::Missing,
                     request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
@@ -5716,6 +5724,7 @@ async fn update_upstream_account_persists_empty_available_models_as_deny_all() {
                     priority_tier: OptionalField::Missing,
                     fast_mode_rewrite_mode: OptionalField::Missing,
                     image_tool_rewrite_mode: OptionalField::Missing,
+                    codex_imagegen_rewrite_mode: OptionalField::Missing,
                     request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
@@ -5774,6 +5783,7 @@ async fn update_upstream_account_rejects_invalid_routing_policy_enums() {
                     priority_tier: OptionalField::Value("normal".to_string()),
                     fast_mode_rewrite_mode: OptionalField::Value("always_fast".to_string()),
                     image_tool_rewrite_mode: OptionalField::Missing,
+                    codex_imagegen_rewrite_mode: OptionalField::Missing,
                     request_compression_algorithm: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
                     upstream_429_retry_enabled: OptionalField::Missing,
@@ -5940,11 +5950,14 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
     save_pool_routing_settings(
         &state.pool,
         &state.config,
-        None,
-        None,
-        Some(RequestCompressionAlgorithm::Gzip),
-        Some(RequestCompressionLevelPreset::Best),
-        None,
+        PoolRoutingSettingsUpdate {
+            crypto_key: None,
+            api_key: None,
+            request_compression_algorithm: Some(RequestCompressionAlgorithm::Gzip),
+            request_compression_level_preset: Some(RequestCompressionLevelPreset::Best),
+            codex_imagegen_rewrite_mode: Some(CodexImagegenRewriteMode::ForceAdd),
+            timeout_updates: None,
+        },
     )
     .await
     .expect("save root request compression settings");
@@ -5984,7 +5997,8 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
     sqlx::query(
         r#"
             UPDATE pool_upstream_account_group_notes
-            SET policy_request_compression_algorithm = 'deflate'
+            SET policy_request_compression_algorithm = 'deflate',
+                policy_codex_imagegen_rewrite_mode = 'fill_missing'
             WHERE group_name = 'compression-mixed'
             "#,
     )
@@ -5999,6 +6013,10 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
                 WHEN ?1 THEN 'zstd'
                 WHEN ?2 THEN 'identity'
                 ELSE policy_request_compression_algorithm
+            END,
+            policy_codex_imagegen_rewrite_mode = CASE id
+                WHEN ?1 THEN 'force_remove'
+                ELSE policy_codex_imagegen_rewrite_mode
             END
             WHERE id IN (?1, ?2)
             "#,
@@ -6025,6 +6043,11 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
         root_only.field_sources.request_compression_algorithm,
         "root"
     );
+    assert_eq!(
+        root_only.codex_imagegen_rewrite_mode,
+        CodexImagegenRewriteMode::ForceAdd
+    );
+    assert_eq!(root_only.field_sources.codex_imagegen_rewrite_mode, "root");
 
     let group_only = rules.get(&group_only_id).expect("group-only rule");
     assert_eq!(
@@ -6033,6 +6056,14 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
     );
     assert_eq!(
         group_only.field_sources.request_compression_algorithm,
+        "group"
+    );
+    assert_eq!(
+        group_only.codex_imagegen_rewrite_mode,
+        CodexImagegenRewriteMode::FillMissing
+    );
+    assert_eq!(
+        group_only.field_sources.codex_imagegen_rewrite_mode,
         "group"
     );
 
@@ -6047,6 +6078,14 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
         account_override.field_sources.request_compression_algorithm,
         "account"
     );
+    assert_eq!(
+        account_override.codex_imagegen_rewrite_mode,
+        CodexImagegenRewriteMode::ForceRemove
+    );
+    assert_eq!(
+        account_override.field_sources.codex_imagegen_rewrite_mode,
+        "account"
+    );
 
     let oauth_rule = rules.get(&oauth_id).expect("oauth rule");
     assert_eq!(
@@ -6056,6 +6095,14 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
     assert_eq!(
         oauth_rule.field_sources.request_compression_algorithm,
         "root"
+    );
+    assert_eq!(
+        oauth_rule.codex_imagegen_rewrite_mode,
+        CodexImagegenRewriteMode::FillMissing
+    );
+    assert_eq!(
+        oauth_rule.field_sources.codex_imagegen_rewrite_mode,
+        "group"
     );
 }
 

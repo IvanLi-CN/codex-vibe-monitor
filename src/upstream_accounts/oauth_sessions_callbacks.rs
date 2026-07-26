@@ -77,6 +77,11 @@ pub(crate) async fn update_pool_routing_settings(
         .as_deref()
         .map(|value| normalize_request_compression_level_preset(Some(value)))
         .transpose()?;
+    let codex_imagegen_rewrite_mode = payload
+        .codex_imagegen_rewrite_mode
+        .as_deref()
+        .map(|value| super::sync::normalize_codex_imagegen_rewrite_mode(Some(value)))
+        .transpose()?;
     let crypto_key = if api_key.is_some() {
         Some(state.upstream_accounts.require_crypto_key()?)
     } else {
@@ -86,15 +91,19 @@ pub(crate) async fn update_pool_routing_settings(
         || timeout_updates.is_some()
         || request_compression_algorithm.is_some()
         || request_compression_level_preset.is_some()
+        || codex_imagegen_rewrite_mode.is_some()
     {
         save_pool_routing_settings(
             &state.pool,
             &state.config,
-            crypto_key,
-            api_key.as_deref(),
-            request_compression_algorithm,
-            request_compression_level_preset,
-            timeout_updates.as_ref(),
+            PoolRoutingSettingsUpdate {
+                crypto_key,
+                api_key: api_key.as_deref(),
+                request_compression_algorithm,
+                request_compression_level_preset,
+                codex_imagegen_rewrite_mode,
+                timeout_updates: timeout_updates.as_ref(),
+            },
         )
         .await?;
         if api_key.is_some() {
@@ -1508,6 +1517,18 @@ pub(crate) async fn update_upstream_account_inner(
                 .map(|mode| mode.as_str().to_string())
         })
         .transpose()?;
+    let policy_codex_imagegen_rewrite_mode = payload
+        .routing_rule
+        .as_ref()
+        .and_then(|rule| match &rule.codex_imagegen_rewrite_mode {
+            OptionalField::Value(value) => Some(value.as_str()),
+            OptionalField::Missing | OptionalField::Null => None,
+        })
+        .map(|value| {
+            super::sync::normalize_codex_imagegen_rewrite_mode(Some(value))
+                .map(|mode| mode.as_str().to_string())
+        })
+        .transpose()?;
     let policy_request_compression_algorithm = payload
         .routing_rule
         .as_ref()
@@ -1918,7 +1939,8 @@ pub(crate) async fn update_upstream_account_inner(
             policy_chat_completions_capability_override = ?42,
             policy_image_endpoint_capability_override = ?43,
             policy_response_image_tool_capability_override = ?44,
-            updated_at = ?45
+            updated_at = ?45,
+            policy_codex_imagegen_rewrite_mode = ?46
         WHERE id = ?1
         "#,
     )
@@ -2108,6 +2130,14 @@ pub(crate) async fn update_upstream_account_inner(
     .bind(image_endpoint_capability_override)
     .bind(response_image_tool_capability_override)
     .bind(&now_iso)
+    .bind(match payload.routing_rule.as_ref() {
+        Some(rule) => match rule.codex_imagegen_rewrite_mode {
+            OptionalField::Missing => row.policy_codex_imagegen_rewrite_mode.clone(),
+            OptionalField::Null => None,
+            OptionalField::Value(_) => policy_codex_imagegen_rewrite_mode.clone(),
+        },
+        None => row.policy_codex_imagegen_rewrite_mode.clone(),
+    })
     .execute(tx.as_mut())
     .await
     .map_err(internal_error_tuple)?;

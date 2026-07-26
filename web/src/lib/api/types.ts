@@ -33,6 +33,7 @@ export type {
   BulkUpstreamAccountSyncSnapshotEventPayload,
   CapabilityOverride,
   CapabilitySupport,
+  CodexImagegenRewriteMode,
   CompactSupportState,
   CompleteOauthLoginSessionPayload,
   ConversationRequestOutcome,

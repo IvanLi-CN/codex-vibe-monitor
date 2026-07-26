@@ -104,3 +104,4 @@
 - [x] M16: 为运行态号池调用补齐当前上游账号呼吸提示，并覆盖 Live、Records、Dashboard working conversations 与 Dashboard 调用详情抽屉的共享账号展示路径。
 - [x] M17: 为账号详情补齐请求 ID 展示、账号作用域锚点分页、虚拟滚动定位与结构化未找到反馈。
 - [x] M18: 为 Records 与 workflow detail 补齐记录侧成本审计、最终成功 attempt Token/成本面板、reasoning `null` vs `0` 合同与共享 warning 语义。
+- [x] M19: 为 Codex Full/Lite imagegen 改写补齐 invocation 与 workflow attempt 审计展示，包含协议、策略、hosted 清理与有界 schema 冲突证据。

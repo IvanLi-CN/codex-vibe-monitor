@@ -1908,6 +1908,7 @@ async fn websocket_payload_owner_guard_blocks_mismatched_payload_owner() {
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::default(),
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        codex_imagegen_rewrite_mode: Default::default(),
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         response_endpoint_capability: CapabilitySupport::Unknown,
         chat_completions_capability: CapabilitySupport::Unknown,
@@ -2035,6 +2036,7 @@ async fn websocket_payload_owner_guard_disabled_does_not_block_mismatched_payloa
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::default(),
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        codex_imagegen_rewrite_mode: Default::default(),
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         response_endpoint_capability: CapabilitySupport::Unknown,
         chat_completions_capability: CapabilitySupport::Unknown,
@@ -7003,6 +7005,7 @@ fn test_live_first_pool_account(
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        codex_imagegen_rewrite_mode: Default::default(),
         request_compression_algorithm,
         response_endpoint_capability: CapabilitySupport::Unknown,
         chat_completions_capability: CapabilitySupport::Unknown,
@@ -7037,6 +7040,22 @@ fn pool_account_supports_live_request_body_rejects_downstream_content_encoding()
     assert!(!pool_account_supports_live_request_body(
         &account,
         &"/v1/chat/completions".parse().expect("valid uri"),
+        &Method::POST,
+        &headers,
+    ));
+}
+
+#[test]
+fn pool_account_supports_live_request_body_buffers_codex_keep_original_for_audit() {
+    let account = test_live_first_pool_account(RequestCompressionAlgorithm::Identity);
+    let headers = HeaderMap::from_iter([(
+        HeaderName::from_static("x-openai-internal-codex-responses-lite"),
+        HeaderValue::from_static("true"),
+    )]);
+
+    assert!(!pool_account_supports_live_request_body(
+        &account,
+        &"/v1/responses".parse().expect("valid uri"),
         &Method::POST,
         &headers,
     ));
