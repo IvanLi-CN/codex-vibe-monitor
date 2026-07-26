@@ -375,7 +375,6 @@ The Storybook `DrawerBindingAndTimeouts` scenario now also renders the widened c
 
 The Storybook `DrawerBindingAndTimeouts` scenario also shows a multi-node conversation proxy list so the drawer contract remains reviewable alongside the Dashboard bulk-entry points.
 
-PR: include
 ![Conversation events tab showing affinity reset and fresh sticky reassignment](./assets/operations-tab-storybook.png)
 
 - source_type: storybook_canvas
@@ -399,7 +398,6 @@ PR: include
   margin_policy: trim_only
   evidence_surface: page
   evidence_note: verifies the actual conversation settings drawer retains the four inherited policy values while explaining that Lite client-owned tools remain unchanged.
-  PR: include
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: fixture-only conversation data
