@@ -462,7 +462,7 @@ export function LongTermStatsSection({
         ...entries.map((entry) => entry.seriesKey).filter((key) => !kept.includes(key)),
       ];
       if (!isInitial && !rangeChanged) {
-        return next.slice(0, 8);
+        return kept.slice(0, 8);
       }
       return next.slice(0, Math.min(8, Math.max(3, kept.length)));
     };
