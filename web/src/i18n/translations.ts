@@ -1308,6 +1308,17 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.modelRouting.transition": "Route change",
     "accountPool.upstreamAccounts.modelRouting.failures": "Failures",
     "accountPool.upstreamAccounts.modelRouting.failureKind": "Failure kind",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.model": "Model routing failure",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.model_unavailable": "Model unavailable",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.model_quota": "Model quota exhausted",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.upstream_http_429":
+      "Model rate limited",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.upstream_http_429_quota_exhausted":
+      "Model quota exhausted",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.upstream_http_5xx":
+      "Upstream service error",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.pool_no_available_account":
+      "Model route unavailable",
     "accountPool.upstreamAccounts.modelRouting.lastFailureAt": "Last failure",
     "accountPool.upstreamAccounts.modelRouting.reset": "Restore available",
     "accountPool.upstreamAccounts.modelRouting.resetting": "Restoring…",
@@ -1344,6 +1355,7 @@ const baseTranslations = {
       "Model route recovered",
     "accountPool.upstreamAccounts.latestAction.actions.model_route_reset": "Model route reset",
     "accountPool.upstreamAccounts.latestAction.sources.call": "Call",
+    "accountPool.upstreamAccounts.latestAction.sources.manual": "Manual",
     "accountPool.upstreamAccounts.latestAction.sources.sync_manual": "Manual sync",
     "accountPool.upstreamAccounts.latestAction.sources.sync_maintenance": "Maintenance sync",
     "accountPool.upstreamAccounts.latestAction.sources.sync_post_create": "Post-create sync",
@@ -1408,9 +1420,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.maintenanceEvents.descriptions.httpStatus":
       "Maintenance request returned HTTP {{status}}.",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_ok": "Sync completed successfully",
+    "accountPool.upstreamAccounts.latestAction.reasons.model_route": "Model route",
     "accountPool.upstreamAccounts.latestAction.reasons.account_updated":
       "Account settings were updated",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error": "Sync failed",
+    "accountPool.upstreamAccounts.latestAction.reasons.egress_throttled": "Egress rate limited",
     "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_exhausted":
       "Latest usage snapshot already shows an exhausted limit window",
     "accountPool.upstreamAccounts.latestAction.reasons.quota_still_exhausted":
@@ -1434,10 +1448,28 @@ const baseTranslations = {
       "Upstream quota or weekly cap was exhausted",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_5xx":
       "Upstream service failure",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_rejected":
+      "Upstream rejected the request",
+    "accountPool.upstreamAccounts.latestAction.reasons.pool_assigned_account_blocked":
+      "Bound account is unavailable",
     "accountPool.upstreamAccounts.recentActions.title": "Recent account events",
     "accountPool.upstreamAccounts.recentActions.description":
       "Latest call and sync actions for this account.",
     "accountPool.upstreamAccounts.recentActions.empty": "No recent account events yet.",
+    "accountPool.upstreamAccounts.recentActions.impact.scope": "Impact scope",
+    "accountPool.upstreamAccounts.recentActions.impact.scopeAccount": "Account",
+    "accountPool.upstreamAccounts.recentActions.impact.scopeModel": "Model",
+    "accountPool.upstreamAccounts.recentActions.impact.affectedModels": "Affected models",
+    "accountPool.upstreamAccounts.recentActions.blockedBinding.encryptedSessionOwner":
+      "Encrypted owner constraint",
+    "accountPool.upstreamAccounts.recentActions.blockedBinding.explicitAccount":
+      "Explicit account binding",
+    "accountPool.upstreamAccounts.recentActions.blockedBinding.openConversations":
+      "Open affected conversations",
+    "accountPool.upstreamAccounts.recentActions.historicalEventUnlinkedAttempt":
+      "(historical event not linked to an attempt)",
+    "accountPool.upstreamAccounts.recentActions.impact.allModels": "All",
+    "accountPool.upstreamAccounts.recentActions.impact.unknownModel": "Unknown",
     "accountPool.upstreamAccounts.duplicate.badge": "Duplicate",
     "accountPool.upstreamAccounts.duplicate.warningTitle":
       "{{name}} was saved, but the upstream identity looks duplicated.",
@@ -3969,6 +4001,15 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.modelRouting.transition": "路由变更",
     "accountPool.upstreamAccounts.modelRouting.failures": "失败次数",
     "accountPool.upstreamAccounts.modelRouting.failureKind": "失败类型",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.model": "模型路由失败",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.model_unavailable": "模型不可用",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.model_quota": "模型额度已耗尽",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.upstream_http_429": "模型限流",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.upstream_http_429_quota_exhausted":
+      "模型额度已耗尽",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.upstream_http_5xx": "上游服务异常",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.pool_no_available_account":
+      "模型路由不可用",
     "accountPool.upstreamAccounts.modelRouting.lastFailureAt": "最近失败",
     "accountPool.upstreamAccounts.modelRouting.reset": "恢复可用",
     "accountPool.upstreamAccounts.modelRouting.resetting": "恢复中…",
@@ -3994,6 +4035,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.actions.model_route_recovered": "模型路由恢复",
     "accountPool.upstreamAccounts.latestAction.actions.model_route_reset": "模型路由已重置",
     "accountPool.upstreamAccounts.latestAction.sources.call": "调用",
+    "accountPool.upstreamAccounts.latestAction.sources.manual": "手动操作",
     "accountPool.upstreamAccounts.latestAction.sources.sync_manual": "手动同步",
     "accountPool.upstreamAccounts.latestAction.sources.sync_maintenance": "维护同步",
     "accountPool.upstreamAccounts.latestAction.sources.sync_post_create": "创建后同步",
@@ -4052,8 +4094,10 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.maintenanceEvents.descriptions.httpStatus":
       "维护请求返回 HTTP {{status}}。",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_ok": "同步完成",
+    "accountPool.upstreamAccounts.latestAction.reasons.model_route": "模型路由",
     "accountPool.upstreamAccounts.latestAction.reasons.account_updated": "账号设置已更新",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error": "同步失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.egress_throttled": "出口正在限流",
     "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_exhausted":
       "最新额度快照已经显示限制窗口耗尽",
     "accountPool.upstreamAccounts.latestAction.reasons.quota_still_exhausted":
@@ -4072,9 +4116,24 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_429_quota_exhausted":
       "上游额度或周限已耗尽",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_5xx": "上游服务异常",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_rejected": "上游拒绝请求",
+    "accountPool.upstreamAccounts.latestAction.reasons.pool_assigned_account_blocked":
+      "绑定账号当前不可用",
     "accountPool.upstreamAccounts.recentActions.title": "最近账号事件",
     "accountPool.upstreamAccounts.recentActions.description": "展示这条账号最近的调用与同步动作。",
     "accountPool.upstreamAccounts.recentActions.empty": "暂时还没有最近事件。",
+    "accountPool.upstreamAccounts.recentActions.impact.scope": "影响范围",
+    "accountPool.upstreamAccounts.recentActions.impact.scopeAccount": "账号",
+    "accountPool.upstreamAccounts.recentActions.impact.scopeModel": "模型",
+    "accountPool.upstreamAccounts.recentActions.impact.affectedModels": "受影响模型",
+    "accountPool.upstreamAccounts.recentActions.blockedBinding.encryptedSessionOwner":
+      "加密 owner 约束",
+    "accountPool.upstreamAccounts.recentActions.blockedBinding.explicitAccount": "单账号显式绑定",
+    "accountPool.upstreamAccounts.recentActions.blockedBinding.openConversations": "打开受影响会话",
+    "accountPool.upstreamAccounts.recentActions.historicalEventUnlinkedAttempt":
+      "（历史事件未关联尝试）",
+    "accountPool.upstreamAccounts.recentActions.impact.allModels": "全部",
+    "accountPool.upstreamAccounts.recentActions.impact.unknownModel": "未知",
     "accountPool.upstreamAccounts.duplicate.badge": "重复账号",
     "accountPool.upstreamAccounts.duplicate.warningTitle":
       "{{name}} 已保存，但检测到上游身份重复。",

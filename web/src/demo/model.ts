@@ -438,11 +438,11 @@ function createAccounts(scene: DemoScene = "operational") {
             : null,
         lastErrorAt: unavailable || needsReauth ? recentAt(6) : null,
         lastAction: unavailable
-          ? "mark_unavailable"
+          ? "route_cooldown_started"
           : needsReauth
-            ? "require_reauth"
+            ? "route_hard_unavailable"
             : "sync_succeeded",
-        lastActionSource: "demo_scheduler",
+        lastActionSource: "sync_maintenance",
         lastActionReasonCode: unavailable
           ? "transport_failure"
           : needsReauth

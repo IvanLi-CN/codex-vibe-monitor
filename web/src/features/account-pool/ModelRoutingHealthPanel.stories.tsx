@@ -34,7 +34,7 @@ const states: ModelRoutingState[] = [
     changedAt: now,
     lastSeenAt: now,
     lastFailureAt: now,
-    lastFailureKind: "model_quota",
+    lastFailureKind: "upstream_http_429_quota_exhausted",
     lastFailureMessage: "Model-specific quota exhausted.",
     cooldownUntil: new Date("2026-07-24T08:00:45.000Z").toISOString(),
   },
@@ -73,11 +73,13 @@ export const MixedStates: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getAllByText("失败摘要", { exact: true })).toHaveLength(2);
     await expect(canvasElement.querySelectorAll("dt")).toHaveLength(17);
+    await expect(canvas.getAllByText("模型不可用", { exact: true })).toHaveLength(2);
+    await expect(canvas.getAllByText("模型额度已耗尽", { exact: true })).toHaveLength(2);
     await expect(
-      canvas.getByText("The requested model is temporarily unavailable upstream.", {
+      canvas.queryByText("The requested model is temporarily unavailable upstream.", {
         exact: true,
       }),
-    ).toBeVisible();
+    ).not.toBeInTheDocument();
   },
 };
 

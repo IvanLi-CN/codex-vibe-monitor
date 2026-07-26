@@ -889,19 +889,19 @@ export default function UpstreamAccountsPage() {
     if (!action) return null;
     const key = `accountPool.upstreamAccounts.latestAction.actions.${action}`;
     const translated = t(key);
-    return translated === key ? action : translated;
+    return translated === key ? t("accountPool.upstreamAccounts.latestAction.unknown") : translated;
   };
   const accountActionSourceLabel = (source?: string | null) => {
     if (!source) return null;
     const key = `accountPool.upstreamAccounts.latestAction.sources.${source}`;
     const translated = t(key);
-    return translated === key ? source : translated;
+    return translated === key ? t("accountPool.upstreamAccounts.latestAction.unknown") : translated;
   };
   const accountActionReasonLabel = (reason?: string | null) => {
     if (!reason) return null;
     const key = `accountPool.upstreamAccounts.latestAction.reasons.${reason}`;
     const translated = t(key);
-    return translated === key ? reason : translated;
+    return translated === key ? t("accountPool.upstreamAccounts.latestAction.unknown") : translated;
   };
   const accountRosterLabels = useMemo<UpstreamAccountsTableLabels>(
     () => ({

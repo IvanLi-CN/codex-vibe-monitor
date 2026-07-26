@@ -1025,6 +1025,33 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
       }
 
       const detailMatch = path.match(/^\/api\/pool\/upstream-accounts\/(\d+)$/);
+      const modelRoutingMatch = path.match(
+        /^\/api\/pool\/upstream-accounts\/(\d+)\/model-routing$/,
+      );
+      if (modelRoutingMatch && method === "GET") {
+        return jsonResponse([
+          {
+            model: "gpt-5.6-terra",
+            state: "available",
+            priority: "normal",
+            failureCount: 0,
+            changedAt: "2026-07-25T10:04:37.000Z",
+            lastSeenAt: "2026-07-25T10:04:37.000Z",
+          },
+          {
+            model: "gpt-5.4-mini",
+            state: "cooling_down",
+            priority: "excluded",
+            failureCount: 5,
+            changedAt: "2026-07-25T10:03:18.000Z",
+            lastSeenAt: "2026-07-25T10:03:18.000Z",
+            lastFailureAt: "2026-07-25T10:03:18.000Z",
+            lastFailureKind: "model",
+            lastFailureMessage: "The requested model is temporarily unavailable upstream.",
+            cooldownUntil: "2026-07-25T10:04:03.000Z",
+          },
+        ]);
+      }
       if (detailMatch && method === "GET") {
         const accountId = Number(detailMatch[1]);
         const detail = store.details[accountId];
