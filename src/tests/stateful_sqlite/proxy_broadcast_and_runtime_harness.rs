@@ -2416,9 +2416,16 @@ async fn forward_proxy_timeseries_keeps_hourly_attempt_history_after_retention()
         hourly_rollup_rows >= 1,
         "retention should materialize owner-facing hourly history alongside raw archive batches"
     );
+    refresh_long_term_stats(&state.pool, 400)
+        .await
+        .expect("materialize long-term stats before archive cleanup");
+    let long_term_deleted = cleanup_expired_archive_batches(&state.pool, &retention_config, false)
+        .await
+        .expect("cleanup archive after long-term stats materialization");
+    assert_eq!(long_term_deleted, 1);
     assert_eq!(
-        summary.archive_batches_deleted, 1,
-        "expired raw archives should be removable without dropping owner-facing node history"
+        summary.archive_batches_deleted, 0,
+        "initial retention must wait for long-term stats materialization before deleting archives"
     );
     let remaining_archive_batches: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'pool_upstream_request_attempts'",
@@ -2566,6 +2573,15 @@ async fn forward_proxy_timeseries_preserves_materialized_history_when_same_month
             .await
             .expect("run first retention pass");
     assert_eq!(first_summary.pool_upstream_request_attempt_rows_archived, 2);
+
+    refresh_long_term_stats(&state.pool, 400)
+        .await
+        .expect("materialize long-term stats before first archive cleanup");
+    let first_long_term_deleted =
+        cleanup_expired_archive_batches(&state.pool, &retention_config, false)
+            .await
+            .expect("cleanup first archive after long-term stats materialization");
+    assert_eq!(first_long_term_deleted, 1);
 
     let remaining_after_first: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'pool_upstream_request_attempts'",
