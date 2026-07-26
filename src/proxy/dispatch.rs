@@ -69,7 +69,6 @@ pub(crate) struct DownstreamResponseChunk {
 pub(crate) struct TrackedDownstreamReceiverStream {
     inner: ReceiverStream<Result<DownstreamResponseChunk, io::Error>>,
     terminal_tx: watch::Sender<DownstreamBodyTerminalState>,
-    downstream_request_observer: Option<DownstreamRequestObserver>,
     terminal_state: DownstreamBodyTerminalState,
 }
 
@@ -77,12 +76,10 @@ impl TrackedDownstreamReceiverStream {
     fn new(
         inner: ReceiverStream<Result<DownstreamResponseChunk, io::Error>>,
         terminal_tx: watch::Sender<DownstreamBodyTerminalState>,
-        downstream_request_observer: Option<DownstreamRequestObserver>,
     ) -> Self {
         Self {
             inner,
             terminal_tx,
-            downstream_request_observer,
             terminal_state: DownstreamBodyTerminalState::Open,
         }
     }
@@ -126,9 +123,6 @@ impl futures_util::Stream for TrackedDownstreamReceiverStream {
         match Pin::new(&mut self.inner).poll_next(cx) {
             std::task::Poll::Ready(Some(Ok(chunk))) => {
                 if chunk.successful_terminal {
-                    if let Some(observation) = self.downstream_request_observer.as_ref() {
-                        observation.mark_successful_terminal_flush_pending();
-                    }
                     self.mark_terminal(DownstreamBodyTerminalState::SuccessfulTerminalForwarded);
                 }
                 std::task::Poll::Ready(Some(Ok(chunk.bytes)))
@@ -145,12 +139,7 @@ impl futures_util::Stream for TrackedDownstreamReceiverStream {
 
 impl Drop for TrackedDownstreamReceiverStream {
     fn drop(&mut self) {
-        if self.terminal_state == DownstreamBodyTerminalState::SuccessfulTerminalForwarded
-            && self
-                .downstream_request_observer
-                .as_ref()
-                .is_none_or(|observation| observation.successful_terminal_flush_confirmed())
-        {
+        if self.terminal_state == DownstreamBodyTerminalState::SuccessfulTerminalForwarded {
             self.mark_terminal(DownstreamBodyTerminalState::Completed);
         } else {
             self.mark_terminal(DownstreamBodyTerminalState::Dropped);
@@ -186,11 +175,8 @@ pub(crate) fn proxy_stream_observe_downstream_body_terminal(
     }
 }
 
-fn proxy_stream_write_error_is_post_terminal(
-    successful_terminal_forwarded: bool,
-    successful_terminal_transport_flushed: bool,
-) -> bool {
-    successful_terminal_forwarded && successful_terminal_transport_flushed
+fn proxy_stream_write_error_is_post_terminal(successful_terminal_forwarded: bool) -> bool {
+    successful_terminal_forwarded
 }
 
 pub(crate) async fn wait_for_downstream_body_terminal_until(
@@ -2585,13 +2571,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 .wait_for_write_error_window(remaining_grace_period)
                 .await
         {
-            let successful_terminal_transport_flushed = downstream_request_observer_for_task
-                .as_ref()
-                .is_none_or(|observation| observation.successful_terminal_flush_confirmed());
-            if proxy_stream_write_error_is_post_terminal(
-                successful_terminal_forwarded,
-                successful_terminal_transport_flushed,
-            ) {
+            if proxy_stream_write_error_is_post_terminal(successful_terminal_forwarded) {
                 post_terminal_downstream_write_error_kind = Some(write_error.kind);
                 post_terminal_downstream_write_error_message = Some(format!(
                     "downstream transport write failed after response.completed ({})",
@@ -3332,7 +3312,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         .body(Body::from_stream(TrackedDownstreamReceiverStream::new(
             ReceiverStream::new(rx),
             downstream_body_terminal_tx,
-            downstream_request_observer,
         )))
         .map_err(|err| {
             (
@@ -3751,22 +3730,31 @@ mod dispatch_tests {
     }
 
     #[tokio::test]
-    async fn downstream_terminal_completion_preserves_success_latch_for_watch_receivers() {
+    async fn downstream_terminal_chunk_preserves_success_latch_when_body_is_released() {
         let (terminal_tx, mut terminal_rx) = watch::channel(DownstreamBodyTerminalState::Open);
-        let (_response_tx, response_rx) = mpsc::channel(1);
-        let mut stream = TrackedDownstreamReceiverStream::new(
-            ReceiverStream::new(response_rx),
-            terminal_tx,
-            None,
-        );
+        let (response_tx, response_rx) = mpsc::channel(1);
+        let mut stream =
+            TrackedDownstreamReceiverStream::new(ReceiverStream::new(response_rx), terminal_tx);
         let mut successful_terminal_forwarded = false;
         let mut downstream_body_available = true;
         let mut downstream_closed = false;
         let mut downstream_write_error_kind = None;
         let mut last_upstream_chunk_gap_ms = None;
 
-        stream.mark_terminal(DownstreamBodyTerminalState::SuccessfulTerminalForwarded);
-        stream.mark_terminal(DownstreamBodyTerminalState::Completed);
+        response_tx
+            .send(Ok(DownstreamResponseChunk {
+                bytes: Bytes::from_static(b"event: response.completed\n\n"),
+                successful_terminal: true,
+            }))
+            .await
+            .expect("queue successful terminal chunk");
+        let chunk = stream
+            .next()
+            .await
+            .expect("terminal chunk should reach downstream body")
+            .expect("terminal chunk should not be an error");
+        assert!(chunk.starts_with(b"event: response.completed"));
+        drop(stream);
 
         assert_eq!(
             *terminal_rx.borrow_and_update(),
@@ -3791,7 +3779,7 @@ mod dispatch_tests {
     }
 
     #[tokio::test]
-    async fn wait_for_downstream_body_terminal_marks_drop_before_flush_confirmation() {
+    async fn wait_for_downstream_body_terminal_marks_drop_before_successful_terminal() {
         let (tx, mut rx) = watch::channel(DownstreamBodyTerminalState::Dropped);
         let mut downstream_body_available = true;
         let mut downstream_closed = false;
@@ -3818,10 +3806,8 @@ mod dispatch_tests {
     }
 
     #[test]
-    fn downstream_write_error_is_post_terminal_only_after_successful_flush() {
-        assert!(!proxy_stream_write_error_is_post_terminal(false, false));
-        assert!(!proxy_stream_write_error_is_post_terminal(true, false));
-        assert!(!proxy_stream_write_error_is_post_terminal(false, true));
-        assert!(proxy_stream_write_error_is_post_terminal(true, true));
+    fn downstream_write_error_is_post_terminal_only_after_successful_terminal_forwarding() {
+        assert!(!proxy_stream_write_error_is_post_terminal(false));
+        assert!(proxy_stream_write_error_is_post_terminal(true));
     }
 }

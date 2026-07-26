@@ -2040,7 +2040,7 @@ async fn capture_target_pool_route_marks_server_overloaded_after_forward_as_retr
     upstream_handle.abort();
 }
 
-async fn spawn_raw_slow_success_upstream() -> (String, JoinHandle<()>) {
+async fn spawn_raw_completed_then_trailing_upstream() -> (String, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind raw slow-success upstream");
@@ -2104,8 +2104,10 @@ async fn spawn_raw_slow_success_upstream() -> (String, JoinHandle<()>) {
             "event: response.completed\n",
             "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_slow_test\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15}}}\n\n",
         );
+        let trailing = "event: response.ping\ndata: {}\n\n";
         let first_chunk = format!("{:X}\r\n{first}\r\n", first.len());
         let second_chunk = format!("{:X}\r\n{second}\r\n", second.len());
+        let trailing_chunk = format!("{:X}\r\n{trailing}\r\n", trailing.len());
 
         tokio::io::AsyncWriteExt::write_all(&mut stream, response_head.as_bytes())
             .await
@@ -2122,6 +2124,15 @@ async fn spawn_raw_slow_success_upstream() -> (String, JoinHandle<()>) {
         tokio::io::AsyncWriteExt::write_all(&mut stream, second_chunk.as_bytes())
             .await
             .expect("write raw upstream second chunk");
+        tokio::io::AsyncWriteExt::flush(&mut stream)
+            .await
+            .expect("flush raw upstream completed chunk");
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        tokio::io::AsyncWriteExt::write_all(&mut stream, trailing_chunk.as_bytes())
+            .await
+            .expect("write raw upstream trailing chunk");
         tokio::io::AsyncWriteExt::write_all(&mut stream, b"0\r\n\r\n")
             .await
             .expect("write raw upstream terminator");
@@ -2135,7 +2146,7 @@ async fn spawn_raw_slow_success_upstream() -> (String, JoinHandle<()>) {
 
 #[tokio::test]
 async fn pool_openai_v1_responses_records_post_terminal_downstream_write_error_as_success() {
-    let (upstream_base, upstream_handle) = spawn_raw_slow_success_upstream().await;
+    let (upstream_base, upstream_handle) = spawn_raw_completed_then_trailing_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
             .await;
@@ -2165,7 +2176,7 @@ async fn pool_openai_v1_responses_records_post_terminal_downstream_write_error_a
         .await
         .expect("connect downstream close client");
     let http_request = format!(
-        "POST /v1/responses?mode=slow-success HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer pool-live-key\r\nContent-Type: application/json\r\nUser-Agent: codex-test-downstream-close/1.0\r\nX-Forwarded-For: 198.51.100.8, 192.168.31.1\r\nX-Real-IP: 198.51.100.9\r\nForwarded: for=198.51.100.10;proto=https;host=example.test\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{}",
+        "POST /v1/responses?mode=completed-then-trailing HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer pool-live-key\r\nContent-Type: application/json\r\nUser-Agent: codex-test-downstream-close/1.0\r\nX-Forwarded-For: 198.51.100.8, 192.168.31.1\r\nX-Real-IP: 198.51.100.9\r\nForwarded: for=198.51.100.10;proto=https;host=example.test\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{}",
         request_body.len(),
         request_body
     );
@@ -2180,25 +2191,24 @@ async fn pool_openai_v1_responses_records_post_terminal_downstream_write_error_a
         let read = tokio::io::AsyncReadExt::read(&mut client, &mut read_buf)
             .await
             .expect("read downstream close response");
-        assert!(read > 0, "socket closed before first response chunk");
+        assert!(read > 0, "socket closed before response.completed");
         response_bytes.extend_from_slice(&read_buf[..read]);
         if response_bytes
-            .windows("response.created".len())
-            .any(|window| window == b"response.created")
+            .windows("response.completed".len())
+            .any(|window| window == b"response.completed")
         {
             break;
         }
         assert!(
             read_started.elapsed() < Duration::from_secs(5),
-            "timed out waiting for first streamed response chunk"
+            "timed out waiting for response.completed"
         );
     }
-    let first_chunk_text = String::from_utf8_lossy(&response_bytes);
+    let completed_chunk_text = String::from_utf8_lossy(&response_bytes);
     assert!(
-        first_chunk_text.contains("response.created"),
-        "expected first chunk to contain response.created, got: {first_chunk_text}"
+        completed_chunk_text.contains("response.completed"),
+        "expected downstream response to contain response.completed, got: {completed_chunk_text}"
     );
-    tokio::time::sleep(Duration::from_millis(300)).await;
     #[allow(deprecated)]
     client
         .set_linger(Some(Duration::ZERO))
@@ -2228,7 +2238,11 @@ async fn pool_openai_v1_responses_records_post_terminal_downstream_write_error_a
         "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_slow_test\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15}}}\n\n",
     )
     .len() as u64;
-    assert_eq!(payload["forwardedChunkCount"].as_u64(), Some(2));
+    assert!(
+        payload["forwardedChunkCount"]
+            .as_u64()
+            .is_some_and(|value| value >= 2)
+    );
     assert!(
         payload["forwardedBytes"]
             .as_u64()
