@@ -1307,6 +1307,14 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.modelRouting.failureKinds.model": "Model routing failure",
     "accountPool.upstreamAccounts.modelRouting.failureKinds.model_unavailable": "Model unavailable",
     "accountPool.upstreamAccounts.modelRouting.failureKinds.model_quota": "Model quota exhausted",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.upstream_http_429":
+      "Model rate limited",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.upstream_http_429_quota_exhausted":
+      "Model quota exhausted",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.upstream_http_5xx":
+      "Upstream service error",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.pool_no_available_account":
+      "Model route unavailable",
     "accountPool.upstreamAccounts.modelRouting.lastFailureAt": "Last failure",
     "accountPool.upstreamAccounts.modelRouting.reset": "Restore available",
     "accountPool.upstreamAccounts.modelRouting.resetting": "Restoring…",
@@ -1343,6 +1351,7 @@ const baseTranslations = {
       "Model route recovered",
     "accountPool.upstreamAccounts.latestAction.actions.model_route_reset": "Model route reset",
     "accountPool.upstreamAccounts.latestAction.sources.call": "Call",
+    "accountPool.upstreamAccounts.latestAction.sources.manual": "Manual",
     "accountPool.upstreamAccounts.latestAction.sources.sync_manual": "Manual sync",
     "accountPool.upstreamAccounts.latestAction.sources.sync_maintenance": "Maintenance sync",
     "accountPool.upstreamAccounts.latestAction.sources.sync_post_create": "Post-create sync",
@@ -1407,6 +1416,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.maintenanceEvents.descriptions.httpStatus":
       "Maintenance request returned HTTP {{status}}.",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_ok": "Sync completed successfully",
+    "accountPool.upstreamAccounts.latestAction.reasons.model_route": "Model route",
     "accountPool.upstreamAccounts.latestAction.reasons.account_updated":
       "Account settings were updated",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error": "Sync failed",
@@ -3986,6 +3996,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.modelRouting.failureKinds.model": "模型路由失败",
     "accountPool.upstreamAccounts.modelRouting.failureKinds.model_unavailable": "模型不可用",
     "accountPool.upstreamAccounts.modelRouting.failureKinds.model_quota": "模型额度已耗尽",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.upstream_http_429": "模型限流",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.upstream_http_429_quota_exhausted":
+      "模型额度已耗尽",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.upstream_http_5xx": "上游服务异常",
+    "accountPool.upstreamAccounts.modelRouting.failureKinds.pool_no_available_account":
+      "模型路由不可用",
     "accountPool.upstreamAccounts.modelRouting.lastFailureAt": "最近失败",
     "accountPool.upstreamAccounts.modelRouting.reset": "恢复可用",
     "accountPool.upstreamAccounts.modelRouting.resetting": "恢复中…",
@@ -4011,6 +4027,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.actions.model_route_recovered": "模型路由恢复",
     "accountPool.upstreamAccounts.latestAction.actions.model_route_reset": "模型路由已重置",
     "accountPool.upstreamAccounts.latestAction.sources.call": "调用",
+    "accountPool.upstreamAccounts.latestAction.sources.manual": "手动操作",
     "accountPool.upstreamAccounts.latestAction.sources.sync_manual": "手动同步",
     "accountPool.upstreamAccounts.latestAction.sources.sync_maintenance": "维护同步",
     "accountPool.upstreamAccounts.latestAction.sources.sync_post_create": "创建后同步",
@@ -4069,6 +4086,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.maintenanceEvents.descriptions.httpStatus":
       "维护请求返回 HTTP {{status}}。",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_ok": "同步完成",
+    "accountPool.upstreamAccounts.latestAction.reasons.model_route": "模型路由",
     "accountPool.upstreamAccounts.latestAction.reasons.account_updated": "账号设置已更新",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error": "同步失败",
     "accountPool.upstreamAccounts.latestAction.reasons.egress_throttled": "出口正在限流",

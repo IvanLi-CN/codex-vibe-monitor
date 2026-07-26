@@ -1304,6 +1304,16 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_invoke_id_occurred_at
+        ON codex_invocations (invoke_id, occurred_at, id)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_invoke_id_occurred_at")?;
+
+    sqlx::query(
+        r#"
         CREATE INDEX IF NOT EXISTS idx_codex_invocations_endpoint_occurred_at
         ON codex_invocations (
             (CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.endpoint') AS TEXT)) END),

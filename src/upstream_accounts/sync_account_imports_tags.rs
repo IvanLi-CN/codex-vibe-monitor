@@ -3130,12 +3130,28 @@ pub(crate) async fn load_upstream_account_detail_with_options(
                         FROM codex_invocations fallback_invocation
                         WHERE fallback_invocation.invoke_id = event.invoke_id
                           AND ABS(
-                                julianday(fallback_invocation.occurred_at) -
-                                julianday(COALESCE(attempts.occurred_at, event.occurred_at))
+                                julianday(
+                                    fallback_invocation.occurred_at,
+                                    CASE WHEN instr(fallback_invocation.occurred_at, 'T') > 0
+                                        THEN '+0 hours' ELSE '-8 hours' END
+                                ) -
+                                julianday(
+                                    COALESCE(attempts.occurred_at, event.occurred_at),
+                                    CASE WHEN instr(COALESCE(attempts.occurred_at, event.occurred_at), 'T') > 0
+                                        THEN '+0 hours' ELSE '-8 hours' END
+                                )
                               ) = (
                                 SELECT MIN(ABS(
-                                    julianday(candidate.occurred_at) -
-                                    julianday(COALESCE(attempts.occurred_at, event.occurred_at))
+                                    julianday(
+                                        candidate.occurred_at,
+                                        CASE WHEN instr(candidate.occurred_at, 'T') > 0
+                                            THEN '+0 hours' ELSE '-8 hours' END
+                                    ) -
+                                    julianday(
+                                        COALESCE(attempts.occurred_at, event.occurred_at),
+                                        CASE WHEN instr(COALESCE(attempts.occurred_at, event.occurred_at), 'T') > 0
+                                            THEN '+0 hours' ELSE '-8 hours' END
+                                    )
                                 ))
                                 FROM codex_invocations candidate
                                 WHERE candidate.invoke_id = event.invoke_id
@@ -3159,12 +3175,28 @@ pub(crate) async fn load_upstream_account_detail_with_options(
                     FROM codex_invocations fallback_invocation
                     WHERE fallback_invocation.invoke_id = event.invoke_id
                       AND ABS(
-                            julianday(fallback_invocation.occurred_at) -
-                            julianday(COALESCE(attempts.occurred_at, event.occurred_at))
+                            julianday(
+                                fallback_invocation.occurred_at,
+                                CASE WHEN instr(fallback_invocation.occurred_at, 'T') > 0
+                                    THEN '+0 hours' ELSE '-8 hours' END
+                            ) -
+                            julianday(
+                                COALESCE(attempts.occurred_at, event.occurred_at),
+                                CASE WHEN instr(COALESCE(attempts.occurred_at, event.occurred_at), 'T') > 0
+                                    THEN '+0 hours' ELSE '-8 hours' END
+                            )
                           ) = (
                             SELECT MIN(ABS(
-                                julianday(candidate.occurred_at) -
-                                julianday(COALESCE(attempts.occurred_at, event.occurred_at))
+                                julianday(
+                                    candidate.occurred_at,
+                                    CASE WHEN instr(candidate.occurred_at, 'T') > 0
+                                        THEN '+0 hours' ELSE '-8 hours' END
+                                ) -
+                                julianday(
+                                    COALESCE(attempts.occurred_at, event.occurred_at),
+                                    CASE WHEN instr(COALESCE(attempts.occurred_at, event.occurred_at), 'T') > 0
+                                        THEN '+0 hours' ELSE '-8 hours' END
+                                )
                             ))
                             FROM codex_invocations candidate
                             WHERE candidate.invoke_id = event.invoke_id

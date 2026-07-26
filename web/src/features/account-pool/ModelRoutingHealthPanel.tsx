@@ -43,7 +43,10 @@ function failureKindLabel(kind: string | null | undefined, t: (key: string) => s
   if (!kind) return "-";
   const key = `accountPool.upstreamAccounts.modelRouting.failureKinds.${kind}`;
   const translated = t(key);
-  return translated === key ? t("accountPool.upstreamAccounts.latestAction.unknown") : translated;
+  if (translated !== key) return translated;
+  const reasonKey = `accountPool.upstreamAccounts.latestAction.reasons.${kind}`;
+  const reason = t(reasonKey);
+  return reason === reasonKey ? t("accountPool.upstreamAccounts.latestAction.unknown") : reason;
 }
 
 export interface ModelRoutingHealthPanelProps {
