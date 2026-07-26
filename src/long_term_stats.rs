@@ -59,12 +59,25 @@ pub(crate) struct LongTermRangeQuery {
     pub(crate) range: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub(crate) struct LongTermSeriesQuery {
     pub(crate) range: Option<String>,
     pub(crate) dimension: Option<String>,
     #[serde(default)]
     pub(crate) key: Vec<String>,
+}
+
+fn parse_long_term_series_query(uri: &Uri) -> LongTermSeriesQuery {
+    let mut query = LongTermSeriesQuery::default();
+    for (key, value) in url::form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
+        match key.as_ref() {
+            "range" => query.range = Some(value.into_owned()),
+            "dimension" => query.dimension = Some(value.into_owned()),
+            "key" => query.key.push(value.into_owned()),
+            _ => {}
+        }
+    }
+    query
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -877,7 +890,7 @@ async fn refresh_long_term_stats_inner(
     // A day may be split across archive parts. Rebuild every affected day from all of its
     // source parts before replacing the durable buckets, so a newly replayed part cannot erase
     // metrics already materialized from an earlier part.
-    if !affected_archive_dates.is_empty() {
+    if ready_state && !affected_archive_dates.is_empty() {
         let mut rebuild_rows = rows
             .iter()
             .filter(|row| {
@@ -1605,8 +1618,9 @@ pub(crate) async fn fetch_long_term_overview(
 
 pub(crate) async fn fetch_long_term_series(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<LongTermSeriesQuery>,
+    OriginalUri(original_uri): OriginalUri,
 ) -> Result<Json<LongTermStatsSeriesResponse>, (StatusCode, String)> {
+    let query = parse_long_term_series_query(&original_uri);
     let range = LongTermRange::parse(query.range.as_deref())
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "invalid range".to_string()))?;
     let dimension = query.dimension.as_deref().unwrap_or_default();
@@ -1919,6 +1933,17 @@ mod tests {
             Some(LongTermRange::ThreeSixtyFive)
         );
         assert_eq!(LongTermRange::parse(Some("1d")), None);
+    }
+
+    #[test]
+    fn series_query_parser_accepts_repeated_keys() {
+        let uri: Uri = "/api/stats/long-term/series?range=30d&dimension=model&key=one&key=two"
+            .parse()
+            .expect("valid series URI");
+        let query = parse_long_term_series_query(&uri);
+        assert_eq!(query.range.as_deref(), Some("30d"));
+        assert_eq!(query.dimension.as_deref(), Some("model"));
+        assert_eq!(query.key, ["one", "two"]);
     }
 
     #[test]
