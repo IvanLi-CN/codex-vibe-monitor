@@ -728,7 +728,10 @@ async fn refresh_long_term_stats_inner(
                     "UPDATE long_term_stats_state SET processed_rows = ?1, total_rows = ?2, updated_at = datetime('now') WHERE id = ?3",
                 )
                 .bind(processed_rows_count)
-                .bind(processed_rows_count)
+                // The archive workload has not been enumerated yet during a full rebuild, so
+                // keep the total explicitly unknown instead of presenting a false completion
+                // ratio to the preparation UI.
+                .bind(0_i64)
                 .bind(LONG_TERM_STATE_ID)
                 .execute(pool)
                 .await?;
