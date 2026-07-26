@@ -961,7 +961,7 @@ pub(crate) async fn query_upstream_account_stats_row(
         .map_err(Into::into)
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug, Clone, FromRow)]
 pub(crate) struct ArchiveBatchPathRow {
     file_path: String,
     month_key: Option<String>,

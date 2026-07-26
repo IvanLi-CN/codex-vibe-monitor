@@ -431,19 +431,17 @@ export function LongTermStatsSection({
     overview: fetchedOverview,
     series: fetchedSeries,
     isLoading,
-    isSeriesLoading,
     error,
     seriesError,
   } = useLongTermStats(range, dimension, modelSelection, !overviewOverride);
   const overview = overviewOverride ?? fetchedOverview;
   const modelSeries = seriesOverride ?? fetchedSeries?.series ?? [];
   const upstreamKeys = useMemo(() => upstreamSelection.slice(0, 8), [upstreamSelection]);
-  const { series: fetchedUpstreamSeries } = useLongTermStats(
-    range,
-    "upstream",
-    upstreamKeys,
-    !overviewOverride,
-  );
+  const {
+    series: fetchedUpstreamSeries,
+    isSeriesLoading: isUpstreamSeriesLoading,
+    seriesError: upstreamSeriesError,
+  } = useLongTermStats(range, "upstream", upstreamKeys, !overviewOverride);
   const upstreamSeries = seriesOverride ? [] : (fetchedUpstreamSeries?.series ?? []);
 
   useEffect(() => {
@@ -607,11 +605,15 @@ export function LongTermStatsSection({
                 series={upstreamSeries}
                 metric={upstreamMetric}
                 emptyLabel={
-                  isSeriesLoading ? t("stats.longTerm.loading") : t("stats.longTerm.emptyChart")
+                  isUpstreamSeriesLoading
+                    ? t("stats.longTerm.loading")
+                    : t("stats.longTerm.emptyChart")
                 }
               />
             </div>
-            {seriesError ? <Alert variant="error">{seriesError}</Alert> : null}
+            {seriesError || upstreamSeriesError ? (
+              <Alert variant="error">{seriesError ?? upstreamSeriesError}</Alert>
+            ) : null}
             <SeriesTable
               title={t("stats.longTerm.upstreams")}
               entries={upstreamTable}

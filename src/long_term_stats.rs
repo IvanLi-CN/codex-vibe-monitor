@@ -549,11 +549,31 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
         .and_hms_opt(0, 0, 0)
         .and_then(|value| Shanghai.from_local_datetime(&value).single())
         .map(|value| value.with_timezone(&Utc).to_rfc3339());
-    let mut rows = if previous_state
+    let has_attempt_table = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pool_upstream_request_attempts')",
+    )
+    .fetch_one(pool)
+    .await?
+        != 0;
+    let live_upstream_account_id_sql = if has_attempt_table {
+        "COALESCE(CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER) END, (SELECT attempt.upstream_account_id FROM pool_upstream_request_attempts attempt WHERE attempt.invoke_id = inv.invoke_id AND attempt.upstream_account_id IS NOT NULL ORDER BY attempt.attempt_index DESC, attempt.id DESC LIMIT 1))"
+    } else {
+        "CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER) END"
+    };
+    let ready_state = previous_state
         .as_ref()
-        .is_some_and(|state| state.status == LONG_TERM_STATUS_READY)
-    {
-        sqlx::query_as::<_, LongTermInvocationRow>(
+        .is_some_and(|state| state.status == LONG_TERM_STATUS_READY);
+    let retention_start = today - ChronoDuration::days(retention_days.max(366) as i64 - 1);
+    let mut hourly: HashMap<(i64, String, String), LongTermBucket> = HashMap::new();
+    let mut daily: HashMap<(String, String, String), LongTermBucket> = HashMap::new();
+    let mut statistics_start_date = previous_state
+        .as_ref()
+        .and_then(|state| state.statistics_start_date.clone());
+    let account_identities = load_long_term_account_identities(pool).await?;
+    let mut rows = Vec::new();
+    let mut processed_rows_count = 0_i64;
+    if ready_state {
+        let live_sql = format!(
             r#"
         SELECT
             inv.id,
@@ -563,7 +583,7 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
             CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.requestModel') AS TEXT)), '') END AS request_model,
             CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.responseModel') AS TEXT)), '') END AS response_model,
             CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.reasoningEffort') AS TEXT)), '') END AS reasoning_effort,
-            CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER) END AS upstream_account_id,
+            {live_upstream_account_id_sql} AS upstream_account_id,
             NULL AS upstream_account_kind,
             NULL AS upstream_account_name,
             inv.total_tokens,
@@ -578,12 +598,16 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
           AND datetime(inv.occurred_at) >= datetime(?1)
         ORDER BY inv.occurred_at ASC, inv.id ASC
             "#,
-        )
-        .bind(live_tail_start.as_deref())
-        .fetch_all(pool)
-        .await?
+            live_upstream_account_id_sql = live_upstream_account_id_sql,
+        );
+        let mut live_rows = sqlx::query_as::<_, LongTermInvocationRow>(&live_sql)
+            .bind(live_tail_start.as_deref())
+            .fetch(pool);
+        while let Some(row) = live_rows.try_next().await? {
+            rows.push(row);
+        }
     } else {
-        sqlx::query_as::<_, LongTermInvocationRow>(
+        let live_sql = format!(
             r#"
         SELECT
             inv.id,
@@ -593,7 +617,7 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
             CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.requestModel') AS TEXT)), '') END AS request_model,
             CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.responseModel') AS TEXT)), '') END AS response_model,
             CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.reasoningEffort') AS TEXT)), '') END AS reasoning_effort,
-            CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER) END AS upstream_account_id,
+            {live_upstream_account_id_sql} AS upstream_account_id,
             NULL AS upstream_account_kind,
             NULL AS upstream_account_name,
             inv.total_tokens,
@@ -607,12 +631,31 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
         WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending')
         ORDER BY inv.occurred_at ASC, inv.id ASC
             "#,
-        )
-        .fetch_all(pool)
-        .await?
-    };
+            live_upstream_account_id_sql = live_upstream_account_id_sql,
+        );
+        let mut live_rows = sqlx::query_as::<_, LongTermInvocationRow>(&live_sql).fetch(pool);
+        while let Some(mut row) = live_rows.try_next().await? {
+            hydrate_long_term_account_identity(&mut row, &account_identities);
+            accumulate_long_term_invocation(
+                &row,
+                &mut hourly,
+                &mut daily,
+                &mut statistics_start_date,
+            );
+            processed_rows_count += 1;
+            if processed_rows_count % 256 == 0 {
+                sqlx::query(
+                    "UPDATE long_term_stats_state SET processed_rows = ?1, total_rows = ?2, updated_at = datetime('now') WHERE id = ?3",
+                )
+                .bind(processed_rows_count)
+                .bind(processed_rows_count)
+                .bind(LONG_TERM_STATE_ID)
+                .execute(pool)
+                .await?;
+            }
+        }
+    }
 
-    let account_identities = load_long_term_account_identities(pool).await?;
     let mut seen_ids = rows.iter().map(|row| row.id).collect::<HashSet<_>>();
     let archive_paths = match load_completed_invocation_archive_paths(pool).await {
         Ok(paths) => paths,
@@ -627,9 +670,11 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
     .await?
     .into_iter()
     .collect::<HashSet<_>>();
+    let all_archive_paths = archive_paths.clone();
     let mut archive_markers = Vec::new();
     let mut archive_read_failed = false;
     let mut unavailable_after_date: Option<NaiveDate> = None;
+    let mut affected_archive_dates = HashSet::new();
     for archive_path in archive_paths {
         if replayed_archive_files.contains(archive_path.file_path()) {
             continue;
@@ -688,8 +733,30 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
         match archive_rows {
             Ok(archive_rows) => {
                 for row in archive_rows {
+                    if let Some(date) =
+                        parse_long_term_timestamp_ms(&row.occurred_at).and_then(|timestamp| {
+                            Shanghai
+                                .timestamp_millis_opt(timestamp)
+                                .single()
+                                .map(|value| value.date_naive())
+                        })
+                    {
+                        affected_archive_dates.insert(date);
+                    }
                     if seen_ids.insert(row.id) {
-                        rows.push(row);
+                        processed_rows_count += 1;
+                        let mut row = row;
+                        hydrate_long_term_account_identity(&mut row, &account_identities);
+                        if ready_state {
+                            rows.push(row);
+                        } else {
+                            accumulate_long_term_invocation(
+                                &row,
+                                &mut hourly,
+                                &mut daily,
+                                &mut statistics_start_date,
+                            );
+                        }
                     }
                 }
                 archive_markers.push(archive_path.file_path().to_string());
@@ -707,100 +774,21 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
             }
         }
     }
-    for row in &mut rows {
-        if row.upstream_account_kind.is_none()
-            && let Some(account_id) = row.upstream_account_id
-            && let Some(identity) = account_identities.get(&account_id)
-        {
-            row.upstream_account_kind = Some(identity.kind.clone());
-            row.upstream_account_name = Some(identity.display_name.clone());
-        }
-    }
-
-    let retention_start = today - ChronoDuration::days(retention_days.max(366) as i64 - 1);
-    let mut hourly: HashMap<(i64, String, String), LongTermBucket> = HashMap::new();
-    let mut daily: HashMap<(String, String, String), LongTermBucket> = HashMap::new();
-    let mut statistics_start_date = previous_state
-        .as_ref()
-        .and_then(|state| state.statistics_start_date.clone());
-
     let total_rows = rows.len() as i64;
-    sqlx::query(
-        "UPDATE long_term_stats_state SET processed_rows = 0, total_rows = ?1, updated_at = datetime('now') WHERE id = ?2",
-    )
-    .bind(total_rows)
-    .bind(LONG_TERM_STATE_ID)
-    .execute(pool)
-    .await?;
+    if ready_state {
+        sqlx::query(
+            "UPDATE long_term_stats_state SET processed_rows = 0, total_rows = ?1, updated_at = datetime('now') WHERE id = ?2",
+        )
+        .bind(total_rows)
+        .bind(LONG_TERM_STATE_ID)
+        .execute(pool)
+        .await?;
+    }
     for (index, row) in rows.iter().enumerate() {
-        let Some(start_ms) = parse_long_term_timestamp_ms(&row.occurred_at) else {
-            continue;
-        };
-        let local_date = Shanghai
-            .timestamp_millis_opt(start_ms)
-            .single()
-            .map(|value| value.date_naive());
-        let Some(local_date) = local_date else {
-            continue;
-        };
-        let date_string = local_date.to_string();
-        if statistics_start_date
-            .as_deref()
-            .is_none_or(|current| date_string.as_str() < current)
-        {
-            statistics_start_date = Some(date_string.clone());
-        }
-        let model = normalize_long_term_model(row);
-        let reasoning = normalize_long_term_reasoning(row.reasoning_effort.as_deref());
-        let upstream = normalize_long_term_upstream(row);
-        let dimensions = [
-            (
-                "overall",
-                "overall".to_string(),
-                "全部".to_string(),
-                String::new(),
-            ),
-            (
-                "model",
-                format!("model:{model}|reasoning:{reasoning}"),
-                model.clone(),
-                reasoning.clone(),
-            ),
-            ("upstream", upstream.0, upstream.1, String::new()),
-        ];
-        let interval_end_ms = row
-            .t_total_ms
-            .filter(|value| value.is_finite() && *value > 0.0)
-            .map(|value| start_ms + value.round() as i64);
-        for (dimension, series_key, display_name, reasoning_effort) in dimensions {
-            let interval = if is_success_status(row.status.as_deref(), row.error_message.as_deref())
-            {
-                interval_end_ms.map(|end_ms| (start_ms, end_ms))
-            } else {
-                None
-            };
-            add_long_term_row(
-                &mut hourly,
-                dimension,
-                &series_key,
-                &display_name,
-                &reasoning_effort,
-                start_ms,
-                row,
-                interval,
-            );
-            add_long_term_daily_row(
-                &mut daily,
-                dimension,
-                &series_key,
-                &display_name,
-                &reasoning_effort,
-                &date_string,
-                row,
-                interval,
-            );
-        }
-        if (index + 1) % 256 == 0 || index + 1 == rows.len() {
+        let mut row = row.clone();
+        hydrate_long_term_account_identity(&mut row, &account_identities);
+        accumulate_long_term_invocation(&row, &mut hourly, &mut daily, &mut statistics_start_date);
+        if ready_state && ((index + 1) % 256 == 0 || index + 1 == rows.len()) {
             sqlx::query(
                 "UPDATE long_term_stats_state SET processed_rows = ?1, total_rows = ?2, updated_at = datetime('now') WHERE id = ?3",
             )
@@ -809,6 +797,112 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
             .bind(LONG_TERM_STATE_ID)
             .execute(pool)
             .await?;
+        }
+    }
+
+    // A day may be split across archive parts. Rebuild every affected day from all of its
+    // source parts before replacing the durable buckets, so a newly replayed part cannot erase
+    // metrics already materialized from an earlier part.
+    if !affected_archive_dates.is_empty() {
+        let mut rebuild_rows = rows
+            .iter()
+            .filter(|row| {
+                parse_long_term_timestamp_ms(&row.occurred_at)
+                    .and_then(|timestamp| {
+                        Shanghai
+                            .timestamp_millis_opt(timestamp)
+                            .single()
+                            .map(|value| affected_archive_dates.contains(&value.date_naive()))
+                    })
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut rebuild_seen_ids = rebuild_rows
+            .iter()
+            .map(|row| row.id)
+            .collect::<HashSet<_>>();
+        for archive_path in all_archive_paths {
+            let overlaps = match (
+                archive_path
+                    .coverage_start_at()
+                    .and_then(long_term_archive_end_date),
+                archive_path
+                    .coverage_end_at()
+                    .and_then(long_term_archive_end_date),
+            ) {
+                (Some(start), Some(end)) => affected_archive_dates
+                    .iter()
+                    .any(|date| *date >= start && *date <= end),
+                _ => true,
+            };
+            if !overlaps {
+                continue;
+            }
+            let Some((archive_pool, cleanup)) =
+                open_invocation_archive_batch_pool(&archive_path, "long-term-stats-rebuild")
+                    .await?
+            else {
+                continue;
+            };
+            let archive_rows = sqlx::query_as::<_, LongTermInvocationRow>(
+                r#"
+                SELECT
+                    id, occurred_at, status, model,
+                    CASE WHEN json_valid(payload) THEN NULLIF(TRIM(CAST(json_extract(payload, '$.requestModel') AS TEXT)), '') END AS request_model,
+                    CASE WHEN json_valid(payload) THEN NULLIF(TRIM(CAST(json_extract(payload, '$.responseModel') AS TEXT)), '') END AS response_model,
+                    CASE WHEN json_valid(payload) THEN NULLIF(TRIM(CAST(json_extract(payload, '$.reasoningEffort') AS TEXT)), '') END AS reasoning_effort,
+                    CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END AS upstream_account_id,
+                    NULL AS upstream_account_kind, NULL AS upstream_account_name,
+                    total_tokens, output_tokens, cost, t_total_ms, t_upstream_ttfb_ms,
+                    t_upstream_stream_ms, error_message
+                FROM codex_invocations
+                WHERE LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')
+                ORDER BY occurred_at ASC, id ASC
+                "#,
+            )
+            .fetch_all(&archive_pool)
+            .await?;
+            archive_pool.close().await;
+            drop(cleanup);
+            for row in archive_rows {
+                if rebuild_seen_ids.insert(row.id) {
+                    rebuild_rows.push(row);
+                }
+            }
+        }
+        let mut rebuilt_hourly = HashMap::new();
+        let mut rebuilt_daily = HashMap::new();
+        let mut rebuilt_start = None;
+        for mut row in rebuild_rows {
+            hydrate_long_term_account_identity(&mut row, &account_identities);
+            accumulate_long_term_invocation(
+                &row,
+                &mut rebuilt_hourly,
+                &mut rebuilt_daily,
+                &mut rebuilt_start,
+            );
+        }
+        hourly.retain(|(bucket_start, _, _), _| {
+            Shanghai
+                .timestamp_opt(*bucket_start, 0)
+                .single()
+                .map(|value| !affected_archive_dates.contains(&value.date_naive()))
+                .unwrap_or(true)
+        });
+        daily.retain(|(date, _, _), _| {
+            NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                .map(|value| !affected_archive_dates.contains(&value))
+                .unwrap_or(true)
+        });
+        hourly.extend(rebuilt_hourly);
+        daily.extend(rebuilt_daily);
+        if let Some(rebuilt_start) = rebuilt_start
+            && statistics_start_date
+                .as_deref()
+                .is_none_or(|current| rebuilt_start.as_str() < current)
+        {
+            statistics_start_date = Some(rebuilt_start);
         }
     }
 
@@ -856,7 +950,7 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
     }
     let status = if archive_read_failed {
         LONG_TERM_STATUS_ERROR
-    } else if rows.is_empty() && !has_persisted_daily_rows {
+    } else if rows.is_empty() && daily.is_empty() && !has_persisted_daily_rows {
         LONG_TERM_STATUS_EMPTY
     } else {
         LONG_TERM_STATUS_READY
@@ -866,13 +960,7 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
     )
     .bind(status)
     .bind(statistics_start_date.map(|date| date.to_string()))
-    .bind(
-        previous_state
-            .as_ref()
-            .map(|state| state.processed_rows)
-            .unwrap_or_default()
-            .max(rows.len() as i64),
-    )
+    .bind(if ready_state { rows.len() as i64 } else { processed_rows_count })
     .bind(archive_read_failed.then_some("one or more invocation archives could not be materialized"))
     .bind(LONG_TERM_STATE_ID)
     .execute(&mut *tx)
@@ -922,6 +1010,93 @@ fn long_term_archive_end_date(raw: &str) -> Option<NaiveDate> {
             .single()
             .map(|value| value.date_naive())
     })
+}
+
+fn hydrate_long_term_account_identity(
+    row: &mut LongTermInvocationRow,
+    account_identities: &HashMap<i64, LongTermAccountIdentity>,
+) {
+    if row.upstream_account_kind.is_none()
+        && let Some(account_id) = row.upstream_account_id
+        && let Some(identity) = account_identities.get(&account_id)
+    {
+        row.upstream_account_kind = Some(identity.kind.clone());
+        row.upstream_account_name = Some(identity.display_name.clone());
+    }
+}
+
+fn accumulate_long_term_invocation(
+    row: &LongTermInvocationRow,
+    hourly: &mut HashMap<(i64, String, String), LongTermBucket>,
+    daily: &mut HashMap<(String, String, String), LongTermBucket>,
+    statistics_start_date: &mut Option<String>,
+) {
+    let Some(start_ms) = parse_long_term_timestamp_ms(&row.occurred_at) else {
+        return;
+    };
+    let Some(local_date) = Shanghai
+        .timestamp_millis_opt(start_ms)
+        .single()
+        .map(|value| value.date_naive())
+    else {
+        return;
+    };
+    let date_string = local_date.to_string();
+    if statistics_start_date
+        .as_deref()
+        .is_none_or(|current| date_string.as_str() < current)
+    {
+        *statistics_start_date = Some(date_string.clone());
+    }
+    let model = normalize_long_term_model(row);
+    let reasoning = normalize_long_term_reasoning(row.reasoning_effort.as_deref());
+    let upstream = normalize_long_term_upstream(row);
+    let dimensions = [
+        (
+            "overall",
+            "overall".to_string(),
+            "全部".to_string(),
+            String::new(),
+        ),
+        (
+            "model",
+            format!("model:{model}|reasoning:{reasoning}"),
+            model,
+            reasoning,
+        ),
+        ("upstream", upstream.0, upstream.1, String::new()),
+    ];
+    let interval_end_ms = row
+        .t_total_ms
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map(|value| start_ms + value.round() as i64);
+    for (dimension, series_key, display_name, reasoning_effort) in dimensions {
+        let interval = if is_success_status(row.status.as_deref(), row.error_message.as_deref()) {
+            interval_end_ms.map(|end_ms| (start_ms, end_ms))
+        } else {
+            None
+        };
+        add_long_term_row(
+            hourly,
+            dimension,
+            &series_key,
+            &display_name,
+            &reasoning_effort,
+            start_ms,
+            row,
+            interval,
+        );
+        add_long_term_daily_row(
+            daily,
+            dimension,
+            &series_key,
+            &display_name,
+            &reasoning_effort,
+            &date_string,
+            row,
+            interval,
+        );
+    }
 }
 
 #[expect(
