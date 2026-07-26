@@ -810,7 +810,7 @@ async fn refresh_long_term_stats_inner(
         .and_then(|state| state.statistics_start_date.clone());
     let account_identities = load_long_term_account_identities(pool).await?;
     let mut rows = Vec::new();
-    let mut seen_ids = HashSet::new();
+    let mut row_positions = HashMap::new();
     let mut processed_rows_count = 0_i64;
     if ready_state {
         let live_sql = format!(
@@ -855,7 +855,7 @@ async fn refresh_long_term_stats_inner(
             .bind(live_tail_start.as_deref())
             .fetch(pool);
         while let Some(row) = live_rows.try_next().await? {
-            if seen_ids.insert(row.id) {
+            if row_positions.insert(row.id, rows.len()).is_none() {
                 rows.push(row);
             }
         }
@@ -891,15 +891,9 @@ async fn refresh_long_term_stats_inner(
             live_upstream_account_id_sql = live_upstream_account_id_sql,
         );
         let mut live_rows = sqlx::query_as::<_, LongTermInvocationRow>(&live_sql).fetch(pool);
-        while let Some(mut row) = live_rows.try_next().await? {
-            if seen_ids.insert(row.id) {
-                hydrate_long_term_account_identity(&mut row, &account_identities);
-                accumulate_long_term_invocation(
-                    &row,
-                    &mut hourly,
-                    &mut daily,
-                    &mut statistics_start_date,
-                );
+        while let Some(row) = live_rows.try_next().await? {
+            if row_positions.insert(row.id, rows.len()).is_none() {
+                rows.push(row);
                 processed_rows_count += 1;
             }
             if processed_rows_count % 256 == 0 {
@@ -1086,20 +1080,13 @@ async fn refresh_long_term_stats_inner(
                     {
                         affected_archive_dates.insert(date);
                     }
-                    if seen_ids.insert(row.id) {
+                    if let Some(index) = row_positions.get(&row.id).copied() {
+                        merge_long_term_invocation_row(&mut row, &rows[index]);
+                        rows[index] = row;
+                    } else {
+                        row_positions.insert(row.id, rows.len());
+                        rows.push(row);
                         processed_rows_count += 1;
-                        let mut row = row;
-                        hydrate_long_term_account_identity(&mut row, &account_identities);
-                        if ready_state {
-                            rows.push(row);
-                        } else {
-                            accumulate_long_term_invocation(
-                                &row,
-                                &mut hourly,
-                                &mut daily,
-                                &mut statistics_start_date,
-                            );
-                        }
                     }
                 }
                 if !ready_state {
@@ -1457,15 +1444,24 @@ async fn refresh_long_term_stats_inner(
         .execute(&mut *tx)
         .await?;
     }
-    for (file_path, archive_sha256) in attempt_archive_markers {
+    if archive_read_failed {
         sqlx::query(
-            "INSERT OR REPLACE INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'pool_upstream_request_attempts', ?2, ?3)",
+            "DELETE FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset IN ('codex_invocations', 'pool_upstream_request_attempts')",
         )
         .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
-        .bind(file_path)
-        .bind(archive_sha256)
         .execute(&mut *tx)
         .await?;
+    } else {
+        for (file_path, archive_sha256) in attempt_archive_markers {
+            sqlx::query(
+                "INSERT OR REPLACE INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'pool_upstream_request_attempts', ?2, ?3)",
+            )
+            .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+            .bind(file_path)
+            .bind(archive_sha256)
+            .execute(&mut *tx)
+            .await?;
+        }
     }
     tx.commit().await?;
     Ok(())
@@ -1536,6 +1532,72 @@ fn hydrate_long_term_account_identity(
     {
         row.upstream_account_kind = Some(identity.kind.clone());
         row.upstream_account_name = Some(identity.display_name.clone());
+    }
+}
+
+fn merge_long_term_invocation_row(
+    preferred: &mut LongTermInvocationRow,
+    fallback: &LongTermInvocationRow,
+) {
+    if preferred.invoke_id.is_none() {
+        preferred.invoke_id = fallback.invoke_id.clone();
+    }
+    if preferred.occurred_at.is_empty() {
+        preferred.occurred_at.clone_from(&fallback.occurred_at);
+    }
+    if preferred.status.is_none() {
+        preferred.status = fallback.status.clone();
+    }
+    if preferred.model.is_none() {
+        preferred.model = fallback.model.clone();
+    }
+    if preferred.request_model.is_none() {
+        preferred.request_model = fallback.request_model.clone();
+    }
+    if preferred.response_model.is_none() {
+        preferred.response_model = fallback.response_model.clone();
+    }
+    if preferred.reasoning_effort.is_none() {
+        preferred.reasoning_effort = fallback.reasoning_effort.clone();
+    }
+    if preferred.upstream_account_id.is_none() {
+        preferred.upstream_account_id = fallback.upstream_account_id;
+    }
+    if preferred.upstream_account_kind.is_none() {
+        preferred.upstream_account_kind = fallback.upstream_account_kind.clone();
+    }
+    if preferred.upstream_account_name.is_none() {
+        preferred.upstream_account_name = fallback.upstream_account_name.clone();
+    }
+    if preferred.total_tokens.is_none() {
+        preferred.total_tokens = fallback.total_tokens;
+    }
+    if preferred.output_tokens.is_none() {
+        preferred.output_tokens = fallback.output_tokens;
+    }
+    if preferred.cost.is_none() {
+        preferred.cost = fallback.cost;
+    }
+    if preferred.t_total_ms.is_none() {
+        preferred.t_total_ms = fallback.t_total_ms;
+    }
+    if preferred.t_req_read_ms.is_none() {
+        preferred.t_req_read_ms = fallback.t_req_read_ms;
+    }
+    if preferred.t_req_parse_ms.is_none() {
+        preferred.t_req_parse_ms = fallback.t_req_parse_ms;
+    }
+    if preferred.t_upstream_connect_ms.is_none() {
+        preferred.t_upstream_connect_ms = fallback.t_upstream_connect_ms;
+    }
+    if preferred.t_upstream_ttfb_ms.is_none() {
+        preferred.t_upstream_ttfb_ms = fallback.t_upstream_ttfb_ms;
+    }
+    if preferred.t_upstream_stream_ms.is_none() {
+        preferred.t_upstream_stream_ms = fallback.t_upstream_stream_ms;
+    }
+    if preferred.error_message.is_none() {
+        preferred.error_message = fallback.error_message.clone();
     }
 }
 
