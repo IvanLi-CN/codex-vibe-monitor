@@ -121,9 +121,9 @@ requested_viewport=desktop 1440x1000; mobile 390x844
 viewport_strategy=ui-demo-source（Chrome viewport override）
 capture_scope=mock-only demo 中账号详情“健康与事件”页面视口
 
-![桌面模型路由健康](assets/model-routing-desktop.png)
+![桌面模型路由健康](./assets/model-routing-desktop.png)
 
-![移动模型路由健康](assets/model-routing-mobile.png)
+![移动模型路由健康](./assets/model-routing-mobile.png)
 
 页面级视觉证据目标源=mock-only ui_demo
 页面级视觉证据=存在
