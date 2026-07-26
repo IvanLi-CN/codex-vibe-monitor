@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-07-26T18:21:55+08:00",
+  "generatedAt": "2026-07-26T18:37:17+08:00",
   "title": "Design System: Codex Vibe Monitor",
   "extensions": {
     "productContext": {
@@ -303,8 +303,7 @@
         "Do not hard-code page-local colors when an existing semantic or chart token applies."
       ]
     },
-    "sourceOfTruth": {
-      "humanDesignEntry": "DESIGN.md",
+    "implementationReferences": {
       "uiGuidelines": "docs/ui/",
       "themeTokens": "web/src/index.css",
       "chartTokens": "web/src/lib/chartTheme.ts",
