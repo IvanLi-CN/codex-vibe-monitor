@@ -1226,6 +1226,12 @@ fn stream_response_parser_recognizes_only_strict_successful_completion() {
             r#"data: {"type":"response.completed","response":{"status":"completed"}"#,
         ]
         .join("\n"),
+        [
+            "event: response.completed",
+            r#"data: {"response":{"status":"completed"}}"#,
+        ]
+        .join("\n"),
+        r#"data: {"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
     ] {
         let mut parser = StreamResponsePayloadChunkParser::default();
         parser.ingest_bytes(payload.as_bytes());

@@ -1406,21 +1406,16 @@ pub(crate) fn stream_payload_indicates_successful_completion(
     event_name: Option<&str>,
     value: &Value,
 ) -> bool {
-    let payload_type = value.get("type").and_then(|entry| entry.as_str());
-    let event_is_completed = match (event_name, payload_type) {
-        (Some(event_name), Some(payload_type)) => {
-            event_name == "response.completed" && payload_type == "response.completed"
-        }
-        (Some(event_name), None) => event_name == "response.completed",
-        (None, Some(payload_type)) => payload_type == "response.completed",
-        (None, None) => false,
-    };
-
-    event_is_completed
-        && value
-            .pointer("/response/status")
-            .and_then(|entry| entry.as_str())
-            .is_some_and(|status| status == "completed")
+    matches!(
+        (
+            event_name,
+            value.get("type").and_then(|entry| entry.as_str())
+        ),
+        (Some("response.completed"), Some("response.completed"))
+    ) && value
+        .pointer("/response/status")
+        .and_then(|entry| entry.as_str())
+        .is_some_and(|status| status == "completed")
 }
 
 pub(crate) fn extract_upstream_error_object(value: &Value) -> Option<&Value> {

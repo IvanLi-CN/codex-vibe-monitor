@@ -16,3 +16,4 @@
 - 2026-07-05: 生产排障证据从 debug-only 调整为阈值化 info：普通小请求不刷屏，但大 body、慢 body read、慢 downstream first byte、慢/大 raw response write 在默认 info 日志下可见，避免把“没有 debug 日志”误判成没有埋点。
 - 2026-07-14: Direct-image 首字节超时改为单次、不可重试终态，返回 `504 upstream_handshake_timeout`；这避免重复图片任务与计费，也不再把真实 timeout 掩盖成无可用账号。
 - SSE 的协议成功终态优先于传输 EOF：严格合法的 `response.completed` 一旦实际送达下游，后续上游读取异常和普通 body release 只能保留诊断，不得倒灌为服务失败或下游失败。
+- 2026-07-26: 下游 body EOF 不能覆盖已送达的成功终态；以单调的成功完成状态传递给所有 watch 接收方。解析器同时要求 `event` 与 payload `type` 完整匹配，终态后的 socket write error 仅保留在 payload 诊断字段。

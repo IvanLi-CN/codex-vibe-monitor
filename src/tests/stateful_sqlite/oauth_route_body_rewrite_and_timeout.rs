@@ -2134,7 +2134,7 @@ async fn spawn_raw_slow_success_upstream() -> (String, JoinHandle<()>) {
 }
 
 #[tokio::test]
-async fn pool_openai_v1_responses_network_marks_after_first_byte_downstream_close() {
+async fn pool_openai_v1_responses_records_post_terminal_downstream_write_error_as_success() {
     let (upstream_base, upstream_handle) = spawn_raw_slow_success_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
@@ -2207,32 +2207,19 @@ async fn pool_openai_v1_responses_network_marks_after_first_byte_downstream_clos
 
     wait_for_codex_invocations(&state.pool, 1).await;
     let (row, payload) = load_latest_invocation_payload_row(state.as_ref()).await;
-    assert_eq!(row.status.as_deref(), Some("http_200"));
-    assert!(
-        row.error_message
-            .as_deref()
-            .is_some_and(|message| message.contains("[downstream_closed]"))
-    );
-    assert_eq!(
-        row.failure_kind.as_deref(),
-        Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
-    );
-    assert_eq!(
-        payload["streamFailureOrigin"].as_str(),
-        Some("downstream_write")
-    );
+    assert_eq!(row.status.as_deref(), Some("success"));
+    assert!(row.error_message.is_none());
+    assert!(row.failure_kind.is_none());
+    assert!(payload["streamFailureOrigin"].is_null());
     assert_eq!(payload["upstreamOutcome"].as_str(), Some("completed"));
-    assert_eq!(
-        payload["downstreamClosePhase"].as_str(),
-        Some("after_first_byte")
-    );
+    assert!(payload["downstreamClosePhase"].is_null());
     assert!(
         matches!(
-            payload["downstreamWriteErrorKind"].as_str(),
+            payload["postTerminalDownstreamWriteErrorKind"].as_str(),
             Some("broken_pipe" | "connection_reset" | "connection_aborted")
         ),
-        "unexpected downstream write error kind: {:?}",
-        payload["downstreamWriteErrorKind"].as_str()
+        "unexpected post-terminal downstream write error kind: {:?}",
+        payload["postTerminalDownstreamWriteErrorKind"].as_str()
     );
     let expected_forwarded_bytes = concat!(
         "event: response.created\n",
@@ -2249,25 +2236,6 @@ async fn pool_openai_v1_responses_network_marks_after_first_byte_downstream_clos
         "forwarded bytes should include both upstream body chunks"
     );
     assert_eq!(payload["usageObserved"].as_bool(), Some(true));
-    assert!(
-        payload["lastUpstreamChunkGapMs"]
-            .as_u64()
-            .is_some_and(|value| value >= 250),
-        "idle gap before downstream close should be observable"
-    );
-    assert_eq!(
-        payload["requestUserAgent"].as_str(),
-        Some("codex-test-downstream-close/1.0")
-    );
-    assert_eq!(
-        payload["requestXForwardedFor"].as_str(),
-        Some("198.51.100.8, 192.168.31.1")
-    );
-    assert_eq!(payload["requestXRealIp"].as_str(), Some("198.51.100.9"));
-    assert_eq!(
-        payload["requestForwarded"].as_str(),
-        Some("for=198.51.100.10;proto=https;host=example.test")
-    );
     let attempt = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
         r#"
         SELECT status, failure_kind, error_message

@@ -56,6 +56,7 @@ pub(crate) const PROXY_DOWNSTREAM_WRITE_ERROR_GRACE_PERIOD: Duration = Duration:
 pub(crate) enum DownstreamBodyTerminalState {
     Open,
     SuccessfulTerminalForwarded,
+    SuccessfulTerminalCompleted,
     Completed,
     Dropped,
 }
@@ -84,6 +85,14 @@ impl TrackedDownstreamReceiverStream {
     }
 
     fn mark_terminal(&mut self, state: DownstreamBodyTerminalState) {
+        let state = if self.terminal_state
+            == DownstreamBodyTerminalState::SuccessfulTerminalForwarded
+            && state == DownstreamBodyTerminalState::Completed
+        {
+            DownstreamBodyTerminalState::SuccessfulTerminalCompleted
+        } else {
+            state
+        };
         let should_update = matches!(
             (self.terminal_state, state),
             (
@@ -93,7 +102,7 @@ impl TrackedDownstreamReceiverStream {
                     | DownstreamBodyTerminalState::Dropped
             ) | (
                 DownstreamBodyTerminalState::SuccessfulTerminalForwarded,
-                DownstreamBodyTerminalState::Completed
+                DownstreamBodyTerminalState::SuccessfulTerminalCompleted
             )
         );
         if should_update {
@@ -143,7 +152,9 @@ pub(crate) fn proxy_stream_observe_downstream_body_terminal(
     last_upstream_chunk_gap_ms: &mut Option<u64>,
 ) {
     match state {
-        DownstreamBodyTerminalState::Open | DownstreamBodyTerminalState::Completed => {}
+        DownstreamBodyTerminalState::Open
+        | DownstreamBodyTerminalState::SuccessfulTerminalCompleted
+        | DownstreamBodyTerminalState::Completed => {}
         DownstreamBodyTerminalState::SuccessfulTerminalForwarded => {
             *successful_terminal_forwarded = true;
         }
@@ -197,6 +208,10 @@ pub(crate) async fn wait_for_downstream_body_terminal_until(
                 {
                     break;
                 }
+            }
+            DownstreamBodyTerminalState::SuccessfulTerminalCompleted => {
+                *successful_terminal_forwarded = true;
+                break;
             }
             DownstreamBodyTerminalState::Completed => break,
             DownstreamBodyTerminalState::Dropped => {
@@ -3706,6 +3721,43 @@ mod dispatch_tests {
         assert!(!downstream_body_available);
         assert!(downstream_closed);
         assert_eq!(downstream_write_error_kind, Some("body_dropped"));
+    }
+
+    #[tokio::test]
+    async fn downstream_terminal_completion_preserves_success_latch_for_watch_receivers() {
+        let (terminal_tx, mut terminal_rx) = watch::channel(DownstreamBodyTerminalState::Open);
+        let (_response_tx, response_rx) = mpsc::channel(1);
+        let mut stream =
+            TrackedDownstreamReceiverStream::new(ReceiverStream::new(response_rx), terminal_tx);
+        let mut successful_terminal_forwarded = false;
+        let mut downstream_body_available = true;
+        let mut downstream_closed = false;
+        let mut downstream_write_error_kind = None;
+        let mut last_upstream_chunk_gap_ms = None;
+
+        stream.mark_terminal(DownstreamBodyTerminalState::SuccessfulTerminalForwarded);
+        stream.mark_terminal(DownstreamBodyTerminalState::Completed);
+
+        assert_eq!(
+            *terminal_rx.borrow_and_update(),
+            DownstreamBodyTerminalState::SuccessfulTerminalCompleted
+        );
+        wait_for_downstream_body_terminal_until(
+            &mut terminal_rx,
+            Instant::now() + Duration::from_millis(25),
+            &mut successful_terminal_forwarded,
+            &mut downstream_body_available,
+            &mut downstream_closed,
+            &mut downstream_write_error_kind,
+            Some(Instant::now()),
+            &mut last_upstream_chunk_gap_ms,
+        )
+        .await;
+
+        assert!(successful_terminal_forwarded);
+        assert!(downstream_body_available);
+        assert!(!downstream_closed);
+        assert!(downstream_write_error_kind.is_none());
     }
 
     #[tokio::test]
