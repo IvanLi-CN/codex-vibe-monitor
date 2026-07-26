@@ -515,26 +515,49 @@ pub(crate) async fn refresh_long_term_stats(
     retention_days: u64,
 ) -> Result<()> {
     let _guard = LONG_TERM_REFRESH_LOCK.lock().await;
-    let was_ready =
-        sqlx::query_scalar::<_, String>("SELECT status FROM long_term_stats_state WHERE id = ?1")
-            .bind(LONG_TERM_STATE_ID)
-            .fetch_optional(pool)
-            .await?
-            .is_some_and(|status| status == LONG_TERM_STATUS_READY);
-    sqlx::query(
-        "UPDATE long_term_stats_state SET status = ?1, last_error = NULL, updated_at = datetime('now') WHERE id = ?2",
+    let state_snapshot = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT status, statistics_start_date FROM long_term_stats_state WHERE id = ?1",
     )
-    .bind(LONG_TERM_STATUS_RUNNING)
     .bind(LONG_TERM_STATE_ID)
-    .execute(pool)
+    .fetch_optional(pool)
     .await?;
+    let has_durable_daily_rows =
+        sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM long_term_usage_daily LIMIT 1)")
+            .fetch_one(pool)
+            .await?
+            != 0;
+    let was_ready = state_snapshot.as_ref().is_some_and(|(status, start_date)| {
+        status.as_deref() == Some(LONG_TERM_STATUS_READY)
+            || (has_durable_daily_rows && start_date.is_some())
+    });
+    if !was_ready {
+        sqlx::query(
+            "UPDATE long_term_stats_state SET status = ?1, last_error = NULL, updated_at = datetime('now') WHERE id = ?2",
+        )
+        .bind(LONG_TERM_STATUS_RUNNING)
+        .bind(LONG_TERM_STATE_ID)
+        .execute(pool)
+        .await?;
+    } else {
+        sqlx::query(
+            "UPDATE long_term_stats_state SET status = ?1, last_error = NULL, updated_at = datetime('now') WHERE id = ?2",
+        )
+        .bind(LONG_TERM_STATUS_READY)
+        .bind(LONG_TERM_STATE_ID)
+        .execute(pool)
+        .await?;
+    }
 
     let result = refresh_long_term_stats_inner(pool, retention_days, was_ready).await;
     if let Err(err) = &result {
         let _ = sqlx::query(
             "UPDATE long_term_stats_state SET status = ?1, last_error = ?2, updated_at = datetime('now') WHERE id = ?3",
         )
-        .bind(LONG_TERM_STATUS_ERROR)
+        .bind(if was_ready {
+            LONG_TERM_STATUS_READY
+        } else {
+            LONG_TERM_STATUS_ERROR
+        })
         .bind(err.to_string())
         .bind(LONG_TERM_STATE_ID)
         .execute(pool)
@@ -555,9 +578,7 @@ async fn refresh_long_term_stats_inner(
     .fetch_optional(pool)
     .await?;
     let today = Utc::now().with_timezone(&Shanghai).date_naive();
-    let live_tail_start = today
-        .pred_opt()
-        .unwrap_or(today)
+    let live_tail_start = (today - ChronoDuration::days(2))
         .and_hms_opt(0, 0, 0)
         .and_then(|value| Shanghai.from_local_datetime(&value).single())
         .map(|value| db_occurred_at_lower_bound(value.with_timezone(&Utc)));
@@ -672,6 +693,30 @@ async fn refresh_long_term_stats_inner(
         Err(error) if error.to_string().contains("no such table") => Vec::new(),
         Err(error) => return Err(error),
     };
+    // Archive manifests update `created_at` when a legacy monthly file is rewritten. Remove
+    // stale replay markers before deciding which archive files can be skipped.
+    let stale_marker_cleanup = sqlx::query(
+        r#"
+        DELETE FROM hourly_rollup_archive_replay
+        WHERE target = ?1
+          AND dataset = 'codex_invocations'
+          AND EXISTS (
+              SELECT 1
+              FROM archive_batches batches
+              WHERE batches.dataset = 'codex_invocations'
+                AND batches.file_path = hourly_rollup_archive_replay.file_path
+                AND datetime(batches.created_at) > datetime(hourly_rollup_archive_replay.replayed_at)
+          )
+        "#,
+    )
+    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+    .execute(pool)
+    .await;
+    if let Err(error) = stale_marker_cleanup
+        && !error.to_string().contains("no such table")
+    {
+        return Err(error.into());
+    }
     let replayed_archive_files = sqlx::query_scalar::<_, String>(
         "SELECT file_path FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = 'codex_invocations'",
     )
