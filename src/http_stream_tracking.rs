@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     future::{Future, poll_fn},
     io,
     net::SocketAddr,
@@ -41,8 +42,8 @@ struct DownstreamTransportObserverState {
     next_request_seq: u64,
     current_request_seq: Option<u64>,
     last_write_error: Option<DownstreamWriteErrorSnapshot>,
-    successful_terminal_flush_pending: Option<u64>,
-    successful_terminal_flush_confirmed: Option<u64>,
+    successful_terminal_flush_pending: BTreeSet<u64>,
+    successful_terminal_flush_confirmed: BTreeSet<u64>,
     reset_monitor_stream: Option<TcpStream>,
     active_reset_monitor_request_seq: Option<u64>,
     connection_closed: bool,
@@ -97,18 +98,6 @@ impl DownstreamTransportObserver {
             .is_some_and(|snapshot| snapshot.request_seq < request_seq)
         {
             state.last_write_error = None;
-        }
-        if state
-            .successful_terminal_flush_pending
-            .is_some_and(|pending_request_seq| pending_request_seq < request_seq)
-        {
-            state.successful_terminal_flush_pending = None;
-        }
-        if state
-            .successful_terminal_flush_confirmed
-            .is_some_and(|confirmed_request_seq| confirmed_request_seq < request_seq)
-        {
-            state.successful_terminal_flush_confirmed = None;
         }
         drop(state);
         if notify_reset_monitor {
@@ -238,9 +227,7 @@ impl DownstreamTransportObserver {
             return;
         }
         state.last_write_error = Some(DownstreamWriteErrorSnapshot { request_seq, kind });
-        if state.successful_terminal_flush_pending == Some(request_seq) {
-            state.successful_terminal_flush_pending = None;
-        }
+        state.successful_terminal_flush_pending.remove(&request_seq);
         drop(state);
         self.inner.notify.notify_waiters();
     }
@@ -254,8 +241,10 @@ impl DownstreamTransportObserver {
         if state.current_request_seq != Some(request_seq) {
             return;
         }
-        state.successful_terminal_flush_pending = Some(request_seq);
-        state.successful_terminal_flush_confirmed = None;
+        state.successful_terminal_flush_pending.insert(request_seq);
+        state
+            .successful_terminal_flush_confirmed
+            .remove(&request_seq);
     }
 
     fn confirm_successful_terminal_flush(&self) {
@@ -264,20 +253,15 @@ impl DownstreamTransportObserver {
             .state
             .lock()
             .expect("downstream transport observer mutex poisoned");
-        let Some(request_seq) = state.successful_terminal_flush_pending else {
-            return;
-        };
-        if state.current_request_seq != Some(request_seq)
-            || state
-                .last_write_error
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.request_seq == request_seq)
-        {
-            state.successful_terminal_flush_pending = None;
+        if state.successful_terminal_flush_pending.is_empty() {
             return;
         }
-        state.successful_terminal_flush_pending = None;
-        state.successful_terminal_flush_confirmed = Some(request_seq);
+        if state.last_write_error.is_some() {
+            state.successful_terminal_flush_pending.clear();
+            return;
+        }
+        let pending = std::mem::take(&mut state.successful_terminal_flush_pending);
+        state.successful_terminal_flush_confirmed.extend(pending);
     }
 
     fn successful_terminal_flush_confirmed_for(&self, request_seq: u64) -> bool {
@@ -286,7 +270,9 @@ impl DownstreamTransportObserver {
             .state
             .lock()
             .expect("downstream transport observer mutex poisoned");
-        state.successful_terminal_flush_confirmed == Some(request_seq)
+        state
+            .successful_terminal_flush_confirmed
+            .contains(&request_seq)
     }
 
     fn current_write_error_for(&self, request_seq: u64) -> Option<DownstreamWriteErrorSnapshot> {
@@ -410,7 +396,9 @@ impl AsyncWrite for ObservedTcpStream {
         match &result {
             Poll::Ready(Err(err)) => self.record_write_error(err),
             Poll::Ready(Ok(_)) => {
-                self.record_pending_socket_error();
+                if !self.record_pending_socket_error() {
+                    self.observer.confirm_successful_terminal_flush();
+                }
             }
             Poll::Pending => {}
         }
@@ -426,7 +414,9 @@ impl AsyncWrite for ObservedTcpStream {
         match &result {
             Poll::Ready(Err(err)) => self.record_write_error(err),
             Poll::Ready(Ok(_)) => {
-                self.record_pending_socket_error();
+                if !self.record_pending_socket_error() {
+                    self.observer.confirm_successful_terminal_flush();
+                }
             }
             Poll::Pending => {}
         }
@@ -442,9 +432,7 @@ impl AsyncWrite for ObservedTcpStream {
         match &result {
             Poll::Ready(Err(err)) => self.record_write_error(err),
             Poll::Ready(Ok(())) => {
-                if !self.record_pending_socket_error() {
-                    self.observer.confirm_successful_terminal_flush();
-                }
+                self.record_pending_socket_error();
             }
             Poll::Pending => {}
         }
@@ -705,6 +693,7 @@ mod tests {
         assert!(request.successful_terminal_flush_confirmed());
 
         let next_request = observer.begin_request();
+        assert!(request.successful_terminal_flush_confirmed());
         next_request.mark_successful_terminal_flush_pending();
         observer.record_write_error("connection_reset");
         observer.confirm_successful_terminal_flush();
