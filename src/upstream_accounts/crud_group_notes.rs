@@ -486,6 +486,9 @@ pub(crate) async fn list_upstream_accounts_from_params(
         .map_err(internal_error_tuple)?;
     let load_groups_ms = load_groups_started_at.elapsed().as_millis() as u64;
     let enrich_block_reason_started_at = Instant::now();
+    enrich_transport_decode_sticky_escape_routing_block_reasons(state.as_ref(), &mut all_items)
+        .await
+        .map_err(internal_error_tuple)?;
     enrich_node_shunt_routing_block_reasons(state.as_ref(), &mut all_items)
         .await
         .map_err(internal_error_tuple)?;

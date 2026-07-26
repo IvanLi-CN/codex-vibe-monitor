@@ -768,9 +768,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     );
     let sticky_source_transport_decode_escape = if non_explicit_sticky_escape_enabled {
         if let Some(account_id) = sticky_source_id {
-            load_transport_decode_sticky_escape_account_ids(&state.pool, &[account_id])
+            load_transport_decode_sticky_escape_states(&state.pool, &[account_id])
                 .await?
-                .contains(&account_id)
+                .contains_key(&account_id)
         } else {
             false
         }
@@ -786,6 +786,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             forced_binding_account_id == Some(route.account_id);
         if !sticky_route_is_forced_binding_target
             && binding_constraint.is_none()
+            && !sticky_source_transport_decode_escape
             && sticky_cut_out_blocked_by_policy
             && tried.contains(&route.account_id)
             && load_upstream_account_row(&state.pool, route.account_id)
@@ -1087,8 +1088,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     }
 
     let mut candidates = load_account_routing_candidates(&state.pool, &tried).await?;
-    let sticky_escape_account_ids = if non_explicit_sticky_escape_enabled {
-        load_transport_decode_sticky_escape_account_ids(
+    let sticky_escape_account_states = if non_explicit_sticky_escape_enabled {
+        load_transport_decode_sticky_escape_states(
             &state.pool,
             &candidates
                 .iter()
@@ -1097,7 +1098,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         )
         .await?
     } else {
-        HashSet::new()
+        HashMap::new()
     };
     for candidate in &mut candidates {
         candidate.in_flight_reservations = pool_routing_reservation_count(state, candidate.id);
@@ -1161,7 +1162,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             }
             continue;
         }
-        if sticky_escape_account_ids.contains(&candidate.id) {
+        if sticky_escape_account_states.contains_key(&candidate.id) {
             saw_degraded_candidate = true;
             continue;
         }

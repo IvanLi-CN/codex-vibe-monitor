@@ -50,6 +50,9 @@ export interface UpstreamAccountsTableProps {
     lastSuccess: string;
     lastCall: string;
     routingBlock: string;
+    routingBlockReason?: (item: UpstreamAccountSummary) => string | null;
+    routingBlockCountdown?: (until: string) => string | null;
+    routingBlockCountdownLabel?: string;
     latestAction: string;
     never: string;
     windows: string;
@@ -156,6 +159,16 @@ export function formatDateTime(value?: string | null, fallback = "—") {
     minute: "2-digit",
     hour12: false,
   }).format(date);
+}
+
+export function resolveRoutingBlockCountdown(until?: string | null, nowMs = Date.now()) {
+  if (!until) return null;
+  const untilMs = Date.parse(until);
+  if (!Number.isFinite(untilMs) || untilMs <= nowMs) return null;
+  const totalSeconds = Math.max(0, Math.ceil((untilMs - nowMs) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 function numberLocale() {
@@ -762,10 +775,12 @@ export function CompactTimestampLine({
   label,
   value,
   title,
+  wrapValue = false,
 }: {
   label: string;
   value: string;
   title?: string;
+  wrapValue?: boolean;
 }) {
   return (
     <div
@@ -775,7 +790,13 @@ export function CompactTimestampLine({
       <span className="truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48">
         {label}
       </span>
-      <span className="truncate whitespace-nowrap text-[12px] leading-4 text-base-content/72 font-mono tabular-nums">
+      <span
+        className={
+          wrapValue
+            ? "min-w-0 whitespace-normal break-words text-[12px] leading-4 text-base-content/72"
+            : "truncate whitespace-nowrap text-[12px] leading-4 text-base-content/72 font-mono tabular-nums"
+        }
+      >
         {value}
       </span>
     </div>
@@ -1070,7 +1091,12 @@ export function UpstreamAccountsTable({
             Number.isFinite(item.secondaryWindow.windowDurationMins) &&
             Math.round(item.secondaryWindow.windowDurationMins) !== 10_080;
           const selected = item.id === selectedId;
-          const routingBlockMessage = item.routingBlockReasonMessage?.trim() || null;
+          const routingBlockMessage =
+            labels.routingBlockReason?.(item) ?? item.routingBlockReasonMessage?.trim() ?? null;
+          const routingBlockCountdown = item.routingBlockUntil
+            ? (labels.routingBlockCountdown?.(item.routingBlockUntil) ??
+              resolveRoutingBlockCountdown(item.routingBlockUntil))
+            : null;
           const latestActionTitle = buildLatestActionTitle(item, labels);
           const statusBadges = resolveRosterSummaryStatusBadges(item, labels);
           const showPlanBadge = shouldShowPlanBadge(item.planType);
@@ -1180,6 +1206,14 @@ export function UpstreamAccountsTable({
                             label={labels.routingBlock}
                             value={routingBlockMessage}
                             title={routingBlockMessage}
+                            wrapValue
+                          />
+                        ) : null}
+                        {routingBlockCountdown ? (
+                          <CompactTimestampLine
+                            label={labels.routingBlockCountdownLabel ?? labels.routingBlock}
+                            value={routingBlockCountdown}
+                            title={routingBlockCountdown}
                           />
                         ) : null}
                         <CompactTimestampLine
@@ -1301,7 +1335,12 @@ export function UpstreamAccountsTable({
                 Number.isFinite(item.secondaryWindow.windowDurationMins) &&
                 Math.round(item.secondaryWindow.windowDurationMins) !== 10_080;
               const selected = item.id === selectedId;
-              const routingBlockMessage = item.routingBlockReasonMessage?.trim() || null;
+              const routingBlockMessage =
+                labels.routingBlockReason?.(item) ?? item.routingBlockReasonMessage?.trim() ?? null;
+              const routingBlockCountdown = item.routingBlockUntil
+                ? (labels.routingBlockCountdown?.(item.routingBlockUntil) ??
+                  resolveRoutingBlockCountdown(item.routingBlockUntil))
+                : null;
               const latestActionTitle = buildLatestActionTitle(item, labels);
               const statusBadges = resolveRosterSummaryStatusBadges(item, labels);
               const primaryWindowTitle =
@@ -1412,6 +1451,14 @@ export function UpstreamAccountsTable({
                           label={labels.routingBlock}
                           value={routingBlockMessage}
                           title={routingBlockMessage}
+                          wrapValue
+                        />
+                      ) : null}
+                      {routingBlockCountdown ? (
+                        <CompactTimestampLine
+                          label={labels.routingBlockCountdownLabel ?? labels.routingBlock}
+                          value={routingBlockCountdown}
+                          title={routingBlockCountdown}
                         />
                       ) : null}
                       <CompactTimestampLine

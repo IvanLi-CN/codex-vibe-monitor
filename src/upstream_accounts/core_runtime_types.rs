@@ -122,6 +122,10 @@ pub(crate) const UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGN
     "group_node_shunt_unassigned";
 pub(crate) const UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED_MESSAGE: &str =
     "分组节点分流策略控制，未排节点";
+pub(crate) const UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_RECENT_UPSTREAM_STREAM_ERRORS: &str =
+    "recent_upstream_stream_errors";
+pub(crate) const UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_RECENT_UPSTREAM_STREAM_ERRORS_MESSAGE: &str =
+    "近期连续上游流错误，自动路由将在五分钟后恢复";
 pub(crate) const UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_ASSIGNED: &str = "assigned";
 pub(crate) const UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_PENDING: &str = "pending";
 pub(crate) const UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_UNCONFIGURED: &str = "unconfigured";
@@ -1682,6 +1686,7 @@ pub(crate) struct UpstreamAccountSummary {
     pub(crate) current_forward_proxy_state: String,
     pub(crate) routing_block_reason_code: Option<String>,
     pub(crate) routing_block_reason_message: Option<String>,
+    pub(crate) routing_block_until: Option<String>,
     pub(crate) token_expires_at: Option<String>,
     pub(crate) primary_window: Option<RateWindowSnapshot>,
     pub(crate) secondary_window: Option<RateWindowSnapshot>,

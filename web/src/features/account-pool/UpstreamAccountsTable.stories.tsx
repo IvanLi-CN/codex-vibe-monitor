@@ -4,7 +4,7 @@ import type {
   EffectiveRoutingRule,
   UpstreamAccountSummary,
 } from "../../lib/api";
-import { UpstreamAccountsTable } from "./UpstreamAccountsTable";
+import { resolveRoutingBlockCountdown, UpstreamAccountsTable } from "./UpstreamAccountsTable";
 
 const now = "2026-03-11T12:30:00.000Z";
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
@@ -600,6 +600,47 @@ export const NodeShuntBlockedIdle: Story = {
     ],
     selectedId: 21,
     labels: chineseLabels,
+  },
+};
+
+const routingBlockStoryNowMs = Date.parse("2026-03-11T12:30:00.000Z");
+
+export const RecentStreamErrorsDegraded: Story = {
+  args: {
+    items: [
+      {
+        ...items[1],
+        id: 22,
+        displayName: "CIII · automatic routing recovery",
+        workStatus: "degraded",
+        healthStatus: "normal",
+        routingBlockReasonCode: "recent_upstream_stream_errors",
+        routingBlockReasonMessage: "近期连续上游流错误，自动路由将在五分钟后恢复",
+        routingBlockUntil: "2026-03-11T12:34:32.000Z",
+      },
+    ],
+    selectedId: 22,
+    labels: {
+      ...chineseLabels,
+      routingBlockReason: (item) =>
+        item.routingBlockReasonCode === "recent_upstream_stream_errors"
+          ? "近期连续上游流错误，五分钟窗口结束后自动恢复路由。"
+          : (item.routingBlockReasonMessage ?? null),
+      routingBlockCountdown: (until) => {
+        const countdown = resolveRoutingBlockCountdown(until, routingBlockStoryNowMs);
+        return countdown ? `预计 ${countdown} 后自动恢复` : null;
+      },
+    },
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop" },
+  },
+};
+
+export const RecentStreamErrorsDegradedNarrow: Story = {
+  ...RecentStreamErrorsDegraded,
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
   },
 };
 

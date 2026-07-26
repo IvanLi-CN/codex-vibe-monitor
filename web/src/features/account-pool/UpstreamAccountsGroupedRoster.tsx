@@ -30,6 +30,7 @@ import {
   resolveCurrentForwardProxyBadgeVariant,
   resolveRosterActionableStatusBadges,
   resolveRosterSummaryStatusBadges,
+  resolveRoutingBlockCountdown,
   type UpstreamAccountsTableLabels,
   windowPercent,
 } from "./UpstreamAccountsTable";
@@ -226,7 +227,12 @@ function GroupMemberRow({
     item.secondaryWindow != null &&
     Number.isFinite(item.secondaryWindow.windowDurationMins) &&
     Math.round(item.secondaryWindow.windowDurationMins) !== 10_080;
-  const routingBlockMessage = item.routingBlockReasonMessage?.trim() || null;
+  const routingBlockMessage =
+    labels.routingBlockReason?.(item) ?? item.routingBlockReasonMessage?.trim() ?? null;
+  const routingBlockCountdown = item.routingBlockUntil
+    ? (labels.routingBlockCountdown?.(item.routingBlockUntil) ??
+      resolveRoutingBlockCountdown(item.routingBlockUntil))
+    : null;
   const latestActionTitle = buildLatestActionTitle(item, labels);
   const statusBadges = resolveRosterSummaryStatusBadges(item, labels);
   const primaryWindowTitle =
@@ -336,6 +342,14 @@ function GroupMemberRow({
                 label={labels.routingBlock}
                 value={routingBlockMessage}
                 title={routingBlockMessage}
+                wrapValue
+              />
+            ) : null}
+            {routingBlockCountdown ? (
+              <CompactTimestampLine
+                label={labels.routingBlockCountdownLabel ?? labels.routingBlock}
+                value={routingBlockCountdown}
+                title={routingBlockCountdown}
               />
             ) : null}
             <CompactTimestampLine
@@ -431,6 +445,12 @@ function GroupMemberGridCard({
     item.compactSupport?.status === "unsupported" && labels.compactSupport?.(item)
       ? labels.compactSupport(item)
       : null;
+  const routingBlockMessage =
+    labels.routingBlockReason?.(item) ?? item.routingBlockReasonMessage?.trim() ?? null;
+  const routingBlockCountdown = item.routingBlockUntil
+    ? (labels.routingBlockCountdown?.(item.routingBlockUntil) ??
+      resolveRoutingBlockCountdown(item.routingBlockUntil))
+    : null;
 
   return (
     // biome-ignore lint/a11y/useSemanticElements: the card wraps nested interactive controls and cannot be represented as a native button.
@@ -504,6 +524,25 @@ function GroupMemberGridCard({
           {renderTagOverflowBadge(labels, item.tags)}
         </div>
       </div>
+      {routingBlockMessage || routingBlockCountdown ? (
+        <div className="mt-3 space-y-1">
+          {routingBlockMessage ? (
+            <CompactTimestampLine
+              label={labels.routingBlock}
+              value={routingBlockMessage}
+              title={routingBlockMessage}
+              wrapValue
+            />
+          ) : null}
+          {routingBlockCountdown ? (
+            <CompactTimestampLine
+              label={labels.routingBlockCountdownLabel ?? labels.routingBlock}
+              value={routingBlockCountdown}
+              title={routingBlockCountdown}
+            />
+          ) : null}
+        </div>
+      ) : null}
       <div className="mt-3 space-y-1.5">
         <CompactWindowLine
           window={item.primaryWindow}

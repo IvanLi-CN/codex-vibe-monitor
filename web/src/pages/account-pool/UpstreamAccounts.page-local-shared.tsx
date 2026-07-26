@@ -37,7 +37,9 @@ import {
 } from "../../features/account-pool/MotherAccountToggle";
 import { UpstreamAccountAttemptTimeline } from "../../features/account-pool/UpstreamAccountAttemptTimeline";
 import { UpstreamAccountGroupCombobox } from "../../features/account-pool/UpstreamAccountGroupCombobox";
+import { resolveRoutingBlockCountdown } from "../../features/account-pool/UpstreamAccountsTable";
 import { UpstreamAccountUsageCard } from "../../features/account-pool/UpstreamAccountUsageCard";
+import { useRoutingBlockClock } from "../../features/account-pool/useRoutingBlockClock";
 import { DashboardActivityOverview } from "../../features/dashboard/DashboardActivityOverview";
 import { ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX } from "../../features/dashboard/dashboardActivityRange";
 import { ForwardProxyBindingSelector } from "../../features/forward-proxy/ForwardProxyBindingSelector";
@@ -262,6 +264,7 @@ type SharedUpstreamAccountDetailDrawerProps = {
   presentation?: "overlay" | "page";
   onInitialDeleteConfirmHandled?: () => void;
   onClose: (options?: SharedUpstreamAccountDetailDrawerCloseOptions) => void;
+  routingBlockNowMs?: number;
 };
 
 type PendingSaveSession = {
@@ -984,6 +987,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   presentation = "overlay",
   onInitialDeleteConfirmHandled,
   onClose,
+  routingBlockNowMs: routingBlockNowMsOverride,
 }: SharedUpstreamAccountDetailDrawerProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -1670,6 +1674,16 @@ function SharedUpstreamAccountDetailDrawerInner({
 
   const selectedDetail = detail?.id === selectedId ? detail : null;
   const selected = selectedDetail ?? selectedSummary;
+  const routingBlockUntil = selectedDetail?.routingBlockUntil ?? null;
+  const refreshExpiredRoutingBlock = useCallback(() => {
+    if (selectedId != null) void loadDetail(selectedId, { silent: true });
+  }, [loadDetail, selectedId]);
+  const localRoutingBlockNowMs = useRoutingBlockClock(
+    [routingBlockUntil],
+    refreshExpiredRoutingBlock,
+    routingBlockNowMsOverride == null,
+  );
+  const routingBlockNowMs = routingBlockNowMsOverride ?? localRoutingBlockNowMs;
   const selectedAccountProxyKeys = normalizeProxyKeys(selectedDetail?.boundProxyKeys);
   const [accountProxyEditorOpen, setAccountProxyEditorOpen] = useState(false);
   const [accountProxyDraftKeys, setAccountProxyDraftKeys] = useState<string[]>([]);
@@ -2745,8 +2759,25 @@ function SharedUpstreamAccountDetailDrawerInner({
                           {t("accountPool.upstreamAccounts.routingBlock.title")}
                         </p>
                         <p className="mt-1 text-sm text-warning/90">
-                          {selectedDetail.routingBlockReasonMessage}
+                          {selectedDetail.routingBlockReasonCode === "recent_upstream_stream_errors"
+                            ? t("accountPool.upstreamAccounts.routingBlock.recentStreamErrors")
+                            : selectedDetail.routingBlockReasonMessage}
                         </p>
+                        {selectedDetail.routingBlockUntil ? (
+                          <p className="mt-1 text-sm text-warning/90">
+                            {(() => {
+                              const countdown = resolveRoutingBlockCountdown(
+                                selectedDetail.routingBlockUntil,
+                                routingBlockNowMs,
+                              );
+                              return countdown
+                                ? t("accountPool.upstreamAccounts.routingBlock.countdown", {
+                                    countdown,
+                                  })
+                                : null;
+                            })()}
+                          </p>
+                        ) : null}
                       </div>
                     </Alert>
                   ) : null}
