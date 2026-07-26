@@ -536,6 +536,7 @@ pub(crate) async fn refresh_long_term_stats(
     retention_days: u64,
 ) -> Result<()> {
     let _guard = LONG_TERM_REFRESH_LOCK.lock().await;
+    let refresh_started_at = format_utc_iso(Utc::now());
     let state_snapshot = sqlx::query_as::<_, (Option<String>, Option<String>)>(
         "SELECT status, statistics_start_date FROM long_term_stats_state WHERE id = ?1",
     )
@@ -563,7 +564,8 @@ pub(crate) async fn refresh_long_term_stats(
         .await?;
     }
 
-    let result = refresh_long_term_stats_inner(pool, retention_days, was_ready).await;
+    let result =
+        refresh_long_term_stats_inner(pool, retention_days, was_ready, &refresh_started_at).await;
     if let Err(err) = &result {
         let _ = sqlx::query(
             "UPDATE long_term_stats_state SET status = ?1, last_error = ?2, updated_at = datetime('now') WHERE id = ?3",
@@ -585,6 +587,7 @@ async fn refresh_long_term_stats_inner(
     pool: &Pool<Sqlite>,
     retention_days: u64,
     was_ready: bool,
+    refresh_started_at: &str,
 ) -> Result<()> {
     let previous_state = sqlx::query_as::<_, LongTermStateRow>(
         "SELECT status, statistics_start_date, processed_rows, total_rows, last_error FROM long_term_stats_state WHERE id = ?1",
@@ -1159,13 +1162,15 @@ async fn refresh_long_term_stats_inner(
         LONG_TERM_STATUS_READY
     };
     sqlx::query(
-        "UPDATE long_term_stats_state SET status = ?1, statistics_start_date = ?2, processed_rows = ?3, total_rows = ?3, last_error = ?4, updated_at = datetime('now') WHERE id = ?5",
+        "UPDATE long_term_stats_state SET status = ?1, statistics_start_date = ?2, processed_rows = ?3, total_rows = ?3, last_error = ?4, updated_at = datetime('now') WHERE id = ?5 AND NOT (status = ?6 AND datetime(updated_at) > datetime(?7))",
     )
     .bind(status)
     .bind(statistics_start_date.map(|date| date.to_string()))
     .bind(if ready_state { rows.len() as i64 } else { processed_rows_count })
     .bind(archive_read_failed.then_some("one or more invocation archives could not be materialized"))
     .bind(LONG_TERM_STATE_ID)
+    .bind(LONG_TERM_STATUS_PREPARING)
+    .bind(refresh_started_at)
     .execute(&mut *tx)
     .await?;
     for file_path in archive_markers {
