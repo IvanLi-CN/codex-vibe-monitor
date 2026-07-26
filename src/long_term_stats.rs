@@ -648,7 +648,14 @@ async fn refresh_long_term_stats_inner(
             inv.error_message
         FROM codex_invocations inv
         WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending')
-          AND datetime(inv.occurred_at) >= datetime(?1)
+          AND (
+              datetime(inv.occurred_at) >= datetime(?1)
+              OR (
+                  inv.t_total_ms IS NOT NULL
+                  AND inv.t_total_ms > 0
+                  AND julianday(inv.occurred_at) + inv.t_total_ms / 86400000.0 >= julianday(?1)
+              )
+          )
         ORDER BY inv.occurred_at ASC, inv.id ASC
             "#,
             live_upstream_account_id_sql = live_upstream_account_id_sql,
@@ -943,8 +950,15 @@ async fn refresh_long_term_stats_inner(
                     inv.t_upstream_ttfb_ms, inv.t_upstream_stream_ms, inv.error_message
                 FROM codex_invocations inv
                 WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending')
-                  AND inv.occurred_at >= ?1
                   AND inv.occurred_at < ?2
+                  AND (
+                      inv.occurred_at >= ?1
+                      OR (
+                          inv.t_total_ms IS NOT NULL
+                          AND inv.t_total_ms > 0
+                          AND julianday(inv.occurred_at) + inv.t_total_ms / 86400000.0 >= julianday(?1)
+                      )
+                  )
                 ORDER BY inv.occurred_at ASC, inv.id ASC
                 "#,
                 live_upstream_account_id_sql = live_upstream_account_id_sql,
