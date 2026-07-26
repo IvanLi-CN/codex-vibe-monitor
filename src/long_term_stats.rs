@@ -901,10 +901,15 @@ async fn refresh_long_term_stats_inner(
         }
     }
 
-    // A day may be split across archive parts. Rebuild every affected day from all of its
-    // source parts before replacing the durable buckets, so a newly replayed part cannot erase
-    // metrics already materialized from an earlier part.
-    if ready_state && !affected_archive_dates.is_empty() {
+    // A day may be split across live rows and archive parts. Rebuild every date touched by the
+    // current live tail from all overlapping source parts before replacing durable buckets.
+    let mut recomputed_dates = affected_archive_dates.clone();
+    for (date, _, _) in daily.keys() {
+        if let Ok(date) = NaiveDate::parse_from_str(date, "%Y-%m-%d") {
+            recomputed_dates.insert(date);
+        }
+    }
+    if ready_state && !recomputed_dates.is_empty() {
         let mut rebuild_rows = rows
             .iter()
             .filter(|row| {
@@ -913,7 +918,7 @@ async fn refresh_long_term_stats_inner(
                         Shanghai
                             .timestamp_millis_opt(timestamp)
                             .single()
-                            .map(|value| affected_archive_dates.contains(&value.date_naive()))
+                            .map(|value| recomputed_dates.contains(&value.date_naive()))
                     })
                     .unwrap_or(false)
             })
@@ -973,7 +978,7 @@ async fn refresh_long_term_stats_inner(
                     .coverage_end_at()
                     .and_then(long_term_archive_end_date),
             ) {
-                (Some(start), Some(end)) => affected_archive_dates
+                (Some(start), Some(end)) => recomputed_dates
                     .iter()
                     .any(|date| *date >= start && *date <= end),
                 _ => true,
@@ -1029,12 +1034,12 @@ async fn refresh_long_term_stats_inner(
             Shanghai
                 .timestamp_opt(*bucket_start, 0)
                 .single()
-                .map(|value| !affected_archive_dates.contains(&value.date_naive()))
+                .map(|value| !recomputed_dates.contains(&value.date_naive()))
                 .unwrap_or(true)
         });
         daily.retain(|(date, _, _), _| {
             NaiveDate::parse_from_str(date, "%Y-%m-%d")
-                .map(|value| !affected_archive_dates.contains(&value))
+                .map(|value| !recomputed_dates.contains(&value))
                 .unwrap_or(true)
         });
         hourly.extend(rebuilt_hourly);
@@ -1057,19 +1062,6 @@ async fn refresh_long_term_stats_inner(
             .await?
             != 0;
     if ready_state {
-        let mut recomputed_dates = affected_archive_dates;
-        for row in &rows {
-            if let Some(date) =
-                parse_long_term_timestamp_ms(&row.occurred_at).and_then(|timestamp| {
-                    Shanghai
-                        .timestamp_millis_opt(timestamp)
-                        .single()
-                        .map(|value| value.date_naive())
-                })
-            {
-                recomputed_dates.insert(date);
-            }
-        }
         for date in recomputed_dates {
             sqlx::query("DELETE FROM long_term_usage_daily WHERE stats_date = ?1")
                 .bind(date.to_string())
@@ -1848,14 +1840,16 @@ fn build_daily_points(
 }
 
 fn normalize_long_term_model(row: &LongTermInvocationRow) -> String {
-    row.response_model
-        .as_deref()
-        .or(row.model.as_deref())
-        .or(row.request_model.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("未知模型")
-        .to_string()
+    for candidate in [
+        row.response_model.as_deref(),
+        row.model.as_deref(),
+        row.request_model.as_deref(),
+    ] {
+        if let Some(value) = candidate.map(str::trim).filter(|value| !value.is_empty()) {
+            return value.to_string();
+        }
+    }
+    "未知模型".to_string()
 }
 
 fn normalize_long_term_reasoning(value: Option<&str>) -> String {
@@ -2039,6 +2033,10 @@ mod tests {
         assert_eq!(metrics.response_ms, Some(600.0));
         assert_eq!(normalize_long_term_model(&success), "response-model");
         assert_eq!(normalize_long_term_model(&failure), "未知模型");
+        let mut blank_legacy = success.clone();
+        blank_legacy.response_model = None;
+        blank_legacy.model = Some("  \t".to_string());
+        assert_eq!(normalize_long_term_model(&blank_legacy), "request-model");
     }
 
     #[test]
