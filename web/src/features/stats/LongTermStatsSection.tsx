@@ -450,7 +450,7 @@ export function LongTermStatsSection({
   const upstreamSeries = seriesOverride ? [] : (fetchedUpstreamSeries?.series ?? []);
 
   useEffect(() => {
-    if (!overview) return;
+    if (!overview || overview.range !== range) return;
     const isInitial = selectionRangeRef.current === null;
     const rangeChanged = selectionRangeRef.current !== range;
     selectionRangeRef.current = range;

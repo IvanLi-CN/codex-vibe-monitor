@@ -940,6 +940,7 @@ async fn refresh_long_term_stats_inner(
                 None
             }
         }) else {
+            archive_read_failed = true;
             if let Some(date) = archive_path
                 .coverage_end_at()
                 .and_then(long_term_archive_end_date)
