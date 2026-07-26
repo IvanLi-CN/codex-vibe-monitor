@@ -426,6 +426,7 @@ export function LongTermStatsSection({
   const [upstreamMetric, setUpstreamMetric] = useState<MetricKey>("tokens");
   const [modelSelection, setModelSelection] = useState<string[]>([]);
   const [upstreamSelection, setUpstreamSelection] = useState<string[]>([]);
+  const selectionRangeRef = useRef<LongTermStatsRange | null>(null);
   const [modelSearch, setModelSearch] = useState("");
   const [upstreamSearch, setUpstreamSearch] = useState("");
   const [modelSort, setModelSort] = useState<MetricKey>("tokens");
@@ -450,17 +451,24 @@ export function LongTermStatsSection({
 
   useEffect(() => {
     if (!overview) return;
+    const isInitial = selectionRangeRef.current === null;
+    const rangeChanged = selectionRangeRef.current !== range;
+    selectionRangeRef.current = range;
     const reconcile = (current: string[], entries: LongTermSeriesSummary[]) => {
       const available = new Set(entries.map((entry) => entry.seriesKey));
       const kept = current.filter((key) => available.has(key));
-      return [
+      const next = [
         ...kept,
         ...entries.map((entry) => entry.seriesKey).filter((key) => !kept.includes(key)),
-      ].slice(0, Math.max(3, kept.length));
+      ];
+      if (!isInitial && !rangeChanged) {
+        return next.slice(0, 8);
+      }
+      return next.slice(0, Math.min(8, Math.max(3, kept.length)));
     };
     setModelSelection((current) => reconcile(current, overview.models));
     setUpstreamSelection((current) => reconcile(current, overview.upstreams));
-  }, [overview]);
+  }, [overview, range]);
 
   const globalChartSeries = useMemo(
     () => [

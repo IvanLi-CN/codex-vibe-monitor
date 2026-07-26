@@ -167,6 +167,7 @@ struct LongTermStateRow {
 #[derive(Debug, Clone, FromRow)]
 struct LongTermInvocationRow {
     id: i64,
+    invoke_id: Option<String>,
     occurred_at: String,
     status: Option<String>,
     model: Option<String>,
@@ -186,6 +187,61 @@ struct LongTermInvocationRow {
     t_upstream_ttfb_ms: Option<f64>,
     t_upstream_stream_ms: Option<f64>,
     error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct LongTermArchiveAttemptRow {
+    invoke_id: String,
+    occurred_at: String,
+    upstream_account_id: Option<i64>,
+}
+
+async fn load_long_term_archive_attempt_accounts(
+    pool: &Pool<Sqlite>,
+) -> Result<HashMap<(String, String), i64>> {
+    let paths = match load_completed_archive_paths_for_dataset(
+        pool,
+        "pool_upstream_request_attempts",
+    )
+    .await
+    {
+        Ok(paths) => paths,
+        Err(error) if error.to_string().contains("no such table") => return Ok(HashMap::new()),
+        Err(error) => return Err(error),
+    };
+    let mut accounts = HashMap::new();
+    for archive_path in paths {
+        let Some((archive_pool, cleanup)) =
+            open_invocation_archive_batch_pool(&archive_path, "long-term-stats-attempt-fallback")
+                .await?
+        else {
+            continue;
+        };
+        let rows = sqlx::query_as::<_, LongTermArchiveAttemptRow>(
+            r#"
+            SELECT invoke_id, occurred_at, upstream_account_id
+            FROM pool_upstream_request_attempts
+            WHERE upstream_account_id IS NOT NULL
+            ORDER BY id ASC
+            "#,
+        )
+        .fetch_all(&archive_pool)
+        .await;
+        archive_pool.close().await;
+        drop(cleanup);
+        match rows {
+            Ok(rows) => {
+                for row in rows {
+                    if let Some(account_id) = row.upstream_account_id {
+                        accounts.insert((row.invoke_id, row.occurred_at), account_id);
+                    }
+                }
+            }
+            Err(error) if error.to_string().contains("no such table") => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(accounts)
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -640,6 +696,7 @@ async fn refresh_long_term_stats_inner(
             r#"
         SELECT
             inv.id,
+            inv.invoke_id,
             inv.occurred_at,
             inv.status,
             inv.model,
@@ -686,6 +743,7 @@ async fn refresh_long_term_stats_inner(
             r#"
         SELECT
             inv.id,
+            inv.invoke_id,
             inv.occurred_at,
             inv.status,
             inv.model,
@@ -792,6 +850,14 @@ async fn refresh_long_term_stats_inner(
         }
     };
     let all_archive_paths = archive_paths.clone();
+    let archive_attempt_accounts = if all_archive_paths
+        .iter()
+        .any(|path| !replayed_archive_files.contains(path.file_path()))
+    {
+        load_long_term_archive_attempt_accounts(pool).await?
+    } else {
+        HashMap::new()
+    };
     let mut archive_markers = Vec::new();
     let mut archive_read_failed = false;
     let mut unavailable_after_date: Option<NaiveDate> = None;
@@ -826,6 +892,7 @@ async fn refresh_long_term_stats_inner(
             r#"
             SELECT
                 id,
+                invoke_id,
                 occurred_at,
                 status,
                 model,
@@ -856,7 +923,14 @@ async fn refresh_long_term_stats_inner(
         drop(cleanup);
         match archive_rows {
             Ok(archive_rows) => {
-                for row in archive_rows {
+                for mut row in archive_rows {
+                    if row.upstream_account_id.is_none()
+                        && let Some(invoke_id) = row.invoke_id.as_ref()
+                        && let Some(account_id) = archive_attempt_accounts
+                            .get(&(invoke_id.clone(), row.occurred_at.clone()))
+                    {
+                        row.upstream_account_id = Some(*account_id);
+                    }
                     if let Some(date) =
                         parse_long_term_timestamp_ms(&row.occurred_at).and_then(|timestamp| {
                             Shanghai
@@ -977,7 +1051,7 @@ async fn refresh_long_term_stats_inner(
             let live_rebuild_sql = format!(
                 r#"
                 SELECT
-                    inv.id, inv.occurred_at, inv.status, inv.model,
+                    inv.id, inv.invoke_id, inv.occurred_at, inv.status, inv.model,
                     CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.requestModel') AS TEXT)), '') END AS request_model,
                     CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.responseModel') AS TEXT)), '') END AS response_model,
                     CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.reasoningEffort') AS TEXT)), '') END AS reasoning_effort,
@@ -1041,7 +1115,7 @@ async fn refresh_long_term_stats_inner(
             let archive_rows = sqlx::query_as::<_, LongTermInvocationRow>(
                 r#"
                 SELECT
-                    id, occurred_at, status, model,
+                    id, invoke_id, occurred_at, status, model,
                     CASE WHEN json_valid(payload) THEN NULLIF(TRIM(CAST(json_extract(payload, '$.requestModel') AS TEXT)), '') END AS request_model,
                     CASE WHEN json_valid(payload) THEN NULLIF(TRIM(CAST(json_extract(payload, '$.responseModel') AS TEXT)), '') END AS response_model,
                     CASE WHEN json_valid(payload) THEN NULLIF(TRIM(CAST(json_extract(payload, '$.reasoningEffort') AS TEXT)), '') END AS reasoning_effort,
@@ -1059,7 +1133,14 @@ async fn refresh_long_term_stats_inner(
             .await?;
             archive_pool.close().await;
             drop(cleanup);
-            for row in archive_rows {
+            for mut row in archive_rows {
+                if row.upstream_account_id.is_none()
+                    && let Some(invoke_id) = row.invoke_id.as_ref()
+                    && let Some(account_id) =
+                        archive_attempt_accounts.get(&(invoke_id.clone(), row.occurred_at.clone()))
+                {
+                    row.upstream_account_id = Some(*account_id);
+                }
                 if rebuild_seen_ids.insert(row.id) {
                     rebuild_rows.push(row);
                 }
@@ -2090,6 +2171,7 @@ mod tests {
     fn metrics_keep_call_count_separate_from_success_only_timing_samples() {
         let success = LongTermInvocationRow {
             id: 1,
+            invoke_id: None,
             occurred_at: "2026-07-26T00:00:00Z".to_string(),
             status: Some("success".to_string()),
             model: Some("legacy-model".to_string()),
@@ -2112,6 +2194,7 @@ mod tests {
         };
         let failure = LongTermInvocationRow {
             id: 2,
+            invoke_id: None,
             occurred_at: "2026-07-26T00:00:01Z".to_string(),
             status: Some("failed".to_string()),
             model: None,
@@ -2155,6 +2238,7 @@ mod tests {
     fn non_api_key_upstreams_share_the_other_series() {
         let row = LongTermInvocationRow {
             id: 1,
+            invoke_id: None,
             occurred_at: "2026-07-26T00:00:00Z".to_string(),
             status: Some("success".to_string()),
             model: None,
@@ -2195,6 +2279,7 @@ mod tests {
             r#"
             CREATE TABLE codex_invocations (
                 id INTEGER PRIMARY KEY,
+                invoke_id TEXT,
                 occurred_at TEXT NOT NULL,
                 status TEXT,
                 model TEXT,
@@ -2216,7 +2301,7 @@ mod tests {
         .await
         .expect("invocation schema");
         sqlx::query(
-            "INSERT INTO codex_invocations (id, occurred_at, status, model, payload, total_tokens, output_tokens, cost, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms) VALUES (1, datetime('now'), 'success', 'gpt-5', '{\"reasoningEffort\":\"high\"}', 12, 4, 0.2, 100, 10, 5, 5, 20, 80)",
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, model, payload, total_tokens, output_tokens, cost, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms) VALUES (1, 'test-invoke-1', datetime('now'), 'success', 'gpt-5', '{\"reasoningEffort\":\"high\"}', 12, 4, 0.2, 100, 10, 5, 5, 20, 80)",
         )
         .execute(&pool)
         .await

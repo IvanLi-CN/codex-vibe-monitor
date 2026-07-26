@@ -1123,6 +1123,13 @@ pub(crate) async fn load_live_invocation_ids_after_id(
 pub(crate) async fn load_completed_invocation_archive_paths(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
 ) -> Result<Vec<ArchiveBatchPathRow>> {
+    load_completed_archive_paths_for_dataset(executor, HOURLY_ROLLUP_DATASET_INVOCATIONS).await
+}
+
+pub(crate) async fn load_completed_archive_paths_for_dataset(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    dataset: &str,
+) -> Result<Vec<ArchiveBatchPathRow>> {
     sqlx::query_as::<_, ArchiveBatchPathRow>(
         r#"
         SELECT
@@ -1134,11 +1141,12 @@ pub(crate) async fn load_completed_invocation_archive_paths(
             NULL AS needs_overall,
             NULL AS needs_failures
         FROM archive_batches
-        WHERE dataset = 'codex_invocations'
-          AND status = ?1
+        WHERE dataset = ?1
+          AND status = ?2
         ORDER BY month_key ASC, created_at ASC, id ASC
         "#,
     )
+    .bind(dataset)
     .bind(ARCHIVE_STATUS_COMPLETED)
     .fetch_all(executor)
     .await
