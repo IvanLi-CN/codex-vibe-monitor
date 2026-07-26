@@ -51,15 +51,15 @@ const MODEL_PERFORMANCE_METRICS: MetricKey[] = [
 ];
 const USAGE_METRICS: MetricKey[] = ["tokens", "cost", "calls"];
 
-const metricLabels: Record<MetricKey, string> = {
-  tokens: "Token",
-  cost: "Cost",
-  calls: "Calls",
-  usageTimeMs: "Usage time",
-  wallTimeMs: "Wall time",
-  outputSpeedTokensPerSecond: "Output speed",
-  firstByteMs: "First byte",
-  responseMs: "Response",
+const metricLabelKeys: Record<MetricKey, string> = {
+  tokens: "stats.longTerm.metric.tokens",
+  cost: "stats.longTerm.metric.cost",
+  calls: "stats.longTerm.metric.calls",
+  usageTimeMs: "stats.longTerm.metric.usageTime",
+  wallTimeMs: "stats.longTerm.metric.wallTime",
+  outputSpeedTokensPerSecond: "stats.longTerm.metric.outputSpeed",
+  firstByteMs: "stats.longTerm.metric.firstByte",
+  responseMs: "stats.longTerm.metric.response",
 };
 
 const metricColors: Record<MetricKey, string> = {
@@ -155,6 +155,7 @@ function MetricToggle({
   options: MetricKey[];
   onChange: (value: MetricKey) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <fieldset className="flex flex-wrap gap-1 rounded-lg border border-base-300/70 bg-base-200/40 p-1">
       {options.map((metric) => (
@@ -165,7 +166,7 @@ function MetricToggle({
           onClick={() => onChange(metric)}
           aria-pressed={metric === value}
         >
-          {metricLabels[metric]}
+          {t(metricLabelKeys[metric])}
         </Button>
       ))}
     </fieldset>
@@ -331,7 +332,7 @@ function SeriesTable({
                     style={{ left: virtualColumn.start, width: virtualColumn.size }}
                     onClick={() => onSort(metric)}
                   >
-                    {metricLabels[metric]}
+                    {t(metricLabelKeys[metric])}
                     {sortMetric === metric ? " ↓" : ""}
                   </button>
                 );

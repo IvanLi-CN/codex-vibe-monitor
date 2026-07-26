@@ -38,6 +38,7 @@ export function useLongTermStats(
   const [error, setError] = useState<string | null>(null);
   const [seriesError, setSeriesError] = useState<string | null>(null);
   const overviewRequestId = useRef(0);
+  const previousRange = useRef(range);
   const stableKeys = useMemo(() => selectedKeys.filter(Boolean).slice(0, 8), [selectedKeys]);
 
   const refresh = useCallback(async () => {
@@ -52,6 +53,18 @@ export function useLongTermStats(
       if (requestId === overviewRequestId.current) setIsLoading(false);
     }
   }, [range]);
+
+  useEffect(() => {
+    if (previousRange.current === range) return;
+    previousRange.current = range;
+    if (sharedOverview === undefined) {
+      setOverview(null);
+      setIsLoading(true);
+      setError(null);
+    }
+    setSeries(null);
+    setSeriesError(null);
+  }, [range, sharedOverview]);
 
   useEffect(() => {
     if (sharedOverview !== undefined) {

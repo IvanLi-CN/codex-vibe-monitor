@@ -1144,10 +1144,17 @@ async fn refresh_long_term_stats_inner(
                 .unwrap_or(safe_start),
         );
     }
-    let status = if archive_read_failed {
+    // A damaged archive only makes the older portion unavailable. Keep the materialized
+    // suffix readable from the safe start date and leave the archive unmarked so the next
+    // refresh can retry it. Without coverage metadata there is no safe truncation point.
+    let status = if archive_read_failed && unavailable_after_date.is_none() {
         LONG_TERM_STATUS_ERROR
     } else if rows.is_empty() && daily.is_empty() && !has_persisted_daily_rows {
-        LONG_TERM_STATUS_EMPTY
+        if archive_read_failed {
+            LONG_TERM_STATUS_READY
+        } else {
+            LONG_TERM_STATUS_EMPTY
+        }
     } else {
         LONG_TERM_STATUS_READY
     };
