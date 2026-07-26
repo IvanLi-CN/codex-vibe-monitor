@@ -513,6 +513,12 @@ pub(crate) async fn refresh_long_term_stats(
     retention_days: u64,
 ) -> Result<()> {
     let _guard = LONG_TERM_REFRESH_LOCK.lock().await;
+    let was_ready =
+        sqlx::query_scalar::<_, String>("SELECT status FROM long_term_stats_state WHERE id = ?1")
+            .bind(LONG_TERM_STATE_ID)
+            .fetch_optional(pool)
+            .await?
+            .is_some_and(|status| status == LONG_TERM_STATUS_READY);
     sqlx::query(
         "UPDATE long_term_stats_state SET status = ?1, last_error = NULL, updated_at = datetime('now') WHERE id = ?2",
     )
@@ -521,7 +527,7 @@ pub(crate) async fn refresh_long_term_stats(
     .execute(pool)
     .await?;
 
-    let result = refresh_long_term_stats_inner(pool, retention_days).await;
+    let result = refresh_long_term_stats_inner(pool, retention_days, was_ready).await;
     if let Err(err) = &result {
         let _ = sqlx::query(
             "UPDATE long_term_stats_state SET status = ?1, last_error = ?2, updated_at = datetime('now') WHERE id = ?3",
@@ -535,7 +541,11 @@ pub(crate) async fn refresh_long_term_stats(
     result
 }
 
-async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64) -> Result<()> {
+async fn refresh_long_term_stats_inner(
+    pool: &Pool<Sqlite>,
+    retention_days: u64,
+    was_ready: bool,
+) -> Result<()> {
     let previous_state = sqlx::query_as::<_, LongTermStateRow>(
         "SELECT status, statistics_start_date, processed_rows, total_rows, last_error FROM long_term_stats_state WHERE id = ?1",
     )
@@ -560,9 +570,7 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
     } else {
         "CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER) END"
     };
-    let ready_state = previous_state
-        .as_ref()
-        .is_some_and(|state| state.status == LONG_TERM_STATUS_READY);
+    let ready_state = was_ready;
     let retention_start = today - ChronoDuration::days(retention_days.max(366) as i64 - 1);
     let mut hourly: HashMap<(i64, String, String), LongTermBucket> = HashMap::new();
     let mut daily: HashMap<(String, String, String), LongTermBucket> = HashMap::new();
@@ -914,6 +922,52 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
             .fetch_one(&mut *tx)
             .await?
             != 0;
+    if ready_state {
+        let mut recomputed_dates = affected_archive_dates;
+        for row in &rows {
+            if let Some(date) =
+                parse_long_term_timestamp_ms(&row.occurred_at).and_then(|timestamp| {
+                    Shanghai
+                        .timestamp_millis_opt(timestamp)
+                        .single()
+                        .map(|value| value.date_naive())
+                })
+            {
+                recomputed_dates.insert(date);
+            }
+        }
+        for date in recomputed_dates {
+            sqlx::query("DELETE FROM long_term_usage_daily WHERE stats_date = ?1")
+                .bind(date.to_string())
+                .execute(&mut *tx)
+                .await?;
+            let day_start_epoch = date
+                .and_hms_opt(0, 0, 0)
+                .and_then(|value| Shanghai.from_local_datetime(&value).single())
+                .map(|value| value.timestamp());
+            let day_end_epoch = date
+                .succ_opt()
+                .and_then(|value| value.and_hms_opt(0, 0, 0))
+                .and_then(|value| Shanghai.from_local_datetime(&value).single())
+                .map(|value| value.timestamp());
+            if let (Some(day_start_epoch), Some(day_end_epoch)) = (day_start_epoch, day_end_epoch) {
+                sqlx::query(
+                    "DELETE FROM long_term_usage_hourly WHERE bucket_start_epoch >= ?1 AND bucket_start_epoch < ?2",
+                )
+                .bind(day_start_epoch)
+                .bind(day_end_epoch)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+    } else {
+        sqlx::query("DELETE FROM long_term_usage_hourly")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM long_term_usage_daily")
+            .execute(&mut *tx)
+            .await?;
+    }
     let retention_start_epoch = retention_start
         .and_hms_opt(0, 0, 0)
         .and_then(|value| Shanghai.from_local_datetime(&value).single())
