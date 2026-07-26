@@ -911,6 +911,14 @@ async fn refresh_long_term_stats_inner(
         }
     }
     if ready_state && !recomputed_dates.is_empty() {
+        if let Some(previous_date) = recomputed_dates
+            .iter()
+            .min()
+            .copied()
+            .and_then(|date| date.pred_opt())
+        {
+            recomputed_dates.insert(previous_date);
+        }
         let mut rebuild_rows = rows
             .iter()
             .filter(|row| {
@@ -929,8 +937,8 @@ async fn refresh_long_term_stats_inner(
             .iter()
             .map(|row| row.id)
             .collect::<HashSet<_>>();
-        let min_date = affected_archive_dates.iter().min().copied();
-        let max_date = affected_archive_dates.iter().max().copied();
+        let min_date = recomputed_dates.iter().min().copied();
+        let max_date = recomputed_dates.iter().max().copied();
         if let (Some(min_date), Some(max_date)) = (min_date, max_date) {
             let live_start = min_date.and_hms_opt(0, 0, 0).map(format_naive);
             let live_end = max_date
