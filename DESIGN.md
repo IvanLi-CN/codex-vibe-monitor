@@ -216,7 +216,7 @@ Codex Vibe Monitor 的界面应像一张可信的观测实验台：稳定、清�
 ### Navigation
 
 - **Style:** 顶部导航使用 segmented control family。当前路由使用 primary 边框、primary tint 背景和 primary 文本。
-- **Responsive:** 小屏允许横向滚动导航，但不能隐藏当前页面上下文。后续若页面继续增长，应评估折叠 nav 或二级导航。
+- **Responsive:** `<=768px` 使用单一 hamburger 导航层，集中呈现顶层入口以及 Account Pool / System 子入口，并在 header 保留当前页面上下文；`>=769px` 使用横向顶层 segmented navigation 与 workspace-local secondary navigation。
 
 ### Data Visualization
 

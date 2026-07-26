@@ -1,47 +1,59 @@
 # Product
 
-## Register
+## Product Definition
 
-product
+Codex Vibe Monitor 是一套自部署的 OpenAI 兼容流量网关，以及围绕调用、路由、账号池和运行状态的一体化观测与运营工作台。
+
+它统一承接 `/v1/*` HTTP 与 WebSocket 流量，按上游账号、模型能力、会话归属和代理策略完成路由，同时保留调用证据、实时状态、历史统计、成本、维护任务与归档数据，并按留证配置和保留策略保存可用的原始 payload。用户可以在同一个界面里判断服务是否正常、定位请求经过了什么路径，并直接调整运行配置。
 
 ## Users
 
-Codex Vibe Monitor 面向自部署 OpenAI 兼容代理的维护者、开发者和小型运维负责人。用户通常同时关心实时调用、失败原因、上游账号健康、费用与 token 消耗、归档保留、运行配置是否稳定。
+产品首先服务于单实例 owner-operator、开发者和小型维护团队。典型用户已经在运行自己的 OpenAI 兼容代理，需要同时照看真实流量、上游账号健康、路由稳定性、延迟、失败原因、token 与费用、数据保留和运行配置。
 
-典型使用场景不是营销浏览，而是在已经有真实流量的服务旁边打开工作台，快速回答三个问题：现在是否正常，问题在哪里，下一步应该调哪个配置。界面需要支持高密度扫描、跨页面排障、长时间驻留观察，也要让偶发维护者能在不读源码的情况下完成基础操作。
+使用场景以日常值守和排障为主：用户会长时间驻留观察，也会在故障发生时跨页面追查一次调用、一个会话或一组账号。界面必须支持高密度扫描，让偶发维护者不读源码也能完成常见诊断与配置操作。
 
-## Product Purpose
+## Core Jobs
 
-Codex Vibe Monitor 是一套自部署的 OpenAI 兼容代理观测工作台。它把 `/v1/*` 流量接入、调用留证、实时 SSE、历史统计、请求排障、上游账号池、forward proxy 配置、价格目录维护、SQLite 持久化与归档放在同一个产品里。
+1. **判断当前是否正常。** 查看当天活动、实时调用、并行会话、代理节点、上游账号和系统存储状态。
+2. **解释问题发生在哪里。** 从汇总趋势下钻到调用详情、pool attempts、路由 payload、失败分类，以及留证和保留范围内可用的原始请求与响应证据。
+3. **把判断转化为操作。** 在当前上下文维护账号、分组、路由策略、模型能力、价格、forward proxy 与留证配置，并查看 retention、归档状态和后台任务。
+4. **保留可回看的运行历史。** 通过 SQLite、时间序列汇总、稳定查询快照、后台维护记录和按策略保留的归档支撑长期分析。
 
-产品成功不是做出一个漂亮总览，而是让用户能看得到、查得到、调得动。Dashboard 和 Live 负责运行态判断，Records 和 Stats 负责历史分析，Account Pool 和 Settings 负责把判断转化为配置动作。
+## Product Surfaces
+
+- **Dashboard**：自然日关键指标、活动趋势、网络速度、账号活动与正在工作的对话。
+- **Stats**：按时间范围分析请求量、token、费用、成功与非成功结果、延迟和并行工作。
+- **Live**：观察实时调用流、Prompt Cache 会话聚合以及 forward proxy 节点的短窗口表现。
+- **Records**：通过稳定搜索快照筛选、排序和分页调用记录，并在留证和保留范围内下钻到可用的请求、响应与路由证据。
+- **Account Pool**：管理 OAuth 与 API Key 上游账号、分组、标签、模型与路由策略、同步状态和维护记录。
+- **System**：集中查看运行状态与存储占用、后台任务，并维护通用设置和 forward proxy 配置。
+
+应用支持 light/dark 双主题、中文与英文界面、桌面与紧凑移动布局，以及可安装 PWA。Web Demo 和 Storybook 提供无需真实后端的产品路由与组件验收面。
+
+## Product Principles
+
+1. **Signal before ornament.** 先让状态、趋势、失败原因和下一步动作可见，再考虑视觉气质。
+2. **Evidence over inference.** 汇总必须能下钻到调用、路由、账号或任务证据，避免只有结论没有解释。
+3. **Dense but legible.** 密度来自分组、对齐和稳定节奏，不依赖更小字号、低对比或过度截断。
+4. **Operate in place.** 筛选、查看、重连、同步、编辑和配置尽量保留在当前工作上下文。
+5. **One operational vocabulary.** Dashboard、Live、Records、Account Pool 和 System 共享状态、指标、表单与反馈语义。
+6. **Protect the hot path.** 后台统计、维护、retention 与归档不能以牺牲代理请求和 OAuth 等前台关键路径为代价。
 
 ## Brand Personality
 
-默认人格是 `precise / observant / restrained`。中文语气应当清晰、直接、专业，允许保留必要英文术语，例如 `proxy`、`token`、`latency`、`SSE`、`routing`，避免为了翻译而降低工程含义。
+产品人格是 `precise / observant / restrained`。视觉方向是“观测实验室”：像一张可信的实验台，而不是舞台。中文表达清晰、直接、专业，保留 `proxy`、`token`、`latency`、`SSE`、`routing` 等能减少歧义的工程术语。
 
-视觉方向是“观测实验室”：像一张可信的实验台，而不是舞台。它可以有实时信号、仪表感和轻微的技术气质，但所有视觉效果都必须服务于读数、定位和操作。
+界面可以使用实时信号、仪表感和受控的环境层次，但所有效果都必须服务于读数、定位或操作。不要做成通用 SaaS dashboard 模板，也不要用深蓝霓虹、glassmorphism、渐变文字、厚侧边彩条或无语义动效替代信息层级。
 
-## Anti-references
+## Accessibility
 
-- 不要做成通用 SaaS dashboard 模板：大号 hero metric、四张同款卡片、渐变强调和空泛文案会削弱可信度。
-- 不要落入“观测工具等于深蓝黑底霓虹”的类别反射。暗色主题可以存在，但不能用黑蓝荧光感替代信息层级。
-- 不要把 glassmorphism 当默认语言。模糊、半透明和光晕只能用于少量浮层或运行态反馈，不能成为所有容器的装饰。
-- 不要使用 gradient text、厚侧边彩条、无意义的 orb 背景、弹跳动效或为了显得高级而发明的控件。
-- 不要牺牲可读性换取酷感。小字号、低对比、过度截断、移动端只能横向拖动，都应被视为技术债。
+界面以 WCAG AA 为默认目标，保留键盘可达、清晰的 `focus-visible`、可读的 `aria-label`、稳定的 heading/landmark 结构，以及 light/dark 两套主题下的文字与状态对比。
 
-## Design Principles
+颜色只能辅助表达状态，不能成为唯一信息来源。图表、表格、徽标与告警需要通过文字、图例、tooltip、数值或形状承载关键判断。紧凑移动布局需要保留安全区、可读内容顺序和可操作的触控目标。
 
-1. **Signal before ornament.** 先让状态、趋势、失败原因和下一步动作可见，再考虑视觉气质。
-2. **Dense but legible.** 产品允许高密度信息，但密度必须来自分组、对齐和稳定节奏，而不是缩小触控目标或压低对比。
-3. **One vocabulary, many surfaces.** Dashboard、Live、Records、Account Pool 和 Settings 应共享同一套按钮、表单、surface、状态色和图表语义。
-4. **Evidence over mood.** 每个图表、徽标、警告、空态和加载态都应能解释系统状态，不用装饰性动效制造“实时感”。
-5. **Operate in place.** 用户应尽量在当前上下文完成筛选、查看、重连、同步、编辑和配置，不把简单任务推给无必要的 modal。
+## Current Boundaries
 
-## Accessibility & Inclusion
-
-目标默认按 WCAG AA。界面要保留键盘可达、清晰 focus-visible、可读 `aria-label`、稳定 heading/landmark 结构，以及 light/dark 两套主题下的文字与状态对比。
-
-数据密集区域应考虑色弱用户：颜色只能辅助表达，不能成为唯一状态来源。图表与表格要保留文字、图例、tooltip 或数值标签来承载关键判断。
-
-动效应短、直接、可预测。加载和实时反馈可以使用 spinner、pulse 或 skeleton，但不能阻挡任务，也不能依赖长序列动画。后续若引入 reduced motion 策略，应优先覆盖全局 pulse、spin、dialog、popover 和图表 hover 反馈。
+- 产品是自部署的单实例工作台，不是托管型 SaaS。
+- 当前不提供多租户、RBAC 或企业级权限控制面。
+- 当前不把告警编排、通知升级和自动修复作为已交付能力。
+- 产品不以替代上游控制台或大规模分布式可观测平台为目标。
