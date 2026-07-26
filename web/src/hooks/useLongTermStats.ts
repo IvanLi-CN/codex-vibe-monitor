@@ -97,7 +97,7 @@ export function useLongTermStats(
     return () => {
       active = false;
     };
-  }, [dimension, overview?.status, range, shouldFetch, stableKeys]);
+  }, [dimension, overview, range, shouldFetch, stableKeys]);
 
   return { overview, series, isLoading, isSeriesLoading, error, seriesError, refresh };
 }

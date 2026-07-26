@@ -2872,7 +2872,7 @@ pub(crate) async fn load_upstream_account_rows_by_ids(
             separated.push_bind(account_id);
         }
     }
-    query.push(") ORDER BY updated_at DESC, id DESC");
+    query.push(") AND COALESCE(deleted_at, '') = '' ORDER BY updated_at DESC, id DESC");
     query
         .build_query_as::<UpstreamAccountRow>()
         .fetch_all(pool)
@@ -3031,7 +3031,8 @@ pub(crate) async fn has_ungrouped_upstream_accounts(pool: &Pool<Sqlite>) -> Resu
         r#"
         SELECT COUNT(*)
         FROM pool_upstream_accounts
-        WHERE NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL
+        WHERE COALESCE(deleted_at, '') = ''
+          AND NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL
         "#,
     )
     .fetch_one(pool)
@@ -3390,7 +3391,7 @@ pub(crate) async fn load_upstream_account_row_conn(
     id: i64,
 ) -> Result<Option<UpstreamAccountRow>> {
     sqlx::query_as::<_, UpstreamAccountRow>(&format!(
-        "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} FROM pool_upstream_accounts WHERE id = ?1 LIMIT 1"
+        "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} FROM pool_upstream_accounts WHERE id = ?1 AND COALESCE(deleted_at, '') = '' LIMIT 1"
     ))
     .bind(id)
     .fetch_optional(conn)
@@ -3420,6 +3421,7 @@ pub(crate) async fn load_upstream_account_row_by_external_identity_conn(
     sqlx::query_as::<_, UpstreamAccountRow>(&format!(
         "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} FROM pool_upstream_accounts \
          WHERE external_client_id = ?1 AND external_source_account_id = ?2 \
+           AND COALESCE(deleted_at, '') = '' \
          ORDER BY id ASC LIMIT 1"
     ))
     .bind(external_client_id)

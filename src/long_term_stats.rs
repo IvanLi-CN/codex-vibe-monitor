@@ -536,8 +536,55 @@ pub(crate) async fn refresh_long_term_stats(
 }
 
 async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64) -> Result<()> {
-    let mut rows = sqlx::query_as::<_, LongTermInvocationRow>(
-        r#"
+    let previous_state = sqlx::query_as::<_, LongTermStateRow>(
+        "SELECT status, statistics_start_date, processed_rows, total_rows, last_error FROM long_term_stats_state WHERE id = ?1",
+    )
+    .bind(LONG_TERM_STATE_ID)
+    .fetch_optional(pool)
+    .await?;
+    let today = Utc::now().with_timezone(&Shanghai).date_naive();
+    let live_tail_start = today
+        .pred_opt()
+        .unwrap_or(today)
+        .and_hms_opt(0, 0, 0)
+        .and_then(|value| Shanghai.from_local_datetime(&value).single())
+        .map(|value| value.with_timezone(&Utc).to_rfc3339());
+    let mut rows = if previous_state
+        .as_ref()
+        .is_some_and(|state| state.status == LONG_TERM_STATUS_READY)
+    {
+        sqlx::query_as::<_, LongTermInvocationRow>(
+            r#"
+        SELECT
+            inv.id,
+            inv.occurred_at,
+            inv.status,
+            inv.model,
+            CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.requestModel') AS TEXT)), '') END AS request_model,
+            CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.responseModel') AS TEXT)), '') END AS response_model,
+            CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.reasoningEffort') AS TEXT)), '') END AS reasoning_effort,
+            CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER) END AS upstream_account_id,
+            NULL AS upstream_account_kind,
+            NULL AS upstream_account_name,
+            inv.total_tokens,
+            inv.output_tokens,
+            inv.cost,
+            inv.t_total_ms,
+            inv.t_upstream_ttfb_ms,
+            inv.t_upstream_stream_ms,
+            inv.error_message
+        FROM codex_invocations inv
+        WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending')
+          AND datetime(inv.occurred_at) >= datetime(?1)
+        ORDER BY inv.occurred_at ASC, inv.id ASC
+            "#,
+        )
+        .bind(live_tail_start.as_deref())
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, LongTermInvocationRow>(
+            r#"
         SELECT
             inv.id,
             inv.occurred_at,
@@ -559,11 +606,11 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
         FROM codex_invocations inv
         WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending')
         ORDER BY inv.occurred_at ASC, inv.id ASC
-        "#,
-    )
-    .fetch_all(pool)
-    .await
-    .context("failed to load invocation rows for long-term stats")?;
+            "#,
+        )
+        .fetch_all(pool)
+        .await?
+    };
 
     let account_identities = load_long_term_account_identities(pool).await?;
     let mut seen_ids = rows.iter().map(|row| row.id).collect::<HashSet<_>>();
@@ -580,12 +627,6 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
     .await?
     .into_iter()
     .collect::<HashSet<_>>();
-    let previous_state = sqlx::query_as::<_, LongTermStateRow>(
-        "SELECT status, statistics_start_date, processed_rows, total_rows, last_error FROM long_term_stats_state WHERE id = ?1",
-    )
-    .bind(LONG_TERM_STATE_ID)
-    .fetch_optional(pool)
-    .await?;
     let mut archive_markers = Vec::new();
     let mut archive_read_failed = false;
     let mut unavailable_after_date: Option<NaiveDate> = None;
@@ -676,7 +717,6 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
         }
     }
 
-    let today = Utc::now().with_timezone(&Shanghai).date_naive();
     let retention_start = today - ChronoDuration::days(retention_days.max(366) as i64 - 1);
     let mut hourly: HashMap<(i64, String, String), LongTermBucket> = HashMap::new();
     let mut daily: HashMap<(String, String, String), LongTermBucket> = HashMap::new();
@@ -684,7 +724,15 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
         .as_ref()
         .and_then(|state| state.statistics_start_date.clone());
 
-    for row in &rows {
+    let total_rows = rows.len() as i64;
+    sqlx::query(
+        "UPDATE long_term_stats_state SET processed_rows = 0, total_rows = ?1, updated_at = datetime('now') WHERE id = ?2",
+    )
+    .bind(total_rows)
+    .bind(LONG_TERM_STATE_ID)
+    .execute(pool)
+    .await?;
+    for (index, row) in rows.iter().enumerate() {
         let Some(start_ms) = parse_long_term_timestamp_ms(&row.occurred_at) else {
             continue;
         };
@@ -752,11 +800,26 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
                 interval,
             );
         }
+        if (index + 1) % 256 == 0 || index + 1 == rows.len() {
+            sqlx::query(
+                "UPDATE long_term_stats_state SET processed_rows = ?1, total_rows = ?2, updated_at = datetime('now') WHERE id = ?3",
+            )
+            .bind((index + 1) as i64)
+            .bind(total_rows)
+            .bind(LONG_TERM_STATE_ID)
+            .execute(pool)
+            .await?;
+        }
     }
 
     // Daily rows are permanent. Hourly rows are incrementally refreshed so replayed archive
     // buckets remain available after their source files are cleaned up.
     let mut tx = pool.begin().await?;
+    let has_persisted_daily_rows =
+        sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM long_term_usage_daily LIMIT 1)")
+            .fetch_one(&mut *tx)
+            .await?
+            != 0;
     let retention_start_epoch = retention_start
         .and_hms_opt(0, 0, 0)
         .and_then(|value| Shanghai.from_local_datetime(&value).single())
@@ -793,7 +856,7 @@ async fn refresh_long_term_stats_inner(pool: &Pool<Sqlite>, retention_days: u64)
     }
     let status = if archive_read_failed {
         LONG_TERM_STATUS_ERROR
-    } else if rows.is_empty() {
+    } else if rows.is_empty() && !has_persisted_daily_rows {
         LONG_TERM_STATUS_EMPTY
     } else {
         LONG_TERM_STATUS_READY
@@ -1688,6 +1751,6 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("state");
-        assert_eq!(status, LONG_TERM_STATUS_EMPTY);
+        assert_eq!(status, LONG_TERM_STATUS_READY);
     }
 }

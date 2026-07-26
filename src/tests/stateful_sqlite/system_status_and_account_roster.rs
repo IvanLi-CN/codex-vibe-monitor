@@ -2999,7 +2999,22 @@ async fn delete_upstream_account_keeps_persisted_group_catalog_rows_after_last_m
             .fetch_one(&state.pool)
             .await
             .expect("count remaining accounts");
-    assert_eq!(remaining_accounts, 0);
+    assert_eq!(remaining_accounts, 1);
+    let deleted_at: Option<String> =
+        sqlx::query_scalar("SELECT deleted_at FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(account_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load soft-delete timestamp");
+    assert!(deleted_at.is_some());
+    let stored_credentials: Option<String> = sqlx::query_scalar(
+        "SELECT encrypted_credentials FROM pool_upstream_accounts WHERE id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load cleared credentials");
+    assert_eq!(stored_credentials, None);
 
     let remaining_tag_links: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_account_tags WHERE account_id = ?1")
