@@ -407,6 +407,7 @@ The Storybook `DrawerBindingAndTimeouts` scenario also shows a multi-node conver
 
 ### Routing Escape Recovery (Storybook)
 
+PR: include
 ![Upstream account stream-error routing escape on desktop](./assets/routing-block-recent-stream-errors-desktop.png)
 
 - source_type: storybook_canvas
@@ -421,8 +422,8 @@ The Storybook `DrawerBindingAndTimeouts` scenario also shows a multi-node conver
 - story_id_or_title: `Account Pool/Components/Upstream Accounts Table/RecentStreamErrorsDegraded`
 - state: CIII is healthy but work-degraded, with a localized recent stream-error reason and a live `mm:ss` recovery countdown.
 - evidence_note: element capture after the reason layout was changed to wrap instead of truncating; the countdown remains on its own row.
-- PR: include
 
+PR: include
 ![Upstream account stream-error routing escape on narrow screen](./assets/routing-block-recent-stream-errors-narrow.png)
 
 - source_type: storybook_canvas
@@ -437,7 +438,6 @@ The Storybook `DrawerBindingAndTimeouts` scenario also shows a multi-node conver
 - story_id_or_title: `Account Pool/Components/Upstream Accounts Table/RecentStreamErrorsDegradedNarrow`
 - state: narrow account card shows the full localized reason on wrapped lines, normal health, degraded work status, and the recovery countdown.
 - evidence_note: narrow element capture confirms the localized reason and countdown fit without overlap or clipping.
-- PR: include
 
 ## Image Tool Override Boundary
 
