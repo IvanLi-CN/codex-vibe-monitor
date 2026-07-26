@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-07-26T18:37:17+08:00",
+  "generatedAt": "2026-07-26T18:46:11+08:00",
   "title": "Design System: Codex Vibe Monitor",
   "extensions": {
     "productContext": {
@@ -59,14 +59,6 @@
         "displayName": "Cost Amber",
         "canonical": "oklch(67.7% 0.154 68)"
       },
-      "neutral-light": {
-        "role": "neutral-emphasis",
-        "canonical": "oklch(30.8% 0.02 258)"
-      },
-      "info-light": {
-        "role": "information",
-        "canonical": "oklch(69.5% 0.152 236)"
-      },
       "success-light": {
         "role": "success",
         "canonical": "oklch(70.2% 0.167 154)"
@@ -111,14 +103,6 @@
         "role": "cost-and-attention",
         "canonical": "oklch(81.4% 0.149 84)"
       },
-      "neutral-dark": {
-        "role": "neutral-emphasis",
-        "canonical": "oklch(29.2% 0.025 259)"
-      },
-      "info-dark": {
-        "role": "information",
-        "canonical": "oklch(77.1% 0.125 234)"
-      },
       "success-dark": {
         "role": "success",
         "canonical": "oklch(78.4% 0.16 155)"
@@ -131,6 +115,13 @@
         "role": "error",
         "canonical": "oklch(75.5% 0.176 24)"
       }
+    },
+    "runtimeColorTokens": {
+      "scope": "CSS theme tokens implemented in web/src/index.css but not represented by DESIGN.md frontmatter.",
+      "neutral-light": "oklch(30.8% 0.02 258)",
+      "info-light": "oklch(69.5% 0.152 236)",
+      "neutral-dark": "oklch(29.2% 0.025 259)",
+      "info-dark": "oklch(77.1% 0.125 234)"
     },
     "semanticColorContract": {
       "primary": "Current selection, primary action, focus ring, and key request signal only.",
