@@ -725,9 +725,11 @@ pub(crate) async fn refresh_long_term_stats(
     .bind(LONG_TERM_STATE_ID)
     .fetch_optional(pool)
     .await?;
-    let was_ready = state_snapshot
-        .as_ref()
-        .is_some_and(|(status, _)| status.as_deref() == Some(LONG_TERM_STATUS_READY));
+    let was_ready = state_snapshot.as_ref().is_some_and(|(status, _)| {
+        status
+            .as_deref()
+            .is_some_and(|status| matches!(status, LONG_TERM_STATUS_READY | LONG_TERM_STATUS_EMPTY))
+    });
     if !was_ready {
         sqlx::query(
             "UPDATE long_term_stats_state SET status = ?1, last_error = NULL, updated_at = datetime('now') WHERE id = ?2",
@@ -1021,6 +1023,9 @@ async fn refresh_long_term_stats_inner(
         };
     let mut archive_markers = Vec::new();
     let mut archive_read_failed = false;
+    let mut failed_archive_paths = HashSet::new();
+    let mut failed_archive_ranges = Vec::new();
+    let mut clear_all_attempt_markers = false;
     let mut unavailable_after_date: Option<NaiveDate> = None;
     let mut affected_archive_dates = HashSet::new();
     let all_archive_paths = archive_paths.clone();
@@ -1037,11 +1042,39 @@ async fn refresh_long_term_stats_inner(
             Ok(value) => value,
             Err(error) => {
                 archive_read_failed = true;
+                failed_archive_paths.insert(archive_path.file_path().to_string());
+                match (
+                    archive_path
+                        .coverage_start_at()
+                        .and_then(long_term_archive_end_date),
+                    archive_path
+                        .coverage_end_at()
+                        .and_then(long_term_archive_end_date),
+                ) {
+                    (Some(start), Some(end)) => {
+                        failed_archive_ranges.push((start.to_string(), end.to_string()));
+                    }
+                    _ => clear_all_attempt_markers = true,
+                }
                 warn!(error = %error, file_path = archive_path.file_path(), "long-term stats archive read failed");
                 None
             }
         }) else {
             archive_read_failed = true;
+            failed_archive_paths.insert(archive_path.file_path().to_string());
+            match (
+                archive_path
+                    .coverage_start_at()
+                    .and_then(long_term_archive_end_date),
+                archive_path
+                    .coverage_end_at()
+                    .and_then(long_term_archive_end_date),
+            ) {
+                (Some(start), Some(end)) => {
+                    failed_archive_ranges.push((start.to_string(), end.to_string()));
+                }
+                _ => clear_all_attempt_markers = true,
+            }
             if let Some(date) = archive_path
                 .coverage_end_at()
                 .and_then(long_term_archive_end_date)
@@ -1100,6 +1133,20 @@ async fn refresh_long_term_stats_inner(
             }
             Err(error) => {
                 archive_read_failed = true;
+                failed_archive_paths.insert(archive_path.file_path().to_string());
+                match (
+                    archive_path
+                        .coverage_start_at()
+                        .and_then(long_term_archive_end_date),
+                    archive_path
+                        .coverage_end_at()
+                        .and_then(long_term_archive_end_date),
+                ) {
+                    (Some(start), Some(end)) => {
+                        failed_archive_ranges.push((start.to_string(), end.to_string()));
+                    }
+                    _ => clear_all_attempt_markers = true,
+                }
                 warn!(error = %error, file_path = archive_path.file_path(), "long-term stats archive query failed");
                 if let Some(date) = archive_path
                     .coverage_end_at()
@@ -1445,12 +1492,46 @@ async fn refresh_long_term_stats_inner(
         .await?;
     }
     if archive_read_failed {
-        sqlx::query(
-            "DELETE FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset IN ('codex_invocations', 'pool_upstream_request_attempts')",
-        )
-        .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
-        .execute(&mut *tx)
-        .await?;
+        for failed_archive_path in failed_archive_paths {
+            sqlx::query(
+                "DELETE FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = 'codex_invocations' AND file_path = ?2",
+            )
+            .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+            .bind(failed_archive_path)
+            .execute(&mut *tx)
+            .await?;
+        }
+        if clear_all_attempt_markers {
+            sqlx::query(
+                "DELETE FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = 'pool_upstream_request_attempts'",
+            )
+            .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+            .execute(&mut *tx)
+            .await?;
+        } else {
+            for (failed_start, failed_end) in failed_archive_ranges {
+                sqlx::query(
+                    r#"
+                    DELETE FROM hourly_rollup_archive_replay
+                    WHERE target = ?1
+                      AND dataset = 'pool_upstream_request_attempts'
+                      AND EXISTS (
+                          SELECT 1
+                          FROM archive_batches attempts
+                          WHERE attempts.dataset = 'pool_upstream_request_attempts'
+                            AND attempts.file_path = hourly_rollup_archive_replay.file_path
+                            AND (attempts.coverage_end_at IS NULL OR attempts.coverage_end_at >= ?2)
+                            AND (attempts.coverage_start_at IS NULL OR attempts.coverage_start_at <= ?3)
+                      )
+                    "#,
+                )
+                .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+                .bind(failed_start)
+                .bind(failed_end)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
     } else {
         for (file_path, archive_sha256) in attempt_archive_markers {
             sqlx::query(
