@@ -469,6 +469,7 @@ pub(crate) async fn ensure_long_term_stats_schema(pool: &Pool<Sqlite>) -> Result
             dataset TEXT NOT NULL,
             file_path TEXT NOT NULL,
             replayed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            archive_sha256 TEXT,
             PRIMARY KEY (target, dataset, file_path)
         )
         "#,
@@ -476,6 +477,13 @@ pub(crate) async fn ensure_long_term_stats_schema(pool: &Pool<Sqlite>) -> Result
     .execute(pool)
     .await
     .context("failed to ensure long term archive replay marker table")?;
+    let replay_columns = load_sqlite_table_columns(pool, "hourly_rollup_archive_replay").await?;
+    if !replay_columns.contains("archive_sha256") {
+        sqlx::query("ALTER TABLE hourly_rollup_archive_replay ADD COLUMN archive_sha256 TEXT")
+            .execute(pool)
+            .await
+            .context("failed to add archive hash to replay markers")?;
+    }
     Ok(())
 }
 
@@ -717,14 +725,25 @@ async fn refresh_long_term_stats_inner(
     {
         return Err(error.into());
     }
-    let replayed_archive_files = sqlx::query_scalar::<_, String>(
-        "SELECT file_path FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = 'codex_invocations'",
+    let replayed_archive_files = match sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT replay.file_path
+        FROM hourly_rollup_archive_replay replay
+        INNER JOIN archive_batches batches
+          ON batches.dataset = 'codex_invocations'
+         AND batches.file_path = replay.file_path
+         AND batches.sha256 = replay.archive_sha256
+        WHERE replay.target = ?1 AND replay.dataset = 'codex_invocations'
+        "#,
     )
     .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
     .fetch_all(pool)
-    .await?
-    .into_iter()
-    .collect::<HashSet<_>>();
+    .await
+    {
+        Ok(rows) => rows.into_iter().collect::<HashSet<_>>(),
+        Err(error) if error.to_string().contains("no such table") => HashSet::new(),
+        Err(error) => return Err(error.into()),
+    };
     let all_archive_paths = archive_paths.clone();
     let mut archive_markers = Vec::new();
     let mut archive_read_failed = false;
@@ -877,6 +896,47 @@ async fn refresh_long_term_stats_inner(
             .iter()
             .map(|row| row.id)
             .collect::<HashSet<_>>();
+        let min_date = affected_archive_dates.iter().min().copied();
+        let max_date = affected_archive_dates.iter().max().copied();
+        if let (Some(min_date), Some(max_date)) = (min_date, max_date) {
+            let live_start = min_date.and_hms_opt(0, 0, 0).map(format_naive);
+            let live_end = max_date
+                .succ_opt()
+                .and_then(|date| date.and_hms_opt(0, 0, 0))
+                .map(format_naive);
+            let live_rebuild_sql = format!(
+                r#"
+                SELECT
+                    inv.id, inv.occurred_at, inv.status, inv.model,
+                    CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.requestModel') AS TEXT)), '') END AS request_model,
+                    CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.responseModel') AS TEXT)), '') END AS response_model,
+                    CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.reasoningEffort') AS TEXT)), '') END AS reasoning_effort,
+                    {live_upstream_account_id_sql} AS upstream_account_id,
+                    NULL AS upstream_account_kind, NULL AS upstream_account_name,
+                    inv.total_tokens, inv.output_tokens, inv.cost, inv.t_total_ms,
+                    inv.t_upstream_ttfb_ms, inv.t_upstream_stream_ms, inv.error_message
+                FROM codex_invocations inv
+                WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending')
+                  AND inv.occurred_at >= ?1
+                  AND inv.occurred_at < ?2
+                ORDER BY inv.occurred_at ASC, inv.id ASC
+                "#,
+                live_upstream_account_id_sql = live_upstream_account_id_sql,
+            );
+            if let (Some(live_start), Some(live_end)) = (live_start, live_end) {
+                let live_rebuild_rows =
+                    sqlx::query_as::<_, LongTermInvocationRow>(&live_rebuild_sql)
+                        .bind(live_start)
+                        .bind(live_end)
+                        .fetch_all(pool)
+                        .await?;
+                for row in live_rebuild_rows {
+                    if rebuild_seen_ids.insert(row.id) {
+                        rebuild_rows.push(row);
+                    }
+                }
+            }
+        }
         for archive_path in all_archive_paths {
             let overlaps = match (
                 archive_path
@@ -1067,11 +1127,18 @@ async fn refresh_long_term_stats_inner(
     .execute(&mut *tx)
     .await?;
     for file_path in archive_markers {
+        let archive_sha256 = sqlx::query_scalar::<_, String>(
+            "SELECT sha256 FROM archive_batches WHERE dataset = 'codex_invocations' AND file_path = ?1 LIMIT 1",
+        )
+        .bind(&file_path)
+        .fetch_optional(&mut *tx)
+        .await?;
         sqlx::query(
-            "INSERT OR REPLACE INTO hourly_rollup_archive_replay (target, dataset, file_path) VALUES (?1, 'codex_invocations', ?2)",
+            "INSERT OR REPLACE INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'codex_invocations', ?2, ?3)",
         )
         .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
         .bind(file_path)
+        .bind(archive_sha256)
         .execute(&mut *tx)
         .await?;
     }

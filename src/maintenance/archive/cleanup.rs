@@ -272,6 +272,7 @@ pub(crate) struct ArchiveBatchCleanupCandidate {
     id: i64,
     dataset: String,
     file_path: String,
+    sha256: String,
     historical_rollups_materialized_at: Option<String>,
     coverage_end_at: Option<String>,
 }
@@ -289,7 +290,7 @@ pub(crate) async fn cleanup_expired_archive_batches(
     let owner_facing_node_health_window_cutoff = shanghai_local_cutoff_string(7);
     let candidates = sqlx::query_as::<_, ArchiveBatchCleanupCandidate>(
         r#"
-        SELECT id, dataset, file_path, historical_rollups_materialized_at, coverage_end_at
+        SELECT id, dataset, file_path, sha256, historical_rollups_materialized_at, coverage_end_at
         FROM archive_batches
         WHERE status = ?1
           AND archive_expires_at IS NOT NULL
@@ -335,12 +336,16 @@ pub(crate) async fn cleanup_expired_archive_batches(
         .as_deref()
         .is_some_and(|status| matches!(status, "ready" | "empty"))
     {
-        sqlx::query_scalar::<_, String>(
+        sqlx::query_as::<_, (String, String)>(
             r#"
-            SELECT file_path
-            FROM hourly_rollup_archive_replay
-            WHERE target = ?1
-              AND dataset = 'codex_invocations'
+            SELECT replay.file_path, replay.archive_sha256
+            FROM hourly_rollup_archive_replay replay
+            INNER JOIN archive_batches batches
+              ON batches.dataset = 'codex_invocations'
+             AND batches.file_path = replay.file_path
+             AND batches.sha256 = replay.archive_sha256
+            WHERE replay.target = ?1
+              AND replay.dataset = 'codex_invocations'
             "#,
         )
         .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
@@ -370,7 +375,8 @@ pub(crate) async fn cleanup_expired_archive_batches(
             && (!long_term_stats_status
                 .as_deref()
                 .is_some_and(|status| matches!(status, "ready" | "empty"))
-                || !long_term_stats_archive_files.contains(&candidate.file_path))
+                || !long_term_stats_archive_files
+                    .contains(&(candidate.file_path.clone(), candidate.sha256.clone())))
         {
             continue;
         }

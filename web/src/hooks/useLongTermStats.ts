@@ -28,6 +28,7 @@ export function useLongTermStats(
   dimension: LongTermStatsDimension,
   selectedKeys: string[],
   enabled = true,
+  sharedOverview?: LongTermStatsOverviewResponse | null,
 ): UseLongTermStatsResult {
   const shouldFetch = enabled && import.meta.env.MODE !== "storybook";
   const [overview, setOverview] = useState<LongTermStatsOverviewResponse | null>(null);
@@ -53,6 +54,11 @@ export function useLongTermStats(
   }, [range]);
 
   useEffect(() => {
+    if (sharedOverview !== undefined) {
+      setOverview(sharedOverview);
+      setIsLoading(false);
+      return;
+    }
     if (!shouldFetch) {
       setIsLoading(false);
       return;
@@ -70,7 +76,7 @@ export function useLongTermStats(
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", load);
     };
-  }, [refresh, shouldFetch]);
+  }, [refresh, sharedOverview, shouldFetch]);
 
   useEffect(() => {
     let active = true;

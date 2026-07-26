@@ -441,7 +441,7 @@ export function LongTermStatsSection({
     series: fetchedUpstreamSeries,
     isSeriesLoading: isUpstreamSeriesLoading,
     seriesError: upstreamSeriesError,
-  } = useLongTermStats(range, "upstream", upstreamKeys, !overviewOverride);
+  } = useLongTermStats(range, "upstream", upstreamKeys, !overviewOverride, overview);
   const upstreamSeries = seriesOverride ? [] : (fetchedUpstreamSeries?.series ?? []);
 
   useEffect(() => {

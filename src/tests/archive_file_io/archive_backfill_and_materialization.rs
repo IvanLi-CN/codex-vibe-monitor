@@ -552,10 +552,11 @@ async fn cleanup_expired_invocation_archive_batches_removes_manifest_rows() {
         .await
         .expect("mark long-term stats ready for cleanup fixture");
     sqlx::query(
-        "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path) VALUES (?1, 'codex_invocations', ?2)",
+        "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'codex_invocations', ?2, ?3)",
     )
     .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
     .bind(archive_path.to_string_lossy().to_string())
+    .bind("expired-sha")
     .execute(&pool)
     .await
     .expect("mark long-term archive replay complete");
@@ -4865,15 +4866,16 @@ async fn prune_archive_batches_removes_expired_segments_and_legacy_batches() {
     .execute(&pool)
     .await
     .expect("insert legacy archive manifest");
-    for archive_path in [
-        segment_path.to_string_lossy().to_string(),
-        legacy_path.to_string_lossy().to_string(),
+    for (archive_path, archive_sha256) in [
+        (segment_path.to_string_lossy().to_string(), "deadbeef"),
+        (legacy_path.to_string_lossy().to_string(), "feedface"),
     ] {
         sqlx::query(
-            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path) VALUES (?1, 'codex_invocations', ?2)",
+            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'codex_invocations', ?2, ?3)",
         )
         .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
         .bind(archive_path)
+        .bind(archive_sha256)
         .execute(&pool)
         .await
         .expect("mark legacy prune archive replay complete");
