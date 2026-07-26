@@ -59,8 +59,10 @@
 
 ## Sticky Escape Update
 
-- Candidate loading now inspects the latest two terminal pool `/v1/responses` attempts per upstream account and marks the account for automatic sticky escape when both failures are `upstream_stream_error`.
+- Candidate loading now inspects the latest two terminal pool `/v1/responses` attempts per upstream account and produces a shared account-to-expiry state only when both latest terminal attempts are `upstream_stream_error` and both occurred in the 300-second window. The active interval is `now < latest_failure_occurred_at + 300 seconds`; the exact boundary is expired.
 - The escape signal is account-global for automatic routing, so different sticky keys stop reusing the same bad account once the threshold is reached.
+- Routing and account roster/detail enrichment consume the same state map. Active entries expose `routingBlockUntil`, reason code `recent_upstream_stream_errors`, a readable message, `workStatus='degraded'`, and `healthStatus='normal'`; node-shunt-unassigned is still a higher-priority hard block without an expiry.
+- The account-pool list and detail surfaces render a localized reason and shared `mm:ss` countdown, using one second-level clock only while an active expiry exists and one silent refresh when it reaches zero.
 - Explicit `upstream_account` bindings ignore the automatic escape signal and continue to behave as operator overrides.
 - `group` bindings keep the group constraint but may rotate from a failed sticky account to another eligible account inside the same group.
 

@@ -708,6 +708,10 @@ const baseTranslations = {
       "Hover or tap for details. Focus the chart and use arrow keys to switch points.",
     "accountPool.upstreamAccounts.table.routingBlockShort": "Blocked",
     "accountPool.upstreamAccounts.routingBlock.title": "Routing blocked",
+    "accountPool.upstreamAccounts.routingBlock.recentStreamErrors":
+      "Recent upstream stream errors; automatic routing will recover after the five-minute window.",
+    "accountPool.upstreamAccounts.routingBlock.countdown": "Automatic recovery in {{countdown}}",
+    "accountPool.upstreamAccounts.routingBlock.countdownLabel": "Recovery",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle": "Submit callback",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeBody":
       "After login succeeds in the browser, paste the callback URL into the field above, then submit this row to finish account creation.",
@@ -3383,6 +3387,10 @@ const baseTranslations = {
       "悬停或轻触查看详情；聚焦图表后可用方向键切换点位。",
     "accountPool.upstreamAccounts.table.routingBlockShort": "受限",
     "accountPool.upstreamAccounts.routingBlock.title": "路由受限",
+    "accountPool.upstreamAccounts.routingBlock.recentStreamErrors":
+      "近期连续上游流错误，五分钟窗口结束后自动恢复路由。",
+    "accountPool.upstreamAccounts.routingBlock.countdown": "预计 {{countdown}} 后自动恢复",
+    "accountPool.upstreamAccounts.routingBlock.countdownLabel": "自动恢复",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle": "提交回调",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeBody":
       "浏览器登录成功后，把上方回调链接粘贴完整，再点击这里完成这一行账号的入池。",

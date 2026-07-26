@@ -175,7 +175,8 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Group binding filters candidates to matching `group_name`.
 - Upstream account binding filters candidates to the bound account id and is treated as an operator-forced account assignment.
 - Existing sticky reuse is still allowed only when the sticky account satisfies the binding constraint.
-- For non-explicit routing paths, repeated transport/decode-shaped `upstream_stream_error` failures on the same upstream account can invalidate sticky reuse and suppress that account from new automatic selection until a healthier candidate is chosen.
+- For non-explicit routing paths, automatic sticky escape is bounded: the latest two terminal pool `/v1/responses` attempts for the same upstream account must both be `upstream_stream_error` and both must be within the latest 300 seconds. An active escape lasts until `latest_failure_occurred_at + 300 seconds`, with the exact boundary (`now == until`) treated as expired; after expiry the account returns to ordinary candidate ordering without manual intervention. A successful or other terminal outcome breaks the consecutive-error signal.
+- Account list and detail responses expose an optional RFC3339 UTC `routingBlockUntil` together with `routingBlockReasonCode` / `routingBlockReasonMessage`. An active recent-stream-error escape uses reason code `recent_upstream_stream_errors`, reports `workStatus='degraded'` and `healthStatus='normal'`, and exposes the same expiry timestamp in list and detail. A node-shunt-unassigned hard block takes precedence over this expiring escape and does not expose an expiry.
 - Manual bindings are the only supported operator override for a sticky source whose effective policy forbids cut-out. Both upstream-account and group bindings may move the conversation out of that sticky source.
 - For forced upstream account binding, an existing sticky route cannot block the selected target through sticky cut-out policy, and the selected target's cut-in policy cannot reject the operator-forced transfer.
 - Existing account eligibility, health, quota, guard, concurrency, retry, route-key, and forward-proxy readiness checks remain authoritative inside the constrained candidate set.
@@ -207,6 +208,11 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given a key with an old sticky route to account `A` and a forced upstream account binding to account `B`, account `B` can be selected even when sticky policy would normally forbid cutting out of `A` or cutting into `B`.
 - Given a key with an old sticky route to account `A` whose source policy forbids cut-out and a group binding to group `prod`, routing may select an eligible account in `prod` instead of failing on `A`.
 - Given non-explicit routing has observed the configured consecutive transport/decode-shaped `upstream_stream_error` threshold on account `A`, later requests for other sticky keys do not automatically select `A` while another eligible account exists.
+- Given the latest two terminal attempts for account `A` are `upstream_stream_error` and both occurred within 300 seconds, automatic routing excludes `A` until `latest_failure_occurred_at + 300 seconds`; once the window expires, `A` is eligible again without an operator action.
+- Given account `A` has only one stream error, a non-stream terminal outcome, a successful outcome, or two stream errors outside the 300-second window, automatic routing does not apply the expiring escape to `A`.
+- Given `now` is exactly equal to an account's `routingBlockUntil`, the escape is expired and the account is eligible for ordinary automatic selection.
+- Given an active escape, account list and detail return the same non-null `routingBlockUntil`, reason code `recent_upstream_stream_errors`, `workStatus='degraded'`, and `healthStatus='normal'`; the UI shows a localized reason and a live `mm:ss` countdown, then refreshes once when the countdown reaches zero.
+- Given a node-shunt-unassigned hard block and an active stream-error escape coexist, the node-shunt block is shown as the higher-priority non-expiring block and the stream-error expiry is suppressed.
 - Given a key bound to account `123` and account `123` is unavailable due to health, quota, concurrency, route-key, or forward-proxy readiness, routing fails without falling back to a different account.
 - Given a key bound to a group, target accounts in that group still honor normal cut-in policy.
 - Given a key bound to a group and the current sticky account reaches the configured consecutive transport/decode-shaped `upstream_stream_error` threshold, routing may reselect another eligible account in that same group.
@@ -400,6 +406,40 @@ PR: include
   submission_gate: approved
   image:
   ![Conversation image-tool policy help](./assets/responses-lite-image-tool-help-conversation.png)
+
+### Routing Escape Recovery (Storybook)
+
+![Upstream account stream-error routing escape on desktop](./assets/routing-block-recent-stream-errors-desktop.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: element
+- requested_viewport: desktop1440
+- viewport_strategy: devtools-emulate
+- margin_policy: trim_only
+- evidence_surface: component
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: `Account Pool/Components/Upstream Accounts Table/RecentStreamErrorsDegraded`
+- state: CIII is healthy but work-degraded, with a localized recent stream-error reason and a live `mm:ss` recovery countdown.
+- evidence_note: element capture after the reason layout was changed to wrap instead of truncating; the countdown remains on its own row.
+- PR: include
+
+![Upstream account stream-error routing escape on narrow screen](./assets/routing-block-recent-stream-errors-narrow.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: element
+- requested_viewport: narrow390
+- viewport_strategy: devtools-emulate
+- margin_policy: trim_only
+- evidence_surface: component
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: `Account Pool/Components/Upstream Accounts Table/RecentStreamErrorsDegradedNarrow`
+- state: narrow account card shows the full localized reason on wrapped lines, normal health, degraded work status, and the recovery countdown.
+- evidence_note: narrow element capture confirms the localized reason and countdown fit without overlap or clipping.
+- PR: include
 
 ## Image Tool Override Boundary
 

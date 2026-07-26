@@ -584,6 +584,34 @@ describe("UpstreamAccountsGroupedRoster", () => {
     expect(content).not.toContain("prod-apac");
   });
 
+  it("renders routing escape reason and countdown in grid cards", () => {
+    renderRoster(
+      [
+        makeGroup("routing-state", [
+          makeItem(21, {
+            routingBlockReasonCode: "recent_upstream_stream_errors",
+            routingBlockReasonMessage: "recent stream errors",
+            routingBlockUntil: "2099-03-11T12:34:32.000Z",
+          }),
+        ]),
+      ],
+      {
+        memberLayout: "grid",
+        selectionMode: "none",
+        onToggleSelected: undefined,
+        onToggleSelectAllVisible: undefined,
+        labels: {
+          ...labels,
+          routingBlockCountdown: () => "01:05",
+        },
+      },
+    );
+
+    const card = host?.querySelector('[data-testid="upstream-accounts-group-grid-card"]');
+    expect(card?.textContent).toContain("recent stream errors");
+    expect(card?.textContent).toContain("01:05");
+  });
+
   it("renders list-parity identity, support, proxy, and overflow badges in one-line grid rows", async () => {
     renderRoster(
       [

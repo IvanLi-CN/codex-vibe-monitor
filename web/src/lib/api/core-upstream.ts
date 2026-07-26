@@ -265,6 +265,7 @@ export interface UpstreamAccountSummary {
   lastActionReasonMessage?: string | null;
   routingBlockReasonCode?: string | null;
   routingBlockReasonMessage?: string | null;
+  routingBlockUntil?: string | null;
   lastActionHttpStatus?: number | null;
   lastActionInvokeId?: string | null;
   lastActionAt?: string | null;
@@ -1265,6 +1266,8 @@ function normalizeUpstreamAccountSummary(raw: unknown): UpstreamAccountSummary |
       typeof payload.routingBlockReasonMessage === "string"
         ? payload.routingBlockReasonMessage
         : null,
+    routingBlockUntil:
+      typeof payload.routingBlockUntil === "string" ? payload.routingBlockUntil : null,
     lastActionHttpStatus: normalizeFiniteNumber(payload.lastActionHttpStatus) ?? null,
     lastActionInvokeId:
       typeof payload.lastActionInvokeId === "string" ? payload.lastActionInvokeId : null,

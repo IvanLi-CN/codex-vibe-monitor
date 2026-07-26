@@ -3210,6 +3210,11 @@ pub(crate) async fn load_upstream_account_detail_with_actual_usage_options(
         std::slice::from_mut(&mut detail.summary),
     )
     .await?;
+    enrich_transport_decode_sticky_escape_routing_block_reasons(
+        state,
+        std::slice::from_mut(&mut detail.summary),
+    )
+    .await?;
     let group =
         load_canonicalized_upstream_account_group(state, detail.summary.group_name.as_deref())
             .await?;
@@ -3254,6 +3259,42 @@ pub(crate) async fn apply_effective_routing_rules_to_summaries(
             apply_root_routing_timeout_defaults(&mut rule, &root_timeouts);
             summary.effective_routing_rule = rule;
         }
+    }
+    Ok(())
+}
+
+pub(crate) async fn enrich_transport_decode_sticky_escape_routing_block_reasons(
+    state: &AppState,
+    items: &mut [UpstreamAccountSummary],
+) -> Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let account_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
+    let states = load_transport_decode_sticky_escape_states(&state.pool, &account_ids).await?;
+    for item in items {
+        let Some(state) = states.get(&item.id) else {
+            continue;
+        };
+        if !item.enabled
+            || item.sync_state == UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING
+            || item.health_status != UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
+            || matches!(
+                item.work_status.as_str(),
+                UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+                    | UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
+            )
+        {
+            continue;
+        }
+        item.work_status = UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED.to_string();
+        item.health_status = UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL.to_string();
+        item.routing_block_reason_code =
+            Some(UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_RECENT_UPSTREAM_STREAM_ERRORS.to_string());
+        item.routing_block_reason_message = Some(
+            UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_RECENT_UPSTREAM_STREAM_ERRORS_MESSAGE.to_string(),
+        );
+        item.routing_block_until = Some(format_utc_iso(state.until));
     }
     Ok(())
 }
@@ -3471,6 +3512,7 @@ pub(crate) fn build_summary_from_row(
         current_forward_proxy_state: UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_UNCONFIGURED.to_string(),
         routing_block_reason_code: None,
         routing_block_reason_message: None,
+        routing_block_until: None,
         token_expires_at: row.token_expires_at.clone(),
         primary_window,
         secondary_window,
@@ -3513,8 +3555,6 @@ pub(crate) fn apply_node_shunt_routing_block_reasons_to_summaries(
     assignments: &UpstreamAccountNodeShuntAssignments,
 ) {
     for item in items {
-        item.routing_block_reason_code = None;
-        item.routing_block_reason_message = None;
         let Some(group_name) = normalize_optional_text(item.group_name.clone()) else {
             continue;
         };
@@ -3533,6 +3573,7 @@ pub(crate) fn apply_node_shunt_routing_block_reasons_to_summaries(
             Some(UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED.to_string());
         item.routing_block_reason_message =
             Some(group_node_shunt_unassigned_error_message().to_string());
+        item.routing_block_until = None;
     }
 }
 

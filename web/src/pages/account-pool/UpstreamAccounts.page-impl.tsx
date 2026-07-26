@@ -32,9 +32,11 @@ import {
   type UpstreamAccountsGroupedRosterGroup,
 } from "../../features/account-pool/UpstreamAccountsGroupedRoster";
 import {
+  resolveRoutingBlockCountdown,
   UpstreamAccountsTable,
   type UpstreamAccountsTableLabels,
 } from "../../features/account-pool/UpstreamAccountsTable";
+import { useRoutingBlockClock } from "../../features/account-pool/useRoutingBlockClock";
 import { AppIcon } from "../../features/shared/AppIcon";
 import { useCompactViewport } from "../../hooks/useCompactViewport";
 import { usePoolTags } from "../../hooks/usePoolTags";
@@ -293,6 +295,7 @@ export default function UpstreamAccountsPage() {
     groups = [],
     hasUngroupedAccounts = false,
     writesEnabled,
+    selectedSummary,
     isLoading,
     listError = null,
     listState = {
@@ -318,6 +321,16 @@ export default function UpstreamAccountsPage() {
     total,
     metrics: listMetrics,
   } = useUpstreamAccounts(accountListQuery);
+  const refreshExpiredRoutingBlocks = useCallback(() => {
+    void refresh({ silent: true });
+  }, [refresh]);
+  const routingBlockNowMs = useRoutingBlockClock(
+    [...items, ...(selectedSummary ? [selectedSummary] : [])].map((item) => item.routingBlockUntil),
+    refreshExpiredRoutingBlocks,
+  );
+  const detailRoutingBlockNowMs = selectedSummary?.routingBlockUntil
+    ? routingBlockNowMs
+    : undefined;
   const [routingDraft, setRoutingDraft] = useState(() => buildRoutingDraft(null));
   const [actionError, setActionError] = useState<ActionErrorState>(() => ({
     routing: null,
@@ -899,6 +912,17 @@ export default function UpstreamAccountsPage() {
       lastSuccess: t("accountPool.upstreamAccounts.table.lastSuccessShort"),
       lastCall: t("accountPool.upstreamAccounts.table.lastCallShort"),
       routingBlock: t("accountPool.upstreamAccounts.table.routingBlockShort"),
+      routingBlockReason: (item) =>
+        item.routingBlockReasonCode === "recent_upstream_stream_errors"
+          ? t("accountPool.upstreamAccounts.routingBlock.recentStreamErrors")
+          : item.routingBlockReasonMessage?.trim() || null,
+      routingBlockCountdown: (until) => {
+        const countdown = resolveRoutingBlockCountdown(until, routingBlockNowMs);
+        return countdown
+          ? t("accountPool.upstreamAccounts.routingBlock.countdown", { countdown })
+          : null;
+      },
+      routingBlockCountdownLabel: t("accountPool.upstreamAccounts.routingBlock.countdownLabel"),
       latestAction: t("accountPool.upstreamAccounts.table.latestActionShort"),
       windows: t("accountPool.upstreamAccounts.table.windows"),
       never: t("accountPool.upstreamAccounts.never"),
@@ -1427,6 +1451,7 @@ export default function UpstreamAccountsPage() {
           initialDeleteConfirmOpen={pendingInitialDeleteConfirm}
           onInitialDeleteConfirmHandled={() => setPendingInitialDeleteConfirm(false)}
           onClose={closeUpstreamAccount}
+          routingBlockNowMs={detailRoutingBlockNowMs}
         />
         {bulkSyncProgressBubble}
       </div>
@@ -2244,6 +2269,7 @@ export default function UpstreamAccountsPage() {
         initialDeleteConfirmOpen={pendingInitialDeleteConfirm}
         onInitialDeleteConfirmHandled={() => setPendingInitialDeleteConfirm(false)}
         onClose={closeUpstreamAccount}
+        routingBlockNowMs={detailRoutingBlockNowMs}
       />
 
       {bulkSyncProgressBubble}
