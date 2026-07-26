@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.48.1",
+  "base_stable_version": "2.48.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-26T04:27:13Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.48.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "2ef8c5b73a9a7743410f8b5d10195d765d7b5df1",
+  "pr_number": 698,
+  "pr_title": "fix(account-pool): localize account event impact diagnostics",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.48.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.48.1",
+  "target_sha": "a267a9958f1da4f57d32c7b8e8b52208daf9e7c0",
+  "type_label": "type:patch"
+}
