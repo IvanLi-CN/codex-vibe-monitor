@@ -365,7 +365,7 @@ function SeriesTable({
                       disabled={!selected && selectedKeys.length >= 8}
                     />
                   </span>
-                  <span className="sticky left-12 z-10 flex h-full w-60 min-w-0 flex-col justify-center bg-base-100 px-3 pr-3">
+                  <span className="sticky left-12 z-10 inline-flex h-full w-60 min-w-0 flex-col justify-center bg-base-100 px-3 pr-3">
                     <span className="block truncate font-medium" title={entry.displayName}>
                       {entry.displayName}
                     </span>

@@ -849,19 +849,14 @@ async fn refresh_long_term_stats_inner(
             Err(error) => return Err(error.into()),
         }
     };
-    let all_archive_paths = archive_paths.clone();
-    let archive_attempt_accounts = if all_archive_paths
-        .iter()
-        .any(|path| !replayed_archive_files.contains(path.file_path()))
-    {
-        load_long_term_archive_attempt_accounts(pool).await?
-    } else {
-        HashMap::new()
-    };
+    // Replayed invocation archives can still be reopened during a date rebuild, so keep the
+    // attempt-account fallback available even when no archive needs first-time materialization.
+    let archive_attempt_accounts = load_long_term_archive_attempt_accounts(pool).await?;
     let mut archive_markers = Vec::new();
     let mut archive_read_failed = false;
     let mut unavailable_after_date: Option<NaiveDate> = None;
     let mut affected_archive_dates = HashSet::new();
+    let all_archive_paths = archive_paths.clone();
     for archive_path in archive_paths {
         if replayed_archive_files.contains(archive_path.file_path()) {
             continue;
