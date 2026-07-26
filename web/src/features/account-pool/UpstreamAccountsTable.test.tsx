@@ -11,6 +11,7 @@ import type {
 import {
   resolveRosterActionableStatusBadges,
   resolveRosterSummaryStatusBadges,
+  resolveRoutingBlockCountdown,
   UpstreamAccountsTable,
 } from "./UpstreamAccountsTable";
 
@@ -208,6 +209,38 @@ function renderInteractiveTable(items: UpstreamAccountSummary[], onSelect = vi.f
 }
 
 describe("UpstreamAccountsTable", () => {
+  it("formats an active routing block countdown and expires at the exact boundary", () => {
+    const now = Date.parse("2026-07-26T12:00:00.000Z");
+    expect(resolveRoutingBlockCountdown("2026-07-26T12:04:32.000Z", now)).toBe("04:32");
+    expect(resolveRoutingBlockCountdown("2026-07-26T12:00:00.000Z", now)).toBeNull();
+  });
+
+  it("renders the routing block reason and recovery countdown", () => {
+    const until = new Date(Date.now() + 272_000).toISOString();
+    const html = renderTable([
+      {
+        id: 41,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "CIII",
+        isMother: false,
+        groupName: "prod",
+        status: "active",
+        displayStatus: "active",
+        enabled: true,
+        workStatus: "degraded",
+        healthStatus: "normal",
+        routingBlockReasonCode: "recent_upstream_stream_errors",
+        routingBlockReasonMessage: "recent stream errors",
+        routingBlockUntil: until,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ]);
+    expect(html).toContain("recent stream errors");
+    expect(html).toMatch(/\d{2}:\d{2}/);
+  });
+
   it("marks OAuth accounts without refresh tokens and does not mark API key accounts", () => {
     const html = renderTable([
       {

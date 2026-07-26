@@ -460,6 +460,19 @@ async fn resolver_non_explicit_sticky_escape_cuts_out_after_two_recent_upstream_
         PoolRoutingSelectionSource::FreshAssignment
     );
 
+    let already_tried_resolution = resolve_pool_account_for_request(
+        &state,
+        Some("non-explicit-escaped-key"),
+        &[unhealthy],
+        &HashSet::new(),
+    )
+    .await
+    .expect("resolve escaped sticky account after the source was tried");
+    let PoolAccountResolution::Resolved(already_tried_account) = already_tried_resolution else {
+        panic!("expected an active escape to bypass the sticky cut-out guard");
+    };
+    assert_eq!(already_tried_account.account_id, healthy);
+
     let fresh_resolution = resolve_pool_account_for_request(
         &state,
         Some("non-explicit-fresh-key"),
@@ -472,6 +485,148 @@ async fn resolver_non_explicit_sticky_escape_cuts_out_after_two_recent_upstream_
         panic!("expected new non-explicit sticky target to avoid the unhealthy account");
     };
     assert_eq!(fresh_account.account_id, healthy);
+}
+
+#[tokio::test]
+async fn transport_decode_sticky_escape_state_expires_at_latest_failure_plus_window() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let route = "https://bounded-stream-escape.example.com/backend-api/codex";
+    let account = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Bounded Stream Escape",
+        "sk-bounded-stream-escape",
+        Some(test_required_group_name()),
+        Some(route),
+    )
+    .await;
+    let now = parse_rfc3339_utc("2026-07-26T12:00:00Z").expect("fixed now");
+    seed_account_attempt_at(
+        &state.pool,
+        "bounded-stream-escape-1",
+        "bounded-stream-escape-key-1",
+        test_required_group_name(),
+        account,
+        route,
+        &format_naive(
+            (now - ChronoDuration::seconds(299))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        ),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED,
+        Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+    )
+    .await;
+    seed_account_attempt_at(
+        &state.pool,
+        "bounded-stream-escape-2",
+        "bounded-stream-escape-key-2",
+        test_required_group_name(),
+        account,
+        route,
+        &format_naive(
+            (now - ChronoDuration::seconds(1))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        ),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED,
+        Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+    )
+    .await;
+
+    let active = load_transport_decode_sticky_escape_states_at(&state.pool, &[account], now)
+        .await
+        .expect("load active escape state");
+    assert_eq!(
+        active.get(&account).map(|state| state.until),
+        Some(now + ChronoDuration::seconds(299))
+    );
+    let at_boundary = load_transport_decode_sticky_escape_states_at(
+        &state.pool,
+        &[account],
+        now + ChronoDuration::seconds(299),
+    )
+    .await
+    .expect("load boundary escape state");
+    assert!(at_boundary.is_empty(), "now == until must be expired");
+}
+
+#[tokio::test]
+async fn transport_decode_sticky_escape_requires_two_recent_stream_errors() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let now = parse_rfc3339_utc("2026-07-26T12:00:00Z").expect("fixed now");
+    let cases = [("single", 1), ("non-stream", 2), ("old", 3)];
+    let mut account_ids = Vec::new();
+    for (label, _) in cases {
+        let route = format!("https://{label}-stream-escape.example.com/backend-api/codex");
+        let account = insert_test_pool_api_key_account_with_options(
+            &state,
+            &format!("Escape {label}"),
+            &format!("sk-escape-{label}"),
+            Some(test_required_group_name()),
+            Some(&route),
+        )
+        .await;
+        account_ids.push(account);
+        if label == "single" {
+            seed_account_attempt_at(
+                &state.pool,
+                "single-stream-error",
+                "single-stream-error-key",
+                test_required_group_name(),
+                account,
+                &route,
+                &format_utc_iso(now - ChronoDuration::seconds(1)),
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED,
+                Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+            )
+            .await;
+        } else if label == "non-stream" {
+            for (index, failure_kind) in [
+                Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+                Some("upstream_http_500"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                seed_account_attempt_at(
+                    &state.pool,
+                    &format!("non-stream-{index}"),
+                    &format!("non-stream-key-{index}"),
+                    test_required_group_name(),
+                    account,
+                    &route,
+                    &format_utc_iso(now - ChronoDuration::seconds(index as i64 + 1)),
+                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                    POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED,
+                    failure_kind,
+                )
+                .await;
+            }
+        } else {
+            for (index, seconds_ago) in [301_i64, 302_i64].into_iter().enumerate() {
+                seed_account_attempt_at(
+                    &state.pool,
+                    &format!("old-{index}"),
+                    &format!("old-key-{index}"),
+                    test_required_group_name(),
+                    account,
+                    &route,
+                    &format_utc_iso(now - ChronoDuration::seconds(seconds_ago)),
+                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                    POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED,
+                    Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+                )
+                .await;
+            }
+        }
+    }
+    let states = load_transport_decode_sticky_escape_states_at(&state.pool, &account_ids, now)
+        .await
+        .expect("load escape states");
+    assert!(states.is_empty());
 }
 
 #[tokio::test]
@@ -1313,10 +1468,37 @@ async fn seed_account_upstream_stream_error_attempt(
     upstream_account_id: i64,
     upstream_base_url: &str,
 ) {
+    seed_account_attempt_at(
+        pool,
+        invoke_id,
+        sticky_key,
+        group_name,
+        upstream_account_id,
+        upstream_base_url,
+        &format_utc_iso(Utc::now()),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED,
+        Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn seed_account_attempt_at(
+    pool: &SqlitePool,
+    invoke_id: &str,
+    sticky_key: &str,
+    group_name: &str,
+    upstream_account_id: i64,
+    upstream_base_url: &str,
+    occurred_at: &str,
+    status: &str,
+    phase: &str,
+    failure_kind: Option<&str>,
+) {
     let upstream_route_key = canonical_pool_upstream_route_key(
         &Url::parse(upstream_base_url).expect("valid upstream route"),
     );
-    let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
         INSERT INTO pool_upstream_request_attempts (
@@ -1349,17 +1531,17 @@ async fn seed_account_upstream_stream_error_attempt(
         "#,
     )
     .bind(invoke_id)
-    .bind(&now_iso)
+    .bind(occurred_at)
     .bind(INVOCATION_ROUTE_MODE_POOL)
     .bind(sticky_key)
     .bind(group_name)
     .bind(FORWARD_PROXY_DIRECT_KEY)
     .bind(upstream_account_id)
     .bind(upstream_route_key)
-    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE)
-    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
-    .bind("upstream stream error: synthetic test failure")
-    .bind(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
+    .bind(status)
+    .bind(phase)
+    .bind((failure_kind.is_some()).then_some("synthetic test failure"))
+    .bind(failure_kind)
     .execute(pool)
     .await
     .expect("seed upstream stream error attempt");

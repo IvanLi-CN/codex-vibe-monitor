@@ -1042,12 +1042,26 @@ pub(crate) async fn load_account_routing_candidate(
     .map_err(Into::into)
 }
 
-pub(crate) async fn load_transport_decode_sticky_escape_account_ids(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TransportDecodeStickyEscapeState {
+    pub(crate) account_id: i64,
+    pub(crate) until: DateTime<Utc>,
+}
+
+pub(crate) async fn load_transport_decode_sticky_escape_states(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
-) -> Result<HashSet<i64>> {
+) -> Result<HashMap<i64, TransportDecodeStickyEscapeState>> {
+    load_transport_decode_sticky_escape_states_at(pool, account_ids, Utc::now()).await
+}
+
+pub(crate) async fn load_transport_decode_sticky_escape_states_at(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+    now: DateTime<Utc>,
+) -> Result<HashMap<i64, TransportDecodeStickyEscapeState>> {
     if account_ids.is_empty() {
-        return Ok(HashSet::new());
+        return Ok(HashMap::new());
     }
 
     let started_at = std::time::Instant::now();
@@ -1069,8 +1083,8 @@ pub(crate) async fn load_transport_decode_sticky_escape_account_ids(
             query
                 .push("SELECT ")
                 .push_bind(*account_id)
-                .push(" AS upstream_account_id, failure_kind FROM (")
-                .push("SELECT failure_kind FROM pool_upstream_request_attempts WHERE upstream_account_id = ")
+                .push(" AS upstream_account_id, occurred_at, failure_kind FROM (")
+                .push("SELECT occurred_at, failure_kind FROM pool_upstream_request_attempts WHERE upstream_account_id = ")
                 .push_bind(*account_id)
                 .push(" AND route_mode = ")
                 .push_bind(INVOCATION_ROUTE_MODE_POOL)
@@ -1083,29 +1097,53 @@ pub(crate) async fn load_transport_decode_sticky_escape_account_ids(
 
         rows.extend(
             query
-                .build_query_as::<(i64, Option<String>)>()
+                .build_query_as::<(i64, String, Option<String>)>()
                 .fetch_all(pool)
                 .await?,
         );
     }
     let row_count = rows.len();
-    let mut latest_failures = HashMap::<i64, Vec<Option<String>>>::new();
-    for (account_id, failure_kind) in rows {
+    let mut latest_failures = HashMap::<i64, Vec<(String, Option<String>)>>::new();
+    for (account_id, occurred_at, failure_kind) in rows {
         latest_failures
             .entry(account_id)
             .or_default()
-            .push(failure_kind);
+            .push((occurred_at, failure_kind));
     }
-    let escaped_account_ids = latest_failures
+    let escaped_states = latest_failures
         .into_iter()
-        .filter_map(|(account_id, failure_kinds)| {
-            (failure_kinds.len() == 2
-                && failure_kinds.iter().all(|failure_kind| {
+        .filter_map(|(account_id, failures)| {
+            if failures.len() != 2
+                || !failures.iter().all(|(_, failure_kind)| {
                     failure_kind.as_deref() == Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
-                }))
-            .then_some(account_id)
+                })
+            {
+                return None;
+            }
+            let latest_failure_at = failures
+                .iter()
+                .filter_map(|(occurred_at, _)| parse_to_utc_datetime(occurred_at))
+                .max()?;
+            let oldest_failure_at = failures
+                .iter()
+                .filter_map(|(occurred_at, _)| parse_to_utc_datetime(occurred_at))
+                .min()?;
+            let window = ChronoDuration::seconds(
+                crate::upstream_accounts::routing::selection::POOL_ROUTE_BINDING_FAILURE_PENALTY_WINDOW_SECS,
+            );
+            if latest_failure_at > now || oldest_failure_at < now - window {
+                return None;
+            }
+            Some((
+                account_id,
+                TransportDecodeStickyEscapeState {
+                    account_id,
+                    until: latest_failure_at + window,
+                },
+            ))
         })
-        .collect::<HashSet<_>>();
+        .filter(|(_, state)| now < state.until)
+        .collect::<HashMap<_, _>>();
 
     let elapsed_ms = started_at.elapsed().as_secs_f64() * 1_000.0;
     if elapsed_ms >= 1_000.0 {
@@ -1119,7 +1157,19 @@ pub(crate) async fn load_transport_decode_sticky_escape_account_ids(
             "slow upstream-account routing read"
         );
     }
-    Ok(escaped_account_ids)
+    Ok(escaped_states)
+}
+
+pub(crate) async fn load_transport_decode_sticky_escape_account_ids(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+) -> Result<HashSet<i64>> {
+    Ok(
+        load_transport_decode_sticky_escape_states(pool, account_ids)
+            .await?
+            .into_keys()
+            .collect(),
+    )
 }
 
 pub(crate) fn compare_routing_candidates(

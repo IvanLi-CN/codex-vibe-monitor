@@ -53,6 +53,7 @@ pub(crate) fn test_summary_with_statuses(
         sync_state: sync_state.to_string(),
         routing_block_reason_code: None,
         routing_block_reason_message: None,
+        routing_block_until: None,
         email: Some("tester@example.com".to_string()),
         chatgpt_account_id: Some("acct_test".to_string()),
         plan_type: Some("pro".to_string()),
