@@ -542,15 +542,9 @@ pub(crate) async fn refresh_long_term_stats(
     .bind(LONG_TERM_STATE_ID)
     .fetch_optional(pool)
     .await?;
-    let has_durable_daily_rows =
-        sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM long_term_usage_daily LIMIT 1)")
-            .fetch_one(pool)
-            .await?
-            != 0;
-    let was_ready = state_snapshot.as_ref().is_some_and(|(status, start_date)| {
-        status.as_deref() == Some(LONG_TERM_STATUS_READY)
-            || (has_durable_daily_rows && start_date.is_some())
-    });
+    let was_ready = state_snapshot
+        .as_ref()
+        .is_some_and(|(status, _)| status.as_deref() == Some(LONG_TERM_STATUS_READY));
     if !was_ready {
         sqlx::query(
             "UPDATE long_term_stats_state SET status = ?1, last_error = NULL, updated_at = datetime('now') WHERE id = ?2",

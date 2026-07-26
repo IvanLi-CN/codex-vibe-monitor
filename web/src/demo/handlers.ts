@@ -2023,13 +2023,18 @@ function demoLongTermMetrics(tokens: number, calls: number, cost: number): LongT
 
 function demoLongTermOverview(range: string) {
   const empty = demoModel.snapshot.scene === "empty";
-  const days = Array.from(
-    { length: range === "7d" ? 7 : range === "30d" ? 30 : range === "180d" ? 180 : 365 },
-    (_, index) => {
-      const date = new Date(Date.UTC(2026, 6, 27 - (range === "7d" ? 6 : 0) + index));
-      return date.toISOString().slice(0, 10);
-    },
+  const length = range === "7d" ? 7 : range === "30d" ? 30 : range === "180d" ? 180 : 365;
+  const endDate = new Date(demoNow());
+  const endDateUtc = new Date(
+    Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate()),
   );
+  const startDateUtc = new Date(endDateUtc);
+  startDateUtc.setUTCDate(startDateUtc.getUTCDate() - length + 1);
+  const days = Array.from({ length }, (_, index) => {
+    const date = new Date(startDateUtc);
+    date.setUTCDate(startDateUtc.getUTCDate() + index);
+    return date.toISOString().slice(0, 10);
+  });
   const models = empty
     ? []
     : [

@@ -1580,6 +1580,52 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
 }
 
 #[tokio::test]
+async fn retention_preserves_long_term_model_fields_when_pruning_payload() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("retention-prune-long-term-model-fields").await;
+    let occurred_at = shanghai_local_days_ago(31, 12, 30, 0);
+    insert_retention_invocation(
+        &pool,
+        "old-model-fields",
+        &occurred_at,
+        SOURCE_XY,
+        "success",
+        Some(
+            r#"{"upstreamAccountId":771,"requestModel":"gpt-5.4","responseModel":"gpt-5.4-routing","reasoningEffort":"high"}"#,
+        ),
+        "{}",
+        None,
+        None,
+        Some(321),
+        Some(1.23),
+    )
+    .await;
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention prune for long-term model fields");
+
+    let payload: Option<String> =
+        sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+            .bind("old-model-fields")
+            .fetch_one(&pool)
+            .await
+            .expect("load pruned long-term payload");
+    let payload = serde_json::from_str::<serde_json::Value>(
+        payload
+            .as_deref()
+            .expect("model fields should remain in payload"),
+    )
+    .expect("decode pruned long-term payload");
+    assert_eq!(payload["upstreamAccountId"].as_i64(), Some(771));
+    assert_eq!(payload["requestModel"].as_str(), Some("gpt-5.4"));
+    assert_eq!(payload["responseModel"].as_str(), Some("gpt-5.4-routing"));
+    assert_eq!(payload["reasoningEffort"].as_str(), Some("high"));
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_prunes_old_legacy_http_200_success_like_invocation_details() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("retention-prune-legacy-http200").await;
