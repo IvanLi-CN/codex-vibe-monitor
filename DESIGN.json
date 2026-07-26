@@ -1,14 +1,15 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-26T18:21:55+08:00",
   "title": "Design System: Codex Vibe Monitor",
-  "productContext": {
-    "category": "Self-hosted OpenAI-compatible gateway observability and operations workspace",
-    "primaryUsers": ["single-instance owner-operators", "developers", "small maintenance teams"],
-    "northStar": "观测实验室",
-    "personality": ["precise", "observant", "restrained"],
-    "designIntent": "A trustworthy, dense operational workbench where signal, evidence, and in-context action take priority over decoration."
-  },
   "extensions": {
+    "productContext": {
+      "category": "Self-hosted OpenAI-compatible gateway observability and operations workspace",
+      "primaryUsers": ["single-instance owner-operators", "developers", "small maintenance teams"],
+      "northStar": "观测实验室",
+      "personality": ["precise", "observant", "restrained"],
+      "designIntent": "A trustworthy, dense operational workbench where signal, evidence, and in-context action take priority over decoration."
+    },
     "theme": {
       "modes": ["light", "dark"],
       "domAttributes": {
