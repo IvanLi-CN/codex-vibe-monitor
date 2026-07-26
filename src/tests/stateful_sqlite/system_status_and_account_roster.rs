@@ -3015,6 +3015,15 @@ async fn delete_upstream_account_keeps_persisted_group_catalog_rows_after_last_m
     .await
     .expect("load cleared credentials");
     assert_eq!(stored_credentials, None);
+    let (live_backfill_completed, archive_backfill_completed): (i64, i64) = sqlx::query_as(
+        "SELECT last_activity_live_backfill_completed, last_activity_archive_backfill_completed FROM pool_upstream_accounts WHERE id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load completed backfill flags");
+    assert_eq!(live_backfill_completed, 1);
+    assert_eq!(archive_backfill_completed, 1);
 
     let remaining_tag_links: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_account_tags WHERE account_id = ?1")

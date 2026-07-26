@@ -2270,6 +2270,8 @@ pub(crate) async fn delete_upstream_account_inner(
                 last_error = NULL,
                 last_action = 'deleted',
                 last_action_source = 'settings',
+                last_activity_live_backfill_completed = 1,
+                last_activity_archive_backfill_completed = 1,
                 deleted_at = datetime('now'),
                 updated_at = datetime('now')
             WHERE id = ?2

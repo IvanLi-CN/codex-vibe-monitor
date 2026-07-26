@@ -180,6 +180,9 @@ struct LongTermInvocationRow {
     output_tokens: Option<i64>,
     cost: Option<f64>,
     t_total_ms: Option<f64>,
+    t_req_read_ms: Option<f64>,
+    t_req_parse_ms: Option<f64>,
+    t_upstream_connect_ms: Option<f64>,
     t_upstream_ttfb_ms: Option<f64>,
     t_upstream_stream_ms: Option<f64>,
     error_message: Option<String>,
@@ -270,10 +273,12 @@ impl LongTermAccumulator {
             self.stream_duration_ms += stream_duration_ms;
             self.output_speed_samples += 1;
         }
-        if let Some(value) = row
-            .t_upstream_ttfb_ms
-            .filter(|value| value.is_finite() && *value >= 0.0)
-        {
+        if let Some(value) = crate::stats::resolve_first_response_byte_total_ms(
+            row.t_req_read_ms,
+            row.t_req_parse_ms,
+            row.t_upstream_connect_ms,
+            row.t_upstream_ttfb_ms,
+        ) {
             self.first_byte_sum_ms += value;
             self.first_byte_samples += 1;
         }
@@ -646,6 +651,9 @@ async fn refresh_long_term_stats_inner(
             inv.output_tokens,
             inv.cost,
             inv.t_total_ms,
+            inv.t_req_read_ms,
+            inv.t_req_parse_ms,
+            inv.t_upstream_connect_ms,
             inv.t_upstream_ttfb_ms,
             inv.t_upstream_stream_ms,
             inv.error_message
@@ -689,6 +697,9 @@ async fn refresh_long_term_stats_inner(
             inv.output_tokens,
             inv.cost,
             inv.t_total_ms,
+            inv.t_req_read_ms,
+            inv.t_req_parse_ms,
+            inv.t_upstream_connect_ms,
             inv.t_upstream_ttfb_ms,
             inv.t_upstream_stream_ms,
             inv.error_message
@@ -823,6 +834,9 @@ async fn refresh_long_term_stats_inner(
                 output_tokens,
                 cost,
                 t_total_ms,
+                t_req_read_ms,
+                t_req_parse_ms,
+                t_upstream_connect_ms,
                 t_upstream_ttfb_ms,
                 t_upstream_stream_ms,
                 error_message
@@ -958,6 +972,7 @@ async fn refresh_long_term_stats_inner(
                     {live_upstream_account_id_sql} AS upstream_account_id,
                     NULL AS upstream_account_kind, NULL AS upstream_account_name,
                     inv.total_tokens, inv.output_tokens, inv.cost, inv.t_total_ms,
+                    inv.t_req_read_ms, inv.t_req_parse_ms, inv.t_upstream_connect_ms,
                     inv.t_upstream_ttfb_ms, inv.t_upstream_stream_ms, inv.error_message
                 FROM codex_invocations inv
                 WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending')
@@ -1020,7 +1035,8 @@ async fn refresh_long_term_stats_inner(
                     CASE WHEN json_valid(payload) THEN NULLIF(TRIM(CAST(json_extract(payload, '$.reasoningEffort') AS TEXT)), '') END AS reasoning_effort,
                     CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END AS upstream_account_id,
                     NULL AS upstream_account_kind, NULL AS upstream_account_name,
-                    total_tokens, output_tokens, cost, t_total_ms, t_upstream_ttfb_ms,
+                    total_tokens, output_tokens, cost, t_total_ms, t_req_read_ms,
+                    t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms,
                     t_upstream_stream_ms, error_message
                 FROM codex_invocations
                 WHERE LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')
@@ -2025,6 +2041,9 @@ mod tests {
             output_tokens: Some(50),
             cost: Some(1.5),
             t_total_ms: Some(900.0),
+            t_req_read_ms: Some(100.0),
+            t_req_parse_ms: Some(50.0),
+            t_upstream_connect_ms: Some(100.0),
             t_upstream_ttfb_ms: Some(300.0),
             t_upstream_stream_ms: Some(600.0),
             error_message: None,
@@ -2044,6 +2063,9 @@ mod tests {
             output_tokens: Some(10),
             cost: None,
             t_total_ms: Some(100.0),
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
             t_upstream_ttfb_ms: Some(20.0),
             t_upstream_stream_ms: Some(80.0),
             error_message: None,
@@ -2057,7 +2079,7 @@ mod tests {
         assert_eq!(metrics.cost, Some(1.5));
         assert_eq!(metrics.usage_time_ms, Some(900.0));
         assert_eq!(metrics.output_speed_tokens_per_second, Some(50.0 / 0.6));
-        assert_eq!(metrics.first_byte_ms, Some(300.0));
+        assert_eq!(metrics.first_byte_ms, Some(550.0));
         assert_eq!(metrics.response_ms, Some(600.0));
         assert_eq!(normalize_long_term_model(&success), "response-model");
         assert_eq!(normalize_long_term_model(&failure), "未知模型");
@@ -2084,6 +2106,9 @@ mod tests {
             output_tokens: Some(1),
             cost: Some(0.1),
             t_total_ms: None,
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
             t_upstream_ttfb_ms: None,
             t_upstream_stream_ms: None,
             error_message: None,
@@ -2116,6 +2141,9 @@ mod tests {
                 output_tokens INTEGER,
                 cost REAL,
                 t_total_ms REAL,
+                t_req_read_ms REAL,
+                t_req_parse_ms REAL,
+                t_upstream_connect_ms REAL,
                 t_upstream_ttfb_ms REAL,
                 t_upstream_stream_ms REAL,
                 error_message TEXT
@@ -2126,7 +2154,7 @@ mod tests {
         .await
         .expect("invocation schema");
         sqlx::query(
-            "INSERT INTO codex_invocations (id, occurred_at, status, model, payload, total_tokens, output_tokens, cost, t_total_ms, t_upstream_ttfb_ms, t_upstream_stream_ms) VALUES (1, datetime('now'), 'success', 'gpt-5', '{\"reasoningEffort\":\"high\"}', 12, 4, 0.2, 100, 20, 80)",
+            "INSERT INTO codex_invocations (id, occurred_at, status, model, payload, total_tokens, output_tokens, cost, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms) VALUES (1, datetime('now'), 'success', 'gpt-5', '{\"reasoningEffort\":\"high\"}', 12, 4, 0.2, 100, 10, 5, 5, 20, 80)",
         )
         .execute(&pool)
         .await

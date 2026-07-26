@@ -366,7 +366,8 @@ pub(crate) async fn count_upstream_accounts_missing_last_activity(
         r#"
             SELECT COUNT(*)
             FROM pool_upstream_accounts
-            WHERE last_activity_at IS NULL
+            WHERE deleted_at IS NULL
+              AND last_activity_at IS NULL
               AND last_activity_archive_backfill_completed = 0
             "#,
     )
@@ -382,7 +383,8 @@ pub(crate) async fn count_upstream_accounts_missing_live_last_activity(
         r#"
             SELECT COUNT(*)
             FROM pool_upstream_accounts
-            WHERE last_activity_at IS NULL
+            WHERE deleted_at IS NULL
+              AND last_activity_at IS NULL
               AND last_activity_live_backfill_completed = 0
             "#,
     )
