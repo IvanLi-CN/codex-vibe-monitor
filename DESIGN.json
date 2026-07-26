@@ -1,78 +1,240 @@
 {
-  "schemaVersion": 2,
-  "generatedAt": "2026-04-30T00:00:00+08:00",
+  "schemaVersion": 3,
   "title": "Design System: Codex Vibe Monitor",
+  "productContext": {
+    "category": "Self-hosted OpenAI-compatible gateway observability and operations workspace",
+    "primaryUsers": ["single-instance owner-operators", "developers", "small maintenance teams"],
+    "northStar": "观测实验室",
+    "personality": ["precise", "observant", "restrained"],
+    "designIntent": "A trustworthy, dense operational workbench where signal, evidence, and in-context action take priority over decoration."
+  },
   "extensions": {
-    "colorMeta": {
-      "primary-light": {
-        "role": "primary",
-        "displayName": "Signal Blue",
-        "canonical": "oklch(57.5% 0.195 258)",
-        "notes": "light 主题主交互信号，用于主操作、当前选择、focus ring 和 request count。"
+    "theme": {
+      "modes": ["light", "dark"],
+      "domAttributes": {
+        "theme": ["vibe-light", "vibe-dark"],
+        "colorMode": ["light", "dark"]
       },
-      "primary-dark": {
-        "role": "primary",
-        "displayName": "Signal Blue Dark",
-        "canonical": "oklch(76.3% 0.133 232)",
-        "notes": "dark 主题主交互信号，降低 chroma 以保持可读和克制。"
-      },
-      "secondary-light": {
-        "role": "secondary",
-        "displayName": "Proxy Teal",
-        "canonical": "oklch(61.5% 0.118 188)",
-        "notes": "代理节点、token 体量和健康类次级信号。"
-      },
-      "accent-light": {
-        "role": "tertiary",
-        "displayName": "Cost Amber",
-        "canonical": "oklch(67.7% 0.154 68)",
-        "notes": "成本、价格、配额压力和 warning-adjacent 信号。"
-      },
-      "base-100-light": {
-        "role": "neutral",
-        "displayName": "Lab Paper",
-        "canonical": "oklch(98.7% 0.006 255)",
-        "notes": "light 主题内容 surface。"
-      },
-      "base-200-dark": {
-        "role": "neutral",
-        "displayName": "Night Bench",
-        "canonical": "oklch(18.4% 0.016 258)",
-        "notes": "dark 主题页面背景。"
+      "persistenceKey": "codex-vibe-monitor.theme-mode",
+      "fallback": "prefers-color-scheme",
+      "backgroundComposition": {
+        "layers": ["restrained gradient", "soft ambient orbs", "fine grid"],
+        "boundary": "Ambient layers belong to the application background only. Do not add floating decorative blobs, gradient text, or content-area glow."
       }
     },
+    "colorMeta": {
+      "base-100-light": {
+        "role": "surface",
+        "displayName": "Lab Paper",
+        "canonical": "oklch(98.7% 0.006 255)"
+      },
+      "base-200-light": {
+        "role": "page-background",
+        "displayName": "Mist Rail",
+        "canonical": "oklch(95.2% 0.01 255)"
+      },
+      "base-300-light": {
+        "role": "border",
+        "displayName": "Rule Line",
+        "canonical": "oklch(90.1% 0.015 257)"
+      },
+      "base-content-light": {
+        "role": "foreground",
+        "displayName": "Graphite Text",
+        "canonical": "oklch(27.2% 0.02 260)"
+      },
+      "primary-light": {
+        "role": "primary-action",
+        "displayName": "Signal Blue",
+        "canonical": "oklch(57.5% 0.195 258)"
+      },
+      "secondary-light": {
+        "role": "secondary-signal",
+        "displayName": "Proxy Teal",
+        "canonical": "oklch(61.5% 0.118 188)"
+      },
+      "accent-light": {
+        "role": "cost-and-attention",
+        "displayName": "Cost Amber",
+        "canonical": "oklch(67.7% 0.154 68)"
+      },
+      "neutral-light": {
+        "role": "neutral-emphasis",
+        "canonical": "oklch(30.8% 0.02 258)"
+      },
+      "info-light": {
+        "role": "information",
+        "canonical": "oklch(69.5% 0.152 236)"
+      },
+      "success-light": {
+        "role": "success",
+        "canonical": "oklch(70.2% 0.167 154)"
+      },
+      "warning-light": {
+        "role": "warning",
+        "canonical": "oklch(80.4% 0.167 82)"
+      },
+      "error-light": {
+        "role": "error",
+        "canonical": "oklch(66.2% 0.218 26)"
+      },
+      "base-100-dark": {
+        "role": "surface",
+        "displayName": "Instrument Panel",
+        "canonical": "oklch(24.5% 0.019 258)"
+      },
+      "base-200-dark": {
+        "role": "page-background",
+        "displayName": "Night Bench",
+        "canonical": "oklch(18.4% 0.016 258)"
+      },
+      "base-300-dark": {
+        "role": "border",
+        "canonical": "oklch(32.1% 0.019 258)"
+      },
+      "base-content-dark": {
+        "role": "foreground",
+        "displayName": "Cool Chalk",
+        "canonical": "oklch(93.6% 0.013 258)"
+      },
+      "primary-dark": {
+        "role": "primary-action",
+        "displayName": "Signal Blue Dark",
+        "canonical": "oklch(76.3% 0.133 232)"
+      },
+      "secondary-dark": {
+        "role": "secondary-signal",
+        "canonical": "oklch(79.1% 0.113 189)"
+      },
+      "accent-dark": {
+        "role": "cost-and-attention",
+        "canonical": "oklch(81.4% 0.149 84)"
+      },
+      "neutral-dark": {
+        "role": "neutral-emphasis",
+        "canonical": "oklch(29.2% 0.025 259)"
+      },
+      "info-dark": {
+        "role": "information",
+        "canonical": "oklch(77.1% 0.125 234)"
+      },
+      "success-dark": {
+        "role": "success",
+        "canonical": "oklch(78.4% 0.16 155)"
+      },
+      "warning-dark": {
+        "role": "warning",
+        "canonical": "oklch(84.9% 0.163 83)"
+      },
+      "error-dark": {
+        "role": "error",
+        "canonical": "oklch(75.5% 0.176 24)"
+      }
+    },
+    "semanticColorContract": {
+      "primary": "Current selection, primary action, focus ring, and key request signal only.",
+      "metricRoles": {
+        "totalCount": "blue",
+        "totalCost": "amber",
+        "totalTokens": "teal",
+        "success": "green",
+        "failure": "red"
+      },
+      "foregroundRule": "Use *-content tokens on solid or high-fill semantic surfaces. Use shared tone-ink tokens for semantic text on translucent or neutral surfaces.",
+      "nonColorRequirement": "Status must also be conveyed through text, value, icon, shape, legend, or label."
+    },
     "typographyMeta": {
+      "fontStack": "IBM Plex Sans, Avenir Next, Segoe UI, PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif",
+      "numericStyle": ["tabular-nums", "font-mono where operationally useful"],
       "display": {
-        "displayName": "Display",
-        "purpose": "应用品牌、页面主标题或抽屉高层标题，不用于营销式 hero。"
+        "fontSize": "1.25rem",
+        "fontWeight": 600,
+        "lineHeight": 1.2,
+        "letterSpacing": "0",
+        "purpose": "Application brand, page title, or high-level drawer title; never a marketing hero."
       },
       "headline": {
-        "displayName": "Headline",
-        "purpose": "section heading、重要 panel 标题、dialog 标题。"
+        "fontSize": "1.125rem",
+        "fontWeight": 600,
+        "lineHeight": 1.25,
+        "letterSpacing": "0",
+        "purpose": "Section, important panel, and dialog headings."
+      },
+      "title": {
+        "fontSize": "1rem",
+        "fontWeight": 600,
+        "lineHeight": 1.35,
+        "letterSpacing": "0",
+        "purpose": "Card titles, form groups, and primary list labels."
       },
       "body": {
-        "displayName": "Body",
-        "purpose": "中文说明和工程上下文说明，长段落控制在 65 到 75ch。"
+        "fontSize": "0.875rem",
+        "fontWeight": 400,
+        "lineHeight": 1.6,
+        "letterSpacing": "0",
+        "purpose": "Descriptions, table content, and configuration context."
       },
       "label": {
-        "displayName": "Label",
-        "purpose": "表头、字段标签、metric label，保持短促和可扫描。"
+        "fontSize": "0.75rem",
+        "fontWeight": 600,
+        "lineHeight": 1.35,
+        "letterSpacing": "0.08em",
+        "purpose": "Short table headers, field labels, and metric labels."
       }
+    },
+    "shapeAndSpacing": {
+      "radius": {
+        "field": "0.75rem",
+        "box": "1rem",
+        "selector": "1.9rem",
+        "full": "9999px"
+      },
+      "spacing": {
+        "controlX": "0.75rem",
+        "panel": "1.25rem",
+        "pageXCompact": "1rem",
+        "section": "1.5rem"
+      },
+      "appShellMaxWidth": "1660px"
+    },
+    "surfaceMeta": {
+      "surface-panel": "Application-level container that separates a major page region from the background.",
+      "surface-card": "Default restrained card surface with tonal background, subtle border, and light or no shadow.",
+      "surface-subtle": "Rows, list items, chip groups, and secondary blocks inside a card.",
+      "surface-inset": "Configuration groups and recessed internal sections.",
+      "field-surface": "Editable input and select surface.",
+      "menu-surface": "Select, menu, and popover list surface.",
+      "dialog-surface": "Blocking or strong-context overlay surface.",
+      "dialog-chrome-surface": "Sticky dialog or drawer header and footer only.",
+      "drawer-shell": "Desktop side-detail overlay shell.",
+      "rule": "Prefer shared surface classes. Do not recreate default containers from page-local border and translucent background utilities."
     },
     "elevation": {
       "panel": {
         "light": "0 18px 40px rgba(15, 23, 42, 0.09)",
-        "dark": "0 20px 54px rgba(2, 6, 23, 0.55)",
-        "purpose": "主内容 surface，避免在同一层级重复叠加。"
+        "dark": "0 20px 54px rgba(2, 6, 23, 0.55)"
       },
       "dialog": {
         "light": "0 32px 90px rgba(15, 23, 42, 0.16)",
-        "dark": "0 36px 110px rgba(2, 6, 23, 0.62)",
-        "purpose": "阻塞式或强上下文浮层。"
+        "dark": "0 36px 110px rgba(2, 6, 23, 0.62)"
       },
       "drawer": {
-        "light": "-32px 0 84px rgba(15, 23, 42, 0.18)",
-        "purpose": "右侧详情面板。"
+        "light": "-32px 0 84px rgba(15, 23, 42, 0.18)"
+      },
+      "rule": "Static content uses tonal layering and restrained borders. Strong shadow is reserved for panels and overlays."
+    },
+    "responsive": {
+      "compact": {
+        "query": "max-width: 768px",
+        "navigation": "Use one hamburger navigation layer containing top-level and Account Pool/System destinations.",
+        "dialogs": "Use a bottom sheet with safe-area padding, 100dvh constraints, and one content scroll body.",
+        "details": "Page heavy account and Prompt Cache details; use full-height bottom sheets for remaining overlays.",
+        "content": "Stack filters and metrics, prefer readable mobile structures, and avoid body-level horizontal overflow."
+      },
+      "desktop": {
+        "query": "min-width: 769px",
+        "navigation": "Use the horizontal top-level segmented navigation and workspace-local secondary navigation.",
+        "dialogs": "Use centered dialogs and right-side drawers according to context."
       }
     },
     "motion": {
@@ -81,51 +243,73 @@
       "durationPanel": "220ms",
       "easing": "ease-out",
       "rules": [
-        "不要动画化布局属性。",
-        "状态反馈允许短 pulse、spin、fade、zoom。",
-        "产品页面不使用编排式入场动画。"
+        "Transition color and shadow properties; do not animate layout properties.",
+        "Use short fade, zoom, slide, pulse, or spin feedback only when it explains state.",
+        "Do not use choreographed page-entry animation."
       ]
     },
-    "breakpoints": {
-      "desktop1660": "1660px",
-      "mobilePagePadding": "1rem",
-      "notes": "小屏先收缩外部留白，再调整区块间距；数据表必要时可横滚，但应优先提供可读移动结构。"
+    "accessibility": {
+      "target": "WCAG AA",
+      "requirements": [
+        "Keyboard-reachable controls and visible focus rings.",
+        "Readable aria-labels and stable heading and landmark structure.",
+        "Text and semantic-state contrast in both light and dark themes.",
+        "Non-color status cues and accessible chart labels, legends, values, or tooltips.",
+        "Stable dimensions for loading, empty, error, and live-refresh states.",
+        "Safe-area-aware compact overlays and practical touch targets."
+      ]
     },
     "componentMeta": {
       "button": {
         "variants": ["default", "secondary", "outline", "ghost", "destructive"],
         "sizes": ["sm", "default", "lg", "icon"],
-        "notes": "默认 h-9 是桌面密度选择；移动触控场景需要评估 44px 目标。"
+        "defaultHeight": "2.25rem",
+        "notes": "Use icon-only buttons for familiar tools with an accessible label. Evaluate 44px targets in touch-first contexts."
       },
       "segmented-control": {
         "variants": ["compact", "default", "nav"],
-        "notes": "顶部导航和内容切换共用同一 visual family。"
+        "notes": "Desktop top-level navigation and content switching share one visual family."
       },
-      "surface-panel": {
-        "notes": "应用级 panel 组合 border、半透明背景、shadow 和少量 backdrop blur；审计建议限制 blur 的默认化。"
+      "field": {
+        "defaultHeight": "2.5rem",
+        "surface": "field-surface",
+        "notes": "Error and disabled states require explicit feedback, not border color alone."
+      },
+      "dialog-and-drawer": {
+        "desktop": ["centered dialog", "right-side drawer"],
+        "compact": ["bottom sheet", "paged heavy detail"],
+        "notes": "Headers and actions may be sticky; the body owns the single scroll region."
       },
       "chart": {
-        "metricRoles": {
-          "totalCount": "blue",
-          "totalCost": "amber",
-          "totalTokens": "teal"
-        },
-        "notes": "图表 token 目前集中在 chartTheme.ts，与全局 OKLCH token 尚未完全统一。"
+        "tokenSource": "web/src/lib/chartTheme.ts",
+        "notes": "Loading, empty, and error states preserve chart dimensions. Numeric axes and values remain stable and scannable."
       }
     },
     "rules": {
-      "northStar": "观测实验室",
       "dos": [
-        "复用 OKLCH 语义 token。",
-        "让颜色承载明确状态或操作语义。",
-        "保留数字对齐、focus ring 和 Storybook 证据入口。"
+        "Reuse semantic OKLCH tokens and shared surface vocabulary.",
+        "Keep primary scarce and attach every color to an interaction, metric, or status meaning.",
+        "Use stable numeric alignment and preserve context during filtering, inspection, and editing.",
+        "Treat light, dark, desktop, and compact layouts as first-class states.",
+        "Use Storybook and the mock-only Web Demo as stable review surfaces."
       ],
       "donts": [
-        "不要使用 gradient text。",
-        "不要用厚侧边彩条做强调。",
-        "不要把 glassmorphism 当默认容器语言。",
-        "不要复刻通用 SaaS dashboard hero metric 模板。"
+        "Do not use gradient text, thick colored side rails, or decorative content-area blobs.",
+        "Do not make glassmorphism the default container language.",
+        "Do not reproduce generic SaaS hero-metric card grids.",
+        "Do not rely on neon dark-blue styling to communicate observability.",
+        "Do not solve density by shrinking readable text or practical touch targets.",
+        "Do not hard-code page-local colors when an existing semantic or chart token applies."
       ]
+    },
+    "sourceOfTruth": {
+      "humanDesignEntry": "DESIGN.md",
+      "uiGuidelines": "docs/ui/",
+      "themeTokens": "web/src/index.css",
+      "chartTokens": "web/src/lib/chartTheme.ts",
+      "themeRuntime": "web/src/theme/context.tsx",
+      "componentPrimitives": "web/src/components/ui/",
+      "productRoutes": "web/src/App.tsx"
     }
   }
 }
