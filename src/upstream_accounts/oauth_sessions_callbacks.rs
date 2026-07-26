@@ -2308,6 +2308,20 @@ pub(crate) async fn delete_upstream_account_inner(
             .execute(tx.as_mut())
             .await
             .map_err(internal_error_tuple)?;
+        sqlx::query(
+            "DELETE FROM prompt_cache_conversation_bindings WHERE upstream_account_id = ?1",
+        )
+        .bind(id)
+        .execute(tx.as_mut())
+        .await
+        .map_err(internal_error_tuple)?;
+        sqlx::query(
+            "DELETE FROM prompt_cache_encrypted_session_owners WHERE owner_upstream_account_id = ?1",
+        )
+        .bind(id)
+        .execute(tx.as_mut())
+        .await
+        .map_err(internal_error_tuple)?;
         cleanup_orphaned_group_metadata(tx.as_mut(), account_group_name.as_deref())
             .await
             .map_err(internal_error_tuple)?;

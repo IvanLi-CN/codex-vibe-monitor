@@ -196,39 +196,55 @@ struct LongTermArchiveAttemptRow {
     upstream_account_id: Option<i64>,
 }
 
+#[derive(Debug, Clone, FromRow)]
+struct LongTermAttemptArchivePath {
+    file_path: String,
+    sha256: String,
+    coverage_start_at: Option<String>,
+    coverage_end_at: Option<String>,
+}
+
 async fn load_long_term_archive_attempt_accounts(
     pool: &Pool<Sqlite>,
     date_range: Option<(NaiveDate, NaiveDate)>,
-) -> Result<HashMap<(String, String), i64>> {
-    let paths = match load_completed_archive_paths_for_dataset(
-        pool,
-        "pool_upstream_request_attempts",
+) -> Result<(HashMap<(String, String), i64>, HashSet<(String, String)>)> {
+    let paths = match sqlx::query_as::<_, LongTermAttemptArchivePath>(
+        "SELECT file_path, sha256, coverage_start_at, coverage_end_at FROM archive_batches WHERE dataset = 'pool_upstream_request_attempts' AND status = ?1 ORDER BY month_key ASC, created_at ASC, id ASC",
     )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_all(pool)
     .await
     {
         Ok(paths) => paths,
-        Err(error) if error.to_string().contains("no such table") => return Ok(HashMap::new()),
-        Err(error) => return Err(error),
+        Err(error) if error.to_string().contains("no such table") => {
+            return Ok((HashMap::new(), HashSet::new()));
+        }
+        Err(error) => return Err(error.into()),
     };
     let mut accounts = HashMap::new();
+    let mut consumed_archives = HashSet::new();
     for archive_path in paths.into_iter().filter(|path| {
         date_range.is_none_or(|(start, end)| {
             let Some(path_start) = path
-                .coverage_start_at()
+                .coverage_start_at
+                .as_deref()
                 .and_then(long_term_archive_end_date)
             else {
                 return true;
             };
             let path_end = path
-                .coverage_end_at()
+                .coverage_end_at
+                .as_deref()
                 .and_then(long_term_archive_end_date)
                 .unwrap_or(path_start);
             path_end >= start && path_start <= end
         })
     }) {
-        let Some((archive_pool, cleanup)) =
-            open_invocation_archive_batch_pool(&archive_path, "long-term-stats-attempt-fallback")
-                .await?
+        let Some((archive_pool, cleanup)) = open_invocation_archive_batch_pool(
+            &ArchiveBatchPathRow::from_file_path(archive_path.file_path.clone()),
+            "long-term-stats-attempt-fallback",
+        )
+        .await?
         else {
             continue;
         };
@@ -251,12 +267,15 @@ async fn load_long_term_archive_attempt_accounts(
                         accounts.insert((row.invoke_id, row.occurred_at), account_id);
                     }
                 }
+                consumed_archives.insert((archive_path.file_path, archive_path.sha256));
             }
-            Err(error) if error.to_string().contains("no such table") => {}
+            Err(error) if error.to_string().contains("no such table") => {
+                consumed_archives.insert((archive_path.file_path, archive_path.sha256));
+            }
             Err(error) => return Err(error.into()),
         }
     }
-    Ok(accounts)
+    Ok((accounts, consumed_archives))
 }
 
 async fn long_term_archive_invocation_query(pool: &Pool<Sqlite>) -> Result<String> {
@@ -1000,11 +1019,12 @@ async fn refresh_long_term_stats_inner(
     } else {
         None
     };
-    let archive_attempt_accounts = if !ready_state || attempt_date_range.is_some() {
-        load_long_term_archive_attempt_accounts(pool, attempt_date_range).await?
-    } else {
-        HashMap::new()
-    };
+    let (archive_attempt_accounts, attempt_archive_markers) =
+        if !ready_state || attempt_date_range.is_some() {
+            load_long_term_archive_attempt_accounts(pool, attempt_date_range).await?
+        } else {
+            (HashMap::new(), HashSet::new())
+        };
     let mut archive_markers = Vec::new();
     let mut archive_read_failed = false;
     let mut unavailable_after_date: Option<NaiveDate> = None;
@@ -1430,6 +1450,16 @@ async fn refresh_long_term_stats_inner(
         .await?;
         sqlx::query(
             "INSERT OR REPLACE INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'codex_invocations', ?2, ?3)",
+        )
+        .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+        .bind(file_path)
+        .bind(archive_sha256)
+        .execute(&mut *tx)
+        .await?;
+    }
+    for (file_path, archive_sha256) in attempt_archive_markers {
+        sqlx::query(
+            "INSERT OR REPLACE INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'pool_upstream_request_attempts', ?2, ?3)",
         )
         .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
         .bind(file_path)

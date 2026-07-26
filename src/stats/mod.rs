@@ -973,6 +973,18 @@ pub(crate) struct ArchiveBatchPathRow {
 }
 
 impl ArchiveBatchPathRow {
+    pub(crate) fn from_file_path(file_path: impl Into<String>) -> Self {
+        Self {
+            file_path: file_path.into(),
+            month_key: None,
+            coverage_start_at: None,
+            coverage_end_at: None,
+            historical_rollups_materialized_at: None,
+            needs_overall: None,
+            needs_failures: None,
+        }
+    }
+
     pub(crate) fn file_path(&self) -> &str {
         &self.file_path
     }

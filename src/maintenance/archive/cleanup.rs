@@ -356,6 +356,30 @@ pub(crate) async fn cleanup_expired_archive_batches(
     } else {
         HashSet::new()
     };
+    let long_term_stats_attempt_archive_files = if long_term_stats_status
+        .as_deref()
+        .is_some_and(|status| matches!(status, "ready" | "empty"))
+    {
+        sqlx::query_as::<_, (String, String)>(
+            r#"
+            SELECT replay.file_path, replay.archive_sha256
+            FROM hourly_rollup_archive_replay replay
+            INNER JOIN archive_batches batches
+              ON batches.dataset = 'pool_upstream_request_attempts'
+             AND batches.file_path = replay.file_path
+             AND batches.sha256 = replay.archive_sha256
+            WHERE replay.target = ?1
+              AND replay.dataset = 'pool_upstream_request_attempts'
+            "#,
+        )
+        .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .collect::<HashSet<_>>()
+    } else {
+        HashSet::new()
+    };
 
     let mut eligible_candidates = Vec::new();
     for candidate in candidates {
@@ -372,9 +396,8 @@ pub(crate) async fn cleanup_expired_archive_batches(
             continue;
         }
         if candidate.dataset == "pool_upstream_request_attempts"
-            && !long_term_stats_status
-                .as_deref()
-                .is_some_and(|status| matches!(status, "ready" | "empty"))
+            && !long_term_stats_attempt_archive_files
+                .contains(&(candidate.file_path.clone(), candidate.sha256.clone()))
         {
             continue;
         }
@@ -900,6 +923,30 @@ pub(crate) async fn prune_legacy_archive_batches(
     } else {
         HashSet::new()
     };
+    let long_term_stats_attempt_archive_files = if long_term_stats_status
+        .as_deref()
+        .is_some_and(|status| matches!(status, "ready" | "empty"))
+    {
+        sqlx::query_as::<_, (String, String)>(
+            r#"
+            SELECT replay.file_path, replay.archive_sha256
+            FROM hourly_rollup_archive_replay replay
+            INNER JOIN archive_batches batches
+              ON batches.dataset = 'pool_upstream_request_attempts'
+             AND batches.file_path = replay.file_path
+             AND batches.sha256 = replay.archive_sha256
+            WHERE replay.target = ?1
+              AND replay.dataset = 'pool_upstream_request_attempts'
+            "#,
+        )
+        .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .collect::<HashSet<_>>()
+    } else {
+        HashSet::new()
+    };
     let mut summary = LegacyArchivePruneSummary {
         scanned_archive_batches: candidates.len(),
         ..LegacyArchivePruneSummary::default()
@@ -925,9 +972,8 @@ pub(crate) async fn prune_legacy_archive_batches(
         }
 
         if candidate.dataset == "pool_upstream_request_attempts"
-            && !long_term_stats_status
-                .as_deref()
-                .is_some_and(|status| matches!(status, "ready" | "empty"))
+            && !long_term_stats_attempt_archive_files
+                .contains(&(candidate.file_path.clone(), candidate.sha256.clone()))
         {
             summary.skipped_unmaterialized_batches += 1;
             continue;

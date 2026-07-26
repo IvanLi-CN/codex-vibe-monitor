@@ -3558,6 +3558,21 @@ async fn retention_archives_and_cleans_up_pool_upstream_request_attempts() {
         .execute(&pool)
         .await
         .expect("mark long-term stats empty before attempt archive cleanup");
+    let archive_sha256: String = sqlx::query_scalar(
+        "SELECT sha256 FROM archive_batches WHERE dataset = 'pool_upstream_request_attempts' LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load pool attempt archive checksum");
+    sqlx::query(
+        "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'pool_upstream_request_attempts', ?2, ?3)",
+    )
+    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+    .bind(&archive_batch.0)
+    .bind(archive_sha256)
+    .execute(&pool)
+    .await
+    .expect("mark pool attempt archive replay complete");
 
     let cleanup_summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await

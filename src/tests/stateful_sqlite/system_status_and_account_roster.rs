@@ -2948,6 +2948,30 @@ async fn delete_upstream_account_keeps_persisted_group_catalog_rows_after_last_m
 
     sqlx::query(
         r#"
+        INSERT INTO prompt_cache_conversation_bindings (
+            prompt_cache_key, binding_kind, group_name, upstream_account_id
+        ) VALUES (?1, 'upstream_account', NULL, ?2)
+        "#,
+    )
+    .bind("delete-target-prompt-cache-binding")
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("insert prompt cache account binding");
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_encrypted_session_owners (prompt_cache_key, owner_upstream_account_id)
+        VALUES (?1, ?2)
+        "#,
+    )
+    .bind("delete-target-prompt-cache-owner")
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("insert prompt cache encrypted owner");
+
+    sqlx::query(
+        r#"
         INSERT INTO pool_upstream_account_group_notes (
             group_name, note, created_at, updated_at
         ) VALUES (?1, ?2, ?3, ?3)
@@ -3040,6 +3064,23 @@ async fn delete_upstream_account_keeps_persisted_group_catalog_rows_after_last_m
             .await
             .expect("count remaining login sessions");
     assert_eq!(remaining_sessions, 0);
+
+    let remaining_prompt_cache_bindings: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversation_bindings WHERE upstream_account_id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count remaining prompt cache bindings");
+    assert_eq!(remaining_prompt_cache_bindings, 0);
+    let remaining_prompt_cache_owners: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_encrypted_session_owners WHERE owner_upstream_account_id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count remaining prompt cache owners");
+    assert_eq!(remaining_prompt_cache_owners, 0);
 
     let remaining_samples: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pool_upstream_account_limit_samples WHERE account_id = ?1",
