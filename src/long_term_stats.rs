@@ -880,6 +880,13 @@ async fn refresh_long_term_stats_inner(
                         }
                     }
                 }
+                if !ready_state {
+                    insert_long_term_date_range(
+                        &mut affected_archive_dates,
+                        archive_path.coverage_start_at(),
+                        archive_path.coverage_end_at(),
+                    );
+                }
                 archive_markers.push(archive_path.file_path().to_string());
             }
             Err(error) => {
@@ -1123,6 +1130,35 @@ async fn refresh_long_term_stats_inner(
                 .await?;
             }
         }
+    } else if !recomputed_dates.is_empty() {
+        // A full rebuild may change a grouping key (for example, after reasoning-effort
+        // backfill). Replace every bucket covered by readable sources so superseded keys cannot
+        // remain and double-count the same invocation. Dates without readable source coverage
+        // are intentionally preserved for archive-retention continuity.
+        for date in &recomputed_dates {
+            sqlx::query("DELETE FROM long_term_usage_daily WHERE stats_date = ?1")
+                .bind(date.to_string())
+                .execute(&mut *tx)
+                .await?;
+            let day_start_epoch = date
+                .and_hms_opt(0, 0, 0)
+                .and_then(|value| Shanghai.from_local_datetime(&value).single())
+                .map(|value| value.timestamp());
+            let day_end_epoch = date
+                .succ_opt()
+                .and_then(|value| value.and_hms_opt(0, 0, 0))
+                .and_then(|value| Shanghai.from_local_datetime(&value).single())
+                .map(|value| value.timestamp());
+            if let (Some(day_start_epoch), Some(day_end_epoch)) = (day_start_epoch, day_end_epoch) {
+                sqlx::query(
+                    "DELETE FROM long_term_usage_hourly WHERE bucket_start_epoch >= ?1 AND bucket_start_epoch < ?2",
+                )
+                .bind(day_start_epoch)
+                .bind(day_end_epoch)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
     } else if !has_persisted_daily_rows {
         sqlx::query("DELETE FROM long_term_usage_hourly")
             .execute(&mut *tx)
@@ -1243,6 +1279,27 @@ fn long_term_archive_end_date(raw: &str) -> Option<NaiveDate> {
             .single()
             .map(|value| value.date_naive())
     })
+}
+
+fn insert_long_term_date_range(
+    dates: &mut HashSet<NaiveDate>,
+    start: Option<&str>,
+    end: Option<&str>,
+) {
+    let (Some(start), Some(end)) = (
+        start.and_then(long_term_archive_end_date),
+        end.and_then(long_term_archive_end_date),
+    ) else {
+        return;
+    };
+    let mut date = start;
+    while date <= end {
+        dates.insert(date);
+        let Some(next) = date.succ_opt() else {
+            break;
+        };
+        date = next;
+    }
 }
 
 fn hydrate_long_term_account_identity(

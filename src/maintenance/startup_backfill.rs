@@ -448,12 +448,18 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
         SELECT EXISTS(
             SELECT 1
             FROM startup_backfill_progress
-            WHERE last_updated > 0
+              WHERE task_name IN (?1, ?2, ?3, ?4, ?5)
+              AND last_updated > 0
               AND last_finished_at IS NOT NULL
-              AND datetime(last_finished_at) >= datetime(?1)
+              AND datetime(last_finished_at) >= datetime(?6)
         )
         "#,
     )
+    .bind(StartupBackfillTask::ProxyUsage.name())
+    .bind(StartupBackfillTask::ProxyCost.name())
+    .bind(StartupBackfillTask::ReasoningEffort.name())
+    .bind(StartupBackfillTask::UpstreamActivityLive.name())
+    .bind(StartupBackfillTask::UpstreamActivityArchives.name())
     .bind(&pass_started_at)
     .fetch_one(&state.pool)
     .await;
