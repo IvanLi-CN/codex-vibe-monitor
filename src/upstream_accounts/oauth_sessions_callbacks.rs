@@ -2254,10 +2254,85 @@ pub(crate) async fn delete_upstream_account_inner(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(internal_error_tuple)?;
-    let group_name = load_upstream_account_row_conn(tx.as_mut(), id)
+    let account_row = load_upstream_account_row_conn(tx.as_mut(), id)
         .await
         .map_err(internal_error_tuple)?
-        .map(|row| row.group_name);
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    let account_group_name = account_row.group_name.clone();
+    if account_row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET enabled = 0,
+                status = ?1,
+                encrypted_credentials = NULL,
+                masked_api_key = NULL,
+                token_expires_at = NULL,
+                last_error = NULL,
+                last_action = 'deleted',
+                last_action_source = 'settings',
+                last_activity_live_backfill_completed = 1,
+                last_activity_archive_backfill_completed = 1,
+                deleted_at = datetime('now'),
+                updated_at = datetime('now')
+            WHERE id = ?2
+            "#,
+        )
+        .bind(UPSTREAM_ACCOUNT_STATUS_DISABLED)
+        .bind(id)
+        .execute(tx.as_mut())
+        .await
+        .map_err(internal_error_tuple)?;
+        sqlx::query("DELETE FROM pool_oauth_login_sessions WHERE account_id = ?1")
+            .bind(id)
+            .execute(tx.as_mut())
+            .await
+            .map_err(internal_error_tuple)?;
+        sqlx::query("DELETE FROM pool_upstream_account_limit_samples WHERE account_id = ?1")
+            .bind(id)
+            .execute(tx.as_mut())
+            .await
+            .map_err(internal_error_tuple)?;
+        sqlx::query("DELETE FROM pool_upstream_account_tags WHERE account_id = ?1")
+            .bind(id)
+            .execute(tx.as_mut())
+            .await
+            .map_err(internal_error_tuple)?;
+        sqlx::query("DELETE FROM pool_sticky_routes WHERE account_id = ?1")
+            .bind(id)
+            .execute(tx.as_mut())
+            .await
+            .map_err(internal_error_tuple)?;
+        sqlx::query("DELETE FROM pool_upstream_account_model_routes WHERE account_id = ?1")
+            .bind(id)
+            .execute(tx.as_mut())
+            .await
+            .map_err(internal_error_tuple)?;
+        sqlx::query(
+            "DELETE FROM prompt_cache_conversation_bindings WHERE upstream_account_id = ?1",
+        )
+        .bind(id)
+        .execute(tx.as_mut())
+        .await
+        .map_err(internal_error_tuple)?;
+        sqlx::query(
+            "DELETE FROM prompt_cache_encrypted_session_owners WHERE owner_upstream_account_id = ?1",
+        )
+        .bind(id)
+        .execute(tx.as_mut())
+        .await
+        .map_err(internal_error_tuple)?;
+        cleanup_orphaned_group_metadata(tx.as_mut(), account_group_name.as_deref())
+            .await
+            .map_err(internal_error_tuple)?;
+        tx.commit().await.map_err(internal_error_tuple)?;
+        if let Ok(mut selected_at) = state.pool_account_selection_runtime.selected_at.lock() {
+            selected_at.remove(&id);
+        }
+        refresh_pool_routing_runtime_cache_best_effort(state, "api key account deleted").await;
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    let group_name = account_row.group_name;
     sqlx::query("DELETE FROM pool_upstream_account_limit_samples WHERE account_id = ?1")
         .bind(id)
         .execute(tx.as_mut())
@@ -2282,12 +2357,9 @@ pub(crate) async fn delete_upstream_account_inner(
     if affected == 0 {
         return Err((StatusCode::NOT_FOUND, "account not found".to_string()));
     }
-    cleanup_orphaned_group_metadata(
-        tx.as_mut(),
-        group_name.as_ref().and_then(|value| value.as_deref()),
-    )
-    .await
-    .map_err(internal_error_tuple)?;
+    cleanup_orphaned_group_metadata(tx.as_mut(), group_name.as_deref())
+        .await
+        .map_err(internal_error_tuple)?;
     tx.commit().await.map_err(internal_error_tuple)?;
     Ok(StatusCode::NO_CONTENT)
 }

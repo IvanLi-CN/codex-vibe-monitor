@@ -310,6 +310,7 @@ pub(crate) async fn load_maintenance_candidates(
         FROM pool_upstream_accounts account
         WHERE account.kind = ?1
           AND account.enabled = 1
+          AND COALESCE(account.deleted_at, '') = ''
           AND account.status <> ?2
         ORDER BY account.id ASC
         "#,
@@ -395,6 +396,7 @@ pub(crate) async fn load_maintenance_candidate(
         WHERE account.id = ?1
           AND account.kind = ?2
           AND account.enabled = 1
+          AND COALESCE(account.deleted_at, '') = ''
           AND account.status <> ?3
         "#,
     )
@@ -777,6 +779,7 @@ pub(crate) async fn load_maintenance_candidates_ranked_before(
             FROM pool_upstream_accounts account
             WHERE account.kind = ?1
               AND account.enabled = 1
+              AND COALESCE(account.deleted_at, '') = ''
               AND account.status <> ?2
         )
         SELECT *

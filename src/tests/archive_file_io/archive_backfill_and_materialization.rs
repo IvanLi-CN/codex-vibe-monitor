@@ -547,6 +547,19 @@ async fn cleanup_expired_invocation_archive_batches_removes_manifest_rows() {
     .execute(&pool)
     .await
     .expect("insert expired invocation archive manifest row");
+    sqlx::query("UPDATE long_term_stats_state SET status = 'ready' WHERE id = 1")
+        .execute(&pool)
+        .await
+        .expect("mark long-term stats ready for cleanup fixture");
+    sqlx::query(
+        "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'codex_invocations', ?2, ?3)",
+    )
+    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind("expired-sha")
+    .execute(&pool)
+    .await
+    .expect("mark long-term archive replay complete");
 
     let deleted = cleanup_expired_archive_batches(&pool, &config, false)
         .await
@@ -988,6 +1001,26 @@ async fn materialize_historical_rollups_marks_batches_and_prune_removes_files() 
         .await
         .expect("load historical rollup backlog after materialization");
     assert_eq!(snapshot_after.legacy_archive_pending, 0);
+
+    let archive_sha256: String = sqlx::query_scalar(
+        "SELECT sha256 FROM archive_batches WHERE dataset = 'codex_invocations' LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load archive checksum for long-term replay marker");
+    sqlx::query("UPDATE long_term_stats_state SET status = 'ready' WHERE id = 1")
+        .execute(&pool)
+        .await
+        .expect("mark long-term stats ready for archive pruning");
+    sqlx::query(
+        "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'codex_invocations', ?2, ?3)",
+    )
+    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(archive_sha256)
+    .execute(&pool)
+    .await
+    .expect("mark archive replay complete for long-term stats");
 
     let prune_dry_run = prune_legacy_archive_batches(&pool, &config, true)
         .await
@@ -3311,14 +3344,14 @@ async fn materialize_historical_rollups_skips_missing_archives_and_preserves_exi
 
     let prune_summary = prune_legacy_archive_batches(&pool, &config, false)
         .await
-        .expect("prune should remove stale missing archive metadata");
-    assert_eq!(prune_summary.deleted_archive_batches, 1);
+        .expect("prune should retain stale metadata without long-term replay");
+    assert_eq!(prune_summary.deleted_archive_batches, 0);
 
     let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
         .fetch_one(&pool)
         .await
         .expect("count remaining archive batches after pruning missing metadata");
-    assert_eq!(remaining_batches, 0);
+    assert_eq!(remaining_batches, 1);
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -3520,6 +3553,26 @@ async fn retention_archives_and_cleans_up_pool_upstream_request_attempts() {
     .execute(&pool)
     .await
     .expect("expire archive batch");
+
+    sqlx::query("UPDATE long_term_stats_state SET status = 'empty' WHERE id = 1")
+        .execute(&pool)
+        .await
+        .expect("mark long-term stats empty before attempt archive cleanup");
+    let archive_sha256: String = sqlx::query_scalar(
+        "SELECT sha256 FROM archive_batches WHERE dataset = 'pool_upstream_request_attempts' LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load pool attempt archive checksum");
+    sqlx::query(
+        "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'pool_upstream_request_attempts', ?2, ?3)",
+    )
+    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+    .bind(&archive_batch.0)
+    .bind(archive_sha256)
+    .execute(&pool)
+    .await
+    .expect("mark pool attempt archive replay complete");
 
     let cleanup_summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
@@ -4821,6 +4874,10 @@ async fn prune_archive_batches_removes_expired_segments_and_legacy_batches() {
     .execute(&pool)
     .await
     .expect("insert expired segment manifest");
+    sqlx::query("UPDATE long_term_stats_state SET status = 'empty' WHERE id = 1")
+        .execute(&pool)
+        .await
+        .expect("mark long-term stats as ready for legacy prune fixture");
 
     let legacy_path = archive_batch_file_path(&config, "codex_invocations", "2024-12")
         .expect("resolve legacy batch path");
@@ -4849,6 +4906,20 @@ async fn prune_archive_batches_removes_expired_segments_and_legacy_batches() {
     .execute(&pool)
     .await
     .expect("insert legacy archive manifest");
+    for (archive_path, archive_sha256) in [
+        (segment_path.to_string_lossy().to_string(), "deadbeef"),
+        (legacy_path.to_string_lossy().to_string(), "feedface"),
+    ] {
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'codex_invocations', ?2, ?3)",
+        )
+        .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+        .bind(archive_path)
+        .bind(archive_sha256)
+        .execute(&pool)
+        .await
+        .expect("mark legacy prune archive replay complete");
+    }
 
     let summary = prune_archive_batches(&pool, &config, false)
         .await

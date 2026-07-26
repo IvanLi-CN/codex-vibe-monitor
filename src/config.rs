@@ -332,6 +332,7 @@ pub(crate) struct AppConfig {
     pub(crate) pool_upstream_request_attempts_retention_days: u64,
     pub(crate) pool_upstream_request_attempts_archive_ttl_days: u64,
     pub(crate) quota_snapshot_full_days: u64,
+    pub(crate) long_term_stats_hourly_retention_days: u64,
     pub(crate) upstream_accounts_oauth_client_id: String,
     pub(crate) upstream_accounts_oauth_issuer: Url,
     pub(crate) upstream_accounts_usage_base_url: Url,
@@ -616,6 +617,11 @@ impl AppConfig {
             ENV_QUOTA_SNAPSHOT_FULL_DAYS,
             DEFAULT_QUOTA_SNAPSHOT_FULL_DAYS,
         )?;
+        let long_term_stats_hourly_retention_days = parse_u64_env_var(
+            ENV_LONG_TERM_STATS_HOURLY_RETENTION_DAYS,
+            DEFAULT_LONG_TERM_STATS_HOURLY_RETENTION_DAYS,
+        )?
+        .max(MIN_LONG_TERM_STATS_HOURLY_RETENTION_DAYS);
         let upstream_accounts_oauth_client_id = env::var(ENV_UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID)
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -738,6 +744,7 @@ impl AppConfig {
             pool_upstream_request_attempts_retention_days,
             pool_upstream_request_attempts_archive_ttl_days,
             quota_snapshot_full_days,
+            long_term_stats_hourly_retention_days,
             upstream_accounts_oauth_client_id,
             upstream_accounts_oauth_issuer,
             upstream_accounts_usage_base_url,

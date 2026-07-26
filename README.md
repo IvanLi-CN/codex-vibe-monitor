@@ -259,6 +259,7 @@ bun run worktree:setup
 | `RETENTION_ENABLED`                                    | 是否启用后台保留任务                                                                                                                |
 | `ARCHIVE_DIR`                                          | 归档目录                                                                                                                            |
 | `PROXY_RAW_DIR`                                        | 原始 payload 落盘目录                                                                                                               |
+| `LONG_TERM_STATS_HOURLY_RETENTION_DAYS`                | 长期统计小时汇总保留天数，默认 400 天，低于 366 天时按 366 天处理；每日汇总永久保留                                                 |
 
 更完整的部署与配置说明请直接看：
 

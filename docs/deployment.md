@@ -124,6 +124,7 @@ labels:
 - `ARCHIVE_DIR`：离线 archive 根目录；相对路径会锚定到 `DATABASE_PATH` 同级目录，建议挂载到持久化卷并纳入备份。
 - `INVOCATION_SUCCESS_FULL_DAYS` / `INVOCATION_MAX_DAYS`：调用明细冷热分层窗口；raw file 删除跟随这两档 retention，不再有独立的 raw retention env。
 - `FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS`：代理尝试的在线保留窗口。
+- `LONG_TERM_STATS_HOURLY_RETENTION_DAYS`：长期用量统计小时汇总保留天数，默认 `400`；配置低于 `366` 时自动提升到 `366`。每日汇总永久保留，且 archive 只有在长期统计回填标记完成后才允许清理。
 - `QUOTA_SNAPSHOT_FULL_DAYS`：配额快照全量在线保留窗口；超窗后压缩为“每天最后一条”。
 
 价格配置说明：

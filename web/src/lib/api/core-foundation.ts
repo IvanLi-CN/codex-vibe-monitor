@@ -813,6 +813,68 @@ export interface StatsResponse {
   maintenance?: StatsMaintenanceResponse;
 }
 
+export type LongTermStatsRange = "7d" | "30d" | "180d" | "365d";
+export type LongTermStatsDimension = "model" | "upstream";
+
+export interface LongTermMetrics {
+  calls: number;
+  tokens: number | null;
+  tokenSamples: number;
+  cost: number | null;
+  costSamples: number;
+  usageTimeMs: number | null;
+  usageTimeSamples: number;
+  wallTimeMs: number | null;
+  wallTimeSamples: number;
+  outputSpeedTokensPerSecond: number | null;
+  outputSpeedSamples: number;
+  firstByteMs: number | null;
+  firstByteSamples: number;
+  responseMs: number | null;
+  responseSamples: number;
+}
+
+export interface LongTermDailyPoint extends LongTermMetrics {
+  date: string;
+}
+
+export interface LongTermSeriesSummary extends LongTermMetrics {
+  seriesKey: string;
+  displayName: string;
+  reasoningEffort?: string | null;
+}
+
+export interface LongTermStatsOverviewResponse {
+  status: "preparing" | "ready" | "empty" | "error";
+  statisticsStartDate?: string | null;
+  processedRows: number;
+  totalRows: number;
+  timezone: "Asia/Shanghai" | string;
+  range: LongTermStatsRange;
+  global: LongTermMetrics;
+  daily: LongTermDailyPoint[];
+  models: LongTermSeriesSummary[];
+  upstreams: LongTermSeriesSummary[];
+}
+
+export interface LongTermSeries {
+  seriesKey: string;
+  displayName: string;
+  reasoningEffort?: string | null;
+  points: LongTermDailyPoint[];
+}
+
+export interface LongTermStatsSeriesResponse {
+  status: LongTermStatsOverviewResponse["status"];
+  statisticsStartDate?: string | null;
+  processedRows: number;
+  totalRows: number;
+  timezone: string;
+  range: LongTermStatsRange;
+  dimension: LongTermStatsDimension;
+  series: LongTermSeries[];
+}
+
 export interface UsageCostBreakdown {
   input: number;
   cacheWrite: number;
@@ -1393,6 +1455,22 @@ export async function fetchInvocationWorkflowDetail(id: number) {
 
 export async function fetchStats() {
   return fetchJson<StatsResponse>("/api/stats");
+}
+
+export async function fetchLongTermStatsOverview(range: LongTermStatsRange) {
+  return fetchJson<LongTermStatsOverviewResponse>(
+    `/api/stats/long-term/overview?range=${encodeURIComponent(range)}`,
+  );
+}
+
+export async function fetchLongTermStatsSeries(
+  range: LongTermStatsRange,
+  dimension: LongTermStatsDimension,
+  keys: string[],
+) {
+  const search = new URLSearchParams({ range, dimension });
+  for (const key of keys) search.append("key", key);
+  return fetchJson<LongTermStatsSeriesResponse>(`/api/stats/long-term/series?${search.toString()}`);
 }
 
 export interface VersionResponse {

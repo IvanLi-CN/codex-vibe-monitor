@@ -292,7 +292,7 @@ pub(crate) async fn load_effective_request_path_timeouts_for_account(
             policy_responses_stream_timeout_secs,
             policy_compact_stream_timeout_secs
         FROM pool_upstream_accounts
-        WHERE id = ?1
+        WHERE id = ?1 AND COALESCE(deleted_at, '') = ''
         LIMIT 1
         "#,
     )

@@ -1,5 +1,5 @@
 import { HttpResponse, http, type JsonBodyType } from "msw";
-import type { ApiInvocationWorkflowDetailResponse } from "../lib/api";
+import type { ApiInvocationWorkflowDetailResponse, LongTermMetrics } from "../lib/api";
 import { demoModel, demoNow } from "./model";
 
 const DEMO_INVOCATION_REQUEST_BODY_SIZE = 8_681_416;
@@ -2001,6 +2001,115 @@ function recordsToSuggestionCounts<T>(
   );
 }
 
+function demoLongTermMetrics(tokens: number, calls: number, cost: number): LongTermMetrics {
+  return {
+    calls,
+    tokens,
+    tokenSamples: calls,
+    cost,
+    costSamples: calls,
+    usageTimeMs: calls * 820,
+    usageTimeSamples: calls,
+    wallTimeMs: calls * 460,
+    wallTimeSamples: calls,
+    outputSpeedTokensPerSecond: 42.5,
+    outputSpeedSamples: calls,
+    firstByteMs: 312,
+    firstByteSamples: calls,
+    responseMs: 1_420,
+    responseSamples: calls,
+  };
+}
+
+function demoLongTermOverview(range: string) {
+  const empty = demoModel.snapshot.scene === "empty";
+  const length = range === "7d" ? 7 : range === "30d" ? 30 : range === "180d" ? 180 : 365;
+  const endDate = new Date(demoNow());
+  const endDateUtc = new Date(
+    Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate()),
+  );
+  const startDateUtc = new Date(endDateUtc);
+  startDateUtc.setUTCDate(startDateUtc.getUTCDate() - length + 1);
+  const days = Array.from({ length }, (_, index) => {
+    const date = new Date(startDateUtc);
+    date.setUTCDate(startDateUtc.getUTCDate() + index);
+    return date.toISOString().slice(0, 10);
+  });
+  const models = empty
+    ? []
+    : [
+        ["model:gpt-5.6-sol|reasoning:high", "gpt-5.6-sol · high", 128_000, 211, 9.8],
+        ["model:gpt-5.6-sol|reasoning:medium", "gpt-5.6-sol · medium", 86_000, 142, 6.4],
+        ["model:gpt-5.6-terra|reasoning:未指定", "gpt-5.6-terra", 23_000, 59, 2.5],
+      ].map(([seriesKey, displayName, tokens, calls, cost]) => ({
+        seriesKey,
+        displayName,
+        reasoningEffort: String(displayName).includes("·")
+          ? String(displayName).split("·")[1].trim()
+          : null,
+        ...demoLongTermMetrics(Number(tokens), Number(calls), Number(cost)),
+      }));
+  const upstreams = empty
+    ? []
+    : [
+        ["account:1", "Primary API key", 154_000, 260, 11.2],
+        ["account:2", "Research API key", 61_000, 108, 5.1],
+        ["other", "其他", 22_000, 44, 2.4],
+      ].map(([seriesKey, displayName, tokens, calls, cost]) => ({
+        seriesKey,
+        displayName,
+        ...demoLongTermMetrics(Number(tokens), Number(calls), Number(cost)),
+      }));
+  return {
+    status: empty ? "empty" : "ready",
+    statisticsStartDate: "2026-01-01",
+    processedRows: empty ? 0 : 412,
+    totalRows: empty ? 0 : 412,
+    timezone: "Asia/Shanghai",
+    range,
+    global: empty ? demoLongTermMetrics(0, 0, 0) : demoLongTermMetrics(237_000, 412, 18.7),
+    daily: empty
+      ? []
+      : days.map((date, index) => ({
+          date,
+          ...demoLongTermMetrics(22_000 + index * 400, 38 + (index % 7), 1.2 + index / 100),
+        })),
+    models,
+    upstreams,
+  };
+}
+
+function demoLongTermSeries(url: URL) {
+  const overview = demoLongTermOverview(url.searchParams.get("range") ?? "7d") as ReturnType<
+    typeof demoLongTermOverview
+  >;
+  const dimension = url.searchParams.get("dimension") ?? "model";
+  const keys = url.searchParams.getAll("key").filter(Boolean);
+  const source = dimension === "upstream" ? overview.upstreams : overview.models;
+  return {
+    status: overview.status,
+    statisticsStartDate: overview.statisticsStartDate,
+    processedRows: overview.processedRows,
+    totalRows: overview.totalRows,
+    timezone: overview.timezone,
+    range: overview.range,
+    dimension,
+    series: source
+      .filter((item) => keys.includes(String(item.seriesKey)))
+      .map((item) => ({
+        seriesKey: String(item.seriesKey),
+        displayName: item.displayName,
+        reasoningEffort: "reasoningEffort" in item ? item.reasoningEffort : null,
+        points: overview.daily.map((point) => ({
+          ...point,
+          tokens: item.tokens,
+          cost: item.cost,
+          calls: item.calls,
+        })),
+      })),
+  };
+}
+
 export async function handleDemoRequest(request: Request) {
   const url = new URL(request.url);
   const pathname = apiPathname(url.pathname);
@@ -2008,6 +2117,10 @@ export async function handleDemoRequest(request: Request) {
 
   if (pathname === "/api/version") return json({ backend: "demo", frontend: "demo" });
   if (pathname === "/api/stats" || pathname === "/api/stats/summary") return json(demoSummary());
+  if (pathname === "/api/stats/long-term/overview") {
+    return json(demoLongTermOverview(url.searchParams.get("range") ?? "7d"));
+  }
+  if (pathname === "/api/stats/long-term/series") return json(demoLongTermSeries(url));
   if (pathname === "/api/stats/dashboard-activity") {
     const includeAccounts = url.searchParams.get("includeAccounts") === "true";
     const includeRecent = url.searchParams.get("includeRecent") !== "false";

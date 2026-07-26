@@ -13,6 +13,18 @@ const hookMocks = vi.hoisted(() => ({
   useParallelWorkStats: vi.fn(),
 }));
 
+const longTermHookMock = vi.hoisted(() => ({
+  useLongTermStats: vi.fn(() => ({
+    overview: null,
+    series: null,
+    isLoading: false,
+    isSeriesLoading: false,
+    error: null,
+    seriesError: null,
+    refresh: vi.fn(),
+  })),
+}));
+
 vi.mock("../hooks/useStats", () => ({
   useSummary: hookMocks.useSummary,
 }));
@@ -32,6 +44,8 @@ vi.mock("../hooks/useFailureSummary", () => ({
 vi.mock("../hooks/useParallelWorkStats", () => ({
   useParallelWorkStats: hookMocks.useParallelWorkStats,
 }));
+
+vi.mock("../hooks/useLongTermStats", () => longTermHookMock);
 
 vi.mock("../features/stats/StatsCards", () => ({
   StatsCards: () => <div data-testid="stats-cards" />,
@@ -166,7 +180,7 @@ describe("StatsPage", () => {
     render(<StatsPage />);
 
     expect(document.querySelectorAll("select")).toHaveLength(0);
-    expect(document.querySelectorAll('button[role="combobox"]')).toHaveLength(3);
+    expect(document.querySelectorAll('button[role="combobox"]')).toHaveLength(4);
     expect(
       host?.querySelector('[data-testid="stats-range-select-trigger"]')?.textContent,
     ).toContain("今日");

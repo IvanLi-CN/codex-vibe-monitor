@@ -851,7 +851,8 @@ pub(crate) async fn backfill_upstream_account_last_activity_from_live_invocation
                 END = pool_upstream_accounts.id
             ),
             last_activity_live_backfill_completed = 1
-        WHERE last_activity_at IS NULL
+        WHERE COALESCE(deleted_at, '') = ''
+          AND last_activity_at IS NULL
           AND last_activity_live_backfill_completed = 0
         "#,
     )
@@ -874,7 +875,7 @@ pub(crate) async fn group_account_count_conn(
         r#"
         SELECT COUNT(*)
         FROM pool_upstream_accounts
-        WHERE group_name = ?1
+        WHERE COALESCE(deleted_at, '') = '' AND group_name = ?1
         "#,
     )
     .bind(group_name)
@@ -1453,7 +1454,7 @@ pub(crate) async fn load_upstream_account_rows_for_groups(
         r#"
         SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS}
         FROM pool_upstream_accounts
-        WHERE group_name IN (
+        WHERE COALESCE(deleted_at, '') = '' AND group_name IN (
         "#
     ));
     {

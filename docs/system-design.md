@@ -34,6 +34,8 @@
 - `codex_invocations` 保留统一明细表，通过 `source` 区分历史 `xy` 与当前 `proxy` 数据。
 - 旧数据库中可能仍有 `stats_source_snapshots` 与 `stats_source_deltas`；服务不会新建、读取、归档或删除这些遗留表。
 - `codex_quota_snapshots` 保留历史快照表，仅作为查询接口的数据来源，不再由运行时主动追加。
+- 长期统计使用隔离的 `long_term_usage_hourly`（受 `LONG_TERM_STATS_HOURLY_RETENTION_DAYS` 控制，默认 400 天且不低于 366 天）与永久 `long_term_usage_daily` 汇总表；首次升级由可恢复后台任务从 live invocation 与可用 archive 重建，并在 `long_term_stats_state` 中持久化进度和统计起始日。
+- API Key 上游账号通过 `pool_upstream_accounts.deleted_at` 软删除。凭据、会话和路由状态会清除，但稳定 ID、kind 与最后显示名保留给历史统计；非 API Key 账号仍沿用物理删除。
 
 示意结构：
 
@@ -56,6 +58,8 @@ CREATE TABLE IF NOT EXISTS codex_quota_snapshots (...);
 
 - `GET /api/invocations`：返回历史与当前调用记录，支持分页、筛选与只读兼容历史 `xy` 数据。
 - `GET /api/stats`、`/api/stats/summary`、`/api/stats/timeseries`：聚合历史 `xy` 与当前 `proxy` 调用记录。
+- `GET /api/stats/long-term/overview?range=7d|30d|180d|365d`：读取上海自然日长期统计的全局、模型/思考强度和上游账号摘要及每日点；回填未完成时只返回准备状态和进度。
+- `GET /api/stats/long-term/series?range=...&dimension=model|upstream&key=...`：按 overview 签发的稳定 series key 返回每日完整指标，单次最多 8 项。
 - `GET /api/quota/latest`：读取数据库中最新的历史 quota snapshot；空库时返回 degraded default。
 - `GET /events`：以 SSE 推送代理写入与统计更新，供前端实时订阅。
 
@@ -64,6 +68,7 @@ CREATE TABLE IF NOT EXISTS codex_quota_snapshots (...);
 - 前端位于 `web/`，使用 `Vite + React + TypeScript` 构建单页应用。
 - Dashboard / Stats / Live / Settings 保持现有结构，展示调用记录、趋势图、配额卡片与代理设置。
 - 页面通过 HTTP API 获取历史数据，再使用 `EventSource` 订阅 `/events` 实时刷新。
+- Stats 页面末尾的长期统计区块使用独立 hooks、筛选和 60 秒轻量刷新，不改变现有 Stats 内容的范围、bucket 或 SSE 行为；桌面表格支持 sticky 身份列以及横纵双向虚拟化。
 - 配额卡片展示的是数据库中已有的历史快照，而不是实时抓取 XYAI 上游结果。
 
 ## 7. 部署与扩展

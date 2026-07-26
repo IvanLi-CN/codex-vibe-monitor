@@ -1136,6 +1136,7 @@ pub(crate) async fn load_conflicting_display_name_id(
         SELECT id
         FROM pool_upstream_accounts
         WHERE lower(trim(display_name)) = lower(trim(?1))
+          AND deleted_at IS NULL
           AND (?2 IS NULL OR id != ?2)
         ORDER BY id ASC
         LIMIT 1
@@ -1283,6 +1284,7 @@ pub(crate) async fn load_conflicting_display_name_rows(
             ) AS plan_type
         FROM pool_upstream_accounts account
         WHERE lower(trim(account.display_name)) = lower(trim(?1))
+          AND account.deleted_at IS NULL
           AND (?2 IS NULL OR account.id != ?2)
         ORDER BY account.id ASC
         "#,
@@ -2438,7 +2440,8 @@ pub(crate) async fn load_upstream_account_groups(
                 TRIM(group_name) AS group_name,
                 COUNT(*) AS account_count
             FROM pool_upstream_accounts
-            WHERE group_name IS NOT NULL AND TRIM(group_name) <> ''
+            WHERE deleted_at IS NULL
+              AND group_name IS NOT NULL AND TRIM(group_name) <> ''
             GROUP BY TRIM(group_name)
         ),
         catalog_groups AS (
@@ -2598,7 +2601,7 @@ pub(crate) async fn load_upstream_account_summaries_for_query(
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} FROM pool_upstream_accounts"
     ));
-    query.push(" WHERE 1 = 1");
+    query.push(" WHERE COALESCE(deleted_at, '') = ''");
 
     if params.group_ungrouped.unwrap_or(false) {
         query.push(" AND (NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL");
@@ -2869,7 +2872,7 @@ pub(crate) async fn load_upstream_account_rows_by_ids(
             separated.push_bind(account_id);
         }
     }
-    query.push(") ORDER BY updated_at DESC, id DESC");
+    query.push(") AND COALESCE(deleted_at, '') = '' ORDER BY updated_at DESC, id DESC");
     query
         .build_query_as::<UpstreamAccountRow>()
         .fetch_all(pool)
@@ -3028,7 +3031,8 @@ pub(crate) async fn has_ungrouped_upstream_accounts(pool: &Pool<Sqlite>) -> Resu
         r#"
         SELECT COUNT(*)
         FROM pool_upstream_accounts
-        WHERE NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL
+        WHERE COALESCE(deleted_at, '') = ''
+          AND NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL
         "#,
     )
     .fetch_one(pool)
@@ -3387,7 +3391,7 @@ pub(crate) async fn load_upstream_account_row_conn(
     id: i64,
 ) -> Result<Option<UpstreamAccountRow>> {
     sqlx::query_as::<_, UpstreamAccountRow>(&format!(
-        "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} FROM pool_upstream_accounts WHERE id = ?1 LIMIT 1"
+        "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} FROM pool_upstream_accounts WHERE id = ?1 AND COALESCE(deleted_at, '') = '' LIMIT 1"
     ))
     .bind(id)
     .fetch_optional(conn)
@@ -3417,6 +3421,7 @@ pub(crate) async fn load_upstream_account_row_by_external_identity_conn(
     sqlx::query_as::<_, UpstreamAccountRow>(&format!(
         "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} FROM pool_upstream_accounts \
          WHERE external_client_id = ?1 AND external_source_account_id = ?2 \
+           AND COALESCE(deleted_at, '') = '' \
          ORDER BY id ASC LIMIT 1"
     ))
     .bind(external_client_id)
@@ -3698,7 +3703,8 @@ pub(crate) async fn load_canonicalized_upstream_account_group(
             r#"
             SELECT COUNT(*)
             FROM pool_upstream_accounts
-            WHERE TRIM(COALESCE(group_name, '')) = ?1
+            WHERE deleted_at IS NULL
+              AND TRIM(COALESCE(group_name, '')) = ?1
             "#,
         )
         .bind(group_name)

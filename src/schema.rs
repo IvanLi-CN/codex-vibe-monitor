@@ -3610,6 +3610,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .context("failed to ensure index idx_system_task_runs_status_time")?;
 
     seed_default_pricing_catalog(pool).await?;
+    ensure_long_term_stats_schema(pool).await?;
     ensure_upstream_accounts_schema(pool).await?;
 
     Ok(())

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Alert } from "../components/ui/alert";
 import { SelectField } from "../components/ui/select-field";
 import { ErrorReasonPieChart } from "../features/stats/ErrorReasonPieChart";
+import { LongTermStatsSection } from "../features/stats/LongTermStatsSection";
 import { ParallelWorkStatsSection } from "../features/stats/ParallelWorkStatsSection";
 import { StatsCards } from "../features/stats/StatsCards";
 import { SuccessFailureChart } from "../features/stats/SuccessFailureChart";
@@ -227,6 +228,8 @@ export default function StatsPage() {
           )}
         </div>
       </section>
+
+      <LongTermStatsSection />
     </div>
   );
 }
