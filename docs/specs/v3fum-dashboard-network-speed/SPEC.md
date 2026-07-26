@@ -45,7 +45,7 @@
 ### Out of scope
 
 - 改造自然日七卡 KPI 口径。
-- 变更现有请求量 / 成本 / Token / 首字用时 / 响应时间布局。
+- 变更现有请求量 / 成本 / Token / TTFT / 响应时间布局；TTFT 口径由 `#6qe6u` 独立负责。
 - 把 host 明细暴露给通用 timeseries、Stats 页面或外部 API 使用方。
 
 ## 需求（Requirements）

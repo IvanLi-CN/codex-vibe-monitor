@@ -62,10 +62,10 @@ function createSummary(): InvocationRecordsSummaryResponse {
       totalCost: 1.25,
     },
     network: {
-      avgTtfbMs: 10,
-      p95TtfbMs: 12,
-      avgTotalMs: 20,
-      p95TotalMs: 25,
+      avgFirstTokenMs: 620,
+      p95FirstTokenMs: 910,
+      avgResponseDurationMs: 1_450,
+      p95ResponseDurationMs: 2_025,
     },
     exception: {
       failureCount: 0,
@@ -106,19 +106,21 @@ describe("records stale-data rendering", () => {
     expect(text).toContain("records.summary.token.requests");
   });
 
-  it("renders network summary totals in seconds while keeping ttfb in milliseconds", () => {
+  it("renders network summary TTFT and response duration without legacy latency fields", () => {
     render(
       <InvocationRecordsSummaryCards focus="network" summary={createSummary()} isLoading={false} />,
     );
 
     const text = host?.textContent ?? "";
-    expect(text).toContain("10 ms");
-    expect(text).toContain("12 ms");
-    expect(text).toContain("0.02 s");
-    expect(text).toContain("0.025 s");
+    expect(text).toContain("620 ms");
+    expect(text).toContain("910 ms");
+    expect(text).toContain("1.45 s");
+    expect(text).toContain("2.02 s");
+    expect(text).not.toContain("records.summary.network.avgTtfb");
+    expect(text).not.toContain("records.summary.network.avgTotal");
   });
 
-  it("renders network record first-response-byte totals in seconds", () => {
+  it("renders network record TTFT in seconds without deriving it from TTFB", () => {
     render(
       <InvocationRecordsTable
         focus="network"
@@ -130,6 +132,8 @@ describe("records stale-data rendering", () => {
             tReqParseMs: 100,
             tUpstreamConnectMs: 100,
             tUpstreamTtfbMs: 118.2,
+            firstTokenMs: 620,
+            tUpstreamStreamMs: 480,
             tTotalMs: 910.4,
           }),
         ]}
@@ -138,8 +142,9 @@ describe("records stale-data rendering", () => {
     );
 
     const text = host?.textContent ?? "";
-    expect(text).toContain("0.518 s");
-    expect(text).toContain("0.91 s");
+    expect(text).toContain("0.62 s");
+    expect(text).toContain("0.48 s");
+    expect(text).not.toContain("0.91 s");
   });
 
   it("keeps table rows visible when a refresh error arrives", () => {

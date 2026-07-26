@@ -185,9 +185,9 @@ function buildDashboardActivityResponse({
       tokensPerMinute: 610,
       spendRate: 0.73,
       firstByteAvgMs: 2145,
-      firstResponseByteTotalAvgMs: 2145,
+      firstTokenAvgMs: 2145,
       avgTotalMs: 12_650,
-      currentFirstResponseByteTotalAvgMs: 2145,
+      currentFirstTokenAvgMs: 2145,
       currentAvgTotalMs: 12_650,
       inProgressInvocationCount: 8,
       retryInvocationCount: 1,
@@ -240,9 +240,9 @@ function buildDashboardActivityResponse({
       tokensPerMinute: 490,
       spendRate: 0.45,
       firstByteAvgMs: 803,
-      firstResponseByteTotalAvgMs: 803,
+      firstTokenAvgMs: 803,
       avgTotalMs: 9140,
-      currentFirstResponseByteTotalAvgMs: 803,
+      currentFirstTokenAvgMs: 803,
       currentAvgTotalMs: 9140,
       inProgressInvocationCount: 3,
       retryInvocationCount: 0,
@@ -337,8 +337,8 @@ function buildTimeseriesPoints({
       totalTokens: totalCount * 3200,
       cacheInputTokens: totalCount * 720,
       totalCost: Number((totalCount * 0.018).toFixed(4)),
-      firstResponseByteTotalSampleCount: totalCount,
-      firstResponseByteTotalAvgMs: totalCount > 0 ? 760 + ((index * 19) % 280) : null,
+      firstTokenSampleCount: totalCount,
+      firstTokenAvgMs: totalCount > 0 ? 760 + ((index * 19) % 280) : null,
     } satisfies TimeseriesPoint;
   });
 }
@@ -389,9 +389,8 @@ function buildTodayTimeseriesPoints({
       totalTokens: tokenTotals[index] ?? 0,
       cacheInputTokens: Math.round((tokenTotals[index] ?? 0) * 0.23),
       totalCost: Number(((costCents[index] ?? 0) / 100).toFixed(2)),
-      firstResponseByteTotalSampleCount: successCount + failureCount,
-      firstResponseByteTotalAvgMs:
-        successCount + failureCount > 0 ? 820 + ((index * 37) % 340) : null,
+      firstTokenSampleCount: successCount + failureCount,
+      firstTokenAvgMs: successCount + failureCount > 0 ? 820 + ((index * 37) % 340) : null,
     } satisfies TimeseriesPoint;
   });
 }

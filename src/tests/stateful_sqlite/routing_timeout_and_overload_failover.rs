@@ -2245,6 +2245,7 @@ async fn gate_pool_initial_response_stream_keeps_non_overload_response_failed_on
     let PoolInitialResponseGateOutcome::Forward {
         response,
         prefetched_bytes,
+        ..
     } = outcome
     else {
         panic!("non-overload response.failed should stay on the original stream");
@@ -2299,6 +2300,7 @@ async fn gate_pool_initial_response_stream_preserves_first_forward_event_boundar
     let PoolInitialResponseGateOutcome::Forward {
         response,
         prefetched_bytes,
+        ..
     } = outcome
     else {
         panic!("response.completed should stay on the original stream");

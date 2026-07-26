@@ -71,9 +71,9 @@
 - Dashboard 快捷策略保存必须使用乐观 UI 与 1 秒 debounce；debounce 窗口内只提交最终值，失败时回滚到最近已提交状态，并在账号卡内暴露可见错误。保存复用 `PATCH /api/pool/upstream-accounts/:id` 的 `routingRule` payload，不新增 mutation endpoint。
 - 账号卡右侧必须提供齿轮 icon button；点击后打开当前账号详情的 `routing` 标签页。
 - Dashboard 实时 KPI 与账号标题行里的 `tokensPerMinute` / `spendRate` 必须统一使用后端 `rolling_60s_live_mean` 合同：以响应 `rangeEnd` 为窗口结束时刻，回看最近 60 秒滚动窗口；`TPM` 分子仅累加成功、失败分类为 `none` 且 `cost` 非空的合格调用 token，`cost=0` 仍计入；`消费速率` 直接使用该窗口 cost 聚合。最近 60 秒没有合格流量时必须返回 `TPM=0`、`消费速率=0`，不得沿用旧值。`requestCount`、`totalTokens`、`totalCost`、recent 调用与排序继续使用所选 range 的总量口径。
-- Dashboard 顶部实时 `首字用时` 与 `响应时间` 必须先读取同一个最近 60 秒滚动窗口：`currentFirstResponseByteTotalAvgMs` 统计 live/terminal success-latency 样本里的首字总耗时 `RQ + PARSE + CONNECT + TTFB`，`currentAvgTotalMs` 只统计终态成功且 `t_total_ms >= 0` 的样本。若最近 60 秒没有各自有效样本，则必须回退到当前所选 range 内最近一次有效结果；只有当前 range 从未出现有效样本时才返回 `null` 并显示 `—`。
+- Dashboard 顶部实时 `TTFT` 与 `响应时间` 必须先读取同一个最近 60 秒滚动窗口：`currentFirstTokenAvgMs` 只统计 `#6qe6u` 定义的真实首 Token 样本，窗口无样本时返回 `null` 并显示 `—`，不得从范围均值、TTFB 或旧累计首字节回填；`currentAvgTotalMs` 只统计终态成功且 `t_total_ms >= 0` 的样本，并保留当前所选 range 最近一次有效总响应时间的既有回退。`currentFirstResponseByteTotalAvgMs` 仅作兼容读取，不得作为 TTFT fallback。
 - 已选中上游账号的 pool running 调用必须在账号活动 live rows、账号卡 `inProgressInvocationCount` / `retryInvocationCount` 与 account-scoped summary 中归属到该账号；当 invocation payload 尚未写入 `upstreamAccountId` 时，可以用同 `invokeId` 的 `pool_upstream_request_attempts.upstream_account_id` 作为读侧 fallback，并且账号级 retry 计数必须基于该 fallback 后的账号重新判定。
-- 单账号卡周期统计必须改为四组：`首字用时 + 响应时间`、`请求数 + 成功 / 失败 / 其他`、`成本 + 失败 / 失败成本比率(%)`、`Token + 缓存命中率 / 失败`。前者为主参数，后者为附加参数；成本组里的失败成本比率必须按 `failureCost / totalCost` 计算，不得复用请求失败率。
+- 单账号卡周期统计必须改为四组：`TTFT + 响应时间`、`请求数 + 成功 / 失败 / 其他`、`成本 + 失败 / 失败成本比率(%)`、`Token + 缓存命中率 / 失败`。TTFT 只读取 `firstTokenAvgMs`；成本组里的失败成本比率必须按 `failureCost / totalCost` 计算，不得复用请求失败率。
 - 单账号卡四组周期统计必须以整张统计卡作为 hover / focus / click / long-press 的浮层触发区域；浮层顶部展示该卡主字段和值，下方按“当前字段 / 相关数据”分组明确列出字段名和值，不得只展示裸数值。
 - 单账号卡四组周期统计的卡内分解段落不得再各自挂载独立 tooltip，避免在整卡 tooltip 内形成嵌套 trigger；recent 区标题行右侧状态分解不受此限制，继续保留自身 hover/title 行为。
 - 单账号卡四组周期统计浮层的补充数据最多 3 项，且只能来自账号活动接口已有字段或前端可安全计算值；不得为了 tooltip 新增后端字段、接口或改变聚合口径。
@@ -202,7 +202,7 @@
 - Given 账号状态为异常/注意态，When 账号卡渲染，Then 状态 badge 集合只显示异常/注意态；点击该集合打开账号详情 `healthEvents` 标签页。
 - Given 账号卡标题区同时存在多个异常/注意状态，When 渲染 `上游拒绝 / 限流` 等 badge，Then 每个 badge 直接并排显示，不再出现把它们整体包起来的外层 chip。
 - Given 用户点击账号卡齿轮按钮，When 打开账号详情，Then 必须进入 `routing` 标签页。
-- Given 查看账号卡周期统计，When 卡片渲染完成，Then 可见四组统计：`首字用时 + 响应时间`、`请求数 + 成功 / 失败 / 其他`、`成本 + 失败 / 失败成本比率(%)`、`Token + 缓存命中率 / 失败`，且所有数值使用滚动数字效果；当 `failureCost=0` 时，成本组失败成本比率显示为 `0%`。
+- Given 查看账号卡周期统计，When 卡片渲染完成，Then 可见四组统计：`TTFT + 响应时间`、`请求数 + 成功 / 失败 / 其他`、`成本 + 失败 / 失败成本比率(%)`、`Token + 缓存命中率 / 失败`，且 TTFT 不从 TTFB 或旧累计首字节字段回退；当 `failureCost=0` 时，成本组失败成本比率显示为 `0%`。
 - Given 查看账号卡四组周期统计，When 对任一统计卡 hover、focus、点击或移动端长按，Then 整张统计卡打开结构化浮层，浮层明确展示主字段名和值、卡面已有分解字段名和值，以及 0 到 3 个相关补充数据。
 - Given 查看账号卡四组周期统计，When 卡片常驻态渲染完成，Then 卡内分解段落不再各自创建独立 tooltip trigger，避免和整卡浮层形成嵌套触发区域。
 - Given 两个工作区视图分别选择了不同排序，When 切换标签或刷新页面，Then 每个标签恢复自己的选择，并显示对应排序名称。
@@ -279,7 +279,7 @@ PR: include
 - source_type: demo_runtime
   story_id_or_title: `dashboard?demoScene=attention`
   scenario: `top realtime KPI and account headers share the same last complete 1m bucket`
-  evidence_note: 验证顶部实时 `TPM / 消费速率 / 首字用时`、账号标题行实时 `TPM / 消费速率` 与账号延迟主卡都统一切到后端 `rolling_60s_live_mean`。画面中实时吞吐空窗时显式返回 `0`，而延迟窗口空窗时继续保留当前 range 最近一次有效结果，不再由完整分钟 bucket、timeseries recent snapshot 或范围均值混算当前值。
+  evidence_note: 该截图仅验证顶部与账号卡的 `rolling_60s_live_mean` 布局和回退交互；其中旧“首字用时”数值来自已废止的累计首字节口径，不构成当前 TTFT 语义证据。当前 TTFT 以 `#6qe6u` 的 `firstToken*` 合同及其视觉证据为准。
   image:
   PR: include
   ![Dashboard 最近完整 1 分钟实时 KPI 证据](./assets/dashboard-last-complete-1m-sma-demo.png)
@@ -453,10 +453,10 @@ PR: include
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
-  scenario: `first-response-byte-total desktop card`
-  evidence_note: 验证账号卡“首字用时”主值使用 owner-facing 的首字总耗时口径；当后端同时返回阶段级 `firstByteAvgMs` 与显式 `firstResponseByteTotalAvgMs` 时，卡面主值显示秒级总耗时而不是被极小的上游首字节时延误导成 `0ms`。
+  scenario: `legacy first-response-byte-total desktop card`
+  evidence_note: 历史截图，记录旧账号卡曾用请求阶段累计首字节替代阶段级 TTFB；该口径现已由 `#6qe6u` 废止，不得解读为 TTFT。当前账号卡只读取 `firstTokenAvgMs`，网络首字节只以 `TTFB / 上游首字节` 展示。
   image:
-  ![Dashboard 上游账号首字总耗时证据](./assets/dashboard-upstream-account-first-byte-total.png)
+  ![Dashboard 上游账号旧累计首字节历史证据](./assets/dashboard-upstream-account-first-byte-total.png)
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`

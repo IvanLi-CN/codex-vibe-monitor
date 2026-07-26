@@ -281,6 +281,7 @@ pub(crate) async fn proxy_openai_v1_common(
         proxy_request_permit,
         admitted_runtime_snapshot,
         downstream_request_observer,
+        started_at,
     ))
     .await
     {
@@ -726,11 +727,12 @@ impl ProxyUpstreamResponseBody {
         }
     }
 
-    async fn into_first_chunk(self) -> Result<(Self, Option<Bytes>), String> {
+    async fn into_first_chunk(self) -> Result<(Self, Option<Bytes>, Option<Instant>), String> {
         match self {
             Self::Reqwest(mut response) => {
                 let first_chunk = response.chunk().await.map_err(|err| err.to_string())?;
-                Ok((Self::Reqwest(response), first_chunk))
+                let received_at = first_chunk.as_ref().map(|_| Instant::now());
+                Ok((Self::Reqwest(response), first_chunk, received_at))
             }
             Self::Axum(response) => {
                 let (parts, body) = response.into_parts();
@@ -740,8 +742,9 @@ impl ProxyUpstreamResponseBody {
                     Some(Err(err)) => return Err(err.to_string()),
                     None => None,
                 };
+                let received_at = first_chunk.as_ref().map(|_| Instant::now());
                 let response = Response::from_parts(parts, Body::from_stream(stream));
-                Ok((Self::Axum(response), first_chunk))
+                Ok((Self::Axum(response), first_chunk, received_at))
             }
         }
     }
@@ -807,7 +810,7 @@ pub(crate) async fn read_pool_upstream_first_chunk_with_timeout(
     response: ProxyUpstreamResponseBody,
     total_timeout: Duration,
     started: Instant,
-) -> Result<(ProxyUpstreamResponseBody, Option<Bytes>), String> {
+) -> Result<(ProxyUpstreamResponseBody, Option<Bytes>, Option<Instant>), String> {
     let Some(timeout_budget) = remaining_timeout_budget(total_timeout, started.elapsed()) else {
         return Err(pool_upstream_timeout_message(
             total_timeout,
@@ -835,6 +838,7 @@ pub(crate) struct PoolUpstreamResponse {
     pub(crate) attempt_started_at_utc: DateTime<Utc>,
     pub(crate) first_byte_latency_ms: f64,
     pub(crate) first_chunk: Option<Bytes>,
+    pub(crate) first_chunk_received_at: Option<Instant>,
     pub(crate) pending_attempt_record: Option<PendingPoolAttemptRecord>,
     pub(crate) deferred_early_phase_cleanup_guard: Option<PoolEarlyPhaseOrphanCleanupGuard>,
     pub(crate) live_attempt_activity_lease: Option<PoolLiveAttemptActivityLease>,

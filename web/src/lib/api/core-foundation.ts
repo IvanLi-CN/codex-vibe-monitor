@@ -384,6 +384,7 @@ export interface ApiInvocation {
   tReqParseMs?: number | null;
   tUpstreamConnectMs?: number | null;
   tUpstreamTtfbMs?: number | null;
+  firstTokenMs?: number | null;
   tUpstreamStreamMs?: number | null;
   tRespParseMs?: number | null;
   tPersistMs?: number | null;
@@ -609,6 +610,10 @@ export interface InvocationTokenSummary {
 export interface InvocationNetworkSummary {
   avgTtfbMs?: number | null;
   p95TtfbMs?: number | null;
+  avgFirstTokenMs?: number | null;
+  p95FirstTokenMs?: number | null;
+  avgResponseDurationMs?: number | null;
+  p95ResponseDurationMs?: number | null;
   avgTotalMs?: number | null;
   p95TotalMs?: number | null;
   maxTotalMs?: number | null;
@@ -906,6 +911,7 @@ export interface ModelPerformanceMetrics {
   streamingResponseRate?: number | null;
   avgResponseMs?: number | null;
   avgFirstResponseByteTotalMs?: number | null;
+  avgFirstTokenMs?: number | null;
   wallClockUsageDurationMs?: number | null;
   cumulativeUsageDurationMs?: number | null;
   parallelism?: number | null;
@@ -956,9 +962,12 @@ export interface UpstreamAccountActivityAccount {
   spendRate?: number | null;
   firstByteAvgMs?: number | null;
   firstResponseByteTotalAvgMs?: number | null;
+  firstTokenAvgMs?: number | null;
   avgTotalMs?: number | null;
+  currentFirstTokenAvgMs?: number | null;
   currentFirstResponseByteTotalAvgMs?: number | null;
   currentAvgTotalMs?: number | null;
+  currentAvgResponseMs?: number | null;
   inProgressInvocationCount?: number | null;
   inProgressPhaseCounts?: InvocationPhaseCounts | null;
   retryInvocationCount?: number | null;
@@ -989,7 +998,9 @@ export interface DashboardActivitySummary {
   tokensPerMinute?: number | null;
   spendRate?: number | null;
   currentFirstResponseByteTotalAvgMs?: number | null;
+  currentFirstTokenAvgMs?: number | null;
   currentAvgTotalMs?: number | null;
+  currentAvgResponseMs?: number | null;
   modelPerformance?: ModelPerformance | null;
 }
 
@@ -1132,6 +1143,9 @@ export interface TimeseriesPoint {
   firstResponseByteTotalSampleCount?: number;
   firstResponseByteTotalAvgMs?: number | null;
   firstResponseByteTotalP95Ms?: number | null;
+  firstTokenSampleCount?: number;
+  firstTokenAvgMs?: number | null;
+  firstTokenP95Ms?: number | null;
 }
 
 export interface TimeseriesResponse {
@@ -1734,6 +1748,7 @@ export interface PromptCacheConversationInvocationPreview {
   tReqParseMs?: ApiInvocation["tReqParseMs"];
   tUpstreamConnectMs?: ApiInvocation["tUpstreamConnectMs"];
   tUpstreamTtfbMs?: ApiInvocation["tUpstreamTtfbMs"];
+  firstTokenMs?: ApiInvocation["firstTokenMs"];
   tUpstreamStreamMs?: ApiInvocation["tUpstreamStreamMs"];
   tRespParseMs?: ApiInvocation["tRespParseMs"];
   tPersistMs?: ApiInvocation["tPersistMs"];
@@ -2113,6 +2128,11 @@ export function normalizeFiniteNumber(value: unknown): number | undefined {
   return value;
 }
 
+function normalizePositiveFiniteNumber(value: unknown): number | undefined {
+  const normalized = normalizeFiniteNumber(value);
+  return normalized != null && normalized > 0 ? normalized : undefined;
+}
+
 function normalizeInvocationLivePhase(value: unknown): InvocationLivePhase | null {
   if (typeof value !== "string") return null;
   const phase = value.trim().toLowerCase();
@@ -2223,6 +2243,11 @@ function normalizeTimeseriesPoint(raw: unknown): TimeseriesPoint | null {
     firstResponseByteTotalP95Ms: hasCalls
       ? (normalizeFiniteNumber(payload.firstResponseByteTotalP95Ms) ?? null)
       : null,
+    firstTokenSampleCount: hasCalls
+      ? (normalizeFiniteNumber(payload.firstTokenSampleCount) ?? 0)
+      : 0,
+    firstTokenAvgMs: hasCalls ? (normalizeFiniteNumber(payload.firstTokenAvgMs) ?? null) : null,
+    firstTokenP95Ms: hasCalls ? (normalizeFiniteNumber(payload.firstTokenP95Ms) ?? null) : null,
   };
 }
 
@@ -2849,7 +2874,8 @@ function normalizePromptCacheConversationInvocationPreview(
     tReqParseMs: normalizeFiniteNumber(payload.tReqParseMs),
     tUpstreamConnectMs: normalizeFiniteNumber(payload.tUpstreamConnectMs),
     tUpstreamTtfbMs: normalizeFiniteNumber(payload.tUpstreamTtfbMs),
-    tUpstreamStreamMs: normalizeFiniteNumber(payload.tUpstreamStreamMs),
+    firstTokenMs: normalizeFiniteNumber(payload.firstTokenMs),
+    tUpstreamStreamMs: normalizePositiveFiniteNumber(payload.tUpstreamStreamMs),
     tRespParseMs: normalizeFiniteNumber(payload.tRespParseMs),
     tPersistMs: normalizeFiniteNumber(payload.tPersistMs),
     tTotalMs: normalizeFiniteNumber(payload.tTotalMs),
@@ -3467,11 +3493,14 @@ function normalizeUpstreamAccountActivityAccount(
     spendRate: normalizeFiniteNumber(payload.spendRate),
     firstByteAvgMs: normalizeFiniteNumber(payload.firstByteAvgMs),
     firstResponseByteTotalAvgMs: normalizeFiniteNumber(payload.firstResponseByteTotalAvgMs),
+    firstTokenAvgMs: normalizeFiniteNumber(payload.firstTokenAvgMs),
     avgTotalMs: normalizeFiniteNumber(payload.avgTotalMs),
+    currentFirstTokenAvgMs: normalizeFiniteNumber(payload.currentFirstTokenAvgMs),
     currentFirstResponseByteTotalAvgMs: normalizeFiniteNumber(
       payload.currentFirstResponseByteTotalAvgMs,
     ),
     currentAvgTotalMs: normalizeFiniteNumber(payload.currentAvgTotalMs),
+    currentAvgResponseMs: normalizeFiniteNumber(payload.currentAvgResponseMs),
     inProgressInvocationCount: normalizeFiniteNumber(payload.inProgressInvocationCount),
     inProgressPhaseCounts: normalizeInvocationPhaseCounts(payload.inProgressPhaseCounts),
     retryInvocationCount: normalizeFiniteNumber(payload.retryInvocationCount),
@@ -3489,6 +3518,7 @@ function normalizeModelPerformanceMetrics(raw: unknown): ModelPerformanceMetrics
     streamingResponseRate: normalizeFiniteNumber(payload.streamingResponseRate),
     avgResponseMs: normalizeFiniteNumber(payload.avgResponseMs),
     avgFirstResponseByteTotalMs: normalizeFiniteNumber(payload.avgFirstResponseByteTotalMs),
+    avgFirstTokenMs: normalizeFiniteNumber(payload.avgFirstTokenMs),
     wallClockUsageDurationMs: normalizeFiniteNumber(payload.wallClockUsageDurationMs),
     cumulativeUsageDurationMs: normalizeFiniteNumber(payload.cumulativeUsageDurationMs),
     parallelism: normalizeFiniteNumber(payload.parallelism),
@@ -3581,7 +3611,9 @@ function normalizeDashboardActivityResponse(raw: unknown): DashboardActivityResp
       currentFirstResponseByteTotalAvgMs: normalizeFiniteNumber(
         summaryPayload.currentFirstResponseByteTotalAvgMs,
       ),
+      currentFirstTokenAvgMs: normalizeFiniteNumber(summaryPayload.currentFirstTokenAvgMs),
       currentAvgTotalMs: normalizeFiniteNumber(summaryPayload.currentAvgTotalMs),
+      currentAvgResponseMs: normalizeFiniteNumber(summaryPayload.currentAvgResponseMs),
       modelPerformance: normalizeModelPerformance(summaryPayload.modelPerformance),
     },
     networkLiveBucket: normalizeDashboardNetworkTimeseriesPoint(payload.networkLiveBucket),

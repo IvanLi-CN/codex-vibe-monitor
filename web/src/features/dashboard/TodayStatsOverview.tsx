@@ -575,7 +575,7 @@ export function TodayStatsOverview({
     !loading && !rateLoading && (rateError != null || rate == null || rate.available === false);
   const tokensPerMinuteUnavailable = rateUnavailable;
   const performanceComparisonUnavailable = false;
-  const responseTimeCurrentValue = rate?.currentFirstResponseByteTotalAvgMs ?? null;
+  const responseTimeCurrentValue = rate?.currentFirstTokenAvgMs ?? null;
   const responseTimeCurrentUnavailable = rateUnavailable || responseTimeCurrentValue == null;
   const tokensPerMinute = rate?.tokensPerMinute ?? 0;
   const spendRate = rate?.spendRate ?? 0;
@@ -918,8 +918,8 @@ export function TodayStatsOverview({
               },
               {
                 label: t("dashboard.today.responseTime"),
-                valueSpec: buildLatencyValueSpec(rate?.currentAvgTotalMs ?? null, localeTag),
-                valueTestId: "today-stats-secondary-response-time-avg-total",
+                valueSpec: buildLatencyValueSpec(rate?.currentAvgResponseMs ?? null, localeTag),
+                valueTestId: "today-stats-secondary-response-time-avg-response",
               },
             ]}
             metricDetails={

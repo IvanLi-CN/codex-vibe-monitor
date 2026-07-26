@@ -254,6 +254,7 @@ export const STORYBOOK_INVOCATION_RECORDS: ApiInvocation[] = [
     tReqParseMs: 1,
     tUpstreamConnectMs: 9330,
     tUpstreamTtfbMs: 0,
+    firstTokenMs: 9360,
     tUpstreamStreamMs: 10080,
     tRespParseMs: 1,
     tPersistMs: 1,
@@ -746,7 +747,7 @@ export function createStoryInvocationResponseBodiesById(records: ApiInvocation[]
   return responseBodiesById;
 }
 
-export const STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS: ApiInvocation[] = [
+export const STORYBOOK_TTFT_RESPONSE_DURATION_RECORDS: ApiInvocation[] = [
   STORYBOOK_INVOCATION_RECORDS[5]!,
   STORYBOOK_INVOCATION_RECORDS[4]!,
   STORYBOOK_INVOCATION_RECORDS[1]!,
@@ -772,11 +773,11 @@ export function summarizeInvocationRecords(records: ApiInvocation[]) {
   const totalCost = sum(records.map((record) => record.cost ?? 0));
   const successCount = records.filter((record) => record.status === "success").length;
   const failureCount = records.filter((record) => record.status === "failed").length;
-  const ttfbValues = records
-    .map((record) => resolveNumericValue(record.tUpstreamTtfbMs))
+  const firstTokenValues = records
+    .map((record) => resolveNumericValue(record.firstTokenMs))
     .filter((value): value is number => value != null);
-  const totalMsValues = records
-    .map((record) => resolveNumericValue(record.tTotalMs))
+  const responseDurationValues = records
+    .map((record) => resolveNumericValue(record.tUpstreamStreamMs))
     .filter((value): value is number => value != null);
 
   const stats: StatsResponse = {
@@ -804,15 +805,16 @@ export function summarizeInvocationRecords(records: ApiInvocation[]) {
   };
 
   const network: InvocationNetworkSummary = {
-    avgTtfbMs:
-      ttfbValues.length > 0 ? Number((sum(ttfbValues) / ttfbValues.length).toFixed(2)) : null,
-    p95TtfbMs: percentile(ttfbValues, 0.95),
-    avgTotalMs:
-      totalMsValues.length > 0
-        ? Number((sum(totalMsValues) / totalMsValues.length).toFixed(2))
+    avgFirstTokenMs:
+      firstTokenValues.length > 0
+        ? Number((sum(firstTokenValues) / firstTokenValues.length).toFixed(2))
         : null,
-    p95TotalMs: percentile(totalMsValues, 0.95),
-    maxTotalMs: totalMsValues.length > 0 ? Math.max(...totalMsValues) : null,
+    p95FirstTokenMs: percentile(firstTokenValues, 0.95),
+    avgResponseDurationMs:
+      responseDurationValues.length > 0
+        ? Number((sum(responseDurationValues) / responseDurationValues.length).toFixed(2))
+        : null,
+    p95ResponseDurationMs: percentile(responseDurationValues, 0.95),
   };
 
   const exception: InvocationExceptionSummary = {

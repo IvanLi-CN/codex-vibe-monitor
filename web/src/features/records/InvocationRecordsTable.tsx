@@ -77,8 +77,8 @@ interface InvocationRecordsRowViewModel {
   imageIntentDisplay: ReturnType<typeof buildInvocationDetailViewModel>["imageIntentDisplay"];
   errorMessage: string;
   collapsedErrorSummary: string;
-  totalLatencyValue: string;
-  firstResponseByteTotalValue: string;
+  responseDurationValue: string;
+  firstTokenValue: string;
   firstByteLatencyValue: string;
   responseContentEncodingValue: string;
   localCostValue: string;
@@ -234,12 +234,10 @@ function renderFocusSummary(
           <dd className="flex justify-end">
             {renderEndpointSummary(row.endpointDisplay, t, "text-[10px]")}
           </dd>
-          <dt className="text-base-content/60">
-            {t("records.table.network.firstResponseByteTotal")}
-          </dt>
-          <dd className="truncate text-right font-mono">{row.firstResponseByteTotalValue}</dd>
-          <dt className="text-base-content/60">{t("records.table.network.totalMs")}</dt>
-          <dd className="truncate text-right font-mono">{row.totalLatencyValue}</dd>
+          <dt className="text-base-content/60">{t("records.table.network.firstToken")}</dt>
+          <dd className="truncate text-right font-mono">{row.firstTokenValue}</dd>
+          <dt className="text-base-content/60">{t("records.table.network.responseDuration")}</dt>
+          <dd className="truncate text-right font-mono">{row.responseDurationValue}</dd>
           <dt className="text-base-content/60">{t("records.table.network.requesterIp")}</dt>
           <dd className="truncate text-right font-mono">
             {formatOptionalText(row.record.requesterIp)}
@@ -366,18 +364,18 @@ function renderDetailSummaryStrip(
 
         <section className="space-y-2 border-t border-base-300/60 pt-4">
           <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/60">
-            {t("table.latency.firstByteTotal")}
+            {t("table.latency.firstTokenResponse")}
           </div>
           <dl className="space-y-2 text-xs">
             <div className="grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-start gap-3">
-              <dt className="text-base-content/60">{t("records.table.network.totalMs")}</dt>
-              <dd className="min-w-0 text-right font-mono">{row.totalLatencyValue}</dd>
+              <dt className="text-base-content/60">{t("records.table.network.firstToken")}</dt>
+              <dd className="min-w-0 text-right font-mono">{row.firstTokenValue}</dd>
             </div>
             <div className="grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-start gap-3">
               <dt className="text-base-content/60">
-                {t("records.table.network.firstResponseByteTotal")}
+                {t("records.table.network.responseDuration")}
               </dt>
-              <dd className="min-w-0 text-right font-mono">{row.firstResponseByteTotalValue}</dd>
+              <dd className="min-w-0 text-right font-mono">{row.responseDurationValue}</dd>
             </div>
             <div className="grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-start gap-3">
               <dt className="text-base-content/60">{t("table.details.httpCompression")}</dt>
@@ -472,15 +470,13 @@ function renderDetailSummaryStrip(
 
       <div className="rounded-xl border border-base-300/70 bg-base-100/65 p-3">
         <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/60">
-          {t("table.latency.firstByteTotal")}
+          {t("table.latency.firstTokenResponse")}
         </div>
         <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-          <dt className="text-base-content/60">{t("records.table.network.totalMs")}</dt>
-          <dd className="truncate text-right font-mono">{row.totalLatencyValue}</dd>
-          <dt className="text-base-content/60">
-            {t("records.table.network.firstResponseByteTotal")}
-          </dt>
-          <dd className="truncate text-right font-mono">{row.firstResponseByteTotalValue}</dd>
+          <dt className="text-base-content/60">{t("records.table.network.firstToken")}</dt>
+          <dd className="truncate text-right font-mono">{row.firstTokenValue}</dd>
+          <dt className="text-base-content/60">{t("records.table.network.responseDuration")}</dt>
+          <dd className="truncate text-right font-mono">{row.responseDurationValue}</dd>
           <dt className="text-base-content/60">{t("table.details.httpCompression")}</dt>
           <dd className="truncate text-right font-mono">{row.responseContentEncodingValue}</dd>
         </dl>
@@ -514,7 +510,6 @@ export function InvocationRecordsTable({
   const { t, locale } = useTranslation();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [drawerRecordId, setDrawerRecordId] = useState<number | null>(null);
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag]);
   const costFormatter = useMemo(
@@ -598,7 +593,6 @@ export function InvocationRecordsTable({
           t,
           locale,
           localeTag,
-          nowMs,
           numberFormatter,
           currencyFormatter: costFormatter,
           renderAccountValue,
@@ -623,23 +617,11 @@ export function InvocationRecordsTable({
       t,
       locale,
       localeTag,
-      nowMs,
       numberFormatter,
       costFormatter,
       dateTimeFormatter,
       renderAccountValue,
     ],
-  );
-
-  const hasInFlightRows = useMemo(
-    () =>
-      rows.some((row) => {
-        const normalizedStatus = (
-          resolveInvocationDisplayStatus(row.record) || "unknown"
-        ).toLowerCase();
-        return normalizedStatus === "running" || normalizedStatus === "pending";
-      }),
-    [rows],
   );
 
   useEffect(() => {
@@ -661,15 +643,6 @@ export function InvocationRecordsTable({
       return rows.some((row) => row.record.id === current) ? current : null;
     });
   }, [rows]);
-
-  useEffect(() => {
-    if (!hasInFlightRows) return;
-    setNowMs(Date.now());
-    const id = window.setInterval(() => {
-      setNowMs(Date.now());
-    }, 1000);
-    return () => window.clearInterval(id);
-  }, [hasInFlightRows]);
 
   const drawerRow = useMemo(
     () => rows.find((row) => row.record.id === drawerRecordId) ?? null,
@@ -716,8 +689,8 @@ export function InvocationRecordsTable({
         return [
           t("records.table.network.endpoint"),
           t("records.table.network.requesterIp"),
-          t("records.table.network.firstResponseByteTotal"),
-          t("records.table.network.totalMs"),
+          t("records.table.network.firstToken"),
+          t("records.table.network.responseDuration"),
         ];
       case "exception":
         return [
@@ -752,10 +725,10 @@ export function InvocationRecordsTable({
               {formatOptionalText(row.record.requesterIp)}
             </td>
             <td className="px-3 py-3 align-middle text-right font-mono text-xs">
-              {row.firstResponseByteTotalValue}
+              {row.firstTokenValue}
             </td>
             <td className="px-3 py-3 align-middle text-right font-mono text-xs">
-              {row.totalLatencyValue}
+              {row.responseDurationValue}
             </td>
           </>
         );
@@ -845,12 +818,12 @@ export function InvocationRecordsTable({
               </dd>
             </div>
             <div className="grid min-w-0 grid-cols-[4rem_minmax(0,1fr)] items-start gap-3">
-              <dt>{t("records.table.network.firstResponseByteTotal")}</dt>
-              <dd className="min-w-0 text-right font-mono">{row.firstResponseByteTotalValue}</dd>
+              <dt>{t("records.table.network.firstToken")}</dt>
+              <dd className="min-w-0 text-right font-mono">{row.firstTokenValue}</dd>
             </div>
             <div className="grid min-w-0 grid-cols-[4rem_minmax(0,1fr)] items-start gap-3">
-              <dt>{t("records.table.network.totalMs")}</dt>
-              <dd className="min-w-0 text-right font-mono">{row.totalLatencyValue}</dd>
+              <dt>{t("records.table.network.responseDuration")}</dt>
+              <dd className="min-w-0 text-right font-mono">{row.responseDurationValue}</dd>
             </div>
           </>
         );
@@ -996,11 +969,11 @@ export function InvocationRecordsTable({
                   </div>
                 )}
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-xs font-mono text-base-content/70">
-                  <span
-                    title={row.totalLatencyValue}
-                  >{`${t("table.column.totalLatencyShort")} ${row.totalLatencyValue}`}</span>
-                  <span title={row.firstResponseByteTotalValue}>
-                    {`${t("table.column.firstResponseByteTotalShort")} ${row.firstResponseByteTotalValue}`}
+                  <span title={row.firstTokenValue}>
+                    {`${t("table.column.firstTokenShort")} ${row.firstTokenValue}`}
+                  </span>
+                  <span title={row.responseDurationValue}>
+                    {`${t("table.column.responseDurationShort")} ${row.responseDurationValue}`}
                   </span>
                   <span
                     title={row.responseContentEncodingValue}

@@ -1067,9 +1067,9 @@ describe("useTimeseries natural-day range patching", () => {
           firstByteSampleCount: 1,
           firstByteAvgMs: 750,
           firstByteP95Ms: 750,
-          firstResponseByteTotalSampleCount: 1,
-          firstResponseByteTotalAvgMs: 18225.02,
-          firstResponseByteTotalP95Ms: 18225.02,
+          firstTokenSampleCount: 1,
+          firstTokenAvgMs: 18225.02,
+          firstTokenP95Ms: 18225.02,
         },
       ],
     };
@@ -1112,9 +1112,9 @@ describe("useTimeseries natural-day range patching", () => {
       firstByteSampleCount: 0,
       firstByteAvgMs: null,
       firstByteP95Ms: null,
-      firstResponseByteTotalSampleCount: 0,
-      firstResponseByteTotalAvgMs: null,
-      firstResponseByteTotalP95Ms: null,
+      firstTokenSampleCount: 0,
+      firstTokenAvgMs: null,
+      firstTokenP95Ms: null,
     });
   });
 });

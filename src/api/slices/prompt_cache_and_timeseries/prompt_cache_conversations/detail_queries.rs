@@ -150,7 +150,7 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
             .push(
                 " AS billing_service_tier, \
                  t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
-                 t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ",
+                 first_token_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ",
             )
             .push(INVOCATION_ENDPOINT_SQL)
             .push(" AS endpoint, ")

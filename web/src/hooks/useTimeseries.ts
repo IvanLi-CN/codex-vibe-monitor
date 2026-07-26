@@ -444,6 +444,9 @@ function sanitizeTimeseriesPointLatency(point: TimeseriesPoint) {
   point.firstResponseByteTotalSampleCount = 0;
   point.firstResponseByteTotalAvgMs = null;
   point.firstResponseByteTotalP95Ms = null;
+  point.firstTokenSampleCount = 0;
+  point.firstTokenAvgMs = null;
+  point.firstTokenP95Ms = null;
 }
 
 function createCountsOnlyLiveRecordDelta(delta: LiveRecordDelta): LiveRecordDelta {

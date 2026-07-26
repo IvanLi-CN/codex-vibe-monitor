@@ -720,6 +720,7 @@ class DemoModel {
       totalTokens: 2444,
       cost: 0.0062,
       tUpstreamTtfbMs: 144,
+      firstTokenMs: 782,
       tTotalMs: 1088,
     };
     this.record("注入模拟实时事件");

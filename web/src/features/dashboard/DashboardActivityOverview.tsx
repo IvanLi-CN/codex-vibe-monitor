@@ -69,9 +69,9 @@ function buildDashboardActivityRate(dashboardActivity: DashboardActivityResponse
     spendRate: dashboardActivity.summary.spendRate ?? 0,
     windowMinutes: dashboardActivity.rateWindow.windowMinutes,
     available: true,
-    currentFirstResponseByteTotalAvgMs:
-      dashboardActivity.summary.currentFirstResponseByteTotalAvgMs ?? null,
+    currentFirstTokenAvgMs: dashboardActivity.summary.currentFirstTokenAvgMs ?? null,
     currentAvgTotalMs: dashboardActivity.summary.currentAvgTotalMs ?? null,
+    currentAvgResponseMs: dashboardActivity.summary.currentAvgResponseMs ?? null,
   };
 }
 
@@ -401,9 +401,9 @@ function DashboardNaturalDayTodaySummaryOverviewSnapshotBacked({
         spendRate: dashboardActivity.summary.spendRate ?? 0,
         windowMinutes: dashboardActivity.rateWindow.windowMinutes,
         available: true,
-        currentFirstResponseByteTotalAvgMs:
-          dashboardActivity.summary.currentFirstResponseByteTotalAvgMs ?? null,
+        currentFirstTokenAvgMs: dashboardActivity.summary.currentFirstTokenAvgMs ?? null,
         currentAvgTotalMs: dashboardActivity.summary.currentAvgTotalMs ?? null,
+        currentAvgResponseMs: dashboardActivity.summary.currentAvgResponseMs ?? null,
       }}
       rateLoading={false}
       rateError={null}
@@ -478,9 +478,9 @@ function DashboardNaturalDayTodaySummaryOverviewFallback({
           spendRate: dashboardActivity.summary.spendRate ?? 0,
           windowMinutes: dashboardActivity.rateWindow.windowMinutes,
           available: true,
-          currentFirstResponseByteTotalAvgMs:
-            dashboardActivity.summary.currentFirstResponseByteTotalAvgMs ?? null,
+          currentFirstTokenAvgMs: dashboardActivity.summary.currentFirstTokenAvgMs ?? null,
           currentAvgTotalMs: dashboardActivity.summary.currentAvgTotalMs ?? null,
+          currentAvgResponseMs: dashboardActivity.summary.currentAvgResponseMs ?? null,
         }
       : null;
   const snapshotActive = upstreamAccountId == null && dashboardActivity?.range === "today";
@@ -583,9 +583,9 @@ function DashboardNaturalDayYesterdaySummaryOverviewSnapshotBacked({
         spendRate: dashboardActivity.summary.spendRate ?? 0,
         windowMinutes: dashboardActivity.rateWindow.windowMinutes,
         available: true,
-        currentFirstResponseByteTotalAvgMs:
-          dashboardActivity.summary.currentFirstResponseByteTotalAvgMs ?? null,
+        currentFirstTokenAvgMs: dashboardActivity.summary.currentFirstTokenAvgMs ?? null,
         currentAvgTotalMs: dashboardActivity.summary.currentAvgTotalMs ?? null,
+        currentAvgResponseMs: dashboardActivity.summary.currentAvgResponseMs ?? null,
       }}
       rateLoading={false}
       rateError={null}
@@ -650,9 +650,9 @@ function DashboardNaturalDayYesterdaySummaryOverviewFallback({
           spendRate: dashboardActivity.summary.spendRate ?? 0,
           windowMinutes: dashboardActivity.rateWindow.windowMinutes,
           available: true,
-          currentFirstResponseByteTotalAvgMs:
-            dashboardActivity.summary.currentFirstResponseByteTotalAvgMs ?? null,
+          currentFirstTokenAvgMs: dashboardActivity.summary.currentFirstTokenAvgMs ?? null,
           currentAvgTotalMs: dashboardActivity.summary.currentAvgTotalMs ?? null,
+          currentAvgResponseMs: dashboardActivity.summary.currentAvgResponseMs ?? null,
         }
       : null;
   const snapshotActive = upstreamAccountId == null && dashboardActivity?.range === "yesterday";

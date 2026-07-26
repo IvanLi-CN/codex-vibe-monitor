@@ -1364,6 +1364,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 attempt_started_at_utc,
                 first_byte_latency_ms,
                 first_chunk: error_body_bytes.filter(|bytes| !bytes.is_empty()),
+                first_chunk_received_at: None,
                 pending_attempt_record,
                 deferred_early_phase_cleanup_guard,
                 live_attempt_activity_lease,
@@ -1493,93 +1494,96 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     }
 
     let first_byte_started = Instant::now();
-    let (response, mut first_chunk) = match read_pool_upstream_first_chunk_with_timeout(
-        response,
-        attempt_pre_first_byte_timeout,
-        connect_started,
-    )
-    .await
-    {
-        Ok(value) => value,
-        Err(err) => {
-            if let Some((forward_proxy_scope, selected_proxy)) = forward_proxy_selection.as_ref() {
-                record_pool_account_forward_proxy_result(
+    let (response, mut first_chunk, mut first_chunk_received_at) =
+        match read_pool_upstream_first_chunk_with_timeout(
+            response,
+            attempt_pre_first_byte_timeout,
+            connect_started,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                if let Some((forward_proxy_scope, selected_proxy)) =
+                    forward_proxy_selection.as_ref()
+                {
+                    record_pool_account_forward_proxy_result(
+                        state.as_ref(),
+                        forward_proxy_scope,
+                        selected_proxy,
+                        ForwardProxyRouteResultKind::NetworkFailure,
+                    )
+                    .await;
+                }
+                let message = format!("upstream stream error before first chunk: {err}");
+                if let Err(route_err) = record_pool_route_transport_failure(
+                    &state.pool,
+                    account.account_id,
+                    sticky_key,
+                    &message,
+                    None,
+                )
+                .await
+                {
+                    warn!(
+                        account_id = account.account_id,
+                        error = %route_err,
+                        "failed to record pool live-attempt first-chunk failure"
+                    );
+                }
+                release_pool_routing_reservation(state.as_ref(), &reservation_key);
+                finalize_tracked_live_first_pool_attempt(
                     state.as_ref(),
-                    forward_proxy_scope,
-                    selected_proxy,
-                    ForwardProxyRouteResultKind::NetworkFailure,
+                    pending_attempt_record.as_ref(),
+                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                    None,
+                    Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+                    Some(message.as_str()),
+                    Some(connect_latency_ms),
+                    None,
+                    None,
                 )
                 .await;
-            }
-            let message = format!("upstream stream error before first chunk: {err}");
-            if let Err(route_err) = record_pool_route_transport_failure(
-                &state.pool,
-                account.account_id,
-                sticky_key,
-                &message,
-                None,
-            )
-            .await
-            {
-                warn!(
-                    account_id = account.account_id,
-                    error = %route_err,
-                    "failed to record pool live-attempt first-chunk failure"
+                complete_deferred_pool_early_phase_cleanup_guard(
+                    &mut deferred_early_phase_cleanup_guard,
                 );
-            }
-            release_pool_routing_reservation(state.as_ref(), &reservation_key);
-            finalize_tracked_live_first_pool_attempt(
-                state.as_ref(),
-                pending_attempt_record.as_ref(),
-                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-                None,
-                Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
-                Some(message.as_str()),
-                Some(connect_latency_ms),
-                None,
-                None,
-            )
-            .await;
-            complete_deferred_pool_early_phase_cleanup_guard(
-                &mut deferred_early_phase_cleanup_guard,
-            );
-            maybe_backfill_oauth_request_debug_from_replay_status(
-                &mut oauth_responses_debug,
-                original_uri,
-                replay_status_rx,
-                state.upstream_accounts.crypto_key.as_ref(),
-            )
-            .await;
-            return Err(PoolUpstreamError {
-                account: Some(account),
-                status: StatusCode::BAD_GATEWAY,
-                message,
-                failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
-                blocked_binding: None,
-                connect_latency_ms,
-                upstream_error_code: None,
-                upstream_error_message: None,
-                canonical_error_message: None,
-                downstream_error_message: None,
-                upstream_request_id: None,
-                proxy_binding_key_snapshot: live_first_proxy_binding_key_snapshot(
-                    state.as_ref(),
-                    forward_proxy_selection
-                        .as_ref()
-                        .map(|(_, selected_proxy)| selected_proxy),
+                maybe_backfill_oauth_request_debug_from_replay_status(
+                    &mut oauth_responses_debug,
+                    original_uri,
+                    replay_status_rx,
+                    state.upstream_accounts.crypto_key.as_ref(),
                 )
-                .await,
-                oauth_responses_debug,
-                attempt_summary: pool_attempt_summary(
-                    1,
-                    1,
-                    Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR.to_string()),
-                ),
-                requested_service_tier: attempted_requested_service_tier,
-                request_body_for_capture: attempted_request_body_for_capture,
-            });
-        }
-    };
+                .await;
+                return Err(PoolUpstreamError {
+                    account: Some(account),
+                    status: StatusCode::BAD_GATEWAY,
+                    message,
+                    failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                    blocked_binding: None,
+                    connect_latency_ms,
+                    upstream_error_code: None,
+                    upstream_error_message: None,
+                    canonical_error_message: None,
+                    downstream_error_message: None,
+                    upstream_request_id: None,
+                    proxy_binding_key_snapshot: live_first_proxy_binding_key_snapshot(
+                        state.as_ref(),
+                        forward_proxy_selection
+                            .as_ref()
+                            .map(|(_, selected_proxy)| selected_proxy),
+                    )
+                    .await,
+                    oauth_responses_debug,
+                    attempt_summary: pool_attempt_summary(
+                        1,
+                        1,
+                        Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR.to_string()),
+                    ),
+                    requested_service_tier: attempted_requested_service_tier,
+                    request_body_for_capture: attempted_request_body_for_capture,
+                });
+            }
+        };
 
     let first_byte_latency_ms = elapsed_ms(first_byte_started);
     if let Some(guard) = deferred_early_phase_cleanup_guard.as_mut() {
@@ -1670,6 +1674,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         deferred_early_phase_cleanup_guard = None;
         live_attempt_activity_lease = None;
         first_chunk = None;
+        first_chunk_received_at = None;
     }
     Ok(PoolUpstreamResponse {
         account,
@@ -1681,6 +1686,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         attempt_started_at_utc,
         first_byte_latency_ms,
         first_chunk,
+        first_chunk_received_at,
         pending_attempt_record,
         deferred_early_phase_cleanup_guard,
         live_attempt_activity_lease,

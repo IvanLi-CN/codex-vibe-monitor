@@ -22,7 +22,6 @@ import {
   type InvocationImageIntentDisplay,
   isInvocationPoolAccountRoutingInProgress,
   isPoolRouteMode,
-  resolveFirstResponseByteTotalMs,
   resolveInvocationAccountLabel,
   resolveInvocationEndpointDisplay,
   resolveInvocationImageIntentDisplay,
@@ -75,8 +74,8 @@ export interface InvocationDetailViewModel {
   imageIntentDisplay: InvocationImageIntentDisplay;
   errorMessage: string;
   collapsedErrorSummary: string;
-  totalLatencyValue: string;
-  firstResponseByteTotalValue: string;
+  responseDurationValue: string;
+  firstTokenValue: string;
   firstByteLatencyValue: string;
   responseContentEncodingValue: string;
   detailNotice: string | null;
@@ -103,7 +102,7 @@ interface BuildInvocationDetailViewModelOptions {
   t: Translator;
   locale: string;
   localeTag: string;
-  nowMs: number;
+  nowMs?: number;
   numberFormatter: Intl.NumberFormat;
   currencyFormatter: Intl.NumberFormat;
   renderAccountValue: InvocationAccountValueRenderer;
@@ -159,14 +158,14 @@ export function formatSecondsFromMilliseconds(value: number | null | undefined, 
   })} s`;
 }
 
-export function formatElapsedSecondsFromTimestamp(
-  occurredAt: string | null | undefined,
+function formatPositiveSecondsFromMilliseconds(
+  value: number | null | undefined,
   localeTag: string,
-  nowMs: number,
 ) {
-  const occurredMs = occurredAt ? Date.parse(occurredAt) : Number.NaN;
-  if (!Number.isFinite(occurredMs)) return FALLBACK_CELL;
-  return formatSecondsFromMilliseconds(Math.max(0, nowMs - occurredMs), localeTag);
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return FALLBACK_CELL;
+  }
+  return formatSecondsFromMilliseconds(value, localeTag);
 }
 
 export function formatOptionalNumber(
@@ -620,7 +619,6 @@ export function buildInvocationDetailViewModel({
   t,
   locale,
   localeTag,
-  nowMs,
   numberFormatter,
   currencyFormatter,
   renderAccountValue,
@@ -674,12 +672,9 @@ export function buildInvocationDetailViewModel({
     numberFormatter,
   );
   const outputReasoningBreakdownValue = `${t("table.column.reasoningTokensShort")} ${reasoningTokensValue}`;
-  const totalLatencyValue =
-    normalizedStatus === "running" || normalizedStatus === "pending"
-      ? formatElapsedSecondsFromTimestamp(record.occurredAt, localeTag, nowMs)
-      : formatSecondsFromMilliseconds(record.tTotalMs, localeTag);
-  const firstResponseByteTotalValue = formatSecondsFromMilliseconds(
-    resolveFirstResponseByteTotalMs(record),
+  const firstTokenValue = formatSecondsFromMilliseconds(record.firstTokenMs, localeTag);
+  const responseDurationValue = formatPositiveSecondsFromMilliseconds(
+    record.tUpstreamStreamMs,
     localeTag,
   );
   const firstByteLatencyValue = formatMilliseconds(record.tUpstreamTtfbMs);
@@ -959,7 +954,7 @@ export function buildInvocationDetailViewModel({
     },
     {
       label: t("table.details.stage.upstreamStream"),
-      value: formatSecondsFromMilliseconds(record.tUpstreamStreamMs, localeTag),
+      value: formatPositiveSecondsFromMilliseconds(record.tUpstreamStreamMs, localeTag),
     },
     {
       label: t("table.details.stage.responseParse"),
@@ -1008,8 +1003,8 @@ export function buildInvocationDetailViewModel({
     imageIntentDisplay,
     errorMessage,
     collapsedErrorSummary,
-    totalLatencyValue,
-    firstResponseByteTotalValue,
+    responseDurationValue,
+    firstTokenValue,
     firstByteLatencyValue,
     responseContentEncodingValue,
     detailNotice,

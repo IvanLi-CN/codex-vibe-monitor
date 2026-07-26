@@ -66,6 +66,7 @@ pub(crate) struct TimeseriesRecord {
     pub(crate) t_req_parse_ms: Option<f64>,
     pub(crate) t_upstream_connect_ms: Option<f64>,
     pub(crate) t_upstream_ttfb_ms: Option<f64>,
+    pub(crate) first_token_ms: Option<f64>,
 }
 
 #[derive(Debug, FromRow)]
@@ -98,6 +99,10 @@ pub(crate) struct InvocationHourlyRollupRecord {
     pub(crate) first_response_byte_total_sum_ms: f64,
     pub(crate) first_response_byte_total_max_ms: f64,
     pub(crate) first_response_byte_total_histogram: String,
+    pub(crate) first_token_sample_count: i64,
+    pub(crate) first_token_sum_ms: f64,
+    pub(crate) first_token_max_ms: f64,
+    pub(crate) first_token_histogram: String,
 }
 
 #[derive(Debug, FromRow)]
@@ -284,6 +289,10 @@ pub(crate) struct BucketAggregate {
     pub(crate) first_response_byte_total_values: Vec<f64>,
     pub(crate) first_response_byte_total_histogram: ApproxHistogramCounts,
     pub(crate) first_response_byte_total_sample_count: i64,
+    pub(crate) first_token_sum_ms: f64,
+    pub(crate) first_token_values: Vec<f64>,
+    pub(crate) first_token_histogram: ApproxHistogramCounts,
+    pub(crate) first_token_sample_count: i64,
 }
 
 impl BucketAggregate {
@@ -339,6 +348,39 @@ impl BucketAggregate {
             self.first_response_byte_total_histogram = empty_approx_histogram();
         }
         add_approx_histogram_sample(&mut self.first_response_byte_total_histogram, value);
+    }
+
+    fn record_first_token_value(&mut self, value: f64) {
+        self.first_token_sample_count += 1;
+        self.first_token_sum_ms += value;
+        self.first_token_values.push(value);
+        if self.first_token_histogram.is_empty() {
+            self.first_token_histogram = empty_approx_histogram();
+        }
+        add_approx_histogram_sample(&mut self.first_token_histogram, value);
+    }
+
+    pub(crate) fn record_first_token_sample(&mut self, first_token_ms: Option<f64>) {
+        let Some(value) = first_token_ms.filter(|value| value.is_finite() && *value >= 0.0) else {
+            return;
+        };
+        self.record_first_token_value(value);
+    }
+
+    pub(crate) fn remove_exact_first_token_sample(&mut self, first_token_ms: Option<f64>) {
+        let Some(value) = first_token_ms.filter(|value| value.is_finite() && *value >= 0.0) else {
+            return;
+        };
+        self.first_token_sample_count = self.first_token_sample_count.saturating_sub(1);
+        self.first_token_sum_ms = (self.first_token_sum_ms - value).max(0.0);
+        if let Some(index) = self
+            .first_token_values
+            .iter()
+            .position(|sample| (*sample - value).abs() <= f64::EPSILON)
+        {
+            self.first_token_values.swap_remove(index);
+        }
+        subtract_approx_histogram_sample(&mut self.first_token_histogram, value);
     }
 
     pub(crate) fn record_ttfb_sample(&mut self, status: Option<&str>, ttfb_ms: Option<f64>) {
@@ -464,6 +506,24 @@ impl BucketAggregate {
             return approx_histogram_percentile_ms(&self.first_response_byte_total_histogram, 0.95);
         }
         let mut sorted = self.first_response_byte_total_values.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        Some(percentile_sorted_f64(&sorted, 0.95))
+    }
+
+    pub(crate) fn first_token_avg_ms(&self) -> Option<f64> {
+        (self.first_token_sample_count > 0)
+            .then_some(self.first_token_sum_ms / self.first_token_sample_count as f64)
+    }
+
+    pub(crate) fn first_token_p95_ms(&self) -> Option<f64> {
+        if self.first_token_values.is_empty() {
+            return approx_histogram_percentile_ms(&self.first_token_histogram, 0.95);
+        }
+        let histogram_total: i64 = self.first_token_histogram.iter().copied().sum();
+        if histogram_total > self.first_token_values.len() as i64 {
+            return approx_histogram_percentile_ms(&self.first_token_histogram, 0.95);
+        }
+        let mut sorted = self.first_token_values.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         Some(percentile_sorted_f64(&sorted, 0.95))
     }
@@ -1084,6 +1144,7 @@ pub(crate) async fn load_invocation_hourly_source_rows_after_id(
             t_req_parse_ms,
             t_upstream_connect_ms,
             t_upstream_ttfb_ms,
+            first_token_ms,
             t_upstream_stream_ms,
             t_resp_parse_ms,
             t_persist_ms
@@ -1457,8 +1518,52 @@ pub(crate) async fn open_invocation_archive_batch_pool(
             return Err(err);
         }
     };
+    ensure_invocation_archive_first_token_compatibility(&archive_pool).await?;
 
     Ok(Some((archive_pool, temp_cleanup)))
+}
+
+async fn ensure_invocation_archive_first_token_compatibility(pool: &Pool<Sqlite>) -> Result<()> {
+    if !sqlite_table_has_column(pool, "codex_invocations", "first_token_ms").await? {
+        sqlx::query("ALTER TABLE codex_invocations ADD COLUMN first_token_ms REAL")
+            .execute(pool)
+            .await
+            .context("failed to add nullable TTFT compatibility column to archive copy")?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod ttft_archive_compatibility_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn legacy_archive_rows_expose_null_ttft_after_compatibility_upgrade() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open sqlite");
+        sqlx::query("CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .expect("create legacy invocation table");
+        sqlx::query("INSERT INTO codex_invocations (id) VALUES (1)")
+            .execute(&pool)
+            .await
+            .expect("insert legacy row");
+
+        ensure_invocation_archive_first_token_compatibility(&pool)
+            .await
+            .expect("upgrade temporary archive copy");
+
+        let first_token_ms =
+            sqlx::query_scalar::<_, Option<f64>>("SELECT first_token_ms FROM codex_invocations")
+                .fetch_one(&pool)
+                .await
+                .expect("read nullable TTFT");
+        assert_eq!(first_token_ms, None);
+    }
 }
 
 pub(crate) async fn query_upstream_account_invocation_preview_rows_from_executor<'e, E>(
@@ -1466,6 +1571,7 @@ pub(crate) async fn query_upstream_account_invocation_preview_rows_from_executor
     range: ExactUtcRange,
     source_scope: InvocationSourceScope,
     has_cost_breakdown_columns: bool,
+    has_first_token_column: bool,
 ) -> Result<Vec<crate::api::UpstreamAccountInvocationPreviewRow>>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
@@ -1479,6 +1585,11 @@ where
         "cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning"
     } else {
         "NULL AS cost_input, NULL AS cost_cache_write, NULL AS cost_cache_read, NULL AS cost_output, NULL AS cost_reasoning"
+    };
+    let first_token_ms = if has_first_token_column {
+        "first_token_ms"
+    } else {
+        "NULL AS first_token_ms"
     };
     query
         .push(crate::api::INVOCATION_PROMPT_CACHE_KEY_SQL)
@@ -1533,7 +1644,9 @@ where
              ",
         )
         .push(crate::api::INVOCATION_BILLING_SERVICE_TIER_SQL)
-        .push(" AS billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ")
+        .push(" AS billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, ")
+        .push(first_token_ms)
+        .push(", t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ")
         .push(crate::api::INVOCATION_DOWNSTREAM_STATUS_CODE_SQL)
         .push(" AS downstream_status_code, ")
         .push(crate::api::INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL)
@@ -1578,11 +1691,14 @@ pub(crate) async fn query_completed_invocation_archive_preview_rows(
         };
         let has_cost_breakdown_columns =
             sqlite_table_has_column(&archive_pool, "codex_invocations", "cost_input").await?;
+        let has_first_token_column =
+            sqlite_table_has_column(&archive_pool, "codex_invocations", "first_token_ms").await?;
         let rows = query_upstream_account_invocation_preview_rows_from_executor(
             &archive_pool,
             range,
             source_scope,
             has_cost_breakdown_columns,
+            has_first_token_column,
         )
         .await?
         .into_iter()
@@ -1885,6 +2001,17 @@ pub(crate) fn merge_invocation_hourly_rollup_delta(
             &delta.first_response_byte_total_histogram,
         )?;
     }
+    target.first_token_sample_count += delta.first_token_sample_count;
+    target.first_token_sum_ms += delta.first_token_sum_ms;
+    target.first_token_max_ms = target.first_token_max_ms.max(delta.first_token_max_ms);
+    if target.first_token_histogram.is_empty() {
+        target.first_token_histogram = delta.first_token_histogram.clone();
+    } else if !delta.first_token_histogram.is_empty() {
+        merge_approx_histogram_into(
+            &mut target.first_token_histogram,
+            &delta.first_token_histogram,
+        )?;
+    }
     Ok(())
 }
 
@@ -1898,6 +2025,7 @@ pub(crate) fn merge_invocation_hourly_rollup_delta_map(
             .or_insert_with(|| InvocationHourlyRollupDelta {
                 first_byte_histogram: empty_approx_histogram(),
                 first_response_byte_total_histogram: empty_approx_histogram(),
+                first_token_histogram: empty_approx_histogram(),
                 ..InvocationHourlyRollupDelta::default()
             });
         merge_invocation_hourly_rollup_delta(entry, delta)?;
@@ -2082,6 +2210,29 @@ pub(crate) async fn load_materialized_invocation_rollup_record(
         } else {
             "0.0 AS total_latency_sum_ms"
         };
+    let has_first_token_rollup =
+        sqlite_table_has_column(pool, "invocation_rollup_hourly", "first_token_sample_count")
+            .await?;
+    let first_token_sample_count_expr = if has_first_token_rollup {
+        "COALESCE(first_token_sample_count, 0) AS first_token_sample_count"
+    } else {
+        "0 AS first_token_sample_count"
+    };
+    let first_token_sum_ms_expr = if has_first_token_rollup {
+        "COALESCE(first_token_sum_ms, 0.0) AS first_token_sum_ms"
+    } else {
+        "0.0 AS first_token_sum_ms"
+    };
+    let first_token_max_ms_expr = if has_first_token_rollup {
+        "COALESCE(first_token_max_ms, 0.0) AS first_token_max_ms"
+    } else {
+        "0.0 AS first_token_max_ms"
+    };
+    let first_token_histogram_expr = if has_first_token_rollup {
+        "COALESCE(first_token_histogram, '[]') AS first_token_histogram"
+    } else {
+        "'[]' AS first_token_histogram"
+    };
     let query = format!(
         r#"
         SELECT
@@ -2102,7 +2253,11 @@ pub(crate) async fn load_materialized_invocation_rollup_record(
             first_response_byte_total_sample_count,
             first_response_byte_total_sum_ms,
             first_response_byte_total_max_ms,
-            first_response_byte_total_histogram
+            first_response_byte_total_histogram,
+            {first_token_sample_count_expr},
+            {first_token_sum_ms_expr},
+            {first_token_max_ms_expr},
+            {first_token_histogram_expr}
         FROM invocation_rollup_hourly
         WHERE bucket_start_epoch = ?1
           AND source = ?2
@@ -2204,6 +2359,19 @@ pub(crate) fn build_invocation_hourly_rollup_delta_record(
             .unwrap_or(0.0))
     .max(0.0);
 
+    let first_token_histogram = subtract_approx_histogram_counts(
+        &archive_delta.first_token_histogram,
+        &materialized_row
+            .map(|row| decode_approx_histogram(&row.first_token_histogram))
+            .unwrap_or_else(empty_approx_histogram),
+    );
+    let first_token_sample_count = first_token_histogram.iter().copied().sum::<i64>();
+    let first_token_sum_ms = (archive_delta.first_token_sum_ms
+        - materialized_row
+            .map(|row| row.first_token_sum_ms)
+            .unwrap_or(0.0))
+    .max(0.0);
+
     if total_count <= 0
         && success_count <= 0
         && failure_count <= 0
@@ -2214,6 +2382,7 @@ pub(crate) fn build_invocation_hourly_rollup_delta_record(
         && total_latency_sample_count <= 0
         && first_byte_sample_count <= 0
         && first_response_byte_total_sample_count <= 0
+        && first_token_sample_count <= 0
     {
         return Ok(None);
     }
@@ -2247,6 +2416,14 @@ pub(crate) fn build_invocation_hourly_rollup_delta_record(
         first_response_byte_total_histogram: encode_approx_histogram(
             &first_response_byte_total_histogram,
         )?,
+        first_token_sample_count,
+        first_token_sum_ms,
+        first_token_max_ms: if first_token_sample_count > 0 {
+            approx_histogram_percentile_ms(&first_token_histogram, 1.0).unwrap_or(0.0)
+        } else {
+            0.0
+        },
+        first_token_histogram: encode_approx_histogram(&first_token_histogram)?,
     }))
 }
 
@@ -2351,6 +2528,23 @@ pub(crate) fn build_materialized_pending_invocation_rollup_overlap_record(
             .unwrap_or(0.0),
     );
 
+    let materialized_first_token_histogram =
+        decode_approx_histogram(&materialized_row.first_token_histogram);
+    let empty_first_token_histogram = empty_approx_histogram();
+    let first_token_histogram = subtract_approx_histogram_counts(
+        &materialized_first_token_histogram,
+        completed_archive_delta
+            .map(|delta| delta.first_token_histogram.as_slice())
+            .unwrap_or(empty_first_token_histogram.as_slice()),
+    );
+    let first_token_sample_count = first_token_histogram.iter().copied().sum::<i64>();
+    let first_token_sum_ms = subtract_nonnegative_f64(
+        materialized_row.first_token_sum_ms,
+        completed_archive_delta
+            .map(|delta| delta.first_token_sum_ms)
+            .unwrap_or(0.0),
+    );
+
     if total_count <= 0
         && success_count <= 0
         && failure_count <= 0
@@ -2361,6 +2555,7 @@ pub(crate) fn build_materialized_pending_invocation_rollup_overlap_record(
         && total_latency_sample_count <= 0
         && first_byte_sample_count <= 0
         && first_response_byte_total_sample_count <= 0
+        && first_token_sample_count <= 0
     {
         return Ok(None);
     }
@@ -2394,6 +2589,14 @@ pub(crate) fn build_materialized_pending_invocation_rollup_overlap_record(
         first_response_byte_total_histogram: encode_approx_histogram(
             &first_response_byte_total_histogram,
         )?,
+        first_token_sample_count,
+        first_token_sum_ms,
+        first_token_max_ms: if first_token_sample_count > 0 {
+            approx_histogram_percentile_ms(&first_token_histogram, 1.0).unwrap_or(0.0)
+        } else {
+            0.0
+        },
+        first_token_histogram: encode_approx_histogram(&first_token_histogram)?,
     }))
 }
 
@@ -3263,6 +3466,11 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_hourly_rollup_
                     &delta.first_response_byte_total_histogram,
                 )
                 .ok()?,
+                first_token_sample_count: delta.first_token_sample_count,
+                first_token_sum_ms: delta.first_token_sum_ms,
+                first_token_max_ms: delta.first_token_max_ms,
+                first_token_histogram: encode_approx_histogram(&delta.first_token_histogram)
+                    .ok()?,
             })
         })
         .collect())
@@ -3801,6 +4009,7 @@ pub(crate) async fn load_live_invocation_summary_rows_for_cleared_buckets_up_to_
             t_req_parse_ms,
             t_upstream_connect_ms,
             t_upstream_ttfb_ms,
+            first_token_ms,
             t_upstream_stream_ms,
             t_resp_parse_ms,
             t_persist_ms
@@ -4345,6 +4554,29 @@ pub(crate) async fn query_invocation_hourly_rollup_range(
         } else {
             "0.0 AS total_latency_sum_ms"
         };
+    let has_first_token_rollup =
+        sqlite_table_has_column(pool, "invocation_rollup_hourly", "first_token_sample_count")
+            .await?;
+    let first_token_sample_count_expr = if has_first_token_rollup {
+        "COALESCE(first_token_sample_count, 0) AS first_token_sample_count"
+    } else {
+        "0 AS first_token_sample_count"
+    };
+    let first_token_sum_ms_expr = if has_first_token_rollup {
+        "COALESCE(first_token_sum_ms, 0.0) AS first_token_sum_ms"
+    } else {
+        "0.0 AS first_token_sum_ms"
+    };
+    let first_token_max_ms_expr = if has_first_token_rollup {
+        "COALESCE(first_token_max_ms, 0.0) AS first_token_max_ms"
+    } else {
+        "0.0 AS first_token_max_ms"
+    };
+    let first_token_histogram_expr = if has_first_token_rollup {
+        "COALESCE(first_token_histogram, '[]') AS first_token_histogram"
+    } else {
+        "'[]' AS first_token_histogram"
+    };
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
@@ -4365,7 +4597,11 @@ pub(crate) async fn query_invocation_hourly_rollup_range(
             first_response_byte_total_sample_count,
             first_response_byte_total_sum_ms,
             first_response_byte_total_max_ms,
-            first_response_byte_total_histogram
+            first_response_byte_total_histogram,
+            {first_token_sample_count_expr},
+            {first_token_sum_ms_expr},
+            {first_token_max_ms_expr},
+            {first_token_histogram_expr}
         FROM invocation_rollup_hourly
         WHERE bucket_start_epoch >=
         "#,

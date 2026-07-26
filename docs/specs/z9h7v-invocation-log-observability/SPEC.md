@@ -13,7 +13,7 @@
 ### Goals
 
 - 在不变更 SQLite 表结构的前提下，补齐请求级上下文字段：`requesterIp`、`promptCacheKey`、`endpoint`、`failureKind`。
-- `/api/invocations` 向前端稳定返回分阶段耗时字段，支持“首字节 / 总耗时”与完整阶段详情展示。
+- `/api/invocations` 向前端稳定返回 invocation 级 `firstTokenMs` 与分阶段耗时字段；摘要展示 `TTFT / 总耗时`，网络详情中的 `tUpstreamTtfbMs` 明确标为 `TTFB / 上游首字节`。
 - Live 与 Dashboard 共用表格统一升级，主表保持简洁，详情区保留完整诊断信息。
 - 请求详情不再展示 `source`，也不把 `source` 当作代理名兜底；代理字段仅展示 payload 中已确认的 `proxyDisplayName`。
 - 调用记录相关模型展示统一采用“响应模型优先”语义，并在请求模型与响应模型不一致时显示低干扰的上游路由差异图标。
@@ -42,7 +42,7 @@
 - 尝试详情必须提供到 `/records?attemptId=...` 的全局调用总览入口，并自动展开该最终调用的完整尝试链；旧 `requestId` 型入口只保留兼容读取，不再作为新 UI 的 attempt 跳转合同。
 - 账号详情请求 tab 中的 owner-facing 主入口必须显示 `attemptId` 作为“请求 ID”，而不是 `invokeId`；若列表需要展示调用侧次级标识，也只能显示 owner-facing 调用短 ID，不得裸露原始 `invokeId`。
 - 号池调用处于 `running` / `pending` 且已携带 `upstreamAccountName` 或 `upstreamAccountId` 时，所有共享 invocation 展示面必须用当前上游账号替代“号池路由中”fallback，并以蓝色呼吸文本表达正在路由中。
-- Dashboard 当前时间范围新增按“响应模型 / 思考程度”分组的性能明细，覆盖 TPM、流式响应速率、平均响应时长、平均首字用时、墙钟时长、累计时长与并行数；这些明细仅统计成功且已计费调用。
+- Dashboard 当前时间范围新增按“响应模型 / 思考程度”分组的性能明细，覆盖 TPM、流式响应速率、平均响应时长、平均 TTFT、墙钟时长、累计时长与并行数；TTFT 样本资格遵循 `#6qe6u`，其余性能样本继续采用本规格的成功已计费口径。
 
 ### Non-goals
 
@@ -108,7 +108,7 @@
 - 运行态号池账号提示必须复用现有账号点击路径；存在账号 ID 时，Live、Records、Dashboard working conversations 与 Dashboard 调用详情抽屉中的账号文本仍可打开上游账号详情。
 - 运行态号池账号提示必须是 text-only 蓝色语义状态，动画周期在 1500-2200ms 内；`prefers-reduced-motion: reduce` 下关闭呼吸动画但保留蓝色文本。
 - Dashboard 模型性能明细的样本资格固定为：状态为 `success` 或 `completed`、失败分类为 `none`、且 `cost` 非空；`cost=0` 仍属于已计费。模型取 `responseModel`，思考程度为空时显示“未指定”。
-- TPM 为合格调用总 token 除以当前完整选择范围的分钟数；流式响应速率为输出 token 除以上游流式响应时长；响应时长为首字至流结束的平均值；首字用时为收到调用请求至上游首字的平均值；墙钟时长为合格调用区间 `intersection([occurred_at, occurred_at + t_total_ms), [range.start, range.end))` 的并集时长；累计时长为合格调用 `t_total_ms` 直接求和；并行数为 `cumulativeUsageDurationMs / wallClockUsageDurationMs`。分母缺失、非有限值或小于等于零时，并行数显示 `—`；缺少有效样本的其他单项同样显示 `—`。
+- TPM 为合格调用总 token 除以当前完整选择范围的分钟数；流式响应速率为输出 token 除以上游流式响应时长；响应时长为完整代理总时长平均值；TTFT 为 `first_token_ms` 样本平均值，不得从 `t_upstream_ttfb_ms` 或阶段累计值计算。墙钟时长为合格调用区间 `intersection([occurred_at, occurred_at + t_total_ms), [range.start, range.end))` 的并集时长；累计时长为合格调用 `t_total_ms` 直接求和；并行数为 `cumulativeUsageDurationMs / wallClockUsageDurationMs`。分母缺失、非有限值或小于等于零时，并行数显示 `—`；缺少有效样本的其他单项同样显示 `—`。
 - `modelPerformance.total.tokensPerMinute` 与账号级模型性能总计继续使用本规格定义的成功已计费完整范围分母；Dashboard 顶部实时 `TPM / 消费速率 / 首字用时 / 响应时间` 的 owner-facing 当前值由 `z6ysw` 的 `last_complete_1m_sma` 合同负责，不复用这些完整范围总计。
 - 桌面端性能明细触发器必须支持 hover、键盘聚焦与点击保留；窄屏点击打开无横向滚动的详情抽屉。总计行置顶，模型行按累计时长降序；显式时长列顺序固定为 `墙钟时长 / 累计时长 / 并行数`；总计墙钟时长允许小于模型行墙钟时长的算术和。
 - `GET /api/invocations/locate` 必须按 `upstreamAccountId + requestId` 在 retained live records 与当前 runtime overlay 中精确定位，固定采用 `occurredAt DESC, id DESC`，返回目标所在的单个分页窗口、稳定 `snapshotId`、短生命周期 `anchorId`、`targetIndex` 与 `targetAbsoluteIndex`。

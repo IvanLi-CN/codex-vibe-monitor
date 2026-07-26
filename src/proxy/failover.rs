@@ -2737,6 +2737,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         attempt_started_at_utc,
                         first_byte_latency_ms,
                         first_chunk,
+                        first_chunk_received_at: None,
                         pending_attempt_record: pending_attempt_record.map(|mut pending| {
                             pending.connect_latency_ms = connect_latency_ms;
                             pending.first_byte_latency_ms = first_byte_latency_ms;
@@ -3019,89 +3020,176 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 );
             }
             let first_byte_started = Instant::now();
-            let (response, first_chunk) = match read_pool_upstream_first_chunk_with_timeout(
-                response,
-                attempt_pre_first_byte_timeout,
-                connect_started,
-            )
-            .await
-            {
-                Ok(value) => value,
-                Err(err) => {
-                    if let Some((forward_proxy_scope, selected_proxy)) =
-                        forward_proxy_selection.as_ref()
-                    {
-                        record_pool_account_forward_proxy_result(
-                            state.as_ref(),
-                            forward_proxy_scope,
-                            selected_proxy,
-                            ForwardProxyRouteResultKind::NetworkFailure,
-                        )
-                        .await;
-                    }
-                    let message = format!("upstream stream error before first chunk: {err}");
-                    let compact_support_observation = classify_compact_support_observation(
-                        original_uri,
-                        None,
-                        Some(message.as_str()),
-                    );
-                    let timeout_shaped_failure = pool_failure_is_timeout_shaped(
-                        PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
-                        &message,
-                    );
-                    let should_timeout_route_failover =
-                        uses_timeout_route_failover && timeout_shaped_failure;
-                    let finished_at = shanghai_now_string();
-                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                        && let Err(record_err) = finalize_pool_upstream_request_attempt(
-                            &state.pool,
-                            pending_attempt_record,
-                            finished_at.as_str(),
-                            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+            let (response, first_chunk, first_chunk_received_at) =
+                match read_pool_upstream_first_chunk_with_timeout(
+                    response,
+                    attempt_pre_first_byte_timeout,
+                    connect_started,
+                )
+                .await
+                {
+                    Ok(value) => value,
+                    Err(err) => {
+                        if let Some((forward_proxy_scope, selected_proxy)) =
+                            forward_proxy_selection.as_ref()
+                        {
+                            record_pool_account_forward_proxy_result(
+                                state.as_ref(),
+                                forward_proxy_scope,
+                                selected_proxy,
+                                ForwardProxyRouteResultKind::NetworkFailure,
+                            )
+                            .await;
+                        }
+                        let message = format!("upstream stream error before first chunk: {err}");
+                        let compact_support_observation = classify_compact_support_observation(
+                            original_uri,
                             None,
-                            None,
-                            Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
                             Some(message.as_str()),
-                            None,
-                            Some(connect_latency_ms),
-                            None,
-                            None,
-                            None,
-                            compact_support_observation
+                        );
+                        let timeout_shaped_failure = pool_failure_is_timeout_shaped(
+                            PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                            &message,
+                        );
+                        let should_timeout_route_failover =
+                            uses_timeout_route_failover && timeout_shaped_failure;
+                        let finished_at = shanghai_now_string();
+                        if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                            && let Err(record_err) = finalize_pool_upstream_request_attempt(
+                                &state.pool,
+                                pending_attempt_record,
+                                finished_at.as_str(),
+                                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                                None,
+                                None,
+                                Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+                                Some(message.as_str()),
+                                None,
+                                Some(connect_latency_ms),
+                                None,
+                                None,
+                                None,
+                                compact_support_observation
+                                    .as_ref()
+                                    .map(|value| value.status),
+                                compact_support_observation
+                                    .as_ref()
+                                    .and_then(|value| value.reason.as_deref()),
+                            )
+                            .await
+                        {
+                            warn!(
+                                invoke_id = pending_attempt_record.invoke_id,
+                                error = %record_err,
+                                "failed to persist pool first-chunk transport attempt"
+                            );
+                        }
+                        if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                            && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
+                                state.as_ref(),
+                                &pending_attempt_record.invoke_id,
+                            )
+                            .await
+                        {
+                            warn!(
+                                invoke_id = pending_attempt_record.invoke_id,
+                                error = %err,
+                                "failed to broadcast pool first-chunk failure snapshot"
+                            );
+                        }
+                        if let (Some(total_timeout), Some(started_at)) =
+                            (responses_total_timeout, attempt_total_timeout_started_at)
+                            && pool_total_timeout_exhausted(total_timeout, started_at)
+                        {
+                            let final_error = build_pool_total_timeout_exhausted_error(
+                                total_timeout,
+                                Some(PoolUpstreamError {
+                                    account: Some(account.clone()),
+                                    status: StatusCode::BAD_GATEWAY,
+                                    message: message.clone(),
+                                    canonical_error_message: None,
+                                    failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                                    blocked_binding: None,
+                                    connect_latency_ms,
+                                    upstream_error_code: None,
+                                    upstream_error_message: None,
+                                    downstream_error_message: None,
+                                    upstream_request_id: None,
+                                    proxy_binding_key_snapshot: if let Some((_, selected_proxy)) =
+                                        forward_proxy_selection.as_ref()
+                                    {
+                                        canonical_pool_attempt_proxy_binding_key(
+                                            state.as_ref(),
+                                            selected_proxy.key.as_str(),
+                                        )
+                                        .await
+                                    } else {
+                                        None
+                                    },
+                                    oauth_responses_debug: oauth_responses_debug.clone(),
+                                    attempt_summary: PoolAttemptSummary::default(),
+                                    requested_service_tier: attempted_requested_service_tier
+                                        .clone(),
+                                    request_body_for_capture: attempted_request_body_for_capture
+                                        .clone(),
+                                }),
+                                attempt_count,
+                                distinct_account_count,
+                            );
+                            if let Some(trace) = trace_context.as_ref()
+                                && let Err(err) = insert_pool_upstream_terminal_attempt(
+                                    &state.pool,
+                                    trace,
+                                    &final_error,
+                                    (attempt_count + 1) as i64,
+                                    distinct_account_count as i64,
+                                    PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
+                                )
+                                .await
+                            {
+                                warn!(
+                                    invoke_id = trace.invoke_id,
+                                    error = %err,
+                                    "failed to persist pool total-timeout exhaustion attempt"
+                                );
+                            }
+                            disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                            return Err(final_error);
+                        }
+                        let has_retry_budget =
+                            same_account_attempt + 1 < same_account_attempt_budget;
+                        if has_retry_budget && !should_timeout_route_failover {
+                            let retry_delay =
+                                fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1);
+                            info!(
+                                account_id = account.account_id,
+                                retry_index = same_account_attempt + 1,
+                                max_same_account_attempts = same_account_attempt_budget,
+                                retry_after_ms = retry_delay.as_millis(),
+                                "pool upstream first chunk failed; retrying same account"
+                            );
+                            disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                            sleep(retry_delay).await;
+                            continue;
+                        }
+                        if let Err(route_err) = record_pool_route_transport_failure_for_attempt(
+                            &state.pool,
+                            account.account_id,
+                            sticky_key,
+                            &message,
+                            trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                            pending_attempt_record
                                 .as_ref()
-                                .map(|value| value.status),
-                            compact_support_observation
-                                .as_ref()
-                                .and_then(|value| value.reason.as_deref()),
+                                .and_then(|pending| pending.attempt_id),
                         )
                         .await
-                    {
-                        warn!(
-                            invoke_id = pending_attempt_record.invoke_id,
-                            error = %record_err,
-                            "failed to persist pool first-chunk transport attempt"
-                        );
-                    }
-                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                        && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
-                            state.as_ref(),
-                            &pending_attempt_record.invoke_id,
-                        )
-                        .await
-                    {
-                        warn!(
-                            invoke_id = pending_attempt_record.invoke_id,
-                            error = %err,
-                            "failed to broadcast pool first-chunk failure snapshot"
-                        );
-                    }
-                    if let (Some(total_timeout), Some(started_at)) =
-                        (responses_total_timeout, attempt_total_timeout_started_at)
-                        && pool_total_timeout_exhausted(total_timeout, started_at)
-                    {
-                        let final_error = build_pool_total_timeout_exhausted_error(
-                            total_timeout,
-                            Some(PoolUpstreamError {
+                        {
+                            warn!(account_id = account.account_id, error = %route_err, "failed to record pool first chunk failure");
+                        }
+                        store_pool_failover_error(
+                            &mut last_error,
+                            &mut preserve_sticky_owner_terminal_error,
+                            PoolUpstreamError {
                                 account: Some(account.clone()),
                                 status: StatusCode::BAD_GATEWAY,
                                 message: message.clone(),
@@ -3129,101 +3217,18 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                                 requested_service_tier: attempted_requested_service_tier.clone(),
                                 request_body_for_capture: attempted_request_body_for_capture
                                     .clone(),
-                            }),
-                            attempt_count,
-                            distinct_account_count,
+                            },
                         );
-                        if let Some(trace) = trace_context.as_ref()
-                            && let Err(err) = insert_pool_upstream_terminal_attempt(
-                                &state.pool,
-                                trace,
-                                &final_error,
-                                (attempt_count + 1) as i64,
-                                distinct_account_count as i64,
-                                PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
-                            )
-                            .await
-                        {
-                            warn!(
-                                invoke_id = trace.invoke_id,
-                                error = %err,
-                                "failed to persist pool total-timeout exhaustion attempt"
-                            );
+                        exhausted_accounts_all_rate_limited = false;
+                        if should_timeout_route_failover {
+                            excluded_upstream_route_keys.insert(upstream_route_key.clone());
+                            overload_required_upstream_route_key = None;
+                            timeout_route_failover_pending = true;
                         }
                         disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
-                        return Err(final_error);
+                        continue 'account_loop;
                     }
-                    let has_retry_budget = same_account_attempt + 1 < same_account_attempt_budget;
-                    if has_retry_budget && !should_timeout_route_failover {
-                        let retry_delay =
-                            fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1);
-                        info!(
-                            account_id = account.account_id,
-                            retry_index = same_account_attempt + 1,
-                            max_same_account_attempts = same_account_attempt_budget,
-                            retry_after_ms = retry_delay.as_millis(),
-                            "pool upstream first chunk failed; retrying same account"
-                        );
-                        disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
-                        sleep(retry_delay).await;
-                        continue;
-                    }
-                    if let Err(route_err) = record_pool_route_transport_failure_for_attempt(
-                        &state.pool,
-                        account.account_id,
-                        sticky_key,
-                        &message,
-                        trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                        pending_attempt_record
-                            .as_ref()
-                            .and_then(|pending| pending.attempt_id),
-                    )
-                    .await
-                    {
-                        warn!(account_id = account.account_id, error = %route_err, "failed to record pool first chunk failure");
-                    }
-                    store_pool_failover_error(
-                        &mut last_error,
-                        &mut preserve_sticky_owner_terminal_error,
-                        PoolUpstreamError {
-                            account: Some(account.clone()),
-                            status: StatusCode::BAD_GATEWAY,
-                            message: message.clone(),
-                            canonical_error_message: None,
-                            failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
-                            blocked_binding: None,
-                            connect_latency_ms,
-                            upstream_error_code: None,
-                            upstream_error_message: None,
-                            downstream_error_message: None,
-                            upstream_request_id: None,
-                            proxy_binding_key_snapshot: if let Some((_, selected_proxy)) =
-                                forward_proxy_selection.as_ref()
-                            {
-                                canonical_pool_attempt_proxy_binding_key(
-                                    state.as_ref(),
-                                    selected_proxy.key.as_str(),
-                                )
-                                .await
-                            } else {
-                                None
-                            },
-                            oauth_responses_debug: oauth_responses_debug.clone(),
-                            attempt_summary: PoolAttemptSummary::default(),
-                            requested_service_tier: attempted_requested_service_tier.clone(),
-                            request_body_for_capture: attempted_request_body_for_capture.clone(),
-                        },
-                    );
-                    exhausted_accounts_all_rate_limited = false;
-                    if should_timeout_route_failover {
-                        excluded_upstream_route_keys.insert(upstream_route_key.clone());
-                        overload_required_upstream_route_key = None;
-                        timeout_route_failover_pending = true;
-                    }
-                    disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
-                    continue 'account_loop;
-                }
-            };
+                };
 
             let first_byte_latency_ms = elapsed_ms(first_byte_started);
             if let Some(guard) = early_phase_cleanup_guard.as_mut() {
@@ -3238,9 +3243,10 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 && status == StatusCode::OK
                 && response_is_event_stream
             {
-                gate_pool_initial_response_stream(
+                gate_pool_initial_response_stream_with_timestamp(
                     response,
                     first_chunk,
+                    first_chunk_received_at,
                     attempt_pre_first_byte_timeout,
                     connect_started,
                 )
@@ -3254,18 +3260,21 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 .unwrap_or(PoolInitialResponseGateOutcome::Forward {
                     response,
                     prefetched_bytes: first_chunk,
+                    prefetched_bytes_received_at: first_chunk_received_at,
                 }))
             } else {
                 Ok(PoolInitialResponseGateOutcome::Forward {
                     response,
                     prefetched_bytes: first_chunk,
+                    prefetched_bytes_received_at: first_chunk_received_at,
                 })
             };
-            let (response, first_chunk) = match initial_gate_outcome {
+            let (response, first_chunk, first_chunk_received_at) = match initial_gate_outcome {
                 Ok(PoolInitialResponseGateOutcome::Forward {
                     response,
                     prefetched_bytes,
-                }) => (response, prefetched_bytes),
+                    prefetched_bytes_received_at,
+                }) => (response, prefetched_bytes, prefetched_bytes_received_at),
                 Ok(PoolInitialResponseGateOutcome::RetrySameAccount {
                     message,
                     upstream_error_code,
@@ -3551,6 +3560,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 attempt_started_at_utc,
                 first_byte_latency_ms,
                 first_chunk,
+                first_chunk_received_at,
                 pending_attempt_record: pending_attempt_record.map(|mut pending| {
                     pending.connect_latency_ms = connect_latency_ms;
                     pending.first_byte_latency_ms = first_byte_latency_ms;

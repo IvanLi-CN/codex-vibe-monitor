@@ -247,6 +247,7 @@ function createPreview(
     tReqParseMs: overrides.tReqParseMs ?? 8,
     tUpstreamConnectMs: overrides.tUpstreamConnectMs ?? 136,
     tUpstreamTtfbMs: overrides.tUpstreamTtfbMs ?? 98,
+    firstTokenMs: overrides.firstTokenMs ?? 742,
     tUpstreamStreamMs: overrides.tUpstreamStreamMs ?? 324,
     tRespParseMs: overrides.tRespParseMs ?? 12,
     tPersistMs: overrides.tPersistMs ?? 9,
@@ -355,6 +356,7 @@ function buildRecordFromPreview(preview: PromptCacheConversationInvocationPrevie
     tReqParseMs: preview.tReqParseMs,
     tUpstreamConnectMs: preview.tUpstreamConnectMs,
     tUpstreamTtfbMs: preview.tUpstreamTtfbMs,
+    firstTokenMs: preview.firstTokenMs,
     tUpstreamStreamMs: preview.tUpstreamStreamMs,
     tRespParseMs: preview.tRespParseMs,
     tPersistMs: preview.tPersistMs,
@@ -893,9 +895,9 @@ function createUpstreamAccountActivityStoryResponse(
         tokensPerMinute: perMinuteRate(totalTokens),
         spendRate: perMinuteRate(totalCost),
         firstByteAvgMs: 480,
-        firstResponseByteTotalAvgMs: 4_380,
+        firstTokenAvgMs: 4_380,
         avgTotalMs: 18_420,
-        currentFirstResponseByteTotalAvgMs: 4_380,
+        currentFirstTokenAvgMs: 4_380,
         currentAvgTotalMs: 18_420,
         inProgressInvocationCount: 3,
         inProgressPhaseCounts: {
@@ -971,9 +973,9 @@ function createUpstreamAccountAdaptiveMetricsStoryResponse() {
   account.usageBreakdown = ADAPTIVE_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN;
   account.tokensPerMinute = perMinuteRate(account.totalTokens);
   account.spendRate = perMinuteRate(account.totalCost);
-  account.firstResponseByteTotalAvgMs = 11_090;
+  account.firstTokenAvgMs = 11_090;
   account.avgTotalMs = 26_800;
-  account.currentFirstResponseByteTotalAvgMs = 11_090;
+  account.currentFirstTokenAvgMs = 11_090;
   account.currentAvgTotalMs = 26_800;
   account.inProgressInvocationCount = 9;
   account.inProgressPhaseCounts = {
@@ -4908,7 +4910,7 @@ export const UpstreamAccountMetricTooltips: Story = {
       await userEvent.unhover(trigger);
     };
 
-    await assertMetricTooltip("latency", ["首字用时", "4.38 s", "响应时间", "阶段首字节"]);
+    await assertMetricTooltip("latency", ["TTFT", "4.38 s", "响应时间", "阶段首字节"]);
     await assertMetricTooltip("requests", ["请求数", "成功率", "75%", "非成功率"]);
     await assertMetricTooltip("cost", [
       "用量明细",
@@ -5077,7 +5079,7 @@ export const UpstreamAccountSplitHeaderTpmWidthBudget: Story = {
           tokensPerMinute: 2_027_266,
           streamingResponseRate: 19.8,
           avgResponseMs: 18_420,
-          avgFirstResponseByteTotalMs: 4_380,
+          avgFirstTokenMs: 4_380,
           wallClockUsageDurationMs: 42_000,
           cumulativeUsageDurationMs: 51_000,
           parallelism: 1.2,
@@ -5089,7 +5091,7 @@ export const UpstreamAccountSplitHeaderTpmWidthBudget: Story = {
             tokensPerMinute: 2_027_266,
             streamingResponseRate: 19.8,
             avgResponseMs: 18_420,
-            avgFirstResponseByteTotalMs: 4_380,
+            avgFirstTokenMs: 4_380,
             wallClockUsageDurationMs: 42_000,
             cumulativeUsageDurationMs: 51_000,
             parallelism: 1.2,

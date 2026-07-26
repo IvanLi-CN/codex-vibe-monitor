@@ -2534,6 +2534,7 @@ pub(crate) async fn update_existing_proxy_invocation_record_tx(
     t_req_parse_ms: Option<f64>,
     t_upstream_connect_ms: Option<f64>,
     t_upstream_ttfb_ms: Option<f64>,
+    first_token_ms: Option<f64>,
     t_upstream_stream_ms: Option<f64>,
     t_resp_parse_ms: Option<f64>,
     t_persist_ms: Option<f64>,
@@ -2579,9 +2580,10 @@ pub(crate) async fn update_existing_proxy_invocation_record_tx(
             t_req_parse_ms = ?36,
             t_upstream_connect_ms = ?37,
             t_upstream_ttfb_ms = ?38,
-            t_upstream_stream_ms = ?39,
-            t_resp_parse_ms = ?40,
-            t_persist_ms = ?41
+            first_token_ms = ?39,
+            t_upstream_stream_ms = ?40,
+            t_resp_parse_ms = ?41,
+            t_persist_ms = ?42
         WHERE id = ?1
           AND (
                 LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
@@ -2630,6 +2632,7 @@ pub(crate) async fn update_existing_proxy_invocation_record_tx(
     .bind(t_req_parse_ms)
     .bind(t_upstream_connect_ms)
     .bind(t_upstream_ttfb_ms)
+    .bind(first_token_ms)
     .bind(t_upstream_stream_ms)
     .bind(t_resp_parse_ms)
     .bind(t_persist_ms)
@@ -2727,6 +2730,10 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         t_req_parse_ms: nullable_runtime_timing_value(record.timings.t_req_parse_ms),
         t_upstream_connect_ms: nullable_runtime_timing_value(record.timings.t_upstream_connect_ms),
         t_upstream_ttfb_ms: nullable_runtime_timing_value(record.timings.t_upstream_ttfb_ms),
+        first_token_ms: record
+            .timings
+            .first_token_ms
+            .filter(|value| value.is_finite() && *value >= 0.0),
         t_upstream_stream_ms: nullable_runtime_timing_value(record.timings.t_upstream_stream_ms),
         t_resp_parse_ms: nullable_runtime_timing_value(record.timings.t_resp_parse_ms),
         t_persist_ms: nullable_runtime_timing_value(record.timings.t_persist_ms),
@@ -2849,6 +2856,7 @@ pub(crate) async fn load_persisted_api_invocation_tx(
             t_req_parse_ms,
             t_upstream_connect_ms,
             t_upstream_ttfb_ms,
+            first_token_ms,
             t_upstream_stream_ms,
             t_resp_parse_ms,
             t_persist_ms,
@@ -2946,6 +2954,47 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
     );
 
     Ok(())
+}
+
+pub(crate) fn broadcast_proxy_capture_first_token_runtime_snapshot(
+    state: &AppState,
+    invoke_id: &str,
+    occurred_at: &str,
+    first_token_ms: f64,
+) {
+    if !first_token_ms.is_finite() || first_token_ms < 0.0 {
+        return;
+    }
+    let Some(mut record) = state
+        .proxy_runtime_invocations
+        .snapshot()
+        .into_iter()
+        .find(|record| record.invoke_id == invoke_id && record.occurred_at == occurred_at)
+    else {
+        return;
+    };
+    if record.first_token_ms.is_some() {
+        return;
+    }
+    record.first_token_ms = Some(first_token_ms);
+    let outcome = state.proxy_runtime_invocations.upsert(record.clone());
+    if outcome.skipped_terminal {
+        return;
+    }
+    state
+        .dashboard_network_speed_cache
+        .observe_dashboard_activity_runtime_snapshot(&record, Utc::now());
+    if state.broadcaster.receiver_count() > 0
+        && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
+            records: vec![record],
+        })
+    {
+        warn!(
+            ?err,
+            invoke_id, "failed to broadcast first-token runtime proxy capture snapshot"
+        );
+    }
+    schedule_dashboard_activity_live_snapshot(state);
 }
 
 pub(crate) fn remove_proxy_runtime_snapshot_for_terminal(
@@ -3263,6 +3312,10 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
     let t_req_parse_ms = nullable_runtime_timing_value(record.timings.t_req_parse_ms);
     let t_upstream_connect_ms = nullable_runtime_timing_value(record.timings.t_upstream_connect_ms);
     let t_upstream_ttfb_ms = nullable_runtime_timing_value(record.timings.t_upstream_ttfb_ms);
+    let first_token_ms = record
+        .timings
+        .first_token_ms
+        .filter(|value| value.is_finite() && *value >= 0.0);
     let core_write_started = Instant::now();
     let created_at = format_utc_iso_millis(Utc::now());
     let mut core_write_path = "insert_missing";
@@ -3296,6 +3349,7 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
             t_req_parse_ms,
             t_upstream_connect_ms,
             t_upstream_ttfb_ms,
+            first_token_ms,
             None,
             None,
             None,
@@ -3349,6 +3403,7 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
                 t_req_parse_ms,
                 t_upstream_connect_ms,
                 t_upstream_ttfb_ms,
+                first_token_ms,
                 t_upstream_stream_ms,
                 t_resp_parse_ms,
                 t_persist_ms,
@@ -3357,7 +3412,7 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
             VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
                 ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36,
-                ?37, ?38, ?39, ?40, ?41, ?42, ?43
+                ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44
             )
             "#,
         )
@@ -3400,6 +3455,7 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
         .bind(t_req_parse_ms)
         .bind(t_upstream_connect_ms)
         .bind(t_upstream_ttfb_ms)
+        .bind(first_token_ms)
         .bind(None::<f64>)
         .bind(None::<f64>)
         .bind(None::<f64>)
@@ -3439,6 +3495,7 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
                 t_req_parse_ms,
                 t_upstream_connect_ms,
                 t_upstream_ttfb_ms,
+                first_token_ms,
                 None,
                 None,
                 None,
@@ -3491,6 +3548,7 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
                 t_req_parse_ms,
                 t_upstream_connect_ms,
                 t_upstream_ttfb_ms,
+                first_token_ms,
                 t_upstream_stream_ms: None,
                 t_resp_parse_ms: None,
                 t_persist_ms: None,
@@ -3678,6 +3736,7 @@ pub(crate) fn build_running_proxy_capture_record(
             t_req_parse_ms,
             t_upstream_connect_ms,
             t_upstream_ttfb_ms,
+            first_token_ms: None,
             t_upstream_stream_ms: 0.0,
             t_resp_parse_ms: 0.0,
             t_persist_ms: 0.0,

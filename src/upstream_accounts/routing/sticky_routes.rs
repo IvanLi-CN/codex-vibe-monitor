@@ -185,6 +185,7 @@ pub(crate) async fn build_account_sticky_keys_response(
                     t_req_parse_ms: row.t_req_parse_ms,
                     t_upstream_connect_ms: row.t_upstream_connect_ms,
                     t_upstream_ttfb_ms: row.t_upstream_ttfb_ms,
+                    first_token_ms: row.first_token_ms,
                     t_upstream_stream_ms: row.t_upstream_stream_ms,
                     t_resp_parse_ms: row.t_resp_parse_ms,
                     t_persist_ms: row.t_persist_ms,
@@ -360,7 +361,7 @@ pub(crate) async fn query_account_sticky_key_recent_invocations(
         .push(crate::api::INVOCATION_BILLING_SERVICE_TIER_SQL)
         .push(
             " AS billing_service_tier, \
-             t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
+             t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, first_token_ms, \
              t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ",
         )
         .push(crate::api::INVOCATION_DOWNSTREAM_STATUS_CODE_SQL)
@@ -402,7 +403,7 @@ pub(crate) async fn query_account_sticky_key_recent_invocations(
     }
 
     query
-        .push(")) SELECT sticky_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, request_model, response_model, total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, reasoning_effort, error_message, downstream_status_code, downstream_error_message, failure_kind, is_actionable, proxy_display_name, upstream_account_id, upstream_account_name, response_content_encoding, transport, requested_service_tier, service_tier, billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, endpoint, compaction_request_kind, compaction_response_kind, image_intent FROM ranked WHERE row_number <= ")
+        .push(")) SELECT sticky_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, request_model, response_model, total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, reasoning_effort, error_message, downstream_status_code, downstream_error_message, failure_kind, is_actionable, proxy_display_name, upstream_account_id, upstream_account_name, response_content_encoding, transport, requested_service_tier, service_tier, billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, first_token_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, endpoint, compaction_request_kind, compaction_response_kind, image_intent FROM ranked WHERE row_number <= ")
         .push_bind(limit_per_key)
         .push(" ORDER BY sticky_key ASC, occurred_at DESC, id DESC");
 

@@ -17,8 +17,8 @@ function buildPoint(
     failureCount: 0,
     totalTokens: 0,
     totalCost: 0,
-    firstResponseByteTotalAvgMs: avgMs,
-    firstResponseByteTotalSampleCount: sampleCount,
+    firstTokenAvgMs: avgMs,
+    firstTokenSampleCount: sampleCount,
   };
 }
 
