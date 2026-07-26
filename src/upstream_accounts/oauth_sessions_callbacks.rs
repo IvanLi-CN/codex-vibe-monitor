@@ -2258,6 +2258,7 @@ pub(crate) async fn delete_upstream_account_inner(
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    let account_group_name = account_row.group_name.clone();
     if account_row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
         sqlx::query(
             r#"
@@ -2305,6 +2306,9 @@ pub(crate) async fn delete_upstream_account_inner(
         sqlx::query("DELETE FROM pool_upstream_account_model_routes WHERE account_id = ?1")
             .bind(id)
             .execute(tx.as_mut())
+            .await
+            .map_err(internal_error_tuple)?;
+        cleanup_orphaned_group_metadata(tx.as_mut(), account_group_name.as_deref())
             .await
             .map_err(internal_error_tuple)?;
         tx.commit().await.map_err(internal_error_tuple)?;

@@ -259,6 +259,93 @@ async fn load_long_term_archive_attempt_accounts(
     Ok(accounts)
 }
 
+async fn long_term_archive_invocation_query(pool: &Pool<Sqlite>) -> Result<String> {
+    let columns = load_archive_table_columns(pool, "codex_invocations").await?;
+    let select = |column: &str| long_term_legacy_select_expr(&columns, column);
+    let status_column = if columns.contains("status") {
+        "status"
+    } else {
+        "NULL"
+    };
+    let payload = if columns.contains("payload") {
+        "payload"
+    } else {
+        "NULL"
+    };
+    let request_model = format!(
+        "CASE WHEN json_valid({payload}) THEN NULLIF(TRIM(CAST(json_extract({payload}, '$.requestModel') AS TEXT)), '') END"
+    );
+    let response_model = format!(
+        "CASE WHEN json_valid({payload}) THEN NULLIF(TRIM(CAST(json_extract({payload}, '$.responseModel') AS TEXT)), '') END"
+    );
+    let reasoning_effort = format!(
+        "CASE WHEN json_valid({payload}) THEN NULLIF(TRIM(CAST(json_extract({payload}, '$.reasoningEffort') AS TEXT)), '') END"
+    );
+    let payload_upstream_account_id = format!(
+        "CASE WHEN json_valid({payload}) THEN CAST(json_extract({payload}, '$.upstreamAccountId') AS INTEGER) END"
+    );
+    let upstream_account_id = if columns.contains("upstream_account_id") {
+        format!("COALESCE(upstream_account_id, {payload_upstream_account_id})")
+    } else {
+        payload_upstream_account_id
+    };
+    Ok(format!(
+        r#"
+        SELECT
+            id,
+            {invoke_id},
+            occurred_at,
+            {status},
+            {model},
+            {request_model} AS request_model,
+            {response_model} AS response_model,
+            {reasoning_effort} AS reasoning_effort,
+            {upstream_account_id} AS upstream_account_id,
+            NULL AS upstream_account_kind,
+            NULL AS upstream_account_name,
+            {total_tokens},
+            {output_tokens},
+            {cost},
+            {t_total_ms},
+            {t_req_read_ms},
+            {t_req_parse_ms},
+            {t_upstream_connect_ms},
+            {t_upstream_ttfb_ms},
+            {t_upstream_stream_ms},
+            {error_message}
+        FROM codex_invocations
+        WHERE LOWER(TRIM(COALESCE({status_column}, ''))) NOT IN ('running', 'pending')
+        ORDER BY occurred_at ASC, id ASC
+        "#,
+        invoke_id = select("invoke_id"),
+        status = select("status"),
+        status_column = status_column,
+        model = select("model"),
+        request_model = request_model,
+        response_model = response_model,
+        reasoning_effort = reasoning_effort,
+        upstream_account_id = upstream_account_id,
+        total_tokens = select("total_tokens"),
+        output_tokens = select("output_tokens"),
+        cost = select("cost"),
+        t_total_ms = select("t_total_ms"),
+        t_req_read_ms = select("t_req_read_ms"),
+        t_req_parse_ms = select("t_req_parse_ms"),
+        t_upstream_connect_ms = select("t_upstream_connect_ms"),
+        t_upstream_ttfb_ms = select("t_upstream_ttfb_ms"),
+        t_upstream_stream_ms = select("t_upstream_stream_ms"),
+        error_message = select("error_message"),
+    ))
+}
+
+fn long_term_legacy_select_expr(columns: &HashSet<String>, column: &str) -> String {
+    if columns.contains(column) {
+        column.to_string()
+    } else {
+        format!("NULL AS {column}")
+    }
+}
+
 #[derive(Debug, Clone, FromRow)]
 struct LongTermRollupRow {
     bucket_or_date: String,
@@ -950,37 +1037,13 @@ async fn refresh_long_term_stats_inner(
             }
             continue;
         };
-        let archive_rows = sqlx::query_as::<_, LongTermInvocationRow>(
-            r#"
-            SELECT
-                id,
-                invoke_id,
-                occurred_at,
-                status,
-                model,
-                CASE WHEN json_valid(payload) THEN NULLIF(TRIM(CAST(json_extract(payload, '$.requestModel') AS TEXT)), '') END AS request_model,
-                CASE WHEN json_valid(payload) THEN NULLIF(TRIM(CAST(json_extract(payload, '$.responseModel') AS TEXT)), '') END AS response_model,
-                CASE WHEN json_valid(payload) THEN NULLIF(TRIM(CAST(json_extract(payload, '$.reasoningEffort') AS TEXT)), '') END AS reasoning_effort,
-                CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END AS upstream_account_id,
-                NULL AS upstream_account_kind,
-                NULL AS upstream_account_name,
-                total_tokens,
-                output_tokens,
-                cost,
-                t_total_ms,
-                t_req_read_ms,
-                t_req_parse_ms,
-                t_upstream_connect_ms,
-                t_upstream_ttfb_ms,
-                t_upstream_stream_ms,
-                error_message
-            FROM codex_invocations
-            WHERE LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')
-            ORDER BY occurred_at ASC, id ASC
-            "#,
-        )
-        .fetch_all(&archive_pool)
-        .await;
+        let archive_rows = match long_term_archive_invocation_query(&archive_pool).await {
+            Ok(query) => sqlx::query_as::<_, LongTermInvocationRow>(&query)
+                .fetch_all(&archive_pool)
+                .await
+                .map_err(Into::into),
+            Err(error) => Err(error),
+        };
         archive_pool.close().await;
         drop(cleanup);
         match archive_rows {
@@ -1174,25 +1237,10 @@ async fn refresh_long_term_stats_inner(
             else {
                 continue;
             };
-            let archive_rows = sqlx::query_as::<_, LongTermInvocationRow>(
-                r#"
-                SELECT
-                    id, invoke_id, occurred_at, status, model,
-                    CASE WHEN json_valid(payload) THEN NULLIF(TRIM(CAST(json_extract(payload, '$.requestModel') AS TEXT)), '') END AS request_model,
-                    CASE WHEN json_valid(payload) THEN NULLIF(TRIM(CAST(json_extract(payload, '$.responseModel') AS TEXT)), '') END AS response_model,
-                    CASE WHEN json_valid(payload) THEN NULLIF(TRIM(CAST(json_extract(payload, '$.reasoningEffort') AS TEXT)), '') END AS reasoning_effort,
-                    CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END AS upstream_account_id,
-                    NULL AS upstream_account_kind, NULL AS upstream_account_name,
-                    total_tokens, output_tokens, cost, t_total_ms, t_req_read_ms,
-                    t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms,
-                    t_upstream_stream_ms, error_message
-                FROM codex_invocations
-                WHERE LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')
-                ORDER BY occurred_at ASC, id ASC
-                "#,
-            )
-            .fetch_all(&archive_pool)
-            .await?;
+            let archive_query = long_term_archive_invocation_query(&archive_pool).await?;
+            let archive_rows = sqlx::query_as::<_, LongTermInvocationRow>(&archive_query)
+                .fetch_all(&archive_pool)
+                .await?;
             archive_pool.close().await;
             drop(cleanup);
             for mut row in archive_rows {
