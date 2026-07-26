@@ -1468,7 +1468,8 @@ export async function fetchLongTermStatsSeries(
   dimension: LongTermStatsDimension,
   keys: string[],
 ) {
-  const search = new URLSearchParams({ range, dimension, key: keys.join(",") });
+  const search = new URLSearchParams({ range, dimension });
+  for (const key of keys) search.append("key", key);
   return fetchJson<LongTermStatsSeriesResponse>(`/api/stats/long-term/series?${search.toString()}`);
 }
 

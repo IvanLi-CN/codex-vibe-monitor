@@ -3703,7 +3703,8 @@ pub(crate) async fn load_canonicalized_upstream_account_group(
             r#"
             SELECT COUNT(*)
             FROM pool_upstream_accounts
-            WHERE TRIM(COALESCE(group_name, '')) = ?1
+            WHERE deleted_at IS NULL
+              AND TRIM(COALESCE(group_name, '')) = ?1
             "#,
         )
         .bind(group_name)

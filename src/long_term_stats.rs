@@ -63,7 +63,8 @@ pub(crate) struct LongTermRangeQuery {
 pub(crate) struct LongTermSeriesQuery {
     pub(crate) range: Option<String>,
     pub(crate) dimension: Option<String>,
-    pub(crate) key: Option<String>,
+    #[serde(default)]
+    pub(crate) key: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -559,7 +560,7 @@ async fn refresh_long_term_stats_inner(
         .unwrap_or(today)
         .and_hms_opt(0, 0, 0)
         .and_then(|value| Shanghai.from_local_datetime(&value).single())
-        .map(|value| value.with_timezone(&Utc).to_rfc3339());
+        .map(|value| db_occurred_at_lower_bound(value.with_timezone(&Utc)));
     let has_attempt_table = sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pool_upstream_request_attempts')",
     )
@@ -1502,12 +1503,9 @@ pub(crate) async fn fetch_long_term_series(
     }
     let keys = query
         .key
-        .as_deref()
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
+        .into_iter()
+        .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .map(str::to_string)
         .collect::<Vec<_>>();
     if keys.is_empty() || keys.len() > 8 {
         return Err((

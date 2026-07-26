@@ -2079,7 +2079,7 @@ function demoLongTermSeries(url: URL) {
     typeof demoLongTermOverview
   >;
   const dimension = url.searchParams.get("dimension") ?? "model";
-  const keys = (url.searchParams.get("key") ?? "").split(",").filter(Boolean);
+  const keys = url.searchParams.getAll("key").filter(Boolean);
   const source = dimension === "upstream" ? overview.upstreams : overview.models;
   return {
     status: overview.status,
