@@ -132,10 +132,10 @@ capture_scope=mock-only demo 中账号详情“健康与事件”页面视口
 页面级 capture_scope=API Key 账号详情“健康与事件”，账号级与模型级影响均使用结构化字段，不使用自然语言影响句；不展示请求模型
 
 PR: include
-![桌面账号事件模型影响](assets/account-event-impact-desktop.png)
+![桌面账号事件模型影响](./assets/account-event-impact-desktop.png)
 
 PR: include
-![移动账号事件模型影响](assets/account-event-impact-mobile.png)
+![移动账号事件模型影响](./assets/account-event-impact-mobile.png)
 
 ## Related PRs
 
