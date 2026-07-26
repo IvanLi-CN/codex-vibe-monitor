@@ -66,7 +66,13 @@
 - Storybook覆盖=通过（`bun run test-storybook`：8 files / 16 tests passed）。
 - 视觉证据目标源=ui_demo；视觉证据=存在；空白裁剪=无需裁剪；聊天回图=已展示；证据落盘=已落盘。
 - 证据绑定sha=`c6e54e13`；来源为 mock-only `demo:dev`，覆盖桌面与 390px 移动端。
-- 桌面长期统计区（KPI、趋势图、上游图表、账号表）：`assets/long-term-stats-desktop-section.png`。
-- 移动端长期统计区（响应式 KPI 与范围选择）：`assets/long-term-stats-mobile-section.png`。
-- 移动端横向滚动与虚拟化账号表：`assets/long-term-stats-mobile-table.png`。
-- PR: none（视觉证据暂不进入 PR 正文；如需 push 图片，须先取得主人明确许可）。
+- PR: include
+- 桌面长期统计区（KPI、趋势图、上游图表、账号表）：
+  ![桌面长期统计区](./assets/long-term-stats-desktop-section.png)
+- PR: include
+- 移动端长期统计区（响应式 KPI 与范围选择）：
+  ![移动端长期统计区](./assets/long-term-stats-mobile-section.png)
+- PR: include
+- 移动端横向滚动与虚拟化账号表：
+  ![移动端虚拟化账号表](./assets/long-term-stats-mobile-table.png)
+- 视觉证据已获主人授权随 PR 提交；图片来源为 mock-only `ui_demo`，不含敏感信息。
