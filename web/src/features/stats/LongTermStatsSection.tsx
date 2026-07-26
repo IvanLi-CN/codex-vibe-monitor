@@ -2,6 +2,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CartesianGrid,
+  Legend,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -22,7 +23,7 @@ import type {
   LongTermStatsOverviewResponse,
   LongTermStatsRange,
 } from "../../lib/api";
-import { chartBaseTokens, metricAccent } from "../../lib/chartTheme";
+import { chartBaseTokens, piePalette } from "../../lib/chartTheme";
 import { useTheme } from "../../theme";
 
 type MetricKey =
@@ -182,6 +183,7 @@ function LongTermChart({
 }) {
   const { themeMode } = useTheme();
   const colors = chartBaseTokens(themeMode);
+  const seriesColors = piePalette(themeMode);
   const chartData = mergeSeriesPoints(series, metric);
   if (series.length === 0 || chartData.length === 0) {
     return (
@@ -212,13 +214,14 @@ function LongTermChart({
               String(key),
             ]}
           />
+          <Legend />
           {series.map((item, index) => (
             <Line
               key={item.seriesKey}
               type="monotone"
               dataKey={item.seriesKey}
               name={item.displayName}
-              stroke={index === 0 ? metricColors[metric] : metricAccent("totalCount", themeMode)}
+              stroke={seriesColors[index % seriesColors.length] ?? metricColors[metric]}
               strokeWidth={2}
               dot={false}
               connectNulls

@@ -1600,6 +1600,20 @@ async fn retention_preserves_long_term_model_fields_when_pruning_payload() {
         Some(1.23),
     )
     .await;
+    insert_retention_invocation(
+        &pool,
+        "old-model-fields-no-upstream",
+        &occurred_at,
+        SOURCE_XY,
+        "success",
+        Some(r#"{"requestModel":"gpt-5.4","responseModel":"gpt-5.4-routing","reasoningEffort":"high"}"#),
+        "{}",
+        None,
+        None,
+        Some(123),
+        Some(0.45),
+    )
+    .await;
 
     run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
@@ -1618,6 +1632,22 @@ async fn retention_preserves_long_term_model_fields_when_pruning_payload() {
     )
     .expect("decode pruned long-term payload");
     assert_eq!(payload["upstreamAccountId"].as_i64(), Some(771));
+    assert_eq!(payload["requestModel"].as_str(), Some("gpt-5.4"));
+    assert_eq!(payload["responseModel"].as_str(), Some("gpt-5.4-routing"));
+    assert_eq!(payload["reasoningEffort"].as_str(), Some("high"));
+
+    let payload: Option<String> =
+        sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+            .bind("old-model-fields-no-upstream")
+            .fetch_one(&pool)
+            .await
+            .expect("load pruned model-only payload");
+    let payload = serde_json::from_str::<serde_json::Value>(
+        payload
+            .as_deref()
+            .expect("model-only fields should remain in payload"),
+    )
+    .expect("decode pruned model-only payload");
     assert_eq!(payload["requestModel"].as_str(), Some("gpt-5.4"));
     assert_eq!(payload["responseModel"].as_str(), Some("gpt-5.4-routing"));
     assert_eq!(payload["reasoningEffort"].as_str(), Some("high"));

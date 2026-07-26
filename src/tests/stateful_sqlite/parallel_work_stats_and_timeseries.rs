@@ -9886,6 +9886,9 @@ async fn timeseries_daily_backed_ignores_pruned_legacy_archive_batch_files() {
     materialize_historical_rollups(&state.pool, &state.config, false)
         .await
         .expect("materialize legacy historical rollups");
+    refresh_long_term_stats(&state.pool, 400)
+        .await
+        .expect("materialize long-term historical rollups");
     prune_legacy_archive_batches(&state.pool, &state.config, false)
         .await
         .expect("prune legacy archive files after materialization");
