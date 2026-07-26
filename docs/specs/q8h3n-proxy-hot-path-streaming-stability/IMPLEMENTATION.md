@@ -24,7 +24,7 @@
 - Note: capture pool outbound 与 route-selection prebuffer fallback 不再直接为大 body 构造 `PoolReplayBodySnapshot::Memory(...)`；rewrite required 但 no-op 的分支保留原 file snapshot，真实 rewrite 后按同一阈值重新选择 memory/file。
 - Note: `body_read_done/live_first_reason/request_body_snapshot_kind`、`downstream_first_byte_elapsed`、`raw_response_write_elapsed` 改为阈值化生产可见：大 body 或慢 body read、慢下游首字节、慢/大 raw response 在 `info` 输出，普通小请求继续保留 `debug`。
 - Note: `/v1/responses` 流式解析器将完整、严格合法的 `response.completed` 视为协议成功终态；仍继续读取上游至 EOF 并收集 raw。终态后的上游读取异常、超时和已送达终态后的普通 body release 只写 payload 中性诊断，不覆盖成功、failure class、号池 attempt 或路由健康；终态前断连仍按 client abort 落盘。
-- Note: 下游 body 的 watch 状态以独立的成功完成值保留已送达的协议终态，不能被随后 body EOF 覆盖；严格解析同时要求 SSE `event` 与 payload `type` 都是 `response.completed`。终态后的实际 transport write error 记录为 payload 中性诊断，调用与号池 attempt 保持成功。
+- Note: 下游 body 的 watch 状态以独立的成功完成值保留已送达的协议终态，不能被随后 body EOF 覆盖；严格解析同时要求 SSE `event` 与 payload `type` 都是 `response.completed`。有 transport observer 时，只有 completed 所在 body 已被成功 flush 到下游，后续实际 socket write error 才记录为 payload 中性诊断；终态 body 被取走但 flush 前被丢弃，继续按 `downstream_closed` 记录。调用与号池 attempt 仅在已确认送达后保持成功。
 
 ## 验证
 

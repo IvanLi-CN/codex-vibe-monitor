@@ -41,6 +41,8 @@ struct DownstreamTransportObserverState {
     next_request_seq: u64,
     current_request_seq: Option<u64>,
     last_write_error: Option<DownstreamWriteErrorSnapshot>,
+    successful_terminal_flush_pending: Option<u64>,
+    successful_terminal_flush_confirmed: Option<u64>,
     reset_monitor_stream: Option<TcpStream>,
     active_reset_monitor_request_seq: Option<u64>,
     connection_closed: bool,
@@ -95,6 +97,18 @@ impl DownstreamTransportObserver {
             .is_some_and(|snapshot| snapshot.request_seq < request_seq)
         {
             state.last_write_error = None;
+        }
+        if state
+            .successful_terminal_flush_pending
+            .is_some_and(|pending_request_seq| pending_request_seq < request_seq)
+        {
+            state.successful_terminal_flush_pending = None;
+        }
+        if state
+            .successful_terminal_flush_confirmed
+            .is_some_and(|confirmed_request_seq| confirmed_request_seq < request_seq)
+        {
+            state.successful_terminal_flush_confirmed = None;
         }
         drop(state);
         if notify_reset_monitor {
@@ -224,8 +238,55 @@ impl DownstreamTransportObserver {
             return;
         }
         state.last_write_error = Some(DownstreamWriteErrorSnapshot { request_seq, kind });
+        if state.successful_terminal_flush_pending == Some(request_seq) {
+            state.successful_terminal_flush_pending = None;
+        }
         drop(state);
         self.inner.notify.notify_waiters();
+    }
+
+    fn mark_successful_terminal_flush_pending(&self, request_seq: u64) {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("downstream transport observer mutex poisoned");
+        if state.current_request_seq != Some(request_seq) {
+            return;
+        }
+        state.successful_terminal_flush_pending = Some(request_seq);
+        state.successful_terminal_flush_confirmed = None;
+    }
+
+    fn confirm_successful_terminal_flush(&self) {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("downstream transport observer mutex poisoned");
+        let Some(request_seq) = state.successful_terminal_flush_pending else {
+            return;
+        };
+        if state.current_request_seq != Some(request_seq)
+            || state
+                .last_write_error
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.request_seq == request_seq)
+        {
+            state.successful_terminal_flush_pending = None;
+            return;
+        }
+        state.successful_terminal_flush_pending = None;
+        state.successful_terminal_flush_confirmed = Some(request_seq);
+    }
+
+    fn successful_terminal_flush_confirmed_for(&self, request_seq: u64) -> bool {
+        let state = self
+            .inner
+            .state
+            .lock()
+            .expect("downstream transport observer mutex poisoned");
+        state.successful_terminal_flush_confirmed == Some(request_seq)
     }
 
     fn current_write_error_for(&self, request_seq: u64) -> Option<DownstreamWriteErrorSnapshot> {
@@ -260,6 +321,16 @@ impl DownstreamRequestObserver {
 
     pub(crate) fn finish_response_monitoring(&self) {
         self.observer.finish_request_monitoring(self.request_seq);
+    }
+
+    pub(crate) fn mark_successful_terminal_flush_pending(&self) {
+        self.observer
+            .mark_successful_terminal_flush_pending(self.request_seq);
+    }
+
+    pub(crate) fn successful_terminal_flush_confirmed(&self) -> bool {
+        self.observer
+            .successful_terminal_flush_confirmed_for(self.request_seq)
     }
 
     pub(crate) async fn wait_for_write_error_window(
@@ -309,9 +380,12 @@ impl ObservedTcpStream {
             .record_write_error(downstream_transport_write_error_kind(err));
     }
 
-    fn record_pending_socket_error(&self) {
+    fn record_pending_socket_error(&self) -> bool {
         if let Ok(Some(err)) = self.inner.take_error() {
             self.record_write_error(&err);
+            true
+        } else {
+            false
         }
     }
 }
@@ -335,7 +409,9 @@ impl AsyncWrite for ObservedTcpStream {
         let result = Pin::new(&mut self.inner).poll_write(cx, buf);
         match &result {
             Poll::Ready(Err(err)) => self.record_write_error(err),
-            Poll::Ready(Ok(_)) => self.record_pending_socket_error(),
+            Poll::Ready(Ok(_)) => {
+                self.record_pending_socket_error();
+            }
             Poll::Pending => {}
         }
         result
@@ -349,7 +425,9 @@ impl AsyncWrite for ObservedTcpStream {
         let result = Pin::new(&mut self.inner).poll_write_vectored(cx, bufs);
         match &result {
             Poll::Ready(Err(err)) => self.record_write_error(err),
-            Poll::Ready(Ok(_)) => self.record_pending_socket_error(),
+            Poll::Ready(Ok(_)) => {
+                self.record_pending_socket_error();
+            }
             Poll::Pending => {}
         }
         result
@@ -363,7 +441,11 @@ impl AsyncWrite for ObservedTcpStream {
         let result = Pin::new(&mut self.inner).poll_flush(cx);
         match &result {
             Poll::Ready(Err(err)) => self.record_write_error(err),
-            Poll::Ready(Ok(())) => self.record_pending_socket_error(),
+            Poll::Ready(Ok(())) => {
+                if !self.record_pending_socket_error() {
+                    self.observer.confirm_successful_terminal_flush();
+                }
+            }
             Poll::Pending => {}
         }
         result
@@ -373,7 +455,9 @@ impl AsyncWrite for ObservedTcpStream {
         let result = Pin::new(&mut self.inner).poll_shutdown(cx);
         match &result {
             Poll::Ready(Err(err)) => self.record_write_error(err),
-            Poll::Ready(Ok(())) => self.record_pending_socket_error(),
+            Poll::Ready(Ok(())) => {
+                self.record_pending_socket_error();
+            }
             Poll::Pending => {}
         }
         result
@@ -609,6 +693,28 @@ mod tests {
             .expect("second request should observe its own write error");
         assert_eq!(second_snapshot.kind, "connection_reset");
         assert_eq!(second_snapshot.request_seq, 2);
+    }
+
+    #[tokio::test]
+    async fn terminal_flush_confirmation_requires_pending_terminal_without_write_error() {
+        let observer = DownstreamTransportObserver::new();
+        let request = observer.begin_request();
+
+        request.mark_successful_terminal_flush_pending();
+        observer.confirm_successful_terminal_flush();
+        assert!(request.successful_terminal_flush_confirmed());
+
+        let next_request = observer.begin_request();
+        next_request.mark_successful_terminal_flush_pending();
+        observer.record_write_error("connection_reset");
+        observer.confirm_successful_terminal_flush();
+        assert!(!next_request.successful_terminal_flush_confirmed());
+        assert!(
+            next_request
+                .wait_for_write_error_window(Duration::ZERO)
+                .await
+                .is_some()
+        );
     }
 
     #[tokio::test]
