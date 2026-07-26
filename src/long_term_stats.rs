@@ -485,10 +485,11 @@ pub(crate) fn spawn_long_term_stats_backfill(
 ) {
     tokio::spawn(async move {
         let _ = sqlx::query(
-            "UPDATE long_term_stats_state SET status = ?1, updated_at = datetime('now') WHERE id = ?2",
+            "UPDATE long_term_stats_state SET status = ?1, updated_at = datetime('now') WHERE id = ?2 AND status <> ?3",
         )
         .bind(LONG_TERM_STATUS_PREPARING)
         .bind(LONG_TERM_STATE_ID)
+        .bind(LONG_TERM_STATUS_READY)
         .execute(&pool)
         .await;
         let mut ticker = interval(Duration::from_secs(60));
