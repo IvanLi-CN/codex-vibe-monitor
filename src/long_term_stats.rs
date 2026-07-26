@@ -1322,6 +1322,44 @@ async fn refresh_long_term_stats_inner(
                 &mut rebuilt_start,
             );
         }
+        // A retained daily row is durable evidence that older source parts contributed to this
+        // date. If the current archive inventory can only reproduce fewer calls, keep the
+        // existing date intact instead of replacing it with a partial reconstruction.
+        let mut incomplete_recomputed_dates = HashSet::new();
+        for date in &recomputed_dates {
+            let date_string = date.to_string();
+            let rebuilt_calls = rebuilt_daily
+                .iter()
+                .filter(|((bucket_date, dimension, _), _)| {
+                    bucket_date == &date_string && dimension == "overall"
+                })
+                .map(|(_, bucket)| bucket.accumulator.calls)
+                .sum::<i64>();
+            let persisted_calls = sqlx::query_scalar::<_, i64>(
+                "SELECT COALESCE(SUM(calls), 0) FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",
+            )
+            .bind(&date_string)
+            .fetch_one(pool)
+            .await?;
+            if persisted_calls > rebuilt_calls {
+                incomplete_recomputed_dates.insert(*date);
+            }
+        }
+        if !incomplete_recomputed_dates.is_empty() {
+            rebuilt_hourly.retain(|(bucket_start, _, _), _| {
+                Shanghai
+                    .timestamp_opt(*bucket_start, 0)
+                    .single()
+                    .map(|value| !incomplete_recomputed_dates.contains(&value.date_naive()))
+                    .unwrap_or(true)
+            });
+            rebuilt_daily.retain(|(date, _, _), _| {
+                NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                    .map(|value| !incomplete_recomputed_dates.contains(&value))
+                    .unwrap_or(true)
+            });
+            recomputed_dates.retain(|date| !incomplete_recomputed_dates.contains(date));
+        }
         hourly.retain(|(bucket_start, _, _), _| {
             Shanghai
                 .timestamp_opt(*bucket_start, 0)
