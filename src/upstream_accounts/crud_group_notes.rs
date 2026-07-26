@@ -650,13 +650,57 @@ pub(crate) async fn list_upstream_account_action_events_from_params(
             event.invoke_id,
             attempts.attempt_public_id,
             event.sticky_key,
-            event.model,
+            COALESCE(
+                event.model,
+                attempts.request_model,
+                (
+                    SELECT COALESCE(
+                        NULLIF(TRIM(CASE
+                            WHEN json_valid(fallback_invocation.payload)
+                                THEN CAST(json_extract(fallback_invocation.payload, '$.requestModel') AS TEXT)
+                        END), ''),
+                        NULLIF(TRIM(fallback_invocation.model), '')
+                    )
+                    FROM codex_invocations fallback_invocation
+                    WHERE fallback_invocation.invoke_id = event.invoke_id
+                      AND ABS(
+                            julianday(
+                                fallback_invocation.occurred_at,
+                                CASE WHEN instr(fallback_invocation.occurred_at, 'T') > 0
+                                    THEN '+0 hours' ELSE '-8 hours' END
+                            ) -
+                            julianday(
+                                COALESCE(attempts.occurred_at, event.occurred_at),
+                                CASE WHEN instr(COALESCE(attempts.occurred_at, event.occurred_at), 'T') > 0
+                                    THEN '+0 hours' ELSE '-8 hours' END
+                            )
+                          ) = (
+                            SELECT MIN(ABS(
+                                julianday(
+                                    candidate.occurred_at,
+                                    CASE WHEN instr(candidate.occurred_at, 'T') > 0
+                                        THEN '+0 hours' ELSE '-8 hours' END
+                                ) -
+                                julianday(
+                                    COALESCE(attempts.occurred_at, event.occurred_at),
+                                    CASE WHEN instr(COALESCE(attempts.occurred_at, event.occurred_at), 'T') > 0
+                                        THEN '+0 hours' ELSE '-8 hours' END
+                                )
+                            ))
+                            FROM codex_invocations candidate
+                            WHERE candidate.invoke_id = event.invoke_id
+                          )
+                    ORDER BY fallback_invocation.id DESC
+                    LIMIT 1
+                )
+            ) AS model,
             event.model_route_state_before,
             event.model_route_state_after,
             event.model_route_priority_before,
             event.model_route_priority_after,
             event.model_route_failure_count,
             event.model_route_cooldown_until,
+            NULL AS blocked_binding_json,
             event.created_at
         FROM pool_upstream_account_events event
         INNER JOIN pool_upstream_accounts account ON account.id = event.account_id

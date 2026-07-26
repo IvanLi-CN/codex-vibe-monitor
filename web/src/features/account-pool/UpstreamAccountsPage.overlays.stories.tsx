@@ -282,11 +282,13 @@ export const DetailDrawerRecordsEmpty: Story = {
 
 function DetailDrawerStorySurface({
   initialTab,
+  accountId = 101,
   initialDeleteConfirmOpen = false,
   maxWidth = "none",
   presentation = "overlay",
 }: {
   initialTab: "overview" | "records" | "routing" | "healthEvents";
+  accountId?: number;
   initialDeleteConfirmOpen?: boolean;
   maxWidth?: string;
   presentation?: "overlay" | "page";
@@ -294,7 +296,9 @@ function DetailDrawerStorySurface({
   const isPagePresentation = presentation === "page";
 
   return (
-    <MemoryRouter initialEntries={["/account-pool/upstream-accounts?upstreamAccountId=101"]}>
+    <MemoryRouter
+      initialEntries={[`/account-pool/upstream-accounts?upstreamAccountId=${accountId}`]}
+    >
       <div
         className={
           isPagePresentation
@@ -311,7 +315,7 @@ function DetailDrawerStorySurface({
               >
                 <SharedUpstreamAccountDetailDrawer
                   open
-                  accountId={101}
+                  accountId={accountId}
                   initialTab={initialTab}
                   initialDeleteConfirmOpen={initialDeleteConfirmOpen}
                   presentation={presentation}
@@ -383,6 +387,64 @@ export const DetailDrawerInvocationLocate: Story = {
         name: /返回最新请求|return to latest requests/i,
       }),
     ).toBeInTheDocument();
+  },
+};
+
+export const DetailDrawerApiKeyEventImpact: Story = {
+  tags: ["test"],
+  render: () => <DetailDrawerStorySurface accountId={102} initialTab="healthEvents" />,
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body);
+    const dialog = await documentScope.findByRole("dialog", {
+      name: /Team key - staging/i,
+    });
+    await expect(
+      within(dialog).getByRole("tab", { name: /健康与事件|health & events/i }),
+    ).toHaveAttribute("aria-selected", "true");
+    await waitFor(() => {
+      const requestLog = window.__storybookUpstreamAccountsController__?.getRequestLog() ?? [];
+      expect(requestLog.some((entry) => entry.includes("includeRecentActions=true"))).toBe(true);
+    });
+    await expect(within(dialog).queryByText(/请求模型|request model/i)).not.toBeInTheDocument();
+    const impacts = await within(dialog).findAllByTestId("account-event-impact");
+    await expect(impacts).toHaveLength(2);
+    await expect(within(impacts[0]).getAllByTestId("account-event-impact-chip")).toHaveLength(2);
+    await expect(within(impacts[1]).getAllByTestId("account-event-impact-chip")).toHaveLength(2);
+    await expect(impacts[0].parentElement).toHaveAttribute("data-testid", "account-event-meta");
+    await expect(impacts[1].parentElement).toHaveAttribute("data-testid", "account-event-meta");
+    await expect(impacts[0]).toHaveTextContent(/影响范围.*账号|impact scope.*account/i);
+    await expect(impacts[0]).toHaveTextContent(/受影响模型.*全部|affected models.*all/i);
+    await expect(impacts[1]).toHaveTextContent(/影响范围.*模型|impact scope.*model/i);
+    await expect(impacts[1]).toHaveTextContent(
+      /受影响模型.*gpt-5\.4-mini|affected models.*gpt-5\.4-mini/i,
+    );
+    await expect(impacts[1]).not.toHaveTextContent(/其他模型|other models/i);
+    await expect(within(dialog).queryByText(/影响：|impact:/i)).not.toBeInTheDocument();
+    await expect(within(impacts[0].parentElement!).getByText(/^(调用|Call)$/)).toBeVisible();
+    await expect(within(impacts[1].parentElement!).getByText(/^(调用|Call)$/)).toBeVisible();
+    await expect(
+      within(dialog).queryByText(/operator|maintenance_scheduler/i),
+    ).not.toBeInTheDocument();
+    await expect(
+      within(dialog).getByText(
+        /降权.*冷却中.*降权.*排除|Degraded.*Cooling down.*Demoted.*Excluded/i,
+      ),
+    ).toBeVisible();
+    await expect(within(dialog).getByText(/上游服务异常|Upstream service failure/i)).toBeVisible();
+    await expect(
+      within(dialog).getByText(/上游额度或周限已耗尽|Upstream quota or weekly cap was exhausted/i),
+    ).toBeVisible();
+    await expect(
+      within(dialog).queryByText(
+        /mark_unavailable|model_route|degraded|cooling_down|demoted|excluded/i,
+      ),
+    ).not.toBeInTheDocument();
+    await expect(
+      within(dialog).queryByText(
+        /The upstream request timed out|The requested model is temporarily unavailable/i,
+      ),
+    ).not.toBeInTheDocument();
+    await expect(within(dialog).queryByText(/-.*->.*-/)).not.toBeInTheDocument();
   },
 };
 

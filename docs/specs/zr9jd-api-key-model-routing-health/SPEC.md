@@ -57,21 +57,30 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - 模型级失败更新该模型的失败计数、失败原因和路由状态，不修改账号级 `cooldown_until`。
 - reset 只清除指定 API Key 账号的指定模型动态状态，恢复 `available/normal`，并记录 `manual_reset` 事件。
 - 健康页只展示近七天真实调用出现的模型；OAuth 账号不展示模型路由状态卡。
+- 账号事件优先使用事件自身模型；缺失时从关联的上游尝试或调用记录回填请求模型。请求模型只说明触发事件的流量上下文，不改变事件原有的账号级或模型级影响边界。
+- 健康事件不展示请求模型。影响信息禁止使用自然语言整句，统一使用结构化 CHIP 字段：模型级事件只展示“影响范围=模型、受影响模型=<模型名>”；认证、网络、通用 5xx 等账号级事件展示“影响范围=账号、受影响模型=全部”。影响 CHIP 与事件类型、来源、错误码和时间归入同一元信息行，宽度不足时整体自然换行。事件不得推断或展示其他模型的当前状态。
 
 ## 接口契约（Interfaces & Contracts）
 
 ### 接口清单（Inventory）
 
-| 接口（Name）                                                       | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes）                                |
-| ------------------------------------------------------------------ | ------------ | ------------- | -------------- | ------------------------ | --------------- | ------------------- | -------------------------------------------- |
-| `GET /api/pool/upstream-accounts/:account_id/model-routing`        | HTTP         | external      | New            | None                     | backend         | account detail      | API Key only; returns seven-day states       |
-| `POST /api/pool/upstream-accounts/:account_id/model-routing/reset` | HTTP         | external      | New            | None                     | backend         | health tab          | Body contains exact `model`                  |
-| `UpstreamAccountActionEvent` model-routing fields                  | JSON         | external      | Modify         | None                     | backend/web     | event list          | Includes model and before/after routing data |
+| 接口（Name）                                                       | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes）                                                                           |
+| ------------------------------------------------------------------ | ------------ | ------------- | -------------- | ------------------------ | --------------- | ------------------- | --------------------------------------------------------------------------------------- |
+| `GET /api/pool/upstream-accounts/:account_id/model-routing`        | HTTP         | external      | New            | None                     | backend         | account detail      | API Key only; returns seven-day states                                                  |
+| `POST /api/pool/upstream-accounts/:account_id/model-routing/reset` | HTTP         | external      | New            | None                     | backend         | health tab          | Body contains exact `model`                                                             |
+| `UpstreamAccountActionEvent` model-routing fields                  | JSON         | external      | Modify         | None                     | backend/web     | event list          | Model falls back through event, attempt, invocation; routing fields define impact scope |
 
 ## 验收标准（Acceptance Criteria）
 
 - Given one API Key has model A and B, When A reaches cooldown, Then B remains eligible and the account is not globally cooled down by A's model error.
 - Given a generic authentication, transport, or 5xx failure, When it is recorded, Then existing account-level health behavior remains unchanged.
+- Given an account event is linked to an attempt or invocation with a known request model, When event detail or the global event list is read, Then the event exposes that request model even if the event row itself has no model.
+- Given a generic account-level event has a request model, When the health tab renders it, Then the UI exposes structured impact fields `scope=account` and `affected models=all` without displaying the request model or an empty model-route transition.
+- Given a model-routing event has an affected model, When the health tab renders it, Then the UI exposes only the structured impact fields `scope=model` and `affected model=<name>` without a natural-language impact sentence or any claim about other models.
+- Given a model-routing event carries route transition fields, When the health tab renders it, Then the UI identifies the affected model through the structured impact fields and shows the concrete route transition.
+- Given a recent account event contains known action, source, reason, route-state, or priority protocol values, When the health tab renders it, Then every value uses the active locale dictionary and the raw protocol value is never displayed; unknown values render as the localized unknown label, and raw backend reason messages do not duplicate localized reason chips.
+- Given model routing health contains a known failure kind, When the health card renders it, Then it shows the localized failure-kind label and never renders the raw failure kind or backend failure message.
+- Given a successful, informational, recovered, or reset event has no active routing failure, When the health tab renders it, Then the UI omits the impact fields instead of claiming an active impact; model recovery/reset events still identify the affected model in their routing transition.
 - Given a model is in a degraded or cooling state, When reset is called, Then only that model becomes `available/normal`, its ETA is cleared, and a structured reset event appears.
 - Given no call for a model for seven days, When model retention runs, Then that model state is removed.
 - Given the health tab is rendered on desktop or mobile, Then model status, change time, ETA, failure summary, and reset action remain readable without overflow.
@@ -101,22 +110,32 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 
 ## Visual Evidence
 
-Storybook覆盖=通过
-视觉证据目标源=storybook_canvas
+Storybook覆盖=通过（组件级）；页面级使用 ui_demo
+视觉证据目标源=ui_demo
 视觉证据=存在
-空白裁剪=已裁剪（`require_margin`；按组件边界截取并规范化外边距）
+空白裁剪=无需裁剪（`trim_only`；视口截图边缘无可安全裁剪空白）
 聊天回图=已展示
 证据落盘=已落盘
-证据绑定sha=27898fad
-requested_viewport=desktop 1280x720; mobile 390x844
-viewport_strategy=browser-resize-fallback（浏览器视口合成不稳定，使用 Storybook canvas 的 Playwright 视口回退）
-capture_scope=Storybook canvas 中账号详情“健康与事件”的模型路由健康面板组件边界
+证据绑定sha=9ca110d6
+requested_viewport=desktop 1440x1000; mobile 390x844
+viewport_strategy=ui-demo-source（Chrome viewport override）
+capture_scope=mock-only demo 中账号详情“健康与事件”页面视口
 
-PR: none
-![桌面模型路由健康](assets/model-routing-desktop.png)
+![桌面模型路由健康](./assets/model-routing-desktop.png)
 
-PR: none
-![移动模型路由健康](assets/model-routing-mobile.png)
+![移动模型路由健康](./assets/model-routing-mobile.png)
+
+页面级视觉证据目标源=mock-only ui_demo
+页面级视觉证据=存在
+页面级聊天回图=已展示
+页面级 requested_viewport=desktop 1440x1000; mobile 390x844
+页面级 capture_scope=API Key 账号详情“健康与事件”，账号级与模型级影响均使用结构化字段，不使用自然语言影响句；不展示请求模型
+
+PR: include
+![桌面账号事件模型影响](./assets/account-event-impact-desktop.png)
+
+PR: include
+![移动账号事件模型影响](./assets/account-event-impact-mobile.png)
 
 ## Related PRs
 

@@ -304,7 +304,8 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
     expect(document.body.textContent).toContain(
       "Plan or billing rejected upstream access (402)",
     );
-    expect(document.body.textContent).toContain(
+    expect(document.body.textContent).toContain("Upstream quota or weekly cap was exhausted");
+    expect(document.body.textContent).not.toContain(
       "Weekly cap exhausted on the previous routing attempt before maintenance retried the account.",
     );
     expect(document.body.textContent).toContain("HTTP 402");

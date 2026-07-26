@@ -194,7 +194,14 @@ describe("demo MSW handlers", () => {
       items: Array<{ id: number; groupName: string | null; boundProxyKeys: string[] }>;
     };
     const events = (await eventsResponse.json()) as {
-      items: Array<{ accountDisplayName: string; forwardProxyKey: string | null }>;
+      items: Array<{
+        action: string;
+        result: string;
+        failureKind: string | null;
+        model: string | null;
+        accountDisplayName: string;
+        forwardProxyKey: string | null;
+      }>;
     };
     const tasks = (await tasksResponse.json()) as { items: Array<{ status: string }> };
     const selectedRecord = records.records.find((record) => record.upstreamAccountId === 101);
@@ -204,6 +211,11 @@ describe("demo MSW handlers", () => {
     expect(accounts.items.some((account) => account.groupName === "production")).toBe(true);
     expect(accounts.items.some((account) => account.groupName === null)).toBe(true);
     expect(events.items).toHaveLength(15);
+    expect(events.items.find((event) => event.action === "model_route_cooldown")).toMatchObject({
+      result: "failed",
+      failureKind: "model",
+      model: "gpt-5.4-mini",
+    });
     expect(tasks.items.map((item) => item.status)).toEqual(
       expect.arrayContaining(["success", "running", "failed"]),
     );
@@ -273,6 +285,26 @@ describe("demo MSW handlers", () => {
     expect(cache.conversations[0]?.upstreamAccounts.length).toBeGreaterThan(0);
     expect(cache.conversations[0]?.recentInvocations.length).toBeGreaterThan(0);
     expect(proxyHistory.nodes.every((node) => node.buckets.length > 0)).toBe(true);
+  });
+
+  it("uses supported localized source values for account health events", async () => {
+    const response = await fetch(
+      "http://demo.invalid/api/pool/upstream-accounts/102?includeRecentActions=true",
+    );
+    const account = (await response.json()) as {
+      recentActions: Array<{ action: string; source: string }>;
+    };
+
+    expect(response.ok).toBe(true);
+    expect(account.recentActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ action: "route_cooldown_started", source: "call" }),
+        expect.objectContaining({ action: "model_route_cooldown", source: "call" }),
+      ]),
+    );
+    expect(account.recentActions.map((event) => event.source)).not.toEqual(
+      expect.arrayContaining(["operator", "maintenance_scheduler"]),
+    );
   });
 
   it("serves shareable dashboard invocation detail data for unavailable request-body playback", async () => {

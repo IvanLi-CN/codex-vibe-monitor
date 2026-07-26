@@ -39,6 +39,16 @@ function DetailValue({ label, children }: { label: string; children: ReactNode }
   );
 }
 
+function failureKindLabel(kind: string | null | undefined, t: (key: string) => string) {
+  if (!kind) return "-";
+  const key = `accountPool.upstreamAccounts.modelRouting.failureKinds.${kind}`;
+  const translated = t(key);
+  if (translated !== key) return translated;
+  const reasonKey = `accountPool.upstreamAccounts.latestAction.reasons.${kind}`;
+  const reason = t(reasonKey);
+  return reason === reasonKey ? t("accountPool.upstreamAccounts.latestAction.unknown") : reason;
+}
+
 export interface ModelRoutingHealthPanelProps {
   states: ModelRoutingState[];
   error?: string | null;
@@ -134,7 +144,7 @@ export function ModelRoutingHealthPanel({
                       <div className="min-w-0 sm:col-span-2 lg:col-span-2">
                         <DetailValue label={t("accountPool.upstreamAccounts.modelRouting.failure")}>
                           <p className="break-words text-sm leading-5 text-base-content/85">
-                            {route.lastFailureMessage ?? "-"}
+                            {failureKindLabel(route.lastFailureKind, t)}
                           </p>
                         </DetailValue>
                       </div>
@@ -150,7 +160,7 @@ export function ModelRoutingHealthPanel({
                           label={t("accountPool.upstreamAccounts.modelRouting.failureKind")}
                         >
                           <span className="break-all font-mono text-xs">
-                            {route.lastFailureKind ?? "-"}
+                            {failureKindLabel(route.lastFailureKind, t)}
                           </span>
                         </DetailValue>
                       </div>
