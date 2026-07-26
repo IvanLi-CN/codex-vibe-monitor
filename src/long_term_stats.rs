@@ -198,6 +198,7 @@ struct LongTermArchiveAttemptRow {
 
 async fn load_long_term_archive_attempt_accounts(
     pool: &Pool<Sqlite>,
+    date_range: Option<(NaiveDate, NaiveDate)>,
 ) -> Result<HashMap<(String, String), i64>> {
     let paths = match load_completed_archive_paths_for_dataset(
         pool,
@@ -210,7 +211,21 @@ async fn load_long_term_archive_attempt_accounts(
         Err(error) => return Err(error),
     };
     let mut accounts = HashMap::new();
-    for archive_path in paths {
+    for archive_path in paths.into_iter().filter(|path| {
+        date_range.is_none_or(|(start, end)| {
+            let Some(path_start) = path
+                .coverage_start_at()
+                .and_then(long_term_archive_end_date)
+            else {
+                return true;
+            };
+            let path_end = path
+                .coverage_end_at()
+                .and_then(long_term_archive_end_date)
+                .unwrap_or(path_start);
+            path_end >= start && path_start <= end
+        })
+    }) {
         let Some((archive_pool, cleanup)) =
             open_invocation_archive_batch_pool(&archive_path, "long-term-stats-attempt-fallback")
                 .await?
@@ -851,7 +866,58 @@ async fn refresh_long_term_stats_inner(
     };
     // Replayed invocation archives can still be reopened during a date rebuild, so keep the
     // attempt-account fallback available even when no archive needs first-time materialization.
-    let archive_attempt_accounts = load_long_term_archive_attempt_accounts(pool).await?;
+    let attempt_date_range = if ready_state {
+        let mut dates = HashSet::new();
+        for row in &rows {
+            if let Some(date) =
+                parse_long_term_timestamp_ms(&row.occurred_at).and_then(|timestamp| {
+                    Shanghai
+                        .timestamp_millis_opt(timestamp)
+                        .single()
+                        .map(|value| value.date_naive())
+                })
+            {
+                dates.insert(date);
+            }
+        }
+        let mut requires_full_attempt_scan = false;
+        for path in &archive_paths {
+            if replayed_archive_files.contains(path.file_path()) {
+                continue;
+            }
+            if path.coverage_start_at().is_none() || path.coverage_end_at().is_none() {
+                requires_full_attempt_scan = true;
+            } else {
+                insert_long_term_date_range(
+                    &mut dates,
+                    path.coverage_start_at(),
+                    path.coverage_end_at(),
+                );
+            }
+        }
+        if requires_full_attempt_scan {
+            None
+        } else {
+            dates
+                .iter()
+                .min()
+                .copied()
+                .zip(dates.iter().max().copied())
+                .map(|(start, end)| {
+                    (
+                        start.pred_opt().unwrap_or(start),
+                        end.succ_opt().unwrap_or(end),
+                    )
+                })
+        }
+    } else {
+        None
+    };
+    let archive_attempt_accounts = if !ready_state || attempt_date_range.is_some() {
+        load_long_term_archive_attempt_accounts(pool, attempt_date_range).await?
+    } else {
+        HashMap::new()
+    };
     let mut archive_markers = Vec::new();
     let mut archive_read_failed = false;
     let mut unavailable_after_date: Option<NaiveDate> = None;
@@ -1864,13 +1930,15 @@ pub(crate) async fn fetch_long_term_series(
             load_long_term_daily_rows(&state.pool, dimension, Some(&key), &start_date, &end_date)
                 .await
                 .map_err(internal_error_tuple)?;
-        let latest = matching.last();
+        let summary = available
+            .iter()
+            .find(|row| row.series_key.as_str() == key.as_str());
         series.push(LongTermSeries {
             series_key: key,
-            display_name: latest
+            display_name: summary
                 .map(|row| row.display_name.clone())
                 .unwrap_or_default(),
-            reasoning_effort: latest.and_then(|row| {
+            reasoning_effort: summary.and_then(|row| {
                 (!row.reasoning_effort.is_empty()).then_some(row.reasoning_effort.clone())
             }),
             points: build_daily_points(&matching, &start_date, &end_date),
