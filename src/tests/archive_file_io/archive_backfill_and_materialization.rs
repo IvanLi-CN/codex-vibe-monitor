@@ -1002,6 +1002,26 @@ async fn materialize_historical_rollups_marks_batches_and_prune_removes_files() 
         .expect("load historical rollup backlog after materialization");
     assert_eq!(snapshot_after.legacy_archive_pending, 0);
 
+    let archive_sha256: String = sqlx::query_scalar(
+        "SELECT sha256 FROM archive_batches WHERE dataset = 'codex_invocations' LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load archive checksum for long-term replay marker");
+    sqlx::query("UPDATE long_term_stats_state SET status = 'ready' WHERE id = 1")
+        .execute(&pool)
+        .await
+        .expect("mark long-term stats ready for archive pruning");
+    sqlx::query(
+        "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'codex_invocations', ?2, ?3)",
+    )
+    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(archive_sha256)
+    .execute(&pool)
+    .await
+    .expect("mark archive replay complete for long-term stats");
+
     let prune_dry_run = prune_legacy_archive_batches(&pool, &config, true)
         .await
         .expect("dry-run prune legacy archive batches");
@@ -3324,14 +3344,14 @@ async fn materialize_historical_rollups_skips_missing_archives_and_preserves_exi
 
     let prune_summary = prune_legacy_archive_batches(&pool, &config, false)
         .await
-        .expect("prune should remove stale missing archive metadata");
-    assert_eq!(prune_summary.deleted_archive_batches, 1);
+        .expect("prune should retain stale metadata without long-term replay");
+    assert_eq!(prune_summary.deleted_archive_batches, 0);
 
     let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
         .fetch_one(&pool)
         .await
         .expect("count remaining archive batches after pruning missing metadata");
-    assert_eq!(remaining_batches, 0);
+    assert_eq!(remaining_batches, 1);
 
     cleanup_temp_test_dir(&temp_dir);
 }

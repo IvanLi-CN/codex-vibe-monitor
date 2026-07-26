@@ -487,6 +487,7 @@ pub(crate) struct LegacyArchivePruneCandidateRow {
     id: i64,
     dataset: String,
     file_path: String,
+    sha256: String,
     historical_rollups_materialized_at: Option<String>,
     coverage_end_at: Option<String>,
 }
@@ -841,7 +842,7 @@ pub(crate) async fn prune_legacy_archive_batches(
     dry_run: bool,
 ) -> Result<LegacyArchivePruneSummary> {
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT id, dataset, file_path, historical_rollups_materialized_at, coverage_end_at \
+        "SELECT id, dataset, file_path, sha256, historical_rollups_materialized_at, coverage_end_at \
          FROM archive_batches WHERE status = ",
     );
     query.push_bind(ARCHIVE_STATUS_COMPLETED);
@@ -864,6 +865,34 @@ pub(crate) async fn prune_legacy_archive_batches(
 
     let pending_account_count = count_upstream_accounts_missing_last_activity(pool).await?;
     let invocation_archive_cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
+    let long_term_stats_status =
+        sqlx::query_scalar::<_, String>("SELECT status FROM long_term_stats_state WHERE id = 1")
+            .fetch_optional(pool)
+            .await?;
+    let long_term_stats_archive_files = if long_term_stats_status
+        .as_deref()
+        .is_some_and(|status| matches!(status, "ready" | "empty"))
+    {
+        sqlx::query_as::<_, (String, String)>(
+            r#"
+            SELECT replay.file_path, replay.archive_sha256
+            FROM hourly_rollup_archive_replay replay
+            INNER JOIN archive_batches batches
+              ON batches.dataset = 'codex_invocations'
+             AND batches.file_path = replay.file_path
+             AND batches.sha256 = replay.archive_sha256
+            WHERE replay.target = ?1
+              AND replay.dataset = 'codex_invocations'
+            "#,
+        )
+        .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .collect::<HashSet<_>>()
+    } else {
+        HashSet::new()
+    };
     let mut summary = LegacyArchivePruneSummary {
         scanned_archive_batches: candidates.len(),
         ..LegacyArchivePruneSummary::default()
@@ -873,6 +902,17 @@ pub(crate) async fn prune_legacy_archive_batches(
         let file_missing = !Path::new(&candidate.file_path).exists();
 
         if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS && pending_account_count > 0 {
+            summary.skipped_unmaterialized_batches += 1;
+            continue;
+        }
+
+        if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
+            && (!long_term_stats_status
+                .as_deref()
+                .is_some_and(|status| matches!(status, "ready" | "empty"))
+                || !long_term_stats_archive_files
+                    .contains(&(candidate.file_path.clone(), candidate.sha256.clone())))
+        {
             summary.skipped_unmaterialized_batches += 1;
             continue;
         }

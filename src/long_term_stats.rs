@@ -614,7 +614,13 @@ async fn refresh_long_term_stats_inner(
     } else {
         "CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER) END"
     };
-    let ready_state = was_ready;
+    let legacy_model_keys = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM long_term_usage_daily WHERE dimension = 'model' AND series_key NOT LIKE 'model:v2:%')",
+    )
+    .fetch_one(pool)
+    .await?
+        != 0;
+    let ready_state = was_ready && !legacy_model_keys;
     let retention_start = today - ChronoDuration::days(retention_days.max(366) as i64 - 1);
     let mut hourly: HashMap<(i64, String, String), LongTermBucket> = HashMap::new();
     let mut daily: HashMap<(String, String, String), LongTermBucket> = HashMap::new();
@@ -623,6 +629,7 @@ async fn refresh_long_term_stats_inner(
         .and_then(|state| state.statistics_start_date.clone());
     let account_identities = load_long_term_account_identities(pool).await?;
     let mut rows = Vec::new();
+    let mut seen_ids = HashSet::new();
     let mut processed_rows_count = 0_i64;
     if ready_state {
         let live_sql = format!(
@@ -656,7 +663,9 @@ async fn refresh_long_term_stats_inner(
             .bind(live_tail_start.as_deref())
             .fetch(pool);
         while let Some(row) = live_rows.try_next().await? {
-            rows.push(row);
+            if seen_ids.insert(row.id) {
+                rows.push(row);
+            }
         }
     } else {
         let live_sql = format!(
@@ -687,14 +696,16 @@ async fn refresh_long_term_stats_inner(
         );
         let mut live_rows = sqlx::query_as::<_, LongTermInvocationRow>(&live_sql).fetch(pool);
         while let Some(mut row) = live_rows.try_next().await? {
-            hydrate_long_term_account_identity(&mut row, &account_identities);
-            accumulate_long_term_invocation(
-                &row,
-                &mut hourly,
-                &mut daily,
-                &mut statistics_start_date,
-            );
-            processed_rows_count += 1;
+            if seen_ids.insert(row.id) {
+                hydrate_long_term_account_identity(&mut row, &account_identities);
+                accumulate_long_term_invocation(
+                    &row,
+                    &mut hourly,
+                    &mut daily,
+                    &mut statistics_start_date,
+                );
+                processed_rows_count += 1;
+            }
             if processed_rows_count % 256 == 0 {
                 sqlx::query(
                     "UPDATE long_term_stats_state SET processed_rows = ?1, total_rows = ?2, updated_at = datetime('now') WHERE id = ?3",
@@ -708,7 +719,6 @@ async fn refresh_long_term_stats_inner(
         }
     }
 
-    let mut seen_ids = rows.iter().map(|row| row.id).collect::<HashSet<_>>();
     let archive_paths = match load_completed_invocation_archive_paths(pool).await {
         Ok(paths) => paths,
         Err(error) if error.to_string().contains("no such table") => Vec::new(),
@@ -738,8 +748,11 @@ async fn refresh_long_term_stats_inner(
     {
         return Err(error.into());
     }
-    let replayed_archive_files = match sqlx::query_scalar::<_, String>(
-        r#"
+    let replayed_archive_files = if !ready_state {
+        HashSet::new()
+    } else {
+        match sqlx::query_scalar::<_, String>(
+            r#"
         SELECT replay.file_path
         FROM hourly_rollup_archive_replay replay
         INNER JOIN archive_batches batches
@@ -748,14 +761,15 @@ async fn refresh_long_term_stats_inner(
          AND batches.sha256 = replay.archive_sha256
         WHERE replay.target = ?1 AND replay.dataset = 'codex_invocations'
         "#,
-    )
-    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
-    .fetch_all(pool)
-    .await
-    {
-        Ok(rows) => rows.into_iter().collect::<HashSet<_>>(),
-        Err(error) if error.to_string().contains("no such table") => HashSet::new(),
-        Err(error) => return Err(error.into()),
+        )
+        .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+        .fetch_all(pool)
+        .await
+        {
+            Ok(rows) => rows.into_iter().collect::<HashSet<_>>(),
+            Err(error) if error.to_string().contains("no such table") => HashSet::new(),
+            Err(error) => return Err(error.into()),
+        }
     };
     let all_archive_paths = archive_paths.clone();
     let mut archive_markers = Vec::new();
@@ -1241,7 +1255,7 @@ fn accumulate_long_term_invocation(
         ),
         (
             "model",
-            format!("model:{model}|reasoning:{reasoning}"),
+            long_term_model_series_key(&model, &reasoning),
             model,
             reasoning,
         ),
@@ -1525,7 +1539,7 @@ async fn load_long_term_rollups(
 ) -> Result<Vec<LongTermRollupRow>> {
     let table = "long_term_usage_daily";
     let sql = format!(
-        "SELECT MAX(stats_date) AS bucket_or_date, dimension, series_key, MAX(display_name) AS display_name, reasoning_effort, SUM(calls) AS calls, SUM(token_total) AS token_total, SUM(token_samples) AS token_samples, SUM(cost_total) AS cost_total, SUM(cost_samples) AS cost_samples, SUM(usage_time_ms) AS usage_time_ms, SUM(usage_time_samples) AS usage_time_samples, SUM(wall_time_ms) AS wall_time_ms, SUM(wall_time_samples) AS wall_time_samples, SUM(output_tokens_total) AS output_tokens_total, SUM(stream_duration_ms) AS stream_duration_ms, SUM(output_speed_samples) AS output_speed_samples, SUM(first_byte_sum_ms) AS first_byte_sum_ms, SUM(first_byte_samples) AS first_byte_samples, SUM(response_sum_ms) AS response_sum_ms, SUM(response_samples) AS response_samples FROM {table} WHERE dimension = ?1 AND stats_date BETWEEN ?2 AND ?3 GROUP BY series_key, reasoning_effort"
+        "SELECT MAX(d.stats_date) AS bucket_or_date, d.dimension, d.series_key, (SELECT latest.display_name FROM {table} latest WHERE latest.dimension = ?1 AND latest.series_key = d.series_key AND latest.reasoning_effort = d.reasoning_effort AND latest.stats_date BETWEEN ?2 AND ?3 ORDER BY latest.stats_date DESC LIMIT 1) AS display_name, d.reasoning_effort, SUM(d.calls) AS calls, SUM(d.token_total) AS token_total, SUM(d.token_samples) AS token_samples, SUM(d.cost_total) AS cost_total, SUM(d.cost_samples) AS cost_samples, SUM(d.usage_time_ms) AS usage_time_ms, SUM(d.usage_time_samples) AS usage_time_samples, SUM(d.wall_time_ms) AS wall_time_ms, SUM(d.wall_time_samples) AS wall_time_samples, SUM(d.output_tokens_total) AS output_tokens_total, SUM(d.stream_duration_ms) AS stream_duration_ms, SUM(d.output_speed_samples) AS output_speed_samples, SUM(d.first_byte_sum_ms) AS first_byte_sum_ms, SUM(d.first_byte_samples) AS first_byte_samples, SUM(d.response_sum_ms) AS response_sum_ms, SUM(d.response_samples) AS response_samples FROM {table} d WHERE d.dimension = ?1 AND d.stats_date BETWEEN ?2 AND ?3 GROUP BY d.series_key, d.reasoning_effort"
     );
     let _ = range;
     Ok(sqlx::query_as::<_, LongTermRollupRow>(&sql)
@@ -1676,13 +1690,13 @@ pub(crate) async fn fetch_long_term_series(
             load_long_term_daily_rows(&state.pool, dimension, Some(&key), &start_date, &end_date)
                 .await
                 .map_err(internal_error_tuple)?;
-        let first = matching.first();
+        let latest = matching.last();
         series.push(LongTermSeries {
             series_key: key,
-            display_name: first
+            display_name: latest
                 .map(|row| row.display_name.clone())
                 .unwrap_or_default(),
-            reasoning_effort: first.and_then(|row| {
+            reasoning_effort: latest.and_then(|row| {
                 (!row.reasoning_effort.is_empty()).then_some(row.reasoning_effort.clone())
             }),
             points: build_daily_points(&matching, &start_date, &end_date),
@@ -1852,6 +1866,15 @@ fn normalize_long_term_reasoning(value: Option<&str>) -> String {
         .to_string()
 }
 
+fn long_term_model_series_key(model: &str, reasoning: &str) -> String {
+    let payload =
+        serde_json::to_vec(&[model, reasoning]).expect("model series key payload is serializable");
+    format!(
+        "model:v2:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload)
+    )
+}
+
 fn normalize_long_term_upstream(row: &LongTermInvocationRow) -> (String, String) {
     if row
         .upstream_account_kind
@@ -1944,6 +1967,14 @@ mod tests {
         assert_eq!(query.range.as_deref(), Some("30d"));
         assert_eq!(query.dimension.as_deref(), Some("model"));
         assert_eq!(query.key, ["one", "two"]);
+    }
+
+    #[test]
+    fn model_series_key_encodes_model_and_reasoning_without_collisions() {
+        let left = long_term_model_series_key("a|reasoning:b", "c");
+        let right = long_term_model_series_key("a", "b|reasoning:c");
+        assert_ne!(left, right);
+        assert!(left.starts_with("model:v2:"));
     }
 
     #[test]
