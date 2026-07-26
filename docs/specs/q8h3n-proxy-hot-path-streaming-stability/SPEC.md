@@ -56,6 +56,8 @@
 - `/v1/images/generations` 与 `/v1/images/edits` 的首字节超时必须视为可能已产生上游副作用的终态：只保留一次 upstream attempt，不做同账号重试或切号，并返回 `504` + `upstream_handshake_timeout`，不得改写成 `pool_no_available_account`。
 - capture 入口不得为了提速跳过完整 raw、usage、failure、prompt-cache/encrypted owner 与 body rewrite 语义。可证明安全前，capture 请求必须先使用 replay snapshot 控制面读取：小体积保留内存，大体积落 file-backed replay；日志必须给出 `body_read_done`、`body_size_bucket`、`request_body_snapshot_kind` 与 `live_first_reason`，说明为何未启用 live-first。
 - capture response streaming 必须先向下游转发 chunk，再异步收敛 raw/record；日志应能区分 `downstream_first_byte_elapsed` 与 `raw_response_write_elapsed`，避免把原始响应落盘耗时误判为上游首字节慢。
+- 对 `/v1/responses` SSE，完整可解析且事件类型与 payload `type` 均为 `response.completed`、`response.status == "completed"` 的事件是不可逆的协议成功终态。代理仍必须继续读取上游到 EOF 并写完整 raw；终态后的上游读取异常或超时只能作为中性诊断，不能改写调用成功、失败分类、账号健康或路由评分。
+- 只有成功终态所在 chunk 已实际送入下游 body 后，普通 body release 才是正常释放，不能生成 `body_dropped`、`downstream_closed` 或 `warning_success`。终态送达前下游断开仍须记录 `client_abort/downstream_closed`；若上游随后完成，号池 attempt 仍成功且不惩罚上游。
 - 任何从完整 `Bytes` / `Vec<u8>` 构造 pool failover replay snapshot 的路径都必须经过统一阈值 helper：`<=1MiB` 才允许 `memory`，超过阈值必须优先写 `cvm-pool-replay-*` 临时文件并返回 `file` snapshot。只有临时文件创建、写入或 flush 失败时才允许 fail-soft 回退 `memory`，且必须产生日志证据。
 - `prepare_pool_request_body_for_account` 在 rewrite required 但实际 no-op 时必须保留原 snapshot kind；不得因为读取 JSON 判断而把原 file-backed snapshot 重新包装成 memory。真实 rewrite 后的新 body 也必须重新经过同一阈值 helper。
 - 生产默认 `RUST_LOG=info` 下必须能看到关键慢段阈值事件：body `>=1MiB` 或 read `>=1000ms` 的 `body_read_done/live_first_reason/request_body_snapshot_kind`，downstream first byte `>=2000ms`，raw response write `>=500ms` 或 raw bytes `>=1MiB`。普通小请求可继续只输出 debug，避免刷屏。
@@ -79,6 +81,8 @@
 - started/admitted/running-shell 观测应能证明本地 admission reject 为 0，且 `max_proxy_in_flight_observed` 可以超过旧配置值。
 - Given 某 `upstream_route_key + proxy_binding_key_snapshot` 近期发生超时/传输失败，When 号池还有其它可路由组合，Then 路由排序优先尝试其它组合；若只有该组合可用，仍允许回退使用而不是直接报无账号。
 - Given direct-image 上游超过有效 `imageFirstByteTimeoutSecs`，When 请求终止，Then 调用方收到单次 `504`、`code=upstream_handshake_timeout` 与 `cvmId`，attempt 数为 1，且账号 reservation 已释放。
+- Given `/v1/responses` 已将严格合法的 `response.completed` 送入下游，When 后续上游读取失败、超时或 body 被释放，Then 调用保持 `success`、`failure_class=none`，只在 payload 记录可选的终态后诊断字段，且继续保留至 EOF 前已采集的完整 raw。
+- Given 下游在严格成功终态送达前断开、上游随后完成，When 调用落盘，Then invocation 保留 `client_abort/downstream_closed` 与 `upstreamOutcome=completed`，而号池 attempt 为成功且不对账号或路由降权。
 
 ## 参考
 

@@ -55,19 +55,26 @@ pub(crate) const PROXY_DOWNSTREAM_WRITE_ERROR_GRACE_PERIOD: Duration = Duration:
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DownstreamBodyTerminalState {
     Open,
+    SuccessfulTerminalForwarded,
+    SuccessfulTerminalCompleted,
     Completed,
     Dropped,
 }
 
+pub(crate) struct DownstreamResponseChunk {
+    bytes: Bytes,
+    successful_terminal: bool,
+}
+
 pub(crate) struct TrackedDownstreamReceiverStream {
-    inner: ReceiverStream<Result<Bytes, io::Error>>,
+    inner: ReceiverStream<Result<DownstreamResponseChunk, io::Error>>,
     terminal_tx: watch::Sender<DownstreamBodyTerminalState>,
     terminal_state: DownstreamBodyTerminalState,
 }
 
 impl TrackedDownstreamReceiverStream {
     fn new(
-        inner: ReceiverStream<Result<Bytes, io::Error>>,
+        inner: ReceiverStream<Result<DownstreamResponseChunk, io::Error>>,
         terminal_tx: watch::Sender<DownstreamBodyTerminalState>,
     ) -> Self {
         Self {
@@ -78,7 +85,28 @@ impl TrackedDownstreamReceiverStream {
     }
 
     fn mark_terminal(&mut self, state: DownstreamBodyTerminalState) {
-        if self.terminal_state == DownstreamBodyTerminalState::Open {
+        let state = if self.terminal_state
+            == DownstreamBodyTerminalState::SuccessfulTerminalForwarded
+            && state == DownstreamBodyTerminalState::Completed
+        {
+            DownstreamBodyTerminalState::SuccessfulTerminalCompleted
+        } else {
+            state
+        };
+        let should_update = matches!(
+            (self.terminal_state, state),
+            (
+                DownstreamBodyTerminalState::Open,
+                DownstreamBodyTerminalState::SuccessfulTerminalForwarded
+                    | DownstreamBodyTerminalState::Completed
+                    | DownstreamBodyTerminalState::Dropped
+            ) | (
+                DownstreamBodyTerminalState::SuccessfulTerminalForwarded,
+                DownstreamBodyTerminalState::SuccessfulTerminalCompleted
+                    | DownstreamBodyTerminalState::Dropped
+            )
+        );
+        if should_update {
             self.terminal_state = state;
             let _ = self.terminal_tx.send(state);
         }
@@ -92,30 +120,51 @@ impl futures_util::Stream for TrackedDownstreamReceiverStream {
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        let poll = Pin::new(&mut self.inner).poll_next(cx);
-        if matches!(poll, std::task::Poll::Ready(None)) {
-            self.mark_terminal(DownstreamBodyTerminalState::Completed);
+        match Pin::new(&mut self.inner).poll_next(cx) {
+            std::task::Poll::Ready(Some(Ok(chunk))) => {
+                if chunk.successful_terminal {
+                    self.mark_terminal(DownstreamBodyTerminalState::SuccessfulTerminalForwarded);
+                }
+                std::task::Poll::Ready(Some(Ok(chunk.bytes)))
+            }
+            std::task::Poll::Ready(Some(Err(err))) => std::task::Poll::Ready(Some(Err(err))),
+            std::task::Poll::Ready(None) => {
+                self.mark_terminal(DownstreamBodyTerminalState::Completed);
+                std::task::Poll::Ready(None)
+            }
+            std::task::Poll::Pending => std::task::Poll::Pending,
         }
-        poll
     }
 }
 
 impl Drop for TrackedDownstreamReceiverStream {
     fn drop(&mut self) {
-        self.mark_terminal(DownstreamBodyTerminalState::Dropped);
+        if self.terminal_state == DownstreamBodyTerminalState::SuccessfulTerminalForwarded {
+            self.mark_terminal(DownstreamBodyTerminalState::Completed);
+        } else {
+            self.mark_terminal(DownstreamBodyTerminalState::Dropped);
+        }
     }
 }
 
 pub(crate) fn proxy_stream_observe_downstream_body_terminal(
     state: DownstreamBodyTerminalState,
+    successful_terminal_forwarded: &mut bool,
+    downstream_body_available: &mut bool,
     downstream_closed: &mut bool,
     downstream_write_error_kind: &mut Option<&'static str>,
     last_upstream_chunk_received_at: Option<Instant>,
     last_upstream_chunk_gap_ms: &mut Option<u64>,
 ) {
     match state {
-        DownstreamBodyTerminalState::Open | DownstreamBodyTerminalState::Completed => {}
+        DownstreamBodyTerminalState::Open
+        | DownstreamBodyTerminalState::SuccessfulTerminalCompleted
+        | DownstreamBodyTerminalState::Completed => {}
+        DownstreamBodyTerminalState::SuccessfulTerminalForwarded => {
+            *successful_terminal_forwarded = true;
+        }
         DownstreamBodyTerminalState::Dropped => {
+            *downstream_body_available = false;
             *downstream_closed = true;
             downstream_write_error_kind.get_or_insert("body_dropped");
             if last_upstream_chunk_gap_ms.is_none() {
@@ -126,9 +175,15 @@ pub(crate) fn proxy_stream_observe_downstream_body_terminal(
     }
 }
 
+fn proxy_stream_write_error_is_post_terminal(successful_terminal_forwarded: bool) -> bool {
+    successful_terminal_forwarded
+}
+
 pub(crate) async fn wait_for_downstream_body_terminal_until(
     downstream_body_terminal_rx: &mut watch::Receiver<DownstreamBodyTerminalState>,
     deadline: Instant,
+    successful_terminal_forwarded: &mut bool,
+    downstream_body_available: &mut bool,
     downstream_closed: &mut bool,
     downstream_write_error_kind: &mut Option<&'static str>,
     last_upstream_chunk_received_at: Option<Instant>,
@@ -148,10 +203,28 @@ pub(crate) async fn wait_for_downstream_body_terminal_until(
                     break;
                 }
             }
+            DownstreamBodyTerminalState::SuccessfulTerminalForwarded => {
+                *successful_terminal_forwarded = true;
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                    break;
+                };
+                if tokio::time::timeout(remaining, downstream_body_terminal_rx.changed())
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            DownstreamBodyTerminalState::SuccessfulTerminalCompleted => {
+                *successful_terminal_forwarded = true;
+                break;
+            }
             DownstreamBodyTerminalState::Completed => break,
             DownstreamBodyTerminalState::Dropped => {
                 proxy_stream_observe_downstream_body_terminal(
                     state,
+                    successful_terminal_forwarded,
+                    downstream_body_available,
                     downstream_closed,
                     downstream_write_error_kind,
                     last_upstream_chunk_received_at,
@@ -1976,7 +2049,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let stream_timeout_for_task = stream_timeout;
     let response_is_event_stream_for_task = response_is_event_stream;
     let proxy_request_permit_for_task = proxy_request_permit;
-    let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
+    let (tx, rx) = mpsc::channel::<Result<DownstreamResponseChunk, io::Error>>(16);
     let (downstream_body_terminal_tx, mut downstream_body_terminal_rx) =
         watch::channel(DownstreamBodyTerminalState::Open);
     if let Some(observation) = downstream_request_observer.as_ref() {
@@ -2015,13 +2088,20 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             BoundedResponseParseBuffer::new(BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES)
         });
         let mut stream_error: Option<String> = None;
+        let mut downstream_body_available = true;
         let mut downstream_closed = false;
+        let mut successful_terminal_forwarded = false;
+        let mut downstream_body_terminal_watch_open = true;
         let mut downstream_first_byte_logged = false;
         let mut forwarded_chunks = 0usize;
         let mut forwarded_bytes = 0usize;
         let mut stream_failure_origin: Option<&'static str> = None;
         let mut upstream_read_error_kind: Option<&'static str> = None;
         let mut downstream_write_error_kind: Option<&'static str> = None;
+        let mut post_terminal_upstream_read_error_kind: Option<&'static str> = None;
+        let mut post_terminal_upstream_read_error_message: Option<String> = None;
+        let mut post_terminal_downstream_write_error_kind: Option<&'static str> = None;
+        let mut post_terminal_downstream_write_error_message: Option<String> = None;
         let mut last_upstream_chunk_received_at: Option<Instant> = None;
         let mut last_downstream_forwarded_chunk_at: Option<Instant> = None;
         let mut last_upstream_chunk_gap_ms: Option<u64> = None;
@@ -2030,7 +2110,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             let chunk_received_at = Instant::now();
             response_preview.append(&chunk);
             response_raw_writer.append(&chunk);
+            let successful_terminal_seen_before_chunk =
+                stream_response_parser.successful_terminal_seen();
             stream_response_parser.ingest_bytes(&chunk);
+            let successful_terminal_in_chunk = !successful_terminal_seen_before_chunk
+                && stream_response_parser.successful_terminal_seen();
             if let Some(buffer) = nonstream_parse_buffer.as_mut() {
                 buffer.append(&chunk);
             }
@@ -2061,8 +2145,16 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             }
             stream_started_at = Some(Instant::now());
             last_upstream_chunk_received_at = Some(chunk_received_at);
-            if !downstream_closed {
-                if tx.send(Ok(chunk)).await.is_err() {
+            if downstream_body_available {
+                if tx
+                    .send(Ok(DownstreamResponseChunk {
+                        bytes: chunk,
+                        successful_terminal: successful_terminal_in_chunk,
+                    }))
+                    .await
+                    .is_err()
+                {
+                    downstream_body_available = false;
                     downstream_closed = true;
                     downstream_write_error_kind = Some("receiver_dropped");
                     let _ = proxy_request_permit_for_task.take();
@@ -2104,28 +2196,39 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             stream_timeout,
                             "waiting for upstream stream completion",
                         );
-                        stream_error = Some(message.clone());
-                        stream_failure_origin = Some("proxy_timeout");
                         last_upstream_chunk_gap_ms = last_upstream_chunk_received_at
                             .map(|instant| instant.elapsed().as_millis() as u64);
-                        if !downstream_closed
+                        if stream_response_parser.successful_terminal_seen() {
+                            post_terminal_upstream_read_error_kind = Some("timeout");
+                            post_terminal_upstream_read_error_message = Some(message.clone());
+                        } else {
+                            stream_error = Some(message.clone());
+                            stream_failure_origin = Some("proxy_timeout");
+                        }
+                        if stream_error.is_some()
+                            && downstream_body_available
                             && tx.send(Err(io::Error::other(message))).await.is_err()
                         {
+                            downstream_body_available = false;
                             downstream_closed = true;
                             downstream_write_error_kind = Some("receiver_dropped");
                         }
                         break;
                     };
                     let next_chunk = tokio::select! {
-                        changed = downstream_body_terminal_rx.changed() => {
+                        changed = downstream_body_terminal_rx.changed(), if downstream_body_terminal_watch_open => {
                             if changed.is_ok() {
                                 proxy_stream_observe_downstream_body_terminal(
                                     *downstream_body_terminal_rx.borrow(),
+                                    &mut successful_terminal_forwarded,
+                                    &mut downstream_body_available,
                                     &mut downstream_closed,
                                     &mut downstream_write_error_kind,
                                     last_upstream_chunk_received_at,
                                     &mut last_upstream_chunk_gap_ms,
                                 );
+                            } else {
+                                downstream_body_terminal_watch_open = false;
                             }
                             continue;
                         }
@@ -2138,13 +2241,20 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                                 stream_timeout,
                                 "waiting for upstream stream completion",
                             );
-                            stream_error = Some(message.clone());
-                            stream_failure_origin = Some("proxy_timeout");
                             last_upstream_chunk_gap_ms = last_upstream_chunk_received_at
                                 .map(|instant| instant.elapsed().as_millis() as u64);
-                            if !downstream_closed
+                            if stream_response_parser.successful_terminal_seen() {
+                                post_terminal_upstream_read_error_kind = Some("timeout");
+                                post_terminal_upstream_read_error_message = Some(message.clone());
+                            } else {
+                                stream_error = Some(message.clone());
+                                stream_failure_origin = Some("proxy_timeout");
+                            }
+                            if stream_error.is_some()
+                                && downstream_body_available
                                 && tx.send(Err(io::Error::other(message))).await.is_err()
                             {
+                                downstream_body_available = false;
                                 downstream_closed = true;
                                 downstream_write_error_kind = Some("receiver_dropped");
                             }
@@ -2153,15 +2263,19 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     }
                 } else {
                     tokio::select! {
-                        changed = downstream_body_terminal_rx.changed() => {
+                        changed = downstream_body_terminal_rx.changed(), if downstream_body_terminal_watch_open => {
                             if changed.is_ok() {
                                 proxy_stream_observe_downstream_body_terminal(
                                     *downstream_body_terminal_rx.borrow(),
+                                    &mut successful_terminal_forwarded,
+                                    &mut downstream_body_available,
                                     &mut downstream_closed,
                                     &mut downstream_write_error_kind,
                                     last_upstream_chunk_received_at,
                                     &mut last_upstream_chunk_gap_ms,
                                 );
+                            } else {
+                                downstream_body_terminal_watch_open = false;
                             }
                             continue;
                         }
@@ -2179,23 +2293,29 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     );
                     stream_error = Some(message.clone());
                     stream_failure_origin = Some("proxy_timeout");
-                    if !downstream_closed && tx.send(Err(io::Error::other(message))).await.is_err()
+                    if downstream_body_available
+                        && tx.send(Err(io::Error::other(message))).await.is_err()
                     {
+                        downstream_body_available = false;
                         downstream_closed = true;
                         downstream_write_error_kind = Some("receiver_dropped");
                     }
                     break;
                 };
                 let next_chunk = tokio::select! {
-                    changed = downstream_body_terminal_rx.changed() => {
+                    changed = downstream_body_terminal_rx.changed(), if downstream_body_terminal_watch_open => {
                         if changed.is_ok() {
                             proxy_stream_observe_downstream_body_terminal(
                                 *downstream_body_terminal_rx.borrow(),
+                                &mut successful_terminal_forwarded,
+                                &mut downstream_body_available,
                                 &mut downstream_closed,
                                 &mut downstream_write_error_kind,
                                 last_upstream_chunk_received_at,
                                 &mut last_upstream_chunk_gap_ms,
                             );
+                        } else {
+                            downstream_body_terminal_watch_open = false;
                         }
                         continue;
                     }
@@ -2210,9 +2330,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         );
                         stream_error = Some(message.clone());
                         stream_failure_origin = Some("proxy_timeout");
-                        if !downstream_closed
+                        if downstream_body_available
                             && tx.send(Err(io::Error::other(message))).await.is_err()
                         {
+                            downstream_body_available = false;
                             downstream_closed = true;
                             downstream_write_error_kind = Some("receiver_dropped");
                         }
@@ -2221,15 +2342,19 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 }
             } else {
                 tokio::select! {
-                    changed = downstream_body_terminal_rx.changed() => {
+                    changed = downstream_body_terminal_rx.changed(), if downstream_body_terminal_watch_open => {
                         if changed.is_ok() {
                             proxy_stream_observe_downstream_body_terminal(
                                 *downstream_body_terminal_rx.borrow(),
+                                &mut successful_terminal_forwarded,
+                                &mut downstream_body_available,
                                 &mut downstream_closed,
                                 &mut downstream_write_error_kind,
                                 last_upstream_chunk_received_at,
                                 &mut last_upstream_chunk_gap_ms,
                             );
+                        } else {
+                            downstream_body_terminal_watch_open = false;
                         }
                         continue;
                     }
@@ -2297,7 +2422,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     }
                     response_preview.append(&chunk);
                     response_raw_writer.append(&chunk);
+                    let successful_terminal_seen_before_chunk =
+                        stream_response_parser.successful_terminal_seen();
                     stream_response_parser.ingest_bytes(&chunk);
+                    let successful_terminal_in_chunk = !successful_terminal_seen_before_chunk
+                        && stream_response_parser.successful_terminal_seen();
                     if let Some(buffer) = nonstream_parse_buffer.as_mut() {
                         buffer.append(&chunk);
                     }
@@ -2332,10 +2461,33 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         schedule_dashboard_activity_live_snapshot(state_for_task.as_ref());
                     }
                     last_upstream_chunk_received_at = Some(chunk_received_at);
-                    if !downstream_closed {
-                        if tx.send(Ok(chunk)).await.is_err() {
-                            downstream_closed = true;
-                            downstream_write_error_kind = Some("receiver_dropped");
+                    if successful_terminal_in_chunk
+                        && downstream_body_available
+                        && let Some(observation) = downstream_request_observer_for_task.as_ref()
+                        && let Some(write_error) = observation
+                            .wait_for_write_error_window(Duration::ZERO)
+                            .await
+                    {
+                        downstream_body_available = false;
+                        downstream_closed = true;
+                        downstream_write_error_kind = Some(write_error.kind);
+                        last_upstream_chunk_gap_ms = gap_before_send_ms;
+                        let _ = proxy_request_permit_for_task.take();
+                    }
+                    if downstream_body_available {
+                        if tx
+                            .send(Ok(DownstreamResponseChunk {
+                                bytes: chunk,
+                                successful_terminal: successful_terminal_in_chunk,
+                            }))
+                            .await
+                            .is_err()
+                        {
+                            downstream_body_available = false;
+                            if !successful_terminal_forwarded {
+                                downstream_closed = true;
+                                downstream_write_error_kind = Some("receiver_dropped");
+                            }
                             last_upstream_chunk_gap_ms = gap_before_send_ms;
                             let _ = proxy_request_permit_for_task.take();
                         } else {
@@ -2368,12 +2520,23 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 }
                 Err(err) => {
                     let msg = format!("upstream stream error: {err}");
-                    stream_error = Some(msg.clone());
-                    stream_failure_origin = Some("upstream_read");
-                    upstream_read_error_kind = Some(proxy_stream_upstream_read_error_kind(&err));
+                    stream_response_parser.flush_pending_line();
+                    let read_error_kind = proxy_stream_upstream_read_error_kind(&err);
+                    if stream_response_parser.successful_terminal_seen() {
+                        post_terminal_upstream_read_error_kind = Some(read_error_kind);
+                        post_terminal_upstream_read_error_message = Some(msg.clone());
+                    } else {
+                        stream_error = Some(msg.clone());
+                        stream_failure_origin = Some("upstream_read");
+                        upstream_read_error_kind = Some(read_error_kind);
+                    }
                     last_upstream_chunk_gap_ms = last_upstream_chunk_received_at
                         .map(|instant| instant.elapsed().as_millis() as u64);
-                    if !downstream_closed && tx.send(Err(io::Error::other(msg))).await.is_err() {
+                    if stream_error.is_some()
+                        && downstream_body_available
+                        && tx.send(Err(io::Error::other(msg))).await.is_err()
+                    {
+                        downstream_body_available = false;
                         downstream_closed = true;
                         downstream_write_error_kind = Some("receiver_dropped");
                     }
@@ -2381,6 +2544,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 }
             }
         }
+        stream_response_parser.flush_pending_line();
         drop(tx);
         drop(proxy_request_permit_for_task.take());
         let downstream_terminal_grace_deadline =
@@ -2389,6 +2553,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             wait_for_downstream_body_terminal_until(
                 &mut downstream_body_terminal_rx,
                 downstream_terminal_grace_deadline,
+                &mut successful_terminal_forwarded,
+                &mut downstream_body_available,
                 &mut downstream_closed,
                 &mut downstream_write_error_kind,
                 last_upstream_chunk_received_at,
@@ -2405,11 +2571,19 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 .wait_for_write_error_window(remaining_grace_period)
                 .await
         {
-            downstream_closed = true;
-            downstream_write_error_kind = Some(write_error.kind);
-            if last_upstream_chunk_gap_ms.is_none() {
-                last_upstream_chunk_gap_ms = last_upstream_chunk_received_at
-                    .map(|instant| instant.elapsed().as_millis() as u64);
+            if proxy_stream_write_error_is_post_terminal(successful_terminal_forwarded) {
+                post_terminal_downstream_write_error_kind = Some(write_error.kind);
+                post_terminal_downstream_write_error_message = Some(format!(
+                    "downstream transport write failed after response.completed ({})",
+                    write_error.kind
+                ));
+            } else {
+                downstream_closed = true;
+                downstream_write_error_kind = Some(write_error.kind);
+                if last_upstream_chunk_gap_ms.is_none() {
+                    last_upstream_chunk_gap_ms = last_upstream_chunk_received_at
+                        .map(|instant| instant.elapsed().as_millis() as u64);
+                }
             }
         }
         if let Some(observation) = downstream_request_observer_for_task.as_ref() {
@@ -2471,6 +2645,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         let preview_bytes = response_preview.as_slice().to_vec();
         let raw_response_preview = response_preview.into_preview();
         let streamed_response_outcome = stream_response_parser.finish();
+        let successful_terminal_seen_upstream = streamed_response_outcome.successful_terminal_seen;
         let preview_looks_like_sse = response_payload_looks_like_sse_after_decode(
             &preview_bytes,
             upstream_content_encoding_for_task.as_deref(),
@@ -2533,6 +2708,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             pure_downstream_closed,
         );
 
+        let downstream_error_message = if downstream_closed {
+            Some(format!(
+                "[{}] downstream closed while streaming upstream response",
+                PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED
+            ))
+        } else {
+            None
+        };
         let error_message = if let Some(err) = stream_error {
             Some(format!("[{}] {err}", PROXY_FAILURE_UPSTREAM_STREAM_ERROR))
         } else if had_logical_stream_failure {
@@ -2542,14 +2725,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 .upstream_error_message
                 .clone()
                 .or_else(|| extract_error_message_from_response_preview(&preview_bytes))
-        } else {
-            None
-        };
-        let downstream_error_message = if downstream_closed {
-            Some(format!(
-                "[{}] downstream closed while streaming upstream response",
-                PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED
-            ))
+        } else if pure_downstream_closed {
+            downstream_error_message.clone()
         } else {
             None
         };
@@ -2769,7 +2946,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     None
                 },
                 attempt_failure_kind,
-                error_message.as_deref(),
+                (!pure_downstream_closed)
+                    .then_some(error_message.as_deref())
+                    .flatten(),
                 downstream_error_message.as_deref(),
                 Some(t_upstream_connect_ms),
                 Some(t_upstream_ttfb_ms),
@@ -2874,187 +3053,194 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             || pure_downstream_closed
             || !upstream_status.is_success())
         .then_some(&request_chain_metadata_for_task);
-        let payload = with_image_tool_rewrite_payload_summary(
-            build_proxy_payload_summary(ProxyPayloadSummary {
-                target: capture_target,
-                status: upstream_status,
-                is_stream: request_info_for_task.is_stream,
-                request_contains_encrypted_content: request_info_for_task
-                    .contains_encrypted_content,
-                response_contains_encrypted_content: response_info.contains_encrypted_content,
-                compaction_request_kind: request_info_for_task.compaction_request_kind,
-                compaction_response_kind: resolve_compaction_response_kind_for_payload(
-                    capture_target,
-                    response_info.compaction_response_kind,
-                ),
-                image_intent: request_info_for_task.image_intent.as_deref(),
-                request_model: request_info_for_task.model.as_deref(),
-                requested_service_tier: request_info_for_task.requested_service_tier.as_deref(),
-                billing_service_tier: billing_service_tier.as_deref(),
-                reasoning_effort: request_info_for_task.reasoning_effort.as_deref(),
-                response_model: response_info.model.as_deref(),
-                usage_missing_reason: response_info.usage_missing_reason.as_deref(),
-                request_parse_error: request_info_for_task.parse_error.as_deref(),
-                request_compression_algorithm: if pool_account_for_task.is_none() {
-                    direct_http_approx_for_task
-                        .request_compression
+        let payload = with_proxy_stream_terminal_diagnostics(
+            with_image_tool_rewrite_payload_summary(
+                build_proxy_payload_summary(ProxyPayloadSummary {
+                    target: capture_target,
+                    status: upstream_status,
+                    is_stream: request_info_for_task.is_stream,
+                    request_contains_encrypted_content: request_info_for_task
+                        .contains_encrypted_content,
+                    response_contains_encrypted_content: response_info.contains_encrypted_content,
+                    compaction_request_kind: request_info_for_task.compaction_request_kind,
+                    compaction_response_kind: resolve_compaction_response_kind_for_payload(
+                        capture_target,
+                        response_info.compaction_response_kind,
+                    ),
+                    image_intent: request_info_for_task.image_intent.as_deref(),
+                    request_model: request_info_for_task.model.as_deref(),
+                    requested_service_tier: request_info_for_task.requested_service_tier.as_deref(),
+                    billing_service_tier: billing_service_tier.as_deref(),
+                    reasoning_effort: request_info_for_task.reasoning_effort.as_deref(),
+                    response_model: response_info.model.as_deref(),
+                    usage_missing_reason: response_info.usage_missing_reason.as_deref(),
+                    request_parse_error: request_info_for_task.parse_error.as_deref(),
+                    request_compression_algorithm: if pool_account_for_task.is_none() {
+                        direct_http_approx_for_task
+                            .request_compression
+                            .as_ref()
+                            .map(|value| value.algorithm.as_str())
+                    } else {
+                        None
+                    },
+                    request_compression_mode: if pool_account_for_task.is_none() {
+                        direct_http_approx_for_task
+                            .request_compression
+                            .as_ref()
+                            .map(|value| value.mode.as_str())
+                    } else {
+                        None
+                    },
+                    request_compression_logical_body_bytes: if pool_account_for_task.is_none() {
+                        direct_http_approx_for_task
+                            .request_compression
+                            .as_ref()
+                            .map(|value| value.logical_body_bytes)
+                    } else {
+                        None
+                    },
+                    request_compression_transmitted_body_bytes: if pool_account_for_task.is_none() {
+                        direct_http_approx_for_task
+                            .request_compression
+                            .as_ref()
+                            .map(|value| value.transmitted_body_bytes)
+                    } else {
+                        None
+                    },
+                    request_compression_transmission_complete: pool_account_for_task
+                        .is_none()
+                        .then_some(direct_http_approx_for_task.request_transmission_complete),
+                    failure_kind,
+                    requester_ip: requester_ip_for_task.as_deref(),
+                    request_user_agent: request_chain_metadata_for_payload
+                        .and_then(|metadata| metadata.user_agent.as_deref()),
+                    request_x_forwarded_for: request_chain_metadata_for_payload
+                        .and_then(|metadata| metadata.x_forwarded_for.as_deref()),
+                    request_forwarded: request_chain_metadata_for_payload
+                        .and_then(|metadata| metadata.forwarded.as_deref()),
+                    request_x_real_ip: request_chain_metadata_for_payload
+                        .and_then(|metadata| metadata.x_real_ip.as_deref()),
+                    upstream_scope: if pool_account_for_task.is_some() {
+                        INVOCATION_UPSTREAM_SCOPE_INTERNAL
+                    } else {
+                        INVOCATION_UPSTREAM_SCOPE_EXTERNAL
+                    },
+                    route_mode: if pool_account_for_task.is_some() {
+                        INVOCATION_ROUTE_MODE_POOL
+                    } else {
+                        INVOCATION_ROUTE_MODE_FORWARD_PROXY
+                    },
+                    sticky_key: sticky_key_for_task.as_deref(),
+                    prompt_cache_key: prompt_cache_key_for_task.as_deref(),
+                    prompt_cache_key_attribution_source: request_info_for_task
+                        .prompt_cache_key_attribution_source
+                        .as_deref(),
+                    client_fingerprint: client_attribution_context_for_task.fingerprint.as_deref(),
+                    client_header_fingerprints: Some(
+                        &client_attribution_context_for_task.header_fingerprints,
+                    )
+                    .filter(|fingerprints| !fingerprints.is_empty()),
+                    upstream_account_id: pool_account_for_task
                         .as_ref()
-                        .map(|value| value.algorithm.as_str())
-                } else {
-                    None
-                },
-                request_compression_mode: if pool_account_for_task.is_none() {
-                    direct_http_approx_for_task
-                        .request_compression
+                        .map(|account| account.account_id),
+                    upstream_account_name: pool_account_for_task
                         .as_ref()
-                        .map(|value| value.mode.as_str())
-                } else {
-                    None
-                },
-                request_compression_logical_body_bytes: if pool_account_for_task.is_none() {
-                    direct_http_approx_for_task
-                        .request_compression
+                        .map(|account| account.display_name.as_str()),
+                    upstream_account_kind: payload_summary_upstream_account_kind(
+                        pool_account_for_task.as_ref(),
+                    ),
+                    upstream_base_url_host: payload_summary_upstream_base_url_host(
+                        pool_account_for_task.as_ref(),
+                    ),
+                    oauth_account_header_attached: oauth_account_header_attached_for_account(
+                        pool_account_for_task.as_ref(),
+                    ),
+                    oauth_account_id_shape: oauth_account_id_shape_for_account(
+                        pool_account_for_task.as_ref(),
+                    ),
+                    oauth_forwarded_header_count: oauth_responses_debug_for_task
                         .as_ref()
-                        .map(|value| value.logical_body_bytes)
-                } else {
-                    None
-                },
-                request_compression_transmitted_body_bytes: if pool_account_for_task.is_none() {
-                    direct_http_approx_for_task
-                        .request_compression
+                        .map(|debug| debug.forwarded_header_names.len()),
+                    oauth_forwarded_header_names: oauth_responses_debug_for_task
                         .as_ref()
-                        .map(|value| value.transmitted_body_bytes)
-                } else {
-                    None
-                },
-                request_compression_transmission_complete: pool_account_for_task
-                    .is_none()
-                    .then_some(direct_http_approx_for_task.request_transmission_complete),
-                failure_kind,
-                requester_ip: requester_ip_for_task.as_deref(),
-                request_user_agent: request_chain_metadata_for_payload
-                    .and_then(|metadata| metadata.user_agent.as_deref()),
-                request_x_forwarded_for: request_chain_metadata_for_payload
-                    .and_then(|metadata| metadata.x_forwarded_for.as_deref()),
-                request_forwarded: request_chain_metadata_for_payload
-                    .and_then(|metadata| metadata.forwarded.as_deref()),
-                request_x_real_ip: request_chain_metadata_for_payload
-                    .and_then(|metadata| metadata.x_real_ip.as_deref()),
-                upstream_scope: if pool_account_for_task.is_some() {
-                    INVOCATION_UPSTREAM_SCOPE_INTERNAL
-                } else {
-                    INVOCATION_UPSTREAM_SCOPE_EXTERNAL
-                },
-                route_mode: if pool_account_for_task.is_some() {
-                    INVOCATION_ROUTE_MODE_POOL
-                } else {
-                    INVOCATION_ROUTE_MODE_FORWARD_PROXY
-                },
-                sticky_key: sticky_key_for_task.as_deref(),
-                prompt_cache_key: prompt_cache_key_for_task.as_deref(),
-                prompt_cache_key_attribution_source: request_info_for_task
-                    .prompt_cache_key_attribution_source
-                    .as_deref(),
-                client_fingerprint: client_attribution_context_for_task.fingerprint.as_deref(),
-                client_header_fingerprints: Some(
-                    &client_attribution_context_for_task.header_fingerprints,
-                )
-                .filter(|fingerprints| !fingerprints.is_empty()),
-                upstream_account_id: pool_account_for_task
-                    .as_ref()
-                    .map(|account| account.account_id),
-                upstream_account_name: pool_account_for_task
-                    .as_ref()
-                    .map(|account| account.display_name.as_str()),
-                upstream_account_kind: payload_summary_upstream_account_kind(
-                    pool_account_for_task.as_ref(),
-                ),
-                upstream_base_url_host: payload_summary_upstream_base_url_host(
-                    pool_account_for_task.as_ref(),
-                ),
-                oauth_account_header_attached: oauth_account_header_attached_for_account(
-                    pool_account_for_task.as_ref(),
-                ),
-                oauth_account_id_shape: oauth_account_id_shape_for_account(
-                    pool_account_for_task.as_ref(),
-                ),
-                oauth_forwarded_header_count: oauth_responses_debug_for_task
-                    .as_ref()
-                    .map(|debug| debug.forwarded_header_names.len()),
-                oauth_forwarded_header_names: oauth_responses_debug_for_task
-                    .as_ref()
-                    .map(|debug| debug.forwarded_header_names.as_slice()),
-                oauth_fingerprint_version: oauth_responses_debug_for_task
-                    .as_ref()
-                    .and_then(|debug| debug.fingerprint_version),
-                oauth_forwarded_header_fingerprints: oauth_responses_debug_for_task
-                    .as_ref()
-                    .and_then(|debug| debug.forwarded_header_fingerprints.as_ref()),
-                oauth_prompt_cache_header_forwarded: oauth_responses_debug_for_task
-                    .as_ref()
-                    .map(|debug| debug.prompt_cache_header_forwarded),
-                oauth_request_body_prefix_fingerprint: oauth_responses_debug_for_task
-                    .as_ref()
-                    .and_then(|debug| debug.request_body_prefix_fingerprint.as_deref()),
-                oauth_request_body_prefix_bytes: oauth_responses_debug_for_task
-                    .as_ref()
-                    .and_then(|debug| debug.request_body_prefix_bytes),
-                oauth_request_body_snapshot_kind: oauth_responses_debug_for_task
-                    .as_ref()
-                    .and_then(|debug| debug.request_body_snapshot_kind),
-                oauth_responses_body_mode: oauth_responses_debug_for_task
-                    .as_ref()
-                    .and_then(|debug| debug.responses_body_mode),
-                oauth_responses_rewrite: oauth_responses_debug_for_task
-                    .as_ref()
-                    .map(|debug| &debug.rewrite),
-                service_tier: response_info.service_tier.as_deref(),
-                stream_terminal_event: response_info.stream_terminal_event.as_deref(),
-                upstream_error_code: response_info.upstream_error_code.as_deref(),
-                upstream_error_message: response_info.upstream_error_message.as_deref(),
-                downstream_status_code: if downstream_closed {
-                    Some(upstream_status)
-                } else {
-                    None
-                },
-                downstream_error_message: downstream_error_message.as_deref(),
-                upstream_request_id: response_info.upstream_request_id.as_deref(),
-                response_content_encoding: Some(response_content_encoding.as_str()),
-                stream_failure_origin,
-                upstream_read_error_kind,
-                content_encoding_chain: Some(response_content_encoding.as_str()),
-                forwarded_chunk_count: Some(forwarded_chunks),
-                forwarded_bytes: Some(forwarded_bytes),
-                usage_observed: Some(usage_observed),
-                downstream_close_phase,
-                downstream_write_error_kind,
-                last_upstream_chunk_gap_ms,
-                upstream_approx_upload_bytes: pool_account_for_task
-                    .is_none()
-                    .then_some(direct_http_approx_for_task.approx_upload_bytes),
-                upstream_approx_download_bytes: pool_account_for_task.is_none().then_some(
-                    direct_http_approx_for_task
-                        .approx_download_bytes_before_response_body
-                        .saturating_add(forwarded_bytes),
-                ),
-                proxy_display_name: selected_proxy_display_name.as_deref(),
-                proxy_weight_delta: if selected_proxy_for_task.is_some() {
-                    proxy_attempt_update.delta()
-                } else {
-                    None
-                },
-                pool_attempt_count: pool_account_for_task
-                    .as_ref()
-                    .map(|_| pending_pool_attempt_summary.pool_attempt_count),
-                pool_distinct_account_count: pool_account_for_task
-                    .as_ref()
-                    .map(|_| pending_pool_attempt_summary.pool_distinct_account_count),
-                pool_attempt_terminal_reason: pool_account_for_task
-                    .as_ref()
-                    .and(pending_pool_attempt_terminal_reason.as_deref()),
-                blocked_binding: None,
-            }),
-            image_tool_rewrite_for_task.as_ref(),
+                        .map(|debug| debug.forwarded_header_names.as_slice()),
+                    oauth_fingerprint_version: oauth_responses_debug_for_task
+                        .as_ref()
+                        .and_then(|debug| debug.fingerprint_version),
+                    oauth_forwarded_header_fingerprints: oauth_responses_debug_for_task
+                        .as_ref()
+                        .and_then(|debug| debug.forwarded_header_fingerprints.as_ref()),
+                    oauth_prompt_cache_header_forwarded: oauth_responses_debug_for_task
+                        .as_ref()
+                        .map(|debug| debug.prompt_cache_header_forwarded),
+                    oauth_request_body_prefix_fingerprint: oauth_responses_debug_for_task
+                        .as_ref()
+                        .and_then(|debug| debug.request_body_prefix_fingerprint.as_deref()),
+                    oauth_request_body_prefix_bytes: oauth_responses_debug_for_task
+                        .as_ref()
+                        .and_then(|debug| debug.request_body_prefix_bytes),
+                    oauth_request_body_snapshot_kind: oauth_responses_debug_for_task
+                        .as_ref()
+                        .and_then(|debug| debug.request_body_snapshot_kind),
+                    oauth_responses_body_mode: oauth_responses_debug_for_task
+                        .as_ref()
+                        .and_then(|debug| debug.responses_body_mode),
+                    oauth_responses_rewrite: oauth_responses_debug_for_task
+                        .as_ref()
+                        .map(|debug| &debug.rewrite),
+                    service_tier: response_info.service_tier.as_deref(),
+                    stream_terminal_event: response_info.stream_terminal_event.as_deref(),
+                    upstream_error_code: response_info.upstream_error_code.as_deref(),
+                    upstream_error_message: response_info.upstream_error_message.as_deref(),
+                    downstream_status_code: if downstream_closed {
+                        Some(upstream_status)
+                    } else {
+                        None
+                    },
+                    downstream_error_message: downstream_error_message.as_deref(),
+                    upstream_request_id: response_info.upstream_request_id.as_deref(),
+                    response_content_encoding: Some(response_content_encoding.as_str()),
+                    stream_failure_origin,
+                    upstream_read_error_kind,
+                    content_encoding_chain: Some(response_content_encoding.as_str()),
+                    forwarded_chunk_count: Some(forwarded_chunks),
+                    forwarded_bytes: Some(forwarded_bytes),
+                    usage_observed: Some(usage_observed),
+                    downstream_close_phase,
+                    downstream_write_error_kind,
+                    last_upstream_chunk_gap_ms,
+                    upstream_approx_upload_bytes: pool_account_for_task
+                        .is_none()
+                        .then_some(direct_http_approx_for_task.approx_upload_bytes),
+                    upstream_approx_download_bytes: pool_account_for_task.is_none().then_some(
+                        direct_http_approx_for_task
+                            .approx_download_bytes_before_response_body
+                            .saturating_add(forwarded_bytes),
+                    ),
+                    proxy_display_name: selected_proxy_display_name.as_deref(),
+                    proxy_weight_delta: if selected_proxy_for_task.is_some() {
+                        proxy_attempt_update.delta()
+                    } else {
+                        None
+                    },
+                    pool_attempt_count: pool_account_for_task
+                        .as_ref()
+                        .map(|_| pending_pool_attempt_summary.pool_attempt_count),
+                    pool_distinct_account_count: pool_account_for_task
+                        .as_ref()
+                        .map(|_| pending_pool_attempt_summary.pool_distinct_account_count),
+                    pool_attempt_terminal_reason: pool_account_for_task
+                        .as_ref()
+                        .and(pending_pool_attempt_terminal_reason.as_deref()),
+                    blocked_binding: None,
+                }),
+                image_tool_rewrite_for_task.as_ref(),
+            ),
+            successful_terminal_seen_upstream.then_some("completed"),
+            post_terminal_upstream_read_error_kind,
+            post_terminal_upstream_read_error_message.as_deref(),
+            post_terminal_downstream_write_error_kind,
+            post_terminal_downstream_write_error_message.as_deref(),
         );
 
         let record = ProxyCaptureRecord {
@@ -3488,6 +3674,7 @@ mod dispatch_tests {
     #[tokio::test]
     async fn wait_for_downstream_body_terminal_until_times_out_when_body_stays_open() {
         let (_tx, mut rx) = watch::channel(DownstreamBodyTerminalState::Open);
+        let mut downstream_body_available = true;
         let mut downstream_closed = false;
         let mut downstream_write_error_kind = None;
         let mut last_upstream_chunk_gap_ms = None;
@@ -3497,6 +3684,8 @@ mod dispatch_tests {
             wait_for_downstream_body_terminal_until(
                 &mut rx,
                 Instant::now() + Duration::from_millis(25),
+                &mut false,
+                &mut downstream_body_available,
                 &mut downstream_closed,
                 &mut downstream_write_error_kind,
                 None,
@@ -3506,6 +3695,7 @@ mod dispatch_tests {
         .await
         .expect("body-terminal wait should not hang forever");
         assert!(!downstream_closed);
+        assert!(downstream_body_available);
         assert!(downstream_write_error_kind.is_none());
         assert!(last_upstream_chunk_gap_ms.is_none());
     }
@@ -3513,6 +3703,7 @@ mod dispatch_tests {
     #[tokio::test]
     async fn wait_for_downstream_body_terminal_until_marks_dropped_before_deadline() {
         let (tx, mut rx) = watch::channel(DownstreamBodyTerminalState::Open);
+        let mut downstream_body_available = true;
         let mut downstream_closed = false;
         let mut downstream_write_error_kind = None;
         let mut last_upstream_chunk_gap_ms = None;
@@ -3524,6 +3715,8 @@ mod dispatch_tests {
         wait_for_downstream_body_terminal_until(
             &mut rx,
             Instant::now() + Duration::from_millis(200),
+            &mut false,
+            &mut downstream_body_available,
             &mut downstream_closed,
             &mut downstream_write_error_kind,
             Some(Instant::now()),
@@ -3531,7 +3724,90 @@ mod dispatch_tests {
         )
         .await;
         send_drop.await.expect("join drop sender");
+        assert!(!downstream_body_available);
         assert!(downstream_closed);
         assert_eq!(downstream_write_error_kind, Some("body_dropped"));
+    }
+
+    #[tokio::test]
+    async fn downstream_terminal_chunk_preserves_success_latch_when_body_is_released() {
+        let (terminal_tx, mut terminal_rx) = watch::channel(DownstreamBodyTerminalState::Open);
+        let (response_tx, response_rx) = mpsc::channel(1);
+        let mut stream =
+            TrackedDownstreamReceiverStream::new(ReceiverStream::new(response_rx), terminal_tx);
+        let mut successful_terminal_forwarded = false;
+        let mut downstream_body_available = true;
+        let mut downstream_closed = false;
+        let mut downstream_write_error_kind = None;
+        let mut last_upstream_chunk_gap_ms = None;
+
+        response_tx
+            .send(Ok(DownstreamResponseChunk {
+                bytes: Bytes::from_static(b"event: response.completed\n\n"),
+                successful_terminal: true,
+            }))
+            .await
+            .expect("queue successful terminal chunk");
+        let chunk = stream
+            .next()
+            .await
+            .expect("terminal chunk should reach downstream body")
+            .expect("terminal chunk should not be an error");
+        assert!(chunk.starts_with(b"event: response.completed"));
+        drop(stream);
+
+        assert_eq!(
+            *terminal_rx.borrow_and_update(),
+            DownstreamBodyTerminalState::SuccessfulTerminalCompleted
+        );
+        wait_for_downstream_body_terminal_until(
+            &mut terminal_rx,
+            Instant::now() + Duration::from_millis(25),
+            &mut successful_terminal_forwarded,
+            &mut downstream_body_available,
+            &mut downstream_closed,
+            &mut downstream_write_error_kind,
+            Some(Instant::now()),
+            &mut last_upstream_chunk_gap_ms,
+        )
+        .await;
+
+        assert!(successful_terminal_forwarded);
+        assert!(downstream_body_available);
+        assert!(!downstream_closed);
+        assert!(downstream_write_error_kind.is_none());
+    }
+
+    #[tokio::test]
+    async fn wait_for_downstream_body_terminal_marks_drop_before_successful_terminal() {
+        let (tx, mut rx) = watch::channel(DownstreamBodyTerminalState::Dropped);
+        let mut downstream_body_available = true;
+        let mut downstream_closed = false;
+        let mut downstream_write_error_kind = None;
+        let mut last_upstream_chunk_gap_ms = None;
+
+        wait_for_downstream_body_terminal_until(
+            &mut rx,
+            Instant::now() + Duration::from_millis(25),
+            &mut true,
+            &mut downstream_body_available,
+            &mut downstream_closed,
+            &mut downstream_write_error_kind,
+            Some(Instant::now()),
+            &mut last_upstream_chunk_gap_ms,
+        )
+        .await;
+
+        drop(tx);
+        assert!(!downstream_body_available);
+        assert!(downstream_closed);
+        assert_eq!(downstream_write_error_kind, Some("body_dropped"));
+        assert!(last_upstream_chunk_gap_ms.is_some());
+    }
+
+    #[test]
+    fn downstream_write_error_is_post_terminal_only_after_successful_terminal_forwarding() {
+        assert!(!proxy_stream_write_error_is_post_terminal(false));
+        assert!(proxy_stream_write_error_is_post_terminal(true));
     }
 }

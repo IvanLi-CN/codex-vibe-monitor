@@ -1050,10 +1050,10 @@ async fn persist_proxy_capture_record_omits_response_preview_and_raw_path_when_d
 }
 
 #[test]
-fn proxy_capture_invocation_status_marks_downstream_closed_as_warning_success() {
+fn proxy_capture_invocation_status_keeps_downstream_close_as_client_abort_shape() {
     assert_eq!(
-        proxy_capture_invocation_status(StatusCode::OK, false, true),
-        INVOCATION_STATUS_WARNING_SUCCESS
+        proxy_capture_invocation_status(StatusCode::OK, true, true),
+        "http_200"
     );
     assert_eq!(
         proxy_capture_invocation_status(StatusCode::OK, false, false),

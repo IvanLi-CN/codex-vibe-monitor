@@ -39,6 +39,7 @@ The capture path historically used one full in-memory request body as both routi
 - If rewrite is required but produces no body changes, return the original snapshot instead of serializing the body back into memory. If rewrite changes the body, pass the rewritten bytes through the same threshold helper.
 - Log `body_read_done`, `body_size_bucket`, `request_body_snapshot_kind`, and `live_first_reason` before materializing the snapshot for full parse/rewrite.
 - Keep response streaming ordered as “forward chunk downstream first, finish raw writer later”; log `downstream_first_byte_elapsed` and `raw_response_write_elapsed` separately.
+- For `/v1/responses` SSE, treat a fully parseable `response.completed` event with matching payload `type` and `response.status="completed"` as the authoritative business-success terminal. Continue reading upstream to EOF and retain raw data, but record later read failures, timeouts, or downstream write observations only as neutral diagnostics; they must not overwrite success or penalize an account/route.
 - Make production evidence thresholded: large or slow request body reads, slow downstream first byte, and slow or large raw response writes should be visible at `info`; ordinary small requests can remain `debug`.
 - Enable live-first for capture only when tests prove encrypted owner binding, prompt-cache binding, body rewrite, failover replay, raw completeness, and terminal record fields remain identical to fallback behavior.
 - Treat direct-image replay as evidence retention, not permission to retry. Image generation/edit may have started before the first response byte, so a first-byte timeout must terminate after one attempt and preserve the real timeout classification.
@@ -53,6 +54,8 @@ The capture path historically used one full in-memory request body as both routi
 - Treat invocation-level raw response capture as final-attempt evidence only. When reconstructing a retry timeline, compute the final real attempt first; non-final attempts must retain their own status, headers, and byte metrics, while an uncaptured attempt response stays explicitly unavailable instead of inheriting the final response body.
 - Treat `snapshot_kind="memory"` on multi-MiB requests as a regression unless the same log window shows a temp-file create/write/flush warning explaining the fail-soft fallback.
 - Do not convert a terminal direct-image timeout into a generic no-account result; return a traceable gateway timeout and release the account reservation without replaying the body.
+- A normal response-body drop after the successful terminal chunk has actually been consumed is not a downstream failure. A drop before that point remains a client abort; an upstream completion that follows must still preserve the successful pool attempt.
+- The inline raw response preview is bounded and may stop before the terminal event. For end-to-end SSE diagnosis, read the complete file at `response_raw_path`; never infer terminal ordering from the 16 KiB preview alone.
 
 ## References
 

@@ -23,6 +23,8 @@
 - Note: direct-image 路径使用独立首字节预算；超时后立即以 `504 upstream_handshake_timeout` 收口并释放 reservation，不进入 replay retry 或切号。
 - Note: capture pool outbound 与 route-selection prebuffer fallback 不再直接为大 body 构造 `PoolReplayBodySnapshot::Memory(...)`；rewrite required 但 no-op 的分支保留原 file snapshot，真实 rewrite 后按同一阈值重新选择 memory/file。
 - Note: `body_read_done/live_first_reason/request_body_snapshot_kind`、`downstream_first_byte_elapsed`、`raw_response_write_elapsed` 改为阈值化生产可见：大 body 或慢 body read、慢下游首字节、慢/大 raw response 在 `info` 输出，普通小请求继续保留 `debug`。
+- Note: `/v1/responses` 流式解析器将完整、严格合法的 `response.completed` 视为协议成功终态；仍继续读取上游至 EOF 并收集 raw。终态后的上游读取异常、超时和已送达终态后的普通 body release 只写 payload 中性诊断，不覆盖成功、failure class、号池 attempt 或路由健康；终态前断连仍按 client abort 落盘。
+- Note: 下游 body 的 watch 状态以独立的成功完成值保留已送达的协议终态，不能被随后 body EOF 覆盖；严格解析同时要求 SSE `event` 与 payload `type` 都是 `response.completed`。终态 chunk 被该 response body stream 成功取出即建立送达，普通 body release 不可反转这一状态。transport observer 继续记录实际 socket write error，但不会把共享 TCP 连接的写入归属到 HTTP/2 的特定 response；在成功终态之后观察到的错误只写 payload 中性诊断。终态前 body drop 仍按 `downstream_closed` 记录。
 
 ## 验证
 
@@ -35,6 +37,8 @@
 - `cargo test resolver_does_not_demote_successful_or_non_timeout_route_proxy_history -- --nocapture`
 - `cargo test candidates_sort -- --nocapture`
 - `scripts/shared-testbox-proxy-parallel-smoke`
+- `cargo test stream_response_parser_recognizes_only_strict_successful_completion -- --nocapture`
+- `cargo test pool_responses_ -- --nocapture`
 - `cargo test skips_follow_up_without_subscribers -- --nocapture`
 - `cargo test persist_and_broadcast_proxy_capture -- --nocapture`
 - `cargo test acquire_proxy_request_concurrency_permit_tracks_multiple_in_flight_requests -- --nocapture`

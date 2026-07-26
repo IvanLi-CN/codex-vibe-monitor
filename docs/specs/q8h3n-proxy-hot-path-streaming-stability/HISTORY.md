@@ -15,3 +15,5 @@
 - 2026-07-05: 101 线上证据显示 11MB/21MB/62MB 请求在 timeout 日志中仍有 `snapshot_kind="memory"`，说明直接从完整 body 构造 memory replay 的残留路径未收口。本轮把 `Bytes` / `Vec<u8>` 到 replay snapshot 的转换统一到阈值 helper，capture outbound、route-selection prebuffer fallback、rewrite changed 都复用该 helper；rewrite no-op 保留原 snapshot，避免 file-backed snapshot 被无意义重新物化为 memory。
 - 2026-07-05: 生产排障证据从 debug-only 调整为阈值化 info：普通小请求不刷屏，但大 body、慢 body read、慢 downstream first byte、慢/大 raw response write 在默认 info 日志下可见，避免把“没有 debug 日志”误判成没有埋点。
 - 2026-07-14: Direct-image 首字节超时改为单次、不可重试终态，返回 `504 upstream_handshake_timeout`；这避免重复图片任务与计费，也不再把真实 timeout 掩盖成无可用账号。
+- SSE 的协议成功终态优先于传输 EOF：严格合法的 `response.completed` 一旦实际送达下游，后续上游读取异常和普通 body release 只能保留诊断，不得倒灌为服务失败或下游失败。
+- 2026-07-26: 下游 body EOF 不能覆盖已送达的成功终态；以单调的成功完成状态传递给对应 response body 的所有 watch 接收方。解析器同时要求 `event` 与 payload `type` 完整匹配。终态 chunk 被下游 body stream 成功取出即建立协议送达，不以共享 TCP 连接的写入结果反推 HTTP/2 中某个 response 的状态；之后观察到的 socket error 只保留在 payload 诊断字段。
