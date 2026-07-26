@@ -809,7 +809,7 @@ pub(crate) async fn load_account_last_activity_map(
     }
 
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT id AS account_id, last_activity_at FROM pool_upstream_accounts WHERE COALESCE(deleted_at, '') = '' AND last_activity_at IS NOT NULL AND id IN (",
+        "SELECT id AS account_id, last_activity_at FROM pool_upstream_accounts WHERE last_activity_at IS NOT NULL AND id IN (",
     );
     {
         let mut separated = query.separated(", ");
