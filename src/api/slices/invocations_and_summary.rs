@@ -14582,24 +14582,21 @@ async fn load_dashboard_activity_snapshot_cached(
             continue;
         }
         if let Ok(snapshot) = result.as_mut() {
-            let mut retained = std::collections::VecDeque::new();
-            for record in std::mem::take(&mut cache.read_model.pending_terminal_records) {
+            // Pending records are shared by every in-flight selection. Do not consume them from
+            // the first completed build: another selection may have started before the same
+            // terminal reached SQLite and still needs to replay its delta.
+            for record in &cache.read_model.pending_terminal_records {
                 let Some(occurred_at) = parse_to_utc_datetime(&record.occurred_at) else {
                     continue;
                 };
-                if dashboard_activity_selection_includes_terminal(&selection, &record, occurred_at)
-                {
+                if dashboard_activity_selection_includes_terminal(&selection, record, occurred_at) {
                     let key = (record.invoke_id.clone(), record.occurred_at.clone());
                     if persisted_terminal_ids_before_build.contains_key(&key) {
                         continue;
                     }
-                    apply_dashboard_activity_terminal_delta(snapshot, &record);
-                    retained.push_back(record);
-                } else {
-                    retained.push_back(record);
+                    apply_dashboard_activity_terminal_delta(snapshot, record);
                 }
             }
-            cache.read_model.pending_terminal_records = retained;
         }
         if let Some(in_flight) = in_flight {
             if let Ok(snapshot) = &result {
