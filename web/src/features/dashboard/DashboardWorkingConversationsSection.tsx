@@ -76,6 +76,10 @@ import {
 } from "../../lib/upstreamAccountBadges";
 import { emitUpstreamAccountsChanged } from "../../lib/upstreamAccountsEvents";
 import { cn } from "../../lib/utils";
+import {
+  InvocationModelContextCluster,
+  InvocationReasoningEffortBadge,
+} from "../invocations/InvocationModelContextCluster";
 import { InvocationPhaseBadge, InvocationPhaseSegments } from "../invocations/InvocationPhaseBadge";
 import {
   buildInvocationDetailViewModel,
@@ -85,10 +89,6 @@ import {
   renderFastIndicator,
   renderInvocationModelBadge,
 } from "../invocations/invocation-details-shared";
-import {
-  getReasoningEffortTone,
-  REASONING_EFFORT_TONE_CLASSNAMES,
-} from "../invocations/invocation-table-reasoning";
 import { renderInvocationTransportBadge } from "../invocations/invocation-transport-badge";
 import { AdaptiveDisplayValue } from "../shared/AdaptiveMetricValue";
 import { AppIcon, type AppIconName } from "../shared/AppIcon";
@@ -101,7 +101,7 @@ import {
   buildAdaptivePercentTextSpec,
   buildAdaptiveTextSpec,
 } from "../shared/adaptiveMetricValueSpec";
-import { ModelIdentity } from "../shared/ModelIdentity";
+import { ModelIdentity, resolveModelIdentityIcon } from "../shared/ModelIdentity";
 import { DashboardNetworkRecentPopover } from "./DashboardNetworkRecentPopover";
 import { DashboardNetworkSpeedCapsule } from "./DashboardNetworkSpeedCapsule";
 import {
@@ -464,36 +464,6 @@ function formatStatusLabel(status: string) {
     return normalized.toUpperCase().replace("_", " ");
   }
   return normalized;
-}
-
-function CompactReasoningEffortBadge({ value }: { value: string }) {
-  if (value === FALLBACK_CELL) {
-    return (
-      <span
-        data-testid="dashboard-working-conversation-reasoning-effort"
-        className="inline-flex shrink-0 items-center font-mono text-[7.5px] font-semibold text-base-content/48"
-        title={value}
-      >
-        {value}
-      </span>
-    );
-  }
-
-  const tone = getReasoningEffortTone(value);
-
-  return (
-    <span
-      data-testid="dashboard-working-conversation-reasoning-effort"
-      data-reasoning-effort-tone={tone}
-      className={cn(
-        "inline-flex min-h-5 max-w-[5rem] shrink-0 items-center rounded-full border px-2 py-0.5 text-[9px] font-semibold leading-none tracking-[0.01em]",
-        REASONING_EFFORT_TONE_CLASSNAMES[tone],
-      )}
-      title={value}
-    >
-      <span className="truncate whitespace-nowrap">{value}</span>
-    </span>
-  );
 }
 
 function CompactLatencyPills({
@@ -2156,6 +2126,8 @@ function AccountRecentInvocationRow({
     ? `${t("dashboard.workingConversations.openConversation")} · ${displayConversationSequenceId} · ${displayPromptCacheKey}`
     : null;
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
+  const shouldGroupModelContext =
+    !viewModel.modelHasMismatch && resolveModelIdentityIcon(viewModel.modelValue) != null;
 
   const handleOpenInvocation = useCallback(() => {
     onOpenInvocation?.({
@@ -2285,7 +2257,7 @@ function AccountRecentInvocationRow({
             imageIntentDisplay={viewModel.imageIntentDisplay}
             t={t}
           />
-          {fastIndicator}
+          {!shouldGroupModelContext ? fastIndicator : null}
           <CompactLatencyPills
             firstTokenValue={compactLatencyValues.firstTokenValue}
             responseTimeValue={compactLatencyValues.responseTimeValue}
@@ -2305,21 +2277,38 @@ function AccountRecentInvocationRow({
         >
           <span>{occurredAtShortLabel}</span>
           <span className="text-base-content/28">·</span>
-          <span className="min-w-0">
-            {renderUpstreamAccountRecentModelDisplay(
-              viewModel.modelHasMismatch,
-              viewModel.modelValue,
-              requestModelValue,
-              responseModelValue,
-              t,
-            )}
-          </span>
-          {viewModel.reasoningEffortValue !== FALLBACK_CELL ? (
+          {shouldGroupModelContext ? (
+            <InvocationModelContextCluster
+              modelValue={viewModel.modelValue}
+              reasoningEffortValue={viewModel.reasoningEffortValue}
+              fastIndicatorState={viewModel.fastIndicatorState}
+              grouped
+              t={t}
+              testId="dashboard-upstream-account-recent-model-context"
+              modelTestId="dashboard-upstream-account-recent-model"
+            />
+          ) : (
             <>
-              <span className="text-base-content/28">·</span>
-              <CompactReasoningEffortBadge value={viewModel.reasoningEffortValue} />
+              <span className="min-w-0">
+                {renderUpstreamAccountRecentModelDisplay(
+                  viewModel.modelHasMismatch,
+                  viewModel.modelValue,
+                  requestModelValue,
+                  responseModelValue,
+                  t,
+                )}
+              </span>
+              {viewModel.reasoningEffortValue !== FALLBACK_CELL ? (
+                <>
+                  <span className="text-base-content/28">·</span>
+                  <InvocationReasoningEffortBadge
+                    value={viewModel.reasoningEffortValue}
+                    testId="dashboard-working-conversation-reasoning-effort"
+                  />
+                </>
+              ) : null}
             </>
-          ) : null}
+          )}
         </div>
       </div>
       {viewModel.collapsedErrorSummary ? (
@@ -2554,6 +2543,8 @@ function InvocationSlot({
 
   const lineLabels = resolveInvocationLineLabels(locale);
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
+  const shouldGroupModelContext =
+    !viewModel.modelHasMismatch && resolveModelIdentityIcon(viewModel.modelValue) != null;
   const displayConversationSequenceId =
     formatDashboardWorkingConversationSequenceId(conversationSequenceId);
   const usageSummaryFields = useMemo(
@@ -2769,24 +2760,44 @@ function InvocationSlot({
                 className="flex min-w-0 shrink-0 flex-wrap items-center gap-x-1 gap-y-0.5 text-base-content/70 sm:flex-nowrap"
                 title={`${viewModel.modelValue} · ${viewModel.reasoningEffortValue} · ${viewModel.serviceTierValue} · ${viewModel.proxyDisplayName}`}
               >
-                <span data-testid="dashboard-working-conversation-model-name" className="min-w-0">
-                  {renderInvocationModelBadge(viewModel.modelValue, {
-                    t,
-                    hasMismatch: viewModel.modelHasMismatch,
-                    className: "max-w-full",
-                    textClassName: "font-mono",
-                    iconClassName: "h-3 w-3",
-                    testId: "dashboard-working-conversation-model",
-                  })}
-                </span>
-                <span className="shrink-0 text-base-content/28">·</span>
-                <CompactReasoningEffortBadge value={viewModel.reasoningEffortValue} />
-                {fastIndicator ? (
+                {shouldGroupModelContext ? (
+                  <InvocationModelContextCluster
+                    modelValue={viewModel.modelValue}
+                    reasoningEffortValue={viewModel.reasoningEffortValue}
+                    fastIndicatorState={viewModel.fastIndicatorState}
+                    grouped
+                    t={t}
+                    testId="dashboard-working-conversation-model-context"
+                    modelTestId="dashboard-working-conversation-model-name"
+                  />
+                ) : (
                   <>
+                    <span
+                      data-testid="dashboard-working-conversation-model-name"
+                      className="min-w-0"
+                    >
+                      {renderInvocationModelBadge(viewModel.modelValue, {
+                        t,
+                        hasMismatch: viewModel.modelHasMismatch,
+                        className: "max-w-full",
+                        textClassName: "font-mono",
+                        iconClassName: "h-3 w-3",
+                        testId: "dashboard-working-conversation-model",
+                      })}
+                    </span>
                     <span className="shrink-0 text-base-content/28">·</span>
-                    {fastIndicator}
+                    <InvocationReasoningEffortBadge
+                      value={viewModel.reasoningEffortValue}
+                      testId="dashboard-working-conversation-reasoning-effort"
+                    />
+                    {fastIndicator ? (
+                      <>
+                        <span className="shrink-0 text-base-content/28">·</span>
+                        {fastIndicator}
+                      </>
+                    ) : null}
                   </>
-                ) : null}
+                )}
               </div>
             </div>
           }

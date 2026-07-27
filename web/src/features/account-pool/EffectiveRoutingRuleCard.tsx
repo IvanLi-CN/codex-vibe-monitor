@@ -60,11 +60,6 @@ import {
 } from "../../lib/upstreamAccountStatusChangeReasons";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
-import {
-  isCompleteGpt56ModelSet,
-  ModelIdentityGroup,
-  resolveGpt56ModelFamily,
-} from "../shared/ModelIdentity";
 import { PolicyInlineOptionGroup } from "./PolicyInlineOptionGroup";
 import { StatusChangeToggleButton } from "./StatusChangeToggleButton";
 import { statusChangeReasonIconName } from "./statusChangeReasonIcons";
@@ -458,25 +453,6 @@ function ValueBadgeList({
   labels: EffectiveRoutingRuleCardProps["labels"];
   variantOverride?: BadgeVariant;
 }) {
-  const gpt56Models = values.filter((value) => resolveGpt56ModelFamily(value) != null);
-  if (isCompleteGpt56ModelSet(gpt56Models)) {
-    const remainingValues = values.filter((value) => resolveGpt56ModelFamily(value) == null);
-    return (
-      <div className="flex min-w-0 flex-wrap items-center gap-2 justify-self-start">
-        <ModelIdentityGroup models={gpt56Models} testId="effective-routing-gpt56-model-group" />
-        {remainingValues.map((value) => (
-          <ValueBadge
-            key={value}
-            field={field}
-            value={value}
-            labels={labels}
-            variantOverride={variantOverride}
-          />
-        ))}
-      </div>
-    );
-  }
-
   return (
     <div className="flex min-w-0 flex-wrap gap-2 justify-self-start">
       {values.map((value) => (

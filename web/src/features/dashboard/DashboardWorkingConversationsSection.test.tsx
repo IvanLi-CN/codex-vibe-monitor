@@ -2690,6 +2690,44 @@ describe("DashboardWorkingConversationsSection", () => {
     ).not.toBe(0);
   });
 
+  it("groups GPT-5.6 model, reasoning effort, and FAST metadata", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-gpt56-context", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-gpt56-context",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+            model: "gpt-5.6-sol",
+            requestModel: "gpt-5.6-sol",
+            responseModel: "gpt-5.6-sol",
+            reasoningEffort: "high",
+            requestedServiceTier: "priority",
+            serviceTier: "priority",
+          }),
+        ]),
+      ]),
+    );
+
+    const cluster = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-model-context"]',
+    );
+    if (!(cluster instanceof HTMLElement)) {
+      throw new Error("missing GPT-5.6 model context cluster");
+    }
+
+    expect(cluster.getAttribute("data-model-context-grouped")).toBe("true");
+    expect(cluster.getAttribute("aria-label")).toContain("gpt-5.6-sol");
+    expect(cluster.querySelector('[data-model-icon="white-balance-sunny"]')).not.toBeNull();
+    expect(
+      cluster.querySelector(
+        '[data-testid="dashboard-working-conversation-model-context-reasoning-effort"]',
+      )?.textContent,
+    ).toContain("high");
+    expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
+  });
+
   it("keeps the account chip inline with model metadata and surfaces compact endpoint badges", () => {
     renderSection(
       createResponse([
