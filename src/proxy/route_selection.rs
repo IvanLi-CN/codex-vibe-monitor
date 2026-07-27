@@ -758,6 +758,27 @@ pub(crate) async fn finalize_tracked_pool_attempt(
     }
 }
 
+async fn annotate_live_first_codex_imagegen_rewrite(
+    state: &AppState,
+    pending_attempt_record: Option<&PendingPoolAttemptRecord>,
+    codex_imagegen_rewrite: Option<&Value>,
+) {
+    if let Some(pending_attempt_record) = pending_attempt_record
+        && let Err(err) = annotate_pool_upstream_request_attempt_codex_imagegen_rewrite(
+            &state.pool,
+            pending_attempt_record,
+            codex_imagegen_rewrite,
+        )
+        .await
+    {
+        warn!(
+            invoke_id = %pending_attempt_record.invoke_id,
+            error = %err,
+            "failed to persist live-first Codex imagegen rewrite audit"
+        );
+    }
+}
+
 pub(crate) async fn send_pool_request_live_first_attempt(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -775,6 +796,11 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
     replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
+    let codex_imagegen_rewrite = codex_imagegen_protocol_from_headers(headers)
+        .filter(|_| {
+            account.codex_imagegen_rewrite_mode == crate::CodexImagegenRewriteMode::KeepOriginal
+        })
+        .map(codex_imagegen_keep_original_audit);
     let (_, _, runtime_timeouts) = load_effective_request_path_timeouts_for_account(
         &state.pool,
         &state.config,
@@ -783,7 +809,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     )
     .await
     .map_err(|err| PoolUpstreamError {
-        codex_imagegen_rewrite: None,
+        codex_imagegen_rewrite: codex_imagegen_rewrite.clone(),
         account: Some(account.clone()),
         status: StatusCode::BAD_GATEWAY,
         message: format!("failed to resolve effective request-path timeouts: {err}"),
@@ -862,7 +888,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     Err(message) => {
                         release_pool_routing_reservation(state.as_ref(), &reservation_key);
                         return Err(PoolUpstreamError {
-                            codex_imagegen_rewrite: None,
+                            codex_imagegen_rewrite: codex_imagegen_rewrite.clone(),
                             account: Some(account.clone()),
                             status: StatusCode::BAD_GATEWAY,
                             message,
@@ -892,7 +918,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     Err(err) => {
                         release_pool_routing_reservation(state.as_ref(), &reservation_key);
                         return Err(PoolUpstreamError {
-                            codex_imagegen_rewrite: None,
+                            codex_imagegen_rewrite: codex_imagegen_rewrite.clone(),
                             account: Some(account.clone()),
                             status: StatusCode::BAD_GATEWAY,
                             message: format!("failed to build pool upstream url: {err}"),
@@ -946,6 +972,12 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             } else {
                 None
             };
+            annotate_live_first_codex_imagegen_rewrite(
+                state.as_ref(),
+                pending_attempt_record.as_ref(),
+                codex_imagegen_rewrite.as_ref(),
+            )
+            .await;
             live_attempt_activity_lease = pending_attempt_record
                 .as_ref()
                 .and_then(|pending| pending.attempt_id)
@@ -1033,7 +1065,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         &mut deferred_early_phase_cleanup_guard,
                     );
                     return Err(PoolUpstreamError {
-                        codex_imagegen_rewrite: None,
+                        codex_imagegen_rewrite: codex_imagegen_rewrite.clone(),
                         account: Some(account.clone()),
                         status: StatusCode::BAD_GATEWAY,
                         message,
@@ -1085,7 +1117,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         &mut deferred_early_phase_cleanup_guard,
                     );
                     return Err(PoolUpstreamError {
-                        codex_imagegen_rewrite: None,
+                        codex_imagegen_rewrite: codex_imagegen_rewrite.clone(),
                         account: Some(account.clone()),
                         status: StatusCode::BAD_GATEWAY,
                         message,
@@ -1120,7 +1152,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     Err(message) => {
                         release_pool_routing_reservation(state.as_ref(), &reservation_key);
                         return Err(PoolUpstreamError {
-                            codex_imagegen_rewrite: None,
+                            codex_imagegen_rewrite: codex_imagegen_rewrite.clone(),
                             account: Some(account.clone()),
                             status: StatusCode::BAD_GATEWAY,
                             message,
@@ -1174,6 +1206,12 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             } else {
                 None
             };
+            annotate_live_first_codex_imagegen_rewrite(
+                state.as_ref(),
+                pending_attempt_record.as_ref(),
+                codex_imagegen_rewrite.as_ref(),
+            )
+            .await;
             live_attempt_activity_lease = pending_attempt_record
                 .as_ref()
                 .and_then(|pending| pending.attempt_id)
@@ -1365,7 +1403,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 response_builder
                     .body(Body::empty())
                     .map_err(|err| PoolUpstreamError {
-                        codex_imagegen_rewrite: None,
+                        codex_imagegen_rewrite: codex_imagegen_rewrite.clone(),
                         account: Some(account.clone()),
                         status: StatusCode::INTERNAL_SERVER_ERROR,
                         message: format!("failed to build proxy response: {err}"),
@@ -1401,7 +1439,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 attempt_summary: pool_attempt_summary(1, 1, None),
                 requested_service_tier: attempted_requested_service_tier,
                 request_body_for_capture: attempted_request_body_for_capture,
-                codex_imagegen_rewrite: None,
+                codex_imagegen_rewrite: codex_imagegen_rewrite.clone(),
             });
         }
         let http_failure_classification =
@@ -1499,7 +1537,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         )
         .await;
         return Err(PoolUpstreamError {
-            codex_imagegen_rewrite: None,
+            codex_imagegen_rewrite: codex_imagegen_rewrite.clone(),
             account: Some(account),
             status,
             message: route_error_message,
@@ -1587,7 +1625,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 )
                 .await;
                 return Err(PoolUpstreamError {
-                    codex_imagegen_rewrite: None,
+                    codex_imagegen_rewrite: codex_imagegen_rewrite.clone(),
                     account: Some(account),
                     status: StatusCode::BAD_GATEWAY,
                     message,
@@ -1727,7 +1765,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         attempt_summary: PoolAttemptSummary::default(),
         requested_service_tier: attempted_requested_service_tier,
         request_body_for_capture: attempted_request_body_for_capture,
-        codex_imagegen_rewrite: None,
+        codex_imagegen_rewrite: codex_imagegen_rewrite.clone(),
     })
 }
 
@@ -3167,9 +3205,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         // binding alone is not enough to start a live-first attempt because the
                         // model may appear after the bounded prefix probe; wait for the replay
                         // snapshot in that case so the persisted attempt can carry the model.
-                        let live_first_requirements_known =
-                            live_first_image_intent_known(capture_target, request_image_intent)
-                                && live_requested_model.is_some();
+                        let live_first_requirements_known = (codex_imagegen_request
+                            || live_first_image_intent_known(capture_target, request_image_intent))
+                            && live_requested_model.is_some();
                         if live_first_requirements_known {
                             let resolution = if prompt_cache_binding_constraint.is_some()
                                 || conversation_override.is_some()

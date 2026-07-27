@@ -196,6 +196,7 @@ The image-tool layer remains separate from the system-tag signal model:
 - For an identified Codex request with a non-default Codex policy, hosted `image_generation` and its matching `tool_choice` are removed before Codex imagegen handling.
 - Codex Full merges the fixed `image_gen.imagegen` namespace snapshot into top-level `tools`. Codex Lite normalizes `input` to an array, merges developer `additional_tools`, and enforces `reasoning.context=all_turns` plus `parallel_tool_calls=false`.
 - `fill_missing` adds the snapshot only when image intent is explicit and no same-name tool exists; `force_add` replaces a same-name conflicting schema; `force_remove` removes only Codex imagegen while retaining unrelated tools.
+- `keep_original` does not decode, replay, or otherwise mutate a recognized Codex request body. A body that is otherwise eligible for live-first forwarding remains eligible; selecting an account with a non-default effective Codex policy falls back to the replayable-body path before any rewrite.
 - a Lite validation message containing `responses lite`, `top-level tool type`, and `image_generation` is a request-shape error, not evidence that the upstream account lacks image-tool capability
 - startup repair resets only historical observed `unsupported` entries matching that exact signature; it retains any manual capability override
 - `/v1/images/generations` and `/v1/images/edits` classify as `direct_image`, only filter by capability, and do not rewrite the body

@@ -3740,6 +3740,17 @@ fn codex_imagegen_audit(
     audit
 }
 
+pub(crate) fn codex_imagegen_keep_original_audit(protocol: CodexImagegenProtocol) -> Value {
+    codex_imagegen_audit(
+        protocol,
+        crate::CodexImagegenRewriteMode::KeepOriginal,
+        "no_change",
+        None,
+        false,
+        Some("already_current"),
+    )
+}
+
 fn rewrite_codex_imagegen_tools(
     value: &mut Value,
     protocol: CodexImagegenProtocol,
@@ -3749,10 +3760,7 @@ fn rewrite_codex_imagegen_tools(
     use crate::CodexImagegenRewriteMode::*;
 
     if matches!(mode, KeepOriginal) {
-        return (
-            false,
-            codex_imagegen_audit(protocol, mode, "no_change", None, false, None),
-        );
+        return (false, codex_imagegen_keep_original_audit(protocol));
     }
     // A non-default Codex policy always supersedes the hosted image tool path.
     let hosted_removed = remove_hosted_image_generation(value);
@@ -4003,7 +4011,8 @@ pub(crate) async fn prepare_pool_request_body_for_account(
             target,
             ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
         )
-    }) && codex_imagegen_protocol.is_some();
+    }) && codex_imagegen_protocol.is_some()
+        && codex_imagegen_rewrite_mode != crate::CodexImagegenRewriteMode::KeepOriginal;
     let image_tool_rewrite_required = capture_target.is_some_and(|target| {
         matches!(
             target,
@@ -4022,7 +4031,11 @@ pub(crate) async fn prepare_pool_request_body_for_account(
             requested_service_tier: None,
             requested_image_intent: default_image_intent,
             requested_hosted_image_intent: default_image_intent,
-            codex_imagegen_rewrite: None,
+            codex_imagegen_rewrite: codex_imagegen_protocol
+                .filter(|_| {
+                    codex_imagegen_rewrite_mode == crate::CodexImagegenRewriteMode::KeepOriginal
+                })
+                .map(codex_imagegen_keep_original_audit),
             snapshot_is_decoded: false,
         });
     };
@@ -4071,13 +4084,18 @@ pub(crate) async fn prepare_pool_request_body_for_account(
                 (None, None, default_image_intent, default_image_intent)
             }
         };
+        let codex_imagegen_rewrite = codex_imagegen_protocol
+            .filter(|_| {
+                codex_imagegen_rewrite_mode == crate::CodexImagegenRewriteMode::KeepOriginal
+            })
+            .map(codex_imagegen_keep_original_audit);
         return Ok(PreparedPoolRequestBody {
             snapshot,
             request_body_for_capture,
             requested_service_tier,
             requested_image_intent,
             requested_hosted_image_intent,
-            codex_imagegen_rewrite: None,
+            codex_imagegen_rewrite,
             snapshot_is_decoded: false,
         });
     }
@@ -5080,7 +5098,7 @@ mod tests {
             Some(&snapshot),
             &uri,
             &Method::POST,
-            None,
+            Some("unsupported-encoding"),
             TagFastModeRewriteMode::KeepOriginal,
             crate::ImageToolRewriteMode::KeepOriginal,
             crate::CodexImagegenRewriteMode::KeepOriginal,
@@ -5097,6 +5115,14 @@ mod tests {
                 .and_then(|audit| audit.get("outcome"))
                 .and_then(Value::as_str),
             Some("no_change")
+        );
+        assert_eq!(
+            prepared
+                .codex_imagegen_rewrite
+                .as_ref()
+                .and_then(|audit| audit.get("reason"))
+                .and_then(Value::as_str),
+            Some("already_current")
         );
         assert_eq!(
             prepared

@@ -213,7 +213,7 @@ async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_chunked_json_without_header_sticky_uses_live_first_attempt() {
+async fn proxy_openai_v1_chunked_codex_lite_keeps_live_first_and_audits_keep_original() {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_millis(500);
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
@@ -257,7 +257,7 @@ async fn proxy_openai_v1_chunked_json_without_header_sticky_uses_live_first_atte
         proxy_openai_v1_via_pool(
             request_state,
             5342,
-            &"/v1/chat/completions".parse().expect("valid uri"),
+            &"/v1/responses".parse().expect("valid uri"),
             Method::POST,
             HeaderMap::from_iter([
                 (
@@ -267,6 +267,10 @@ async fn proxy_openai_v1_chunked_json_without_header_sticky_uses_live_first_atte
                 (
                     http_header::CONTENT_TYPE,
                     HeaderValue::from_static("application/json"),
+                ),
+                (
+                    HeaderName::from_static("x-openai-internal-codex-responses-lite"),
+                    HeaderValue::from_static("true"),
                 ),
             ]),
             Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
@@ -294,17 +298,18 @@ async fn proxy_openai_v1_chunked_json_without_header_sticky_uses_live_first_atte
     wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
     let latest_attempt = timeout(Duration::from_secs(1), async {
         loop {
-            let row = sqlx::query_as::<_, (Option<String>, Option<String>, String)>(
-                r#"
-                SELECT group_name_snapshot, proxy_binding_key_snapshot, status
+            let row =
+                sqlx::query_as::<_, (Option<String>, Option<String>, String, Option<String>)>(
+                    r#"
+                SELECT group_name_snapshot, proxy_binding_key_snapshot, status, request_summary_json
                 FROM pool_upstream_request_attempts
                 ORDER BY id DESC
                 LIMIT 1
                 "#,
-            )
-            .fetch_one(&state.pool)
-            .await
-            .expect("load latest pool attempt");
+                )
+                .fetch_one(&state.pool)
+                .await
+                .expect("load latest pool attempt");
             if row.2 == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS {
                 break row;
             }
@@ -326,6 +331,25 @@ async fn proxy_openai_v1_chunked_json_without_header_sticky_uses_live_first_atte
     assert_eq!(
         latest_attempt.2, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
         "successful live-first requests should land as real success attempts",
+    );
+    let request_summary: Value = serde_json::from_str(
+        latest_attempt
+            .3
+            .as_deref()
+            .expect("Codex live-first request should persist an audit summary"),
+    )
+    .expect("decode Codex live-first audit summary");
+    assert_eq!(
+        request_summary["codexImagegenRewrite"]["protocol"],
+        "responses_lite"
+    );
+    assert_eq!(
+        request_summary["codexImagegenRewrite"]["mode"],
+        "keep_original"
+    );
+    assert_eq!(
+        request_summary["codexImagegenRewrite"]["outcome"],
+        "no_change"
     );
 
     let attempts = attempts.lock().expect("lock attempts");
