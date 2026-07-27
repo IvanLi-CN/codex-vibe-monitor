@@ -1179,7 +1179,7 @@ async fn compress_cold_pool_attempt_response_raw_lane(
             last_seen_occurred_at = Some(candidate.occurred_at.clone());
             last_seen_id = candidate.id;
             rows_processed += 1;
-            let outcome = maybe_compress_proxy_raw_path(
+            let outcome = match maybe_compress_proxy_raw_path(
                 pool,
                 candidate.id,
                 "attempt_response",
@@ -1188,7 +1188,19 @@ async fn compress_cold_pool_attempt_response_raw_lane(
                 raw_path_fallback_root,
                 dry_run,
             )
-            .await?;
+            .await
+            {
+                Ok(outcome) => outcome,
+                Err(err) => {
+                    warn!(
+                        invocation_id = candidate.id,
+                        field = "attempt_response",
+                        error = %err,
+                        "failed to cold-compress raw payload file; continuing retention"
+                    );
+                    continue;
+                }
+            };
             let next_path = outcome
                 .new_db_path
                 .clone()

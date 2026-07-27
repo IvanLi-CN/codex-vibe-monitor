@@ -440,7 +440,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
     result
 }
 
-async fn persist_pool_failover_terminal_invocation(
+pub(crate) async fn persist_pool_failover_terminal_invocation(
     state: &AppState,
     proxy_request_id: u64,
     capture_started: Instant,

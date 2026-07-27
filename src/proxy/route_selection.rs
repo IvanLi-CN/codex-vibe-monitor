@@ -1709,6 +1709,77 @@ pub(crate) async fn continue_or_retry_pool_live_request(
     sticky_key: Option<String>,
     requested_model: Option<String>,
     prompt_cache_key: Option<String>,
+    prompt_cache_binding_constraint: Option<PromptCacheConversationBindingConstraint>,
+    owner_auto_guard_active: bool,
+    responses_total_timeout_started_at: Option<Instant>,
+    no_available_wait_deadline: Option<Instant>,
+    replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
+    replay_cancel: &CancellationToken,
+    replay_wait_timeout: Duration,
+    trace_context: PoolUpstreamAttemptTraceContext,
+    first_error: PoolUpstreamError,
+) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
+    let capture_started = Instant::now();
+    let runtime_snapshot_context = PoolAttemptRuntimeSnapshotContext {
+        capture_target: ProxyCaptureTarget::Responses,
+        request_info: RequestCaptureInfo {
+            model: requested_model.clone(),
+            ..RequestCaptureInfo::default()
+        },
+        prompt_cache_key: prompt_cache_key.clone(),
+        owner_auto_guard_active,
+        t_req_read_ms: 0.0,
+        t_req_parse_ms: 0.0,
+    };
+    let result = continue_or_retry_pool_live_request_inner(
+        state.clone(),
+        proxy_request_id,
+        method,
+        original_uri,
+        headers,
+        handshake_timeout,
+        initial_account,
+        sticky_key,
+        requested_model,
+        prompt_cache_key,
+        prompt_cache_binding_constraint,
+        owner_auto_guard_active,
+        responses_total_timeout_started_at,
+        no_available_wait_deadline,
+        replay_status_rx,
+        replay_cancel,
+        replay_wait_timeout,
+        trace_context.clone(),
+        first_error,
+    )
+    .await;
+    if let Err(error) = &result {
+        persist_pool_failover_terminal_invocation(
+            state.as_ref(),
+            proxy_request_id,
+            capture_started,
+            original_uri,
+            headers,
+            Some(&trace_context),
+            Some(&runtime_snapshot_context),
+            error,
+        )
+        .await;
+    }
+    result
+}
+
+async fn continue_or_retry_pool_live_request_inner(
+    state: Arc<AppState>,
+    proxy_request_id: u64,
+    method: Method,
+    original_uri: &Uri,
+    headers: &HeaderMap,
+    handshake_timeout: Duration,
+    initial_account: PoolResolvedAccount,
+    sticky_key: Option<String>,
+    requested_model: Option<String>,
+    prompt_cache_key: Option<String>,
     _prompt_cache_binding_constraint: Option<PromptCacheConversationBindingConstraint>,
     _owner_auto_guard_active: bool,
     responses_total_timeout_started_at: Option<Instant>,
@@ -1716,6 +1787,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
     replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
     replay_cancel: &CancellationToken,
     replay_wait_timeout: Duration,
+    trace_context: PoolUpstreamAttemptTraceContext,
     first_error: PoolUpstreamError,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
     let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
@@ -1991,11 +2063,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                 headers,
                 Some(snapshot),
                 handshake_timeout,
-                Some(build_via_pool_attempt_trace_context(
-                    proxy_request_id,
-                    original_uri.path(),
-                    replay_sticky_key.clone(),
-                )),
+                Some(trace_context.clone()),
                 Some(PoolAttemptRuntimeSnapshotContext {
                     capture_target: ProxyCaptureTarget::Responses,
                     request_info: RequestCaptureInfo {
@@ -2016,7 +2084,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                 preferred_account,
                 failover_progress,
                 same_account_attempts,
-                true,
+                false,
             )
             .await
         }
@@ -3230,6 +3298,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         &replay_status_rx,
                                         &replay_cancel,
                                         runtime_timeouts.request_read_timeout,
+                                        pool_attempt_trace_context,
                                         first_error,
                                     )
                                     .await
