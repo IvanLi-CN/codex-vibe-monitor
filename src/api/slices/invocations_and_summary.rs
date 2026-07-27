@@ -4002,6 +4002,8 @@ fn build_attempt_response_summary(
         });
     let response_body_capture_detail_level = if attempt_response_body_captured {
         Some(record.detail_level.clone())
+    } else if is_final_attempt && record.response_raw_path.is_some() {
+        Some("full".to_string())
     } else {
         Some("attempt_metrics".to_string())
     };
@@ -15860,6 +15862,13 @@ mod invocation_cost_audit_tests {
                 .as_ref()
                 .expect("final summary")["responseBodyCapture"]["availableAtInvocationLevel"],
             Value::Bool(true)
+        );
+        assert_eq!(
+            final_attempt
+                .response_summary
+                .as_ref()
+                .expect("final summary")["responseBodyCapture"]["detailLevel"],
+            json!("full")
         );
     }
 }
