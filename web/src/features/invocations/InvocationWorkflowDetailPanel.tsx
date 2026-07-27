@@ -2684,6 +2684,13 @@ export function InvocationWorkflowAttemptRecord({
   const currentSection = isControlled ? activeSection : internalSection;
   const currentOpen = isControlled ? isOpen : currentSection != null;
   const attemptPublicId = entry.attempt?.attemptId?.trim() || null;
+  const responseBodyCaptureSummary = readRecord(entry.attempt?.responseSummary);
+  const responseBodyCapture = readRecord(responseBodyCaptureSummary?.responseBodyCapture);
+  const invocationResponseFallbackAllowed = readBoolean(
+    responseBodyCapture?.availableAtInvocationLevel,
+  );
+  const responseBodyUnavailableReason =
+    readString(responseBodyCapture?.unavailableReason) ?? "attempt_response_body_not_captured";
 
   useEffect(() => {
     requestBodyFetchSeqRef.current += 1;
@@ -2737,6 +2744,14 @@ export function InvocationWorkflowAttemptRecord({
 
     const requestSeq = responseBodyFetchSeqRef.current + 1;
     responseBodyFetchSeqRef.current = requestSeq;
+    if (!attemptPublicId && !invocationResponseFallbackAllowed) {
+      setResponseBodyState({
+        status: "loaded",
+        data: { available: false, unavailableReason: responseBodyUnavailableReason },
+        error: null,
+      });
+      return;
+    }
     setResponseBodyState({ status: "loading", data: null, error: null });
     const fetchResponseBody = attemptPublicId
       ? fetchInvocationAttemptResponseBody(record.id, attemptPublicId)
@@ -2754,7 +2769,14 @@ export function InvocationWorkflowAttemptRecord({
           error: error instanceof Error ? error.message : String(error),
         });
       });
-  }, [attemptPublicId, currentSection, record.id, responseBodyState.status]);
+  }, [
+    attemptPublicId,
+    currentSection,
+    invocationResponseFallbackAllowed,
+    record.id,
+    responseBodyState.status,
+    responseBodyUnavailableReason,
+  ]);
 
   const handleSelectSection = (section: AttemptSection) => {
     if (isControlled) {

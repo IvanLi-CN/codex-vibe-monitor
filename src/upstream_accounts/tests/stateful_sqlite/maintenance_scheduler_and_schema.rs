@@ -1176,7 +1176,7 @@ async fn account_attempt_list_returns_workflow_entries_and_final_success_usage_o
     );
     assert_eq!(
         failure_response_summary["responseBodyCapture"]["unavailableReason"],
-        json!("non_final_attempt_response_body_not_captured")
+        json!("attempt_response_body_not_captured")
     );
 }
 
