@@ -9,7 +9,28 @@ import {
 import {
   getReasoningEffortTone,
   REASONING_EFFORT_TONE_CLASSNAMES,
+  type ReasoningEffortTone,
 } from "./invocation-table-reasoning";
+
+const REASONING_EFFORT_CONTEXT_TONE_CLASSNAMES: Record<ReasoningEffortTone, string> = {
+  none: "text-base-content/68",
+  minimal: "tone-ink-info",
+  low: "tone-ink-info",
+  medium: "tone-ink-primary",
+  high: "tone-ink-warning",
+  xhigh: "tone-ink-error",
+  unknown: "text-base-content/62",
+};
+
+const REASONING_EFFORT_CONTEXT_MARKER_CLASSNAMES: Record<ReasoningEffortTone, string> = {
+  none: "bg-base-content/34",
+  minimal: "bg-info/65",
+  low: "bg-info/80",
+  medium: "bg-primary/80",
+  high: "bg-warning/85",
+  xhigh: "bg-error/85",
+  unknown: "bg-base-content/38",
+};
 
 export interface InvocationModelContextClusterProps {
   modelValue: string;
@@ -89,7 +110,7 @@ export function InvocationModelContextCluster({
     hasMismatch: modelHasMismatch,
     className: "max-w-full",
     textClassName: "font-mono",
-    iconClassName: "h-3 w-3",
+    iconClassName: "h-3.5 w-3.5",
     testId: testId ? `${testId}-model` : undefined,
   });
 
@@ -99,7 +120,7 @@ export function InvocationModelContextCluster({
         data-testid={testId}
         data-model-context-grouped="true"
         className={cn(
-          "inline-flex h-6 min-w-0 max-w-full items-stretch overflow-hidden rounded-md border border-base-content/16 bg-base-100/88 shadow-sm ring-1 ring-base-100/60",
+          "inline-flex h-5 min-w-0 max-w-full items-stretch overflow-hidden rounded-md border border-base-300/75 bg-base-200/58 leading-none",
           className,
         )}
         title={modelLabel}
@@ -109,30 +130,36 @@ export function InvocationModelContextCluster({
         <span
           data-testid={modelTestId}
           data-model-context-part="model"
-          className="flex min-w-6 shrink-0 items-center justify-center bg-base-200/72 px-1.5"
+          className="flex w-5 shrink-0 items-center justify-center text-base-content/72"
         >
           {model}
         </span>
-        <span className="w-px shrink-0 bg-base-content/12" aria-hidden />
+        <span className="w-px shrink-0 bg-base-300/75" aria-hidden />
         <span
           data-testid={testId ? `${testId}-reasoning-effort` : undefined}
           data-model-context-part="reasoning-effort"
           data-reasoning-effort-tone={reasoningTone}
           className={cn(
-            "flex min-w-0 items-center px-2 font-mono text-[0.625rem] font-semibold leading-none tracking-[0.01em]",
-            REASONING_EFFORT_TONE_CLASSNAMES[reasoningTone],
-            "border-0",
+            "flex min-w-0 items-center gap-1 px-1.5 text-[0.625rem] font-semibold",
+            REASONING_EFFORT_CONTEXT_TONE_CLASSNAMES[reasoningTone],
           )}
           title={reasoningEffortValue}
         >
+          <span
+            className={cn(
+              "h-1 w-1 shrink-0 rounded-full",
+              REASONING_EFFORT_CONTEXT_MARKER_CLASSNAMES[reasoningTone],
+            )}
+            aria-hidden
+          />
           <span className="truncate whitespace-nowrap">{reasoningEffortValue}</span>
         </span>
         {fastIndicator ? (
           <>
-            <span className="w-px shrink-0 bg-base-content/12" aria-hidden />
+            <span className="w-px shrink-0 bg-base-300/75" aria-hidden />
             <span
               data-model-context-part="fast"
-              className="flex shrink-0 items-center justify-center bg-warning/10 px-1.5"
+              className="flex w-5 shrink-0 items-center justify-center"
             >
               {fastIndicator}
             </span>
