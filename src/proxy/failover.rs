@@ -2919,6 +2919,40 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         })
                 });
                 let finished_at = shanghai_now_string();
+                if let Some(response_body) = error_body_bytes.as_ref()
+                    && let Some(pending_attempt_record) = pending_attempt_record.as_mut()
+                {
+                    let response_body_logging_enabled = state
+                        .proxy_model_settings
+                        .read()
+                        .await
+                        .response_body_logging_enabled;
+                    let raw_meta = spawn_raw_payload_file_write(
+                        state.as_ref(),
+                        pending_attempt_record
+                            .attempt_public_id
+                            .as_deref()
+                            .unwrap_or(
+                                trace_context
+                                    .as_ref()
+                                    .map(|trace| trace.invoke_id.as_str())
+                                    .unwrap_or("pool-attempt"),
+                            ),
+                        "response",
+                        response_body.clone(),
+                        response_body_logging_enabled,
+                    )
+                    .finish()
+                    .await;
+                    let response_content_encoding = response_headers
+                        .get(header::CONTENT_ENCODING)
+                        .and_then(|value| value.to_str().ok());
+                    set_pending_pool_upstream_request_attempt_response_capture(
+                        pending_attempt_record,
+                        &raw_meta,
+                        response_content_encoding,
+                    );
+                }
                 if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                     && let Err(record_err) = finalize_pool_upstream_request_attempt(
                         &state.pool,

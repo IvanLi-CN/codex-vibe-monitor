@@ -1894,6 +1894,7 @@ mod tests {
             detail_prune_reason: None,
             response_content_encoding: None,
             failure_class: Some("service_failure".to_string()),
+            attempt_public_id: None,
         };
 
         let (body, from_full_body) =
@@ -1922,12 +1923,41 @@ mod tests {
             detail_prune_reason: Some("success_over_30d".to_string()),
             response_content_encoding: None,
             failure_class: Some("client_failure".to_string()),
+            attempt_public_id: None,
         };
 
         let err = resolve_response_body_text_from_row(&row, None)
             .expect_err("structured-only rows should not expose a full body");
 
         assert_eq!(err, "detail_pruned");
+    }
+
+    #[test]
+    fn attempt_response_body_reports_attempt_specific_missing_reason() {
+        let row = InvocationResponseBodyRow {
+            id: 3,
+            invoke_id: "invoke-attempt-missing".to_string(),
+            payload: None,
+            raw_response: String::new(),
+            request_raw_path: None,
+            request_raw_size: None,
+            request_raw_truncated: None,
+            request_raw_truncated_reason: None,
+            response_raw_path: None,
+            response_raw_size: None,
+            response_raw_truncated: Some(0),
+            response_raw_truncated_reason: None,
+            detail_level: "full".to_string(),
+            detail_prune_reason: None,
+            response_content_encoding: None,
+            failure_class: Some("service_failure".to_string()),
+            attempt_public_id: Some("attempt-abc".to_string()),
+        };
+
+        assert_eq!(
+            raw_response_fallback_reason(&row),
+            "attempt_response_body_not_captured"
+        );
     }
 }
 

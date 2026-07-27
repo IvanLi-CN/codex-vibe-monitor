@@ -4918,6 +4918,7 @@ pub(crate) struct InvocationResponseBodyRow {
     pub(crate) detail_prune_reason: Option<String>,
     pub(crate) response_content_encoding: Option<String>,
     pub(crate) failure_class: Option<String>,
+    pub(crate) attempt_public_id: Option<String>,
 }
 
 pub(crate) fn is_abnormal_invocation_failure(failure_class: Option<&str>) -> bool {
@@ -4946,7 +4947,9 @@ pub(crate) fn truncate_response_preview_text(value: &str) -> (String, bool) {
 }
 
 pub(crate) fn raw_response_fallback_reason(row: &InvocationResponseBodyRow) -> String {
-    if row.detail_level == DETAIL_LEVEL_STRUCTURED_ONLY {
+    if row.attempt_public_id.is_some() && row.response_raw_path.is_none() {
+        "attempt_response_body_not_captured".to_string()
+    } else if row.detail_level == DETAIL_LEVEL_STRUCTURED_ONLY {
         "detail_pruned".to_string()
     } else if row.response_raw_truncated.unwrap_or_default() != 0 {
         row.response_raw_truncated_reason
@@ -5059,7 +5062,8 @@ pub(crate) async fn fetch_invocation_response_body_row_by_id(
          detail_level, \
          detail_prune_reason, \
          {response_content_encoding} AS response_content_encoding, \
-         {resolved_failure} AS failure_class \
+         {resolved_failure} AS failure_class, \
+         NULL AS attempt_public_id \
          FROM codex_invocations \
          WHERE id = ?1 \
          LIMIT 1",
@@ -5249,6 +5253,7 @@ async fn fetch_invocation_attempt_response_body_row(
                     FROM pool_upstream_request_attempts AS final_attempt
                     WHERE final_attempt.invoke_id = attempts.invoke_id
                       AND final_attempt.occurred_at = attempts.occurred_at
+                      AND final_attempt.status != 'budget_exhausted_final'
                 ) THEN inv.raw_response
                 ELSE ''
             END AS raw_response,
@@ -5263,6 +5268,7 @@ async fn fetch_invocation_attempt_response_body_row(
                     FROM pool_upstream_request_attempts AS final_attempt
                     WHERE final_attempt.invoke_id = attempts.invoke_id
                       AND final_attempt.occurred_at = attempts.occurred_at
+                      AND final_attempt.status != 'budget_exhausted_final'
                 ) THEN inv.response_raw_path
                 ELSE NULL
             END AS response_raw_path,
@@ -5273,6 +5279,7 @@ async fn fetch_invocation_attempt_response_body_row(
                     FROM pool_upstream_request_attempts AS final_attempt
                     WHERE final_attempt.invoke_id = attempts.invoke_id
                       AND final_attempt.occurred_at = attempts.occurred_at
+                      AND final_attempt.status != 'budget_exhausted_final'
                 ) THEN inv.response_raw_size
                 ELSE NULL
             END AS response_raw_size,
@@ -5283,6 +5290,7 @@ async fn fetch_invocation_attempt_response_body_row(
                     FROM pool_upstream_request_attempts AS final_attempt
                     WHERE final_attempt.invoke_id = attempts.invoke_id
                       AND final_attempt.occurred_at = attempts.occurred_at
+                      AND final_attempt.status != 'budget_exhausted_final'
                 ) THEN inv.response_raw_truncated
                 ELSE NULL
             END AS response_raw_truncated,
@@ -5293,13 +5301,25 @@ async fn fetch_invocation_attempt_response_body_row(
                     FROM pool_upstream_request_attempts AS final_attempt
                     WHERE final_attempt.invoke_id = attempts.invoke_id
                       AND final_attempt.occurred_at = attempts.occurred_at
+                      AND final_attempt.status != 'budget_exhausted_final'
                 ) THEN inv.response_raw_truncated_reason
                 ELSE NULL
             END AS response_raw_truncated_reason,
             inv.detail_level,
             inv.detail_prune_reason,
-            COALESCE(attempts.response_content_encoding, {response_content_encoding}) AS response_content_encoding,
-            {resolved_failure} AS failure_class
+            CASE
+                WHEN attempts.response_content_encoding IS NOT NULL THEN attempts.response_content_encoding
+                WHEN attempts.attempt_index = (
+                    SELECT MAX(final_attempt.attempt_index)
+                    FROM pool_upstream_request_attempts AS final_attempt
+                    WHERE final_attempt.invoke_id = attempts.invoke_id
+                      AND final_attempt.occurred_at = attempts.occurred_at
+                      AND final_attempt.status != 'budget_exhausted_final'
+                ) THEN {response_content_encoding}
+                ELSE NULL
+            END AS response_content_encoding,
+            {resolved_failure} AS failure_class,
+            attempts.attempt_public_id AS attempt_public_id
         FROM codex_invocations AS inv
         JOIN pool_upstream_request_attempts AS attempts
             ON attempts.invoke_id = inv.invoke_id
@@ -5395,6 +5415,8 @@ pub(crate) async fn fetch_invocation_attempt_response_body(
         != 0;
     let source = Some(if has_attempt_capture {
         "attempt_raw_file"
+    } else if row.attempt_public_id.is_some() {
+        "attempt_metrics"
     } else {
         "invocation_raw_file"
     });
