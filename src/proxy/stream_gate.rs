@@ -1205,6 +1205,7 @@ enum IncrementalResponsePayloadDecoderKind {
     Gzip(WriteGzipDecoder<Vec<u8>>),
     DeflateProbe,
     Brotli(Box<DecompressorWriter<Vec<u8>>>),
+    Chain(Vec<IncrementalResponsePayloadDecoder>),
     Failed,
 }
 
@@ -1212,29 +1213,52 @@ pub(crate) struct IncrementalResponsePayloadDecoder {
     kind: IncrementalResponsePayloadDecoderKind,
     deflate_prefix: Vec<u8>,
     brotli_decoded_bytes: usize,
+    decode_failure_reason: Option<String>,
 }
 
 impl IncrementalResponsePayloadDecoder {
     pub(crate) fn new(content_encoding: Option<&str>) -> Self {
         let encodings = parse_content_encodings(content_encoding);
-        let kind = match encodings.as_slice() {
-            [] => IncrementalResponsePayloadDecoderKind::Identity,
-            [encoding] if encoding == "identity" => IncrementalResponsePayloadDecoderKind::Identity,
-            [encoding] if encoding == "gzip" || encoding == "x-gzip" => {
-                IncrementalResponsePayloadDecoderKind::Gzip(WriteGzipDecoder::new(Vec::new()))
+        let kind = if encodings.len() > 1 {
+            // Content-Encoding lists transformations in application order. Decode the
+            // right-most transformation first, then pass the result through the remaining
+            // stages so TTFT sees the original event stream incrementally.
+            IncrementalResponsePayloadDecoderKind::Chain(
+                encodings
+                    .iter()
+                    .rev()
+                    .map(|encoding| Self::new(Some(encoding)))
+                    .collect(),
+            )
+        } else {
+            match encodings.as_slice() {
+                [] => IncrementalResponsePayloadDecoderKind::Identity,
+                [encoding] if encoding == "identity" => {
+                    IncrementalResponsePayloadDecoderKind::Identity
+                }
+                [encoding] if encoding == "gzip" || encoding == "x-gzip" => {
+                    IncrementalResponsePayloadDecoderKind::Gzip(WriteGzipDecoder::new(Vec::new()))
+                }
+                [encoding] if encoding == "deflate" => {
+                    IncrementalResponsePayloadDecoderKind::DeflateProbe
+                }
+                [encoding] if encoding == "br" => IncrementalResponsePayloadDecoderKind::Brotli(
+                    Box::new(DecompressorWriter::new(Vec::new(), 4096)),
+                ),
+                _ => IncrementalResponsePayloadDecoderKind::Failed,
             }
-            [encoding] if encoding == "deflate" => {
-                IncrementalResponsePayloadDecoderKind::DeflateProbe
-            }
-            [encoding] if encoding == "br" => IncrementalResponsePayloadDecoderKind::Brotli(
-                Box::new(DecompressorWriter::new(Vec::new(), 4096)),
-            ),
-            _ => IncrementalResponsePayloadDecoderKind::Failed,
         };
         Self {
             kind,
             deflate_prefix: Vec::new(),
             brotli_decoded_bytes: 0,
+            decode_failure_reason: None,
+        }
+    }
+
+    fn record_decode_failure(&mut self, encoding: &str, error: impl std::fmt::Display) {
+        if self.decode_failure_reason.is_none() {
+            self.decode_failure_reason = Some(format!("{encoding}:{error}"));
         }
     }
 
@@ -1257,15 +1281,20 @@ impl IncrementalResponsePayloadDecoder {
                         self.kind = IncrementalResponsePayloadDecoderKind::Flate(decoder);
                         decoded
                     }
-                    Err(_) => Vec::new(),
+                    Err(_) => {
+                        self.record_decode_failure("deflate", "invalid compressed stream");
+                        Vec::new()
+                    }
                 }
             }
             IncrementalResponsePayloadDecoderKind::Gzip(mut decoder) => {
                 let output_before = decoder.get_ref().len();
                 if decoder.write_all(bytes).is_err() {
+                    self.record_decode_failure("gzip", "invalid compressed stream");
                     return Vec::new();
                 }
                 if decoder.flush().is_err() {
+                    self.record_decode_failure("gzip", "invalid compressed stream");
                     return Vec::new();
                 }
                 let decoded = decoder.get_ref()[output_before..].to_vec();
@@ -1289,11 +1318,15 @@ impl IncrementalResponsePayloadDecoder {
                         self.kind = IncrementalResponsePayloadDecoderKind::Flate(decoder);
                         decoded
                     }
-                    Err(_) => Vec::new(),
+                    Err(_) => {
+                        self.record_decode_failure("deflate", "invalid compressed stream");
+                        Vec::new()
+                    }
                 }
             }
             IncrementalResponsePayloadDecoderKind::Brotli(mut decoder) => {
                 if decoder.write_all(bytes).is_err() {
+                    self.record_decode_failure("br", "invalid compressed stream");
                     return Vec::new();
                 }
                 let output = decoder.get_ref();
@@ -1302,8 +1335,57 @@ impl IncrementalResponsePayloadDecoder {
                 self.kind = IncrementalResponsePayloadDecoderKind::Brotli(decoder);
                 decoded
             }
+            IncrementalResponsePayloadDecoderKind::Chain(mut decoders) => {
+                let mut decoded = bytes.to_vec();
+                for decoder in &mut decoders {
+                    if decoded.is_empty() {
+                        break;
+                    }
+                    decoded = decoder.ingest(&decoded);
+                }
+                self.kind = IncrementalResponsePayloadDecoderKind::Chain(decoders);
+                decoded
+            }
             IncrementalResponsePayloadDecoderKind::Failed => Vec::new(),
         }
+    }
+
+    pub(crate) fn finish(&mut self) {
+        let kind = std::mem::replace(
+            &mut self.kind,
+            IncrementalResponsePayloadDecoderKind::Failed,
+        );
+        match kind {
+            IncrementalResponsePayloadDecoderKind::Gzip(mut decoder) => {
+                if decoder.try_finish().is_err() {
+                    self.record_decode_failure("gzip", "invalid compressed stream");
+                }
+                self.kind = IncrementalResponsePayloadDecoderKind::Gzip(decoder);
+            }
+            IncrementalResponsePayloadDecoderKind::Brotli(mut decoder) => {
+                if decoder.close().is_err() {
+                    self.record_decode_failure("br", "invalid compressed stream");
+                }
+                self.kind = IncrementalResponsePayloadDecoderKind::Brotli(decoder);
+            }
+            IncrementalResponsePayloadDecoderKind::Chain(mut decoders) => {
+                for decoder in &mut decoders {
+                    decoder.finish();
+                }
+                self.kind = IncrementalResponsePayloadDecoderKind::Chain(decoders);
+            }
+            other => self.kind = other,
+        }
+    }
+
+    pub(crate) fn failure_reason(&self) -> Option<&str> {
+        self.decode_failure_reason.as_deref().or_else(|| {
+            if let IncrementalResponsePayloadDecoderKind::Chain(decoders) = &self.kind {
+                decoders.iter().find_map(Self::failure_reason)
+            } else {
+                None
+            }
+        })
     }
 }
 
@@ -1575,6 +1657,28 @@ mod ttft_tests {
         let mut parser = StreamResponsePayloadChunkParser::default();
         assert!(!parser.ingest_bytes(&decoder.ingest(&compressed[..split])));
         assert!(parser.ingest_bytes(&decoder.ingest(&compressed[split..])));
+    }
+
+    #[test]
+    fn ttft_decodes_stacked_content_encodings_before_parsing() {
+        let raw = b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n";
+        let mut gzip_encoder = GzEncoder::new(Vec::new(), Compression::default());
+        gzip_encoder.write_all(raw).expect("write gzip SSE payload");
+        let gzip_compressed = gzip_encoder.finish().expect("finish gzip SSE payload");
+        let mut stacked = Vec::new();
+        {
+            let mut brotli_encoder = brotli::CompressorWriter::new(&mut stacked, 4096, 5, 22);
+            brotli_encoder
+                .write_all(&gzip_compressed)
+                .expect("write stacked brotli payload");
+            brotli_encoder
+                .flush()
+                .expect("flush stacked brotli payload");
+        }
+
+        let mut decoder = IncrementalResponsePayloadDecoder::new(Some("gzip, br"));
+        let mut parser = StreamResponsePayloadChunkParser::default();
+        assert!(parser.ingest_bytes(&decoder.ingest(&stacked)));
     }
 
     #[test]
@@ -1919,6 +2023,7 @@ pub(crate) enum PoolInitialResponseGateOutcome {
         response: ProxyUpstreamResponseBody,
         prefetched_bytes: Option<Bytes>,
         prefetched_bytes_received_at: Option<Instant>,
+        replayed_bytes_received_at: Option<Instant>,
     },
     RetrySameAccount {
         message: String,
@@ -2054,6 +2159,7 @@ pub(crate) async fn gate_pool_initial_response_stream_with_timestamp(
         response: rebuilt_response,
         prefetched_bytes,
         prefetched_bytes_received_at: first_forward_event_received_at,
+        replayed_bytes_received_at: first_forward_event_received_at,
     })
 }
 

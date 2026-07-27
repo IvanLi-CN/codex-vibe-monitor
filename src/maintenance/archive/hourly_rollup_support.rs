@@ -404,6 +404,13 @@ pub(crate) fn accumulate_upstream_account_usage_breakdown_rollup(
         entry.performance_first_token_sample_count += 1;
         entry.performance_first_token_sum_ms += first_token_ms;
     }
+    if is_success_like
+        && let Some(stream_duration_ms) =
+            normalize_non_negative_timing_value(row.t_upstream_stream_ms)
+    {
+        entry.performance_response_sample_count += 1;
+        entry.performance_response_sum_ms += stream_duration_ms;
+    }
     if success_billed {
         entry.performance_total_tokens += row.total_tokens.unwrap_or_default().max(0);
         if let Some(stream_duration_ms) =
@@ -411,8 +418,6 @@ pub(crate) fn accumulate_upstream_account_usage_breakdown_rollup(
         {
             entry.performance_stream_output_tokens += row.output_tokens.unwrap_or_default().max(0);
             entry.performance_stream_duration_ms += stream_duration_ms;
-            entry.performance_response_sample_count += 1;
-            entry.performance_response_sum_ms += stream_duration_ms;
         }
         if let Some(ttfb_ms) = row
             .t_upstream_ttfb_ms

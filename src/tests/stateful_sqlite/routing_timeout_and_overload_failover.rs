@@ -2328,6 +2328,50 @@ async fn gate_pool_initial_response_stream_preserves_first_forward_event_boundar
 }
 
 #[tokio::test]
+async fn gate_pool_initial_response_stream_preserves_replayed_chunk_timestamp() {
+    let payload = [
+        "event: response.created\n",
+        r#"data: {"type":"response.created","response":{"id":"resp_gate_timestamp_test","model":"gpt-5.4","status":"in_progress"}}"#,
+        "\n\n",
+        "event: response.output_text.delta\n",
+        r#"data: {"type":"response.output_text.delta","delta":"answer"}"#,
+        "\n\n",
+    ]
+    .concat();
+    let response = ProxyUpstreamResponseBody::Axum(
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(http_header::CONTENT_TYPE, "text/event-stream")
+            .body(Body::from(payload.clone()))
+            .expect("build gate timestamp response"),
+    );
+    let received_at = Instant::now() - Duration::from_millis(25);
+
+    let outcome = gate_pool_initial_response_stream_with_timestamp(
+        response,
+        Some(Bytes::from(payload)),
+        Some(received_at),
+        Duration::from_secs(1),
+        Instant::now(),
+    )
+    .await
+    .expect("gate timestamp response stream");
+
+    let PoolInitialResponseGateOutcome::Forward {
+        prefetched_bytes,
+        prefetched_bytes_received_at,
+        replayed_bytes_received_at,
+        ..
+    } = outcome
+    else {
+        panic!("model delta should remain on the original stream");
+    };
+    assert!(prefetched_bytes.is_some());
+    assert_eq!(prefetched_bytes_received_at, Some(received_at));
+    assert_eq!(replayed_bytes_received_at, Some(received_at));
+}
+
+#[tokio::test]
 async fn gate_pool_initial_response_stream_retries_overload_after_metadata_prefix_exceeds_preview_limit()
  {
     let oversized_metadata = less_compressible_test_string(RAW_RESPONSE_PREVIEW_LIMIT + 8 * 1024);

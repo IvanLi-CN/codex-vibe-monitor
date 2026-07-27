@@ -18466,3 +18466,60 @@ fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error
         "legacy http_200 rows with structured failure metadata must not be treated as pruned successes",
     );
 }
+
+#[tokio::test]
+async fn dashboard_activity_response_duration_includes_success_without_cost() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, source, status, total_tokens, output_tokens, cost,
+            t_upstream_stream_ms, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(98_001_i64)
+    .bind("dashboard-activity-unpriced-response")
+    .bind(occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(0_i64)
+    .bind(0_i64)
+    .bind(Option::<f64>::None)
+    .bind(750.0_f64)
+    .bind(
+        json!({
+            "promptCacheKey": "pck-dashboard-activity-unpriced-response",
+            "responseModel": "custom-unpriced-model",
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert unpriced response-duration invocation");
+
+    let activity =
+        load_dashboard_activity_snapshot(state.as_ref(), "today", Shanghai, 1, true, false, None)
+            .await
+            .expect("load dashboard activity with unpriced response duration");
+    let model = activity
+        .summary()
+        .model_performance
+        .models
+        .iter()
+        .find(|model| model.model == "custom-unpriced-model")
+        .expect("unpriced model performance row");
+    assert_f64_close(
+        model
+            .metrics
+            .avg_response_ms
+            .expect("unpriced response duration sample"),
+        750.0,
+    );
+}

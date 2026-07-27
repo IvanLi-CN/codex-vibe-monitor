@@ -1518,7 +1518,15 @@ pub(crate) async fn open_invocation_archive_batch_pool(
             return Err(err);
         }
     };
-    ensure_invocation_archive_first_token_compatibility(&archive_pool).await?;
+    let has_invocation_table = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'codex_invocations')",
+    )
+    .fetch_one(&archive_pool)
+    .await?
+        != 0;
+    if has_invocation_table {
+        ensure_invocation_archive_first_token_compatibility(&archive_pool).await?;
+    }
 
     Ok(Some((archive_pool, temp_cleanup)))
 }

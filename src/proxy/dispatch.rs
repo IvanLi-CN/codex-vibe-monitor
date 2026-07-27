@@ -1196,13 +1196,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     if body_rewritten {
         upstream_headers.remove(header::CONTENT_LENGTH);
     }
-    if request_info.is_stream {
-        // Keep event-stream TTFT observable without depending on an encoded upstream body.
-        upstream_headers.insert(
-            header::ACCEPT_ENCODING,
-            HeaderValue::from_static("identity"),
-        );
-    }
+    // Preserve the client's response-encoding negotiation. TTFT inspection decodes a copy of
+    // the upstream bytes below; forwarded bytes must retain the negotiated representation.
     let pool_attempt_runtime_snapshot =
         pool_route_active.then(|| PoolAttemptRuntimeSnapshotContext {
             capture_target,
@@ -1223,6 +1218,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         t_upstream_connect_ms,
         prefetched_first_chunk,
         prefetched_first_chunk_received_at,
+        prefetched_first_stream_chunk_received_at,
         prefetched_stream_timeout,
         prefetched_ttfb_ms,
         oauth_responses_debug,
@@ -1265,6 +1261,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 response.connect_latency_ms,
                 response.first_chunk,
                 response.first_chunk_received_at,
+                response.first_stream_chunk_received_at,
                 response.stream_timeout,
                 response.first_byte_latency_ms,
                 response.oauth_responses_debug,
@@ -1535,6 +1532,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 Some(response.selected_proxy),
                 None,
                 response.connect_latency_ms,
+                None,
                 None,
                 None,
                 None,
@@ -2060,6 +2058,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let pending_pool_attempt_summary_for_task = pending_pool_attempt_summary.clone();
     let prefetched_first_chunk_for_task = prefetched_first_chunk;
     let prefetched_first_chunk_received_at_for_task = prefetched_first_chunk_received_at;
+    let mut prefetched_first_stream_chunk_received_at_for_task =
+        prefetched_first_stream_chunk_received_at;
     let prefetched_stream_timeout_for_task = prefetched_stream_timeout;
     let prefetched_ttfb_ms_for_task = prefetched_ttfb_ms;
     let upstream_attempt_started_at_for_task = upstream_attempt_started_at;
@@ -2405,7 +2405,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             };
             match next_chunk {
                 Ok(chunk) => {
-                    let chunk_received_at = Instant::now();
+                    let chunk_received_at = prefetched_first_stream_chunk_received_at_for_task
+                        .take()
+                        .unwrap_or_else(Instant::now);
                     let gap_before_send_ms = last_downstream_forwarded_chunk_at
                         .map(|instant| instant.elapsed().as_millis() as u64);
                     if stream_started_at.is_none() {
@@ -2596,6 +2598,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             }
         }
         stream_response_parser.flush_pending_line();
+        stream_response_decoder.finish();
         drop(tx);
         drop(proxy_request_permit_for_task.take());
         let downstream_terminal_grace_deadline =
@@ -2734,6 +2737,18 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     )
                 })
         };
+        if let Some(reason) = stream_response_decoder.failure_reason()
+            && !response_info
+                .usage_missing_reason
+                .as_deref()
+                .is_some_and(|value| value.contains("response_decode_failed:"))
+        {
+            let existing = response_info.usage_missing_reason.take();
+            response_info.usage_missing_reason = Some(match existing {
+                Some(existing) => format!("response_decode_failed:{reason};{existing}"),
+                None => format!("response_decode_failed:{reason}"),
+            });
+        }
         let t_resp_parse_ms = elapsed_ms(resp_parse_started);
 
         if response_info.model.is_none() {

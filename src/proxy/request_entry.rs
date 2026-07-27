@@ -839,6 +839,7 @@ pub(crate) struct PoolUpstreamResponse {
     pub(crate) first_byte_latency_ms: f64,
     pub(crate) first_chunk: Option<Bytes>,
     pub(crate) first_chunk_received_at: Option<Instant>,
+    pub(crate) first_stream_chunk_received_at: Option<Instant>,
     pub(crate) pending_attempt_record: Option<PendingPoolAttemptRecord>,
     pub(crate) deferred_early_phase_cleanup_guard: Option<PoolEarlyPhaseOrphanCleanupGuard>,
     pub(crate) live_attempt_activity_lease: Option<PoolLiveAttemptActivityLease>,
