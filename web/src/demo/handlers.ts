@@ -1715,7 +1715,7 @@ function poolAttempts(invokeId: string) {
   const first = {
     ...base,
     id: record.id * 10 + 1,
-    attemptId: formatDemoAttemptId(record.id * 100 + 1),
+    attemptId: record.id === 9002 ? "qPvNNAK8" : formatDemoAttemptId(record.id * 100 + 1),
     upstreamAccountId: accountId,
     upstreamAccountName: record.upstreamAccountName ?? null,
     upstreamRouteKey: "pool",
@@ -2421,13 +2421,15 @@ export async function handleDemoRequest(request: Request) {
     const attempt = record
       ? poolAttempts(record.invokeId).find((item) => item.attemptId === attemptId)
       : null;
-    if (!record) return json({ error: `Demo attempt ${attemptId} not found.` }, { status: 404 });
+    if (!record || !attempt) {
+      return json({ error: `Demo attempt ${attemptId} not found.` }, { status: 404 });
+    }
     return json({
       available: true,
       bodyText: DEMO_INVOCATION_RESPONSE_BODY_TEXT,
       headers: {
         contentEncoding: "identity",
-        upstreamRequestId: attempt?.upstreamRequestId ?? `req_demo_${record.id}`,
+        upstreamRequestId: attempt.upstreamRequestId ?? `req_demo_${record.id}`,
         cvmInvokeId: record.invokeId,
       },
       routing: {

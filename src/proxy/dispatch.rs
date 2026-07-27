@@ -437,6 +437,9 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
     status: StatusCode,
     failure_kind: &'static str,
     error_message: &str,
+    terminal_attempt_summary: Option<&PoolAttemptSummary>,
+    terminal_account: Option<&PoolResolvedAccount>,
+    terminal_connect_latency_ms: Option<f64>,
 ) -> bool {
     let response_envelope = build_local_capture_error_envelope(invoke_id, status, error_message);
     let req_raw = spawn_raw_payload_file_write(
@@ -510,10 +513,11 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
             client_fingerprint: client_attribution_context.fingerprint.as_deref(),
             client_header_fingerprints: Some(&client_attribution_context.header_fingerprints)
                 .filter(|fingerprints| !fingerprints.is_empty()),
-            upstream_account_id: None,
-            upstream_account_name: None,
-            upstream_account_kind: None,
-            upstream_base_url_host: None,
+            upstream_account_id: terminal_account.map(|account| account.account_id),
+            upstream_account_name: terminal_account.map(|account| account.display_name.as_str()),
+            upstream_account_kind: terminal_account.map(|account| account.kind.as_str()),
+            upstream_base_url_host: terminal_account
+                .and_then(|account| account.upstream_base_url.host_str()),
             oauth_account_header_attached: None,
             oauth_account_id_shape: None,
             oauth_forwarded_header_count: None,
@@ -547,9 +551,12 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
             upstream_approx_download_bytes: None,
             proxy_display_name: None,
             proxy_weight_delta: None,
-            pool_attempt_count: Some(0),
-            pool_distinct_account_count: Some(0),
-            pool_attempt_terminal_reason: Some(failure_kind),
+            pool_attempt_count: terminal_attempt_summary.map(|summary| summary.pool_attempt_count),
+            pool_distinct_account_count: terminal_attempt_summary
+                .map(|summary| summary.pool_distinct_account_count),
+            pool_attempt_terminal_reason: terminal_attempt_summary
+                .and_then(|summary| summary.pool_attempt_terminal_reason.as_deref())
+                .or(Some(failure_kind)),
             blocked_binding: None,
         })),
         raw_response: response_envelope.body_text.clone(),
@@ -557,10 +564,10 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
         req_raw,
         resp_raw: build_local_capture_error_resp_raw(&response_envelope),
         timings: StageTimings {
-            t_total_ms: 0.0,
+            t_total_ms: capture_started.elapsed().as_secs_f64() * 1_000.0,
             t_req_read_ms,
             t_req_parse_ms,
-            t_upstream_connect_ms: 0.0,
+            t_upstream_connect_ms: terminal_connect_latency_ms.unwrap_or_default(),
             t_upstream_ttfb_ms: 0.0,
             first_token_ms: None,
             t_upstream_stream_ms: 0.0,
@@ -1089,6 +1096,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     status,
                     PROXY_FAILURE_POOL_ROUTING_BLOCKED,
                     &message,
+                    None,
+                    None,
+                    None,
                 )
                 .await;
                 if terminal_invocation_persisted {
@@ -1132,6 +1142,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     status,
                     PROXY_FAILURE_POOL_ROUTING_BLOCKED,
                     &message,
+                    None,
+                    None,
+                    None,
                 )
                 .await;
                 if terminal_invocation_persisted {

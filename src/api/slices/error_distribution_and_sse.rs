@@ -1894,6 +1894,7 @@ mod tests {
             detail_prune_reason: None,
             response_content_encoding: None,
             failure_class: Some("service_failure".to_string()),
+            upstream_request_id: None,
             attempt_public_id: None,
         };
 
@@ -1923,6 +1924,7 @@ mod tests {
             detail_prune_reason: Some("success_over_30d".to_string()),
             response_content_encoding: None,
             failure_class: Some("client_failure".to_string()),
+            upstream_request_id: None,
             attempt_public_id: None,
         };
 
@@ -1951,6 +1953,7 @@ mod tests {
             detail_prune_reason: None,
             response_content_encoding: None,
             failure_class: Some("service_failure".to_string()),
+            upstream_request_id: None,
             attempt_public_id: Some("attempt-abc".to_string()),
         };
 

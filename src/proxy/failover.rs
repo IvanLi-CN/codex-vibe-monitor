@@ -497,6 +497,9 @@ async fn persist_pool_failover_terminal_invocation(
         error.status,
         error.failure_kind,
         &error.message,
+        Some(&error.attempt_summary),
+        error.account.as_ref(),
+        Some(error.connect_latency_ms),
     )
     .await;
 }

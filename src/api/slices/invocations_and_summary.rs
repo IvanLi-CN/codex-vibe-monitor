@@ -4918,6 +4918,7 @@ pub(crate) struct InvocationResponseBodyRow {
     pub(crate) detail_prune_reason: Option<String>,
     pub(crate) response_content_encoding: Option<String>,
     pub(crate) failure_class: Option<String>,
+    pub(crate) upstream_request_id: Option<String>,
     pub(crate) attempt_public_id: Option<String>,
 }
 
@@ -5063,6 +5064,7 @@ pub(crate) async fn fetch_invocation_response_body_row_by_id(
          detail_prune_reason, \
          {response_content_encoding} AS response_content_encoding, \
          {resolved_failure} AS failure_class, \
+         NULL AS upstream_request_id, \
          NULL AS attempt_public_id \
          FROM codex_invocations \
          WHERE id = ?1 \
@@ -5135,7 +5137,10 @@ fn build_response_body_header_snapshot(
             .clone()
             .or_else(|| payload_string(payload, &["responseContentEncoding"])),
         "contentEncodingChain": payload_string(payload, &["contentEncodingChain"]),
-        "upstreamRequestId": payload_string(payload, &["upstreamRequestId"]),
+        "upstreamRequestId": row
+            .upstream_request_id
+            .clone()
+            .or_else(|| payload_string(payload, &["upstreamRequestId"])),
         "cvmInvokeId": Some(row.invoke_id.clone()),
     })
 }
@@ -5319,6 +5324,7 @@ async fn fetch_invocation_attempt_response_body_row(
                 ELSE NULL
             END AS response_content_encoding,
             {resolved_failure} AS failure_class,
+            attempts.upstream_request_id AS upstream_request_id,
             attempts.attempt_public_id AS attempt_public_id
         FROM codex_invocations AS inv
         JOIN pool_upstream_request_attempts AS attempts

@@ -370,8 +370,13 @@ describe("demo MSW handlers", () => {
     expect(attemptResponseBody).toMatchObject({
       available: true,
       captureSource: "attempt_raw_file",
-      headers: { upstreamRequestId: "req_demo_9002" },
+      headers: { upstreamRequestId: "up_demo_9002_1" },
     });
+
+    const missingAttemptResponse = await fetch(
+      "http://demo.invalid/api/invocations/9002/attempts/missing-attempt/response-body",
+    );
+    expect(missingAttemptResponse.status).toBe(404);
   });
 
   it("fails closed instead of returning a real network response in network-failure scene", async () => {
