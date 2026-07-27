@@ -110,7 +110,9 @@ Dashboard / Live / Records 三处调用详情曾经以“摘要字段 + 局部�
 
 ## Visual Evidence
 
-页面级绑定场景：mock-only Web Demo `#/dashboard/invocations/demo-invocation-9002?demoScene=attention&demoViewport=desktop`。
+页面级绑定场景：mock-only Web Demo `#/dashboard/invocations/demo-invocation-9002?demoScene=attention&demoViewport=desktop`，固定桌面网页视口 `1440x900`。
+
+视口证据元数据：`requested_viewport=1440x900`，`viewport_strategy=explicit-browser-viewport`，`capture_scope=browser-viewport`。
 
 组件级回归场景：Storybook `Invocations/InvocationWorkflowDetailPanel/BlockedPoolWorkflow`。
 
@@ -132,7 +134,7 @@ PR: none
 视觉证据目标源=ui_demo
 证据落盘=已落盘：`assets/attempt-response-body-demo.png`
 证据绑定sha=f3025f57
-空白裁剪=无需裁剪（页面边界存在半透明抽屉背景，裁剪器按 ambiguous_border 保持原图）
+空白裁剪=无需裁剪（固定 1440x900 页面边界存在半透明抽屉背景，裁剪器按 ambiguous_border 保持原图）
 聊天回图=已展示
 证据说明：attempt `qPvNNAK8` 展开后显示 `captureSource=attempt_raw_file`、独立大小/编码元数据与实际 JSON 响应体；页面来自 mock-only、免登录 Demo。
 
