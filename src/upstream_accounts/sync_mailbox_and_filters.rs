@@ -1456,6 +1456,7 @@ pub(crate) fn normalize_group_account_routing_rule(
         priority_tier,
         fast_mode_rewrite_mode,
         image_tool_rewrite_mode,
+        codex_imagegen_rewrite_mode: None,
         request_compression_algorithm: None,
         concurrency_limit,
         upstream_429_retry_enabled,
@@ -1566,6 +1567,29 @@ pub(crate) fn normalize_image_tool_rewrite_mode(
 
 pub(crate) fn decode_image_tool_rewrite_mode(value: &str) -> ImageToolRewriteMode {
     ImageToolRewriteMode::from_str(value)
+}
+
+pub(crate) fn normalize_codex_imagegen_rewrite_mode(
+    value: Option<&str>,
+) -> Result<CodexImagegenRewriteMode, (StatusCode, String)> {
+    let normalized = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("keep_original");
+    match normalized {
+        "force_remove" => Ok(CodexImagegenRewriteMode::ForceRemove),
+        "keep_original" => Ok(CodexImagegenRewriteMode::KeepOriginal),
+        "fill_missing" => Ok(CodexImagegenRewriteMode::FillMissing),
+        "force_add" => Ok(CodexImagegenRewriteMode::ForceAdd),
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            "codexImagegenRewriteMode must be one of: force_remove, keep_original, fill_missing, force_add".to_string(),
+        )),
+    }
+}
+
+pub(crate) fn decode_codex_imagegen_rewrite_mode(value: &str) -> CodexImagegenRewriteMode {
+    CodexImagegenRewriteMode::from_str(value)
 }
 
 pub(crate) fn normalize_request_compression_algorithm(
@@ -1808,6 +1832,7 @@ pub(crate) fn group_routing_rule_from_columns(
     policy_priority_tier: Option<&str>,
     policy_fast_mode_rewrite_mode: Option<&str>,
     policy_image_tool_rewrite_mode: Option<&str>,
+    policy_codex_imagegen_rewrite_mode: Option<&str>,
     policy_request_compression_algorithm: Option<&str>,
     policy_concurrency_limit: Option<i64>,
     policy_upstream_429_retry_enabled: Option<i64>,
@@ -1843,6 +1868,8 @@ pub(crate) fn group_routing_rule_from_columns(
         image_tool_rewrite_mode: decode_image_tool_rewrite_mode(
             policy_image_tool_rewrite_mode.unwrap_or("keep_original"),
         ),
+        codex_imagegen_rewrite_mode: policy_codex_imagegen_rewrite_mode
+            .map(decode_codex_imagegen_rewrite_mode),
         request_compression_algorithm: policy_request_compression_algorithm
             .map(decode_request_compression_algorithm),
         concurrency_limit: policy_concurrency_limit.unwrap_or(legacy_concurrency_limit),
@@ -1892,6 +1919,7 @@ pub(crate) async fn load_group_routing_rule(
         policy_priority_tier: Option<String>,
         policy_fast_mode_rewrite_mode: Option<String>,
         policy_image_tool_rewrite_mode: Option<String>,
+        policy_codex_imagegen_rewrite_mode: Option<String>,
         policy_request_compression_algorithm: Option<String>,
         policy_concurrency_limit: Option<i64>,
         policy_upstream_429_retry_enabled: Option<i64>,
@@ -1925,6 +1953,7 @@ pub(crate) async fn load_group_routing_rule(
             policy_priority_tier,
             policy_fast_mode_rewrite_mode,
             policy_image_tool_rewrite_mode,
+            policy_codex_imagegen_rewrite_mode,
             policy_request_compression_algorithm,
             policy_concurrency_limit,
             policy_upstream_429_retry_enabled,
@@ -1958,6 +1987,7 @@ pub(crate) async fn load_group_routing_rule(
         return Ok(group_routing_rule_from_columns(
             0, false, 0, None, None, None, None, None, None, None, None, None, None, None, None,
             None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None,
         ));
     };
     let upstream_429_retry_enabled =
@@ -1975,6 +2005,7 @@ pub(crate) async fn load_group_routing_rule(
         row.policy_priority_tier.as_deref(),
         row.policy_fast_mode_rewrite_mode.as_deref(),
         row.policy_image_tool_rewrite_mode.as_deref(),
+        row.policy_codex_imagegen_rewrite_mode.as_deref(),
         row.policy_request_compression_algorithm.as_deref(),
         row.policy_concurrency_limit,
         row.policy_upstream_429_retry_enabled,

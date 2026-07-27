@@ -1841,6 +1841,7 @@ describe("account pool frontend API helpers", () => {
       },
       requestCompressionAlgorithm: "identity",
       requestCompressionLevelPreset: "balanced",
+      codexImagegenRewriteMode: "keep_original",
     });
   });
 

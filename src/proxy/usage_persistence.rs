@@ -713,6 +713,54 @@ pub(crate) async fn annotate_pool_upstream_request_attempt_request_compression(
     Ok(result.rows_affected() > 0)
 }
 
+/// Stores the bounded rewrite audit on the attempt that produced it. This keeps
+/// failover timelines account-accurate instead of inheriting the final attempt's audit.
+pub(crate) async fn annotate_pool_upstream_request_attempt_codex_imagegen_rewrite(
+    pool: &Pool<Sqlite>,
+    pending: &PendingPoolAttemptRecord,
+    codex_imagegen_rewrite: Option<&Value>,
+) -> Result<bool> {
+    let Some(codex_imagegen_rewrite) = codex_imagegen_rewrite else {
+        return Ok(false);
+    };
+    let Some(attempt_id) = pending.attempt_id else {
+        return Ok(false);
+    };
+
+    let existing = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT request_summary_json FROM pool_upstream_request_attempts WHERE id = ?1",
+    )
+    .bind(attempt_id)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+    let mut summary = existing
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| Value::Object(Default::default()));
+    let Some(summary) = summary.as_object_mut() else {
+        return Ok(false);
+    };
+    if summary.get("codexImagegenRewrite") == Some(codex_imagegen_rewrite) {
+        return Ok(false);
+    }
+    summary.insert(
+        "codexImagegenRewrite".to_string(),
+        codex_imagegen_rewrite.clone(),
+    );
+    let request_summary_json = serde_json::to_string(&Value::Object(summary.clone()))?;
+    let result = sqlx::query(
+        "UPDATE pool_upstream_request_attempts SET request_summary_json = ?2 WHERE id = ?1",
+    )
+    .bind(attempt_id)
+    .bind(request_summary_json)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
 pub(crate) async fn update_pool_upstream_request_attempt_phase(
     pool: &Pool<Sqlite>,
     pending: &PendingPoolAttemptRecord,
@@ -2542,6 +2590,26 @@ pub(crate) fn with_image_tool_rewrite_payload_summary(
         return payload;
     };
     object.insert("imageToolRewrite".to_string(), image_tool_rewrite.clone());
+    serde_json::to_string(&value).unwrap_or(payload)
+}
+
+pub(crate) fn with_codex_imagegen_rewrite_payload_summary(
+    payload: String,
+    codex_imagegen_rewrite: Option<&Value>,
+) -> String {
+    let Some(codex_imagegen_rewrite) = codex_imagegen_rewrite else {
+        return payload;
+    };
+    let Ok(mut value) = serde_json::from_str::<Value>(&payload) else {
+        return payload;
+    };
+    let Some(object) = value.as_object_mut() else {
+        return payload;
+    };
+    object.insert(
+        "codexImagegenRewrite".to_string(),
+        codex_imagegen_rewrite.clone(),
+    );
     serde_json::to_string(&value).unwrap_or(payload)
 }
 

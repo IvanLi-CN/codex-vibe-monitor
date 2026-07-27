@@ -285,6 +285,7 @@ describe("Settings forward proxy table", () => {
     expect(saveRouting).toHaveBeenCalledWith({
       requestCompressionAlgorithm: "identity",
       requestCompressionLevelPreset: "balanced",
+      codexImagegenRewriteMode: "keep_original",
       timeouts: {
         responsesFirstByteTimeoutSecs: 180,
         compactFirstByteTimeoutSecs: 300,

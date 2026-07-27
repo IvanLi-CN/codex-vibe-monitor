@@ -15,6 +15,7 @@ import { SelectField } from "../../components/ui/select-field";
 import { Switch } from "../../components/ui/switch";
 import { useCompactViewport } from "../../hooks/useCompactViewport";
 import type {
+  CodexImagegenRewriteMode,
   EffectiveRoutingTimeoutFieldSources,
   GroupAccountRoutingRule,
   ImageToolRewriteMode,
@@ -59,12 +60,15 @@ import { RoutingTimeoutOverridesEditor } from "./RoutingTimeoutOverridesEditor";
 import { StatusChangeToggleButton } from "./StatusChangeToggleButton";
 import { statusChangeReasonIconName } from "./statusChangeReasonIcons";
 
+const CODEX_IMAGEGEN_INHERIT_VALUE = "__inherit__";
+
 type GroupAccountRoutingRuleDraft = {
   allowCutOut: boolean;
   allowCutIn: boolean;
   priorityTier: TagPriorityTier;
   fastModeRewriteMode: TagFastModeRewriteMode;
   imageToolRewriteMode: ImageToolRewriteMode;
+  codexImagegenRewriteMode: CodexImagegenRewriteMode | typeof CODEX_IMAGEGEN_INHERIT_VALUE;
   requestCompressionAlgorithm:
     | RequestCompressionAlgorithm
     | typeof REQUEST_COMPRESSION_INHERIT_VALUE;
@@ -206,6 +210,7 @@ function buildDraft(
     priorityTier: rule?.priorityTier ?? "normal",
     fastModeRewriteMode: rule?.fastModeRewriteMode ?? "keep_original",
     imageToolRewriteMode: rule?.imageToolRewriteMode ?? "keep_original",
+    codexImagegenRewriteMode: rule?.codexImagegenRewriteMode ?? CODEX_IMAGEGEN_INHERIT_VALUE,
     requestCompressionAlgorithm: options?.changedFieldsOnly
       ? (rule?.requestCompressionAlgorithm ?? REQUEST_COMPRESSION_INHERIT_VALUE)
       : (rule?.requestCompressionAlgorithm ?? "identity"),
@@ -250,12 +255,17 @@ function buildPayload(
     draft.requestCompressionAlgorithm === REQUEST_COMPRESSION_INHERIT_VALUE
       ? null
       : draft.requestCompressionAlgorithm;
+  const codexImagegenRewriteMode =
+    draft.codexImagegenRewriteMode === CODEX_IMAGEGEN_INHERIT_VALUE
+      ? null
+      : draft.codexImagegenRewriteMode;
   const payload: UpdateGroupAccountRoutingRulePayload = {
     allowCutOut: draft.allowCutOut,
     allowCutIn: draft.allowCutIn,
     priorityTier: draft.priorityTier,
     fastModeRewriteMode: draft.fastModeRewriteMode,
     imageToolRewriteMode: draft.imageToolRewriteMode,
+    codexImagegenRewriteMode,
     ...(requestCompressionAlgorithm == null ? {} : { requestCompressionAlgorithm }),
     concurrencyLimit: sliderConcurrencyLimitToApiValue(draft.concurrencyLimit),
     upstream429RetryEnabled: draft.upstream429RetryEnabled,
@@ -284,6 +294,12 @@ function buildPayload(
     }
     if (draft.imageToolRewriteMode !== (base.imageToolRewriteMode ?? "keep_original")) {
       changedPayload.imageToolRewriteMode = payload.imageToolRewriteMode;
+    }
+    if (
+      draft.codexImagegenRewriteMode !==
+      (base.codexImagegenRewriteMode ?? CODEX_IMAGEGEN_INHERIT_VALUE)
+    ) {
+      changedPayload.codexImagegenRewriteMode = payload.codexImagegenRewriteMode;
     }
     if (
       draft.requestCompressionAlgorithm !==
@@ -369,6 +385,8 @@ export interface GroupAccountRoutingRuleLabels {
   imageToolForceAdd: string;
   imageToolForceRemove: string;
   imageToolRewriteHint?: string;
+  codexImagegenRewriteMode?: string;
+  codexImagegenRewriteHint?: string;
   requestCompressionAlgorithm: string;
   requestCompressionFollow: string;
   requestCompressionIdentity: string;
@@ -631,6 +649,35 @@ export function GroupAccountRoutingRuleEditor({
             setDraft((current) => ({
               ...current,
               imageToolRewriteMode: value as ImageToolRewriteMode,
+            }))
+          }
+        />
+      </div>
+
+      <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
+        <ResponsivePolicySelect<CodexImagegenRewriteMode | typeof CODEX_IMAGEGEN_INHERIT_VALUE>
+          compact={isCompactViewport}
+          label={labels.codexImagegenRewriteMode ?? "Codex imagegen"}
+          helpContent={labels.codexImagegenRewriteHint}
+          name="groupCodexImagegenRewriteMode"
+          value={draft.codexImagegenRewriteMode}
+          disabled={busy}
+          options={[
+            {
+              value: CODEX_IMAGEGEN_INHERIT_VALUE,
+              label: labels.requestCompressionInherited,
+            },
+            { value: "keep_original", label: labels.imageToolKeepOriginal },
+            { value: "fill_missing", label: labels.imageToolFillMissing },
+            { value: "force_add", label: labels.imageToolForceAdd },
+            { value: "force_remove", label: labels.imageToolForceRemove },
+          ]}
+          onValueChange={(value) =>
+            setDraft((current) => ({
+              ...current,
+              codexImagegenRewriteMode: value as
+                | CodexImagegenRewriteMode
+                | typeof CODEX_IMAGEGEN_INHERIT_VALUE,
             }))
           }
         />

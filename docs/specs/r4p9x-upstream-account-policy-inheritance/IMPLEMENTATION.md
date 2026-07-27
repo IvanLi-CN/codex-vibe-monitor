@@ -178,3 +178,5 @@ Validation covers:
 - `cargo test prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slots -- --nocapture`
 - `cd web && npm test -- --run UpstreamAccounts.test.tsx`
 - `cd web && npm run build`
+
+Codex imagegen now resolves through the same root -> group -> account policy chain as other routing fields. The stored concrete root default is `keep_original`; lower layers retain nullable override semantics. Request preparation recognizes Codex Full/Lite explicitly, removes conflicting hosted image tools for active Codex policies, and records bounded schema-conflict audit data.

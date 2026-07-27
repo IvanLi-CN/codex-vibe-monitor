@@ -702,8 +702,10 @@
 - 开放问题：是否后续在 SQLite 增加独立 `prompt_cache_key` 列（本次不做）。
 - 假设：现有代理链路 payload 存储可承载新增上下文字段。
 
-## Responses Lite Image Tool Audit
+## Codex Imagegen Rewrite Audit
 
-- Responses-family invocation payloads may carry optional `imageToolRewrite` with `protocol`, effective `mode`, `outcome`, and optional `reason`.
+- Responses-family invocation payloads may carry optional `imageToolRewrite` for ordinary hosted tool rewriting and optional `codexImagegenRewrite` for the Codex client-executed namespace. They are distinct contracts.
+- `codexImagegenRewrite` contains `protocol`, `clientMatch`, effective `mode`, `outcome`, `hostedRemoved`, snapshot commit/fingerprint, and optional `reason`. A same-name conflict additionally records the prior schema fingerprint and differing JSON paths.
 - Workflow attempt request summaries forward the same object so invocation and per-attempt detail agree without a schema migration.
-- Lite skip is rendered as `protocol=responses_lite`, `outcome=skipped`, and `reason=responses_lite_client_owned_tools`; older records simply omit the object.
+- A recognized `keep_original` request records `outcome=no_change` and `reason=already_current` even when it is sent through live-first forwarding; this audit path must not require body decoding or disable a raw compressed/file-backed request snapshot.
+- Structured conflict logging uses the same bounded fields as the audit. It must not log prompts, image bytes, or complete request payloads; older records simply omit the object.

@@ -77,6 +77,7 @@ function buildBindingResponse(
     allowSwitchUpstream: overrides.allowSwitchUpstream ?? null,
     fastModeRewriteMode: overrides.fastModeRewriteMode ?? null,
     imageToolRewriteMode: overrides.imageToolRewriteMode ?? null,
+    codexImagegenRewriteMode: overrides.codexImagegenRewriteMode ?? null,
     availableModels: overrides.availableModels ?? null,
     forwardProxyKey: overrides.forwardProxyKey ?? null,
     forwardProxyKeys:
@@ -1088,6 +1089,7 @@ function StorybookPromptCacheAccountMock({ children }: { children: ReactNode }) 
           allowSwitchUpstream: "account",
           fastModeRewriteMode: "account",
           imageToolRewriteMode: "account",
+          codexImagegenRewriteMode: "account",
           availableModels: "account",
           forwardProxyKey: "account",
         };
@@ -1104,6 +1106,10 @@ function StorybookPromptCacheAccountMock({ children }: { children: ReactNode }) 
             "imageToolRewriteMode" in payload
               ? payload.imageToolRewriteMode
               : current.imageToolRewriteMode,
+          codexImagegenRewriteMode:
+            "codexImagegenRewriteMode" in payload
+              ? payload.codexImagegenRewriteMode
+              : current.codexImagegenRewriteMode,
           availableModels:
             "availableModels" in payload ? payload.availableModels : current.availableModels,
           forwardProxyKey: Array.isArray(payload.forwardProxyKeys)
@@ -1126,6 +1132,9 @@ function StorybookPromptCacheAccountMock({ children }: { children: ReactNode }) 
               : {}),
             ...("imageToolRewriteMode" in payload
               ? { imageToolRewriteMode: "conversation" as const }
+              : {}),
+            ...("codexImagegenRewriteMode" in payload
+              ? { codexImagegenRewriteMode: "conversation" as const }
               : {}),
             ...("availableModels" in payload ? { availableModels: "conversation" as const } : {}),
             ...(Array.isArray(payload.forwardProxyKeys) || "forwardProxyKey" in payload
@@ -2195,6 +2204,7 @@ export const DrawerBindingAndTimeouts: Story = {
         allowSwitchUpstream: true,
         fastModeRewriteMode: "force_add",
         imageToolRewriteMode: "force_remove",
+        codexImagegenRewriteMode: "force_add",
         availableModels: ["gpt-5.1-codex-max", "gpt-5.1-codex-mini"],
         forwardProxyKey: "__direct__",
         forwardProxyKeys: ["__direct__", "tokyo-edge-01"],
@@ -2202,6 +2212,7 @@ export const DrawerBindingAndTimeouts: Story = {
           allowSwitchUpstream: "conversation",
           fastModeRewriteMode: "conversation",
           imageToolRewriteMode: "conversation",
+          codexImagegenRewriteMode: "conversation",
           availableModels: "conversation",
           forwardProxyKey: "conversation",
         },
@@ -2231,6 +2242,7 @@ export const DrawerBindingAndTimeouts: Story = {
     ).toBeGreaterThan(0);
     await expect(documentScope.getAllByText(/强制添加|Force add/i).length).toBeGreaterThan(0);
     await expect(documentScope.getAllByText(/强制移除|Force remove/i).length).toBeGreaterThan(0);
+    await expect(documentScope.getAllByText(/Codex imagegen/i).length).toBeGreaterThan(0);
     await expect(documentScope.getAllByText(/对话|Conversation/i).length).toBeGreaterThan(0);
     await expect(documentScope.getAllByText(/gpt-5\.1-codex-max/i).length).toBeGreaterThan(0);
     await expect(documentScope.getAllByText(/gpt-5\.1-codex-mini/i).length).toBeGreaterThan(0);
@@ -2246,9 +2258,7 @@ export const DrawerBindingAndTimeouts: Story = {
       throw new Error("missing expanded image tool help");
     }
     await userEvent.click(imageToolHelp);
-    await expect(
-      documentScope.getByText(/Codex Responses Lite 的工具由客户端控制并保持原样/i),
-    ).toBeVisible();
+    await expect(documentScope.getByText(/Codex Full 与 Lite imagegen 请单独配置/i)).toBeVisible();
 
     await expect(
       documentScope.getByRole("button", {

@@ -478,7 +478,8 @@ async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_compa
         None,
         TagFastModeRewriteMode::ForceAdd,
         crate::ImageToolRewriteMode::KeepOriginal,
-        false,
+        crate::CodexImagegenRewriteMode::KeepOriginal,
+        None,
     )
     .await
     .expect("prepare compact pool request body");
@@ -512,7 +513,8 @@ async fn prepare_pool_request_body_for_account_preserves_file_snapshot_when_rewr
         None,
         TagFastModeRewriteMode::KeepOriginal,
         crate::ImageToolRewriteMode::ForceRemove,
-        false,
+        crate::CodexImagegenRewriteMode::KeepOriginal,
+        None,
     )
     .await
     .expect("prepare compact pool request body");
@@ -554,7 +556,8 @@ async fn prepare_pool_request_body_for_account_reports_rewritten_image_intent_af
         None,
         TagFastModeRewriteMode::KeepOriginal,
         crate::ImageToolRewriteMode::ForceRemove,
-        false,
+        crate::CodexImagegenRewriteMode::KeepOriginal,
+        None,
     )
     .await
     .expect("prepare responses pool request body");
@@ -601,7 +604,8 @@ async fn prepare_pool_request_body_for_account_keeps_large_rewrite_file_backed()
         None,
         TagFastModeRewriteMode::KeepOriginal,
         crate::ImageToolRewriteMode::ForceRemove,
-        false,
+        crate::CodexImagegenRewriteMode::KeepOriginal,
+        None,
     )
     .await
     .expect("prepare responses pool request body");
@@ -623,7 +627,8 @@ async fn prepare_pool_request_body_for_account_keeps_large_rewrite_file_backed()
 }
 
 #[tokio::test]
-async fn prepare_pool_request_body_for_account_keeps_responses_lite_image_tools_client_owned() {
+async fn prepare_pool_request_body_for_account_keeps_responses_lite_body_when_codex_policy_keeps_original()
+ {
     let expected = json!({
         "model": "gpt-5.6-codex",
         "input": {
@@ -637,34 +642,27 @@ async fn prepare_pool_request_body_for_account_keeps_responses_lite_image_tools_
     });
     let body = Bytes::from(serde_json::to_vec(&expected).expect("serialize Lite request body"));
 
-    for rewrite_mode in [
+    let prepared = prepare_pool_request_body_for_account(
+        488490,
+        Some(&PoolReplayBodySnapshot::Memory(body.clone())),
+        &"/v1/responses".parse().expect("valid responses uri"),
+        &Method::POST,
+        None,
+        TagFastModeRewriteMode::KeepOriginal,
         crate::ImageToolRewriteMode::KeepOriginal,
-        crate::ImageToolRewriteMode::FillMissing,
-        crate::ImageToolRewriteMode::ForceAdd,
-        crate::ImageToolRewriteMode::ForceRemove,
-    ] {
-        let prepared = prepare_pool_request_body_for_account(
-            488490,
-            Some(&PoolReplayBodySnapshot::Memory(body.clone())),
-            &"/v1/responses".parse().expect("valid responses uri"),
-            &Method::POST,
-            None,
-            TagFastModeRewriteMode::KeepOriginal,
-            rewrite_mode,
-            true,
-        )
-        .await
-        .expect("prepare Lite pool request body");
+        crate::CodexImagegenRewriteMode::KeepOriginal,
+        Some(CodexImagegenProtocol::Lite),
+    )
+    .await
+    .expect("prepare Lite pool request body");
 
-        assert!(!prepared.snapshot_is_decoded);
-        assert_eq!(
-            prepared
-                .request_body_for_capture
-                .expect("capture request body should be preserved"),
-            body,
-            "Lite {rewrite_mode:?} must preserve client-owned tools"
-        );
-    }
+    assert!(!prepared.snapshot_is_decoded);
+    assert_eq!(
+        prepared
+            .request_body_for_capture
+            .expect("capture request body should be preserved"),
+        body
+    );
 }
 
 #[tokio::test]
@@ -686,7 +684,8 @@ async fn prepare_pool_request_body_for_account_keeps_compressed_and_file_backed_
         None,
         TagFastModeRewriteMode::KeepOriginal,
         crate::ImageToolRewriteMode::ForceRemove,
-        true,
+        crate::CodexImagegenRewriteMode::KeepOriginal,
+        Some(CodexImagegenProtocol::Lite),
     )
     .await
     .expect("prepare file-backed Lite request body");
@@ -717,7 +716,8 @@ async fn prepare_pool_request_body_for_account_keeps_compressed_and_file_backed_
         Some("gzip"),
         TagFastModeRewriteMode::KeepOriginal,
         crate::ImageToolRewriteMode::ForceAdd,
-        true,
+        crate::CodexImagegenRewriteMode::KeepOriginal,
+        Some(CodexImagegenProtocol::Lite),
     )
     .await
     .expect("prepare compressed Lite request body");
@@ -755,7 +755,8 @@ async fn prepare_pool_request_body_for_account_decodes_gzip_before_rewrite() {
         Some("gzip"),
         TagFastModeRewriteMode::ForceAdd,
         crate::ImageToolRewriteMode::KeepOriginal,
-        false,
+        crate::CodexImagegenRewriteMode::KeepOriginal,
+        None,
     )
     .await
     .expect("prepare gzip-compressed pool request body");
@@ -794,6 +795,8 @@ async fn build_pool_upstream_request_body_follow_passthrough_preserves_gzip_snap
         request_body_for_capture: None,
         requested_service_tier: None,
         requested_image_intent: ImageIntent::Unknown,
+        requested_hosted_image_intent: ImageIntent::Unknown,
+        codex_imagegen_rewrite: None,
         snapshot_is_decoded: false,
     };
 
@@ -823,6 +826,8 @@ async fn build_pool_upstream_request_body_follow_rejects_unsupported_request_enc
         request_body_for_capture: None,
         requested_service_tier: None,
         requested_image_intent: ImageIntent::Unknown,
+        requested_hosted_image_intent: ImageIntent::Unknown,
+        codex_imagegen_rewrite: None,
         snapshot_is_decoded: false,
     };
 

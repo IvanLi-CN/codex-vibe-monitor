@@ -366,6 +366,12 @@ export function useUpstreamAccountGroupSettingsDialog(
       imageToolRewriteHint: t(
         "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint",
       ),
+      codexImagegenRewriteMode: t(
+        "accountPool.upstreamAccounts.groupNotes.routingPolicy.codexImagegenRewriteMode",
+      ),
+      codexImagegenRewriteHint: t(
+        "accountPool.upstreamAccounts.groupNotes.routingPolicy.codexImagegenRewriteHint",
+      ),
       requestCompressionAlgorithm: t(
         "accountPool.upstreamAccounts.groupNotes.routingPolicy.requestCompressionAlgorithm",
       ),

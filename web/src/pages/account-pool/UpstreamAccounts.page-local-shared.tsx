@@ -3613,6 +3613,12 @@ function SharedUpstreamAccountDetailDrawerInner({
                       imageToolRewriteHint: t(
                         "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint",
                       ),
+                      fieldCodexImagegenRewriteMode: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fieldCodexImagegenRewriteMode",
+                      ),
+                      codexImagegenRewriteHint: t(
+                        "accountPool.upstreamAccounts.groupNotes.routingPolicy.codexImagegenRewriteHint",
+                      ),
                       timeoutSectionTitle: t(
                         "accountPool.upstreamAccounts.routing.timeout.sectionTitle",
                       ),

@@ -990,6 +990,17 @@ const successfulWorkflowResponse: ApiInvocationWorkflowDetailResponse = {
             outcome: "skipped",
             reason: "responses_lite_client_owned_tools",
           },
+          codexImagegenRewrite: {
+            protocol: "responses_lite",
+            clientMatch: "codex_desktop",
+            mode: "force_add",
+            outcome: "replaced",
+            hostedRemoved: true,
+            snapshotCommit: "61a44880a85d2fd0d8770908dea5733495e571c8",
+            injectedSchemaFingerprint: "f7a2e541",
+            existingSchemaFingerprint: "9af48d31",
+            schemaDiffPaths: ["/parameters/properties/prompt", "/description"],
+          },
           routing: {
             routeMode: "pool",
             proxyDisplayName: "tokyo-edge-02",

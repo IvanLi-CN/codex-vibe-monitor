@@ -2,6 +2,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CartesianGrid,
+  type DefaultLegendContentProps,
   Legend,
   Line,
   LineChart,
@@ -25,6 +26,7 @@ import type {
 } from "../../lib/api";
 import { chartBaseTokens, piePalette } from "../../lib/chartTheme";
 import { useTheme } from "../../theme";
+import { ModelIdentity } from "../shared/ModelIdentity";
 
 type MetricKey =
   | "tokens"
@@ -177,10 +179,12 @@ function LongTermChart({
   series,
   metric,
   emptyLabel,
+  modelSeries = false,
 }: {
   series: LongTermSeries[];
   metric: MetricKey;
   emptyLabel: string;
+  modelSeries?: boolean;
 }) {
   const { themeMode } = useTheme();
   const colors = chartBaseTokens(themeMode);
@@ -215,7 +219,7 @@ function LongTermChart({
               String(key),
             ]}
           />
-          <Legend />
+          <Legend content={<LongTermChartLegend modelSeries={modelSeries} />} />
           {series.map((item, index) => (
             <Line
               key={item.seriesKey}
@@ -234,6 +238,40 @@ function LongTermChart({
   );
 }
 
+function LongTermChartLegend({
+  payload,
+  modelSeries,
+}: DefaultLegendContentProps & { modelSeries: boolean }) {
+  if (!payload || payload.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 px-2 pt-1 text-xs text-base-content/75">
+      {payload.map((entry) => {
+        const label = entry.value ?? "";
+        return (
+          <span
+            key={String(entry.dataKey ?? label)}
+            className="inline-flex min-w-0 items-center gap-1.5"
+          >
+            <span
+              className="h-2 w-2 flex-none rounded-full"
+              style={{ backgroundColor: entry.color ?? "currentColor" }}
+              aria-hidden
+            />
+            {modelSeries ? (
+              <ModelIdentity model={label} className="max-w-[12rem] justify-start" />
+            ) : (
+              <span className="max-w-[12rem] truncate" title={label}>
+                {label}
+              </span>
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 function SeriesTable({
   title,
   entries,
@@ -243,6 +281,7 @@ function SeriesTable({
   onSort,
   search,
   onSearch,
+  modelEntries = false,
 }: {
   title: string;
   entries: LongTermSeriesSummary[];
@@ -252,6 +291,7 @@ function SeriesTable({
   onSort: (metric: MetricKey) => void;
   search: string;
   onSearch: (value: string) => void;
+  modelEntries?: boolean;
 }) {
   const { t } = useTranslation();
   const parentRef = useRef<HTMLDivElement>(null);
@@ -366,9 +406,17 @@ function SeriesTable({
                     />
                   </span>
                   <span className="sticky left-12 z-10 inline-flex h-full w-60 min-w-0 flex-col justify-center bg-base-100 px-3 pr-3">
-                    <span className="block truncate font-medium" title={entry.displayName}>
-                      {entry.displayName}
-                    </span>
+                    {modelEntries ? (
+                      <ModelIdentity
+                        model={entry.displayName}
+                        className="max-w-full justify-start"
+                        textClassName="block truncate font-medium"
+                      />
+                    ) : (
+                      <span className="block truncate font-medium" title={entry.displayName}>
+                        {entry.displayName}
+                      </span>
+                    )}
                     {entry.reasoningEffort ? (
                       <span className="block truncate text-xs opacity-60">
                         {entry.reasoningEffort}
@@ -551,6 +599,7 @@ export function LongTermStatsSection({
                   series={modelSeries}
                   metric={modelMetric}
                   emptyLabel={t("stats.longTerm.emptyChart")}
+                  modelSeries
                 />
               </div>
               <div className="space-y-3">
@@ -568,6 +617,7 @@ export function LongTermStatsSection({
                   series={modelSeries}
                   metric={performanceMetric}
                   emptyLabel={t("stats.longTerm.emptyChart")}
+                  modelSeries
                 />
               </div>
             </div>
@@ -584,11 +634,13 @@ export function LongTermStatsSection({
                 series={modelSeries}
                 metric={usageMetric}
                 emptyLabel={t("stats.longTerm.emptyChart")}
+                modelSeries
               />
             </div>
             <SeriesTable
               title={t("stats.longTerm.models")}
               entries={modelTable}
+              modelEntries
               selectedKeys={modelSelection}
               onToggle={(key) =>
                 setModelSelection((current) =>

@@ -10,7 +10,7 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 
 - Add a per-`promptCacheKey` binding contract for group binding, upstream account binding, and clearing the binding.
 - Add per-conversation request-path timeout overrides that can exist with or without a manual binding target.
-- Add per-conversation runtime policy overrides for upstream switching, FAST mode rewrite, image tool rewrite, available models, and a hard list of forward-proxy binding nodes.
+- Add per-conversation runtime policy overrides for upstream switching, FAST mode rewrite, hosted image-tool rewrite, Codex imagegen rewrite, available models, and a hard list of forward-proxy binding nodes.
 - Expose the binding on the Prompt Cache conversation detail drawer.
 - Add a Dashboard-scoped bulk workflow for route binding, affinity reset, and FAST mode rewrites across multiple Prompt Cache conversations.
 - Add a categorized event record surface on the Prompt Cache conversation detail drawer so manual and automatic routing changes stay traceable per conversation.
@@ -57,9 +57,10 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - Timeout inheritance for a conversation field is `global/root -> group -> account -> conversation`.
 - Conversation policy overrides are nullable per field. `NULL` means inherit the selected account/group/root policy; a non-`NULL` value applies only to the current `promptCacheKey`.
 - Conversation `allowSwitchUpstream` is the setting labelled “切出”. It means the current conversation may switch away from the original/sticky upstream account when routing evaluates future requests.
-- Conversation FAST mode and image tool overrides use the existing rewrite modes: `force_remove`, `keep_original`, `fill_missing`, and `force_add`.
-- The conversation Settings editors for FAST mode and image tool offer only those four concrete rewrite modes; clearing a local override remains an explicit field action, not a Select option.
-- After a concrete FAST mode or image tool choice saves, its field editor remains expanded so the operator retains the editing context.
+- Conversation FAST mode, hosted image-tool, and Codex imagegen overrides use the four rewrite modes: `force_remove`, `keep_original`, `fill_missing`, and `force_add`.
+- The conversation Settings editors for FAST mode, hosted image-tool, and Codex imagegen offer only those four concrete modes; clearing a local override remains an explicit field action, not a Select option.
+- `codexImagegenRewriteMode` applies only after explicit Codex Full/Lite recognition and outranks the hosted image-tool policy for that request.
+- After a concrete FAST mode, hosted image-tool, or Codex imagegen choice saves, its field editor remains expanded so the operator retains the editing context.
 - Conversation available-model override must contain at least one model. An empty list is rejected; clearing the override uses `null`.
 - Conversation proxy override stores one or more existing selectable forward-proxy binding keys. The list may include `__direct__`; it may not contain custom proxy URLs.
 - Prompt Cache conversation detail adds a sibling `事件记录` tab alongside `概览 / 调用 / 设置`.

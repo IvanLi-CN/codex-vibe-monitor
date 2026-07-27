@@ -8,27 +8,28 @@ status: active
 related_specs: [r4p9x, z9h7v, pbgwc]
 ---
 
-# OpenAI Responses Lite Image-Tool Boundaries
+# Codex Responses Imagegen Boundaries
 
 ## Context
 
-Codex Responses Lite is not a Full Responses payload with a different model name. The client owns its image-generation extension and declares it through `input.additional_tools`.
+Codex Responses Lite is not a Full Responses payload with a different model name. Codex owns the image-generation executor; CVM only advertises its `image_gen.imagegen` namespace using the protocol-specific request shape.
 
 ## Symptoms
 
-A proxy that injects top-level `tools: [{"type":"image_generation"}]` or `tool_choice` can make an otherwise valid Lite request fail with a 400 validation error about a top-level image-generation tool. Treating that response as account capability evidence incorrectly excludes healthy upstream accounts.
+A proxy that routes Codex through hosted `image_generation` can make a valid Codex request return a result the Codex UI cannot render. A Lite request can also fail validation when a top-level hosted tool is injected. Neither failure is account capability evidence.
 
 ## Root Cause
 
-The legacy rewrite policy operated on the Full Responses top-level tool contract without first identifying the Lite protocol. The resulting malformed request was then classified as an unsupported image-tool capability.
+The legacy hosted rewrite policy was applied before Codex protocol handling. It advertised a server-hosted executor to a client that expects its own `image_gen.imagegen` namespace and result path.
 
 ## Resolution
 
-1. Detect Lite exclusively from `X-OpenAI-Internal-Codex-Responses-Lite: true`.
-2. For Lite, leave all `input.additional_tools` content, top-level tools, and `tool_choice` untouched for every policy mode, including `force_remove`.
-3. Continue Full Responses `keep_original | fill_missing | force_add | force_remove` behavior unchanged.
-4. Persist `imageToolRewrite` audit data on invocation and workflow-attempt request summaries. Lite uses `responses_lite`, `skipped`, and `responses_lite_client_owned_tools`.
-5. Do not learn `unsupported` from an error matching `responses lite`, `top-level tool type`, and `image_generation`; repair only already-observed rows with that exact signature and retain manual overrides.
+1. Detect Lite exclusively from `X-OpenAI-Internal-Codex-Responses-Lite: true`; detect Full only from `originator: Codex Desktop` or a `Codex Desktop/…` user agent. Do not infer either from a model, body shape, or session id.
+2. Apply the independent `codexImagegenRewriteMode`: `keep_original | fill_missing | force_add | force_remove`. Root defaults to `keep_original`; group, account, and conversation can inherit or override it.
+3. For Full, merge the fixed `image_gen.imagegen` snapshot into top-level `tools`. For Lite, normalize `input` to an array, merge developer `additional_tools`, set `reasoning.context=all_turns`, and set `parallel_tool_calls=false`.
+4. When the Codex policy is not `keep_original`, remove hosted `image_generation` and its matching `tool_choice` before applying the Codex policy. Preserve unrelated namespaces and tools.
+5. Use the OpenAI Codex commit `61a44880a85d2fd0d8770908dea5733495e571c8` schema snapshot. `fill_missing` preserves an existing same-name tool; `force_add` replaces it and records fingerprints plus differing JSON paths.
+6. Persist `codexImagegenRewrite` on the originating workflow attempt as well as the invocation summary, so failover rows never inherit the final account's audit. It contains protocol, client match, effective mode, outcome, hosted removal, snapshot fingerprint, and conflict-only fingerprints/diff paths. It never contains prompts, image bytes, or full requests.
 
 ## Error and Retry Boundary
 
@@ -42,11 +43,11 @@ Responses Lite protocol detection and upstream error retry classification are se
 ## Guardrails
 
 - Do not infer Lite from `gpt-5.6` or any model identifier.
-- Do not recreate the Codex image-generation schema in CVM.
-- Preserve the rule for compressed and file-backed replay bodies; preserving the snapshot is preferable to materializing it merely for a skipped rewrite.
+- Do not implement an image executor, response-stream conversion, or historical hosted-result backfill in CVM.
+- Keep the snapshot immutable until the referenced Codex commit is deliberately refreshed; do not synthesize a schema at runtime.
+- Run the same contract for compressed and file-backed replay bodies when a Codex rewrite is active; `keep_original` continues to preserve its original snapshot.
 
 ## References
 
-- OpenAI Codex Lite suite, commit [`5c94796`](https://github.com/openai/codex/blob/5c94796dc9e88580fdf0b05ef9ce9d975a86e1a6/codex-rs/core/tests/suite/responses_lite.rs)
-- OpenAI Codex image-generation tool extension, commit [`5c94796`](https://github.com/openai/codex/blob/5c94796dc9e88580fdf0b05ef9ce9d975a86e1a6/codex-rs/ext/image-generation/src/tool.rs)
+- OpenAI Codex image-generation tool extension, commit [`61a4488`](https://github.com/openai/codex/blob/61a44880a85d2fd0d8770908dea5733495e571c8/codex-rs/ext/image-generation/src/tool.rs)
 - sub2api Lite tool normalization, commit [`cb24522`](https://github.com/Wei-Shaw/sub2api/blob/cb24522dd53f8f363d008e3afdc8e4baf9788cab/backend/internal/service/openai_responses_lite_tools.go)

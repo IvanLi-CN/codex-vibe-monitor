@@ -662,6 +662,7 @@ pub(crate) fn prompt_cache_conversation_bindings_create_sql(table_name: &str) ->
             allow_switch_upstream INTEGER,
             fast_mode_rewrite_mode TEXT,
             image_tool_rewrite_mode TEXT,
+            codex_imagegen_rewrite_mode TEXT,
             available_models_json TEXT,
             forward_proxy_key TEXT,
             forward_proxy_keys_json TEXT,
@@ -725,7 +726,13 @@ pub(crate) fn prompt_cache_binding_copy_expr(
             "image_first_byte_timeout_secs" => "image_first_byte_timeout_secs",
             "responses_stream_timeout_secs" => "responses_stream_timeout_secs",
             "compact_stream_timeout_secs" => "compact_stream_timeout_secs",
+            "allow_switch_upstream" => "allow_switch_upstream",
+            "fast_mode_rewrite_mode" => "fast_mode_rewrite_mode",
+            "image_tool_rewrite_mode" => "image_tool_rewrite_mode",
+            "codex_imagegen_rewrite_mode" => "codex_imagegen_rewrite_mode",
+            "available_models_json" => "available_models_json",
             "forward_proxy_key" => "forward_proxy_key",
+            "forward_proxy_keys_json" => "forward_proxy_keys_json",
             _ => "NULL",
         }
     } else {
@@ -747,7 +754,7 @@ pub(crate) async fn migrate_prompt_cache_conversation_bindings_contract(
         return Ok(());
     };
     let normalized_sql = current_sql.to_ascii_lowercase();
-    let already_compatible = normalized_sql.contains("'none'")
+    let compatible_before_codex_imagegen = normalized_sql.contains("'none'")
         && normalized_sql.contains("responses_first_byte_timeout_secs")
         && normalized_sql.contains("compact_first_byte_timeout_secs")
         && normalized_sql.contains("image_first_byte_timeout_secs")
@@ -759,10 +766,22 @@ pub(crate) async fn migrate_prompt_cache_conversation_bindings_contract(
         && normalized_sql.contains("available_models_json")
         && normalized_sql.contains("forward_proxy_key")
         && normalized_sql.contains("forward_proxy_keys_json");
+    let already_compatible =
+        compatible_before_codex_imagegen && normalized_sql.contains("codex_imagegen_rewrite_mode");
     if already_compatible {
         return Ok(());
     }
     let existing_columns = prompt_cache_conversation_bindings_existing_columns(pool).await?;
+    if compatible_before_codex_imagegen && !existing_columns.contains("codex_imagegen_rewrite_mode")
+    {
+        sqlx::query(
+            "ALTER TABLE prompt_cache_conversation_bindings ADD COLUMN codex_imagegen_rewrite_mode TEXT",
+        )
+        .execute(pool)
+        .await
+        .context("failed to add codex_imagegen_rewrite_mode to compatible conversation bindings")?;
+        return Ok(());
+    }
     let responses_first_byte_timeout_copy =
         prompt_cache_binding_copy_expr(&existing_columns, "responses_first_byte_timeout_secs");
     let compact_first_byte_timeout_copy =
@@ -775,6 +794,18 @@ pub(crate) async fn migrate_prompt_cache_conversation_bindings_contract(
         prompt_cache_binding_copy_expr(&existing_columns, "compact_stream_timeout_secs");
     let forward_proxy_key_copy =
         prompt_cache_binding_copy_expr(&existing_columns, "forward_proxy_key");
+    let allow_switch_upstream_copy =
+        prompt_cache_binding_copy_expr(&existing_columns, "allow_switch_upstream");
+    let fast_mode_rewrite_mode_copy =
+        prompt_cache_binding_copy_expr(&existing_columns, "fast_mode_rewrite_mode");
+    let image_tool_rewrite_mode_copy =
+        prompt_cache_binding_copy_expr(&existing_columns, "image_tool_rewrite_mode");
+    let codex_imagegen_rewrite_mode_copy =
+        prompt_cache_binding_copy_expr(&existing_columns, "codex_imagegen_rewrite_mode");
+    let available_models_json_copy =
+        prompt_cache_binding_copy_expr(&existing_columns, "available_models_json");
+    let forward_proxy_keys_json_copy =
+        prompt_cache_binding_copy_expr(&existing_columns, "forward_proxy_keys_json");
 
     let mut tx = pool.begin().await?;
     let drop_temp_sql = format!("DROP TABLE IF EXISTS {TEMP_TABLE}");
@@ -804,6 +835,7 @@ pub(crate) async fn migrate_prompt_cache_conversation_bindings_contract(
             allow_switch_upstream,
             fast_mode_rewrite_mode,
             image_tool_rewrite_mode,
+            codex_imagegen_rewrite_mode,
             available_models_json,
             forward_proxy_key,
             forward_proxy_keys_json,
@@ -820,12 +852,13 @@ pub(crate) async fn migrate_prompt_cache_conversation_bindings_contract(
             {image_first_byte_timeout_copy},
             {responses_stream_timeout_copy},
             {compact_stream_timeout_copy},
-            NULL,
-            NULL,
-            NULL,
-            NULL,
+            {allow_switch_upstream_copy},
+            {fast_mode_rewrite_mode_copy},
+            {image_tool_rewrite_mode_copy},
+            {codex_imagegen_rewrite_mode_copy},
+            {available_models_json_copy},
             {forward_proxy_key_copy},
-            NULL,
+            {forward_proxy_keys_json_copy},
             created_at,
             updated_at
         FROM prompt_cache_conversation_bindings
@@ -3301,6 +3334,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             allow_switch_upstream INTEGER,
             fast_mode_rewrite_mode TEXT,
             image_tool_rewrite_mode TEXT,
+            codex_imagegen_rewrite_mode TEXT,
             available_models_json TEXT,
             forward_proxy_key TEXT,
             forward_proxy_keys_json TEXT,

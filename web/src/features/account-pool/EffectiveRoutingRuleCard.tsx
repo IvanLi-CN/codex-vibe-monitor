@@ -22,6 +22,7 @@ import { Input } from "../../components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
 import { Switch } from "../../components/ui/switch";
 import type {
+  CodexImagegenRewriteMode,
   EffectiveRoutingRule,
   EffectiveRoutingRuleSource,
   EffectiveRoutingTimeoutFieldSources,
@@ -71,6 +72,7 @@ type EditablePolicyField =
   | "priorityTier"
   | "fastModeRewriteMode"
   | "imageToolRewriteMode"
+  | "codexImagegenRewriteMode"
   | "requestCompressionAlgorithm"
   | "concurrencyLimit"
   | "upstream429Retry"
@@ -90,6 +92,7 @@ export type EffectiveRoutingRuleCardRowKey =
   | "allowCutIn"
   | "fastModeRewriteMode"
   | "imageToolRewriteMode"
+  | "codexImagegenRewriteMode"
   | "requestCompressionAlgorithm"
   | "concurrencyLimit"
   | "upstream429Retry"
@@ -107,6 +110,7 @@ const editableFieldSourceKeys: Array<[EditablePolicyField, keyof FieldSourceMap]
   ["priorityTier", "priorityTier"],
   ["fastModeRewriteMode", "fastModeRewriteMode"],
   ["imageToolRewriteMode", "imageToolRewriteMode"],
+  ["codexImagegenRewriteMode", "codexImagegenRewriteMode"],
   ["requestCompressionAlgorithm", "requestCompressionAlgorithm"],
   ["concurrencyLimit", "concurrencyLimit"],
   ["upstream429Retry", "upstream429Retry"],
@@ -210,6 +214,8 @@ interface EffectiveRoutingRuleCardProps {
     fieldFastMode?: string;
     fieldImageToolRewriteMode?: string;
     imageToolRewriteHint?: string;
+    fieldCodexImagegenRewriteMode?: string;
+    codexImagegenRewriteHint?: string;
     fieldRequestCompression?: string;
     fieldConcurrency?: string;
     fieldUpstream429?: string;
@@ -264,6 +270,7 @@ const defaultFieldSources: FieldSourceMap = {
   priorityTier: "root",
   fastModeRewriteMode: "root",
   imageToolRewriteMode: "root",
+  codexImagegenRewriteMode: "root",
   requestCompressionAlgorithm: "root",
   concurrencyLimit: "root",
   upstream429Retry: "root",
@@ -288,6 +295,7 @@ function defaultRule(rule?: EffectiveRoutingRule | null): EffectiveRoutingRule {
       priorityTier: "normal",
       fastModeRewriteMode: "keep_original",
       imageToolRewriteMode: "keep_original",
+      codexImagegenRewriteMode: "keep_original",
       requestCompressionAlgorithm: "identity",
       sourceTagIds: [],
       sourceTagNames: [],
@@ -680,6 +688,7 @@ export function EffectiveRoutingRuleCard({
           "allowCutIn",
           "fastModeRewriteMode",
           "imageToolRewriteMode",
+          "codexImagegenRewriteMode",
           "requestCompressionAlgorithm",
           "concurrencyLimit",
           "upstream429Retry",
@@ -942,6 +951,37 @@ export function EffectiveRoutingRuleCard({
       ),
     },
     {
+      key: "codexImagegenRewriteMode" as const,
+      field: "codexImagegenRewriteMode" as const,
+      label: labels.fieldCodexImagegenRewriteMode ?? "Codex imagegen",
+      value:
+        resolvedRule.codexImagegenRewriteMode === "fill_missing"
+          ? labels.imageToolFillMissing
+          : resolvedRule.codexImagegenRewriteMode === "force_add"
+            ? labels.imageToolForceAdd
+            : resolvedRule.codexImagegenRewriteMode === "force_remove"
+              ? labels.imageToolForceRemove
+              : labels.imageToolKeepOriginal,
+      source: fieldSources.codexImagegenRewriteMode ?? "root",
+      clearPayload: { codexImagegenRewriteMode: null },
+      editor: (
+        <PolicyInlineOptionGroup<CodexImagegenRewriteMode>
+          ariaLabel={labels.fieldCodexImagegenRewriteMode ?? "Codex imagegen"}
+          value={resolvedRule.codexImagegenRewriteMode ?? "keep_original"}
+          disabled={isBusy("codexImagegenRewriteMode")}
+          options={[
+            { value: "keep_original", label: labels.imageToolKeepOriginal },
+            { value: "fill_missing", label: labels.imageToolFillMissing },
+            { value: "force_add", label: labels.imageToolForceAdd },
+            { value: "force_remove", label: labels.imageToolForceRemove },
+          ]}
+          onChange={(value) =>
+            changeField("codexImagegenRewriteMode", { codexImagegenRewriteMode: value })
+          }
+        />
+      ),
+    },
+    {
       key: "requestCompressionAlgorithm" as const,
       field: "requestCompressionAlgorithm" as const,
       label: labels.fieldRequestCompression ?? "Request compression",
@@ -1164,7 +1204,9 @@ export function EffectiveRoutingRuleCard({
                           hint={
                             row.key === "imageToolRewriteMode"
                               ? labels.imageToolRewriteHint
-                              : undefined
+                              : row.key === "codexImagegenRewriteMode"
+                                ? labels.codexImagegenRewriteHint
+                                : undefined
                           }
                         />
                       </span>
@@ -1230,7 +1272,9 @@ export function EffectiveRoutingRuleCard({
                               hint={
                                 row.key === "imageToolRewriteMode"
                                   ? labels.imageToolRewriteHint
-                                  : undefined
+                                  : row.key === "codexImagegenRewriteMode"
+                                    ? labels.codexImagegenRewriteHint
+                                    : undefined
                               }
                             />
                           </p>
@@ -1566,6 +1610,8 @@ function fieldToSource(
       return sources.fastModeRewriteMode;
     case "imageToolRewriteMode":
       return sources.imageToolRewriteMode ?? "root";
+    case "codexImagegenRewriteMode":
+      return sources.codexImagegenRewriteMode ?? "root";
     case "requestCompressionAlgorithm":
       return sources.requestCompressionAlgorithm ?? "root";
     case "concurrencyLimit":

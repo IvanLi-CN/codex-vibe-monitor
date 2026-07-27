@@ -1,6 +1,7 @@
 import { normalizeForwardProxyProtocolLabel } from "../forwardProxyDisplay";
 import { getBrowserTimeZone } from "../timeZone";
 import type {
+  CodexImagegenRewriteMode,
   CompactSupportState,
   EffectiveRoutingRule,
   EffectiveRoutingRuleSource,
@@ -1805,6 +1806,7 @@ export interface PromptCacheConversationBindingResponse {
   allowSwitchUpstream?: boolean | null;
   fastModeRewriteMode?: PromptCacheConversationRewriteMode | null;
   imageToolRewriteMode?: PromptCacheConversationRewriteMode | null;
+  codexImagegenRewriteMode?: CodexImagegenRewriteMode | null;
   availableModels?: string[] | null;
   forwardProxyKey?: string | null;
   forwardProxyKeys?: string[];
@@ -1812,6 +1814,7 @@ export interface PromptCacheConversationBindingResponse {
     allowSwitchUpstream: EffectiveRoutingRuleSource;
     fastModeRewriteMode: EffectiveRoutingRuleSource;
     imageToolRewriteMode: EffectiveRoutingRuleSource;
+    codexImagegenRewriteMode?: EffectiveRoutingRuleSource;
     availableModels: EffectiveRoutingRuleSource;
     forwardProxyKey: EffectiveRoutingRuleSource;
   };
@@ -1885,6 +1888,7 @@ export type UpdatePromptCacheConversationBindingPayload =
       allowSwitchUpstream?: boolean | null;
       fastModeRewriteMode?: PromptCacheConversationRewriteMode | null;
       imageToolRewriteMode?: PromptCacheConversationRewriteMode | null;
+      codexImagegenRewriteMode?: CodexImagegenRewriteMode | null;
       availableModels?: string[] | null;
       forwardProxyKey?: string | null;
       forwardProxyKeys?: string[] | null;
@@ -1896,6 +1900,7 @@ export type UpdatePromptCacheConversationBindingPayload =
       allowSwitchUpstream?: boolean | null;
       fastModeRewriteMode?: PromptCacheConversationRewriteMode | null;
       imageToolRewriteMode?: PromptCacheConversationRewriteMode | null;
+      codexImagegenRewriteMode?: CodexImagegenRewriteMode | null;
       availableModels?: string[] | null;
       forwardProxyKey?: string | null;
       forwardProxyKeys?: string[] | null;
@@ -1907,6 +1912,7 @@ export type UpdatePromptCacheConversationBindingPayload =
       allowSwitchUpstream?: boolean | null;
       fastModeRewriteMode?: PromptCacheConversationRewriteMode | null;
       imageToolRewriteMode?: PromptCacheConversationRewriteMode | null;
+      codexImagegenRewriteMode?: CodexImagegenRewriteMode | null;
       availableModels?: string[] | null;
       forwardProxyKey?: string | null;
       forwardProxyKeys?: string[] | null;
@@ -3101,6 +3107,13 @@ export function normalizePoolRoutingSettings(raw: unknown): PoolRoutingSettings 
       payload.requestCompressionLevelPreset === "best"
         ? (payload.requestCompressionLevelPreset as RequestCompressionLevelPreset)
         : "balanced",
+    codexImagegenRewriteMode:
+      payload.codexImagegenRewriteMode === "fill_missing" ||
+      payload.codexImagegenRewriteMode === "force_add" ||
+      payload.codexImagegenRewriteMode === "force_remove" ||
+      payload.codexImagegenRewriteMode === "keep_original"
+        ? (payload.codexImagegenRewriteMode as CodexImagegenRewriteMode)
+        : "keep_original",
     timeouts: normalizePoolRoutingTimeoutSettings(payload.timeouts),
   };
 }
@@ -3190,6 +3203,7 @@ function normalizePromptCacheConversationBindingResponse(
       typeof raw.allowSwitchUpstream === "boolean" ? raw.allowSwitchUpstream : null,
     fastModeRewriteMode: normalizeRewriteMode(raw.fastModeRewriteMode),
     imageToolRewriteMode: normalizeRewriteMode(raw.imageToolRewriteMode),
+    codexImagegenRewriteMode: normalizeRewriteMode(raw.codexImagegenRewriteMode),
     availableModels: Array.isArray(raw.availableModels)
       ? raw.availableModels
           .filter((value): value is string => typeof value === "string")
@@ -3203,6 +3217,7 @@ function normalizePromptCacheConversationBindingResponse(
       allowSwitchUpstream: normalizePolicySource(rawPolicySources.allowSwitchUpstream),
       fastModeRewriteMode: normalizePolicySource(rawPolicySources.fastModeRewriteMode),
       imageToolRewriteMode: normalizePolicySource(rawPolicySources.imageToolRewriteMode),
+      codexImagegenRewriteMode: normalizePolicySource(rawPolicySources.codexImagegenRewriteMode),
       availableModels: normalizePolicySource(rawPolicySources.availableModels),
       forwardProxyKey: normalizePolicySource(rawPolicySources.forwardProxyKey),
     },

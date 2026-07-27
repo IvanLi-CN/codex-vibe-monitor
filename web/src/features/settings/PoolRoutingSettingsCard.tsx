@@ -11,7 +11,11 @@ import {
 import { Input } from "../../components/ui/input";
 import { SelectField } from "../../components/ui/select-field";
 import { useTranslation } from "../../i18n";
-import type { RequestCompressionAlgorithm, RequestCompressionLevelPreset } from "../../lib/api";
+import type {
+  CodexImagegenRewriteMode,
+  RequestCompressionAlgorithm,
+  RequestCompressionLevelPreset,
+} from "../../lib/api";
 import {
   requestCompressionAlgorithmLabel,
   requestCompressionLevelPresetLabel,
@@ -28,6 +32,7 @@ type PoolRoutingSettingsCardProps = {
   draft: {
     requestCompressionAlgorithm: RequestCompressionAlgorithm;
     requestCompressionLevelPreset: RequestCompressionLevelPreset;
+    codexImagegenRewriteMode: CodexImagegenRewriteMode;
     responsesFirstByteTimeoutSecs: string;
     compactFirstByteTimeoutSecs: string;
     imageFirstByteTimeoutSecs: string;
@@ -40,6 +45,7 @@ type PoolRoutingSettingsCardProps = {
   validationMessage?: string | null;
   onAlgorithmChange: (value: RequestCompressionAlgorithm) => void;
   onLevelPresetChange: (value: RequestCompressionLevelPreset) => void;
+  onCodexImagegenRewriteModeChange: (value: CodexImagegenRewriteMode) => void;
   onTimeoutChange: (key: RoutingTimeoutFieldKey, value: string) => void;
   onSave: () => void;
 };
@@ -52,6 +58,7 @@ export function PoolRoutingSettingsCard({
   validationMessage,
   onAlgorithmChange,
   onLevelPresetChange,
+  onCodexImagegenRewriteModeChange,
   onTimeoutChange,
   onSave,
 }: PoolRoutingSettingsCardProps) {
@@ -188,6 +195,33 @@ export function PoolRoutingSettingsCard({
           <p className="text-xs leading-snug text-base-content/60">
             {t("settings.routing.requestCompressionHint")}
           </p>
+        </div>
+
+        <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+          <div className="space-y-1">
+            <div className="font-medium leading-snug">
+              {t("settings.routing.codexImagegen.title")}
+            </div>
+            <div className="text-sm leading-snug text-base-content/70">
+              {t("settings.routing.codexImagegen.description")}
+            </div>
+          </div>
+          <SelectField
+            className="field"
+            label={t("settings.routing.codexImagegen.mode")}
+            name="settingsRoutingCodexImagegenRewriteMode"
+            value={draft.codexImagegenRewriteMode}
+            disabled={!writesEnabled || busy}
+            options={[
+              { value: "keep_original", label: t("settings.routing.codexImagegen.keepOriginal") },
+              { value: "fill_missing", label: t("settings.routing.codexImagegen.fillMissing") },
+              { value: "force_add", label: t("settings.routing.codexImagegen.forceAdd") },
+              { value: "force_remove", label: t("settings.routing.codexImagegen.forceRemove") },
+            ]}
+            onValueChange={(value) =>
+              onCodexImagegenRewriteModeChange(value as CodexImagegenRewriteMode)
+            }
+          />
         </div>
 
         <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">

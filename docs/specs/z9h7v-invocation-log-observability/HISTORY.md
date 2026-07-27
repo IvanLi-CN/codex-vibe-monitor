@@ -62,3 +62,4 @@
 - 2026-07-22: 账号详情 attempts API 改为返回 workflow-compatible `workflowEntry` 与 `invocationRecord`，前端直接复用调用详情 attempt 卡；旧账号详情不显示 Token/成本的限制被“仅最终成功 attempt 显示 usage”规则 supersede。
 
 - 2026-07-24: Added Responses Lite image-tool rewrite audit fields to invocation payload and workflow attempt request detail, making skipped client-owned tools visible next to the effective policy.
+- 2026-07-26: Added the separate `codexImagegenRewrite` audit object for Codex Full/Lite namespace handling. It records the protocol match, effective policy, outcome, hosted-tool removal, fixed snapshot fingerprint, and bounded conflict differences without retaining request content or image bytes.

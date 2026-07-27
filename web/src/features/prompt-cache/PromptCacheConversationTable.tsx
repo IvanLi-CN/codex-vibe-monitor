@@ -128,6 +128,7 @@ type ConversationInlinePolicyField =
   | "allowCutOut"
   | "fastModeRewriteMode"
   | "imageToolRewriteMode"
+  | "codexImagegenRewriteMode"
   | "availableModels"
   | "proxyBindings"
   | "timeoutResponsesFirstByte"
@@ -217,6 +218,7 @@ function applyBindingPolicyDraft(
     setAllowSwitchUpstreamDraft: (value: OptionalBooleanDraft) => void;
     setFastModeDraft: (value: RewriteModeDraft) => void;
     setImageToolDraft: (value: RewriteModeDraft) => void;
+    setCodexImagegenDraft: (value: RewriteModeDraft) => void;
     setAvailableModelsMode: (value: "inherit" | "override") => void;
     setAvailableModelsDraft: (value: string) => void;
     setForwardProxyKeysDraft: (value: string[]) => void;
@@ -231,6 +233,7 @@ function applyBindingPolicyDraft(
   );
   setters.setFastModeDraft(nextBinding.fastModeRewriteMode ?? "keep_original");
   setters.setImageToolDraft(nextBinding.imageToolRewriteMode ?? "keep_original");
+  setters.setCodexImagegenDraft(nextBinding.codexImagegenRewriteMode ?? "keep_original");
   setters.setAvailableModelsMode(nextBinding.availableModels == null ? "inherit" : "override");
   setters.setAvailableModelsDraft((nextBinding.availableModels ?? []).join(", "));
   setters.setForwardProxyKeysDraft(normalizeConversationProxyKeys(nextBinding.forwardProxyKeys));
@@ -246,6 +249,7 @@ function buildConversationEffectiveRoutingRule(
     priorityTier: "normal",
     fastModeRewriteMode: binding.fastModeRewriteMode ?? "keep_original",
     imageToolRewriteMode: binding.imageToolRewriteMode ?? "keep_original",
+    codexImagegenRewriteMode: binding.codexImagegenRewriteMode ?? "keep_original",
     concurrencyLimit: 0,
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
@@ -259,6 +263,7 @@ function buildConversationEffectiveRoutingRule(
       priorityTier: "root",
       fastModeRewriteMode: binding.policyFieldSources?.fastModeRewriteMode ?? "account",
       imageToolRewriteMode: binding.policyFieldSources?.imageToolRewriteMode ?? "account",
+      codexImagegenRewriteMode: binding.policyFieldSources?.codexImagegenRewriteMode ?? "account",
       concurrencyLimit: "root",
       upstream429Retry: "root",
       availableModels: binding.policyFieldSources?.availableModels ?? "account",
@@ -294,6 +299,11 @@ function buildConversationRowValueOverrides(
 
   if (binding.imageToolRewriteMode == null) {
     overrides.imageToolRewriteMode = {
+      value: t("live.conversations.drawer.policy.rewriteInherited"),
+    };
+  }
+  if (binding.codexImagegenRewriteMode == null) {
+    overrides.codexImagegenRewriteMode = {
       value: t("live.conversations.drawer.policy.rewriteInherited"),
     };
   }
@@ -2093,6 +2103,7 @@ export function PromptCacheConversationHistoryDrawer({
     useState<OptionalBooleanDraft>("inherit");
   const [fastModeDraft, setFastModeDraft] = useState<RewriteModeDraft>("keep_original");
   const [imageToolDraft, setImageToolDraft] = useState<RewriteModeDraft>("keep_original");
+  const [codexImagegenDraft, setCodexImagegenDraft] = useState<RewriteModeDraft>("keep_original");
   const [availableModelsMode, setAvailableModelsMode] = useState<"inherit" | "override">("inherit");
   const [availableModelsDraft, setAvailableModelsDraft] = useState("");
   const [forwardProxyKeysDraft, setForwardProxyKeysDraft] = useState<string[]>([]);
@@ -2382,6 +2393,7 @@ export function PromptCacheConversationHistoryDrawer({
       setAllowSwitchUpstreamDraft("inherit");
       setFastModeDraft("keep_original");
       setImageToolDraft("keep_original");
+      setCodexImagegenDraft("keep_original");
       setAvailableModelsMode("inherit");
       setAvailableModelsDraft("");
       setForwardProxyKeysDraft([]);
@@ -2427,6 +2439,7 @@ export function PromptCacheConversationHistoryDrawer({
           setAllowSwitchUpstreamDraft,
           setFastModeDraft,
           setImageToolDraft,
+          setCodexImagegenDraft,
           setAvailableModelsMode,
           setAvailableModelsDraft,
           setForwardProxyKeysDraft,
@@ -2601,6 +2614,7 @@ export function PromptCacheConversationHistoryDrawer({
         | { allowSwitchUpstream: boolean | null }
         | { fastModeRewriteMode: PromptCacheConversationRewriteMode | null }
         | { imageToolRewriteMode: PromptCacheConversationRewriteMode | null }
+        | { codexImagegenRewriteMode: PromptCacheConversationRewriteMode | null }
         | { availableModels: string[] | null }
         | { forwardProxyKeys: string[] | null }
         | { timeouts: NonNullable<UpdateGroupAccountRoutingRulePayload["timeouts"]> },
@@ -2619,6 +2633,7 @@ export function PromptCacheConversationHistoryDrawer({
           setAllowSwitchUpstreamDraft,
           setFastModeDraft,
           setImageToolDraft,
+          setCodexImagegenDraft,
           setAvailableModelsMode,
           setAvailableModelsDraft,
           setForwardProxyKeysDraft,
@@ -2710,6 +2725,24 @@ export function PromptCacheConversationHistoryDrawer({
         />
       ),
     };
+    rowOverrides.codexImagegenRewriteMode = {
+      ...(rowOverrides.codexImagegenRewriteMode ?? {}),
+      editor: (
+        <SelectField
+          value={codexImagegenDraft}
+          disabled={inlinePolicyBusyField != null}
+          aria-label="Codex imagegen"
+          size="sm"
+          options={rewriteModeOptions}
+          onValueChange={(value) => {
+            setCodexImagegenDraft(value as RewriteModeDraft);
+            void saveConversationInlinePolicy("codexImagegenRewriteMode", {
+              codexImagegenRewriteMode: value as PromptCacheConversationRewriteMode,
+            });
+          }}
+        />
+      ),
+    };
     rowOverrides.availableModels = {
       ...(rowOverrides.availableModels ?? {}),
       editor: (
@@ -2754,6 +2787,7 @@ export function PromptCacheConversationHistoryDrawer({
     binding,
     fastModeDraft,
     imageToolDraft,
+    codexImagegenDraft,
     inlinePolicyBusyField,
     rewriteModeOptions,
     saveConversationInlinePolicy,
@@ -2860,6 +2894,7 @@ export function PromptCacheConversationHistoryDrawer({
             "allowCutOut",
             "fastModeRewriteMode",
             "imageToolRewriteMode",
+            "codexImagegenRewriteMode",
             "availableModels",
             "proxyBindings",
           ]}
@@ -2887,6 +2922,12 @@ export function PromptCacheConversationHistoryDrawer({
               if (field === "imageToolRewriteMode") {
                 void saveConversationInlinePolicy("imageToolRewriteMode", {
                   imageToolRewriteMode: payload.imageToolRewriteMode ?? null,
+                });
+                return;
+              }
+              if (field === "codexImagegenRewriteMode") {
+                void saveConversationInlinePolicy("codexImagegenRewriteMode", {
+                  codexImagegenRewriteMode: payload.codexImagegenRewriteMode ?? null,
                 });
                 return;
               }
@@ -3067,6 +3108,10 @@ export function PromptCacheConversationHistoryDrawer({
             fieldImageToolRewriteMode: t("live.conversations.drawer.policy.imageTool"),
             imageToolRewriteHint: t(
               "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint",
+            ),
+            fieldCodexImagegenRewriteMode: t("live.conversations.drawer.policy.codexImagegen"),
+            codexImagegenRewriteHint: t(
+              "accountPool.upstreamAccounts.groupNotes.routingPolicy.codexImagegenRewriteHint",
             ),
             fieldConcurrency: t("accountPool.upstreamAccounts.effectiveRule.fieldConcurrency"),
             fieldUpstream429: t("accountPool.upstreamAccounts.effectiveRule.fieldUpstream429"),
@@ -3277,6 +3322,7 @@ export function PromptCacheConversationHistoryDrawer({
           setAllowSwitchUpstreamDraft,
           setFastModeDraft,
           setImageToolDraft,
+          setCodexImagegenDraft,
           setAvailableModelsMode,
           setAvailableModelsDraft,
           setForwardProxyKeysDraft,

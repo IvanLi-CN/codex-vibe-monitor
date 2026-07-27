@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { useTranslation } from "../../i18n";
 import type { ModelPerformance } from "../../lib/api";
 import { cn } from "../../lib/utils";
+import { ModelIdentity } from "../shared/ModelIdentity";
 
 export interface ModelPerformanceDetailsProps {
   title: string;
@@ -126,9 +127,11 @@ export function ModelPerformanceDetails({
             className="border-t border-base-300/70 pt-3.5 first:border-t-0 first:pt-0"
           >
             <div className="min-w-0">
-              <p className="break-all font-mono text-sm font-semibold text-base-content">
-                {model.model}
-              </p>
+              <ModelIdentity
+                model={model.model}
+                className="max-w-full justify-start"
+                textClassName="break-all font-mono text-sm font-semibold text-base-content"
+              />
               <p className="mt-1 text-xs text-base-content/62">
                 {t("dashboard.modelPerformance.reasoningEffort")}:{" "}
                 {effortLabel(
@@ -196,9 +199,11 @@ export function ModelPerformanceDetails({
                 key={`${model.model}:${model.reasoningEffort ?? ""}`}
                 label={
                   <span className="flex min-w-0 flex-col gap-0.5">
-                    <span className="break-all font-mono font-semibold text-base-content/85">
-                      {model.model}
-                    </span>
+                    <ModelIdentity
+                      model={model.model}
+                      className="max-w-full justify-start"
+                      textClassName="break-all font-mono font-semibold text-base-content/85"
+                    />
                     <span className="text-[9px] font-normal leading-3 text-base-content/58">
                       {t("dashboard.modelPerformance.reasoningEffort")}:{" "}
                       {effortLabel(

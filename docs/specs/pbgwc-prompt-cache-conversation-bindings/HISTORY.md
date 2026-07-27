@@ -30,3 +30,4 @@
 
 - 2026-07-24: Clarified the conversation image-tool override with a focusable help icon: Full Responses may be rewritten, while Responses Lite client-owned tools stay unchanged.
 - 2026-07-26: Bounded automatic sticky escape after consecutive upstream stream errors to a five-minute, latest-failure-based expiry. Account roster and detail APIs now expose the shared expiry/reason state, active entries are classified as degraded work with normal health, node-shunt hard blocks take precedence, and the UI shows a live countdown before one silent recovery refresh.
+- 2026-07-26: Added nullable conversation-level `codexImagegenRewriteMode`. It inherits after root/group/account policy, applies only to explicitly identified Codex requests, and remains visually distinct from the existing hosted image-tool override.

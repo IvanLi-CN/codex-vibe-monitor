@@ -12,6 +12,7 @@ import {
 import { useTranslation } from "../../i18n";
 import type { ModelRoutingState } from "../../lib/api";
 import { AppIcon } from "../shared/AppIcon";
+import { ModelIdentity } from "../shared/ModelIdentity";
 
 function formatDateTime(value?: string | null) {
   if (!value) return "-";
@@ -94,9 +95,11 @@ export function ModelRoutingHealthPanel({
                 className="surface-subtle grid gap-2 rounded-lg px-3 py-2.5 lg:grid-cols-[minmax(0,1.4fr)_minmax(7rem,.8fr)_minmax(7rem,.8fr)_minmax(11rem,1fr)_minmax(13rem,1.1fr)] lg:items-center"
               >
                 <div className="min-w-0">
-                  <p className="truncate font-mono text-sm font-semibold leading-5 text-base-content">
-                    {route.model}
-                  </p>
+                  <ModelIdentity
+                    model={route.model}
+                    className="max-w-full justify-start"
+                    textClassName="truncate font-mono text-sm font-semibold leading-5 text-base-content"
+                  />
                   <p className="mt-0.5 text-xs leading-4 text-base-content/72">
                     {t("accountPool.upstreamAccounts.modelRouting.lastSeen")}:{" "}
                     {formatDateTime(route.lastSeenAt)}
