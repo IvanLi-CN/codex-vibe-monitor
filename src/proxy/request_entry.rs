@@ -3458,7 +3458,7 @@ fn normalise_lite_input_tools(value: &mut Value) -> Option<(&mut Vec<Value>, boo
         .map(|input| (input, normalized))
 }
 
-fn take_lite_top_level_namespaces(value: &mut Value) -> (Vec<Value>, bool) {
+fn take_lite_top_level_developer_tools(value: &mut Value) -> (Vec<Value>, bool) {
     let Some(tools) = value
         .as_object_mut()
         .and_then(|object| object.get_mut("tools"))
@@ -3467,18 +3467,20 @@ fn take_lite_top_level_namespaces(value: &mut Value) -> (Vec<Value>, bool) {
         return (Vec::new(), false);
     };
 
-    let mut namespaces = Vec::new();
+    let mut developer_tools = Vec::new();
     let mut retained = Vec::with_capacity(tools.len());
     for tool in std::mem::take(tools) {
-        if tool.get("type").and_then(Value::as_str) == Some("namespace") {
-            namespaces.push(tool);
+        if tool.get("type").and_then(Value::as_str) == Some("namespace")
+            || is_legacy_codex_imagegen_tool(&tool)
+        {
+            developer_tools.push(tool);
         } else {
             retained.push(tool);
         }
     }
-    let moved = !namespaces.is_empty();
+    let moved = !developer_tools.is_empty();
     *tools = retained;
-    (namespaces, moved)
+    (developer_tools, moved)
 }
 
 fn is_lite_developer_additional_tools(item: &Value) -> bool {
@@ -3524,22 +3526,25 @@ fn rewrite_lite_codex_imagegen_tools(
 ) -> (bool, Option<Value>, &'static str) {
     use crate::CodexImagegenRewriteMode::*;
 
-    let (top_level_namespaces, migrated_top_level_namespaces) =
-        take_lite_top_level_namespaces(value);
+    let (top_level_developer_tools, migrated_top_level_developer_tools) =
+        take_lite_top_level_developer_tools(value);
     let Some((input, input_normalized)) = normalise_lite_input_tools(value) else {
         return (false, None, "invalid_input");
     };
-    let existing = input.iter().find_map(|item| {
-        is_lite_developer_additional_tools(item)
-            .then(|| item.get("tools").and_then(Value::as_array))
-            .flatten()
-            .and_then(|tools| find_codex_imagegen_function(tools))
-    });
+    let existing = input
+        .iter()
+        .find_map(|item| {
+            is_lite_developer_additional_tools(item)
+                .then(|| item.get("tools").and_then(Value::as_array))
+                .flatten()
+                .and_then(|tools| find_codex_imagegen_function(tools))
+        })
+        .or_else(|| find_codex_imagegen_function(&top_level_developer_tools));
     let first_developer_tools_position = input
         .iter()
         .position(is_lite_developer_additional_tools)
         .or_else(|| {
-            let needs_developer_tools = !top_level_namespaces.is_empty()
+            let needs_developer_tools = !top_level_developer_tools.is_empty()
                 || matches!(mode, ForceAdd)
                 || (matches!(mode, FillMissing) && existing.is_none());
             needs_developer_tools.then(|| {
@@ -3554,7 +3559,7 @@ fn rewrite_lite_codex_imagegen_tools(
                 0
             })
         });
-    let mut changed = input_normalized || migrated_top_level_namespaces;
+    let mut changed = input_normalized || migrated_top_level_developer_tools;
 
     if let Some(position) = first_developer_tools_position {
         let tools = input[position]
@@ -3567,7 +3572,7 @@ fn rewrite_lite_codex_imagegen_tools(
             changed = true;
         }
         if let Some(tools) = tools.as_array_mut() {
-            tools.extend(top_level_namespaces);
+            tools.extend(top_level_developer_tools);
         }
     }
 
@@ -4739,9 +4744,8 @@ mod tests {
             "tools": [{"type": "function", "name": "search"}]
         });
         let legacy_imagegen = serde_json::json!({
-            "type": "namespace",
-            "name": "image_gen",
-            "tools": [{"type": "function", "name": "imagegen", "parameters": {"type": "object"}}]
+            "type": "image_gen.imagegen",
+            "version": "legacy"
         });
         let mut request = serde_json::json!({
             "input": [{"type": "message", "role": "user", "content": "draw"}],
@@ -4752,7 +4756,7 @@ mod tests {
             ]
         });
 
-        let (changed, _) = rewrite_codex_imagegen_tools(
+        let (changed, audit) = rewrite_codex_imagegen_tools(
             &mut request,
             CodexImagegenProtocol::Lite,
             crate::CodexImagegenRewriteMode::ForceAdd,
@@ -4760,6 +4764,7 @@ mod tests {
         );
 
         assert!(changed);
+        assert_eq!(audit["outcome"], "replaced");
         assert_eq!(
             request["tools"],
             serde_json::json!([{"type": "function", "name": "unrelated"}])
@@ -4768,6 +4773,11 @@ mod tests {
             .as_array()
             .expect("Lite developer tools");
         assert!(tools.iter().any(|tool| tool == &web));
+        assert!(
+            tools
+                .iter()
+                .all(|tool| tool["type"] != "image_gen.imagegen")
+        );
         assert_eq!(
             find_codex_imagegen_function(tools),
             Some(codex_imagegen_function())

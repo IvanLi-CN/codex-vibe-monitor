@@ -7046,8 +7046,25 @@ fn pool_account_supports_live_request_body_rejects_downstream_content_encoding()
 }
 
 #[test]
-fn pool_account_supports_live_request_body_buffers_codex_keep_original_for_audit() {
+fn pool_account_supports_live_request_body_allows_codex_keep_original() {
     let account = test_live_first_pool_account(RequestCompressionAlgorithm::Identity);
+    let headers = HeaderMap::from_iter([(
+        HeaderName::from_static("x-openai-internal-codex-responses-lite"),
+        HeaderValue::from_static("true"),
+    )]);
+
+    assert!(pool_account_supports_live_request_body(
+        &account,
+        &"/v1/responses".parse().expect("valid uri"),
+        &Method::POST,
+        &headers,
+    ));
+}
+
+#[test]
+fn pool_account_supports_live_request_body_buffers_codex_rewrite() {
+    let mut account = test_live_first_pool_account(RequestCompressionAlgorithm::Identity);
+    account.codex_imagegen_rewrite_mode = crate::CodexImagegenRewriteMode::ForceAdd;
     let headers = HeaderMap::from_iter([(
         HeaderName::from_static("x-openai-internal-codex-responses-lite"),
         HeaderValue::from_static("true"),

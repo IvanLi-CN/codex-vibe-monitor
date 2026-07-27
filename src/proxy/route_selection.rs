@@ -301,7 +301,8 @@ pub(crate) fn pool_account_supports_live_request_body(
             ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
         )
     }) && codex_imagegen_protocol_from_headers(headers)
-        .is_some();
+        .is_some()
+        && account.codex_imagegen_rewrite_mode != crate::CodexImagegenRewriteMode::KeepOriginal;
     let image_tool_rewrite_required = capture_target.is_some_and(|target| {
         matches!(
             target,
