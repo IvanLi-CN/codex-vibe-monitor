@@ -518,6 +518,23 @@ describe("EffectiveRoutingRuleCard", () => {
     expect(document.body.textContent).not.toContain("Add gpt-5.4-mini");
   });
 
+  it("groups the complete GPT-5.6 family in the read-only model field", () => {
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          availableModels: ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"],
+        })}
+        labels={labels}
+      />,
+    );
+
+    const group = document.querySelector('[data-testid="effective-routing-gpt56-model-group"]');
+    expect(group).not.toBeNull();
+    expect(group?.getAttribute("aria-label")).toBe("gpt-5.6-sol · gpt-5.6-terra · gpt-5.6-luna");
+    expect(group?.querySelectorAll("[data-model-icon]")).toHaveLength(3);
+    expect(document.body.textContent).not.toContain("gpt-5.6-sol");
+  });
+
   it("renders status change reasons with their resolved source and evidence-only state", () => {
     const baseReasons = buildDefaultStatusChangeReasons();
     const baseSources = buildDefaultStatusChangeReasonFieldSources();

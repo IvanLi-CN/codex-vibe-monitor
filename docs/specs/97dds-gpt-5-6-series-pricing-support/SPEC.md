@@ -35,6 +35,7 @@ The project needs a compatible upgrade that preserves existing user-defined pric
 - Model resolution must match exact ids first and also map `gpt-5.6-sol|terra|luna-YYYY-MM-DD` to their base model pricing rows.
 - Settings pricing UI must split cached pricing into separate cache read and cache write columns and clearly label the contract as estimation metadata rather than runtime token truth.
 - Structured read-only model fields must render `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` as solar, earth, and lunar icons. Exact and date-suffixed IDs share the base icon; tooltips and accessible names retain the complete ID. Editors, filters, selectors, and raw payload viewers keep the original text.
+- When a structured read-only model-list field contains the complete Sol/Terra/Luna family, the three icons must render as one reusable grouped identity unit; partial families and mixed unknown models keep the existing individual-value fallback.
 - New invocation rows must persist exact cost buckets. Historical rows with a known total cost must contribute that full amount to `unknown` instead of being repriced or invalidating exact realtime buckets; rows without a total cost do not fabricate an unknown amount.
 - `cacheWriteTokens` must be derived as `max(inputTokens - cacheInputTokens, 0)`; `cacheInputTokens` remains the upstream cache-read count.
 - Records-side cost truth remains the persisted `cost`. `/api/invocations` may additionally return a `costAudit` comparison object that recomputes cost from the current pricing catalog, but that local recomputation is advisory only and never rewrites the recorded amount.
@@ -98,6 +99,7 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 - Given a record with both persisted `cost` and a locally recomputed total, when their absolute difference is greater than `0.000001 USD`, then the audit flags `mismatch=true`; if the recorded and local `priceVersion` differ, the reason is `price_version_changed`, otherwise the reason is `total_mismatch`.
 - Given a workflow attempt usage audit where `reasoningTokens` were never recorded, when the response audit object is rendered, then reasoning stays `null` / `—`; given a real recorded zero, when the same response audit object is rendered, then reasoning remains `0`.
 - Given a structured read-only field for any GPT-5.6 base or date-suffixed model, when it renders, then it shows the mapped icon with the complete model ID in its tooltip and accessible name; given a non-GPT-5.6 or unknown model, then the existing text fallback remains visible.
+- Given a structured read-only model-list field containing Sol, Terra, and Luna (including date-suffixed aliases), when it renders, then the complete family appears in one grouped identity unit ordered Sol, Terra, Luna, with each full ID available to assistive technology; given a partial family or mixed unknown list, then the existing individual values remain visible.
 
 ## Visual Evidence
 
@@ -175,6 +177,21 @@ PR: none
 - story_id_or_title: Components/ModelIdentity Dated Variant And Fallback
 - state: date-suffixed GPT-5.6 alias and unsupported model fallback
 - evidence_note: Verifies a date-suffixed GPT-5.6 model inherits the Sol icon and an unsupported model remains visible as its original text.
+
+![GPT-5.6 complete family group](./assets/gpt56-model-identity-group-storybook.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: element
+- requested_viewport: desktop
+- viewport_strategy: storybook-viewport
+- margin_policy: require_margin
+- evidence_surface: component
+- sensitive_exclusion: N/A
+- submission_gate: pending-owner-approval
+- story_id_or_title: Components/ModelIdentity Complete Family Group
+- state: canonical and date-suffixed complete GPT-5.6 family groups
+- evidence_note: Verifies Sol, Terra, and Luna are visually contained as reusable single-unit groups while each icon keeps its full model ID tooltip and accessible name.
 
 ## References
 

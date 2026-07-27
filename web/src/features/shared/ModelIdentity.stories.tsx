@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, within } from "storybook/test";
-import { ModelIdentity } from "./ModelIdentity";
+import { ModelIdentity, ModelIdentityGroup } from "./ModelIdentity";
 
 const meta = {
   title: "Components/ModelIdentity",
@@ -52,5 +52,31 @@ export const DatedVariantAndFallback: Story = {
       "white-balance-sunny",
     );
     await expect(canvas.getByTestId("model-fallback")).toHaveTextContent("gpt-5.5");
+  },
+};
+
+export const CompleteFamilyGroup: Story = {
+  render: () => (
+    <div className="flex min-w-0 flex-wrap items-center gap-3">
+      <ModelIdentityGroup
+        models={["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]}
+        testId="model-family-group"
+      />
+      <ModelIdentityGroup
+        models={["gpt-5.6-sol-2026-07-08", "gpt-5.6-terra-2026-07-08", "gpt-5.6-luna-2026-07-08"]}
+        testId="model-family-dated-group"
+      />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId("model-family-group")).toHaveAttribute(
+      "aria-label",
+      "gpt-5.6-sol · gpt-5.6-terra · gpt-5.6-luna",
+    );
+    await expect(canvas.getByTestId("model-family-dated-group")).toHaveAttribute(
+      "data-model-identity-group",
+      "gpt-5.6",
+    );
   },
 };

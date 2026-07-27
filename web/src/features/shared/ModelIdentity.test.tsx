@@ -1,6 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { ModelIdentity, resolveModelIdentityIcon } from "./ModelIdentity";
+import {
+  isCompleteGpt56ModelSet,
+  ModelIdentity,
+  ModelIdentityGroup,
+  resolveModelIdentityIcon,
+} from "./ModelIdentity";
 
 describe("resolveModelIdentityIcon", () => {
   it.each([
@@ -42,5 +47,33 @@ describe("ModelIdentity", () => {
 
     expect(markup).toContain(">gpt-5.5<");
     expect(markup).not.toContain("data-model-icon");
+  });
+});
+
+describe("ModelIdentityGroup", () => {
+  it.each([
+    ["canonical ids", ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]],
+    [
+      "dated ids",
+      ["gpt-5.6-luna-2026-07-08", "gpt-5.6-sol-2026-07-08", "gpt-5.6-terra-2026-07-08"],
+    ],
+  ])("groups the complete %s family", (_label, models) => {
+    expect(isCompleteGpt56ModelSet(models)).toBe(true);
+    const markup = renderToStaticMarkup(
+      <ModelIdentityGroup models={models} testId="model-group" />,
+    );
+
+    expect(markup).toContain('data-model-identity-group="gpt-5.6"');
+    expect(markup).toContain('aria-label="gpt-5.6-sol');
+    expect(markup).toContain('data-model-icon="white-balance-sunny"');
+    expect(markup).toContain('data-model-icon="earth"');
+    expect(markup).toContain('data-model-icon="weather-night"');
+  });
+
+  it("does not group an incomplete or non-target set", () => {
+    expect(isCompleteGpt56ModelSet(["gpt-5.6-sol", "gpt-5.6-terra"])).toBe(false);
+    expect(renderToStaticMarkup(<ModelIdentityGroup models={["gpt-5.6-sol", "gpt-5.5"]} />)).toBe(
+      "",
+    );
   });
 });

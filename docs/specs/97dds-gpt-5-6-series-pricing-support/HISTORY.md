@@ -13,3 +13,4 @@
 - 2026-07-20: Added records-side advisory cost auditing. Persisted invocation `cost` remains the truth source; `/api/invocations` may now compare it against a current-catalog local recomputation with a fixed `0.000001 USD` mismatch tolerance and explicit reasons for price-version drift or non-comparable history.
 - 2026-07-20: Reused the same recorded/local cost semantics for workflow-success usage audits, while preserving the distinction between missing `reasoningTokens` and a real recorded `0`.
 - 2026-07-27: Added a shared read-only model identity renderer. GPT-5.6 Sol/Terra/Luna and date-suffixed aliases use solar, earth, and lunar icons with full-ID tooltip/ARIA semantics; editors, filters, selectors, and raw payloads remain textual.
+- 2026-07-27: Grouped complete GPT-5.6 Sol/Terra/Luna model lists into one ordered identity unit, while partial or mixed lists retain their existing individual-value rendering.

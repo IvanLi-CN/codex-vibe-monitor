@@ -22,6 +22,7 @@
 - [x] Retire CRS runtime configuration, polling, aggregation, retention, and API reads while keeping old SQLite tables untouched.
 - [x] Extend records-side pricing observability with advisory `costAudit` totals and workflow-success usage audits that compare persisted cost against the current local catalog without rewriting historical truth.
 - [x] Add shared structured read-only model identity icons for the GPT-5.6 Sol/Terra/Luna family, including dated aliases, accessible IDs, invocation surfaces, usage/performance details, routing health, and long-term model summaries.
+- [x] Group complete Sol/Terra/Luna model-list fields into one reusable identity unit while preserving individual fallback values and editor text.
 - [x] Run Rust and web validation, capture visual evidence, and update this file with the final verification set.
 
 ## Verification
