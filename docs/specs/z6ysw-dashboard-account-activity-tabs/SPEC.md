@@ -272,8 +272,6 @@
 
 ## Visual Evidence
 
-PR: include
-
 - source_type: ui_demo
   story_id_or_title: `dashboard?demoScene=operational&demoTheme=dark`
   scenario: `dashboard summary and upstream-account cards share one exact snapshot`
