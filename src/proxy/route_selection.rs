@@ -2370,7 +2370,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 ..PoolFailoverProgress::default()
                             },
                             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
-                            true,
+                            capture_target.is_some(),
                         )
                         .await
                         .map_err(|err| proxy_error_response_from_pool_upstream_error(err, None))?,
@@ -3966,7 +3966,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 ..PoolFailoverProgress::default()
                             },
                             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
-                            true,
+                            capture_target.is_some(),
                         )
                         .await
                         .map_err(|err| proxy_error_response_from_pool_upstream_error(err, None))?,
