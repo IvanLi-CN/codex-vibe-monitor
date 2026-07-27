@@ -945,6 +945,17 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             .flush_buffered_for_test(&state.pool)
             .await;
     }
+    if terminal_enqueued {
+        let delta = apply_dashboard_activity_terminal_record(state, &inserted_record).await;
+        debug!(
+            invoke_id = %invoke_id,
+            terminal_delta_applied_selection_count = delta.applied_selection_count,
+            terminal_delta_duplicate = delta.duplicate,
+            terminal_delta_skipped_out_of_range_count = delta.skipped_out_of_range_count,
+            response_source = "memory",
+            "applied raw terminal record to dashboard activity read model"
+        );
+    }
     if state.broadcaster.receiver_count() > 0
         && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
             records: vec![inserted_record],

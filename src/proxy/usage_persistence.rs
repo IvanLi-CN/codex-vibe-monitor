@@ -1466,6 +1466,17 @@ pub(crate) async fn broadcast_recovered_proxy_invocations(
         return Ok(());
     }
 
+    for record in &records {
+        let delta = apply_dashboard_activity_terminal_record(state, record).await;
+        debug!(
+            invoke_id = %record.invoke_id,
+            terminal_delta_applied_selection_count = delta.applied_selection_count,
+            terminal_delta_duplicate = delta.duplicate,
+            response_source = "memory",
+            "applied recovered terminal record to dashboard activity read model"
+        );
+    }
+
     if records.iter().any(|record| {
         record
             .prompt_cache_key
@@ -1715,7 +1726,8 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
             &pending_attempt_record.invoke_id,
             &pending_attempt_record.occurred_at,
             "drop_guard",
-        );
+        )
+        .await;
         schedule_dashboard_activity_live_snapshot(state);
     } else {
         remove_proxy_runtime_snapshot_by_key(
@@ -1786,7 +1798,8 @@ pub(crate) async fn recover_guard_dropped_pool_invocation_orphan(
             &selector.invoke_id,
             &selector.occurred_at,
             recovery_trigger,
-        );
+        )
+        .await;
         schedule_dashboard_activity_live_snapshot(state);
         return Ok(());
     }
@@ -3276,7 +3289,7 @@ pub(crate) fn remove_proxy_runtime_snapshot_by_key(
     removed_runtime_snapshot
 }
 
-pub(crate) fn terminalize_proxy_runtime_snapshot_by_key(
+pub(crate) async fn terminalize_proxy_runtime_snapshot_by_key(
     state: &AppState,
     invoke_id: &str,
     occurred_at: &str,
@@ -3315,12 +3328,15 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_by_key(
     let remove_outcome = state
         .proxy_runtime_invocations
         .upsert_terminal(record.clone());
+    let delta = apply_dashboard_activity_terminal_record(state, &record).await;
     debug!(
         invoke_id,
         occurred_at,
         reason,
         terminal_removed_runtime_snapshot = true,
         terminal_already_tombstoned = remove_outcome.already_terminal,
+        terminal_delta_applied_selection_count = delta.applied_selection_count,
+        terminal_delta_duplicate = delta.duplicate,
         "non-terminal proxy runtime snapshot terminalized by key"
     );
     if state.broadcaster.receiver_count() > 0
@@ -3339,7 +3355,7 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_by_key(
     true
 }
 
-pub(crate) fn terminalize_proxy_runtime_snapshot_with_error(
+pub(crate) async fn terminalize_proxy_runtime_snapshot_with_error(
     state: &AppState,
     invoke_id: &str,
     occurred_at: &str,
@@ -3390,6 +3406,7 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_with_error(
     let remove_outcome = state
         .proxy_runtime_invocations
         .upsert_terminal(record.clone());
+    let delta = apply_dashboard_activity_terminal_record(state, &record).await;
     debug!(
         invoke_id,
         occurred_at,
@@ -3399,6 +3416,8 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_with_error(
         terminal_overlay_emitted = true,
         terminal_removed_runtime_snapshot = true,
         terminal_already_tombstoned = remove_outcome.already_terminal,
+        terminal_delta_applied_selection_count = delta.applied_selection_count,
+        terminal_delta_duplicate = delta.duplicate,
         "non-terminal proxy runtime snapshot terminalized with error overlay"
     );
     if state.broadcaster.receiver_count() > 0
@@ -3477,6 +3496,17 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
             .sqlite_batch_writer
             .flush_buffered_for_test(&state.pool)
             .await;
+    }
+    if terminal_enqueued {
+        let delta = apply_dashboard_activity_terminal_record(state, &persisted_record).await;
+        debug!(
+            invoke_id = %invoke_id,
+            terminal_delta_applied_selection_count = delta.applied_selection_count,
+            terminal_delta_duplicate = delta.duplicate,
+            terminal_delta_skipped_out_of_range_count = delta.skipped_out_of_range_count,
+            response_source = "memory",
+            "applied terminal record to dashboard activity read model"
+        );
     }
     if state.broadcaster.receiver_count() > 0
         && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {

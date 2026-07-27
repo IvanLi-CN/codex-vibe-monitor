@@ -19,8 +19,7 @@ const DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL: Duration = Duration::from_se
 const DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL: Duration = Duration::from_millis(50);
 
 #[cfg(not(test))]
-const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration =
-    Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS);
+const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_millis(500);
 const SUMMARY_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
@@ -997,6 +996,22 @@ impl SubscriptionHub {
         state: Arc<AppState>,
         payload: BroadcastPayload,
     ) {
+        if let BroadcastPayload::Records { records } = &payload {
+            for record in records
+                .iter()
+                .filter(|record| crate::app_state::runtime_store_record_is_terminal(record))
+            {
+                let delta = apply_dashboard_activity_terminal_record(state.as_ref(), record).await;
+                tracing::debug!(
+                    invoke_id = %record.invoke_id,
+                    terminal_delta_applied_selection_count = delta.applied_selection_count,
+                    terminal_delta_duplicate = delta.duplicate,
+                    terminal_delta_skipped_out_of_range_count = delta.skipped_out_of_range_count,
+                    response_source = "memory",
+                    "applied terminal broadcast to dashboard activity read model"
+                );
+            }
+        }
         let affected = {
             let mut guard = self.state.lock().await;
             let active_subscribers = guard.active_subscribers.clone();
@@ -1197,17 +1212,11 @@ impl SubscriptionHub {
                     return;
                 }
                 tracing::debug!(
-                    refresh_reason = "ttl_expired",
-                    invalidation_reason = "deferred_topic_refresh",
+                    refresh_reason = "scheduled_terminal_refresh",
+                    response_source = "memory",
                     selection_fingerprint = dashboard_activity_selection_fingerprint(&selection),
-                    "invalidating dashboard activity base snapshot before topic refresh"
+                    "publishing dashboard activity read model after terminal coalescing"
                 );
-                invalidate_dashboard_activity_snapshot_cache(
-                    state.dashboard_activity_snapshot_cache.as_ref(),
-                    &selection,
-                    "scheduled_terminal_refresh",
-                )
-                .await;
                 match hub
                     .refresh_topic_if_active(state.clone(), topic.clone(), true)
                     .await
@@ -1228,17 +1237,11 @@ impl SubscriptionHub {
         }
 
         tracing::debug!(
-            refresh_reason = "ttl_expired",
-            invalidation_reason = "immediate_topic_refresh",
+            refresh_reason = "scheduled_terminal_refresh",
+            response_source = "memory",
             selection_fingerprint = dashboard_activity_selection_fingerprint(&selection),
-            "invalidating dashboard activity base snapshot before topic refresh"
+            "publishing dashboard activity read model after terminal coalescing"
         );
-        invalidate_dashboard_activity_snapshot_cache(
-            state.dashboard_activity_snapshot_cache.as_ref(),
-            &selection,
-            "scheduled_terminal_refresh",
-        )
-        .await;
         let _ = self.refresh_topic_if_active(state, topic, true).await?;
         Ok(())
     }

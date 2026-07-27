@@ -2,6 +2,7 @@ use super::*;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use tokio::sync::watch;
 
@@ -1182,6 +1183,20 @@ pub(crate) struct DashboardActivitySnapshotCacheEntry {
     pub(crate) response: DashboardActivitySnapshot,
 }
 
+/// Write-side state layered over the last DB-backed Dashboard snapshot.
+///
+/// Terminal records are accepted by the write controller before SQLite flushes. Keeping their
+/// identities here lets the read side publish those deltas immediately without rebuilding the
+/// full range for every terminal event.
+#[derive(Debug, Default)]
+pub(crate) struct DashboardActivityReadModel {
+    pub(crate) applied_terminal_keys: HashMap<(String, String), Instant>,
+    pub(crate) pending_terminal_records: VecDeque<ApiInvocation>,
+    pub(crate) terminal_delta_count: u64,
+    pub(crate) duplicate_delta_count: u64,
+    pub(crate) pending_terminal_overflow_count: u64,
+}
+
 #[derive(Debug)]
 pub(crate) struct DashboardActivitySnapshotInFlight {
     pub(crate) signal: watch::Sender<bool>,
@@ -1195,6 +1210,7 @@ pub(crate) struct DashboardActivitySnapshotCacheState {
     pub(crate) in_flight:
         HashMap<DashboardActivitySnapshotSelection, DashboardActivitySnapshotInFlight>,
     pub(crate) invalidation_reasons: HashMap<DashboardActivitySnapshotSelection, &'static str>,
+    pub(crate) read_model: DashboardActivityReadModel,
 }
 
 #[derive(Debug)]
