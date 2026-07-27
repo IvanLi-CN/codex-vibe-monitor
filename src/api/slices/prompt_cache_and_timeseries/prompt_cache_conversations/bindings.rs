@@ -31,6 +31,7 @@ pub(crate) struct PromptCacheConversationBindingRow {
     pub(crate) allow_switch_upstream: Option<i64>,
     pub(crate) fast_mode_rewrite_mode: Option<String>,
     pub(crate) image_tool_rewrite_mode: Option<String>,
+    pub(crate) codex_imagegen_rewrite_mode: Option<String>,
     pub(crate) available_models_json: Option<String>,
     pub(crate) forward_proxy_key: Option<String>,
     pub(crate) forward_proxy_keys_json: Option<String>,
@@ -61,6 +62,7 @@ pub(crate) struct PromptCacheConversationPolicyFieldSources {
     pub(crate) allow_switch_upstream: String,
     pub(crate) fast_mode_rewrite_mode: String,
     pub(crate) image_tool_rewrite_mode: String,
+    pub(crate) codex_imagegen_rewrite_mode: String,
     pub(crate) available_models: String,
     pub(crate) forward_proxy_key: String,
 }
@@ -82,6 +84,7 @@ pub(crate) struct PromptCacheConversationBindingResponse {
     pub(crate) allow_switch_upstream: Option<bool>,
     pub(crate) fast_mode_rewrite_mode: Option<TagFastModeRewriteMode>,
     pub(crate) image_tool_rewrite_mode: Option<ImageToolRewriteMode>,
+    pub(crate) codex_imagegen_rewrite_mode: Option<CodexImagegenRewriteMode>,
     pub(crate) available_models: Option<Vec<String>>,
     pub(crate) forward_proxy_key: Option<String>,
     pub(crate) forward_proxy_keys: Vec<String>,
@@ -220,6 +223,8 @@ pub(crate) struct UpdatePromptCacheConversationBindingRequest {
     #[serde(default, deserialize_with = "deserialize_patch_field")]
     image_tool_rewrite_mode: PatchField<String>,
     #[serde(default, deserialize_with = "deserialize_patch_field")]
+    codex_imagegen_rewrite_mode: PatchField<String>,
+    #[serde(default, deserialize_with = "deserialize_patch_field")]
     available_models: PatchField<Vec<String>>,
     #[serde(default, deserialize_with = "deserialize_patch_field")]
     forward_proxy_key: PatchField<String>,
@@ -353,6 +358,7 @@ pub(crate) async fn binding_response_for_none(
         allow_switch_upstream: Some(effective_policy.allow_cut_out()),
         fast_mode_rewrite_mode: Some(effective_policy.fast_mode_rewrite_mode),
         image_tool_rewrite_mode: Some(effective_policy.image_tool_rewrite_mode),
+        codex_imagegen_rewrite_mode: Some(effective_policy.codex_imagegen_rewrite_mode),
         available_models: effective_policy
             .available_models()
             .map(|models| models.to_vec()),
@@ -513,6 +519,15 @@ pub(crate) async fn binding_response_from_row(
                     .as_ref()
                     .map(|rule| rule.image_tool_rewrite_mode)
             }),
+        codex_imagegen_rewrite_mode: row
+            .codex_imagegen_rewrite_mode
+            .as_deref()
+            .map(CodexImagegenRewriteMode::from_str)
+            .or_else(|| {
+                effective_policy
+                    .as_ref()
+                    .map(|rule| rule.codex_imagegen_rewrite_mode)
+            }),
         available_models: row
             .available_models_json
             .as_deref()
@@ -540,6 +555,10 @@ impl PromptCacheConversationPolicyFieldSources {
                 .map(|rule| rule.image_tool_rewrite_mode_source())
                 .unwrap_or("root")
                 .to_string(),
+            codex_imagegen_rewrite_mode: effective_policy
+                .map(|rule| rule.codex_imagegen_rewrite_mode_source())
+                .unwrap_or("root")
+                .to_string(),
             available_models: effective_policy
                 .map(|rule| rule.available_models_source())
                 .unwrap_or("root")
@@ -564,6 +583,10 @@ impl PromptCacheConversationPolicyFieldSources {
             image_tool_rewrite_mode: source_for_optional_or_effective(
                 row.image_tool_rewrite_mode.as_ref(),
                 effective_policy.map(|rule| rule.image_tool_rewrite_mode_source()),
+            ),
+            codex_imagegen_rewrite_mode: source_for_optional_or_effective(
+                row.codex_imagegen_rewrite_mode.as_ref(),
+                effective_policy.map(|rule| rule.codex_imagegen_rewrite_mode_source()),
             ),
             available_models: source_for_optional_or_effective(
                 row.available_models_json.as_ref(),
@@ -765,6 +788,12 @@ fn prompt_cache_conversation_policy_changed_fields(
     );
     push_if_changed(
         &mut changed_fields,
+        "codexImagegenRewriteMode",
+        before.and_then(|row| row.codex_imagegen_rewrite_mode.as_deref())
+            != after.and_then(|row| row.codex_imagegen_rewrite_mode.as_deref()),
+    );
+    push_if_changed(
+        &mut changed_fields,
         "availableModels",
         before
             .and_then(|row| row.available_models_json.as_deref())
@@ -818,7 +847,10 @@ fn prompt_cache_conversation_policy_info_types(changed_fields: &[String]) -> Vec
     let has_request_rewrite = changed_fields.iter().any(|field| {
         matches!(
             field.as_str(),
-            "fastModeRewriteMode" | "imageToolRewriteMode" | "availableModels"
+            "fastModeRewriteMode"
+                | "imageToolRewriteMode"
+                | "codexImagegenRewriteMode"
+                | "availableModels"
         )
     });
     if has_request_rewrite {
@@ -1181,6 +1213,7 @@ where
             binding.allow_switch_upstream,
             binding.fast_mode_rewrite_mode,
             binding.image_tool_rewrite_mode,
+            binding.codex_imagegen_rewrite_mode,
             binding.available_models_json,
             binding.forward_proxy_key,
             binding.forward_proxy_keys_json,
@@ -1252,6 +1285,25 @@ pub(crate) fn normalize_image_tool_rewrite_mode(
     }
 }
 
+pub(crate) fn normalize_codex_imagegen_rewrite_mode(
+    value: PatchField<String>,
+) -> Result<PatchField<CodexImagegenRewriteMode>, ApiError> {
+    let value = match value {
+        PatchField::Missing => return Ok(PatchField::Missing),
+        PatchField::Null => return Ok(PatchField::Null),
+        PatchField::Value(value) => value,
+    };
+    match value.trim() {
+        "force_remove" => Ok(PatchField::Value(CodexImagegenRewriteMode::ForceRemove)),
+        "keep_original" => Ok(PatchField::Value(CodexImagegenRewriteMode::KeepOriginal)),
+        "fill_missing" => Ok(PatchField::Value(CodexImagegenRewriteMode::FillMissing)),
+        "force_add" => Ok(PatchField::Value(CodexImagegenRewriteMode::ForceAdd)),
+        _ => Err(ApiError::bad_request(anyhow!(
+            "codexImagegenRewriteMode must be one of: force_remove, keep_original, fill_missing, force_add"
+        ))),
+    }
+}
+
 pub(crate) fn normalize_available_models_patch(
     value: PatchField<Vec<String>>,
 ) -> Result<PatchField<Vec<String>>, ApiError> {
@@ -1309,6 +1361,10 @@ pub(crate) fn conversation_routing_override_from_row(
             .image_tool_rewrite_mode
             .as_deref()
             .map(ImageToolRewriteMode::from_str),
+        codex_imagegen_rewrite_mode: row
+            .codex_imagegen_rewrite_mode
+            .as_deref()
+            .map(CodexImagegenRewriteMode::from_str),
         available_models: row
             .available_models_json
             .as_deref()
@@ -2124,6 +2180,7 @@ fn existing_binding_request(
             allow_switch_upstream: PatchField::Missing,
             fast_mode_rewrite_mode: PatchField::Missing,
             image_tool_rewrite_mode: PatchField::Missing,
+            codex_imagegen_rewrite_mode: PatchField::Missing,
             available_models: PatchField::Missing,
             forward_proxy_key: PatchField::Missing,
             forward_proxy_keys: PatchField::Missing,
@@ -2137,6 +2194,7 @@ fn existing_binding_request(
                 allow_switch_upstream: PatchField::Missing,
                 fast_mode_rewrite_mode: PatchField::Missing,
                 image_tool_rewrite_mode: PatchField::Missing,
+                codex_imagegen_rewrite_mode: PatchField::Missing,
                 available_models: PatchField::Missing,
                 forward_proxy_key: PatchField::Missing,
                 forward_proxy_keys: PatchField::Missing,
@@ -2150,6 +2208,7 @@ fn existing_binding_request(
             allow_switch_upstream: PatchField::Missing,
             fast_mode_rewrite_mode: PatchField::Missing,
             image_tool_rewrite_mode: PatchField::Missing,
+            codex_imagegen_rewrite_mode: PatchField::Missing,
             available_models: PatchField::Missing,
             forward_proxy_key: PatchField::Missing,
             forward_proxy_keys: PatchField::Missing,
@@ -2207,6 +2266,9 @@ async fn save_prompt_cache_conversation_binding_for_key(
         .map(|mode| mode.as_str().to_string());
     let image_tool_rewrite_mode =
         normalize_image_tool_rewrite_mode(payload.image_tool_rewrite_mode)?
+            .map(|mode| mode.as_str().to_string());
+    let codex_imagegen_rewrite_mode =
+        normalize_codex_imagegen_rewrite_mode(payload.codex_imagegen_rewrite_mode)?
             .map(|mode| mode.as_str().to_string());
     let available_models = match normalize_available_models_patch(payload.available_models)? {
         PatchField::Missing => PatchField::Missing,
@@ -2277,6 +2339,12 @@ async fn save_prompt_cache_conversation_binding_for_key(
             .as_ref()
             .and_then(|row| row.image_tool_rewrite_mode.clone()),
     );
+    let next_codex_imagegen_rewrite_mode = next_optional_patch_value(
+        codex_imagegen_rewrite_mode,
+        existing_row
+            .as_ref()
+            .and_then(|row| row.codex_imagegen_rewrite_mode.clone()),
+    );
     let next_available_models = next_optional_patch_value(
         available_models,
         existing_row
@@ -2313,6 +2381,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
     let next_policy_all_clear = next_allow_switch_upstream.is_none()
         && next_fast_mode_rewrite_mode.is_none()
         && next_image_tool_rewrite_mode.is_none()
+        && next_codex_imagegen_rewrite_mode.is_none()
         && next_available_models.is_none()
         && next_forward_proxy_key.is_none()
         && next_forward_proxy_keys_json.is_none();
@@ -2342,13 +2411,14 @@ async fn save_prompt_cache_conversation_binding_for_key(
                         allow_switch_upstream,
                         fast_mode_rewrite_mode,
                         image_tool_rewrite_mode,
+                        codex_imagegen_rewrite_mode,
                         available_models_json,
                         forward_proxy_key,
                         forward_proxy_keys_json,
                         created_at,
                         updated_at
                     )
-                    VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now'), datetime('now'))
+                    VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, datetime('now'), datetime('now'))
                     ON CONFLICT(prompt_cache_key) DO UPDATE SET
                         binding_kind = excluded.binding_kind,
                         group_name = NULL,
@@ -2361,6 +2431,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
                         allow_switch_upstream = excluded.allow_switch_upstream,
                         fast_mode_rewrite_mode = excluded.fast_mode_rewrite_mode,
                         image_tool_rewrite_mode = excluded.image_tool_rewrite_mode,
+                        codex_imagegen_rewrite_mode = excluded.codex_imagegen_rewrite_mode,
                         available_models_json = excluded.available_models_json,
                         forward_proxy_key = excluded.forward_proxy_key,
                         forward_proxy_keys_json = excluded.forward_proxy_keys_json,
@@ -2377,6 +2448,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
                 .bind(next_allow_switch_upstream)
                 .bind(&next_fast_mode_rewrite_mode)
                 .bind(&next_image_tool_rewrite_mode)
+                .bind(&next_codex_imagegen_rewrite_mode)
                 .bind(&next_available_models)
                 .bind(&next_forward_proxy_key)
                 .bind(&next_forward_proxy_keys_json)
@@ -2404,13 +2476,14 @@ async fn save_prompt_cache_conversation_binding_for_key(
                     allow_switch_upstream,
                     fast_mode_rewrite_mode,
                     image_tool_rewrite_mode,
+                    codex_imagegen_rewrite_mode,
                     available_models_json,
                     forward_proxy_key,
                     forward_proxy_keys_json,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, datetime('now'), datetime('now'))
+                VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, datetime('now'), datetime('now'))
                 ON CONFLICT(prompt_cache_key) DO UPDATE SET
                     binding_kind = excluded.binding_kind,
                     group_name = excluded.group_name,
@@ -2423,6 +2496,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
                     allow_switch_upstream = excluded.allow_switch_upstream,
                     fast_mode_rewrite_mode = excluded.fast_mode_rewrite_mode,
                     image_tool_rewrite_mode = excluded.image_tool_rewrite_mode,
+                    codex_imagegen_rewrite_mode = excluded.codex_imagegen_rewrite_mode,
                     available_models_json = excluded.available_models_json,
                     forward_proxy_key = excluded.forward_proxy_key,
                     forward_proxy_keys_json = excluded.forward_proxy_keys_json,
@@ -2440,6 +2514,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
             .bind(next_allow_switch_upstream)
             .bind(&next_fast_mode_rewrite_mode)
             .bind(&next_image_tool_rewrite_mode)
+            .bind(&next_codex_imagegen_rewrite_mode)
             .bind(&next_available_models)
             .bind(&next_forward_proxy_key)
             .bind(&next_forward_proxy_keys_json)
@@ -2469,13 +2544,14 @@ async fn save_prompt_cache_conversation_binding_for_key(
                     allow_switch_upstream,
                     fast_mode_rewrite_mode,
                     image_tool_rewrite_mode,
+                    codex_imagegen_rewrite_mode,
                     available_models_json,
                     forward_proxy_key,
                     forward_proxy_keys_json,
                     created_at,
                     updated_at
                 )
-                VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, datetime('now'), datetime('now'))
+                VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, datetime('now'), datetime('now'))
                 ON CONFLICT(prompt_cache_key) DO UPDATE SET
                     binding_kind = excluded.binding_kind,
                     group_name = NULL,
@@ -2488,6 +2564,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
                     allow_switch_upstream = excluded.allow_switch_upstream,
                     fast_mode_rewrite_mode = excluded.fast_mode_rewrite_mode,
                     image_tool_rewrite_mode = excluded.image_tool_rewrite_mode,
+                    codex_imagegen_rewrite_mode = excluded.codex_imagegen_rewrite_mode,
                     available_models_json = excluded.available_models_json,
                     forward_proxy_key = excluded.forward_proxy_key,
                     forward_proxy_keys_json = excluded.forward_proxy_keys_json,
@@ -2505,6 +2582,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
             .bind(next_allow_switch_upstream)
             .bind(&next_fast_mode_rewrite_mode)
             .bind(&next_image_tool_rewrite_mode)
+            .bind(&next_codex_imagegen_rewrite_mode)
             .bind(&next_available_models)
             .bind(&next_forward_proxy_key)
             .bind(&next_forward_proxy_keys_json)
@@ -2845,6 +2923,7 @@ pub(crate) async fn post_bulk_prompt_cache_conversation_bindings(
                         allow_switch_upstream: PatchField::Missing,
                         fast_mode_rewrite_mode: PatchField::Missing,
                         image_tool_rewrite_mode: PatchField::Missing,
+                        codex_imagegen_rewrite_mode: PatchField::Missing,
                         available_models: PatchField::Missing,
                         forward_proxy_key: PatchField::Missing,
                         forward_proxy_keys: PatchField::Missing,

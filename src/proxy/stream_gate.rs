@@ -512,6 +512,7 @@ pub(crate) fn build_pool_total_timeout_exhausted_error(
     distinct_account_count: usize,
 ) -> PoolUpstreamError {
     let mut final_error = last_error.unwrap_or(PoolUpstreamError {
+        codex_imagegen_rewrite: None,
         account: None,
         status: StatusCode::GATEWAY_TIMEOUT,
         message: pool_total_timeout_exhausted_message(total_timeout),

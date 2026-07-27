@@ -1198,6 +1198,13 @@ pub(crate) async fn update_upstream_account_group(
                     .map(|mode| mode.as_str())
             })
             .transpose()?;
+        let policy_codex_imagegen_rewrite_mode = routing_rule
+            .codex_imagegen_rewrite_mode_value()
+            .map(|value| {
+                super::sync::normalize_codex_imagegen_rewrite_mode(Some(value))
+                    .map(|mode| mode.as_str())
+            })
+            .transpose()?;
         let policy_request_compression_algorithm = routing_rule
             .request_compression_algorithm_value()
             .map(|value| {
@@ -1301,7 +1308,8 @@ pub(crate) async fn update_upstream_account_group(
                 policy_compact_first_byte_timeout_secs = CASE WHEN ?46 != 0 THEN policy_compact_first_byte_timeout_secs ELSE ?47 END,
                 policy_image_first_byte_timeout_secs = CASE WHEN ?48 != 0 THEN policy_image_first_byte_timeout_secs ELSE ?49 END,
                 policy_responses_stream_timeout_secs = CASE WHEN ?50 != 0 THEN policy_responses_stream_timeout_secs ELSE ?51 END,
-                policy_compact_stream_timeout_secs = CASE WHEN ?52 != 0 THEN policy_compact_stream_timeout_secs ELSE ?53 END
+                policy_compact_stream_timeout_secs = CASE WHEN ?52 != 0 THEN policy_compact_stream_timeout_secs ELSE ?53 END,
+                policy_codex_imagegen_rewrite_mode = CASE WHEN ?54 != 0 THEN policy_codex_imagegen_rewrite_mode ELSE ?55 END
             WHERE group_name = ?1
             "#,
         )
@@ -1358,6 +1366,8 @@ pub(crate) async fn update_upstream_account_group(
         .bind(responses_stream_timeout_secs.flatten())
         .bind(if compact_stream_timeout_secs.is_none() { 1_i64 } else { 0_i64 })
         .bind(compact_stream_timeout_secs.flatten())
+        .bind(if matches!(routing_rule.codex_imagegen_rewrite_mode, OptionalField::Missing) { 1_i64 } else { 0_i64 })
+        .bind(policy_codex_imagegen_rewrite_mode)
         .execute(tx.as_mut())
         .await
         .map_err(internal_error_tuple)?;

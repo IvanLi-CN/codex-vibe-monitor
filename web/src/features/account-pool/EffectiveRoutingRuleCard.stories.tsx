@@ -7,7 +7,10 @@ import {
   buildDefaultStatusChangeReasons,
   type StatusChangeReasonCode,
 } from "../../lib/upstreamAccountStatusChangeReasons";
-import { EffectiveRoutingRuleCard } from "./EffectiveRoutingRuleCard";
+import {
+  EffectiveRoutingRuleCard,
+  type EffectiveRoutingRuleCardRowKey,
+} from "./EffectiveRoutingRuleCard";
 
 const labels = {
   title: "Effective routing rule",
@@ -44,7 +47,10 @@ const labels = {
   fieldFastMode: "FAST mode",
   fieldImageToolRewriteMode: "Image tools",
   imageToolRewriteHint:
-    "These modes rewrite Full Responses only: fill when missing injects only after confirmed image intent, force add injects, and force remove strips the top-level image tool. Codex Responses Lite keeps client-owned tools unchanged.",
+    "These modes rewrite hosted Full Responses tools only. Configure Codex Full and Lite imagegen separately.",
+  fieldCodexImagegenRewriteMode: "Codex imagegen",
+  codexImagegenRewriteHint:
+    "Controls the Codex client imagegen namespace separately from hosted image tools. Full uses top-level tools; Lite uses developer additional tools.",
   fieldConcurrency: "Concurrency",
   fieldUpstream429: "Upstream 429 retry",
   fieldAvailableModels: "Available models",
@@ -105,6 +111,7 @@ const relaxedRule: EffectiveRoutingRule = {
   priorityTier: "normal",
   fastModeRewriteMode: "keep_original",
   imageToolRewriteMode: "keep_original",
+  codexImagegenRewriteMode: "keep_original",
   requestCompressionAlgorithm: "identity",
   concurrencyLimit: 0,
   upstream429RetryEnabled: false,
@@ -121,6 +128,7 @@ const relaxedRule: EffectiveRoutingRule = {
     priorityTier: "root",
     fastModeRewriteMode: "root",
     imageToolRewriteMode: "root",
+    codexImagegenRewriteMode: "root",
     requestCompressionAlgorithm: "root",
     concurrencyLimit: "root",
     upstream429Retry: "root",
@@ -149,6 +157,7 @@ const strictRule: EffectiveRoutingRule = {
   priorityTier: "no_new",
   fastModeRewriteMode: "force_remove",
   imageToolRewriteMode: "force_add",
+  codexImagegenRewriteMode: "force_add",
   requestCompressionAlgorithm: "gzip",
   concurrencyLimit: 2,
   upstream429RetryEnabled: true,
@@ -173,6 +182,7 @@ const strictRule: EffectiveRoutingRule = {
     priorityTier: "account",
     fastModeRewriteMode: "account",
     imageToolRewriteMode: "tag",
+    codexImagegenRewriteMode: "account",
     requestCompressionAlgorithm: "account",
     concurrencyLimit: "tag",
     upstream429Retry: "account",
@@ -201,6 +211,7 @@ const strictFieldSources = {
   priorityTier: "tag",
   fastModeRewriteMode: "account",
   imageToolRewriteMode: "account",
+  codexImagegenRewriteMode: "account",
   requestCompressionAlgorithm: "account",
   concurrencyLimit: "tag",
   upstream429Retry: "account",
@@ -237,6 +248,7 @@ const multipleAccountOverridesRule: EffectiveRoutingRule = {
     priorityTier: "account",
     fastModeRewriteMode: "account",
     imageToolRewriteMode: strictRule.fieldSources?.imageToolRewriteMode ?? "root",
+    codexImagegenRewriteMode: strictRule.fieldSources?.codexImagegenRewriteMode ?? "root",
     requestCompressionAlgorithm: "account",
     concurrencyLimit: "account",
     upstream429Retry: "account",
@@ -274,8 +286,16 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="min-h-screen bg-base-200 px-6 py-8 text-base-content">
-        <div className="mx-auto max-w-3xl">
+      <div className="min-h-screen bg-base-200 px-12 py-12 text-base-content">
+        <div
+          className="effective-routing-rule-story-surface mx-auto max-w-3xl rounded-xl border border-base-300/70 p-2"
+          style={{ backgroundColor: "#ffffff" }}
+        >
+          <style>
+            {
+              ".effective-routing-rule-story-surface .surface-card { background-color: #ffffff !important; }"
+            }
+          </style>
           <Story />
         </div>
       </div>
@@ -360,6 +380,7 @@ function applyPatchToRule(
     priorityTier: rule.fieldSources?.priorityTier ?? "root",
     fastModeRewriteMode: rule.fieldSources?.fastModeRewriteMode ?? "root",
     imageToolRewriteMode: rule.fieldSources?.imageToolRewriteMode ?? "root",
+    codexImagegenRewriteMode: rule.fieldSources?.codexImagegenRewriteMode ?? "root",
     requestCompressionAlgorithm: rule.fieldSources?.requestCompressionAlgorithm ?? "root",
     concurrencyLimit: rule.fieldSources?.concurrencyLimit ?? "root",
     upstream429Retry: rule.fieldSources?.upstream429Retry ?? "root",
@@ -403,6 +424,13 @@ function applyPatchToRule(
     if (patch.imageToolRewriteMode !== null)
       next.imageToolRewriteMode = patch.imageToolRewriteMode ?? next.imageToolRewriteMode;
     nextSources.imageToolRewriteMode = sourceFor(patch.imageToolRewriteMode);
+  }
+  if ("codexImagegenRewriteMode" in patch) {
+    if (patch.codexImagegenRewriteMode !== null) {
+      next.codexImagegenRewriteMode =
+        patch.codexImagegenRewriteMode ?? next.codexImagegenRewriteMode;
+    }
+    nextSources.codexImagegenRewriteMode = sourceFor(patch.codexImagegenRewriteMode);
   }
   if ("requestCompressionAlgorithm" in patch) {
     if (patch.requestCompressionAlgorithm !== null) {
@@ -499,16 +527,19 @@ function EditableRoutingRuleDemo({
   initialRule,
   busyField,
   errorByField,
+  visibleRows,
 }: {
   initialRule: EffectiveRoutingRule;
   busyField?: EditablePolicyConfig["busyField"];
   errorByField?: EditablePolicyConfig["errorByField"];
+  visibleRows?: readonly EffectiveRoutingRuleCardRowKey[];
 }) {
   const [rule, setRule] = useState(initialRule);
   return (
     <EffectiveRoutingRuleCard
       rule={rule}
       labels={labels}
+      visibleRows={visibleRows ? [...visibleRows] : undefined}
       editablePolicy={{
         busyField,
         errorByField,
@@ -541,13 +572,29 @@ export const EditableImageToolHelp: Story = {
   render: () => <EditableRoutingRuleDemo initialRule={strictRule} />,
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body);
+    await expect(documentScope.getByText("Codex imagegen", { exact: true })).toBeVisible();
     const help = documentScope.getByRole("button", {
       name: "Image tools help",
     });
     await userEvent.click(help);
     await expect(
-      documentScope.getByText(/Codex Responses Lite keeps client-owned tools unchanged/i),
+      documentScope.getByText(/Configure Codex Full and Lite imagegen separately/i),
     ).toBeVisible();
+  },
+};
+
+export const EditableImagegenRewritePolicies: Story = {
+  render: () => (
+    <EditableRoutingRuleDemo
+      initialRule={strictRule}
+      visibleRows={["imageToolRewriteMode", "codexImagegenRewriteMode"]}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body);
+    await expect(documentScope.getByText("Image tools", { exact: true })).toBeVisible();
+    await expect(documentScope.getByText("Codex imagegen", { exact: true })).toBeVisible();
+    await expect(documentScope.getByRole("radiogroup", { name: "Codex imagegen" })).toBeVisible();
   },
 };
 
@@ -638,6 +685,7 @@ export const EditableDenyAllModels: Story = {
           priorityTier: strictRule.fieldSources?.priorityTier ?? "root",
           fastModeRewriteMode: strictRule.fieldSources?.fastModeRewriteMode ?? "root",
           imageToolRewriteMode: strictRule.fieldSources?.imageToolRewriteMode ?? "root",
+          codexImagegenRewriteMode: strictRule.fieldSources?.codexImagegenRewriteMode ?? "root",
           concurrencyLimit: strictRule.fieldSources?.concurrencyLimit ?? "root",
           upstream429Retry: strictRule.fieldSources?.upstream429Retry ?? "root",
           ...strictRule.fieldSources,

@@ -1614,6 +1614,7 @@ function AttemptDetail({
   const labels = buildPayloadViewerLabels(isZh);
   const requestSummary = readRecord(attempt.requestSummary);
   const imageToolRewrite = readRecord(requestSummary?.imageToolRewrite);
+  const codexImagegenRewrite = readRecord(requestSummary?.codexImagegenRewrite);
   const responseSummary = readRecord(attempt.responseSummary);
   const usageAudit = readAttemptUsageAudit(responseSummary?.usage);
   const requestBodyParsed = requestBodyState.data?.bodyText
@@ -1755,6 +1756,34 @@ function AttemptDetail({
       { key: "mode", label: isZh ? "图片工具策略" : "Image Tool Policy", monospace: false },
       { key: "outcome", label: isZh ? "图片工具结果" : "Image Tool Outcome", monospace: false },
       { key: "reason", label: isZh ? "图片工具原因" : "Image Tool Reason", monospace: false },
+    ]),
+    ...buildStructuredItems(codexImagegenRewrite, localeTag, isZh, [
+      {
+        key: "protocol",
+        label: isZh ? "Codex 图片协议" : "Codex Image Protocol",
+        monospace: false,
+      },
+      { key: "mode", label: isZh ? "Codex 图片策略" : "Codex Image Policy", monospace: false },
+      { key: "outcome", label: isZh ? "Codex 图片结果" : "Codex Image Outcome", monospace: false },
+      { key: "reason", label: isZh ? "Codex 图片原因" : "Codex Image Reason", monospace: false },
+      {
+        key: "hostedRemoved",
+        label: isZh ? "移除托管图片工具" : "Hosted Image Removed",
+        monospace: false,
+      },
+      {
+        key: "existingSchemaFingerprint",
+        label: isZh ? "原 Schema 指纹" : "Existing Schema Fingerprint",
+      },
+      {
+        key: "injectedSchemaFingerprint",
+        label: isZh ? "注入 Schema 指纹" : "Injected Schema Fingerprint",
+      },
+      {
+        key: "schemaDiffPaths",
+        label: isZh ? "Schema 差异字段" : "Schema Diff Paths",
+        monospace: false,
+      },
     ]),
     ...buildStructuredItems(requestBodyParsed, localeTag, isZh, [
       { key: "model", label: isZh ? "请求体模型" : "Body Model", monospace: false },

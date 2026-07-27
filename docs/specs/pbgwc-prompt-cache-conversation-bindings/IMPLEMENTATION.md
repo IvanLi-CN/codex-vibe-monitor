@@ -13,6 +13,7 @@
 - [x] Conversation runtime policy override columns and per-field PATCH semantics.
 - [x] Account-pool runtime routing constraints.
 - [x] Conversation overrides for upstream switching, FAST mode, image tool, available models, and a hard multi-node forward-proxy binding list.
+- [x] Conversation override for Codex imagegen rewrite mode, including source badges, explicit clear-to-inherit, and the shared four-mode selector.
 - [x] Dashboard conversations multi-select, including persistent selection mode and temporary `Cmd`/`Ctrl` modifier selection keyed by `promptCacheKey`.
 - [x] Dashboard floating bulk action bar with route binding, manual binding clear, FAST mode, and cancel-selection actions.
 - [x] Bulk Prompt Cache conversation binding API for bind, manual binding clear, clear/reset affinity, and FAST mode writes with per-item result snapshots.

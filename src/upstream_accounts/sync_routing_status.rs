@@ -25,6 +25,7 @@ pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> Effect
     };
     let mut fast_mode_rewrite_mode = TagFastModeRewriteMode::KeepOriginal;
     let image_tool_rewrite_mode = ImageToolRewriteMode::KeepOriginal;
+    let codex_imagegen_rewrite_mode = CodexImagegenRewriteMode::KeepOriginal;
     let request_compression_algorithm = RequestCompressionAlgorithm::Identity;
     let mut concurrency_limit = 0;
     let mut upstream_429_retry_enabled = false;
@@ -92,6 +93,7 @@ pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> Effect
         priority_tier,
         fast_mode_rewrite_mode,
         image_tool_rewrite_mode,
+        codex_imagegen_rewrite_mode,
         request_compression_algorithm,
         concurrency_limit,
         upstream_429_retry_enabled,
@@ -112,6 +114,7 @@ pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> Effect
             priority_tier: field_source.clone(),
             fast_mode_rewrite_mode: field_source.clone(),
             image_tool_rewrite_mode: "root".to_string(),
+            codex_imagegen_rewrite_mode: "root".to_string(),
             request_compression_algorithm: "root".to_string(),
             concurrency_limit: field_source.clone(),
             upstream_429_retry: field_source.clone(),
@@ -141,6 +144,7 @@ pub(crate) struct RoutingPolicyOverrideRow {
     policy_priority_tier: Option<String>,
     policy_fast_mode_rewrite_mode: Option<String>,
     policy_image_tool_rewrite_mode: Option<String>,
+    policy_codex_imagegen_rewrite_mode: Option<String>,
     policy_request_compression_algorithm: Option<String>,
     policy_concurrency_limit: Option<i64>,
     policy_upstream_429_retry_enabled: Option<i64>,
@@ -175,6 +179,7 @@ pub(crate) struct GroupRoutingPolicyOverrideRow {
     policy_priority_tier: Option<String>,
     policy_fast_mode_rewrite_mode: Option<String>,
     policy_image_tool_rewrite_mode: Option<String>,
+    policy_codex_imagegen_rewrite_mode: Option<String>,
     policy_request_compression_algorithm: Option<String>,
     policy_concurrency_limit: Option<i64>,
     policy_upstream_429_retry_enabled: Option<i64>,
@@ -281,6 +286,14 @@ pub(crate) fn apply_root_request_compression_defaults(
     rule.field_sources.request_compression_algorithm = "root".to_string();
 }
 
+pub(crate) fn apply_root_codex_imagegen_rewrite_mode(
+    rule: &mut EffectiveRoutingRule,
+    mode: CodexImagegenRewriteMode,
+) {
+    rule.codex_imagegen_rewrite_mode = mode;
+    rule.field_sources.codex_imagegen_rewrite_mode = "root".to_string();
+}
+
 pub(crate) fn apply_routing_policy_override(
     rule: &mut EffectiveRoutingRule,
     source: &str,
@@ -289,6 +302,7 @@ pub(crate) fn apply_routing_policy_override(
     priority_tier: Option<&str>,
     fast_mode_rewrite_mode: Option<&str>,
     image_tool_rewrite_mode: Option<&str>,
+    codex_imagegen_rewrite_mode: Option<&str>,
     request_compression_algorithm: Option<&str>,
     allow_request_compression_override: bool,
     concurrency_limit: Option<i64>,
@@ -323,6 +337,13 @@ pub(crate) fn apply_routing_policy_override(
     {
         rule.field_sources.image_tool_rewrite_mode = source.to_string();
         rule.image_tool_rewrite_mode = image_tool_rewrite_mode;
+    }
+    if codex_imagegen_rewrite_mode.is_some()
+        && let Ok(codex_imagegen_rewrite_mode) =
+            super::normalize_codex_imagegen_rewrite_mode(codex_imagegen_rewrite_mode)
+    {
+        rule.field_sources.codex_imagegen_rewrite_mode = source.to_string();
+        rule.codex_imagegen_rewrite_mode = codex_imagegen_rewrite_mode;
     }
     if allow_request_compression_override
         && request_compression_algorithm.is_some()
@@ -376,6 +397,7 @@ pub(crate) async fn load_group_routing_policy_override_map(
             policy_priority_tier,
             policy_fast_mode_rewrite_mode,
             policy_image_tool_rewrite_mode,
+            policy_codex_imagegen_rewrite_mode,
             policy_request_compression_algorithm,
             policy_concurrency_limit,
             policy_upstream_429_retry_enabled,
@@ -434,6 +456,7 @@ pub(crate) async fn load_account_routing_policy_override_map(
             policy_priority_tier,
             policy_fast_mode_rewrite_mode,
             policy_image_tool_rewrite_mode,
+            policy_codex_imagegen_rewrite_mode,
             policy_request_compression_algorithm,
             policy_concurrency_limit,
             policy_upstream_429_retry_enabled,
@@ -485,6 +508,7 @@ pub(crate) fn apply_group_routing_policy_override(
         row.policy_priority_tier.as_deref(),
         row.policy_fast_mode_rewrite_mode.as_deref(),
         row.policy_image_tool_rewrite_mode.as_deref(),
+        row.policy_codex_imagegen_rewrite_mode.as_deref(),
         row.policy_request_compression_algorithm.as_deref(),
         true,
         row.policy_concurrency_limit,
@@ -592,6 +616,9 @@ pub(crate) fn apply_tag_layer_routing_policy(
     let inherited_image_tool_rewrite_mode = rule.image_tool_rewrite_mode;
     let inherited_image_tool_rewrite_mode_source =
         rule.field_sources.image_tool_rewrite_mode.clone();
+    let inherited_codex_imagegen_rewrite_mode = rule.codex_imagegen_rewrite_mode;
+    let inherited_codex_imagegen_rewrite_mode_source =
+        rule.field_sources.codex_imagegen_rewrite_mode.clone();
     let inherited_request_compression_algorithm = rule.request_compression_algorithm;
     let inherited_request_compression_algorithm_source =
         rule.field_sources.request_compression_algorithm.clone();
@@ -635,6 +662,8 @@ pub(crate) fn apply_tag_layer_routing_policy(
     rule.timeout_field_sources = tag_rule.timeout_field_sources.clone();
     rule.image_tool_rewrite_mode = inherited_image_tool_rewrite_mode;
     rule.field_sources.image_tool_rewrite_mode = inherited_image_tool_rewrite_mode_source;
+    rule.codex_imagegen_rewrite_mode = inherited_codex_imagegen_rewrite_mode;
+    rule.field_sources.codex_imagegen_rewrite_mode = inherited_codex_imagegen_rewrite_mode_source;
     rule.request_compression_algorithm = inherited_request_compression_algorithm;
     rule.field_sources.request_compression_algorithm =
         inherited_request_compression_algorithm_source;
@@ -692,6 +721,7 @@ pub(crate) fn apply_account_routing_policy_override(
         row.policy_priority_tier.as_deref(),
         row.policy_fast_mode_rewrite_mode.as_deref(),
         row.policy_image_tool_rewrite_mode.as_deref(),
+        row.policy_codex_imagegen_rewrite_mode.as_deref(),
         row.policy_request_compression_algorithm.as_deref(),
         true,
         row.policy_concurrency_limit,

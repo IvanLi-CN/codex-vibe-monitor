@@ -3380,6 +3380,23 @@ fn parse_summary_json_or_fallback(
     }
 }
 
+fn merge_attempt_request_summary_json(raw: Option<&str>, fallback: Value) -> Option<Value> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Some(fallback);
+    };
+    let Ok(stored) = serde_json::from_str::<Value>(raw) else {
+        return Some(fallback);
+    };
+    let (Some(mut fallback), Some(stored)) = (fallback.as_object().cloned(), stored.as_object())
+    else {
+        return Some(fallback);
+    };
+    for (key, value) in stored {
+        fallback.insert(key.clone(), value.clone());
+    }
+    Some(Value::Object(fallback))
+}
+
 fn parse_optional_json_value(raw: Option<&str>) -> Option<Value> {
     raw.and_then(|value| {
         let normalized = value.trim();
@@ -3898,6 +3915,7 @@ fn build_attempt_request_summary(
         ),
     );
     let image_tool_rewrite = payload_clone(payload, &["imageToolRewrite"]);
+    let codex_imagegen_rewrite = payload_clone(payload, &["codexImagegenRewrite"]);
     let mut summary = json!({
         "endpoint": attempt.endpoint.clone(),
         "routeMode": record.route_mode.clone(),
@@ -3938,6 +3956,9 @@ fn build_attempt_request_summary(
     });
     if let Some(image_tool_rewrite) = image_tool_rewrite {
         summary["imageToolRewrite"] = image_tool_rewrite;
+    }
+    if let Some(codex_imagegen_rewrite) = codex_imagegen_rewrite {
+        summary["codexImagegenRewrite"] = codex_imagegen_rewrite;
     }
     summary
 }
@@ -4108,9 +4129,9 @@ fn build_workflow_attempt_from_row(
             .upstream_request_id
             .clone()
             .or(invocation_upstream_request_id),
-        request_summary: parse_summary_json_or_fallback(
+        request_summary: merge_attempt_request_summary_json(
             attempt.request_summary_json.as_deref(),
-            || build_attempt_request_summary(record, attempt, payload),
+            build_attempt_request_summary(record, attempt, payload),
         ),
         response_summary: parse_summary_json_or_fallback(
             attempt.response_summary_json.as_deref(),
@@ -10871,16 +10892,15 @@ async fn dashboard_activity_materialized_archive_fallback_totals(
             source_scope,
         )
         .await?;
-        let live_totals = dashboard_activity_stats_totals_from_aggregate_rows(
-            &query_live_upstream_account_activity_aggregate_rows(
-                &state.pool,
-                source_scope,
-                skipped_range,
-                true,
-                DashboardActivityExcludedInvocationIdsFilter::None,
-            )
-            .await?,
-        );
+        let live_rows = query_live_upstream_account_activity_aggregate_rows(
+            &state.pool,
+            source_scope,
+            skipped_range,
+            true,
+            DashboardActivityExcludedInvocationIdsFilter::None,
+        )
+        .await?;
+        let live_totals = dashboard_activity_stats_totals_from_aggregate_rows(&live_rows);
         fallback_totals = fallback_totals.add(dashboard_activity_stats_totals_subtract(
             rollup_totals,
             live_totals,
@@ -15657,6 +15677,65 @@ mod invocation_cost_audit_tests {
                 .as_ref()
                 .expect("final summary")["responseBodyCapture"]["availableAtInvocationLevel"],
             Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn workflow_attempt_request_summary_keeps_its_own_codex_imagegen_audit() {
+        let record = sample_invocation(Some(0));
+        let mut first_attempt = sample_attempt_row(1, "failed");
+        first_attempt.request_summary_json = Some(
+            json!({
+                "codexImagegenRewrite": {"protocol": "full", "mode": "force_add"}
+            })
+            .to_string(),
+        );
+        let mut final_attempt = sample_attempt_row(2, "success");
+        final_attempt.request_summary_json = Some(
+            json!({
+                "codexImagegenRewrite": {"protocol": "lite", "mode": "force_remove"}
+            })
+            .to_string(),
+        );
+        let invocation_payload = json!({
+            "codexImagegenRewrite": {"protocol": "lite", "mode": "force_add"}
+        });
+
+        let first = build_workflow_attempt_from_row(
+            &record,
+            &first_attempt,
+            Some(&invocation_payload),
+            None,
+            false,
+        );
+        let final_attempt = build_workflow_attempt_from_row(
+            &record,
+            &final_attempt,
+            Some(&invocation_payload),
+            None,
+            true,
+        );
+
+        assert_eq!(
+            first
+                .request_summary
+                .as_ref()
+                .expect("first request summary")["codexImagegenRewrite"]["protocol"],
+            json!("full")
+        );
+        assert_eq!(
+            final_attempt
+                .request_summary
+                .as_ref()
+                .expect("final request summary")["codexImagegenRewrite"]["mode"],
+            json!("force_remove")
+        );
+        assert_eq!(
+            first
+                .request_summary
+                .as_ref()
+                .expect("first request summary")["endpoint"],
+            json!("/v1/responses")
         );
     }
 }

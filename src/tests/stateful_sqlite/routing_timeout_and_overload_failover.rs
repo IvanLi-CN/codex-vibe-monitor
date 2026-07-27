@@ -2699,6 +2699,7 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        codex_imagegen_rewrite_mode: Default::default(),
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         response_endpoint_capability: CapabilitySupport::Unknown,
         chat_completions_capability: CapabilitySupport::Unknown,

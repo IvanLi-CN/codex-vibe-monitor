@@ -1342,6 +1342,7 @@ pub(crate) async fn reserve_test_pool_routing_account(
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
         image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        codex_imagegen_rewrite_mode: Default::default(),
         request_compression_algorithm: RequestCompressionAlgorithm::Identity,
         response_endpoint_capability: CapabilitySupport::Unknown,
         chat_completions_capability: CapabilitySupport::Unknown,

@@ -16269,7 +16269,7 @@ async fn dashboard_activity_summary_only_uses_rollups_when_materialized_archive_
 async fn dashboard_activity_rollup_fallback_preserves_account_attribution_for_partial_hour_ranges()
 {
     let mut config = test_config();
-    config.invocation_max_days = 0;
+    config.invocation_max_days = 1;
     let state = test_state_from_config(config, true).await;
     let created_at = format_utc_iso(Utc::now());
     sqlx::query(
@@ -16295,7 +16295,7 @@ async fn dashboard_activity_rollup_fallback_preserves_account_attribution_for_pa
     .expect("insert partial-hour recovery account");
 
     let range_window =
-        resolve_range_window("1d", Shanghai).expect("1d dashboard range should resolve");
+        resolve_range_window("7d", Shanghai).expect("7d dashboard range should resolve");
     let full_hour_end_epoch = align_bucket_epoch(range_window.end.timestamp(), 3_600, 0);
     let full_hour_start_epoch = full_hour_end_epoch - 3_600;
     let full_hour_start = Utc
@@ -16474,7 +16474,7 @@ async fn dashboard_activity_rollup_fallback_preserves_account_attribution_for_pa
     let Json(response) = fetch_dashboard_activity(
         State(state.clone()),
         Query(DashboardActivityQuery {
-            range: "1d".to_string(),
+            range: "7d".to_string(),
             recent_limit: Some(2),
             time_zone: Some("Asia/Shanghai".to_string()),
             include_accounts: true,
@@ -16510,7 +16510,7 @@ async fn dashboard_activity_rollup_fallback_preserves_account_attribution_for_pa
     let Json(activity) = fetch_upstream_account_activity(
         State(state.clone()),
         Query(UpstreamAccountActivityQuery {
-            range: "1d".to_string(),
+            range: "7d".to_string(),
             recent_limit: Some(2),
             time_zone: Some("Asia/Shanghai".to_string()),
         }),

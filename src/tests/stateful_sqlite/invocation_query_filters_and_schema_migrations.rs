@@ -494,6 +494,109 @@ struct PromptCacheBindingTimeoutMigrationRow {
     responses_stream_timeout_secs: Option<i64>,
     compact_stream_timeout_secs: Option<i64>,
     allow_switch_upstream: Option<i64>,
+    codex_imagegen_rewrite_mode: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct PromptCacheBindingPolicyMigrationRow {
+    allow_switch_upstream: Option<i64>,
+    fast_mode_rewrite_mode: Option<String>,
+    image_tool_rewrite_mode: Option<String>,
+    codex_imagegen_rewrite_mode: Option<String>,
+    available_models_json: Option<String>,
+    forward_proxy_key: Option<String>,
+    forward_proxy_keys_json: Option<String>,
+}
+
+#[tokio::test]
+async fn ensure_schema_adds_codex_imagegen_column_without_losing_existing_binding_policies() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    sqlx::query(
+        r#"
+        CREATE TABLE prompt_cache_conversation_bindings (
+            prompt_cache_key TEXT PRIMARY KEY,
+            binding_kind TEXT NOT NULL CHECK(binding_kind IN ('none', 'group', 'upstream_account')),
+            group_name TEXT,
+            upstream_account_id INTEGER,
+            responses_first_byte_timeout_secs INTEGER,
+            compact_first_byte_timeout_secs INTEGER,
+            image_first_byte_timeout_secs INTEGER,
+            responses_stream_timeout_secs INTEGER,
+            compact_stream_timeout_secs INTEGER,
+            allow_switch_upstream INTEGER,
+            fast_mode_rewrite_mode TEXT,
+            image_tool_rewrite_mode TEXT,
+            available_models_json TEXT,
+            forward_proxy_key TEXT,
+            forward_proxy_keys_json TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            CHECK (
+                (binding_kind = 'none' AND group_name IS NULL AND upstream_account_id IS NULL)
+                OR (binding_kind = 'group' AND group_name IS NOT NULL AND upstream_account_id IS NULL)
+                OR (binding_kind = 'upstream_account' AND group_name IS NULL AND upstream_account_id IS NOT NULL)
+            )
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create pre-Codex policy bindings table");
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_bindings (
+            prompt_cache_key, binding_kind, allow_switch_upstream,
+            fast_mode_rewrite_mode, image_tool_rewrite_mode, available_models_json,
+            forward_proxy_key, forward_proxy_keys_json
+        )
+        VALUES (?1, 'none', ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("pck-preserve-policy-columns")
+    .bind(1_i64)
+    .bind("force_remove")
+    .bind("force_add")
+    .bind(r#"["gpt-5.6"]"#)
+    .bind("primary-egress")
+    .bind(r#"["primary-egress","fallback-egress"]"#)
+    .execute(&pool)
+    .await
+    .expect("insert pre-Codex policy binding");
+
+    ensure_schema(&pool)
+        .await
+        .expect("schema migration should add only the Codex policy column");
+
+    let row = sqlx::query_as::<_, PromptCacheBindingPolicyMigrationRow>(
+        r#"
+        SELECT
+            allow_switch_upstream,
+            fast_mode_rewrite_mode,
+            image_tool_rewrite_mode,
+            codex_imagegen_rewrite_mode,
+            available_models_json,
+            forward_proxy_key,
+            forward_proxy_keys_json
+        FROM prompt_cache_conversation_bindings
+        WHERE prompt_cache_key = ?1
+        "#,
+    )
+    .bind("pck-preserve-policy-columns")
+    .fetch_one(&pool)
+    .await
+    .expect("load migrated policy binding");
+    assert_eq!(row.allow_switch_upstream, Some(1));
+    assert_eq!(row.fast_mode_rewrite_mode.as_deref(), Some("force_remove"));
+    assert_eq!(row.image_tool_rewrite_mode.as_deref(), Some("force_add"));
+    assert_eq!(row.codex_imagegen_rewrite_mode, None);
+    assert_eq!(row.available_models_json.as_deref(), Some(r#"["gpt-5.6"]"#));
+    assert_eq!(row.forward_proxy_key.as_deref(), Some("primary-egress"));
+    assert_eq!(
+        row.forward_proxy_keys_json.as_deref(),
+        Some(r#"["primary-egress","fallback-egress"]"#)
+    );
 }
 
 #[tokio::test]
@@ -558,7 +661,8 @@ async fn ensure_schema_preserves_prompt_cache_binding_timeouts_when_adding_polic
             compact_first_byte_timeout_secs,
             responses_stream_timeout_secs,
             compact_stream_timeout_secs,
-            allow_switch_upstream
+            allow_switch_upstream,
+            codex_imagegen_rewrite_mode
         FROM prompt_cache_conversation_bindings
         WHERE prompt_cache_key = ?1
         "#,
@@ -572,6 +676,7 @@ async fn ensure_schema_preserves_prompt_cache_binding_timeouts_when_adding_polic
     assert_eq!(row.responses_stream_timeout_secs, Some(183));
     assert_eq!(row.compact_stream_timeout_secs, Some(184));
     assert_eq!(row.allow_switch_upstream, None);
+    assert_eq!(row.codex_imagegen_rewrite_mode, None);
 }
 
 #[tokio::test]
@@ -625,7 +730,8 @@ async fn ensure_schema_migrates_pre_timeout_prompt_cache_binding_table() {
             compact_first_byte_timeout_secs,
             responses_stream_timeout_secs,
             compact_stream_timeout_secs,
-            allow_switch_upstream
+            allow_switch_upstream,
+            codex_imagegen_rewrite_mode
         FROM prompt_cache_conversation_bindings
         WHERE prompt_cache_key = ?1
         "#,
@@ -639,6 +745,7 @@ async fn ensure_schema_migrates_pre_timeout_prompt_cache_binding_table() {
     assert_eq!(row.responses_stream_timeout_secs, None);
     assert_eq!(row.compact_stream_timeout_secs, None);
     assert_eq!(row.allow_switch_upstream, None);
+    assert_eq!(row.codex_imagegen_rewrite_mode, None);
 }
 
 #[tokio::test]
@@ -4126,6 +4233,7 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
         SET policy_allow_cut_out = 0,
             policy_fast_mode_rewrite_mode = 'force_remove',
             policy_image_tool_rewrite_mode = 'fill_missing',
+            policy_codex_imagegen_rewrite_mode = 'fill_missing',
             policy_available_models_json = '["gpt-5.1-codex-mini"]'
         WHERE id = ?1
         "#,
@@ -4195,6 +4303,10 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
         Some(ImageToolRewriteMode::FillMissing)
     );
     assert_eq!(
+        inherited_account_response.codex_imagegen_rewrite_mode,
+        Some(CodexImagegenRewriteMode::FillMissing)
+    );
+    assert_eq!(
         inherited_account_response.available_models,
         Some(vec!["gpt-5.1-codex-mini".to_string()])
     );
@@ -4214,6 +4326,12 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
         inherited_account_response
             .policy_field_sources
             .image_tool_rewrite_mode,
+        "account"
+    );
+    assert_eq!(
+        inherited_account_response
+            .policy_field_sources
+            .codex_imagegen_rewrite_mode,
         "account"
     );
     assert_eq!(
@@ -4245,6 +4363,7 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
             "allowSwitchUpstream": true,
             "fastModeRewriteMode": "force_add",
             "imageToolRewriteMode": "force_remove",
+            "codexImagegenRewriteMode": "force_add",
             "availableModels": ["gpt-5.1-codex-max", "gpt-5.1-codex-max", "gpt-5.1-codex-mini"],
             "forwardProxyKey": "__direct__",
         }))
@@ -4267,6 +4386,10 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
     assert_eq!(
         account_response.image_tool_rewrite_mode,
         Some(ImageToolRewriteMode::ForceRemove)
+    );
+    assert_eq!(
+        account_response.codex_imagegen_rewrite_mode,
+        Some(CodexImagegenRewriteMode::ForceAdd)
     );
     assert_eq!(
         account_response.available_models,
@@ -4292,6 +4415,10 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
     assert_eq!(
         conversation_override.image_tool_rewrite_mode,
         Some(ImageToolRewriteMode::ForceRemove)
+    );
+    assert_eq!(
+        conversation_override.codex_imagegen_rewrite_mode,
+        Some(CodexImagegenRewriteMode::ForceAdd)
     );
     assert_eq!(
         conversation_override.available_models,
@@ -4333,6 +4460,7 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
             "allowSwitchUpstream": null,
             "fastModeRewriteMode": null,
             "imageToolRewriteMode": null,
+            "codexImagegenRewriteMode": null,
             "availableModels": null,
             "forwardProxyKey": null,
         }))
@@ -4355,6 +4483,10 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
         Some(ImageToolRewriteMode::FillMissing)
     );
     assert_eq!(
+        clear_response.codex_imagegen_rewrite_mode,
+        Some(CodexImagegenRewriteMode::FillMissing)
+    );
+    assert_eq!(
         clear_response.available_models,
         Some(vec!["gpt-5.1-codex-mini".to_string()])
     );
@@ -4372,6 +4504,12 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
     );
     assert_eq!(
         clear_response.policy_field_sources.image_tool_rewrite_mode,
+        "account"
+    );
+    assert_eq!(
+        clear_response
+            .policy_field_sources
+            .codex_imagegen_rewrite_mode,
         "account"
     );
     assert_eq!(
