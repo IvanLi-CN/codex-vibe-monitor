@@ -111,7 +111,7 @@
 - TPM 为合格调用总 token 除以当前完整选择范围的分钟数；流式响应速率为输出 token 除以上游流式响应时长；响应时长为完整代理总时长平均值；TTFT 为 `first_token_ms` 样本平均值，不得从 `t_upstream_ttfb_ms` 或阶段累计值计算。墙钟时长为合格调用区间 `intersection([occurred_at, occurred_at + t_total_ms), [range.start, range.end))` 的并集时长；累计时长为合格调用 `t_total_ms` 直接求和；并行数为 `cumulativeUsageDurationMs / wallClockUsageDurationMs`。分母缺失、非有限值或小于等于零时，并行数显示 `—`；缺少有效样本的其他单项同样显示 `—`。
 - `modelPerformance.total.tokensPerMinute` 与账号级模型性能总计继续使用本规格定义的成功已计费完整范围分母；Dashboard 顶部实时 `TPM / 消费速率 / 首字用时 / 响应时间` 的 owner-facing 当前值由 `z6ysw` 的 `last_complete_1m_sma` 合同负责，不复用这些完整范围总计。
 - 桌面端性能明细触发器必须支持 hover、键盘聚焦与点击保留；浮窗宽度随视口自适应且上限为 `72rem`，表格不得产生横向滚动，只允许在模型数量或可用高度不足时纵向滚动。总计行置顶，模型行按累计时长降序；显式时长列顺序固定为 `墙钟时长 / 累计时长 / 并行数`；总计墙钟时长允许小于模型行墙钟时长的算术和。
-- 模型性能明细的每个桌面模型数据行必须保持单行，首列固定采用“可省略的完整模型名 + 模型图标/思考程度分组胶囊”；模型名通过 title 与可访问名称保留完整值，胶囊使用思考程度色点与本地化标签。窄屏详情抽屉复用同一模型身份语义，并继续使用无横向滚动的指标网格。
+- 模型性能明细的每个桌面模型数据行必须保持单行。命中 GPT-5.6 专用身份方案时只显示模型图标/思考程度分组胶囊，不得同时重复显示模型名称；未命中专用方案时显示可省略的模型名与思考程度。完整模型值始终通过 title 与可访问名称保留。窄屏详情抽屉复用同一模型身份语义，并继续使用无横向滚动的指标网格。
 - `GET /api/invocations/locate` 必须按 `upstreamAccountId + requestId` 在 retained live records 与当前 runtime overlay 中精确定位，固定采用 `occurredAt DESC, id DESC`，返回目标所在的单个分页窗口、稳定 `snapshotId`、短生命周期 `anchorId`、`targetIndex` 与 `targetAbsoluteIndex`。
 - 锚点定位未命中时必须返回结构化 `404`；不得为了定位查询 archive，也不得返回或预加载目标页之外的调用记录。
 
@@ -285,7 +285,7 @@
 - Given 当前 Dashboard 范围内同时存在成功已计费、失败、运行中和未计费调用，When 请求模型性能明细，Then 仅成功已计费调用进入总计和模型行，且 `cost=0` 的成功调用仍保留；模型按响应模型归属，空思考程度显示“未指定”。
 - Given 同一模型两次成功已计费调用分别持续 `10s`、`10s` 且重叠 `5s`，When 请求模型性能明细，Then 该模型返回 `wallClockUsageDurationMs=15s`、`cumulativeUsageDurationMs=20s`、`parallelism≈1.33`。
 - Given 两个不同模型在所选范围内各自活跃 `4s` 且跨模型重叠 `1s`，When owner 查看模型性能明细，Then 总计墙钟时长为 `7s`、两个模型行墙钟时长之和为 `8s`，并且说明文案明确“跨模型重叠时模型行墙钟和可能大于总计”。
-- Given owner 在桌面 hover、键盘聚焦或点击 Dashboard 的模型性能入口，When 性能明细打开，Then 显示置顶总计与按累计时长降序的模型行，且显式展示 `墙钟时长 / 累计时长 / 并行数` 三列，缺失指标显示 `—`；每个模型行保持单行，完整模型名与图标/思考程度分组胶囊并排展示，超长模型名安全省略，表格 `scrollWidth <= clientWidth`；Given 窄屏点击同一入口，Then 以无横向滚动的抽屉和相同模型身份语义展示同一数据。
+- Given owner 在桌面 hover、键盘聚焦或点击 Dashboard 的模型性能入口，When 性能明细打开，Then 显示置顶总计与按累计时长降序的模型行，且显式展示 `墙钟时长 / 累计时长 / 并行数` 三列，缺失指标显示 `—`；每个模型行保持单行，GPT-5.6 专用图标方案不得与模型名称重复显示，未知模型名安全省略，表格 `scrollWidth <= clientWidth`；Given 窄屏点击同一入口，Then 以无横向滚动的抽屉和相同模型身份语义展示同一数据。
 
 ### Manual verification
 
@@ -482,7 +482,7 @@
   viewport_strategy: storybook-viewport
   margin_policy: require_margin
   evidence_surface: component
-  evidence_note: verifies seven dense model rows stay on one line, long model names truncate beside the grouped model/reasoning capsule, and the table has no horizontal overflow while retaining all seven metrics.
+  evidence_note: verifies seven dense model rows stay on one line, dedicated GPT-5.6 identity capsules replace redundant model names, fallback names truncate safely, and the table has no horizontal overflow while retaining all seven metrics.
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only Dashboard data
@@ -498,7 +498,7 @@
   viewport_strategy: storybook-viewport
   margin_policy: require_margin
   evidence_surface: component
-  evidence_note: verifies the drawer preserves its two-column metric grid, keeps the model name and grouped capsule on one line, and has no horizontal overflow at the narrow viewport.
+  evidence_note: verifies the drawer preserves its two-column metric grid, uses the dedicated GPT-5.6 identity capsule without repeating the model name, and has no horizontal overflow at the narrow viewport.
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only Dashboard data

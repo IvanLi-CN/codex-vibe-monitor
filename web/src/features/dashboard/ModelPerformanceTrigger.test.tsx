@@ -116,10 +116,13 @@ describe("ModelPerformanceTrigger", () => {
       '[data-testid="model-performance-table-model-context"]',
     );
     expect(modelContexts).toHaveLength(2);
-    expect(modelContexts?.[0]?.getAttribute("data-model-context-display")).toBe("name-and-badge");
+    expect(modelContexts?.[0]?.getAttribute("data-model-context-display")).toBe("model-badge");
     expect(modelContexts?.[0]?.getAttribute("title")).toContain("gpt-5.6-sol");
-    expect(modelContexts?.[0]?.querySelector('[data-testid$="-name"]')?.getAttribute("title")).toBe(
-      "gpt-5.6-sol",
+    expect(modelContexts?.[0]?.querySelector('[data-testid$="-name"]')).toBeNull();
+    expect(modelContexts?.[0]?.querySelector('[data-reasoning-effort-tone="high"]')).not.toBeNull();
+    expect(modelContexts?.[1]?.getAttribute("data-model-context-display")).toBe("name-and-effort");
+    expect(modelContexts?.[1]?.querySelector('[data-testid$="-name"]')?.getAttribute("title")).toBe(
+      "gpt-5.6-terra-experimental-routing-variant-with-a-very-long-name",
     );
     expect(
       modelContexts?.[1]?.querySelector('[data-reasoning-effort-tone="unknown"]'),

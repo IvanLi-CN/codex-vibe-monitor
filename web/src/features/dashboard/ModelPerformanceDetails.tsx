@@ -138,6 +138,7 @@ export function ModelPerformanceDetails({
           >
             <ModelPerformanceModelIdentity
               model={model.model}
+              effortValue={model.reasoningEffort}
               effort={effortLabel(
                 model.reasoningEffort,
                 effortLabels,
@@ -213,6 +214,7 @@ export function ModelPerformanceDetails({
                 label={
                   <ModelPerformanceModelIdentity
                     model={model.model}
+                    effortValue={model.reasoningEffort}
                     effort={effortLabel(
                       model.reasoningEffort,
                       effortLabels,
@@ -255,7 +257,8 @@ function ModelPerformanceTableRow({
       {values.map((value, index) => (
         <td
           key={METRIC_CELL_KEYS[index]}
-          className="border-l border-base-300/30 px-1.5 py-1.5 text-right font-mono font-semibold tabular-nums text-base-content whitespace-nowrap"
+          className="overflow-hidden border-l border-base-300/30 px-1.5 py-1.5 text-right font-mono font-semibold text-ellipsis tabular-nums text-base-content whitespace-nowrap"
+          title={value}
         >
           {value}
         </td>

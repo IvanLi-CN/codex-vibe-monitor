@@ -28,36 +28,40 @@ const EFFORT_MARKER_CLASSNAMES: Record<ReasoningEffortTone, string> = {
 export function ModelPerformanceModelIdentity({
   model,
   effort,
+  effortValue,
   className,
   modelClassName,
   testId,
 }: {
   model: string;
   effort: string;
+  effortValue: string | null | undefined;
   className?: string;
   modelClassName?: string;
   testId?: string;
 }) {
-  const tone = getReasoningEffortTone(effort);
+  const tone = effortValue ? getReasoningEffortTone(effortValue) : "none";
   const hasModelIcon = resolveModelIdentityIcon(model) !== null;
   const accessibleLabel = `${model} · ${effort}`;
 
   return (
     <span
       data-testid={testId}
-      data-model-context-display="name-and-badge"
+      data-model-context-display={hasModelIcon ? "model-badge" : "name-and-effort"}
       className={cn("flex min-w-0 max-w-full items-center gap-1.5 whitespace-nowrap", className)}
       title={accessibleLabel}
     >
       <span className="sr-only">{accessibleLabel}</span>
       <span className="contents" aria-hidden>
-        <span
-          data-testid={testId ? `${testId}-name` : undefined}
-          className={cn("min-w-0 truncate font-mono", modelClassName)}
-          title={model}
-        >
-          {model}
-        </span>
+        {hasModelIcon ? null : (
+          <span
+            data-testid={testId ? `${testId}-name` : undefined}
+            className={cn("min-w-0 truncate font-mono", modelClassName)}
+            title={model}
+          >
+            {model}
+          </span>
+        )}
         <span
           data-testid={testId ? `${testId}-badge` : undefined}
           className="inline-flex h-6 shrink-0 items-stretch overflow-hidden rounded-md border border-base-300/75 bg-base-200/58 leading-none"

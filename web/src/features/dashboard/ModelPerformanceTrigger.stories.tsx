@@ -156,9 +156,20 @@ export const DesktopTooltip: Story = {
     await expect(scrollRegion.scrollWidth).toBeLessThanOrEqual(scrollRegion.clientWidth);
     const modelRows = within(details).getAllByTestId("model-performance-table-model-context");
     await expect(modelRows).toHaveLength(7);
+    await expect(
+      modelRows.filter((row) => row.dataset.modelContextDisplay === "model-badge"),
+    ).toHaveLength(5);
+    await expect(
+      modelRows.filter((row) => row.dataset.modelContextDisplay === "name-and-effort"),
+    ).toHaveLength(2);
     for (const row of modelRows) {
       await expect(getComputedStyle(row).whiteSpace).toBe("nowrap");
       await expect(row.getBoundingClientRect().height).toBeLessThanOrEqual(32);
+    }
+    const metricCells = within(details).getAllByRole("cell");
+    await expect(metricCells.length).toBeGreaterThan(0);
+    for (const cell of metricCells) {
+      await expect(getComputedStyle(cell).overflowX).toBe("hidden");
     }
   },
 };
