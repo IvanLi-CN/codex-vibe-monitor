@@ -133,7 +133,7 @@ PR: none
 视觉证据=存在
 视觉证据目标源=ui_demo
 证据落盘=已落盘：`assets/attempt-response-body-demo.png`
-证据绑定sha=f3025f57
+证据绑定sha=e82e3e71
 空白裁剪=无需裁剪（固定 1440x900 页面边界存在半透明抽屉背景，裁剪器按 ambiguous_border 保持原图）
 聊天回图=已展示
 证据说明：attempt `qPvNNAK8` 展开后显示 `captureSource=attempt_raw_file`、独立大小/编码元数据与实际 JSON 响应体；页面来自 mock-only、免登录 Demo。
