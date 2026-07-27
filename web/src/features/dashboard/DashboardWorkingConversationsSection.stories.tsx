@@ -2260,6 +2260,26 @@ const createdAtDescendingOrderKeys = [...createdAtDescendingOrderResponse.conver
   )
   .map((conversation) => conversation.promptCacheKey);
 
+const gpt56ModelContextResponse = createResponse([
+  createConversation("story-gpt56-model-context", [
+    createPreview({
+      id: 9_560,
+      invokeId: "story-gpt56-model-context-invoke",
+      occurredAt: "2026-04-04T10:04:00Z",
+      status: "completed",
+      model: "gpt-5.6-sol",
+      requestModel: "gpt-5.6-sol",
+      responseModel: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      requestedServiceTier: "priority",
+      serviceTier: "priority",
+      transport: "websocket",
+      totalTokens: 12_520,
+      cost: 0.014,
+    }),
+  ]),
+]);
+
 const upstreamAccountSortBaseResponse = createUpstreamAccountActivityStoryResponse(2);
 const upstreamAccountSortOrderingResponse: UpstreamAccountActivityResponse = {
   ...upstreamAccountSortBaseResponse,
@@ -3402,6 +3422,41 @@ export const CurrentAndPrevious: Story = {
     await expect(usageHit).toHaveAttribute("data-summary-tone", "warning");
     await expect(usageCost).toHaveAttribute("data-summary-tone", "warning");
     await expect(currentSlot).not.toHaveTextContent(/RQ |UP |ED |TT /);
+  },
+};
+
+export const GPT56ModelContextCluster: Story = {
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "GPT-5.6 invocation metadata keeps the model identity, reasoning effort, and FAST state in one reusable visual cluster.",
+      },
+    },
+  },
+  args: {
+    activeRange: "today",
+    cards: buildCards(gpt56ModelContextResponse),
+    isLoading: false,
+    error: null,
+  },
+  play: async ({ canvasElement }) => {
+    const cluster = canvasElement.querySelector(
+      '[data-testid="dashboard-working-conversation-model-context"]',
+    );
+    if (!(cluster instanceof HTMLElement)) {
+      throw new Error("missing GPT-5.6 model context cluster");
+    }
+
+    await expect(cluster).toHaveAttribute("data-model-context-grouped", "true");
+    await expect(cluster).toHaveAttribute("aria-label", expect.stringContaining("gpt-5.6-sol"));
+    await expect(cluster.querySelector('[data-model-icon="white-balance-sunny"]')).not.toBeNull();
+    await expect(
+      cluster.querySelector(
+        '[data-testid="dashboard-working-conversation-model-context-reasoning-effort"]',
+      ),
+    ).toHaveTextContent("high");
+    await expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
   },
 };
 
@@ -5709,11 +5764,31 @@ const bulkSelectionStoryArgs = {
 };
 
 const bulkSelectionStoryRecentTargets: DashboardBulkRouteBindRecentTarget[] = [
-  { kind: "upstreamAccount", upstreamAccountId: 21, usedAt: Date.parse("2026-07-20T11:00:00Z") },
-  { kind: "group", groupName: "Tokyo", usedAt: Date.parse("2026-07-20T10:00:00Z") },
-  { kind: "group", groupName: "CIII", usedAt: Date.parse("2026-07-20T09:00:00Z") },
-  { kind: "upstreamAccount", upstreamAccountId: 101, usedAt: Date.parse("2026-07-20T08:00:00Z") },
-  { kind: "group", groupName: "Relay-Blue", usedAt: Date.parse("2026-07-20T07:00:00Z") },
+  {
+    kind: "upstreamAccount",
+    upstreamAccountId: 21,
+    usedAt: Date.parse("2026-07-20T11:00:00Z"),
+  },
+  {
+    kind: "group",
+    groupName: "Tokyo",
+    usedAt: Date.parse("2026-07-20T10:00:00Z"),
+  },
+  {
+    kind: "group",
+    groupName: "CIII",
+    usedAt: Date.parse("2026-07-20T09:00:00Z"),
+  },
+  {
+    kind: "upstreamAccount",
+    upstreamAccountId: 101,
+    usedAt: Date.parse("2026-07-20T08:00:00Z"),
+  },
+  {
+    kind: "group",
+    groupName: "Relay-Blue",
+    usedAt: Date.parse("2026-07-20T07:00:00Z"),
+  },
 ];
 
 async function enableConversationSelectionMode(canvasElement: HTMLElement) {
