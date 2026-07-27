@@ -11,7 +11,7 @@
 ## Coverage / rollout summary
 
 - 已修复账号活动 v2 coverage 的升级自愈：新的 live/archive repair generation 会先撤销旧 marker、仅清零 v2 派生字段并重置独立回放进度；完整小时只在该小时现存 live rows 全部越过 repair cursor 后写 marker，marker 缺口继续走 exact raw/archive fallback。整桶重算写入独立的 per-bucket invocation watermark，使滞后 repair 只跳过已被权威重算包含的行，但不会提前宣告 coverage；coverage、rollup、cursor 与 exact tail 固定在同一 SQLite 读事务。已覆盖错误 marker + 稀疏 rollup + 游标追平、重复启动幂等、部分回放与 covered-hour late live tail，通用 rollup、原始调用和 legacy 字段保持不变。
-- 已实现：`today / 1d / 7d` Dashboard 与上游账号活动 HTTP/SSE 共享 cache-backed memory-first baseline。terminal record 以 `(invokeId, occurredAt)` 幂等增量更新累计账号/总览 usage；5 秒订阅刷新不再触发 full DB build，60 秒 reconcile 与错误 last-good fallback 负责最终对账。
+- 已实现：`today / 1d / 7d` Dashboard 与上游账号活动 HTTP/SSE 共享 cache-backed memory-first baseline。terminal record 以 `(invokeId, occurredAt)` 幂等增量更新累计账号/总览 usage；`today` 以 60 秒 reconcile 与错误 last-good fallback 负责最终对账，rolling `1d / 7d` 在完整 expiry delta 落地前保留 5 秒精确窗口刷新边界。
 - 已实现：Dashboard 上游账号视图拆为汇总优先与快照绑定的 recent 批量补齐；首屏使用局部骨架，范围刷新保留旧卡片，recent 失败保留汇总并局部重试。
 - 已实现：`includeRecent=false` 的第一阶段对保留期外数据执行 archive 内部分组聚合，只返回账号指标而不读取、排序或传输 invocation preview；兼容 combined 响应与第二阶段 recent 接口继续按相同精确快照边界读取 bounded preview。
 - 已实现：Dashboard 工作区头部控制条重新对齐 spec 基线，桌面布局恢复为“左侧 tabs、右侧 当前对话 badge + 排序按钮”的紧凑顺序，不再出现 `badge -> tabs -> 排序` 的错误节奏；对应视觉证据已刷新为当前实现。

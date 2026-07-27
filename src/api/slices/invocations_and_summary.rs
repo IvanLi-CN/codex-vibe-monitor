@@ -11236,6 +11236,7 @@ pub(crate) const DASHBOARD_ACTIVITY_RATE_WINDOW_MINUTES: i64 = 5;
 /// layered onto the cached baseline synchronously, so this is not an owner-visible freshness
 /// budget.
 pub(crate) const DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS: u64 = 60;
+const DASHBOARD_ACTIVITY_ROLLING_SNAPSHOT_CACHE_TTL_SECS: u64 = 5;
 const DASHBOARD_ACTIVITY_READ_MODEL_MAX_TERMINAL_KEYS: usize = 50_000;
 const DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_TERMINALS: usize = 10_000;
 const DASHBOARD_ACTIVITY_LAST_GOOD_MAX_AGE: Duration = Duration::from_secs(15 * 60);
@@ -12493,6 +12494,14 @@ fn dashboard_activity_snapshot_selection_anchor(
         .with_timezone(&reporting_tz)
         .format("%Y-%m-%d")
         .to_string()
+}
+
+fn dashboard_activity_snapshot_cache_ttl(range_name: &str) -> Duration {
+    if parse_duration_spec(range_name).is_ok() {
+        Duration::from_secs(DASHBOARD_ACTIVITY_ROLLING_SNAPSHOT_CACHE_TTL_SECS)
+    } else {
+        Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS)
+    }
 }
 
 fn resolve_dashboard_activity_exact_range(
@@ -14345,8 +14354,8 @@ async fn load_dashboard_activity_snapshot_cached(
     let mut waited_on_in_flight = false;
     let mut max_waiter_count = 0_usize;
     let mut saw_expired_entry = false;
-    let cache_ttl = Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS);
-    let cache_ttl_ms = DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS * 1_000;
+    let cache_ttl = dashboard_activity_snapshot_cache_ttl(range_name);
+    let cache_ttl_ms = cache_ttl.as_millis() as u64;
     let selection_fingerprint = dashboard_activity_selection_fingerprint(&selection);
 
     loop {
@@ -14630,9 +14639,10 @@ async fn load_dashboard_activity_snapshot_cached(
                 },
             )),
             Err(err) => {
-                let Some(entry) = cache.entries.get(&selection) else {
+                let Some(entry) = cache.entries.get_mut(&selection) else {
                     return Err(err);
                 };
+                entry.last_reconcile_attempted_at = Instant::now();
                 let cache_entry_age_ms = entry.cached_at.elapsed().as_millis() as u64;
                 tracing::warn!(
                     selection_fingerprint,
@@ -16546,6 +16556,22 @@ pub(crate) fn push_exact_range(
 #[cfg(test)]
 mod dashboard_activity_read_model_tests {
     use super::*;
+
+    #[test]
+    fn rolling_snapshots_refresh_before_the_reported_window_drifts() {
+        assert_eq!(
+            dashboard_activity_snapshot_cache_ttl("1d"),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            dashboard_activity_snapshot_cache_ttl("7d"),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            dashboard_activity_snapshot_cache_ttl("today"),
+            Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS)
+        );
+    }
 
     #[test]
     fn terminal_delta_updates_cached_summary_without_a_database_rebuild() {

@@ -955,7 +955,8 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             .flush_buffered_for_test(&state.pool)
             .await;
     }
-    if state.broadcaster.receiver_count() > 0
+    if terminal_enqueued
+        && state.broadcaster.receiver_count() > 0
         && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
             records: vec![inserted_record],
         })
@@ -966,8 +967,8 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             "failed to broadcast new proxy capture record"
         );
     }
-    schedule_dashboard_activity_live_snapshot(state);
     if terminal_enqueued {
+        schedule_dashboard_activity_live_snapshot(state);
         schedule_proxy_capture_follow_up_after_terminal_enqueue(state, &invoke_id, "raw_terminal");
     }
     Ok(())
