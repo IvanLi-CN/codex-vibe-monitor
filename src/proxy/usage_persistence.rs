@@ -2009,6 +2009,11 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
     let upstream_request_header_bytes_approx = pending.upstream_request_header_bytes_approx;
     let upstream_response_body_bytes = pending.upstream_response_body_bytes;
     let upstream_response_header_bytes_approx = pending.upstream_response_header_bytes_approx;
+    let response_raw_capture_present = pending.response_raw_path.is_some()
+        || pending.response_raw_size.is_some()
+        || pending.response_raw_truncated
+        || pending.response_raw_truncated_reason.is_some()
+        || pending.response_content_encoding.is_some();
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: pending.invoke_id.clone(),
         occurred_at: pending.occurred_at.clone(),
@@ -2080,7 +2085,11 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
         .bind(pending.response_raw_path.as_deref())
         .bind(pending.response_raw_codec.as_deref())
         .bind(pending.response_raw_size)
-        .bind(Some(if pending.response_raw_truncated { 1_i64 } else { 0_i64 }))
+        .bind(response_raw_capture_present.then_some(if pending.response_raw_truncated {
+            1_i64
+        } else {
+            0_i64
+        }))
         .bind(pending.response_raw_truncated_reason.as_deref())
         .bind(pending.response_content_encoding.as_deref())
         .execute(pool)

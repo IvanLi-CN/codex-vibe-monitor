@@ -3127,25 +3127,6 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         })
                 });
                 let finished_at = shanghai_now_string();
-                if let Some(response_body) = error_body_bytes.as_ref()
-                    && let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                {
-                    let response_body_logging_enabled = state
-                        .proxy_model_settings
-                        .read()
-                        .await
-                        .response_body_logging_enabled;
-                    let response_content_encoding = response_headers
-                        .get(header::CONTENT_ENCODING)
-                        .and_then(|value| value.to_str().ok());
-                    spawn_pool_attempt_response_capture(
-                        state.clone(),
-                        pending_attempt_record.clone(),
-                        response_body.clone(),
-                        response_body_logging_enabled,
-                        response_content_encoding.map(str::to_string),
-                    );
-                }
                 if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                     && let Err(record_err) = finalize_pool_upstream_request_attempt(
                         &state.pool,
@@ -3174,6 +3155,25 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         invoke_id = pending_attempt_record.invoke_id,
                         error = %record_err,
                         "failed to persist pool http failure attempt"
+                    );
+                }
+                if let Some(response_body) = error_body_bytes.as_ref()
+                    && let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                {
+                    let response_body_logging_enabled = state
+                        .proxy_model_settings
+                        .read()
+                        .await
+                        .response_body_logging_enabled;
+                    let response_content_encoding = response_headers
+                        .get(header::CONTENT_ENCODING)
+                        .and_then(|value| value.to_str().ok());
+                    spawn_pool_attempt_response_capture(
+                        state.clone(),
+                        pending_attempt_record.clone(),
+                        response_body.clone(),
+                        response_body_logging_enabled,
+                        response_content_encoding.map(str::to_string),
                     );
                 }
                 if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
@@ -3648,20 +3648,6 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         raw_body,
                     }) => {
                         let finished_at = shanghai_now_string();
-                        if let Some(pending_attempt_record) = pending_attempt_record.as_ref() {
-                            let response_body_logging_enabled = state
-                                .proxy_model_settings
-                                .read()
-                                .await
-                                .response_body_logging_enabled;
-                            spawn_pool_attempt_response_capture(
-                                state.clone(),
-                                pending_attempt_record.clone(),
-                                raw_body.clone(),
-                                response_body_logging_enabled,
-                                response_content_encoding_for_attempt.clone(),
-                            );
-                        }
                         if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                             && let Err(record_err) = finalize_pool_upstream_request_attempt(
                                 &state.pool,
@@ -3686,6 +3672,20 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 invoke_id = pending_attempt_record.invoke_id,
                                 error = %record_err,
                                 "failed to persist pool retryable response.failed attempt"
+                            );
+                        }
+                        if let Some(pending_attempt_record) = pending_attempt_record.as_ref() {
+                            let response_body_logging_enabled = state
+                                .proxy_model_settings
+                                .read()
+                                .await
+                                .response_body_logging_enabled;
+                            spawn_pool_attempt_response_capture(
+                                state.clone(),
+                                pending_attempt_record.clone(),
+                                raw_body.clone(),
+                                response_body_logging_enabled,
+                                response_content_encoding_for_attempt.clone(),
                             );
                         }
                         if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
