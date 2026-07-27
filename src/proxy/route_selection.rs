@@ -3957,7 +3957,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             ..PoolFailoverProgress::default()
                         },
                         same_account_attempts,
-                        true,
+                        capture_target.is_some(),
                     )
                     .await
                     .map_err(|err| proxy_error_response_from_pool_upstream_error(err, None))?,

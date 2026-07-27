@@ -287,7 +287,9 @@ const LEGACY_ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS: &str =
     "XY_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS";
 
 fn proxy_raw_async_writer_limit(_config: &AppConfig) -> usize {
-    DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS
+    // Pool attempts now keep an independent response writer alongside the
+    // invocation writer; preserve the original invocation capacity.
+    DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS * 2
 }
 const ENV_QUOTA_SNAPSHOT_FULL_DAYS: &str = "QUOTA_SNAPSHOT_FULL_DAYS";
 const ENV_LONG_TERM_STATS_HOURLY_RETENTION_DAYS: &str = "LONG_TERM_STATS_HOURLY_RETENTION_DAYS";
