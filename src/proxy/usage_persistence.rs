@@ -658,6 +658,62 @@ pub(crate) fn set_pending_pool_upstream_request_attempt_response_capture(
         .map(ToOwned::to_owned);
 }
 
+pub(crate) async fn persist_pool_upstream_request_attempt_response_capture(
+    pool: &Pool<Sqlite>,
+    pending: &PendingPoolAttemptRecord,
+) -> Result<()> {
+    let attempt_id = match pending.attempt_id {
+        Some(attempt_id) => Some(attempt_id),
+        None => sqlx::query_scalar::<_, Option<i64>>(
+            r#"
+            SELECT id
+            FROM pool_upstream_request_attempts
+            WHERE invoke_id = ?1
+              AND occurred_at = ?2
+              AND attempt_index = ?3
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(&pending.invoke_id)
+        .bind(&pending.occurred_at)
+        .bind(pending.attempt_index)
+        .fetch_optional(pool)
+        .await?
+        .flatten(),
+    };
+    let Some(attempt_id) = attempt_id else {
+        return Ok(());
+    };
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_request_attempts
+        SET
+            response_raw_path = ?2,
+            response_raw_codec = COALESCE(?3, response_raw_codec),
+            response_raw_size = ?4,
+            response_raw_truncated = ?5,
+            response_raw_truncated_reason = ?6,
+            response_content_encoding = ?7
+        WHERE id = ?1
+        "#,
+    )
+    .bind(attempt_id)
+    .bind(pending.response_raw_path.as_deref())
+    .bind(pending.response_raw_codec.as_deref())
+    .bind(pending.response_raw_size)
+    .bind(if pending.response_raw_truncated {
+        1_i64
+    } else {
+        0_i64
+    })
+    .bind(pending.response_raw_truncated_reason.as_deref())
+    .bind(pending.response_content_encoding.as_deref())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub(crate) fn update_pending_pool_upstream_request_attempt_http_bytes(
     pending: &mut PendingPoolAttemptRecord,
     logical_body_bytes: Option<usize>,

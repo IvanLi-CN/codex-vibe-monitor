@@ -1628,6 +1628,53 @@ pub(crate) fn delete_exact_proxy_raw_path(
     Ok(())
 }
 
+async fn pool_attempt_response_paths_for_invocation_ids(
+    pool: &Pool<Sqlite>,
+    invocation_ids: &[i64],
+) -> Result<Vec<String>> {
+    if invocation_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT attempts.response_raw_path FROM pool_upstream_request_attempts AS attempts JOIN codex_invocations AS inv ON inv.invoke_id = attempts.invoke_id AND inv.occurred_at = attempts.occurred_at WHERE inv.id IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for id in invocation_ids {
+            separated.push_bind(id);
+        }
+    }
+    query.push(") AND attempts.response_raw_path IS NOT NULL");
+    Ok(query
+        .build_query_scalar::<Option<String>>()
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .flatten()
+        .collect())
+}
+
+async fn clear_pool_attempt_response_captures_for_invocation_ids(
+    tx: &mut sqlx::SqliteConnection,
+    invocation_ids: &[i64],
+) -> Result<()> {
+    if invocation_ids.is_empty() {
+        return Ok(());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "UPDATE pool_upstream_request_attempts SET response_raw_path = NULL, response_raw_codec = 'identity', response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, response_content_encoding = NULL WHERE EXISTS (SELECT 1 FROM codex_invocations AS inv WHERE inv.id IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for id in invocation_ids {
+            separated.push_bind(id);
+        }
+    }
+    query.push(") AND inv.invoke_id = pool_upstream_request_attempts.invoke_id AND inv.occurred_at = pool_upstream_request_attempts.occurred_at)");
+    query.build().execute(&mut *tx).await?;
+    Ok(())
+}
+
 pub(crate) async fn prune_old_invocation_details(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -1671,7 +1718,11 @@ pub(crate) async fn prune_old_invocation_details(
                 "retention dry-run planned invocation detail prune archive batch"
             );
         }
-        let raw_paths = candidates
+        let ids = candidates
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>();
+        let mut raw_paths = candidates
             .iter()
             .flat_map(|candidate| {
                 [
@@ -1680,6 +1731,12 @@ pub(crate) async fn prune_old_invocation_details(
                 ]
             })
             .collect::<Vec<_>>();
+        raw_paths.extend(
+            pool_attempt_response_paths_for_invocation_ids(pool, &ids)
+                .await?
+                .into_iter()
+                .map(Some),
+        );
         return Ok((
             candidates.len(),
             by_group.len(),
@@ -1726,7 +1783,11 @@ pub(crate) async fn prune_old_invocation_details(
         for (group_key, group) in by_group {
             rows_pruned += group.len();
             archive_batches += 1;
-            let raw_paths = group
+            let ids = group
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>();
+            let mut raw_paths = group
                 .iter()
                 .flat_map(|candidate| {
                     [
@@ -1735,11 +1796,12 @@ pub(crate) async fn prune_old_invocation_details(
                     ]
                 })
                 .collect::<Vec<_>>();
-
-            let ids = group
-                .iter()
-                .map(|candidate| candidate.id)
-                .collect::<Vec<_>>();
+            raw_paths.extend(
+                pool_attempt_response_paths_for_invocation_ids(pool, &ids)
+                    .await?
+                    .into_iter()
+                    .map(Some),
+            );
             let mut archive_outcome = match archive_layout_for_dataset(config, spec.dataset) {
                 ArchiveBatchLayout::LegacyMonth => {
                     archive_rows_into_month_batch(pool, config, spec, &group_key, &ids).await?
@@ -1779,6 +1841,7 @@ pub(crate) async fn prune_old_invocation_details(
                 }
             }
             query.push(")");
+            clear_pool_attempt_response_captures_for_invocation_ids(tx.as_mut(), &ids).await?;
             query.build().execute(tx.as_mut()).await?;
             tx.commit().await?;
 

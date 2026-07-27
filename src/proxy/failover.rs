@@ -607,6 +607,42 @@ fn pool_attempt_response_capture_key(pending: &PendingPoolAttemptRecord) -> Stri
     })
 }
 
+fn spawn_pool_attempt_response_capture(
+    state: Arc<AppState>,
+    pending: PendingPoolAttemptRecord,
+    response_body: Bytes,
+    response_body_logging_enabled: bool,
+    response_content_encoding: Option<String>,
+) {
+    let capture_key = pool_attempt_response_capture_key(&pending);
+    tokio::spawn(async move {
+        let raw_meta = spawn_raw_payload_file_write(
+            state.as_ref(),
+            &capture_key,
+            "response",
+            response_body,
+            response_body_logging_enabled,
+        )
+        .finish()
+        .await;
+        let mut pending = pending;
+        set_pending_pool_upstream_request_attempt_response_capture(
+            &mut pending,
+            &raw_meta,
+            response_content_encoding.as_deref(),
+        );
+        if let Err(err) =
+            persist_pool_upstream_request_attempt_response_capture(&state.pool, &pending).await
+        {
+            warn!(
+                invoke_id = %pending.invoke_id,
+                error = %err,
+                "failed to persist asynchronous pool attempt response capture"
+            );
+        }
+    });
+}
+
 async fn send_pool_request_with_failover_and_binding_constraint_inner(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -3092,30 +3128,22 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 });
                 let finished_at = shanghai_now_string();
                 if let Some(response_body) = error_body_bytes.as_ref()
-                    && let Some(pending_attempt_record) = pending_attempt_record.as_mut()
+                    && let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                 {
                     let response_body_logging_enabled = state
                         .proxy_model_settings
                         .read()
                         .await
                         .response_body_logging_enabled;
-                    let capture_key = pool_attempt_response_capture_key(pending_attempt_record);
-                    let raw_meta = spawn_raw_payload_file_write(
-                        state.as_ref(),
-                        &capture_key,
-                        "response",
-                        response_body.clone(),
-                        response_body_logging_enabled,
-                    )
-                    .finish()
-                    .await;
                     let response_content_encoding = response_headers
                         .get(header::CONTENT_ENCODING)
                         .and_then(|value| value.to_str().ok());
-                    set_pending_pool_upstream_request_attempt_response_capture(
-                        pending_attempt_record,
-                        &raw_meta,
-                        response_content_encoding,
+                    spawn_pool_attempt_response_capture(
+                        state.clone(),
+                        pending_attempt_record.clone(),
+                        response_body.clone(),
+                        response_body_logging_enabled,
+                        response_content_encoding.map(str::to_string),
                     );
                 }
                 if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
@@ -3620,27 +3648,18 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         raw_body,
                     }) => {
                         let finished_at = shanghai_now_string();
-                        if let Some(pending_attempt_record) = pending_attempt_record.as_mut() {
+                        if let Some(pending_attempt_record) = pending_attempt_record.as_ref() {
                             let response_body_logging_enabled = state
                                 .proxy_model_settings
                                 .read()
                                 .await
                                 .response_body_logging_enabled;
-                            let capture_key =
-                                pool_attempt_response_capture_key(pending_attempt_record);
-                            let raw_meta = spawn_raw_payload_file_write(
-                                state.as_ref(),
-                                &capture_key,
-                                "response",
+                            spawn_pool_attempt_response_capture(
+                                state.clone(),
+                                pending_attempt_record.clone(),
                                 raw_body.clone(),
                                 response_body_logging_enabled,
-                            )
-                            .finish()
-                            .await;
-                            set_pending_pool_upstream_request_attempt_response_capture(
-                                pending_attempt_record,
-                                &raw_meta,
-                                response_content_encoding_for_attempt.as_deref(),
+                                response_content_encoding_for_attempt.clone(),
                             );
                         }
                         if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
