@@ -5396,8 +5396,10 @@ pub(crate) async fn fetch_invocation_attempt_response_body(
         fetch_invocation_attempt_response_body_row(&state.pool, id, attempt_public_id.as_str())
             .await?
             .ok_or_else(|| ApiError::bad_request(anyhow!("attempt not found")))?;
-    let has_attempt_capture = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT attempts.response_raw_path IS NOT NULL
+    let (has_attempt_capture, has_invocation_capture) =
+        sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+            "SELECT attempts.response_raw_path IS NOT NULL,
+                inv.response_raw_path IS NOT NULL
          FROM pool_upstream_request_attempts AS attempts
          JOIN codex_invocations AS inv
            ON inv.invoke_id = attempts.invoke_id
@@ -5405,20 +5407,20 @@ pub(crate) async fn fetch_invocation_attempt_response_body(
          WHERE inv.id = ?1
            AND attempts.attempt_public_id = ?2
          LIMIT 1",
-    )
-    .bind(id)
-    .bind(attempt_public_id.as_str())
-    .fetch_optional(&state.pool)
-    .await?
-    .flatten()
-    .unwrap_or_default()
-        != 0;
+        )
+        .bind(id)
+        .bind(attempt_public_id.as_str())
+        .fetch_optional(&state.pool)
+        .await?
+        .unwrap_or_default();
+    let has_attempt_capture = has_attempt_capture.unwrap_or_default() != 0;
+    let has_invocation_capture = has_invocation_capture.unwrap_or_default() != 0;
     let source = Some(if has_attempt_capture {
         "attempt_raw_file"
-    } else if row.attempt_public_id.is_some() {
-        "attempt_metrics"
-    } else {
+    } else if has_invocation_capture && row.response_raw_path.is_some() {
         "invocation_raw_file"
+    } else {
+        "attempt_metrics"
     });
     Ok(Json(build_response_body_response_with_source(
         &row,
