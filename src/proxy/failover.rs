@@ -515,6 +515,18 @@ async fn persist_pool_failover_terminal_invocation(
     .await;
 }
 
+fn pool_attempt_response_capture_key(pending: &PendingPoolAttemptRecord) -> String {
+    pending.attempt_public_id.clone().unwrap_or_else(|| {
+        format!(
+            "{}-attempt-{}-{}-{}",
+            pending.invoke_id,
+            pending.attempt_index,
+            pending.distinct_account_index,
+            pending.same_account_retry_index,
+        )
+    })
+}
+
 async fn send_pool_request_with_failover_and_binding_constraint_inner(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -2941,17 +2953,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         .read()
                         .await
                         .response_body_logging_enabled;
+                    let capture_key = pool_attempt_response_capture_key(pending_attempt_record);
                     let raw_meta = spawn_raw_payload_file_write(
                         state.as_ref(),
-                        pending_attempt_record
-                            .attempt_public_id
-                            .as_deref()
-                            .unwrap_or(
-                                trace_context
-                                    .as_ref()
-                                    .map(|trace| trace.invoke_id.as_str())
-                                    .unwrap_or("pool-attempt"),
-                            ),
+                        &capture_key,
                         "response",
                         response_body.clone(),
                         response_body_logging_enabled,
@@ -3469,17 +3474,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 .read()
                                 .await
                                 .response_body_logging_enabled;
+                            let capture_key =
+                                pool_attempt_response_capture_key(pending_attempt_record);
                             let raw_meta = spawn_raw_payload_file_write(
                                 state.as_ref(),
-                                pending_attempt_record
-                                    .attempt_public_id
-                                    .as_deref()
-                                    .unwrap_or(
-                                        trace_context
-                                            .as_ref()
-                                            .map(|trace| trace.invoke_id.as_str())
-                                            .unwrap_or("pool-attempt"),
-                                    ),
+                                &capture_key,
                                 "response",
                                 raw_body.clone(),
                                 response_body_logging_enabled,
