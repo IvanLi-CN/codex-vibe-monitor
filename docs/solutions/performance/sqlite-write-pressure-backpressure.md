@@ -81,6 +81,7 @@
 - 对 proxy 收尾这类 SSE follow-up，active subscriber 也不等于可以强制同步 flush SQLite。若 terminal record 已进入 P1 write controller，follow-up 应避免把 UI 实时性需求重新变成写锁 barrier；先广播 terminal overlay，再让后续 reconcile/summary 在有界延迟内补齐。
 - proxy snapshot/broadcast 在 `database is locked` 下应 fail-soft skip 并记录结构化证据，依赖已发出的 SSE 事件和后续 HTTP reconcile 补齐 UI；不要在请求尾部立即重试并放大锁争用。
 - write-side live read model 只有在维护成本本身也受控时才值得做：前台请求内同步维护最小必要 working-set / in-progress truth，后台 rebuild 和补偿刷新则继续挂到统一 pressure gate/cooldown，避免为了止住读热点又新增一组不受控维护写入。
+- 对 Dashboard 这类连续 terminal 流量下的累计 KPI，不能把固定 SSE publish cadence 等同于 DB reconcile cadence。terminal enqueue 后应以稳定 event key 幂等更新内存 baseline，5 秒窗口仅合并 fanout；SQLite 只承担 warm restore、最长间隔的 reconcile 与异常 fallback。reconcile lock/error 时保留 last-good snapshot，并记录 baseline age、delta/duplicate count、reconcile outcome 与 sequence-gap 证据。
 - 不要让 P1 terminal flush 在同一锁窗口内继续执行 P2 rollup/account-touch 派生写；这会把“记录最终一致”重新变成“请求尾锁放大”。P1 成功后把 P2 放回队列，等待下一轮时间窗口或 pressure 允许。
 
 ## 何时升级方案

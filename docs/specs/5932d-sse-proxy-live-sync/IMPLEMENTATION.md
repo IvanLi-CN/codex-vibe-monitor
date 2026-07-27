@@ -30,7 +30,7 @@
 - 已实现：open-range `stats.summary.current` 的 Dashboard live snapshot 直接 overlay `in-progress / retry / phase / avg wait`，字段未变化时不推进 cursor；terminal Records 按固定 `500ms` deadline 合并 totals refresh，失败保留 last-good payload，并使用 `500ms -> 1s -> 2s -> 5s` 有界退避。
 - 已实现：proxy terminal follow-up 不再构建或广播五个 legacy Summary 窗口；只在存在真实 `quota.current` owner subscriber 时保留 quota follow-up，避免无消费者的请求尾部重算 SQLite。
 - 已实现：summary `non_success_tokens` 的 live 部分复用账号活动 hourly v2 coverage，完整小时读 rollup、边界与 coverage hole 走 scalar exact tail；健康路径不再调用整窗账号活动 raw aggregate。
-- 已实现：Dashboard 5 秒 TTL 语义不变，刷新 telemetry 现在区分 `initial_build`、`ttl_expired`、`scheduled_terminal_refresh`，并记录 `active_subscriber_count`、`coalesced_event_count`、`build_source`、`refresh_outcome` 与 last-good age。
+- 已实现：Dashboard open-range terminal totals 在 persistence enqueue 成功后同步 fan-out 到共享内存 baseline；`dashboard.activity.current` 的固定 5 秒 deadline 只发布内存 snapshot，不再失效 DB cache。`today` baseline 由初始 build 与最多每 60 秒一次的 reconcile 维护；rolling `1d / 7d` 在尚未具备完整 expiry delta 前保持 5 秒的精确窗口刷新边界。reconcile 失败保留 last-good totals，live overlay 继续更新。
 
 ## Migrated consumers
 
