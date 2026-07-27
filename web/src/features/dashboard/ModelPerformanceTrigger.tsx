@@ -54,7 +54,7 @@ export function ModelPerformanceTrigger({
         sideOffset={8}
         className={className}
         contentClassName={cn(
-          "w-[min(48rem,calc(100vw-1rem))] max-w-[min(48rem,calc(100vw-1rem))] px-3.5 py-3",
+          "w-[min(72rem,calc(100vw-1rem))] max-w-[min(72rem,calc(100vw-1rem))] px-3.5 py-3",
           contentClassName,
         )}
         triggerProps={{

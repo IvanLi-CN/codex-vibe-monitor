@@ -35,7 +35,7 @@
 - 账号详情 records tab 中曾被 `hidden` 包裹的 `InvocationTable` / anchored locate dead path 已删除，不再保留 `invokeId` 锚点定位状态、隐藏 fallback alert 或同路径局部状态；健康与事件入口只保留“请求 tab -> target attempt focus”的单一路径。
 - Dashboard 活动快照现额外返回全局与账号级的模型性能分组。仅状态成功、失败分类为 `none` 且 `cost` 非空的调用参与 TPM、流式响应速率、响应时长、墙钟时长、累计时长和并行数；TTFT 独立按 `#6qe6u` 的 `first_token_ms` 样本资格聚合，首 Token 后失败或中断仍可保留 TTFT 样本。模型按响应模型归属，空思考程度在前端显示“未指定”。后端在单次 retained live interval 扫描里同时生成全局、账号、模型与账号+模型四级墙钟并集，并继续累加各 scope 的 `t_total_ms`，统一对外返回 `wallClockUsageDurationMs`、`cumulativeUsageDurationMs` 与 `parallelism`。
 - `modelPerformance` 继续服务 Dashboard 完整范围性能明细入口，不再回流为顶部实时 KPI 当前值；顶部 `TPM / 消费速率 / TTFT / 响应时间` 已改由 `z6ysw` 的后端滚动窗口合同驱动，其中 TTFT 只读取 `currentFirstTokenAvgMs`。
-- `ModelPerformanceTrigger` 在桌面通过可点击、可聚焦的 Tooltip 展示总计及按累计时长排序的模型行，在窄屏通过详情抽屉展示无横向滚动的指标网格；入口仍挂在总览与账号区域，但展示的是完整范围性能明细而非实时 1 分钟值。owner-facing 明细显式拆成 `墙钟时长 / 累计时长 / 并行数` 三列，并补充说明“跨模型重叠时模型行墙钟和可能大于总计”。
+- `ModelPerformanceTrigger` 在桌面通过可点击、可聚焦的 Tooltip 展示总计及按累计时长排序的模型行，在窄屏通过详情抽屉展示无横向滚动的指标网格；入口仍挂在总览与账号区域，但展示的是完整范围性能明细而非实时 1 分钟值。owner-facing 明细显式拆成 `墙钟时长 / 累计时长 / 并行数` 三列，并补充说明“跨模型重叠时模型行墙钟和可能大于总计”。桌面浮窗自适应至 `72rem`，模型行使用单行完整模型名与图标/思考程度分组胶囊，移动抽屉复用同一模型身份语义。
 - 调用结果中的 HTTP 现在明确为上游 HTTP；下游 HTTP、完整错误、上游请求 ID、路由键、压缩与近似传输字节仅在当前尝试对应的详情面板中展示。代理绑定优先解析为当前节点显示名，历史或未知绑定键降级为截短值并保留完整提示。
 - 桌面与窄屏请求 tab 现统一使用同一套摘要卡与详情面板交互；目标 attempt 的 scroll/highlight/fade 反馈由共享卡片组件统一实现，不再维护单独的桌面/移动定位逻辑。
 - `pool_upstream_account_events` 新增可空 `attempt_id`。failover 路径在已获得 pending attempt ID 时，将新生成的 call 事件直接绑定到同一账号、同一请求尝试；历史事件不回填，前端不会再用 `invokeId` 猜测其对应尝试。带关联的健康事件明确显示并点击“上游尝试 ID”，不将为空的最终 `invokeId` 渲染为入口。
