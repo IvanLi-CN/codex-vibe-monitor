@@ -3987,13 +3987,13 @@ fn build_attempt_response_summary(
                 .flatten()
         })
         .or(attempt.upstream_response_body_bytes);
-    let response_body_capture_truncated = attempt
-        .response_raw_truncated
-        .map(|value| value != 0)
-        .or_else(|| {
-            is_final_attempt.then(|| record.response_raw_truncated.unwrap_or_default() != 0)
-        })
-        .unwrap_or(false);
+    let response_body_capture_truncated = if attempt_response_body_captured {
+        attempt.response_raw_truncated.unwrap_or_default() != 0
+    } else if is_final_attempt && record.response_raw_path.is_some() {
+        record.response_raw_truncated.unwrap_or_default() != 0
+    } else {
+        false
+    };
     let response_body_capture_truncated_reason =
         attempt.response_raw_truncated_reason.clone().or_else(|| {
             is_final_attempt
@@ -15820,6 +15820,7 @@ mod invocation_cost_audit_tests {
         let mut record = sample_invocation(Some(0));
         record.response_raw_path = Some("response-body.json".to_string());
         record.response_raw_size = Some(181_382);
+        record.response_raw_truncated = Some(1);
         record.response_content_encoding = Some("identity".to_string());
         record.upstream_request_id = Some("W1scc2SS".to_string());
 
@@ -15869,6 +15870,13 @@ mod invocation_cost_audit_tests {
                 .as_ref()
                 .expect("final summary")["responseBodyCapture"]["detailLevel"],
             json!("full")
+        );
+        assert_eq!(
+            final_attempt
+                .response_summary
+                .as_ref()
+                .expect("final summary")["responseBodyCapture"]["truncated"],
+            json!(true)
         );
     }
 }
