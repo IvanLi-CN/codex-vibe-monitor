@@ -2,7 +2,17 @@ import type { ReactNode } from "react";
 import { useTranslation } from "../../i18n";
 import type { ModelPerformance } from "../../lib/api";
 import { cn } from "../../lib/utils";
-import { ModelIdentity } from "../shared/ModelIdentity";
+import { ModelPerformanceModelIdentity } from "./ModelPerformanceModelIdentity";
+
+const METRIC_CELL_KEYS = [
+  "tpm",
+  "streaming-rate",
+  "response",
+  "first-byte",
+  "wall-clock-duration",
+  "cumulative-duration",
+  "parallelism",
+] as const;
 
 export interface ModelPerformanceDetailsProps {
   title: string;
@@ -126,21 +136,18 @@ export function ModelPerformanceDetails({
             key={`${model.model}:${model.reasoningEffort ?? ""}`}
             className="border-t border-base-300/70 pt-3.5 first:border-t-0 first:pt-0"
           >
-            <div className="min-w-0">
-              <ModelIdentity
-                model={model.model}
-                className="max-w-full justify-start"
-                textClassName="break-all font-mono text-sm font-semibold text-base-content"
-              />
-              <p className="mt-1 text-xs text-base-content/62">
-                {t("dashboard.modelPerformance.reasoningEffort")}:{" "}
-                {effortLabel(
-                  model.reasoningEffort,
-                  effortLabels,
-                  t("dashboard.modelPerformance.effort.unspecified"),
-                )}
-              </p>
-            </div>
+            <ModelPerformanceModelIdentity
+              model={model.model}
+              effortValue={model.reasoningEffort}
+              effort={effortLabel(
+                model.reasoningEffort,
+                effortLabels,
+                t("dashboard.modelPerformance.effort.unspecified"),
+              )}
+              className="w-full"
+              modelClassName="text-sm font-semibold text-base-content"
+              testId="model-performance-drawer-model-context"
+            />
             <div className="mt-3">
               <ModelPerformanceMetricGrid values={valuesFor(model)} labels={labels} />
             </div>
@@ -154,17 +161,24 @@ export function ModelPerformanceDetails({
     <div className="space-y-2" data-testid="model-performance-tooltip-content">
       <div>
         <p className="font-semibold text-base-content">{title}</p>
-        <p className="mt-0.5 text-[11px] leading-4 text-base-content/65">
+        <p className="mt-0.5 text-xs leading-4 text-base-content/65">
           {t("dashboard.modelPerformance.description")}
         </p>
-        <p className="mt-1 text-[11px] leading-4 text-base-content/55">
+        <p className="mt-1 text-xs leading-4 text-base-content/55">
           {t("dashboard.modelPerformance.overlapNote")}
         </p>
       </div>
-      <div className="max-h-[min(28rem,calc(100dvh-8rem))] overflow-auto">
-        <table className="w-full min-w-[60rem] table-fixed border-collapse text-[10px] leading-4 sm:text-[11px]">
+      <div
+        className="max-h-[min(28rem,calc(100dvh-8rem))] overflow-x-hidden overflow-y-auto"
+        data-testid="model-performance-table-scroll-region"
+      >
+        <table className="w-full table-fixed border-collapse text-xs leading-4">
           <caption className="sr-only">{title}</caption>
-          <thead className="border-y border-base-300/55 bg-base-200/55 text-[9px] text-base-content/60">
+          <colgroup>
+            <col className="w-[26%]" />
+            <col span={7} />
+          </colgroup>
+          <thead className="border-y border-base-300/55 bg-base-200/55 text-xs text-base-content/60">
             <tr>
               <th scope="col" className="w-[19%] px-2 py-2 text-left font-semibold">
                 {t("dashboard.modelPerformance.model")}
@@ -198,21 +212,18 @@ export function ModelPerformanceDetails({
               <ModelPerformanceTableRow
                 key={`${model.model}:${model.reasoningEffort ?? ""}`}
                 label={
-                  <span className="flex min-w-0 flex-col gap-0.5">
-                    <ModelIdentity
-                      model={model.model}
-                      className="max-w-full justify-start"
-                      textClassName="break-all font-mono font-semibold text-base-content/85"
-                    />
-                    <span className="text-[9px] font-normal leading-3 text-base-content/58">
-                      {t("dashboard.modelPerformance.reasoningEffort")}:{" "}
-                      {effortLabel(
-                        model.reasoningEffort,
-                        effortLabels,
-                        t("dashboard.modelPerformance.effort.unspecified"),
-                      )}
-                    </span>
-                  </span>
+                  <ModelPerformanceModelIdentity
+                    model={model.model}
+                    effortValue={model.reasoningEffort}
+                    effort={effortLabel(
+                      model.reasoningEffort,
+                      effortLabels,
+                      t("dashboard.modelPerformance.effort.unspecified"),
+                    )}
+                    className="w-full"
+                    modelClassName="font-semibold text-base-content/85"
+                    testId="model-performance-table-model-context"
+                  />
                 }
                 values={valuesFor(model)}
               />
@@ -237,13 +248,17 @@ function ModelPerformanceTableRow({
     <tr
       className={cn("border-b border-base-300/35 last:border-b-0", emphasized && "bg-base-100/50")}
     >
-      <th scope="row" className="px-2 py-2 text-left font-medium text-base-content/80">
+      <th
+        scope="row"
+        className="overflow-hidden px-2 py-1.5 text-left font-medium text-base-content/80 whitespace-nowrap"
+      >
         {label}
       </th>
       {values.map((value, index) => (
         <td
-          key={`${value}:${index}`}
-          className="border-l border-base-300/30 px-1.5 py-2 text-right font-mono font-semibold tabular-nums text-base-content whitespace-nowrap"
+          key={METRIC_CELL_KEYS[index]}
+          className="overflow-hidden border-l border-base-300/30 px-1.5 py-1.5 text-right font-mono font-semibold text-ellipsis tabular-nums text-base-content whitespace-nowrap"
+          title={value}
         >
           {value}
         </td>
@@ -271,7 +286,7 @@ function ModelPerformanceMetricGrid({
       <dl className="grid grid-cols-2 gap-x-5 gap-y-2.5">
         {entries.map((entry) => (
           <div key={entry.label} className="min-w-0">
-            <dt className="text-[11px] leading-4 text-base-content/60">{entry.label}</dt>
+            <dt className="text-xs leading-4 text-base-content/60">{entry.label}</dt>
             <dd className="mt-0.5 truncate font-mono text-sm font-semibold tabular-nums text-base-content">
               {entry.value}
             </dd>
