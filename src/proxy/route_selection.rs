@@ -1716,10 +1716,10 @@ pub(crate) async fn continue_or_retry_pool_live_request(
     replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
     replay_cancel: &CancellationToken,
     replay_wait_timeout: Duration,
+    capture_started: Instant,
     trace_context: PoolUpstreamAttemptTraceContext,
     first_error: PoolUpstreamError,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
-    let capture_started = Instant::now();
     let runtime_snapshot_context = PoolAttemptRuntimeSnapshotContext {
         capture_target: ProxyCaptureTarget::Responses,
         request_info: RequestCaptureInfo {
@@ -3298,6 +3298,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         &replay_status_rx,
                                         &replay_cancel,
                                         runtime_timeouts.request_read_timeout,
+                                        request_started_at,
                                         pool_attempt_trace_context,
                                         first_error,
                                     )

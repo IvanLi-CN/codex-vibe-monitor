@@ -5255,7 +5255,8 @@ async fn fetch_invocation_attempt_response_body_row(
             inv.invoke_id,
             inv.payload,
             CASE
-                WHEN attempts.attempt_index = (
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.attempt_index = (
                     SELECT MAX(final_attempt.attempt_index)
                     FROM pool_upstream_request_attempts AS final_attempt
                     WHERE final_attempt.invoke_id = attempts.invoke_id
@@ -5269,8 +5270,10 @@ async fn fetch_invocation_attempt_response_body_row(
             inv.request_raw_truncated,
             inv.request_raw_truncated_reason,
             CASE
-                WHEN attempts.response_raw_path IS NOT NULL THEN attempts.response_raw_path
-                WHEN attempts.attempt_index = (
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.response_raw_path IS NOT NULL THEN attempts.response_raw_path
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.attempt_index = (
                     SELECT MAX(final_attempt.attempt_index)
                     FROM pool_upstream_request_attempts AS final_attempt
                     WHERE final_attempt.invoke_id = attempts.invoke_id
@@ -5280,8 +5283,10 @@ async fn fetch_invocation_attempt_response_body_row(
                 ELSE NULL
             END AS response_raw_path,
             CASE
-                WHEN attempts.response_raw_path IS NOT NULL THEN attempts.response_raw_size
-                WHEN attempts.attempt_index = (
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.response_raw_path IS NOT NULL THEN attempts.response_raw_size
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.attempt_index = (
                     SELECT MAX(final_attempt.attempt_index)
                     FROM pool_upstream_request_attempts AS final_attempt
                     WHERE final_attempt.invoke_id = attempts.invoke_id
@@ -5291,8 +5296,10 @@ async fn fetch_invocation_attempt_response_body_row(
                 ELSE NULL
             END AS response_raw_size,
             CASE
-                WHEN attempts.response_raw_path IS NOT NULL THEN attempts.response_raw_truncated
-                WHEN attempts.attempt_index = (
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.response_raw_path IS NOT NULL THEN attempts.response_raw_truncated
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.attempt_index = (
                     SELECT MAX(final_attempt.attempt_index)
                     FROM pool_upstream_request_attempts AS final_attempt
                     WHERE final_attempt.invoke_id = attempts.invoke_id
@@ -5302,8 +5309,10 @@ async fn fetch_invocation_attempt_response_body_row(
                 ELSE NULL
             END AS response_raw_truncated,
             CASE
-                WHEN attempts.response_raw_path IS NOT NULL THEN attempts.response_raw_truncated_reason
-                WHEN attempts.attempt_index = (
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.response_raw_path IS NOT NULL THEN attempts.response_raw_truncated_reason
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.attempt_index = (
                     SELECT MAX(final_attempt.attempt_index)
                     FROM pool_upstream_request_attempts AS final_attempt
                     WHERE final_attempt.invoke_id = attempts.invoke_id
@@ -5315,8 +5324,10 @@ async fn fetch_invocation_attempt_response_body_row(
             inv.detail_level,
             inv.detail_prune_reason,
             CASE
-                WHEN attempts.response_content_encoding IS NOT NULL THEN attempts.response_content_encoding
-                WHEN attempts.attempt_index = (
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.response_content_encoding IS NOT NULL THEN attempts.response_content_encoding
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.attempt_index = (
                     SELECT MAX(final_attempt.attempt_index)
                     FROM pool_upstream_request_attempts AS final_attempt
                     WHERE final_attempt.invoke_id = attempts.invoke_id
@@ -5404,10 +5415,12 @@ pub(crate) async fn fetch_invocation_attempt_response_body(
         fetch_invocation_attempt_response_body_row(&state.pool, id, attempt_public_id.as_str())
             .await?
             .ok_or_else(|| ApiError::bad_request(anyhow!("attempt not found")))?;
-    let (has_attempt_capture, has_invocation_capture) =
-        sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
-            "SELECT attempts.response_raw_path IS NOT NULL,
-                inv.response_raw_path IS NOT NULL
+    let (has_attempt_capture, has_invocation_capture) = sqlx::query_as::<
+        _,
+        (Option<i64>, Option<i64>),
+    >(
+        "SELECT (inv.detail_level != 'structured_only' AND attempts.response_raw_path IS NOT NULL),
+                (inv.detail_level != 'structured_only' AND inv.response_raw_path IS NOT NULL)
          FROM pool_upstream_request_attempts AS attempts
          JOIN codex_invocations AS inv
            ON inv.invoke_id = attempts.invoke_id
@@ -5415,12 +5428,12 @@ pub(crate) async fn fetch_invocation_attempt_response_body(
          WHERE inv.id = ?1
            AND attempts.attempt_public_id = ?2
          LIMIT 1",
-        )
-        .bind(id)
-        .bind(attempt_public_id.as_str())
-        .fetch_optional(&state.pool)
-        .await?
-        .unwrap_or_default();
+    )
+    .bind(id)
+    .bind(attempt_public_id.as_str())
+    .fetch_optional(&state.pool)
+    .await?
+    .unwrap_or_default();
     let has_attempt_capture = has_attempt_capture.unwrap_or_default() != 0;
     let has_invocation_capture = has_invocation_capture.unwrap_or_default() != 0;
     let source = Some(if has_attempt_capture {
