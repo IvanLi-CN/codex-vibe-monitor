@@ -10097,6 +10097,16 @@ async fn query_live_dashboard_activity_persisted_terminal_keys(
     Ok(persisted)
 }
 
+async fn query_live_dashboard_activity_snapshot_cursor(
+    pool: &Pool<Sqlite>,
+) -> Result<i64, ApiError> {
+    Ok(
+        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
 async fn query_archive_upstream_account_activity_overlapping_live_ids(
     live_pool: &Pool<Sqlite>,
     archive_pool: &Pool<Sqlite>,
@@ -14370,52 +14380,41 @@ async fn load_dashboard_activity_snapshot_cached(
                 })
                 .collect::<HashSet<_>>()
         };
-        let persisted_terminal_keys_before_build = if pending_keys_before_build.is_empty() {
-            Ok(HashSet::new())
-        } else {
-            query_live_dashboard_activity_persisted_terminal_keys(
-                &state.pool,
-                dashboard_activity_selection_source_scope(&selection),
-                &pending_keys_before_build
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            )
-            .await
-        };
+        let (persisted_terminal_keys_before_build, snapshot_cursor_before_build) = tokio::try_join!(
+            async {
+                if pending_keys_before_build.is_empty() {
+                    Ok(HashSet::new())
+                } else {
+                    query_live_dashboard_activity_persisted_terminal_keys(
+                        &state.pool,
+                        dashboard_activity_selection_source_scope(&selection),
+                        &pending_keys_before_build
+                            .iter()
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                    )
+                    .await
+                }
+            },
+            query_live_dashboard_activity_snapshot_cursor(&state.pool),
+        )?;
         let build_started_at = Instant::now();
-        let mut result = match persisted_terminal_keys_before_build {
-            Ok(persisted_terminal_keys_before_build) => {
-                let snapshot = load_dashboard_activity_snapshot_for_range(
-                    state,
-                    range_name,
-                    reporting_tz,
-                    range,
-                    recent_limit,
-                    include_accounts,
-                    include_recent,
-                    in_progress_counts_override.clone(),
-                )
-                .await;
-                snapshot.map(|snapshot| (snapshot, persisted_terminal_keys_before_build))
-            }
-            Err(err) => Err(err),
+        let mut result = load_dashboard_activity_snapshot_for_range(
+            state,
+            range_name,
+            reporting_tz,
+            range,
+            recent_limit,
+            include_accounts,
+            include_recent,
+            in_progress_counts_override.clone(),
+        )
+        .await;
+        let snapshot_cursor_after_build = if result.is_ok() {
+            query_live_dashboard_activity_snapshot_cursor(&state.pool).await?
+        } else {
+            snapshot_cursor_before_build
         };
-        // A terminal can commit after the pre-build probe but before the snapshot's query.
-        // Recheck the pre-existing journal keys before applying deltas to that snapshot.
-        if let Ok((_, persisted_terminal_keys)) = result.as_mut()
-            && !pending_keys_before_build.is_empty()
-        {
-            *persisted_terminal_keys = query_live_dashboard_activity_persisted_terminal_keys(
-                &state.pool,
-                dashboard_activity_selection_source_scope(&selection),
-                &pending_keys_before_build
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            )
-            .await?;
-        }
         let db_build_elapsed_ms = build_started_at.elapsed().as_millis() as u64;
 
         let mut cache = state.dashboard_activity_snapshot_cache.lock().await;
@@ -14433,7 +14432,46 @@ async fn load_dashboard_activity_snapshot_cached(
             guard.disarm();
         }
         let coalesced_waiter_count = in_flight.as_ref().map_or(0, |flight| flight.waiter_count);
-        if let Ok((snapshot, persisted_terminal_keys_before_build)) = result.as_mut() {
+        let snapshot_cursor_advanced = snapshot_cursor_before_build != snapshot_cursor_after_build;
+        if snapshot_cursor_advanced {
+            if let Some(entry) = cache.entries.get(&selection) {
+                let cache_entry_age_ms = entry.cached_at.elapsed().as_millis() as u64;
+                let snapshot = entry.response.clone();
+                if let Some(in_flight) = in_flight {
+                    let _ = in_flight.signal.send(true);
+                }
+                tracing::debug!(
+                    selection_fingerprint,
+                    snapshot_cursor_before_build,
+                    snapshot_cursor_after_build,
+                    cache_entry_age_ms,
+                    "dashboard activity reconciliation observed a live-write cursor advance; retained last-good snapshot"
+                );
+                return Ok((
+                    snapshot,
+                    DashboardActivitySnapshotCacheOutcome {
+                        cache_hit_or_miss: "last_good_fallback",
+                        cache_bypass_reason: "reconcile_cursor_advanced",
+                        coalesced_waiter_count,
+                        db_build_elapsed_ms,
+                        cache_ttl_ms,
+                        cache_entry_age_ms,
+                        cache_entry_count: cache.entries.len(),
+                        in_flight_count: cache.in_flight.len(),
+                        refresh_reason: "reconcile_cursor_advanced",
+                        selection_fingerprint,
+                        terminal_delta_count: cache.read_model.terminal_delta_count,
+                        duplicate_delta_count: cache.read_model.duplicate_delta_count,
+                    },
+                ));
+            }
+            if let Some(in_flight) = in_flight {
+                let _ = in_flight.signal.send(true);
+            }
+            drop(cache);
+            continue;
+        }
+        if let Ok(snapshot) = result.as_mut() {
             let mut retained = std::collections::VecDeque::new();
             for record in std::mem::take(&mut cache.read_model.pending_terminal_records) {
                 let Some(occurred_at) = parse_to_utc_datetime(&record.occurred_at) else {
@@ -14455,7 +14493,6 @@ async fn load_dashboard_activity_snapshot_cached(
             }
             cache.read_model.pending_terminal_records = retained;
         }
-        let result = result.map(|(snapshot, _)| snapshot);
         if let Some(in_flight) = in_flight {
             if let Ok(snapshot) = &result {
                 cache.entries.insert(
