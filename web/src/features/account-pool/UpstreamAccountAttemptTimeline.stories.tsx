@@ -486,7 +486,10 @@ function AttemptTimelineFetchMock({ accountId }: { accountId: number }) {
           },
         );
       }
-      if (url.includes("/api/invocations/77/response-body")) {
+      if (
+        url.includes("/api/invocations/77/attempts/ASUCC002/response-body") ||
+        url.includes("/api/invocations/77/response-body")
+      ) {
         return new Response(
           JSON.stringify({
             available: true,

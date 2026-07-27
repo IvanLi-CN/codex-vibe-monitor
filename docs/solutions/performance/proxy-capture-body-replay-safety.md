@@ -51,7 +51,8 @@ The capture path historically used one full in-memory request body as both routi
 - Do not infer “no encrypted content” from a prefix scan; absence is only safe after full parse or an equivalent explicit contract.
 - Do not drop or truncate raw payload as a performance optimization. If raw writer fails, log and classify it, but keep business response semantics separate.
 - Keep fallback reason values stable enough for production log comparison.
-- Treat invocation-level raw response capture as final-attempt evidence only. When reconstructing a retry timeline, compute the final real attempt first; non-final attempts must retain their own status, headers, and byte metrics, while an uncaptured attempt response stays explicitly unavailable instead of inheriting the final response body.
+- Persist raw response metadata per real pool attempt, keyed by `attempt_public_id`; the response-body API must join `invocation id + attempt_public_id` before reading the file. The final invocation raw response remains a compatibility fallback only for historical final attempts whose attempt file was never captured.
+- Capture the bytes consumed by the `response.failed` retry gate before retrying. A failover chain that exhausts all attempts must still enqueue one invocation-level terminal record so the request log remains traceable.
 - Treat `snapshot_kind="memory"` on multi-MiB requests as a regression unless the same log window shows a temp-file create/write/flush warning explaining the fail-soft fallback.
 - Do not convert a terminal direct-image timeout into a generic no-account result; return a traceable gateway timeout and release the account reservation without replaying the body.
 - A normal response-body drop after the successful terminal chunk has actually been consumed is not a downstream failure. A drop before that point remains a client abort; an upstream completion that follows must still preserve the successful pool attempt.

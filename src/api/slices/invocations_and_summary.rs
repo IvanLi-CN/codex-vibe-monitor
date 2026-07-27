@@ -3217,6 +3217,12 @@ struct InvocationWorkflowAttemptRow {
     compact_support_reason: Option<String>,
     request_summary_json: Option<String>,
     response_summary_json: Option<String>,
+    response_raw_path: Option<String>,
+    response_raw_codec: Option<String>,
+    response_raw_size: Option<i64>,
+    response_raw_truncated: Option<i64>,
+    response_raw_truncated_reason: Option<String>,
+    response_content_encoding: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3550,14 +3556,18 @@ fn build_response_header_snapshot(
     payload: Option<&Value>,
     allow_invocation_level_fields: bool,
 ) -> Value {
-    let content_encoding = allow_invocation_level_fields
-        .then(|| {
-            record
-                .response_content_encoding
-                .clone()
-                .or_else(|| payload_string(payload, &["responseContentEncoding"]))
-        })
-        .flatten();
+    let content_encoding = attempt
+        .and_then(|attempt| attempt.response_content_encoding.clone())
+        .or_else(|| {
+            allow_invocation_level_fields
+                .then(|| {
+                    record
+                        .response_content_encoding
+                        .clone()
+                        .or_else(|| payload_string(payload, &["responseContentEncoding"]))
+                })
+                .flatten()
+        });
     let content_encoding_chain = allow_invocation_level_fields
         .then(|| payload_string(payload, &["contentEncodingChain"]))
         .flatten();
@@ -3982,27 +3992,39 @@ fn build_attempt_response_summary(
     let invocation_upstream_request_id = is_final_attempt
         .then_some(record.upstream_request_id.as_ref())
         .flatten();
-    let invocation_response_content_encoding = is_final_attempt
-        .then(|| record.response_content_encoding.clone())
-        .flatten();
+    let invocation_response_content_encoding =
+        attempt.response_content_encoding.clone().or_else(|| {
+            is_final_attempt
+                .then(|| record.response_content_encoding.clone())
+                .flatten()
+        });
     let invocation_response_payload = is_final_attempt.then_some(payload).flatten();
-    let response_body_capture_size = if is_final_attempt {
-        record.response_raw_size
-    } else {
-        attempt.upstream_response_body_bytes
-    };
-    let response_body_capture_truncated = if is_final_attempt {
+    let attempt_response_body_captured = attempt.response_raw_path.is_some();
+    let response_body_capture_size = attempt
+        .response_raw_size
+        .or_else(|| {
+            is_final_attempt
+                .then_some(record.response_raw_size)
+                .flatten()
+        })
+        .or(attempt.upstream_response_body_bytes);
+    let response_body_capture_truncated = if attempt_response_body_captured {
+        attempt.response_raw_truncated.unwrap_or_default() != 0
+    } else if is_final_attempt && record.response_raw_path.is_some() {
         record.response_raw_truncated.unwrap_or_default() != 0
     } else {
         false
     };
-    let response_body_capture_truncated_reason = if is_final_attempt {
-        record.response_raw_truncated_reason.clone()
-    } else {
-        None
-    };
-    let response_body_capture_detail_level = if is_final_attempt {
+    let response_body_capture_truncated_reason =
+        attempt.response_raw_truncated_reason.clone().or_else(|| {
+            is_final_attempt
+                .then(|| record.response_raw_truncated_reason.clone())
+                .flatten()
+        });
+    let response_body_capture_detail_level = if attempt_response_body_captured {
         Some(record.detail_level.clone())
+    } else if is_final_attempt && record.response_raw_path.is_some() {
+        Some("full".to_string())
     } else {
         Some("attempt_metrics".to_string())
     };
@@ -4042,14 +4064,15 @@ fn build_attempt_response_summary(
             "total": is_final_attempt.then_some(record.t_total_ms).flatten(),
         },
         "responseBodyCapture": {
+            "availableAtAttemptLevel": attempt_response_body_captured,
             "availableAtInvocationLevel": is_final_attempt && record.response_raw_path.is_some(),
             "size": response_body_capture_size,
             "truncated": response_body_capture_truncated,
             "truncatedReason": response_body_capture_truncated_reason,
             "detailLevel": response_body_capture_detail_level,
             "detailPruneReason": is_final_attempt.then(|| record.detail_prune_reason.clone()).flatten(),
-            "unavailableReason": (!is_final_attempt)
-                .then_some("non_final_attempt_response_body_not_captured"),
+            "unavailableReason": (!(attempt_response_body_captured || (is_final_attempt && record.response_raw_path.is_some())))
+                .then_some("attempt_response_body_not_captured"),
         },
         "usage": usage_cost_audit.map(|audit| build_invocation_usage_summary(record, audit)),
     })
@@ -4704,7 +4727,13 @@ async fn query_invocation_workflow_attempt_rows(
             attempts.compact_support_status,
             attempts.compact_support_reason,
             attempts.request_summary_json,
-            attempts.response_summary_json
+            attempts.response_summary_json,
+            attempts.response_raw_path,
+            attempts.response_raw_codec,
+            attempts.response_raw_size,
+            attempts.response_raw_truncated,
+            attempts.response_raw_truncated_reason,
+            attempts.response_content_encoding
         FROM pool_upstream_request_attempts AS attempts
         LEFT JOIN pool_upstream_accounts AS accounts
             ON accounts.id = attempts.upstream_account_id
@@ -4912,6 +4941,8 @@ pub(crate) struct InvocationResponseBodyRow {
     pub(crate) detail_prune_reason: Option<String>,
     pub(crate) response_content_encoding: Option<String>,
     pub(crate) failure_class: Option<String>,
+    pub(crate) upstream_request_id: Option<String>,
+    pub(crate) attempt_public_id: Option<String>,
 }
 
 pub(crate) fn is_abnormal_invocation_failure(failure_class: Option<&str>) -> bool {
@@ -4940,7 +4971,9 @@ pub(crate) fn truncate_response_preview_text(value: &str) -> (String, bool) {
 }
 
 pub(crate) fn raw_response_fallback_reason(row: &InvocationResponseBodyRow) -> String {
-    if row.detail_level == DETAIL_LEVEL_STRUCTURED_ONLY {
+    if row.attempt_public_id.is_some() && row.response_raw_path.is_none() {
+        "attempt_response_body_not_captured".to_string()
+    } else if row.detail_level == DETAIL_LEVEL_STRUCTURED_ONLY {
         "detail_pruned".to_string()
     } else if row.response_raw_truncated.unwrap_or_default() != 0 {
         row.response_raw_truncated_reason
@@ -5053,7 +5086,9 @@ pub(crate) async fn fetch_invocation_response_body_row_by_id(
          detail_level, \
          detail_prune_reason, \
          {response_content_encoding} AS response_content_encoding, \
-         {resolved_failure} AS failure_class \
+         {resolved_failure} AS failure_class, \
+         NULL AS upstream_request_id, \
+         NULL AS attempt_public_id \
          FROM codex_invocations \
          WHERE id = ?1 \
          LIMIT 1",
@@ -5125,7 +5160,10 @@ fn build_response_body_header_snapshot(
             .clone()
             .or_else(|| payload_string(payload, &["responseContentEncoding"])),
         "contentEncodingChain": payload_string(payload, &["contentEncodingChain"]),
-        "upstreamRequestId": payload_string(payload, &["upstreamRequestId"]),
+        "upstreamRequestId": row
+            .upstream_request_id
+            .clone()
+            .or_else(|| payload_string(payload, &["upstreamRequestId"])),
         "cvmInvokeId": Some(row.invoke_id.clone()),
     })
 }
@@ -5178,6 +5216,14 @@ fn build_response_body_response(
     row: &InvocationResponseBodyRow,
     raw_path_fallback_root: Option<&Path>,
 ) -> InvocationResponseBodyResponse {
+    build_response_body_response_with_source(row, raw_path_fallback_root, None)
+}
+
+fn build_response_body_response_with_source(
+    row: &InvocationResponseBodyRow,
+    raw_path_fallback_root: Option<&Path>,
+    capture_source_override: Option<&str>,
+) -> InvocationResponseBodyResponse {
     let payload = parse_optional_json_value(row.payload.as_deref());
     let headers = Some(build_response_body_header_snapshot(row, payload.as_ref()));
     let routing = Some(build_response_delivery_snapshot(payload.as_ref()));
@@ -5195,7 +5241,7 @@ fn build_response_body_response(
             detail_prune_reason: row.detail_prune_reason.clone(),
             capture_source: Some(
                 if from_full_body {
-                    "raw_file"
+                    capture_source_override.unwrap_or("raw_file")
                 } else {
                     "preview"
                 }
@@ -5216,6 +5262,121 @@ fn build_response_body_response(
             capture_source: None,
         },
     }
+}
+
+async fn fetch_invocation_attempt_response_body_row(
+    pool: &Pool<Sqlite>,
+    invocation_id: i64,
+    attempt_public_id: &str,
+) -> Result<Option<InvocationResponseBodyRow>, ApiError> {
+    let sql = format!(
+        r#"
+        SELECT
+            inv.id,
+            inv.invoke_id,
+            inv.payload,
+            CASE
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.attempt_index = (
+                    SELECT MAX(final_attempt.attempt_index)
+                    FROM pool_upstream_request_attempts AS final_attempt
+                    WHERE final_attempt.invoke_id = attempts.invoke_id
+                      AND final_attempt.occurred_at = attempts.occurred_at
+                      AND final_attempt.status != 'budget_exhausted_final'
+                ) THEN inv.raw_response
+                ELSE ''
+            END AS raw_response,
+            inv.request_raw_path,
+            inv.request_raw_size,
+            inv.request_raw_truncated,
+            inv.request_raw_truncated_reason,
+            CASE
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.response_raw_path IS NOT NULL THEN attempts.response_raw_path
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.attempt_index = (
+                    SELECT MAX(final_attempt.attempt_index)
+                    FROM pool_upstream_request_attempts AS final_attempt
+                    WHERE final_attempt.invoke_id = attempts.invoke_id
+                      AND final_attempt.occurred_at = attempts.occurred_at
+                      AND final_attempt.status != 'budget_exhausted_final'
+                ) THEN inv.response_raw_path
+                ELSE NULL
+            END AS response_raw_path,
+            CASE
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.response_raw_path IS NOT NULL THEN attempts.response_raw_size
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.attempt_index = (
+                    SELECT MAX(final_attempt.attempt_index)
+                    FROM pool_upstream_request_attempts AS final_attempt
+                    WHERE final_attempt.invoke_id = attempts.invoke_id
+                      AND final_attempt.occurred_at = attempts.occurred_at
+                      AND final_attempt.status != 'budget_exhausted_final'
+                ) THEN inv.response_raw_size
+                ELSE NULL
+            END AS response_raw_size,
+            CASE
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.response_raw_path IS NOT NULL THEN attempts.response_raw_truncated
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.attempt_index = (
+                    SELECT MAX(final_attempt.attempt_index)
+                    FROM pool_upstream_request_attempts AS final_attempt
+                    WHERE final_attempt.invoke_id = attempts.invoke_id
+                      AND final_attempt.occurred_at = attempts.occurred_at
+                      AND final_attempt.status != 'budget_exhausted_final'
+                ) THEN inv.response_raw_truncated
+                ELSE NULL
+            END AS response_raw_truncated,
+            CASE
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.response_raw_path IS NOT NULL THEN attempts.response_raw_truncated_reason
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.attempt_index = (
+                    SELECT MAX(final_attempt.attempt_index)
+                    FROM pool_upstream_request_attempts AS final_attempt
+                    WHERE final_attempt.invoke_id = attempts.invoke_id
+                      AND final_attempt.occurred_at = attempts.occurred_at
+                      AND final_attempt.status != 'budget_exhausted_final'
+                ) THEN inv.response_raw_truncated_reason
+                ELSE NULL
+            END AS response_raw_truncated_reason,
+            inv.detail_level,
+            inv.detail_prune_reason,
+            CASE
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.response_content_encoding IS NOT NULL THEN attempts.response_content_encoding
+                WHEN inv.detail_level != 'structured_only'
+                    AND attempts.attempt_index = (
+                    SELECT MAX(final_attempt.attempt_index)
+                    FROM pool_upstream_request_attempts AS final_attempt
+                    WHERE final_attempt.invoke_id = attempts.invoke_id
+                      AND final_attempt.occurred_at = attempts.occurred_at
+                      AND final_attempt.status != 'budget_exhausted_final'
+                ) THEN {response_content_encoding}
+                ELSE NULL
+            END AS response_content_encoding,
+            {resolved_failure} AS failure_class,
+            attempts.upstream_request_id AS upstream_request_id,
+            attempts.attempt_public_id AS attempt_public_id
+        FROM codex_invocations AS inv
+        JOIN pool_upstream_request_attempts AS attempts
+            ON attempts.invoke_id = inv.invoke_id
+           AND attempts.occurred_at = inv.occurred_at
+        WHERE inv.id = ?1
+          AND attempts.attempt_public_id = ?2
+        LIMIT 1
+        "#,
+        response_content_encoding = INVOCATION_RESPONSE_CONTENT_ENCODING_SQL,
+        resolved_failure = INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
+    );
+    sqlx::query_as::<_, InvocationResponseBodyRow>(&sql)
+        .bind(invocation_id)
+        .bind(attempt_public_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(ApiError::from)
 }
 
 pub(crate) async fn fetch_invocation_record_detail(
@@ -5264,6 +5425,49 @@ pub(crate) async fn fetch_invocation_response_body(
     Ok(Json(build_response_body_response(
         &row,
         state.config.database_path.parent(),
+    )))
+}
+
+pub(crate) async fn fetch_invocation_attempt_response_body(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path((id, attempt_public_id)): axum::extract::Path<(i64, String)>,
+) -> Result<Json<InvocationResponseBodyResponse>, ApiError> {
+    let row =
+        fetch_invocation_attempt_response_body_row(&state.pool, id, attempt_public_id.as_str())
+            .await?
+            .ok_or_else(|| ApiError::bad_request(anyhow!("attempt not found")))?;
+    let (has_attempt_capture, has_invocation_capture) = sqlx::query_as::<
+        _,
+        (Option<i64>, Option<i64>),
+    >(
+        "SELECT (inv.detail_level != 'structured_only' AND attempts.response_raw_path IS NOT NULL),
+                (inv.detail_level != 'structured_only' AND inv.response_raw_path IS NOT NULL)
+         FROM pool_upstream_request_attempts AS attempts
+         JOIN codex_invocations AS inv
+           ON inv.invoke_id = attempts.invoke_id
+          AND inv.occurred_at = attempts.occurred_at
+         WHERE inv.id = ?1
+           AND attempts.attempt_public_id = ?2
+         LIMIT 1",
+    )
+    .bind(id)
+    .bind(attempt_public_id.as_str())
+    .fetch_optional(&state.pool)
+    .await?
+    .unwrap_or_default();
+    let has_attempt_capture = has_attempt_capture.unwrap_or_default() != 0;
+    let has_invocation_capture = has_invocation_capture.unwrap_or_default() != 0;
+    let source = Some(if has_attempt_capture {
+        "attempt_raw_file"
+    } else if has_invocation_capture && row.response_raw_path.is_some() {
+        "invocation_raw_file"
+    } else {
+        "attempt_metrics"
+    });
+    Ok(Json(build_response_body_response_with_source(
+        &row,
+        state.config.database_path.parent(),
+        source,
     )))
 }
 
@@ -15461,6 +15665,12 @@ mod invocation_cost_audit_tests {
             compact_support_reason: None,
             request_summary_json: None,
             response_summary_json: None,
+            response_raw_path: None,
+            response_raw_codec: None,
+            response_raw_size: None,
+            response_raw_truncated: None,
+            response_raw_truncated_reason: None,
+            response_content_encoding: None,
         }
     }
 
@@ -15596,7 +15806,7 @@ mod invocation_cost_audit_tests {
     }
 
     #[test]
-    fn non_final_attempt_response_summary_does_not_reuse_invocation_level_response_details() {
+    fn attempt_response_summary_uses_its_own_raw_capture_metadata() {
         let mut record = sample_invocation(Some(0));
         record.response_raw_path = Some("response-body.json".to_string());
         record.response_raw_size = Some(181_382);
@@ -15606,6 +15816,10 @@ mod invocation_cost_audit_tests {
         let mut attempt = sample_attempt_row(1, "failed");
         attempt.upstream_request_id = Some("H3HxTB12".to_string());
         attempt.upstream_response_body_bytes = Some(98);
+        attempt.response_raw_path = Some("attempt-H3HxTB12-response.bin".to_string());
+        attempt.response_raw_size = Some(98);
+        attempt.response_raw_truncated = Some(0);
+        attempt.response_content_encoding = Some("gzip".to_string());
 
         let response_summary = build_attempt_response_summary(&record, &attempt, None, None, false);
 
@@ -15613,21 +15827,25 @@ mod invocation_cost_audit_tests {
             response_summary["responseBodyCapture"]["availableAtInvocationLevel"],
             Value::Bool(false)
         );
+        assert_eq!(
+            response_summary["responseBodyCapture"]["availableAtAttemptLevel"],
+            Value::Bool(true)
+        );
         assert_eq!(response_summary["responseBodyCapture"]["size"], json!(98));
         assert_eq!(
             response_summary["responseBodyCapture"]["detailLevel"],
-            json!("attempt_metrics")
+            json!("full")
         );
-        assert_eq!(
-            response_summary["responseBodyCapture"]["unavailableReason"],
-            json!("non_final_attempt_response_body_not_captured")
-        );
+        assert!(response_summary["responseBodyCapture"]["unavailableReason"].is_null());
         assert_eq!(
             response_summary["headers"]["upstreamRequestId"],
             json!("H3HxTB12")
         );
-        assert!(response_summary["headers"]["contentEncoding"].is_null());
-        assert!(response_summary["responseContentEncoding"].is_null());
+        assert_eq!(
+            response_summary["headers"]["contentEncoding"],
+            json!("gzip")
+        );
+        assert_eq!(response_summary["responseContentEncoding"], json!("gzip"));
     }
 
     #[test]
@@ -15635,6 +15853,7 @@ mod invocation_cost_audit_tests {
         let mut record = sample_invocation(Some(0));
         record.response_raw_path = Some("response-body.json".to_string());
         record.response_raw_size = Some(181_382);
+        record.response_raw_truncated = Some(1);
         record.response_content_encoding = Some("identity".to_string());
         record.upstream_request_id = Some("W1scc2SS".to_string());
 
@@ -15677,6 +15896,20 @@ mod invocation_cost_audit_tests {
                 .as_ref()
                 .expect("final summary")["responseBodyCapture"]["availableAtInvocationLevel"],
             Value::Bool(true)
+        );
+        assert_eq!(
+            final_attempt
+                .response_summary
+                .as_ref()
+                .expect("final summary")["responseBodyCapture"]["detailLevel"],
+            json!("full")
+        );
+        assert_eq!(
+            final_attempt
+                .response_summary
+                .as_ref()
+                .expect("final summary")["responseBodyCapture"]["truncated"],
+            json!(true)
         );
     }
 

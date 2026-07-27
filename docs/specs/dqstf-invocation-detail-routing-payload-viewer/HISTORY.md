@@ -27,3 +27,5 @@
 - 2026-07-20: mock-only Web Demo 为 `demo-invocation-9002` 补齐 Dashboard 路由级 workflow detail / request-body / response-body 夹具，页面级最终证据切回真实 `#/dashboard/invocations/:invokeId` 抽屉，而不是只依赖 Storybook 组件画布。
 - 2026-07-25: workflow detail 的响应 fallback 按最终真实出站 attempt 隔离；非最终重试只展示自身状态、响应头摘要与响应体字节指标，调用级 raw response 仅允许绑定最终尝试，避免 502 重试卡片伪装成后续成功响应。
 - 2026-07-25: 本修复的视觉证据仅用于聊天中的 Storybook 验收；preferred evidence section 使用 `PR: none`，避免在没有截图提交授权时向 PR 发布图片链接。
+- 2026-07-27: 响应回放契约扩展为每次真实号池 attempt 独立保存 raw body metadata、编码和文件；新增 attempt-scoped response-body API，历史最终 attempt 保留调用级兼容回退，其他缺失体稳定 unavailable。
+- 2026-07-27: failover 全链失败补写调用级终态，并在 `response.failed` 重试门控消费的首段响应上绑定当前 attempt，避免请求记录退化为无响应体的 `attempt_metrics`。

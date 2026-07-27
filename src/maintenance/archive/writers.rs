@@ -46,6 +46,14 @@ pub(crate) struct PoolUpstreamRequestAttemptArchiveRow {
     upstream_response_header_bytes_approx: Option<i64>,
     compact_support_status: Option<String>,
     compact_support_reason: Option<String>,
+    request_summary_json: Option<String>,
+    response_summary_json: Option<String>,
+    response_raw_path: Option<String>,
+    response_raw_codec: Option<String>,
+    response_raw_size: Option<i64>,
+    response_raw_truncated: Option<i64>,
+    response_raw_truncated_reason: Option<String>,
+    response_content_encoding: Option<String>,
     created_at: String,
 }
 
@@ -116,6 +124,12 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_direct(
         ("routing_source", "TEXT"),
         ("request_summary_json", "TEXT"),
         ("response_summary_json", "TEXT"),
+        ("response_raw_path", "TEXT"),
+        ("response_raw_codec", "TEXT NOT NULL DEFAULT 'identity'"),
+        ("response_raw_size", "INTEGER"),
+        ("response_raw_truncated", "INTEGER NOT NULL DEFAULT 0"),
+        ("response_raw_truncated_reason", "TEXT"),
+        ("response_content_encoding", "TEXT"),
     ] {
         if !archive_columns.contains(column) {
             let statement =
@@ -370,6 +384,14 @@ pub(crate) async fn archive_pool_upstream_request_attempt_rows_into_month_batch(
                 .push_bind(row.upstream_response_header_bytes_approx)
                 .push_bind(&row.compact_support_status)
                 .push_bind(&row.compact_support_reason)
+                .push_bind(&row.request_summary_json)
+                .push_bind(&row.response_summary_json)
+                .push_bind(&row.response_raw_path)
+                .push_bind(&row.response_raw_codec)
+                .push_bind(row.response_raw_size)
+                .push_bind(row.response_raw_truncated)
+                .push_bind(&row.response_raw_truncated_reason)
+                .push_bind(&row.response_content_encoding)
                 .push_bind(&row.created_at);
         });
         insert.build().execute(&mut conn).await.with_context(|| {

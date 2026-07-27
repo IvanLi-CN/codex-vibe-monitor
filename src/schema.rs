@@ -3305,6 +3305,12 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             compact_support_reason TEXT,
             request_summary_json TEXT,
             response_summary_json TEXT,
+            response_raw_path TEXT,
+            response_raw_codec TEXT NOT NULL DEFAULT 'identity',
+            response_raw_size INTEGER,
+            response_raw_truncated INTEGER NOT NULL DEFAULT 0,
+            response_raw_truncated_reason TEXT,
+            response_content_encoding TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -3439,6 +3445,12 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("request_model", "TEXT"),
         ("request_summary_json", "TEXT"),
         ("response_summary_json", "TEXT"),
+        ("response_raw_path", "TEXT"),
+        ("response_raw_codec", "TEXT NOT NULL DEFAULT 'identity'"),
+        ("response_raw_size", "INTEGER"),
+        ("response_raw_truncated", "INTEGER NOT NULL DEFAULT 0"),
+        ("response_raw_truncated_reason", "TEXT"),
+        ("response_content_encoding", "TEXT"),
     ] {
         if !existing_pool_attempt_columns.contains(column) {
             let statement =

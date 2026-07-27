@@ -550,7 +550,7 @@ pub(crate) struct DryRunBatchCount {
 pub(crate) const CODEX_INVOCATIONS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, status, error_message, failure_kind, failure_class, is_actionable, payload, raw_response, cost_estimated, price_version, request_raw_path, request_raw_codec, request_raw_size, request_raw_truncated, request_raw_truncated_reason, response_raw_path, response_raw_codec, response_raw_size, response_raw_truncated, response_raw_truncated_reason, detail_level, detail_pruned_at, detail_prune_reason, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, first_token_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, created_at";
 pub(crate) const FORWARD_PROXY_ATTEMPTS_ARCHIVE_COLUMNS: &str =
     "id, proxy_key, occurred_at, is_success, latency_ms, failure_kind, is_probe";
-pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_COLUMNS: &str = "id, attempt_public_id, invoke_id, occurred_at, endpoint, route_mode, sticky_key, routing_source, upstream_base_url_host, group_name_snapshot, proxy_binding_key_snapshot, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, requester_ip, started_at, finished_at, status, phase, http_status, downstream_http_status, failure_kind, error_message, downstream_error_message, connect_latency_ms, first_byte_latency_ms, stream_latency_ms, upstream_request_id, upstream_request_compression_algorithm, upstream_request_compression_mode, upstream_request_logical_body_bytes, upstream_request_transmitted_body_bytes, upstream_request_header_bytes_approx, upstream_response_body_bytes, upstream_response_header_bytes_approx, compact_support_status, compact_support_reason, created_at";
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_COLUMNS: &str = "id, attempt_public_id, invoke_id, occurred_at, endpoint, route_mode, sticky_key, routing_source, upstream_base_url_host, group_name_snapshot, proxy_binding_key_snapshot, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, requester_ip, started_at, finished_at, status, phase, http_status, downstream_http_status, failure_kind, error_message, downstream_error_message, connect_latency_ms, first_byte_latency_ms, stream_latency_ms, upstream_request_id, upstream_request_compression_algorithm, upstream_request_compression_mode, upstream_request_logical_body_bytes, upstream_request_transmitted_body_bytes, upstream_request_header_bytes_approx, upstream_response_body_bytes, upstream_response_header_bytes_approx, compact_support_status, compact_support_reason, request_summary_json, response_summary_json, response_raw_path, response_raw_codec, response_raw_size, response_raw_truncated, response_raw_truncated_reason, response_content_encoding, created_at";
 pub(crate) const CODEX_QUOTA_SNAPSHOTS_ARCHIVE_COLUMNS: &str = "id, captured_at, amount_limit, used_amount, remaining_amount, period, period_reset_time, expire_time, is_active, total_cost, total_requests, total_tokens, last_request_time, billing_type, remaining_count, used_count, sub_type_name";
 
 pub(crate) const CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL: &str = r#"
@@ -661,6 +661,14 @@ CREATE TABLE IF NOT EXISTS archive_db.pool_upstream_request_attempts (
     upstream_response_header_bytes_approx INTEGER,
     compact_support_status TEXT,
     compact_support_reason TEXT,
+    request_summary_json TEXT,
+    response_summary_json TEXT,
+    response_raw_path TEXT,
+    response_raw_codec TEXT NOT NULL DEFAULT 'identity',
+    response_raw_size INTEGER,
+    response_raw_truncated INTEGER NOT NULL DEFAULT 0,
+    response_raw_truncated_reason TEXT,
+    response_content_encoding TEXT,
     created_at TEXT NOT NULL
 )
 "#;
@@ -1098,7 +1106,18 @@ pub(crate) async fn compress_cold_proxy_raw_payloads_with_budget(
         .await?;
         accumulate_raw_compression_summary(&mut summary, response_summary);
 
-        if !request_hit_batch_limit && !response_hit_batch_limit {
+        let (attempt_summary, attempt_hit_batch_limit) =
+            compress_cold_pool_attempt_response_raw_lane(
+                pool,
+                config,
+                raw_path_fallback_root,
+                dry_run,
+                batch_limit,
+            )
+            .await?;
+        accumulate_raw_compression_summary(&mut summary, attempt_summary);
+
+        if !request_hit_batch_limit && !response_hit_batch_limit && !attempt_hit_batch_limit {
             break;
         }
         if dry_run {
@@ -1112,6 +1131,116 @@ pub(crate) async fn compress_cold_proxy_raw_payloads_with_budget(
     }
 
     Ok(summary)
+}
+
+async fn compress_cold_pool_attempt_response_raw_lane(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    raw_path_fallback_root: Option<&Path>,
+    dry_run: bool,
+    batch_limit: usize,
+) -> Result<(RawCompressionPassSummary, bool)> {
+    let cutoff = shanghai_local_cutoff_for_age_secs_string(config.proxy_raw_hot_secs);
+    let archive_cutoff =
+        shanghai_local_cutoff_string(config.pool_upstream_request_attempts_retention_days);
+    let mut summary = RawCompressionPassSummary::default();
+    let mut rows_processed = 0usize;
+    let mut last_seen_occurred_at: Option<String> = None;
+    let mut last_seen_id = 0_i64;
+
+    while rows_processed < batch_limit {
+        let candidates = sqlx::query_as::<_, InvocationRawCompressionFieldCandidate>(
+            r#"
+            SELECT id, occurred_at, response_raw_path AS raw_path
+            FROM pool_upstream_request_attempts
+            WHERE occurred_at < ?1
+              AND occurred_at >= ?2
+              AND response_raw_path IS NOT NULL
+              AND response_raw_codec = ?3
+              AND (?4 IS NULL OR occurred_at > ?4 OR (occurred_at = ?4 AND id > ?5))
+            ORDER BY occurred_at ASC, id ASC
+            LIMIT ?6
+            "#,
+        )
+        .bind(&cutoff)
+        .bind(&archive_cutoff)
+        .bind(RAW_CODEC_IDENTITY)
+        .bind(last_seen_occurred_at.as_deref())
+        .bind(last_seen_id)
+        .bind((batch_limit - rows_processed).max(1) as i64)
+        .fetch_all(pool)
+        .await?;
+
+        if candidates.is_empty() {
+            break;
+        }
+
+        for candidate in candidates {
+            last_seen_occurred_at = Some(candidate.occurred_at.clone());
+            last_seen_id = candidate.id;
+            rows_processed += 1;
+            let outcome = match maybe_compress_proxy_raw_path(
+                pool,
+                candidate.id,
+                "attempt_response",
+                Some(candidate.raw_path.as_str()),
+                config.proxy_raw_compression,
+                raw_path_fallback_root,
+                dry_run,
+            )
+            .await
+            {
+                Ok(outcome) => outcome,
+                Err(err) => {
+                    warn!(
+                        invocation_id = candidate.id,
+                        field = "attempt_response",
+                        error = %err,
+                        "failed to cold-compress raw payload file; continuing retention"
+                    );
+                    continue;
+                }
+            };
+            let next_path = outcome
+                .new_db_path
+                .clone()
+                .unwrap_or_else(|| candidate.raw_path.clone());
+            let next_codec = outcome
+                .new_codec
+                .clone()
+                .unwrap_or_else(|| raw_codec_from_path(Some(next_path.as_str())));
+            if !dry_run
+                && (next_path != candidate.raw_path || !raw_codec_is_identity(Some(&next_codec)))
+            {
+                sqlx::query(
+                    "UPDATE pool_upstream_request_attempts SET response_raw_path = ?1, response_raw_codec = ?2 WHERE id = ?3",
+                )
+                .bind(&next_path)
+                .bind(&next_codec)
+                .bind(candidate.id)
+                .execute(pool)
+                .await?;
+                if let Some(path) = outcome.old_exact_path.as_deref()
+                    && next_path != candidate.raw_path
+                {
+                    delete_exact_proxy_raw_path(Some(path), raw_path_fallback_root)?;
+                }
+            }
+            if outcome.candidate_counted {
+                summary.files_considered += 1;
+            }
+            if outcome.compressed {
+                summary.files_compressed += 1;
+            }
+            summary.bytes_before += outcome.bytes_before;
+            summary.bytes_after += outcome.bytes_after;
+            summary.estimated_bytes_after += outcome.estimated_bytes_after;
+            if rows_processed >= batch_limit {
+                break;
+            }
+        }
+    }
+    Ok((summary, rows_processed >= batch_limit))
 }
 
 pub(crate) fn accumulate_raw_compression_summary(
@@ -1499,6 +1628,53 @@ pub(crate) fn delete_exact_proxy_raw_path(
     Ok(())
 }
 
+async fn pool_attempt_response_paths_for_invocation_ids(
+    pool: &Pool<Sqlite>,
+    invocation_ids: &[i64],
+) -> Result<Vec<String>> {
+    if invocation_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT attempts.response_raw_path FROM pool_upstream_request_attempts AS attempts JOIN codex_invocations AS inv ON inv.invoke_id = attempts.invoke_id AND inv.occurred_at = attempts.occurred_at WHERE inv.id IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for id in invocation_ids {
+            separated.push_bind(id);
+        }
+    }
+    query.push(") AND attempts.response_raw_path IS NOT NULL");
+    Ok(query
+        .build_query_scalar::<Option<String>>()
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .flatten()
+        .collect())
+}
+
+async fn clear_pool_attempt_response_captures_for_invocation_ids(
+    tx: &mut sqlx::SqliteConnection,
+    invocation_ids: &[i64],
+) -> Result<()> {
+    if invocation_ids.is_empty() {
+        return Ok(());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "UPDATE pool_upstream_request_attempts SET response_raw_path = NULL, response_raw_codec = 'identity', response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, response_content_encoding = NULL WHERE EXISTS (SELECT 1 FROM codex_invocations AS inv WHERE inv.id IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for id in invocation_ids {
+            separated.push_bind(id);
+        }
+    }
+    query.push(") AND inv.invoke_id = pool_upstream_request_attempts.invoke_id AND inv.occurred_at = pool_upstream_request_attempts.occurred_at)");
+    query.build().execute(&mut *tx).await?;
+    Ok(())
+}
+
 pub(crate) async fn prune_old_invocation_details(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -1542,7 +1718,11 @@ pub(crate) async fn prune_old_invocation_details(
                 "retention dry-run planned invocation detail prune archive batch"
             );
         }
-        let raw_paths = candidates
+        let ids = candidates
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>();
+        let mut raw_paths = candidates
             .iter()
             .flat_map(|candidate| {
                 [
@@ -1551,6 +1731,12 @@ pub(crate) async fn prune_old_invocation_details(
                 ]
             })
             .collect::<Vec<_>>();
+        raw_paths.extend(
+            pool_attempt_response_paths_for_invocation_ids(pool, &ids)
+                .await?
+                .into_iter()
+                .map(Some),
+        );
         return Ok((
             candidates.len(),
             by_group.len(),
@@ -1597,7 +1783,11 @@ pub(crate) async fn prune_old_invocation_details(
         for (group_key, group) in by_group {
             rows_pruned += group.len();
             archive_batches += 1;
-            let raw_paths = group
+            let ids = group
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>();
+            let mut raw_paths = group
                 .iter()
                 .flat_map(|candidate| {
                     [
@@ -1606,11 +1796,12 @@ pub(crate) async fn prune_old_invocation_details(
                     ]
                 })
                 .collect::<Vec<_>>();
-
-            let ids = group
-                .iter()
-                .map(|candidate| candidate.id)
-                .collect::<Vec<_>>();
+            raw_paths.extend(
+                pool_attempt_response_paths_for_invocation_ids(pool, &ids)
+                    .await?
+                    .into_iter()
+                    .map(Some),
+            );
             let mut archive_outcome = match archive_layout_for_dataset(config, spec.dataset) {
                 ArchiveBatchLayout::LegacyMonth => {
                     archive_rows_into_month_batch(pool, config, spec, &group_key, &ids).await?
@@ -1650,6 +1841,7 @@ pub(crate) async fn prune_old_invocation_details(
                 }
             }
             query.push(")");
+            clear_pool_attempt_response_captures_for_invocation_ids(tx.as_mut(), &ids).await?;
             query.build().execute(tx.as_mut()).await?;
             tx.commit().await?;
 
@@ -1912,6 +2104,25 @@ pub(crate) async fn archive_timestamped_dataset(
                 .iter()
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
+            let pool_attempt_raw_paths = if spec.dataset == "pool_upstream_request_attempts" {
+                let placeholders = std::iter::repeat_n("?", ids.len())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let query = format!(
+                    "SELECT response_raw_path FROM pool_upstream_request_attempts WHERE id IN ({placeholders})"
+                );
+                let mut query_builder = sqlx::query_scalar::<_, Option<String>>(&query);
+                for id in &ids {
+                    query_builder = query_builder.bind(id);
+                }
+                query_builder
+                    .fetch_all(pool)
+                    .await?
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
             let recreated_pool_upstream_month_archive = if spec.dataset
                 == "pool_upstream_request_attempts"
             {
@@ -2086,6 +2297,10 @@ pub(crate) async fn archive_timestamped_dataset(
             )
             .await?;
             tx.commit().await?;
+            if spec.dataset == "pool_upstream_request_attempts" {
+                let _ =
+                    delete_proxy_raw_paths(&pool_attempt_raw_paths, config.database_path.parent())?;
+            }
         }
     }
 

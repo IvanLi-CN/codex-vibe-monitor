@@ -1952,6 +1952,7 @@ pub(crate) fn build_retryable_overload_gate_outcome(
     upstream_error_code: Option<String>,
     upstream_error_message: Option<String>,
     upstream_request_id: Option<String>,
+    raw_body: Bytes,
 ) -> PoolInitialResponseGateOutcome {
     let response_info = ResponseCaptureInfo {
         model: None,
@@ -1970,6 +1971,7 @@ pub(crate) fn build_retryable_overload_gate_outcome(
         upstream_error_code,
         upstream_error_message,
         upstream_request_id,
+        raw_body,
     }
 }
 
@@ -2031,6 +2033,7 @@ pub(crate) enum PoolInitialResponseGateOutcome {
         upstream_error_code: Option<String>,
         upstream_error_message: Option<String>,
         upstream_request_id: Option<String>,
+        raw_body: Bytes,
     },
 }
 
@@ -2099,6 +2102,7 @@ pub(crate) async fn gate_pool_initial_response_stream_with_timestamp(
                         upstream_error_code,
                         upstream_error_message,
                         upstream_request_id,
+                        Bytes::copy_from_slice(&buffered),
                     ));
                 }
             }
@@ -2201,6 +2205,7 @@ pub(crate) fn gate_pool_initial_compact_response(
         upstream_error_code,
         upstream_error_message,
         extract_upstream_request_id(&value),
+        first_chunk.clone(),
     ))
 }
 
