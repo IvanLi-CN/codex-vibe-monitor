@@ -1252,6 +1252,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             None,
             PoolFailoverProgress::default(),
             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
+            false,
         )
         .await
         {

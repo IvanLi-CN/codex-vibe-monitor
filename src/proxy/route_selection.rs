@@ -2016,6 +2016,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                 preferred_account,
                 failover_progress,
                 same_account_attempts,
+                true,
             )
             .await
         }
@@ -2301,6 +2302,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 ..PoolFailoverProgress::default()
                             },
                             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
+                            true,
                         )
                         .await
                         .map_err(|err| proxy_error_response_from_pool_upstream_error(err, None))?,
@@ -3895,6 +3897,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 ..PoolFailoverProgress::default()
                             },
                             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
+                            true,
                         )
                         .await
                         .map_err(|err| proxy_error_response_from_pool_upstream_error(err, None))?,
@@ -3954,6 +3957,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             ..PoolFailoverProgress::default()
                         },
                         same_account_attempts,
+                        true,
                     )
                     .await
                     .map_err(|err| proxy_error_response_from_pool_upstream_error(err, None))?,

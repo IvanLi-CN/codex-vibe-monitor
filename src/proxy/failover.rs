@@ -380,6 +380,7 @@ pub(crate) async fn send_pool_request_with_failover(
         preferred_account,
         failover_progress,
         same_account_attempts,
+        true,
     )
     .await
 }
@@ -400,6 +401,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
     preferred_account: Option<PoolResolvedAccount>,
     failover_progress: PoolFailoverProgress,
     same_account_attempts: u8,
+    persist_terminal_invocation: bool,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
     let capture_started = Instant::now();
     let trace_for_terminal_capture = trace_context.clone();
@@ -422,9 +424,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
         same_account_attempts,
     )
     .await;
-    if runtime_context_for_terminal_capture.is_none()
-        && let Err(error) = &result
-    {
+    if persist_terminal_invocation && let Err(error) = &result {
         persist_pool_failover_terminal_invocation(
             state.as_ref(),
             proxy_request_id,
