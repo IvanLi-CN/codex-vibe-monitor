@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.50.2",
+  "base_stable_version": "2.50.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-27T06:27:55Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.50.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "5ae558cfc726d6e90d346bd2ee1fe38cb0ca12c9",
+  "pr_number": 705,
+  "pr_title": "feat(web): group GPT-5.6 model identities",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.50.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.50.2",
+  "target_sha": "422bc4341fcf07b9f06b1d7f745c47a2e0ad707f",
+  "type_label": "type:patch"
+}
