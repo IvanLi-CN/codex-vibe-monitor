@@ -3325,40 +3325,99 @@ fn replace_codex_imagegen_in_tool_list(
             (removed, existing, outcome)
         }
         FillMissing if existing.is_some() => (false, existing, "no_change"),
-        FillMissing | ForceAdd => {
+        FillMissing => {
             let replacement = codex_imagegen_function();
-            let mut updated = false;
-            let original_len = tools.len();
-            tools.retain(|tool| !is_legacy_codex_imagegen_tool(tool));
-            updated |= tools.len() != original_len;
-            let mut found_namespace = false;
-            for namespace in tools
+            if let Some(namespace) = tools
                 .iter_mut()
-                .filter(|tool| is_codex_imagegen_namespace(tool))
+                .find(|tool| is_codex_imagegen_namespace(tool))
             {
-                found_namespace = true;
                 let Some(namespace_tools) =
                     namespace.get_mut("tools").and_then(Value::as_array_mut)
                 else {
                     *namespace = codex_imagegen_namespace();
-                    updated = true;
-                    continue;
+                    return (true, existing, "injected");
                 };
-                if let Some(position) = namespace_tools.iter().position(is_codex_imagegen_function)
+                namespace_tools.push(replacement);
+            } else {
+                tools.push(codex_imagegen_namespace());
+            }
+            (true, existing, "injected")
+        }
+        ForceAdd => {
+            let replacement = codex_imagegen_function();
+            let original_len = tools.len();
+            tools.retain(|tool| !is_legacy_codex_imagegen_tool(tool));
+            let mut updated = tools.len() != original_len;
+
+            let mut first_function_namespace = None;
+            let mut first_function = None;
+            let mut function_count = 0;
+            for (namespace_index, namespace) in tools.iter().enumerate() {
+                if !is_codex_imagegen_namespace(namespace) {
+                    continue;
+                }
+                for function in namespace
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|tool| is_codex_imagegen_function(tool))
                 {
-                    if matches!(mode, ForceAdd) && namespace_tools[position] != replacement {
-                        namespace_tools[position] = replacement.clone();
-                        updated = true;
+                    if first_function.is_none() {
+                        first_function_namespace = Some(namespace_index);
+                        first_function = Some(function);
                     }
-                } else {
-                    namespace_tools.push(replacement.clone());
-                    updated = true;
+                    function_count += 1;
                 }
             }
-            if !found_namespace {
+            let target_namespace_index = first_function_namespace
+                .or_else(|| tools.iter().position(is_codex_imagegen_namespace));
+            let already_canonical = function_count == 1
+                && first_function.is_some_and(|function| function == &replacement);
+
+            if let Some(target_namespace_index) = target_namespace_index {
+                if !already_canonical {
+                    for (namespace_index, namespace) in tools.iter_mut().enumerate() {
+                        if !is_codex_imagegen_namespace(namespace) {
+                            continue;
+                        }
+                        let Some(namespace_tools) =
+                            namespace.get_mut("tools").and_then(Value::as_array_mut)
+                        else {
+                            if namespace_index == target_namespace_index {
+                                *namespace = codex_imagegen_namespace();
+                            }
+                            continue;
+                        };
+                        if namespace_index == target_namespace_index {
+                            let mut canonical_inserted = false;
+                            let mut normalized_tools =
+                                Vec::with_capacity(namespace_tools.len() + 1);
+                            for tool in namespace_tools.drain(..) {
+                                if is_codex_imagegen_function(&tool) {
+                                    if !canonical_inserted {
+                                        normalized_tools.push(replacement.clone());
+                                        canonical_inserted = true;
+                                    }
+                                } else {
+                                    normalized_tools.push(tool);
+                                }
+                            }
+                            if !canonical_inserted {
+                                normalized_tools.push(replacement.clone());
+                            }
+                            *namespace_tools = normalized_tools;
+                        } else {
+                            namespace_tools.retain(|tool| !is_codex_imagegen_function(tool));
+                        }
+                    }
+                    updated = true;
+                }
+            } else {
                 tools.push(codex_imagegen_namespace());
                 updated = true;
             }
+
             let outcome = if existing.is_some() && updated {
                 "replaced"
             } else if updated {
@@ -4674,7 +4733,15 @@ mod tests {
             "tools": [
                 {"type": "image_generation"},
                 {"type": "namespace", "name": "web", "tools": [{"type": "function", "name": "search"}]},
-                {"type": "namespace", "name": "image_gen", "tools": [{"type": "function", "name": "imagegen", "parameters": {"type": "object"}}]}
+                {"type": "namespace", "name": "image_gen", "tools": [
+                    {"type": "function", "name": "imagegen", "parameters": {"type": "object"}},
+                    {"type": "function", "name": "imagegen", "parameters": {"type": "object", "properties": {"legacy": {"type": "string"}}}},
+                    {"type": "function", "name": "keep_me"}
+                ]},
+                {"type": "namespace", "name": "image_gen", "tools": [
+                    {"type": "function", "name": "imagegen", "parameters": {"type": "object", "properties": {"other": {"type": "boolean"}}}},
+                    {"type": "function", "name": "also_keep_me"}
+                ]}
             ],
             "tool_choice": {"type": "image_generation"}
         });
@@ -4698,8 +4765,29 @@ mod tests {
         assert!(request.get("tool_choice").is_none());
         let tools = request["tools"].as_array().expect("top-level tools array");
         assert!(tools.iter().any(|tool| tool["name"] == "web"));
-        let imagegen = find_codex_imagegen_function(tools).expect("canonical imagegen function");
-        assert_eq!(imagegen, codex_imagegen_function());
+        let imagegen = tools
+            .iter()
+            .filter(|tool| is_codex_imagegen_namespace(tool))
+            .flat_map(|namespace| {
+                namespace
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+            })
+            .filter(|tool| is_codex_imagegen_function(tool))
+            .collect::<Vec<_>>();
+        assert_eq!(imagegen, vec![&codex_imagegen_function()]);
+        assert!(tools.iter().any(|tool| {
+            tool.get("tools")
+                .and_then(Value::as_array)
+                .is_some_and(|items| items.iter().any(|item| item["name"] == "keep_me"))
+        }));
+        assert!(tools.iter().any(|tool| {
+            tool.get("tools")
+                .and_then(Value::as_array)
+                .is_some_and(|items| items.iter().any(|item| item["name"] == "also_keep_me"))
+        }));
     }
 
     #[test]
