@@ -11250,6 +11250,7 @@ pub(crate) struct DashboardActivitySnapshot {
     summary: DashboardActivitySummaryResponse,
     summary_model_performance_accumulator: ModelPerformanceAccumulator,
     account_model_performance_accumulators: HashMap<Option<i64>, ModelPerformanceAccumulator>,
+    account_latency_accumulators: HashMap<Option<i64>, DashboardActivityAccountLatencyAccumulator>,
     model_performance_accumulator_ready: bool,
     materialized_archive_fallback_totals: StatsTotals,
     materialized_archive_details_limited: bool,
@@ -11320,11 +11321,85 @@ impl DashboardActivitySnapshot {
             },
             summary_model_performance_accumulator: ModelPerformanceAccumulator::default(),
             account_model_performance_accumulators: HashMap::new(),
+            account_latency_accumulators: HashMap::new(),
             model_performance_accumulator_ready: true,
             materialized_archive_fallback_totals: StatsTotals::default(),
             materialized_archive_details_limited: false,
             build_telemetry: DashboardActivityBuildTelemetry::default(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DashboardActivityAccountLatencyAccumulator {
+    first_response_byte_total_sample_count: i64,
+    first_response_byte_total_sum_ms: f64,
+    first_token_sample_count: i64,
+    first_token_sum_ms: f64,
+    total_latency_sample_count: i64,
+    total_latency_sum_ms: f64,
+}
+
+impl DashboardActivityAccountLatencyAccumulator {
+    fn from_aggregate(aggregate: &UpstreamAccountActivityAccumulator) -> Self {
+        Self {
+            first_response_byte_total_sample_count: aggregate
+                .first_response_byte_total_sample_count,
+            first_response_byte_total_sum_ms: aggregate.first_response_byte_total_sum_ms,
+            first_token_sample_count: aggregate.first_token_sample_count,
+            first_token_sum_ms: aggregate.first_token_sum_ms,
+            total_latency_sample_count: aggregate.total_latency_sample_count,
+            total_latency_sum_ms: aggregate.total_latency_sum_ms,
+        }
+    }
+
+    fn add_terminal_record(&mut self, record: &ApiInvocation, success: bool) {
+        if let Some(first_token_ms) = record
+            .first_token_ms
+            .filter(|value| value.is_finite() && *value >= 0.0)
+        {
+            self.first_token_sample_count += 1;
+            self.first_token_sum_ms += first_token_ms;
+        }
+        if !success {
+            return;
+        }
+        if record
+            .t_upstream_ttfb_ms
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .is_some()
+            && let Some(first_response_byte_total_ms) =
+                crate::stats::resolve_first_response_byte_total_ms(
+                    record.t_req_read_ms,
+                    record.t_req_parse_ms,
+                    record.t_upstream_connect_ms,
+                    record.t_upstream_ttfb_ms,
+                )
+        {
+            self.first_response_byte_total_sample_count += 1;
+            self.first_response_byte_total_sum_ms += first_response_byte_total_ms;
+        }
+        if let Some(total_latency_ms) = record
+            .t_total_ms
+            .filter(|value| value.is_finite() && *value >= 0.0)
+        {
+            self.total_latency_sample_count += 1;
+            self.total_latency_sum_ms += total_latency_ms;
+        }
+    }
+
+    fn apply_to_account(self, account: &mut DashboardActivityAccountResponse) {
+        let first_response_byte_total_avg_ms = (self.first_response_byte_total_sample_count > 0)
+            .then_some(
+                self.first_response_byte_total_sum_ms
+                    / self.first_response_byte_total_sample_count as f64,
+            );
+        account.first_byte_avg_ms = first_response_byte_total_avg_ms;
+        account.first_response_byte_total_avg_ms = first_response_byte_total_avg_ms;
+        account.first_token_avg_ms = (self.first_token_sample_count > 0)
+            .then_some(self.first_token_sum_ms / self.first_token_sample_count as f64);
+        account.avg_total_ms = (self.total_latency_sample_count > 0)
+            .then_some(self.total_latency_sum_ms / self.total_latency_sample_count as f64);
     }
 }
 
@@ -11666,6 +11741,12 @@ fn apply_dashboard_activity_terminal_delta(
             .accounts
             .push(dashboard_activity_terminal_account(snapshot, record));
     }
+    let account_latency = snapshot
+        .account_latency_accumulators
+        .entry(record.upstream_account_id)
+        .or_default();
+    account_latency.add_terminal_record(record, success);
+    let account_latency = *account_latency;
     let account = snapshot
         .accounts
         .iter_mut()
@@ -11697,6 +11778,7 @@ fn apply_dashboard_activity_terminal_delta(
         account.last_invocation_at = Some(record.occurred_at.clone());
     }
     add_dashboard_activity_terminal_usage(&mut account.usage_breakdown, record);
+    account_latency.apply_to_account(account);
     account.cache_hit_rate = (account.total_tokens > 0)
         .then_some(account.usage_breakdown.cache_read_tokens as f64 / account.total_tokens as f64);
     account.model_performance = account_model_performance;
@@ -11768,11 +11850,14 @@ pub(crate) async fn apply_dashboard_activity_terminal_record(
         parse_to_utc_datetime(&pending.occurred_at)
             .is_some_and(|occurred_at| occurred_at >= oldest_supported)
     });
-    while cache.read_model.pending_terminal_records.len()
+    if cache.read_model.pending_terminal_records.len()
         > DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_TERMINALS
     {
-        cache.read_model.pending_terminal_records.pop_front();
         cache.read_model.pending_terminal_overflow_count += 1;
+        tracing::warn!(
+            pending_terminal_record_count = cache.read_model.pending_terminal_records.len(),
+            "dashboard activity read model retained pending terminal records beyond the advisory limit"
+        );
     }
     outcome
 }
@@ -13615,6 +13700,7 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
         },
         summary_model_performance_accumulator: ModelPerformanceAccumulator::default(),
         account_model_performance_accumulators: HashMap::new(),
+        account_latency_accumulators: HashMap::new(),
         model_performance_accumulator_ready: false,
         materialized_archive_fallback_totals: StatsTotals::default(),
         materialized_archive_details_limited: false,
@@ -13698,6 +13784,7 @@ async fn load_dashboard_activity_snapshot_for_range(
         summary,
         summary_model_performance_accumulator: build.summary_model_performance_accumulator,
         account_model_performance_accumulators: build.account_model_performance_accumulators,
+        account_latency_accumulators: build.account_latency_accumulators,
         model_performance_accumulator_ready: true,
         materialized_archive_fallback_totals: build.materialized_archive_fallback_totals,
         materialized_archive_details_limited: build.materialized_archive_details_limited,
@@ -13737,6 +13824,7 @@ struct DashboardActivityAccountBuildResult {
     summary_model_performance: ModelPerformanceResponse,
     summary_model_performance_accumulator: ModelPerformanceAccumulator,
     account_model_performance_accumulators: HashMap<Option<i64>, ModelPerformanceAccumulator>,
+    account_latency_accumulators: HashMap<Option<i64>, DashboardActivityAccountLatencyAccumulator>,
     materialized_archive_fallback_totals: StatsTotals,
     materialized_archive_details_limited: bool,
     build_telemetry: DashboardActivityBuildTelemetry,
@@ -14268,6 +14356,15 @@ async fn load_dashboard_activity_account_build_result(
             (*upstream_account_id, aggregate.model_performance.clone())
         })
         .collect();
+    let account_latency_accumulators = account_activity
+        .iter()
+        .map(|(upstream_account_id, aggregate)| {
+            (
+                *upstream_account_id,
+                DashboardActivityAccountLatencyAccumulator::from_aggregate(aggregate),
+            )
+        })
+        .collect();
     let summary_model_performance_accumulator = model_performance.clone();
     let mut accounts = account_activity
         .into_iter()
@@ -14295,6 +14392,7 @@ async fn load_dashboard_activity_account_build_result(
             .into_response(range, model_performance_available),
         summary_model_performance_accumulator,
         account_model_performance_accumulators,
+        account_latency_accumulators,
         materialized_archive_fallback_totals,
         materialized_archive_details_limited,
         build_telemetry,
@@ -14363,6 +14461,7 @@ async fn load_dashboard_activity_snapshot_cached(
     let mut waited_on_in_flight = false;
     let mut max_waiter_count = 0_usize;
     let mut saw_expired_entry = false;
+    let mut concurrent_reconcile_retry_count = 0usize;
     let cache_ttl = dashboard_activity_snapshot_cache_ttl(range_name);
     let cache_ttl_ms = cache_ttl.as_millis() as u64;
     let selection_fingerprint = dashboard_activity_selection_fingerprint(&selection);
@@ -14545,10 +14644,9 @@ async fn load_dashboard_activity_snapshot_cached(
             });
         if relevant_terminal_persisted_during_build {
             if let Some(entry) = cache.entries.get_mut(&selection) {
-                // The write-side delta has already been applied to this last-good entry. Renew
-                // its reconciliation budget so sustained terminal traffic does not repeatedly
-                // rebuild the same full range while preserving the current in-memory totals.
-                entry.last_reconcile_attempted_at = Instant::now();
+                // The write-side delta has already been applied to this last-good entry. Do not
+                // renew its reconciliation deadline: rolling ranges must rebuild from their
+                // current boundary even while terminal persistence is continuously advancing.
                 let cache_entry_age_ms = entry.cached_at.elapsed().as_millis() as u64;
                 let snapshot = entry.response.clone();
                 if let Some(in_flight) = in_flight {
@@ -14584,11 +14682,19 @@ async fn load_dashboard_activity_snapshot_cached(
                     },
                 ));
             }
-            if let Some(in_flight) = in_flight {
+            if let Some(in_flight) = in_flight.as_ref() {
                 let _ = in_flight.signal.send(true);
             }
-            drop(cache);
-            continue;
+            if concurrent_reconcile_retry_count == 0 {
+                concurrent_reconcile_retry_count += 1;
+                drop(cache);
+                continue;
+            }
+            tracing::warn!(
+                selection_fingerprint,
+                concurrent_reconcile_retry_count,
+                "dashboard activity reconciliation accepted a bounded concurrent-write retry"
+            );
         }
         if let Ok(snapshot) = result.as_mut() {
             // Pending records are shared by every in-flight selection. Do not consume them from
@@ -16589,7 +16695,8 @@ mod dashboard_activity_read_model_tests {
             costs: None,
             models: Vec::new(),
         });
-        let record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        let mut record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        record.first_token_ms = Some(650.0);
 
         apply_dashboard_activity_terminal_delta(&mut snapshot, &record);
 
@@ -16610,6 +16717,10 @@ mod dashboard_activity_read_model_tests {
         let account = snapshot.accounts.first().expect("terminal account");
         assert_eq!(account.upstream_account_id, Some(17));
         assert_eq!(account.request_count, 1);
+        assert_eq!(account.first_byte_avg_ms, Some(548.0));
+        assert_eq!(account.first_response_byte_total_avg_ms, Some(548.0));
+        assert_eq!(account.first_token_avg_ms, Some(650.0));
+        assert_eq!(account.avg_total_ms, Some(3_450.0));
         assert!(
             (account.cache_hit_rate.expect("cache hit rate") - (400.0 / 1_200.0)).abs()
                 < f64::EPSILON
@@ -16629,6 +16740,30 @@ mod dashboard_activity_read_model_tests {
             Some(3_450.0)
         );
         assert_eq!(account.model_performance.models.len(), 1);
+    }
+
+    #[test]
+    fn terminal_delta_merges_account_latency_with_the_cached_baseline() {
+        let mut snapshot = DashboardActivitySnapshot::test_stub("7d");
+        let mut first = invocation_cost_audit_tests::sample_invocation(Some(25));
+        first.first_token_ms = Some(650.0);
+        apply_dashboard_activity_terminal_delta(&mut snapshot, &first);
+
+        let mut second = first.clone();
+        second.id = 8;
+        second.invoke_id = "invocation-cost-audit-second".to_string();
+        second.occurred_at = "2026-07-20 10:25:10".to_string();
+        second.t_upstream_ttfb_ms = Some(430.0);
+        second.first_token_ms = Some(750.0);
+        second.t_total_ms = Some(4_450.0);
+        apply_dashboard_activity_terminal_delta(&mut snapshot, &second);
+
+        let account = snapshot.accounts.first().expect("terminal account");
+        assert_eq!(account.request_count, 2);
+        assert_eq!(account.first_byte_avg_ms, Some(598.0));
+        assert_eq!(account.first_response_byte_total_avg_ms, Some(598.0));
+        assert_eq!(account.first_token_avg_ms, Some(700.0));
+        assert_eq!(account.avg_total_ms, Some(3_950.0));
     }
 
     #[test]

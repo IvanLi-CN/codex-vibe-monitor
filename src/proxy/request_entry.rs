@@ -216,8 +216,7 @@ pub(crate) async fn proxy_openai_v1_common(
                 PROXY_FAILURE_POOL_ROUTING_BLOCKED,
                 &err.message,
                 "missing_bearer_token",
-            )
-            .await;
+            );
             schedule_dashboard_activity_live_snapshot(state.as_ref());
         }
         return build_proxy_error_response(err, &invoke_id);
@@ -254,8 +253,7 @@ pub(crate) async fn proxy_openai_v1_common(
                     PROXY_FAILURE_POOL_ROUTING_BLOCKED,
                     &err.message,
                     "route_validation_failed",
-                )
-                .await;
+                );
                 schedule_dashboard_activity_live_snapshot(state.as_ref());
             }
             return build_proxy_error_response(err, &invoke_id);

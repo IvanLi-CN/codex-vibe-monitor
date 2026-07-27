@@ -996,22 +996,6 @@ impl SubscriptionHub {
         state: Arc<AppState>,
         payload: BroadcastPayload,
     ) {
-        if let BroadcastPayload::Records { records } = &payload {
-            for record in records
-                .iter()
-                .filter(|record| crate::app_state::runtime_store_record_is_terminal(record))
-            {
-                let delta = apply_dashboard_activity_terminal_record(state.as_ref(), record).await;
-                tracing::debug!(
-                    invoke_id = %record.invoke_id,
-                    terminal_delta_applied_selection_count = delta.applied_selection_count,
-                    terminal_delta_duplicate = delta.duplicate,
-                    terminal_delta_skipped_out_of_range_count = delta.skipped_out_of_range_count,
-                    response_source = "memory",
-                    "applied terminal broadcast to dashboard activity read model"
-                );
-            }
-        }
         let affected = {
             let mut guard = self.state.lock().await;
             let active_subscribers = guard.active_subscribers.clone();

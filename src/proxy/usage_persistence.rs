@@ -1728,8 +1728,7 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
             &pending_attempt_record.invoke_id,
             &pending_attempt_record.occurred_at,
             "drop_guard",
-        )
-        .await;
+        );
         schedule_dashboard_activity_live_snapshot(state);
     } else {
         remove_proxy_runtime_snapshot_by_key(
@@ -1800,8 +1799,7 @@ pub(crate) async fn recover_guard_dropped_pool_invocation_orphan(
             &selector.invoke_id,
             &selector.occurred_at,
             recovery_trigger,
-        )
-        .await;
+        );
         schedule_dashboard_activity_live_snapshot(state);
         return Ok(());
     }
@@ -3291,7 +3289,7 @@ pub(crate) fn remove_proxy_runtime_snapshot_by_key(
     removed_runtime_snapshot
 }
 
-pub(crate) async fn terminalize_proxy_runtime_snapshot_by_key(
+pub(crate) fn terminalize_proxy_runtime_snapshot_by_key(
     state: &AppState,
     invoke_id: &str,
     occurred_at: &str,
@@ -3330,15 +3328,13 @@ pub(crate) async fn terminalize_proxy_runtime_snapshot_by_key(
     let remove_outcome = state
         .proxy_runtime_invocations
         .upsert_terminal(record.clone());
-    let delta = apply_dashboard_activity_terminal_record(state, &record).await;
     debug!(
         invoke_id,
         occurred_at,
         reason,
         terminal_removed_runtime_snapshot = true,
         terminal_already_tombstoned = remove_outcome.already_terminal,
-        terminal_delta_applied_selection_count = delta.applied_selection_count,
-        terminal_delta_duplicate = delta.duplicate,
+        terminal_delta_skipped_runtime_only = true,
         "non-terminal proxy runtime snapshot terminalized by key"
     );
     if state.broadcaster.receiver_count() > 0
@@ -3357,7 +3353,7 @@ pub(crate) async fn terminalize_proxy_runtime_snapshot_by_key(
     true
 }
 
-pub(crate) async fn terminalize_proxy_runtime_snapshot_with_error(
+pub(crate) fn terminalize_proxy_runtime_snapshot_with_error(
     state: &AppState,
     invoke_id: &str,
     occurred_at: &str,
@@ -3408,7 +3404,6 @@ pub(crate) async fn terminalize_proxy_runtime_snapshot_with_error(
     let remove_outcome = state
         .proxy_runtime_invocations
         .upsert_terminal(record.clone());
-    let delta = apply_dashboard_activity_terminal_record(state, &record).await;
     debug!(
         invoke_id,
         occurred_at,
@@ -3418,8 +3413,7 @@ pub(crate) async fn terminalize_proxy_runtime_snapshot_with_error(
         terminal_overlay_emitted = true,
         terminal_removed_runtime_snapshot = true,
         terminal_already_tombstoned = remove_outcome.already_terminal,
-        terminal_delta_applied_selection_count = delta.applied_selection_count,
-        terminal_delta_duplicate = delta.duplicate,
+        terminal_delta_skipped_runtime_only = true,
         "non-terminal proxy runtime snapshot terminalized with error overlay"
     );
     if state.broadcaster.receiver_count() > 0
