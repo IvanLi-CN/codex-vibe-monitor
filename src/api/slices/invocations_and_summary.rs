@@ -11795,6 +11795,15 @@ pub(crate) async fn rollback_dashboard_activity_terminal_record(
     cache.invalidation_reasons.clear();
 }
 
+/// Recovery can replace a previously persisted running row with its terminal form. Its positive
+/// row ID is not proof that a warm baseline observed the terminal fields, so force the next read
+/// to rebuild from persisted state before registering the recovered record as pending.
+pub(crate) async fn invalidate_dashboard_activity_baselines_for_recovery(state: &AppState) {
+    let mut cache = state.dashboard_activity_snapshot_cache.lock().await;
+    cache.entries.clear();
+    cache.invalidation_reasons.clear();
+}
+
 impl Default for DashboardActivityBuildTelemetry {
     fn default() -> Self {
         Self {

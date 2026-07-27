@@ -1466,6 +1466,8 @@ pub(crate) async fn broadcast_recovered_proxy_invocations(
         return Ok(());
     }
 
+    invalidate_dashboard_activity_baselines_for_recovery(state).await;
+
     for record in &records {
         let delta = apply_dashboard_activity_terminal_record(state, record).await;
         debug!(
