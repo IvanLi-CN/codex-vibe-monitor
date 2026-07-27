@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.50.0",
+  "base_stable_version": "2.49.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-27T03:06:15Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.50.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8b3a38c33e08c0d7f2f17a76c874797a56cb5bed",
+  "pr_number": 701,
+  "pr_title": "feat: unify TTFT semantics across metrics",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.50.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.50.0",
+  "target_sha": "43daa83fdff7007d681151cc2506c23732cd7777",
+  "type_label": "type:minor"
+}
