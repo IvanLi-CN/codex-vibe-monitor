@@ -595,18 +595,6 @@ pub(crate) async fn persist_pool_failover_terminal_invocation(
     .await;
 }
 
-fn pool_attempt_response_capture_key(pending: &PendingPoolAttemptRecord) -> String {
-    pending.attempt_public_id.clone().unwrap_or_else(|| {
-        format!(
-            "{}-attempt-{}-{}-{}",
-            pending.invoke_id,
-            pending.attempt_index,
-            pending.distinct_account_index,
-            pending.same_account_retry_index,
-        )
-    })
-}
-
 fn spawn_pool_attempt_response_capture(
     state: Arc<AppState>,
     pending: PendingPoolAttemptRecord,
@@ -631,14 +619,26 @@ fn spawn_pool_attempt_response_capture(
             &raw_meta,
             response_content_encoding.as_deref(),
         );
-        if let Err(err) =
-            persist_pool_upstream_request_attempt_response_capture(&state.pool, &pending).await
-        {
-            warn!(
-                invoke_id = %pending.invoke_id,
-                error = %err,
-                "failed to persist asynchronous pool attempt response capture"
-            );
+        match persist_pool_upstream_request_attempt_response_capture(&state.pool, &pending).await {
+            Ok(()) => {
+                if let Err(err) =
+                    broadcast_pool_upstream_attempts_snapshot(state.as_ref(), &pending.invoke_id)
+                        .await
+                {
+                    warn!(
+                        invoke_id = %pending.invoke_id,
+                        error = %err,
+                        "failed to broadcast asynchronous pool attempt response capture"
+                    );
+                }
+            }
+            Err(err) => {
+                warn!(
+                    invoke_id = %pending.invoke_id,
+                    error = %err,
+                    "failed to persist asynchronous pool attempt response capture"
+                );
+            }
         }
     });
 }

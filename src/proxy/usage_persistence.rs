@@ -658,6 +658,18 @@ pub(crate) fn set_pending_pool_upstream_request_attempt_response_capture(
         .map(ToOwned::to_owned);
 }
 
+pub(crate) fn pool_attempt_response_capture_key(pending: &PendingPoolAttemptRecord) -> String {
+    pending.attempt_public_id.clone().unwrap_or_else(|| {
+        format!(
+            "{}-attempt-{}-{}-{}",
+            pending.invoke_id,
+            pending.attempt_index,
+            pending.distinct_account_index,
+            pending.same_account_retry_index,
+        )
+    })
+}
+
 pub(crate) async fn persist_pool_upstream_request_attempt_response_capture(
     pool: &Pool<Sqlite>,
     pending: &PendingPoolAttemptRecord,

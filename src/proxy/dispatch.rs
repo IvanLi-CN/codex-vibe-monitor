@@ -2142,17 +2142,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             proxy_settings.response_body_logging_enabled,
         );
         let attempt_response_capture_enabled = proxy_settings.response_body_logging_enabled
-            && pending_pool_attempt_record_for_task
-                .as_ref()
-                .and_then(|pending| pending.attempt_public_id.as_deref())
-                .is_some();
+            && pending_pool_attempt_record_for_task.is_some();
         let attempt_response_capture_key = pending_pool_attempt_record_for_task
             .as_ref()
-            .and_then(|pending| pending.attempt_public_id.as_deref())
-            .unwrap_or(&invoke_id_for_task);
+            .map(pool_attempt_response_capture_key)
+            .unwrap_or_else(|| invoke_id_for_task.clone());
         let mut attempt_response_raw_writer = AsyncStreamingRawPayloadWriter::new(
             state_for_task.as_ref(),
-            attempt_response_capture_key,
+            &attempt_response_capture_key,
             "response",
             attempt_response_capture_enabled,
         );
