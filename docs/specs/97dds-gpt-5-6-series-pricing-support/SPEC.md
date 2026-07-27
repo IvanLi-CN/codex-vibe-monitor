@@ -190,7 +190,7 @@ PR: none
 - submission_gate: pending-owner-approval
 - story_id_or_title: Dashboard/WorkingConversationsSection GPT56ModelContextCluster
 - state: GPT-5.6 Sol invocation with high reasoning effort and effective FAST priority
-- evidence_note: Verifies the invocation card presents the solar model icon, reasoning effort, and FAST indicator as one bounded visual cluster while keeping the full model ID in accessible semantics.
+- evidence_note: Verifies the invocation card presents the solar model icon, reasoning effort, and FAST indicator as one continuous segmented identity strip while keeping the full model ID in accessible semantics.
 
 ## References
 
