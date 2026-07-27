@@ -440,6 +440,7 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
     terminal_attempt_summary: Option<&PoolAttemptSummary>,
     terminal_account: Option<&PoolResolvedAccount>,
     terminal_connect_latency_ms: Option<f64>,
+    terminal_error: Option<&PoolUpstreamError>,
     response_envelope_override: Option<ProxyErrorResponseEnvelope>,
 ) -> bool {
     let response_envelope = response_envelope_override
@@ -534,11 +535,14 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
             oauth_responses_rewrite: None,
             service_tier: None,
             stream_terminal_event: None,
-            upstream_error_code: None,
-            upstream_error_message: None,
+            upstream_error_code: terminal_error
+                .and_then(|error| error.upstream_error_code.as_deref()),
+            upstream_error_message: terminal_error
+                .and_then(|error| error.upstream_error_message.as_deref()),
             downstream_status_code: Some(status),
             downstream_error_message: Some(error_message),
-            upstream_request_id: None,
+            upstream_request_id: terminal_error
+                .and_then(|error| error.upstream_request_id.as_deref()),
             response_content_encoding: None,
             stream_failure_origin: None,
             upstream_read_error_kind: None,
@@ -559,7 +563,7 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
             pool_attempt_terminal_reason: terminal_attempt_summary
                 .and_then(|summary| summary.pool_attempt_terminal_reason.as_deref())
                 .or(Some(failure_kind)),
-            blocked_binding: None,
+            blocked_binding: terminal_error.and_then(|error| error.blocked_binding.as_ref()),
         })),
         raw_response: response_envelope.body_text.clone(),
         response_body_preview_enabled: true,
@@ -1102,6 +1106,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await;
                 if terminal_invocation_persisted {
@@ -1145,6 +1150,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     status,
                     PROXY_FAILURE_POOL_ROUTING_BLOCKED,
                     &message,
+                    None,
                     None,
                     None,
                     None,

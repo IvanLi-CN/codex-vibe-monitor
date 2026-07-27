@@ -510,6 +510,7 @@ pub(crate) async fn persist_pool_failover_terminal_invocation(
         Some(&error.attempt_summary),
         error.account.as_ref(),
         Some(error.connect_latency_ms),
+        Some(error),
         Some(response_envelope),
     )
     .await;
