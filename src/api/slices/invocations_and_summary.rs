@@ -8277,6 +8277,13 @@ impl ModelPerformanceAccumulator {
             self.first_byte_sample_count += 1;
             self.first_byte_sum_ms += first_response_byte_total_ms;
         }
+        if let Some(first_token_ms) = record
+            .first_token_ms
+            .filter(|value| value.is_finite() && *value >= 0.0)
+        {
+            self.first_token_sample_count += 1;
+            self.first_token_sum_ms += first_token_ms;
+        }
         if let Some(total_ms) = record
             .t_total_ms
             .filter(|value| value.is_finite() && *value >= 0.0)
@@ -14367,37 +14374,8 @@ async fn load_dashboard_activity_snapshot_cached(
             continue;
         }
 
-        let pending_keys_before_build = {
-            let cache = state.dashboard_activity_snapshot_cache.lock().await;
-            cache
-                .read_model
-                .pending_terminal_records
-                .iter()
-                .filter_map(|record| {
-                    let occurred_at = parse_to_utc_datetime(&record.occurred_at)?;
-                    dashboard_activity_selection_includes_terminal(&selection, record, occurred_at)
-                        .then_some((record.invoke_id.clone(), record.occurred_at.clone()))
-                })
-                .collect::<HashSet<_>>()
-        };
-        let (persisted_terminal_keys_before_build, snapshot_cursor_before_build) = tokio::try_join!(
-            async {
-                if pending_keys_before_build.is_empty() {
-                    Ok(HashSet::new())
-                } else {
-                    query_live_dashboard_activity_persisted_terminal_keys(
-                        &state.pool,
-                        dashboard_activity_selection_source_scope(&selection),
-                        &pending_keys_before_build
-                            .iter()
-                            .cloned()
-                            .collect::<Vec<_>>(),
-                    )
-                    .await
-                }
-            },
-            query_live_dashboard_activity_snapshot_cursor(&state.pool),
-        )?;
+        let snapshot_cursor_before_build =
+            query_live_dashboard_activity_snapshot_cursor(&state.pool).await?;
         let build_started_at = Instant::now();
         let mut result = load_dashboard_activity_snapshot_for_range(
             state,
@@ -14414,6 +14392,29 @@ async fn load_dashboard_activity_snapshot_cached(
             query_live_dashboard_activity_snapshot_cursor(&state.pool).await?
         } else {
             snapshot_cursor_before_build
+        };
+        let pending_keys_after_build = {
+            let cache = state.dashboard_activity_snapshot_cache.lock().await;
+            cache
+                .read_model
+                .pending_terminal_records
+                .iter()
+                .filter_map(|record| {
+                    let occurred_at = parse_to_utc_datetime(&record.occurred_at)?;
+                    dashboard_activity_selection_includes_terminal(&selection, record, occurred_at)
+                        .then_some((record.invoke_id.clone(), record.occurred_at.clone()))
+                })
+                .collect::<HashSet<_>>()
+        };
+        let persisted_terminal_keys_after_build = if result.is_ok() {
+            query_live_dashboard_activity_persisted_terminal_keys(
+                &state.pool,
+                dashboard_activity_selection_source_scope(&selection),
+                &pending_keys_after_build.iter().cloned().collect::<Vec<_>>(),
+            )
+            .await?
+        } else {
+            HashSet::new()
         };
         let db_build_elapsed_ms = build_started_at.elapsed().as_millis() as u64;
 
@@ -14480,9 +14481,7 @@ async fn load_dashboard_activity_snapshot_cached(
                 if dashboard_activity_selection_includes_terminal(&selection, &record, occurred_at)
                 {
                     let key = (record.invoke_id.clone(), record.occurred_at.clone());
-                    if pending_keys_before_build.contains(&key)
-                        && persisted_terminal_keys_before_build.contains(&key)
-                    {
+                    if persisted_terminal_keys_after_build.contains(&key) {
                         continue;
                     }
                     apply_dashboard_activity_terminal_delta(snapshot, &record);
