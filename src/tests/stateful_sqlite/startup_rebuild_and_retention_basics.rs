@@ -1929,7 +1929,9 @@ async fn retention_archives_into_legacy_archive_batch_with_raw_expires_at_column
         SqlitePool::connect(&test_sqlite_url_for_path(&legacy_archive_db_path))
             .await
             .expect("open legacy archive sqlite");
-    let legacy_create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    let legacy_create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL
+        .replace("archive_db.", "")
+        .replace("    first_token_ms REAL,\n", "");
     sqlx::query(&legacy_create_sql)
         .execute(&legacy_archive_pool)
         .await
@@ -2009,6 +2011,17 @@ async fn retention_archives_into_legacy_archive_batch_with_raw_expires_at_column
         archive_columns.contains("raw_expires_at"),
         "historical archive files should keep their legacy schema"
     );
+    assert!(
+        archive_columns.contains("first_token_ms"),
+        "append should upgrade legacy archives with nullable TTFT storage"
+    );
+    let archived_first_token_ms: Option<f64> =
+        sqlx::query_scalar("SELECT first_token_ms FROM codex_invocations WHERE invoke_id = ?1")
+            .bind("archive-into-legacy-batch")
+            .fetch_one(&archived_pool)
+            .await
+            .expect("load archived TTFT");
+    assert_eq!(archived_first_token_ms, None);
     archived_pool.close().await;
 
     cleanup_temp_test_dir(&temp_dir);

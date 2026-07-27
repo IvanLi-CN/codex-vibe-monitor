@@ -1475,7 +1475,7 @@ function ConversationActivityChart({
     failure: t("live.conversations.activity.legendFailure"),
     inFlight: t("live.conversations.activity.legendInFlight"),
     neutral: t("live.conversations.activity.legendNeutral"),
-    duration: t("table.details.firstResponseByteTotal"),
+    duration: t("table.details.totalLatency"),
   };
   const renderTooltip = (bucket: ConversationActivityBucket) => [
     {

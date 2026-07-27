@@ -330,7 +330,6 @@ function InvocationDetailProbe({ record }: { record: ApiInvocation }) {
     t,
     locale,
     localeTag,
-    nowMs: Date.now(),
     numberFormatter: new Intl.NumberFormat(localeTag),
     currencyFormatter: new Intl.NumberFormat(localeTag, {
       style: "currency",
@@ -431,7 +430,6 @@ describe("pool account routing display", () => {
       t: (key) => key,
       locale: "zh",
       localeTag: "zh-CN",
-      nowMs: Date.parse("2026-03-07T03:14:00Z"),
       numberFormatter: new Intl.NumberFormat("zh-CN"),
       currencyFormatter: new Intl.NumberFormat("zh-CN", {
         style: "currency",
@@ -962,6 +960,8 @@ describe("InvocationTable", () => {
         tReqParseMs: 20,
         tUpstreamConnectMs: 456.7,
         tUpstreamTtfbMs: 149.5,
+        firstTokenMs: 3830,
+        tUpstreamStreamMs: 3964,
         tTotalMs: 7794.1,
       },
       {
@@ -991,7 +991,7 @@ describe("InvocationTable", () => {
     expect(html).toContain("high");
     expect(html).toContain("推理 41");
     expect(html).toContain("推理 —");
-    expect(html).toContain("7.79 s");
+    expect(html).toContain("3.96 s");
     expect(html).toContain("3.83 s");
     expect(html).toContain("/v1/responses");
     expect(html).toContain("/v1/chat/completions");
@@ -1000,7 +1000,7 @@ describe("InvocationTable", () => {
     expect(html).toContain(">—</span>");
   });
 
-  it("renders account/proxy and total-latency/compression summaries", () => {
+  it("renders account/proxy and TTFT/response-duration summaries", () => {
     const html = renderTable([
       {
         id: 31,
@@ -1023,6 +1023,8 @@ describe("InvocationTable", () => {
         tReqParseMs: 1,
         tUpstreamConnectMs: 9330,
         tUpstreamTtfbMs: 118.2,
+        firstTokenMs: 648.2,
+        tUpstreamStreamMs: 260.4,
         tTotalMs: 910.4,
       },
       {
@@ -1048,10 +1050,11 @@ describe("InvocationTable", () => {
 
     expect(html).toContain("账号");
     expect(html).toContain("代理");
-    expect(html).toContain("用时");
-    expect(html).toContain("首字总耗时");
-    expect(html).toContain("首字总耗时 / HTTP 压缩");
-    expect(html).toContain("9.48 s");
+    expect(html).toContain("响应耗时");
+    expect(html).toContain("TTFT");
+    expect(html).toContain("响应耗时 / HTTP 压缩");
+    expect(html).toContain("0.648 s");
+    expect(html).toContain("0.26 s");
     expect(html).toContain("pool-account-a");
     expect(html).toContain("反向代理");
     expect(html).toContain("gzip, br");
@@ -1406,7 +1409,7 @@ describe("InvocationTable", () => {
       cost: 0.0046,
       tUpstreamConnectMs: 26,
       tUpstreamTtfbMs: 148.2,
-      tUpstreamStreamMs: 613,
+      tUpstreamStreamMs: 0,
       tTotalMs: 805,
     };
 
@@ -1422,6 +1425,7 @@ describe("InvocationTable", () => {
     expect(html).not.toContain(">首字耗时<");
     expect(html).toContain("阶段耗时");
     expect(html).toContain("上游首字节");
+    expect(html).not.toContain(">0 s<");
     expect(html).toContain("总耗时");
   });
 
@@ -1890,6 +1894,7 @@ describe("InvocationTable", () => {
       tReqParseMs: 20,
       tUpstreamConnectMs: 456.7,
       tUpstreamTtfbMs: 88.8,
+      firstTokenMs: 4020,
       tUpstreamStreamMs: 12000,
       tRespParseMs: 90,
       tPersistMs: 8,
@@ -1938,7 +1943,7 @@ describe("InvocationTable", () => {
     expect(text).toContain("12,345 ms");
   });
 
-  it("shows a non-zero first-response-byte total when upstream first-byte stage is 0 ms", async () => {
+  it("shows recorded TTFT independently when upstream TTFB is 0 ms", async () => {
     const record: ApiInvocation = {
       id: 92,
       invokeId: "invocation-zero-upstream-first-byte",
@@ -1953,6 +1958,7 @@ describe("InvocationTable", () => {
       tReqParseMs: 1,
       tUpstreamConnectMs: 9330,
       tUpstreamTtfbMs: 0,
+      firstTokenMs: 9360,
       tUpstreamStreamMs: 10080,
       tRespParseMs: 1,
       tPersistMs: 1,
@@ -1964,7 +1970,9 @@ describe("InvocationTable", () => {
 
     await renderInteractiveTable([record]);
 
-    expect(document.body.textContent).toContain("9.36 s ·");
+    expect(document.body.textContent).toContain("9.36 s");
+    expect(document.body.textContent).toContain("10.08 s ·");
+    expect(document.body.textContent).not.toContain("19.46 s");
 
     const trigger = Array.from(document.querySelectorAll("button")).find((button) => {
       const label = button.getAttribute("aria-label");
@@ -1996,10 +2004,7 @@ describe("InvocationTable", () => {
     expect(text).toContain("0 ms");
   });
 
-  it("ticks running elapsed time on the client while leaving first-byte data empty", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-03-16T09:10:35Z"));
-
+  it("does not derive TTFT or response duration from a running total", async () => {
     await renderInteractiveTable([
       {
         id: -91,
@@ -2014,17 +2019,8 @@ describe("InvocationTable", () => {
       },
     ]);
 
-    expect(document.body.textContent).toContain("用时");
-    expect(document.body.textContent).toContain("5 s");
+    expect(document.body.textContent).toContain("TTFT");
     expect(document.body.textContent).toContain("— · —");
-
-    await act(async () => {
-      vi.advanceTimersByTime(1000);
-      await Promise.resolve();
-    });
-
-    expect(document.body.textContent).toContain("6 s");
-    vi.useRealTimers();
   });
 
   it("forwards pool account clicks to the shared upstream account controller", async () => {

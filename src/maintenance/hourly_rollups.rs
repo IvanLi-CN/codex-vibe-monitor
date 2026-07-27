@@ -715,6 +715,7 @@ pub(crate) fn build_invocation_archive_rows_chunk_query(
     let cost_cache_read = legacy_compatible_archive_select_expr(archive_columns, "cost_cache_read");
     let cost_output = legacy_compatible_archive_select_expr(archive_columns, "cost_output");
     let cost_reasoning = legacy_compatible_archive_select_expr(archive_columns, "cost_reasoning");
+    let first_token_ms = legacy_compatible_archive_select_expr(archive_columns, "first_token_ms");
     format!(
         r#"
         SELECT
@@ -744,6 +745,7 @@ pub(crate) fn build_invocation_archive_rows_chunk_query(
             t_req_parse_ms,
             t_upstream_connect_ms,
             t_upstream_ttfb_ms,
+            {first_token_ms},
             t_upstream_stream_ms,
             t_resp_parse_ms,
             t_persist_ms
@@ -1914,6 +1916,18 @@ mod hourly_rollup_budget_tests {
     }
 
     #[test]
+    fn invocation_archive_replay_treats_missing_first_token_column_as_null() {
+        let legacy_query = build_invocation_archive_rows_chunk_query(&HashSet::new());
+        assert!(legacy_query.contains("NULL AS first_token_ms"));
+
+        let modern_query = build_invocation_archive_rows_chunk_query(&HashSet::from([
+            "first_token_ms".to_string(),
+        ]));
+        assert!(modern_query.contains("first_token_ms,"));
+        assert!(!modern_query.contains("NULL AS first_token_ms"));
+    }
+
+    #[test]
     fn inflate_gzip_sqlite_file_with_budget_stops_mid_inflate_when_elapsed_budget_is_exhausted() {
         let temp_dir = budgeted_inflate_test_dir("historical-rollup-budgeted-inflate");
         let source_path = temp_dir.join("archive.sqlite.gz");
@@ -2683,6 +2697,7 @@ pub(crate) fn codex_invocations_create_sql(table_name: &str) -> String {
             t_req_parse_ms REAL,
             t_upstream_connect_ms REAL,
             t_upstream_ttfb_ms REAL,
+            first_token_ms REAL,
             t_upstream_stream_ms REAL,
             t_resp_parse_ms REAL,
             t_persist_ms REAL,
@@ -2868,6 +2883,7 @@ pub(crate) async fn ensure_codex_invocations_archive_schema(
         ("cost_cache_read", "REAL"),
         ("cost_output", "REAL"),
         ("cost_reasoning", "REAL"),
+        ("first_token_ms", "REAL"),
     ] {
         if !archive_columns.contains(column) {
             let statement =

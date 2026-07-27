@@ -2269,7 +2269,7 @@ async fn fetch_invocation_summary_normalizes_top_level_success_and_failure_count
 }
 
 #[tokio::test]
-async fn fetch_invocation_summary_keeps_zero_ms_network_samples() {
+async fn fetch_invocation_summary_keeps_zero_ms_ttft_but_ignores_missing_response_duration() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2283,16 +2283,20 @@ async fn fetch_invocation_summary_keeps_zero_ms_network_samples() {
             source,
             status,
             t_upstream_ttfb_ms,
+            first_token_ms,
+            t_upstream_stream_ms,
             t_total_ms,
             raw_response
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
         "#,
     )
     .bind("summary-zero-network")
     .bind("2026-03-10 09:10:00")
     .bind(SOURCE_PROXY)
     .bind("success")
+    .bind(0.0_f64)
+    .bind(0.0_f64)
     .bind(0.0_f64)
     .bind(0.0_f64)
     .bind("{}")
@@ -2307,6 +2311,10 @@ async fn fetch_invocation_summary_keeps_zero_ms_network_samples() {
     assert_eq!(summary.total_count, 1);
     assert_eq!(summary.network.avg_ttfb_ms, Some(0.0));
     assert_eq!(summary.network.p95_ttfb_ms, Some(0.0));
+    assert_eq!(summary.network.avg_first_token_ms, Some(0.0));
+    assert_eq!(summary.network.p95_first_token_ms, Some(0.0));
+    assert_eq!(summary.network.avg_response_duration_ms, None);
+    assert_eq!(summary.network.p95_response_duration_ms, None);
     assert_eq!(summary.network.avg_total_ms, Some(0.0));
     assert_eq!(summary.network.p95_total_ms, Some(0.0));
 }
@@ -2343,6 +2351,10 @@ async fn fetch_invocation_summary_returns_zero_values_for_empty_results() {
     assert_f64_close(summary.token.total_cost, 0.0);
     assert_eq!(summary.network.avg_ttfb_ms, None);
     assert_eq!(summary.network.p95_ttfb_ms, None);
+    assert_eq!(summary.network.avg_first_token_ms, None);
+    assert_eq!(summary.network.p95_first_token_ms, None);
+    assert_eq!(summary.network.avg_response_duration_ms, None);
+    assert_eq!(summary.network.p95_response_duration_ms, None);
     assert_eq!(summary.network.avg_total_ms, None);
     assert_eq!(summary.network.p95_total_ms, None);
     assert_eq!(summary.exception.failure_count, 0);
@@ -2350,6 +2362,44 @@ async fn fetch_invocation_summary_returns_zero_values_for_empty_results() {
     assert_eq!(summary.exception.client_failure_count, 0);
     assert_eq!(summary.exception.client_abort_count, 0);
     assert_eq!(summary.exception.actionable_failure_count, 0);
+}
+
+#[tokio::test]
+async fn fetch_invocation_summary_p95_ignores_zero_response_duration_placeholders() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, stream_ms) in [
+        ("summary-zero-response", 0.0_f64),
+        ("summary-positive-response", 100.0_f64),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, t_upstream_stream_ms, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-03-10 09:10:00")
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(stream_ms)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert response-duration summary row");
+    }
+
+    let Json(summary) = fetch_invocation_summary(State(state), Query(ListQuery::default()))
+        .await
+        .expect("summary query with response-duration samples should succeed");
+
+    assert_eq!(summary.network.avg_response_duration_ms, Some(100.0));
+    assert_eq!(summary.network.p95_response_duration_ms, Some(100.0));
 }
 
 #[tokio::test]

@@ -670,7 +670,7 @@ describe("DashboardActivityOverview", () => {
             },
             tokensPerMinute: 1234,
             spendRate: 0.45,
-            currentFirstResponseByteTotalAvgMs: 1500,
+            currentFirstTokenAvgMs: 1500,
             currentAvgTotalMs: 2400,
           },
         }}

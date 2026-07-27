@@ -1766,9 +1766,23 @@ fn apply_dashboard_activity_live_overlay_to_payload(
         );
         set_json_optional_field(
             summary,
+            "currentFirstTokenAvgMs",
+            current_snapshot_summary
+                .first_token_avg_ms()
+                .map(|value| json!(value)),
+        );
+        set_json_optional_field(
+            summary,
             "currentAvgTotalMs",
             current_snapshot_summary
                 .avg_total_ms()
+                .map(|value| json!(value)),
+        );
+        set_json_optional_field(
+            summary,
+            "currentAvgResponseMs",
+            current_snapshot_summary
+                .avg_response_duration_ms()
                 .map(|value| json!(value)),
         );
     }
@@ -1852,8 +1866,22 @@ fn apply_dashboard_activity_live_overlay_to_payload(
         );
         set_json_optional_field(
             account_object,
+            "currentFirstTokenAvgMs",
+            current_snapshot
+                .first_token_avg_ms()
+                .map(|value| json!(value)),
+        );
+        set_json_optional_field(
+            account_object,
             "currentAvgTotalMs",
             current_snapshot.avg_total_ms().map(|value| json!(value)),
+        );
+        set_json_optional_field(
+            account_object,
+            "currentAvgResponseMs",
+            current_snapshot
+                .avg_response_duration_ms()
+                .map(|value| json!(value)),
         );
         if let Some(live_account) = live_account {
             let current_request_count = account_object
@@ -3945,7 +3973,9 @@ mod tests {
                 "tokensPerMinute": 123.0,
                 "spendRate": 4.56,
                 "currentFirstResponseByteTotalAvgMs": 789.0,
-                "currentAvgTotalMs": 456.0
+                "currentFirstTokenAvgMs": 987.0,
+                "currentAvgTotalMs": 456.0,
+                "currentAvgResponseMs": 135.0
             },
             "accounts": [{
                 "accountKey": "upstream:42",
@@ -3954,7 +3984,9 @@ mod tests {
                 "tokensPerMinute": 33.0,
                 "spendRate": 1.23,
                 "currentFirstResponseByteTotalAvgMs": 654.0,
+                "currentFirstTokenAvgMs": 456.0,
                 "currentAvgTotalMs": 321.0,
+                "currentAvgResponseMs": 246.0,
                 "recentInvocations": []
             }]
         });
@@ -3986,9 +4018,19 @@ mod tests {
             "summary stale currentFirstResponseByteTotalAvgMs should be removed",
         );
         assert_eq!(
+            summary.get("currentFirstTokenAvgMs"),
+            None,
+            "summary stale currentFirstTokenAvgMs should be removed",
+        );
+        assert_eq!(
             summary.get("currentAvgTotalMs"),
             None,
             "summary stale currentAvgTotalMs should be removed",
+        );
+        assert_eq!(
+            summary.get("currentAvgResponseMs"),
+            None,
+            "summary stale currentAvgResponseMs should be removed",
         );
 
         let account = payload
@@ -4003,9 +4045,19 @@ mod tests {
             "account stale currentFirstResponseByteTotalAvgMs should be removed",
         );
         assert_eq!(
+            account.get("currentFirstTokenAvgMs"),
+            None,
+            "account stale currentFirstTokenAvgMs should be removed",
+        );
+        assert_eq!(
             account.get("currentAvgTotalMs"),
             None,
             "account stale currentAvgTotalMs should be removed",
+        );
+        assert_eq!(
+            account.get("currentAvgResponseMs"),
+            None,
+            "account stale currentAvgResponseMs should be removed",
         );
     }
 }

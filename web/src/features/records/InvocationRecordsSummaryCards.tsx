@@ -83,22 +83,22 @@ export function InvocationRecordsSummaryCards({
       case "network":
         return [
           {
-            label: t("records.summary.network.avgTtfb"),
-            value: formatMs(summary?.network.avgTtfbMs),
+            label: t("records.summary.network.avgFirstToken"),
+            value: formatMs(summary?.network.avgFirstTokenMs),
             toneClass: "text-info",
           },
           {
-            label: t("records.summary.network.p95Ttfb"),
-            value: formatMs(summary?.network.p95TtfbMs),
+            label: t("records.summary.network.p95FirstToken"),
+            value: formatMs(summary?.network.p95FirstTokenMs),
           },
           {
-            label: t("records.summary.network.avgTotal"),
-            value: formatSeconds(summary?.network.avgTotalMs),
+            label: t("records.summary.network.avgResponseDuration"),
+            value: formatSeconds(summary?.network.avgResponseDurationMs),
             toneClass: "text-primary",
           },
           {
-            label: t("records.summary.network.p95Total"),
-            value: formatSeconds(summary?.network.p95TotalMs),
+            label: t("records.summary.network.p95ResponseDuration"),
+            value: formatSeconds(summary?.network.p95ResponseDurationMs),
           },
         ];
       case "exception":

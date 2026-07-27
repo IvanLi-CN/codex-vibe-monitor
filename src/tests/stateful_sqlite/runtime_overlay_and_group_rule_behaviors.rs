@@ -232,6 +232,7 @@ fn test_stage_timings() -> StageTimings {
         t_req_parse_ms: 0.0,
         t_upstream_connect_ms: 0.0,
         t_upstream_ttfb_ms: 0.0,
+        first_token_ms: None,
         t_upstream_stream_ms: 0.0,
         t_resp_parse_ms: 0.0,
         t_persist_ms: 0.0,

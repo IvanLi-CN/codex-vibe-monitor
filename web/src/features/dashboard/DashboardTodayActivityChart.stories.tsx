@@ -72,8 +72,8 @@ function buildRealisticPoint(index: number, intensity = 1) {
     totalTokens,
     totalCost: Number((totalTokens * 0.000018).toFixed(4)),
     nonSuccessCost: Number((failureCount * avgTokens * 0.000018).toFixed(4)),
-    firstResponseByteTotalSampleCount: completedCount,
-    firstResponseByteTotalAvgMs:
+    firstTokenSampleCount: completedCount,
+    firstTokenAvgMs:
       completedCount > 0 ? Math.round(latencyBase + deterministicNoise(index, 5.1) * 115) : null,
   };
 }
@@ -131,8 +131,8 @@ const latencyMinuteAlignmentResponse: TimeseriesResponse = {
         totalTokens: hasCalls ? 900 : 0,
         totalCost: hasCalls ? 0.0162 : 0,
         nonSuccessCost: 0,
-        firstResponseByteTotalSampleCount: hasCalls || hasInconsistentLatency ? 1 : 0,
-        firstResponseByteTotalAvgMs: hasCalls
+        firstTokenSampleCount: hasCalls || hasInconsistentLatency ? 1 : 0,
+        firstTokenAvgMs: hasCalls
           ? 820 + (index - 731) * 42
           : hasInconsistentLatency
             ? 18_225.02
@@ -175,8 +175,8 @@ const mixedOutcomeMinuteAlignmentResponse: TimeseriesResponse = {
       totalTokens: completedCount * 920,
       totalCost: Number((completedCount * 0.0166).toFixed(4)),
       nonSuccessCost: Number((failureCount * 0.0166).toFixed(4)),
-      firstResponseByteTotalSampleCount: completedCount,
-      firstResponseByteTotalAvgMs: completedCount > 0 ? 760 + (index - 42) * 18 : null,
+      firstTokenSampleCount: completedCount,
+      firstTokenAvgMs: completedCount > 0 ? 760 + (index - 42) * 18 : null,
     };
   }),
 };

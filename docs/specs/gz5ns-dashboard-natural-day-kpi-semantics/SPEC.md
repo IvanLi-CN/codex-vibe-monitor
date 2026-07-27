@@ -51,7 +51,7 @@
 - `消费速率` 右下为 `每对话`，公式是 `当前 spendRate / strict inProgressConversationCount`；分母为 `0` 或缺失时显示 `—`。
 - `成功` 右上为 `较昨日`，语义是 `当前成功数 / 昨日同进度成功数` 的比例，不是 delta；底部仍保留 `失败` 与 `失败率`。
 - `进行中对话` 右下为 `重试`，定义为当前 strict in-progress 对话里，上一条调用 display status 为 `failed` 且不含 `interrupted` 的唯一对话数。
-- `首字用时` 右下为最近 5 分钟完整调用结束的 `t_total_ms` 均值，定义为当前自然日窗口内最近 5 分钟相交 bucket 的 `avgTotalMs` 按 `totalLatencySampleCount` 与相交时长加权后的窗口均值；缺样本显示 `—`，不回退到整日均值。
+- `TTFT` 主值与日均只读取 `#6qe6u` 的真实首 Token 聚合；右下 `响应时间` 仍为最近 5 分钟完整调用结束的 `t_total_ms` 均值。任一指标缺样本显示 `—`，TTFT 不回退到 TTFB 或旧累计首字节耗时。
 - `今日成本` / `今日 Tokens` 右下都为 `失败`，聚合 `failed + interrupted` 调用的 cost / tokens。
 - 增强后的 summary 字段必须同时在全局 Dashboard 与 `upstreamAccountId` 账号作用域下可用。
 - 自然日金额图保留“累计金额”语义，但在 `metric=totalCost` 时必须改为两层堆叠面积：`累计成功金额` + `累计 Non-success 金额`。
@@ -77,12 +77,12 @@
 
 ### Core flows
 
-- 在 Dashboard `活动总览` 的 `今日` 与 `昨日` 页签中，七卡按同一顺序展示：`TPM`、`消费速率`、`进行中对话`、`成功`、`首字用时`、`今日成本`、`今日 Tokens`。
+- 在 Dashboard `活动总览` 的 `今日` 与 `昨日` 页签中，七卡按同一顺序展示：`TPM`、`消费速率`、`进行中对话`、`成功`、`TTFT`、`今日成本`、`今日 Tokens`。
 - 账号详情 `调用记录` tab 内复用同一个 `DashboardActivityOverview` / `TodayStatsOverview` 链路，样式与语义不分叉，只按 `upstreamAccountId` 切换数据作用域。
 - `TPM` 与 `消费速率` 左下仍展示工作分钟日均，右上展示 `较昨日`，右下展示 `每对话`。
 - `成功` 卡主值展示成功数，右上展示当前成功数相对昨日同进度成功数的比例，底部展示 `失败` 与 `失败率`。
 - `进行中对话` 主值展示 strict in-progress conversation count，左下展示 `日均`，右上展示 `较昨日`，右下展示 `重试`。
-- `首字用时` 主值沿用现有 active-tail 首字总耗时均值，左下展示整日日均，右上展示 `较昨日`，右下展示最近 5 分钟完整调用结束的 `t_total_ms` 均值。
+- `TTFT` 主值采用 `currentFirstTokenAvgMs`，左下展示整日 `firstTokenAvgMs`，右上展示 `较昨日`，右下展示最近 5 分钟完整调用结束的 `t_total_ms` 均值；所有历史无 TTFT 样本状态显示 `—`。
 - `今日成本` 左下展示前 7 个完整自然日均值，右上展示与昨日同进度 delta，右下展示失败/中断成本。
 - `今日 Tokens` 左下展示缓存命中率，右上展示与昨日同进度 delta，右下展示失败/中断 tokens。
 - Dashboard 自然日 comparison summary 中，`previous7d` 属于 closed-range exact window；owner-facing 当前应用不得为它建立 `stats.summary.current` 订阅，只能在首屏、范围切换、作用域切换与本地下一个午夜 rollover 时走 `fetchSummary("previous7d")`。
@@ -92,7 +92,7 @@
 ### Edge cases / errors
 
 - strict in-progress 分母为 `0` 或 `null` 时，`每对话` 必须显示 `—`，不能显示 `0`。
-- 当前最近 5 分钟窗口缺少完整调用结束的 `t_total_ms` 样本时，`首字用时 -> 响应时间` 显示 `—`。
+- 当前最近 5 分钟窗口缺少完整调用结束的 `t_total_ms` 样本时，`TTFT -> 响应时间` 显示 `—`；当前或整日缺真实首 Token 样本时，对应 TTFT 值独立显示 `—`。
 - 当前没有昨日同进度成功数或基线为 `0` 时，`成功 -> 较昨日` 显示 `—`。
 - summary 主请求失败时，保留现有整体 alert 语义；不把增强字段单独兜底成局部 tile。
 - summary 成功但增强字段缺失时，只影响对应辅助位显示 `—`，不阻断主值展示。
@@ -124,7 +124,7 @@
 - Given 打开 Dashboard `今日` 或 `昨日` 自然日页签，When 查看七卡，Then 每张卡都展示为“左上标签 + 右上 comparison/meta + 主值 + 底部左右 inline secondary”，右下不再留白。
 - Given `成功` 卡有昨日同进度成功基线，When 查看右上比较，Then 显示的是比值语义而不是 delta 百分比。
 - Given 当前进行中对话上一条调用是 `failed`，When 该对话仍 in-progress，Then `进行中对话 -> 重试` 会计入；若上一条是 `interrupted`，Then 不计入。
-- Given 当前最近 5 分钟窗口没有完整调用结束的 `t_total_ms` 样本，When 查看 `首字用时 -> 响应时间`，Then 显示 `—`。
+- Given 当前最近 5 分钟窗口没有完整调用结束的 `t_total_ms` 样本，When 查看 `TTFT -> 响应时间`，Then 显示 `—`；TTFT 自身不得用 TTFB 填充。
 - Given 今天存在 `failed`、`interrupted` 或二者混合调用，When 查看 `今日成本 -> 失败` 和 `今日 Tokens -> 失败`，Then 两者都包含这些 non-success 调用的累计金额与 Token。
 - Given 账号详情页传入 `upstreamAccountId`，When 查看自然日七卡，Then 增强字段与 Dashboard 全局视图一样生效，且作用域不泄露为全局数据。
 - Given 自然日金额图切到 `金额` metric，When 某个 bucket 同时包含成功与 `failed/interrupted` 成本，Then tooltip 同时显示累计 `Success`、累计 `Non-success` 与累计总金额，且前两者之和等于总金额。
@@ -178,7 +178,7 @@
 - source_type: `storybook_canvas`
   story_id_or_title: `dashboard-todaystatsoverview--desktop-single-row`
   scenario: `desktop single-row swapped cards`
-  evidence_note: `验证桌面单行七卡顺序已调整为 TPM、消费速率、进行中调用、成功、首字用时、今日成本、今日 Token。`
+  evidence_note: `验证桌面单行七卡顺序已调整为 TPM、消费速率、进行中调用、成功、TTFT、今日成本、今日 Token；截图生成时使用的旧延迟数据口径不构成当前 TTFT 语义证据，当前口径以 #6qe6u 为准。`
   PR: include
   ![TodayStatsOverview swapped cards](./assets/today-stats-overview-swapped-cards.png)
 - SHA `worktree`
@@ -198,9 +198,9 @@
 - SHA `worktree`
 - source_type: `storybook_canvas`
   story_id_or_title: `dashboard-todaystatsoverview--desktop-single-row`
-  scenario: `first-byte main value with recent avg total secondary`
-  evidence_note: `验证第五张卡主值仍为“首字用时”，右下标签为“响应时间”，其值为最近 5 分钟完整调用结束的 t_total_ms 均值；其余卡片语义不变。截图为中文 locale 的 Storybook 单卡裁切。`
-  ![First-byte time tile with recent avg total secondary](./assets/response-time-avg-total-storybook.png)
+  scenario: `legacy first-byte main value with recent avg total secondary`
+  evidence_note: `历史截图，仅验证第五张卡与“响应时间”次指标的布局；旧“首字用时”数据源已由 #6qe6u 废止，不构成 TTFT 证据。当前主值必须来自 firstToken*，不得从 TTFB 或累计首字节回填。`
+  ![Legacy first-byte tile layout evidence](./assets/response-time-avg-total-storybook.png)
 - SHA `worktree`
 - source_type: `storybook_canvas`
   story_id_or_title: `dashboard-todaystatsoverview--desktop-1280-precision-guard`
@@ -228,7 +228,7 @@
 
 - 风险：`nonSuccessCost/nonSuccessTokens` 仍是 summary augmentation 字段，如果未来被其他视图重用，可能需要进一步下沉到 rollup totals 契约。
 - 风险：natural-day timeseries 新增 `nonSuccessCost` 后，live / hourly-rollup / archive / upstream-account 需要保持同一聚合口径；任一路径遗漏都会让堆叠高度与 tooltip 总额不一致。
-- 风险：`首字用时` 主值继续走 active-tail 首字耗时读模型，而右下 `响应时间` 走最近 5 分钟完整调用的 `avgTotalMs`；若未来产品希望两者统一成单一口径，需要同步更新文案、helper 与 spec。
+- 风险：`TTFT` 主值走 `#6qe6u` 的真实首 Token 读模型，而右下 `响应时间` 走最近 5 分钟完整调用的 `avgTotalMs`；两者必须保持独立字段与样本资格，不能因展示在同一卡片而互相回填。
 - 假设：`每对话` 的分母固定使用 strict `inProgressConversationCount`，分母为 `0/null` 时显示 `—`。
 - 假设：`失败` 成本与 Token 的正式口径为 `failed + interrupted`。
 

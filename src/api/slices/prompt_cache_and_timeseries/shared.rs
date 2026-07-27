@@ -333,7 +333,7 @@ where
         .push(
             " AS live_phase, \
             t_total_ms, t_req_read_ms, t_req_parse_ms, \
-            t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, \
+            t_upstream_connect_ms, t_upstream_ttfb_ms, first_token_ms, t_upstream_stream_ms, \
             t_resp_parse_ms, t_persist_ms \
          FROM codex_invocations \
          WHERE occurred_at >= ",
@@ -748,6 +748,29 @@ pub(super) async fn query_invocation_hourly_rollup_range_tx(
         } else {
             "0.0 AS total_latency_sum_ms"
         };
+    let has_first_token_rollup =
+        sqlite_table_has_column_tx(tx, "invocation_rollup_hourly", "first_token_sample_count")
+            .await?;
+    let first_token_sample_count_expr = if has_first_token_rollup {
+        "COALESCE(first_token_sample_count, 0) AS first_token_sample_count"
+    } else {
+        "0 AS first_token_sample_count"
+    };
+    let first_token_sum_ms_expr = if has_first_token_rollup {
+        "COALESCE(first_token_sum_ms, 0.0) AS first_token_sum_ms"
+    } else {
+        "0.0 AS first_token_sum_ms"
+    };
+    let first_token_max_ms_expr = if has_first_token_rollup {
+        "COALESCE(first_token_max_ms, 0.0) AS first_token_max_ms"
+    } else {
+        "0.0 AS first_token_max_ms"
+    };
+    let first_token_histogram_expr = if has_first_token_rollup {
+        "COALESCE(first_token_histogram, '[]') AS first_token_histogram"
+    } else {
+        "'[]' AS first_token_histogram"
+    };
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
@@ -768,7 +791,11 @@ pub(super) async fn query_invocation_hourly_rollup_range_tx(
             first_response_byte_total_sample_count,
             first_response_byte_total_sum_ms,
             first_response_byte_total_max_ms,
-            first_response_byte_total_histogram
+            first_response_byte_total_histogram,
+            {first_token_sample_count_expr},
+            {first_token_sum_ms_expr},
+            {first_token_max_ms_expr},
+            {first_token_histogram_expr}
         FROM invocation_rollup_hourly
         WHERE bucket_start_epoch >=
         "#,
@@ -872,6 +899,8 @@ pub(crate) async fn query_upstream_account_usage_breakdown_hourly_rollup_range_t
             performance_response_sum_ms,
             performance_first_byte_sample_count,
             performance_first_byte_sum_ms,
+            performance_first_token_sample_count,
+            performance_first_token_sum_ms,
             performance_usage_duration_sample_count,
             performance_usage_duration_sum_ms
         FROM upstream_account_usage_breakdown_hourly
@@ -927,6 +956,28 @@ pub(crate) async fn query_upstream_account_stats_rollup_range_tx(
         } else {
             "0.0 AS total_latency_sum_ms"
         };
+    let has_first_token_rollup =
+        sqlite_table_has_column_tx(tx, table_name, "first_token_sample_count").await?;
+    let first_token_sample_count_expr = if has_first_token_rollup {
+        "COALESCE(first_token_sample_count, 0) AS first_token_sample_count"
+    } else {
+        "0 AS first_token_sample_count"
+    };
+    let first_token_sum_ms_expr = if has_first_token_rollup {
+        "COALESCE(first_token_sum_ms, 0.0) AS first_token_sum_ms"
+    } else {
+        "0.0 AS first_token_sum_ms"
+    };
+    let first_token_max_ms_expr = if has_first_token_rollup {
+        "COALESCE(first_token_max_ms, 0.0) AS first_token_max_ms"
+    } else {
+        "0.0 AS first_token_max_ms"
+    };
+    let first_token_histogram_expr = if has_first_token_rollup {
+        "COALESCE(first_token_histogram, '[]') AS first_token_histogram"
+    } else {
+        "'[]' AS first_token_histogram"
+    };
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
@@ -950,7 +1001,11 @@ pub(crate) async fn query_upstream_account_stats_rollup_range_tx(
             first_response_byte_total_sample_count,
             first_response_byte_total_sum_ms,
             first_response_byte_total_max_ms,
-            first_response_byte_total_histogram
+            first_response_byte_total_histogram,
+            {first_token_sample_count_expr},
+            {first_token_sum_ms_expr},
+            {first_token_max_ms_expr},
+            {first_token_histogram_expr}
         FROM {table_name}
         WHERE bucket_start_epoch >=
         "#,

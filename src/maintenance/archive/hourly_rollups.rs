@@ -62,6 +62,16 @@ async fn load_pool_attempt_fallback_capability_tx(
     })
 }
 
+async fn live_invocation_first_token_ms_sql_tx(tx: &mut SqliteConnection) -> Result<&'static str> {
+    let has_column = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM pragma_table_info('codex_invocations') WHERE name = 'first_token_ms' LIMIT 1",
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .is_some();
+    Ok(if has_column { "first_token_ms" } else { "NULL" })
+}
+
 fn live_invocation_upstream_account_id_sql(
     invocation_ref: &str,
     capability: PoolAttemptFallbackCapability,
@@ -144,8 +154,10 @@ async fn subtract_upstream_account_usage_breakdown_hourly_rows_tx(
                 performance_response_sum_ms = MAX(performance_response_sum_ms - ?23, 0.0),
                 performance_first_byte_sample_count = MAX(performance_first_byte_sample_count - ?24, 0),
                 performance_first_byte_sum_ms = MAX(performance_first_byte_sum_ms - ?25, 0.0),
-                performance_usage_duration_sample_count = MAX(performance_usage_duration_sample_count - ?26, 0),
-                performance_usage_duration_sum_ms = MAX(performance_usage_duration_sum_ms - ?27, 0.0),
+                performance_first_token_sample_count = MAX(performance_first_token_sample_count - ?26, 0),
+                performance_first_token_sum_ms = MAX(performance_first_token_sum_ms - ?27, 0.0),
+                performance_usage_duration_sample_count = MAX(performance_usage_duration_sample_count - ?28, 0),
+                performance_usage_duration_sum_ms = MAX(performance_usage_duration_sum_ms - ?29, 0.0),
                 updated_at = datetime('now')
             WHERE bucket_start_epoch = ?1
               AND source = ?2
@@ -179,6 +191,8 @@ async fn subtract_upstream_account_usage_breakdown_hourly_rows_tx(
         .bind(delta.performance_response_sum_ms)
         .bind(delta.performance_first_byte_sample_count)
         .bind(delta.performance_first_byte_sum_ms)
+        .bind(delta.performance_first_token_sample_count)
+        .bind(delta.performance_first_token_sum_ms)
         .bind(delta.performance_usage_duration_sample_count)
         .bind(delta.performance_usage_duration_sum_ms)
         .execute(&mut *tx)
@@ -212,6 +226,8 @@ async fn subtract_upstream_account_usage_breakdown_hourly_rows_tx(
               AND performance_response_sum_ms = 0.0
               AND performance_first_byte_sample_count = 0
               AND performance_first_byte_sum_ms = 0.0
+              AND performance_first_token_sample_count = 0
+              AND performance_first_token_sum_ms = 0.0
               AND performance_usage_duration_sample_count = 0
               AND performance_usage_duration_sum_ms = 0.0
             "#,
@@ -656,6 +672,7 @@ pub(crate) fn build_legacy_compatible_invocation_archive_query(
     let cost_cache_read = legacy_compatible_archive_select_expr(archive_columns, "cost_cache_read");
     let cost_output = legacy_compatible_archive_select_expr(archive_columns, "cost_output");
     let cost_reasoning = legacy_compatible_archive_select_expr(archive_columns, "cost_reasoning");
+    let first_token_ms = legacy_compatible_archive_select_expr(archive_columns, "first_token_ms");
     format!(
         r#"
         SELECT
@@ -686,6 +703,7 @@ pub(crate) fn build_legacy_compatible_invocation_archive_query(
             t_req_parse_ms,
             t_upstream_connect_ms,
             t_upstream_ttfb_ms,
+            {first_token_ms},
             t_upstream_stream_ms,
             t_resp_parse_ms,
             t_persist_ms
@@ -1322,6 +1340,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     .or_insert_with(|| UpstreamAccountStatsDelta {
                         first_byte_histogram: empty_approx_histogram(),
                         first_response_byte_total_histogram: empty_approx_histogram(),
+                        first_token_histogram: empty_approx_histogram(),
                         ..UpstreamAccountStatsDelta::default()
                     });
                 accumulate_upstream_account_stats_delta(entry, row);
@@ -1339,6 +1358,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     .or_insert_with(|| UpstreamAccountStatsDelta {
                         first_byte_histogram: empty_approx_histogram(),
                         first_response_byte_total_histogram: empty_approx_histogram(),
+                        first_token_histogram: empty_approx_histogram(),
                         ..UpstreamAccountStatsDelta::default()
                     });
                 accumulate_upstream_account_stats_delta(entry, row);
@@ -1361,6 +1381,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     .or_insert_with(|| UpstreamAccountStatsDelta {
                         first_byte_histogram: empty_approx_histogram(),
                         first_response_byte_total_histogram: empty_approx_histogram(),
+                        first_token_histogram: empty_approx_histogram(),
                         ..UpstreamAccountStatsDelta::default()
                     });
                 accumulate_upstream_account_activity_v2_delta(entry, row);
@@ -1421,6 +1442,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
         struct InvocationRollupHistogramRow {
             first_byte_histogram: String,
             first_response_byte_total_histogram: String,
+            first_token_histogram: String,
         }
 
         for ((bucket_start_epoch, source), delta) in overall {
@@ -1428,7 +1450,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                 r#"
                 SELECT
                     first_byte_histogram,
-                    first_response_byte_total_histogram
+                    first_response_byte_total_histogram,
+                    first_token_histogram
                 FROM invocation_rollup_hourly
                 WHERE bucket_start_epoch = ?1 AND source = ?2
                 "#,
@@ -1453,6 +1476,14 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                 &mut merged_first_response_byte_total_histogram,
                 &delta.first_response_byte_total_histogram,
             )?;
+            let mut merged_first_token_histogram = current_histograms
+                .as_ref()
+                .map(|row| decode_approx_histogram(&row.first_token_histogram))
+                .unwrap_or_else(empty_approx_histogram);
+            merge_approx_histogram_into(
+                &mut merged_first_token_histogram,
+                &delta.first_token_histogram,
+            )?;
             sqlx::query(
                 r#"
                 INSERT INTO invocation_rollup_hourly (
@@ -1475,9 +1506,13 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     first_response_byte_total_sum_ms,
                     first_response_byte_total_max_ms,
                     first_response_byte_total_histogram,
+                    first_token_sample_count,
+                    first_token_sum_ms,
+                    first_token_max_ms,
+                    first_token_histogram,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, datetime('now'))
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, datetime('now'))
                 ON CONFLICT(bucket_start_epoch, source) DO UPDATE SET
                     total_count = invocation_rollup_hourly.total_count + excluded.total_count,
                     success_count = invocation_rollup_hourly.success_count + excluded.success_count,
@@ -1496,6 +1531,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     first_response_byte_total_sum_ms = invocation_rollup_hourly.first_response_byte_total_sum_ms + excluded.first_response_byte_total_sum_ms,
                     first_response_byte_total_max_ms = MAX(invocation_rollup_hourly.first_response_byte_total_max_ms, excluded.first_response_byte_total_max_ms),
                     first_response_byte_total_histogram = excluded.first_response_byte_total_histogram,
+                    first_token_sample_count = invocation_rollup_hourly.first_token_sample_count + excluded.first_token_sample_count,
+                    first_token_sum_ms = invocation_rollup_hourly.first_token_sum_ms + excluded.first_token_sum_ms,
+                    first_token_max_ms = MAX(invocation_rollup_hourly.first_token_max_ms, excluded.first_token_max_ms),
+                    first_token_histogram = excluded.first_token_histogram,
                     updated_at = datetime('now')
                 "#,
             )
@@ -1520,6 +1559,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             .bind(encode_approx_histogram(
                 &merged_first_response_byte_total_histogram,
             )?)
+            .bind(delta.first_token_sample_count)
+            .bind(delta.first_token_sum_ms)
+            .bind(delta.first_token_max_ms)
+            .bind(encode_approx_histogram(&merged_first_token_histogram)?)
             .execute(&mut *tx)
             .await?;
         }
@@ -1809,11 +1852,13 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     performance_response_sum_ms,
                     performance_first_byte_sample_count,
                     performance_first_byte_sum_ms,
+                    performance_first_token_sample_count,
+                    performance_first_token_sum_ms,
                     performance_usage_duration_sample_count,
                     performance_usage_duration_sum_ms,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, datetime('now'))
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, datetime('now'))
                 ON CONFLICT(bucket_start_epoch, source, upstream_account_key, normalized_model, normalized_reasoning_effort) DO UPDATE SET
                     request_count = upstream_account_usage_breakdown_hourly.request_count + excluded.request_count,
                     success_count = upstream_account_usage_breakdown_hourly.success_count + excluded.success_count,
@@ -1835,6 +1880,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     performance_response_sum_ms = upstream_account_usage_breakdown_hourly.performance_response_sum_ms + excluded.performance_response_sum_ms,
                     performance_first_byte_sample_count = upstream_account_usage_breakdown_hourly.performance_first_byte_sample_count + excluded.performance_first_byte_sample_count,
                     performance_first_byte_sum_ms = upstream_account_usage_breakdown_hourly.performance_first_byte_sum_ms + excluded.performance_first_byte_sum_ms,
+                    performance_first_token_sample_count = upstream_account_usage_breakdown_hourly.performance_first_token_sample_count + excluded.performance_first_token_sample_count,
+                    performance_first_token_sum_ms = upstream_account_usage_breakdown_hourly.performance_first_token_sum_ms + excluded.performance_first_token_sum_ms,
                     performance_usage_duration_sample_count = upstream_account_usage_breakdown_hourly.performance_usage_duration_sample_count + excluded.performance_usage_duration_sample_count,
                     performance_usage_duration_sum_ms = upstream_account_usage_breakdown_hourly.performance_usage_duration_sum_ms + excluded.performance_usage_duration_sum_ms,
                     updated_at = datetime('now')
@@ -1866,6 +1913,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             .bind(delta.performance_response_sum_ms)
             .bind(delta.performance_first_byte_sample_count)
             .bind(delta.performance_first_byte_sum_ms)
+            .bind(delta.performance_first_token_sample_count)
+            .bind(delta.performance_first_token_sum_ms)
             .bind(delta.performance_usage_duration_sample_count)
             .bind(delta.performance_usage_duration_sum_ms)
             .execute(&mut *tx)
@@ -1878,6 +1927,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
         struct AccountStatsHistogramRow {
             first_byte_histogram: String,
             first_response_byte_total_histogram: String,
+            first_token_histogram: String,
         }
 
         for ((bucket_start_epoch, source, upstream_account_id), delta) in
@@ -1887,7 +1937,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                 r#"
                 SELECT
                     first_byte_histogram,
-                    first_response_byte_total_histogram
+                    first_response_byte_total_histogram,
+                    first_token_histogram
                 FROM upstream_account_stats_hourly
                 WHERE bucket_start_epoch = ?1 AND source = ?2 AND upstream_account_id = ?3
                 "#,
@@ -1912,6 +1963,14 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             merge_approx_histogram_into(
                 &mut merged_first_response_byte_total_histogram,
                 &delta.first_response_byte_total_histogram,
+            )?;
+            let mut merged_first_token_histogram = current_histograms
+                .as_ref()
+                .map(|row| decode_approx_histogram(&row.first_token_histogram))
+                .unwrap_or_else(empty_approx_histogram);
+            merge_approx_histogram_into(
+                &mut merged_first_token_histogram,
+                &delta.first_token_histogram,
             )?;
             sqlx::query(
                 r#"
@@ -1939,9 +1998,13 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     first_response_byte_total_sum_ms,
                     first_response_byte_total_max_ms,
                     first_response_byte_total_histogram,
+                    first_token_sample_count,
+                    first_token_sum_ms,
+                    first_token_max_ms,
+                    first_token_histogram,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, datetime('now'))
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, datetime('now'))
                 ON CONFLICT(bucket_start_epoch, source, upstream_account_id) DO UPDATE SET
                     total_count = upstream_account_stats_hourly.total_count + excluded.total_count,
                     success_count = upstream_account_stats_hourly.success_count + excluded.success_count,
@@ -1963,6 +2026,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     first_response_byte_total_sum_ms = upstream_account_stats_hourly.first_response_byte_total_sum_ms + excluded.first_response_byte_total_sum_ms,
                     first_response_byte_total_max_ms = MAX(upstream_account_stats_hourly.first_response_byte_total_max_ms, excluded.first_response_byte_total_max_ms),
                     first_response_byte_total_histogram = excluded.first_response_byte_total_histogram,
+                    first_token_sample_count = upstream_account_stats_hourly.first_token_sample_count + excluded.first_token_sample_count,
+                    first_token_sum_ms = upstream_account_stats_hourly.first_token_sum_ms + excluded.first_token_sum_ms,
+                    first_token_max_ms = MAX(upstream_account_stats_hourly.first_token_max_ms, excluded.first_token_max_ms),
+                    first_token_histogram = excluded.first_token_histogram,
                     updated_at = datetime('now')
                 "#,
             )
@@ -1991,15 +2058,44 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             .bind(encode_approx_histogram(
                 &merged_first_response_byte_total_histogram,
             )?)
+            .bind(delta.first_token_sample_count)
+            .bind(delta.first_token_sum_ms)
+            .bind(delta.first_token_max_ms)
+            .bind(encode_approx_histogram(&merged_first_token_histogram)?)
             .execute(&mut *tx)
             .await?;
         }
     }
 
     if upsert_upstream_account_activity_v2 {
+        #[derive(sqlx::FromRow)]
+        struct ActivityV2StatsHistogramRow {
+            first_token_histogram: String,
+        }
+
         for ((bucket_start_epoch, source, upstream_account_id), delta) in
             upstream_account_activity_v2
         {
+            let current_histogram = sqlx::query_as::<_, ActivityV2StatsHistogramRow>(
+                r#"
+                SELECT first_token_histogram
+                FROM upstream_account_stats_hourly
+                WHERE bucket_start_epoch = ?1 AND source = ?2 AND upstream_account_id = ?3
+                "#,
+            )
+            .bind(bucket_start_epoch)
+            .bind(&source)
+            .bind(upstream_account_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let mut merged_first_token_histogram = current_histogram
+                .as_ref()
+                .map(|row| decode_approx_histogram(&row.first_token_histogram))
+                .unwrap_or_else(empty_approx_histogram);
+            merge_approx_histogram_into(
+                &mut merged_first_token_histogram,
+                &delta.first_token_histogram,
+            )?;
             sqlx::query(
                 r#"
                 INSERT INTO upstream_account_stats_hourly (
@@ -2028,12 +2124,16 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     activity_v2_latest_first_response_ms,
                     activity_v2_latest_total_latency_at,
                     activity_v2_latest_total_latency_ms,
+                    first_token_sample_count,
+                    first_token_sum_ms,
+                    first_token_max_ms,
+                    first_token_histogram,
                     updated_at
                 )
                 VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                     ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23,
-                    ?24, ?25, datetime('now')
+                    ?24, ?25, ?26, ?27, ?28, ?29, datetime('now')
                 )
                 ON CONFLICT(bucket_start_epoch, source, upstream_account_id) DO UPDATE SET
                     activity_v2_request_count = upstream_account_stats_hourly.activity_v2_request_count + excluded.activity_v2_request_count,
@@ -2088,6 +2188,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                         THEN excluded.activity_v2_latest_total_latency_at
                         ELSE upstream_account_stats_hourly.activity_v2_latest_total_latency_at
                     END,
+                    first_token_sample_count = upstream_account_stats_hourly.first_token_sample_count + excluded.first_token_sample_count,
+                    first_token_sum_ms = upstream_account_stats_hourly.first_token_sum_ms + excluded.first_token_sum_ms,
+                    first_token_max_ms = MAX(upstream_account_stats_hourly.first_token_max_ms, excluded.first_token_max_ms),
+                    first_token_histogram = excluded.first_token_histogram,
                     updated_at = datetime('now')
                 "#,
             )
@@ -2116,6 +2220,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             .bind(delta.latest_first_response_byte_total_ms)
             .bind(delta.latest_total_latency_at.as_deref())
             .bind(delta.latest_total_latency_ms)
+            .bind(delta.first_token_sample_count)
+            .bind(delta.first_token_sum_ms)
+            .bind(delta.first_token_max_ms)
+            .bind(encode_approx_histogram(&merged_first_token_histogram)?)
             .execute(&mut *tx)
             .await?;
         }
@@ -2126,6 +2234,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
         struct AccountMinuteStatsHistogramRow {
             first_byte_histogram: String,
             first_response_byte_total_histogram: String,
+            first_token_histogram: String,
         }
 
         for ((bucket_start_epoch, source, upstream_account_id), delta) in
@@ -2135,7 +2244,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                 r#"
                 SELECT
                     first_byte_histogram,
-                    first_response_byte_total_histogram
+                    first_response_byte_total_histogram,
+                    first_token_histogram
                 FROM upstream_account_stats_minute
                 WHERE bucket_start_epoch = ?1 AND source = ?2 AND upstream_account_id = ?3
                 "#,
@@ -2160,6 +2270,14 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             merge_approx_histogram_into(
                 &mut merged_first_response_byte_total_histogram,
                 &delta.first_response_byte_total_histogram,
+            )?;
+            let mut merged_first_token_histogram = current_histograms
+                .as_ref()
+                .map(|row| decode_approx_histogram(&row.first_token_histogram))
+                .unwrap_or_else(empty_approx_histogram);
+            merge_approx_histogram_into(
+                &mut merged_first_token_histogram,
+                &delta.first_token_histogram,
             )?;
             sqlx::query(
                 r#"
@@ -2187,9 +2305,13 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     first_response_byte_total_sum_ms,
                     first_response_byte_total_max_ms,
                     first_response_byte_total_histogram,
+                    first_token_sample_count,
+                    first_token_sum_ms,
+                    first_token_max_ms,
+                    first_token_histogram,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, datetime('now'))
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, datetime('now'))
                 ON CONFLICT(bucket_start_epoch, source, upstream_account_id) DO UPDATE SET
                     total_count = upstream_account_stats_minute.total_count + excluded.total_count,
                     success_count = upstream_account_stats_minute.success_count + excluded.success_count,
@@ -2211,6 +2333,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     first_response_byte_total_sum_ms = upstream_account_stats_minute.first_response_byte_total_sum_ms + excluded.first_response_byte_total_sum_ms,
                     first_response_byte_total_max_ms = MAX(upstream_account_stats_minute.first_response_byte_total_max_ms, excluded.first_response_byte_total_max_ms),
                     first_response_byte_total_histogram = excluded.first_response_byte_total_histogram,
+                    first_token_sample_count = upstream_account_stats_minute.first_token_sample_count + excluded.first_token_sample_count,
+                    first_token_sum_ms = upstream_account_stats_minute.first_token_sum_ms + excluded.first_token_sum_ms,
+                    first_token_max_ms = MAX(upstream_account_stats_minute.first_token_max_ms, excluded.first_token_max_ms),
+                    first_token_histogram = excluded.first_token_histogram,
                     updated_at = datetime('now')
                 "#,
             )
@@ -2239,6 +2365,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             .bind(encode_approx_histogram(
                 &merged_first_response_byte_total_histogram,
             )?)
+            .bind(delta.first_token_sample_count)
+            .bind(delta.first_token_sum_ms)
+            .bind(delta.first_token_max_ms)
+            .bind(encode_approx_histogram(&merged_first_token_histogram)?)
             .execute(&mut *tx)
             .await?;
         }
@@ -2449,6 +2579,7 @@ pub(crate) async fn load_live_invocation_hourly_rows_for_bucket_epochs_tx(
         "codex_invocations",
         load_pool_attempt_fallback_capability_tx(tx).await?,
     );
+    let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(tx).await?;
 
     let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
         "SELECT \
@@ -2479,6 +2610,7 @@ pub(crate) async fn load_live_invocation_hourly_rows_for_bucket_epochs_tx(
             t_req_parse_ms,
             t_upstream_connect_ms,
             t_upstream_ttfb_ms,
+            {} AS first_token_ms,
             t_upstream_stream_ms,
             t_resp_parse_ms,
             t_persist_ms
@@ -2486,7 +2618,7 @@ pub(crate) async fn load_live_invocation_hourly_rows_for_bucket_epochs_tx(
          WHERE occurred_at >= ?1
            AND occurred_at < ?2
          ORDER BY id ASC",
-        upstream_account_id_sql,
+        upstream_account_id_sql, first_token_ms_sql,
     ))
     .bind(db_occurred_at_lower_bound(min_bucket_start))
     .bind(db_occurred_at_lower_bound(max_bucket_end))
@@ -2578,6 +2710,7 @@ pub(crate) async fn replay_live_invocation_hourly_rollups(pool: &Pool<Sqlite>) -
             "codex_invocations",
             load_pool_attempt_fallback_capability_tx(&mut conn).await?,
         );
+        let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(&mut conn).await?;
         sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
             r#"
         SELECT
@@ -2608,6 +2741,7 @@ pub(crate) async fn replay_live_invocation_hourly_rollups(pool: &Pool<Sqlite>) -
             t_req_parse_ms,
             t_upstream_connect_ms,
             t_upstream_ttfb_ms,
+            {} AS first_token_ms,
             t_upstream_stream_ms,
             t_resp_parse_ms,
             t_persist_ms
@@ -2616,7 +2750,7 @@ pub(crate) async fn replay_live_invocation_hourly_rollups(pool: &Pool<Sqlite>) -
         ORDER BY id ASC
         LIMIT ?2
         "#,
-            upstream_account_id_sql,
+            upstream_account_id_sql, first_token_ms_sql,
         ))
         .bind(cursor_id)
         .bind(BACKFILL_BATCH_SIZE)
@@ -2659,6 +2793,7 @@ pub(crate) async fn replay_live_invocation_hourly_rollups_tx(
         "codex_invocations",
         load_pool_attempt_fallback_capability_tx(tx).await?,
     );
+    let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(tx).await?;
     let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
         r#"
         SELECT
@@ -2689,6 +2824,7 @@ pub(crate) async fn replay_live_invocation_hourly_rollups_tx(
             t_req_parse_ms,
             t_upstream_connect_ms,
             t_upstream_ttfb_ms,
+            {} AS first_token_ms,
             t_upstream_stream_ms,
             t_resp_parse_ms,
             t_persist_ms
@@ -2697,7 +2833,7 @@ pub(crate) async fn replay_live_invocation_hourly_rollups_tx(
         ORDER BY id ASC
         LIMIT ?2
         "#,
-        upstream_account_id_sql,
+        upstream_account_id_sql, first_token_ms_sql,
     ))
     .bind(cursor_id)
     .bind(BACKFILL_BATCH_SIZE)
@@ -2758,6 +2894,7 @@ pub(crate) async fn repair_live_invocation_account_activity_v2_once(
         "codex_invocations",
         load_pool_attempt_fallback_capability_tx(tx.as_mut()).await?,
     );
+    let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(tx.as_mut()).await?;
     let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
         r#"
         SELECT
@@ -2767,13 +2904,13 @@ pub(crate) async fn repair_live_invocation_account_activity_v2_once(
             cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning,
             error_message, failure_kind, failure_class, is_actionable, payload,
             t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms,
-            t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms
+            t_upstream_ttfb_ms, {} AS first_token_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms
         FROM codex_invocations
         WHERE id > ?1 AND id <= ?2
         ORDER BY id ASC
         LIMIT ?3
         "#,
-        upstream_account_id_sql,
+        upstream_account_id_sql, first_token_ms_sql,
     ))
     .bind(repair_cursor)
     .bind(shared_live_cursor)
@@ -2900,6 +3037,7 @@ async fn repair_live_invocation_usage_breakdown_rollups_once(pool: &Pool<Sqlite>
         "codex_invocations",
         load_pool_attempt_fallback_capability_tx(tx.as_mut()).await?,
     );
+    let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(tx.as_mut()).await?;
     let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
         r#"
         SELECT
@@ -2930,6 +3068,7 @@ async fn repair_live_invocation_usage_breakdown_rollups_once(pool: &Pool<Sqlite>
             t_req_parse_ms,
             t_upstream_connect_ms,
             t_upstream_ttfb_ms,
+            {} AS first_token_ms,
             t_upstream_stream_ms,
             t_resp_parse_ms,
             t_persist_ms
@@ -2939,7 +3078,7 @@ async fn repair_live_invocation_usage_breakdown_rollups_once(pool: &Pool<Sqlite>
         ORDER BY id ASC
         LIMIT ?3
         "#,
-        upstream_account_id_sql,
+        upstream_account_id_sql, first_token_ms_sql,
     ))
     .bind(repair_cursor)
     .bind(shared_live_cursor)
@@ -3521,6 +3660,7 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
                 t_req_parse_ms,
                 t_upstream_connect_ms,
                 t_upstream_ttfb_ms,
+                first_token_ms,
                 t_upstream_stream_ms,
                 t_resp_parse_ms,
                 t_persist_ms
@@ -3573,9 +3713,13 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
                 first_response_byte_total_sum_ms,
                 first_response_byte_total_max_ms,
                 first_response_byte_total_histogram,
+                first_token_sample_count,
+                first_token_sum_ms,
+                first_token_max_ms,
+                first_token_histogram,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, datetime('now'))
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, datetime('now'))
             ON CONFLICT(bucket_start_epoch, source) DO UPDATE SET
                 total_count = excluded.total_count,
                 success_count = excluded.success_count,
@@ -3594,6 +3738,10 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
                 first_response_byte_total_sum_ms = excluded.first_response_byte_total_sum_ms,
                 first_response_byte_total_max_ms = excluded.first_response_byte_total_max_ms,
                 first_response_byte_total_histogram = excluded.first_response_byte_total_histogram,
+                first_token_sample_count = excluded.first_token_sample_count,
+                first_token_sum_ms = excluded.first_token_sum_ms,
+                first_token_max_ms = excluded.first_token_max_ms,
+                first_token_histogram = excluded.first_token_histogram,
                 updated_at = datetime('now')
             "#,
         )
@@ -3618,6 +3766,10 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
         .bind(encode_approx_histogram(
             &delta.first_response_byte_total_histogram,
         )?)
+        .bind(delta.first_token_sample_count)
+        .bind(delta.first_token_sum_ms)
+        .bind(delta.first_token_max_ms)
+        .bind(encode_approx_histogram(&delta.first_token_histogram)?)
         .execute(tx.as_mut())
         .await?;
     }
@@ -3701,6 +3853,7 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
         "codex_invocations",
         load_pool_attempt_fallback_capability_tx(&mut live_conn).await?,
     );
+    let first_token_ms_sql = live_invocation_first_token_ms_sql_tx(&mut live_conn).await?;
     loop {
         let mut live_rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&format!(
             r#"
@@ -3732,6 +3885,7 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
                 t_req_parse_ms,
                 t_upstream_connect_ms,
                 t_upstream_ttfb_ms,
+                {} AS first_token_ms,
                 t_upstream_stream_ms,
                 t_resp_parse_ms,
                 t_persist_ms
@@ -3740,7 +3894,7 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
             ORDER BY id ASC
             LIMIT ?2
             "#,
-            upstream_account_id_sql,
+            upstream_account_id_sql, first_token_ms_sql,
         ))
         .bind(cursor_id)
         .bind(BACKFILL_BATCH_SIZE)
@@ -3912,6 +4066,8 @@ mod upstream_host_network_minute_tests {
                 performance_response_sum_ms REAL NOT NULL DEFAULT 0,
                 performance_first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
                 performance_first_byte_sum_ms REAL NOT NULL DEFAULT 0,
+                performance_first_token_sample_count INTEGER NOT NULL DEFAULT 0,
+                performance_first_token_sum_ms REAL NOT NULL DEFAULT 0,
                 performance_usage_duration_sample_count INTEGER NOT NULL DEFAULT 0,
                 performance_usage_duration_sum_ms REAL NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -4463,6 +4619,8 @@ mod retention_breakdown_materialization_tests {
                 performance_response_sum_ms REAL NOT NULL DEFAULT 0,
                 performance_first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
                 performance_first_byte_sum_ms REAL NOT NULL DEFAULT 0,
+                performance_first_token_sample_count INTEGER NOT NULL DEFAULT 0,
+                performance_first_token_sum_ms REAL NOT NULL DEFAULT 0,
                 performance_usage_duration_sample_count INTEGER NOT NULL DEFAULT 0,
                 performance_usage_duration_sum_ms REAL NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -4572,6 +4730,7 @@ mod retention_breakdown_materialization_tests {
             t_req_parse_ms: Some(0.0),
             t_upstream_connect_ms: Some(0.0),
             t_upstream_ttfb_ms: Some(10.0),
+            first_token_ms: None,
             t_upstream_stream_ms: Some(20.0),
             t_resp_parse_ms: Some(0.0),
             t_persist_ms: Some(0.0),
@@ -4696,6 +4855,7 @@ mod retention_breakdown_materialization_tests {
             t_req_parse_ms: Some(0.0),
             t_upstream_connect_ms: Some(0.0),
             t_upstream_ttfb_ms: Some(10.0),
+            first_token_ms: None,
             t_upstream_stream_ms: Some(20.0),
             t_resp_parse_ms: Some(0.0),
             t_persist_ms: Some(0.0),
@@ -4932,6 +5092,7 @@ mod retention_breakdown_materialization_tests {
             t_req_parse_ms: Some(0.0),
             t_upstream_connect_ms: Some(0.0),
             t_upstream_ttfb_ms: Some(10.0),
+            first_token_ms: None,
             t_upstream_stream_ms: Some(20.0),
             t_resp_parse_ms: Some(0.0),
             t_persist_ms: Some(0.0),
@@ -5081,6 +5242,7 @@ mod retention_breakdown_materialization_tests {
             t_req_parse_ms: Some(0.0),
             t_upstream_connect_ms: Some(0.0),
             t_upstream_ttfb_ms: Some(12.0),
+            first_token_ms: None,
             t_upstream_stream_ms: Some(24.0),
             t_resp_parse_ms: Some(0.0),
             t_persist_ms: Some(0.0),
@@ -5155,6 +5317,7 @@ mod retention_breakdown_materialization_tests {
                 t_req_parse_ms: Some(0.0),
                 t_upstream_connect_ms: Some(0.0),
                 t_upstream_ttfb_ms: Some(10.0),
+                first_token_ms: None,
                 t_upstream_stream_ms: Some(20.0),
                 t_resp_parse_ms: Some(0.0),
                 t_persist_ms: Some(0.0),
@@ -5187,6 +5350,7 @@ mod retention_breakdown_materialization_tests {
                 t_req_parse_ms: Some(0.0),
                 t_upstream_connect_ms: Some(0.0),
                 t_upstream_ttfb_ms: Some(11.0),
+                first_token_ms: None,
                 t_upstream_stream_ms: Some(21.0),
                 t_resp_parse_ms: Some(0.0),
                 t_persist_ms: Some(0.0),
@@ -5219,6 +5383,7 @@ mod retention_breakdown_materialization_tests {
                 t_req_parse_ms: Some(0.0),
                 t_upstream_connect_ms: Some(0.0),
                 t_upstream_ttfb_ms: Some(12.0),
+                first_token_ms: None,
                 t_upstream_stream_ms: Some(22.0),
                 t_resp_parse_ms: Some(0.0),
                 t_persist_ms: Some(0.0),
@@ -5251,6 +5416,7 @@ mod retention_breakdown_materialization_tests {
                 t_req_parse_ms: Some(0.0),
                 t_upstream_connect_ms: Some(0.0),
                 t_upstream_ttfb_ms: Some(13.0),
+                first_token_ms: None,
                 t_upstream_stream_ms: Some(23.0),
                 t_resp_parse_ms: Some(0.0),
                 t_persist_ms: Some(0.0),

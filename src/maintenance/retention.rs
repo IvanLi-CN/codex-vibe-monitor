@@ -91,9 +91,76 @@ pub(crate) struct InvocationArchiveCandidate {
     pub(crate) cache_input_tokens: Option<i64>,
     pub(crate) total_tokens: Option<i64>,
     pub(crate) cost: Option<f64>,
+    pub(crate) first_token_ms: Option<f64>,
     pub(crate) payload: Option<String>,
     pub(crate) request_raw_path: Option<String>,
     pub(crate) response_raw_path: Option<String>,
+}
+
+fn invocation_archive_candidate_to_hourly_source_record(
+    candidate: &InvocationArchiveCandidate,
+) -> InvocationHourlySourceRecord {
+    InvocationHourlySourceRecord {
+        id: candidate.id,
+        occurred_at: candidate.occurred_at.clone(),
+        source: candidate.source.clone(),
+        status: candidate.status.clone(),
+        detail_level: DETAIL_LEVEL_FULL.to_string(),
+        model: None,
+        input_tokens: candidate.input_tokens,
+        output_tokens: candidate.output_tokens,
+        cache_input_tokens: candidate.cache_input_tokens,
+        total_tokens: candidate.total_tokens,
+        cost: candidate.cost,
+        upstream_account_id: None,
+        cost_input: None,
+        cost_cache_write: None,
+        cost_cache_read: None,
+        cost_output: None,
+        cost_reasoning: None,
+        error_message: None,
+        failure_kind: None,
+        failure_class: None,
+        is_actionable: None,
+        payload: candidate.payload.clone(),
+        t_total_ms: None,
+        t_req_read_ms: None,
+        t_req_parse_ms: None,
+        t_upstream_connect_ms: None,
+        t_upstream_ttfb_ms: None,
+        first_token_ms: candidate.first_token_ms,
+        t_upstream_stream_ms: None,
+        t_resp_parse_ms: None,
+        t_persist_ms: None,
+    }
+}
+
+#[cfg(test)]
+mod ttft_retention_tests {
+    use super::*;
+
+    #[test]
+    fn archived_invocation_keeps_ttft_for_rollup_materialization() {
+        let candidate = InvocationArchiveCandidate {
+            id: 7,
+            occurred_at: "2026-07-25 12:00:00".to_string(),
+            source: SOURCE_PROXY.to_string(),
+            status: Some("success".to_string()),
+            input_tokens: Some(10),
+            output_tokens: Some(2),
+            cache_input_tokens: Some(3),
+            total_tokens: Some(12),
+            cost: Some(0.01),
+            first_token_ms: Some(321.0),
+            payload: None,
+            request_raw_path: None,
+            response_raw_path: None,
+        };
+
+        let row = invocation_archive_candidate_to_hourly_source_record(&candidate);
+
+        assert_eq!(row.first_token_ms, Some(321.0));
+    }
 }
 
 #[derive(Debug, FromRow, Clone)]
@@ -320,6 +387,8 @@ pub(crate) struct InvocationHourlySourceRecord {
     pub(crate) t_req_parse_ms: Option<f64>,
     pub(crate) t_upstream_connect_ms: Option<f64>,
     pub(crate) t_upstream_ttfb_ms: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) first_token_ms: Option<f64>,
     pub(crate) t_upstream_stream_ms: Option<f64>,
     pub(crate) t_resp_parse_ms: Option<f64>,
     pub(crate) t_persist_ms: Option<f64>,
@@ -478,7 +547,7 @@ pub(crate) struct DryRunBatchCount {
     pub(crate) row_count: i64,
 }
 
-pub(crate) const CODEX_INVOCATIONS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, status, error_message, failure_kind, failure_class, is_actionable, payload, raw_response, cost_estimated, price_version, request_raw_path, request_raw_codec, request_raw_size, request_raw_truncated, request_raw_truncated_reason, response_raw_path, response_raw_codec, response_raw_size, response_raw_truncated, response_raw_truncated_reason, detail_level, detail_pruned_at, detail_prune_reason, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, created_at";
+pub(crate) const CODEX_INVOCATIONS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, status, error_message, failure_kind, failure_class, is_actionable, payload, raw_response, cost_estimated, price_version, request_raw_path, request_raw_codec, request_raw_size, request_raw_truncated, request_raw_truncated_reason, response_raw_path, response_raw_codec, response_raw_size, response_raw_truncated, response_raw_truncated_reason, detail_level, detail_pruned_at, detail_prune_reason, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, first_token_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, created_at";
 pub(crate) const FORWARD_PROXY_ATTEMPTS_ARCHIVE_COLUMNS: &str =
     "id, proxy_key, occurred_at, is_success, latency_ms, failure_kind, is_probe";
 pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_COLUMNS: &str = "id, attempt_public_id, invoke_id, occurred_at, endpoint, route_mode, sticky_key, routing_source, upstream_base_url_host, group_name_snapshot, proxy_binding_key_snapshot, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, requester_ip, started_at, finished_at, status, phase, http_status, downstream_http_status, failure_kind, error_message, downstream_error_message, connect_latency_ms, first_byte_latency_ms, stream_latency_ms, upstream_request_id, upstream_request_compression_algorithm, upstream_request_compression_mode, upstream_request_logical_body_bytes, upstream_request_transmitted_body_bytes, upstream_request_header_bytes_approx, upstream_response_body_bytes, upstream_response_header_bytes_approx, compact_support_status, compact_support_reason, request_summary_json, response_summary_json, response_raw_path, response_raw_codec, response_raw_size, response_raw_truncated, response_raw_truncated_reason, response_content_encoding, created_at";
@@ -529,6 +598,7 @@ CREATE TABLE IF NOT EXISTS archive_db.codex_invocations (
     t_req_parse_ms REAL,
     t_upstream_connect_ms REAL,
     t_upstream_ttfb_ms REAL,
+    first_token_ms REAL,
     t_upstream_stream_ms REAL,
     t_resp_parse_ms REAL,
     t_persist_ms REAL,
@@ -1729,6 +1799,7 @@ pub(crate) async fn archive_old_invocations(
                 cache_input_tokens,
                 total_tokens,
                 cost,
+                first_token_ms,
                 payload,
                 request_raw_path,
                 response_raw_path
@@ -1788,6 +1859,7 @@ pub(crate) async fn archive_old_invocations(
                 cache_input_tokens,
                 total_tokens,
                 cost,
+                first_token_ms,
                 payload,
                 request_raw_path,
                 response_raw_path
@@ -1831,38 +1903,7 @@ pub(crate) async fn archive_old_invocations(
                 .collect::<Vec<_>>();
             let materialized_rows = group
                 .iter()
-                .map(|candidate| InvocationHourlySourceRecord {
-                    id: candidate.id,
-                    occurred_at: candidate.occurred_at.clone(),
-                    source: candidate.source.clone(),
-                    status: candidate.status.clone(),
-                    detail_level: DETAIL_LEVEL_FULL.to_string(),
-                    model: None,
-                    input_tokens: candidate.input_tokens,
-                    output_tokens: candidate.output_tokens,
-                    cache_input_tokens: candidate.cache_input_tokens,
-                    total_tokens: candidate.total_tokens,
-                    cost: candidate.cost,
-                    upstream_account_id: None,
-                    cost_input: None,
-                    cost_cache_write: None,
-                    cost_cache_read: None,
-                    cost_output: None,
-                    cost_reasoning: None,
-                    error_message: None,
-                    failure_kind: None,
-                    failure_class: None,
-                    is_actionable: None,
-                    payload: candidate.payload.clone(),
-                    t_total_ms: None,
-                    t_req_read_ms: None,
-                    t_req_parse_ms: None,
-                    t_upstream_connect_ms: None,
-                    t_upstream_ttfb_ms: None,
-                    t_upstream_stream_ms: None,
-                    t_resp_parse_ms: None,
-                    t_persist_ms: None,
-                })
+                .map(invocation_archive_candidate_to_hourly_source_record)
                 .collect::<Vec<_>>();
             let mut archive_outcome = match archive_layout_for_dataset(config, spec.dataset) {
                 ArchiveBatchLayout::LegacyMonth => {

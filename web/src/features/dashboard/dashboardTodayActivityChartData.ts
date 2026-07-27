@@ -27,11 +27,11 @@ export interface DashboardTodayMinuteDatum {
   totalTokens: number;
   tokensPerMinute: number | null;
   spendRate: number | null;
-  firstResponseByteTotalAvgMs: number | null;
-  firstResponseByteTotalSampleCount: number;
+  firstTokenAvgMs: number | null;
+  firstTokenSampleCount: number;
   chartTokensPerMinute: number | null;
   chartSpendRate: number | null;
-  chartFirstResponseByteTotalAvgMs: number | null;
+  chartFirstTokenAvgMs: number | null;
   cumulativeCost: number | null;
   cumulativeSuccessCost: number | null;
   cumulativeNonSuccessCost: number | null;
@@ -83,8 +83,8 @@ export function buildTodayMinuteChartData(
       totalCost: number;
       nonSuccessCost: number;
       totalTokens: number;
-      firstResponseByteTotalWeightedMs: number;
-      firstResponseByteTotalSampleCount: number;
+      firstTokenWeightedMs: number;
+      firstTokenSampleCount: number;
     }
   >();
 
@@ -103,8 +103,8 @@ export function buildTodayMinuteChartData(
       totalCost: 0,
       nonSuccessCost: 0,
       totalTokens: 0,
-      firstResponseByteTotalWeightedMs: 0,
-      firstResponseByteTotalSampleCount: 0,
+      firstTokenWeightedMs: 0,
+      firstTokenSampleCount: 0,
     };
     current.successCount += point.successCount ?? 0;
     current.failureCount += point.failureCount ?? 0;
@@ -126,20 +126,19 @@ export function buildTodayMinuteChartData(
     current.totalCost += point.totalCost ?? 0;
     current.nonSuccessCost += point.nonSuccessCost ?? 0;
     current.totalTokens += point.totalTokens ?? 0;
-    const firstResponseByteTotalAvgMs = point.firstResponseByteTotalAvgMs ?? null;
+    const firstTokenAvgMs = point.firstTokenAvgMs ?? null;
     const pointCallCount = Math.max(
       point.totalCount ?? 0,
       (point.successCount ?? 0) + (point.failureCount ?? 0) + pointInFlightCount,
       0,
     );
-    const firstResponseByteTotalSampleCount =
-      pointCallCount <= 0 || firstResponseByteTotalAvgMs == null
+    const firstTokenSampleCount =
+      pointCallCount <= 0 || firstTokenAvgMs == null
         ? 0
-        : Math.max(point.firstResponseByteTotalSampleCount ?? 1, 1);
-    if (firstResponseByteTotalAvgMs != null && firstResponseByteTotalSampleCount > 0) {
-      current.firstResponseByteTotalWeightedMs +=
-        firstResponseByteTotalAvgMs * firstResponseByteTotalSampleCount;
-      current.firstResponseByteTotalSampleCount += firstResponseByteTotalSampleCount;
+        : Math.max(point.firstTokenSampleCount ?? 1, 1);
+    if (firstTokenAvgMs != null && firstTokenSampleCount > 0) {
+      current.firstTokenWeightedMs += firstTokenAvgMs * firstTokenSampleCount;
+      current.firstTokenSampleCount += firstTokenSampleCount;
     }
     pointMap.set(bucketEpoch, current);
   }
@@ -177,10 +176,10 @@ export function buildTodayMinuteChartData(
     // cumulative cost after subtracting explicit non-success usage.
     const successCost = Math.max(0, totalCost - nonSuccessCost);
     const totalTokens = point?.totalTokens ?? 0;
-    const firstResponseByteTotalAvgMs =
-      point == null || point.firstResponseByteTotalSampleCount <= 0
+    const firstTokenAvgMs =
+      point == null || point.firstTokenSampleCount <= 0
         ? null
-        : point.firstResponseByteTotalWeightedMs / point.firstResponseByteTotalSampleCount;
+        : point.firstTokenWeightedMs / point.firstTokenSampleCount;
     cumulativeCost += totalCost;
     cumulativeSuccessCost += successCost;
     cumulativeNonSuccessCost += nonSuccessCost;
@@ -210,13 +209,11 @@ export function buildTodayMinuteChartData(
       totalTokens,
       tokensPerMinute: isFuture ? null : totalTokens,
       spendRate: isFuture ? null : totalCost,
-      firstResponseByteTotalAvgMs: isFuture ? null : firstResponseByteTotalAvgMs,
-      firstResponseByteTotalSampleCount: isFuture
-        ? 0
-        : (point?.firstResponseByteTotalSampleCount ?? 0),
+      firstTokenAvgMs: isFuture ? null : firstTokenAvgMs,
+      firstTokenSampleCount: isFuture ? 0 : (point?.firstTokenSampleCount ?? 0),
       chartTokensPerMinute: null,
       chartSpendRate: null,
-      chartFirstResponseByteTotalAvgMs: isFuture ? null : firstResponseByteTotalAvgMs,
+      chartFirstTokenAvgMs: isFuture ? null : firstTokenAvgMs,
       cumulativeCost: isFuture ? null : cumulativeCost,
       cumulativeSuccessCost: isFuture ? null : cumulativeSuccessCost,
       cumulativeNonSuccessCost: isFuture ? null : cumulativeNonSuccessCost,

@@ -131,8 +131,9 @@ const sampleRate: DashboardTodayRateSnapshot = {
   spendRate: 0.1,
   windowMinutes: 1,
   available: true,
-  currentFirstResponseByteTotalAvgMs: 980,
+  currentFirstTokenAvgMs: 980,
   currentAvgTotalMs: 4100,
+  currentAvgResponseMs: 4100,
 };
 
 const sampleModelPerformance: ModelPerformance = {
@@ -141,7 +142,7 @@ const sampleModelPerformance: ModelPerformance = {
     tokensPerMinute: 1200,
     streamingResponseRate: 148.2,
     avgResponseMs: 4100,
-    avgFirstResponseByteTotalMs: 980,
+    avgFirstTokenMs: 980,
     wallClockUsageDurationMs: 94000,
     cumulativeUsageDurationMs: 133000,
     parallelism: 1.41,
@@ -153,7 +154,7 @@ const sampleModelPerformance: ModelPerformance = {
       tokensPerMinute: 760,
       streamingResponseRate: 162.4,
       avgResponseMs: 4500,
-      avgFirstResponseByteTotalMs: 1100,
+      avgFirstTokenMs: 1100,
       wallClockUsageDurationMs: 82000,
       cumulativeUsageDurationMs: 107000,
       parallelism: 1.3,
@@ -164,7 +165,7 @@ const sampleModelPerformance: ModelPerformance = {
       tokensPerMinute: 440,
       streamingResponseRate: null,
       avgResponseMs: null,
-      avgFirstResponseByteTotalMs: 860,
+      avgFirstTokenMs: 860,
       wallClockUsageDurationMs: 47000,
       cumulativeUsageDurationMs: 61000,
       parallelism: 1.3,
@@ -225,10 +226,9 @@ const sampleTimeseries: TimeseriesResponse = {
       totalCost: Number((1.1 + index * 0.08).toFixed(2)),
       avgTotalMs: sampleCount > 0 ? Number((1260 + index * 132.5).toFixed(1)) : null,
       totalLatencySampleCount: sampleCount,
-      firstResponseByteTotalSampleCount: sampleCount,
-      firstResponseByteTotalAvgMs: index % 3 === 0 ? null : Number((780 + index * 96.5).toFixed(1)),
-      firstResponseByteTotalP95Ms:
-        index % 3 === 0 ? null : Number((960 + index * 118.5).toFixed(1)),
+      firstTokenSampleCount: sampleCount,
+      firstTokenAvgMs: index % 3 === 0 ? null : Number((780 + index * 96.5).toFixed(1)),
+      firstTokenP95Ms: index % 3 === 0 ? null : Number((960 + index * 118.5).toFixed(1)),
     };
   }),
 };
@@ -241,10 +241,8 @@ const comparisonTimeseries: TimeseriesResponse = {
     ...point,
     bucketStart: new Date(Date.parse("2026-04-09T00:00:00.000Z") + index * 60_000).toISOString(),
     bucketEnd: new Date(Date.parse("2026-04-09T00:01:00.000Z") + index * 60_000).toISOString(),
-    firstResponseByteTotalAvgMs:
-      point.firstResponseByteTotalAvgMs == null
-        ? null
-        : Number((point.firstResponseByteTotalAvgMs * 0.82).toFixed(1)),
+    firstTokenAvgMs:
+      point.firstTokenAvgMs == null ? null : Number((point.firstTokenAvgMs * 0.82).toFixed(1)),
   })),
 };
 
@@ -364,7 +362,7 @@ export const Populated: Story = {
     await expect(within(document.body).getByRole("tooltip")).toHaveTextContent(
       /Model performance|模型性能/,
     );
-    await userEvent.click(canvas.getByRole("button", { name: /time to first byte|首字用时/i }));
+    await userEvent.click(canvas.getByRole("button", { name: /TTFT|TTFT/i }));
     await expect(within(document.body).getByRole("tooltip")).toBeInTheDocument();
     await expect(canvas.getByTestId("today-stats-value-spend-rate")).toHaveTextContent("0.10");
     await expect(canvas.getByTestId("today-stats-value-spend-rate")).not.toHaveTextContent("$");
@@ -592,7 +590,7 @@ export const DesktopSingleRow: Story = {
     await expect(tiles).toHaveLength(7);
     const labels = tiles.map((tile) => tile.textContent ?? "");
     expect(labels[2]).toMatch(/in progress|进行中/i);
-    expect(labels[3]).toMatch(/time to first byte|首字用时/i);
+    expect(labels[3]).toMatch(/TTFT|TTFT/i);
     expect(labels[4]).toMatch(/success|成功/i);
   },
 };
@@ -689,7 +687,7 @@ export const ScopedAccountEmbedded: Story = {
       "—",
     );
     await expect(
-      canvas.getByTestId("today-stats-secondary-response-time-avg-total"),
+      canvas.getByTestId("today-stats-secondary-response-time-avg-response"),
     ).not.toHaveTextContent("—");
     await expect(canvas.getByTestId("today-stats-secondary-cost-failed")).not.toHaveTextContent(
       "—",
@@ -697,7 +695,7 @@ export const ScopedAccountEmbedded: Story = {
     await expect(canvas.getByTestId("today-stats-secondary-tokens-failed")).not.toHaveTextContent(
       "—",
     );
-    await expect(canvas.getByText(/time to first byte|首字用时/i)).toBeInTheDocument();
+    await expect(canvas.getByText(/TTFT|TTFT/i)).toBeInTheDocument();
   },
 };
 
@@ -935,9 +933,9 @@ const ratePrecisionTimeseries: TimeseriesResponse = {
       totalCost: 1,
       avgTotalMs: 1280,
       totalLatencySampleCount: 6,
-      firstResponseByteTotalSampleCount: 6,
-      firstResponseByteTotalAvgMs: 760,
-      firstResponseByteTotalP95Ms: 960,
+      firstTokenSampleCount: 6,
+      firstTokenAvgMs: 760,
+      firstTokenP95Ms: 960,
     },
     {
       bucketStart: "2026-04-10T00:01:00.000Z",
@@ -950,9 +948,9 @@ const ratePrecisionTimeseries: TimeseriesResponse = {
       totalCost: 0,
       avgTotalMs: null,
       totalLatencySampleCount: 0,
-      firstResponseByteTotalSampleCount: 0,
-      firstResponseByteTotalAvgMs: null,
-      firstResponseByteTotalP95Ms: null,
+      firstTokenSampleCount: 0,
+      firstTokenAvgMs: null,
+      firstTokenP95Ms: null,
     },
   ],
 };
@@ -1146,8 +1144,9 @@ function buildAnimatedRate(step: number): DashboardTodayRateSnapshot {
     spendRate: Number((0.1 + step * 0.006).toFixed(3)),
     windowMinutes: 1,
     available: true,
-    currentFirstResponseByteTotalAvgMs: 980 + step * 18,
+    currentFirstTokenAvgMs: 980 + step * 18,
     currentAvgTotalMs: 4100 + step * 85,
+    currentAvgResponseMs: 4100 + step * 85,
   };
 }
 

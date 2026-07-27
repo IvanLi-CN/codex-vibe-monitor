@@ -76,7 +76,7 @@ export function ModelPerformanceDetails({
       ? "—"
       : `${formatNumber(metrics.streamingResponseRate, localeTag, 2)} tok/s`,
     formatDuration(metrics.avgResponseMs, localeTag),
-    formatDuration(metrics.avgFirstResponseByteTotalMs, localeTag),
+    formatDuration(metrics.avgFirstTokenMs, localeTag),
     formatDuration(metrics.wallClockUsageDurationMs, localeTag),
     formatDuration(metrics.cumulativeUsageDurationMs, localeTag),
     formatParallelism(metrics.parallelism, localeTag),

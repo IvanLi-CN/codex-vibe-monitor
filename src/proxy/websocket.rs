@@ -1059,12 +1059,28 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
     })
 }
 
+pub(crate) struct TimestampedWsDownstreamMessage {
+    message: AxumWsMessage,
+    received_at: Instant,
+    received_at_rfc3339: String,
+}
+
+impl TimestampedWsDownstreamMessage {
+    fn now(message: AxumWsMessage) -> Self {
+        Self {
+            message,
+            received_at: Instant::now(),
+            received_at_rfc3339: Utc::now().to_rfc3339(),
+        }
+    }
+}
+
 pub(crate) async fn proxy_websocket_tunnel(
     state: Arc<AppState>,
     downstream: WebSocket,
     prepared: PreparedUpstreamWebSocket,
     _proxy_request_permit: ProxyRequestConcurrencyPermit,
-    initial_downstream_messages: Vec<AxumWsMessage>,
+    initial_downstream_messages: Vec<TimestampedWsDownstreamMessage>,
 ) {
     let PreparedUpstreamWebSocket {
         upstream,
@@ -1103,11 +1119,25 @@ pub(crate) async fn proxy_websocket_tunnel(
         std::collections::VecDeque::from(initial_downstream_messages);
 
     loop {
-        if let Some(message) = pending_downstream_messages.pop_front() {
+        if let Some(timestamped_message) = pending_downstream_messages.pop_front() {
+            let TimestampedWsDownstreamMessage {
+                message,
+                received_at,
+                received_at_rfc3339,
+            } = timestamped_message;
             let close_seen = matches!(message, AxumWsMessage::Close(_));
             if ws_message_starts_response_create_turn(&message) {
+                if active_turn_waiting_terminal {
+                    usage_tracker
+                        .persist_interrupted_turn(
+                            state.as_ref(),
+                            "websocket turn superseded by a new response.create",
+                        )
+                        .await;
+                }
                 active_turn_waiting_terminal = true;
                 saw_terminal_upstream_event = false;
+                usage_tracker.start_turn_at(received_at, received_at_rfc3339);
             }
             if let Some(payload_bytes) = ws_message_payload_bytes(&message) {
                 match apply_ws_downstream_payload_guard(
@@ -1171,10 +1201,24 @@ pub(crate) async fn proxy_websocket_tunnel(
             downstream_msg = downstream_rx.next() => {
                 match downstream_msg {
                     Some(Ok(message)) => {
+                        let timestamped_message = TimestampedWsDownstreamMessage::now(message);
+                        let message = timestamped_message.message;
                         let close_seen = matches!(message, AxumWsMessage::Close(_));
                         if ws_message_starts_response_create_turn(&message) {
+                            if active_turn_waiting_terminal {
+                                usage_tracker
+                                    .persist_interrupted_turn(
+                                        state.as_ref(),
+                                        "websocket turn superseded by a new response.create",
+                                    )
+                                    .await;
+                            }
                             active_turn_waiting_terminal = true;
                             saw_terminal_upstream_event = false;
+                            usage_tracker.start_turn_at(
+                                timestamped_message.received_at,
+                                timestamped_message.received_at_rfc3339,
+                            );
                         }
                         if let Some(payload_bytes) = ws_message_payload_bytes(&message) {
                             match apply_ws_downstream_payload_guard(
@@ -1383,6 +1427,8 @@ pub(crate) async fn proxy_websocket_tunnel(
                             .observe_upstream_text(state.as_ref(), text)
                             .await;
                         if terminal_for_message {
+                            saw_terminal_upstream_event = true;
+                            active_turn_waiting_terminal = false;
                             break;
                         }
                     }
@@ -1416,6 +1462,17 @@ pub(crate) async fn proxy_websocket_tunnel(
                 }
             }
         }
+    }
+
+    if active_turn_waiting_terminal && !saw_terminal_upstream_event {
+        usage_tracker
+            .persist_interrupted_turn(
+                state.as_ref(),
+                failure
+                    .as_deref()
+                    .unwrap_or("websocket turn ended before terminal event"),
+            )
+            .await;
     }
 
     let status = if failure.is_some() {
@@ -1487,7 +1544,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
 ) {
     let first_downstream_message =
         match timeout(runtime_timeouts.request_read_timeout, downstream.next()).await {
-            Ok(Some(Ok(message))) => message,
+            Ok(Some(Ok(message))) => TimestampedWsDownstreamMessage::now(message),
             Ok(Some(Err(err))) => {
                 let message =
                     format!("failed to read websocket first response.create frame: {err}");
@@ -1535,12 +1592,12 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                 return;
             }
         };
-    if matches!(first_downstream_message, AxumWsMessage::Close(_)) {
+    if matches!(first_downstream_message.message, AxumWsMessage::Close(_)) {
         return;
     }
 
     let payload_inspection = match inspect_ws_request_payload(
-        ws_message_payload_bytes(&first_downstream_message).unwrap_or_default(),
+        ws_message_payload_bytes(&first_downstream_message.message).unwrap_or_default(),
     ) {
         Some(inspection) if inspection.event_type.as_deref() == Some("response.create") => {
             inspection
@@ -1697,11 +1754,11 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
     required_subprotocol: Option<String>,
     mut trace: PoolUpstreamAttemptTraceContext,
     proxy_request_permit: ProxyRequestConcurrencyPermit,
-    initial_downstream_message: Option<AxumWsMessage>,
+    initial_downstream_message: Option<TimestampedWsDownstreamMessage>,
 ) {
     let initial_inspection = initial_downstream_message
         .as_ref()
-        .and_then(|message| ws_message_payload_bytes(message))
+        .and_then(|message| ws_message_payload_bytes(&message.message))
         .and_then(inspect_ws_request_payload);
     let requested_model = initial_inspection
         .as_ref()
@@ -1795,6 +1852,14 @@ pub(crate) struct WsUsageTracker {
     request_contains_encrypted_content: bool,
     attempt_id: Option<i64>,
     request_started_at: Option<String>,
+    turn_started_at: Option<Instant>,
+    turn_stream_started_at: Option<Instant>,
+    turn_occurred_at: Option<String>,
+    turn_index: u64,
+    response_id: Option<String>,
+    runtime_snapshot_published: bool,
+    runtime_snapshot_invoke_id: Option<String>,
+    first_token_ms: Option<f64>,
 }
 
 impl WsUsageTracker {
@@ -1813,10 +1878,67 @@ impl WsUsageTracker {
             request_contains_encrypted_content: false,
             attempt_id,
             request_started_at,
+            turn_started_at: None,
+            turn_stream_started_at: None,
+            turn_occurred_at: None,
+            turn_index: 0,
+            response_id: None,
+            runtime_snapshot_published: false,
+            runtime_snapshot_invoke_id: None,
+            first_token_ms: None,
         }
     }
 
+    fn start_turn_at(&mut self, received_at: Instant, received_at_rfc3339: String) {
+        self.request_started_at = Some(received_at_rfc3339);
+        self.turn_started_at = Some(received_at);
+        self.turn_stream_started_at = None;
+        self.turn_occurred_at = Some(shanghai_now_string());
+        self.turn_index = self.ordinal.saturating_add(1);
+        self.response_id = None;
+        self.runtime_snapshot_published = false;
+        self.runtime_snapshot_invoke_id = None;
+        self.first_token_ms = None;
+    }
+
+    fn stream_duration_ms(&self) -> Option<f64> {
+        self.turn_stream_started_at.map(elapsed_ms)
+    }
+
+    fn turn_invoke_id(&self) -> String {
+        self.response_id
+            .as_deref()
+            .map(|response_id| format!("{}-{response_id}", self.trace.invoke_id))
+            .unwrap_or_else(|| format!("{}-turn-{}", self.trace.invoke_id, self.turn_index))
+    }
+
+    fn observe_first_token_text(&mut self, text: &str) -> bool {
+        if self.first_token_ms.is_some() {
+            return false;
+        }
+        let Some(turn_started_at) = self.turn_started_at else {
+            return false;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(text) else {
+            return false;
+        };
+        if !stream_payload_contains_nonempty_model_delta(None, &value) {
+            return false;
+        }
+        self.first_token_ms = Some(elapsed_ms(turn_started_at));
+        true
+    }
+
     async fn observe_upstream_text(&mut self, state: &AppState, text: &str) {
+        if self.turn_stream_started_at.is_none() {
+            self.turn_stream_started_at = Some(Instant::now());
+        }
+        if let Some(response_id) = ws_response_id_from_text(text) {
+            self.response_id = Some(response_id);
+        }
+        if self.observe_first_token_text(text) {
+            self.publish_first_token_runtime_snapshot(state).await;
+        }
         let Some(event) = parse_ws_usage_event(text) else {
             if ws_terminal_event_is_failure_without_usage(text)
                 && let Some(attempt_id) = self.attempt_id
@@ -1841,6 +1963,11 @@ impl WsUsageTracker {
             return;
         };
         self.ordinal = self.ordinal.saturating_add(1);
+        let response_id_override = self.response_id.clone();
+        let invoke_id_override = self.runtime_snapshot_invoke_id.clone();
+        let stream_duration_ms = ws_usage_event_is_terminal(&event)
+            .then(|| self.stream_duration_ms())
+            .flatten();
         if let Err(err) = persist_ws_usage_event(
             state,
             &self.account,
@@ -1852,6 +1979,11 @@ impl WsUsageTracker {
             text,
             self.attempt_id,
             self.request_started_at.as_deref(),
+            self.turn_occurred_at.as_deref(),
+            invoke_id_override.as_deref(),
+            response_id_override.as_deref(),
+            self.first_token_ms,
+            stream_duration_ms,
         )
         .await
         {
@@ -1862,6 +1994,112 @@ impl WsUsageTracker {
                 "failed to persist websocket usage event"
             );
         }
+    }
+
+    async fn publish_first_token_runtime_snapshot(&mut self, state: &AppState) {
+        if self.runtime_snapshot_published {
+            return;
+        }
+        let Some(first_token_ms) = self.first_token_ms else {
+            return;
+        };
+        let Some(occurred_at) = self.turn_occurred_at.as_deref() else {
+            return;
+        };
+
+        let mut request_info = RequestCaptureInfo {
+            model: self.trace.request_model.clone(),
+            is_stream: true,
+            ..RequestCaptureInfo::default()
+        };
+        request_info.prompt_cache_key = self.prompt_cache_key.clone();
+        request_info.prompt_cache_key_attribution_source = self
+            .prompt_cache_key
+            .as_ref()
+            .map(|_| "websocket_trace".to_string());
+        let invoke_id = self.turn_invoke_id();
+        let mut record = build_running_proxy_capture_record(
+            &invoke_id,
+            occurred_at,
+            ProxyCaptureTarget::Responses,
+            &request_info,
+            self.trace.requester_ip.as_deref(),
+            self.trace.sticky_key.as_deref(),
+            self.prompt_cache_key.as_deref(),
+            true,
+            Some(self.account.account_id),
+            Some(self.account.display_name.as_str()),
+            Some(self.account.kind.as_str()),
+            self.account.upstream_base_url.host_str(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        );
+        record.timings.first_token_ms = Some(first_token_ms);
+        self.runtime_snapshot_invoke_id = Some(invoke_id);
+        self.runtime_snapshot_published = true;
+        if let Err(err) = persist_and_broadcast_proxy_capture_runtime_snapshot(state, record).await
+        {
+            warn!(
+                invoke_id = %self.trace.invoke_id,
+                error = %err,
+                "failed to publish websocket first-token runtime snapshot"
+            );
+        }
+    }
+
+    async fn persist_interrupted_turn(&mut self, state: &AppState, reason: &str) {
+        let Some(first_token_ms) = self.first_token_ms else {
+            return;
+        };
+        let event = WsUsageEvent {
+            event_type: "response.failed".to_string(),
+            response_id: None,
+            response_status: Some("incomplete".to_string()),
+            model: self.trace.request_model.clone(),
+            service_tier: None,
+            usage: ParsedUsage::default(),
+            contains_encrypted_content: self.request_contains_encrypted_content,
+        };
+        let raw_event = serde_json::json!({
+            "type": "response.failed",
+            "response": {"status": "incomplete"},
+            "error": reason,
+        })
+        .to_string();
+        let ordinal = self.ordinal.saturating_add(1);
+        if let Err(err) = persist_ws_usage_event(
+            state,
+            &self.account,
+            &self.trace,
+            self.prompt_cache_key.as_deref(),
+            ordinal,
+            event,
+            self.request_contains_encrypted_content,
+            &raw_event,
+            self.attempt_id,
+            self.request_started_at.as_deref(),
+            self.turn_occurred_at.as_deref(),
+            self.runtime_snapshot_invoke_id.as_deref(),
+            self.response_id.as_deref(),
+            Some(first_token_ms),
+            self.stream_duration_ms(),
+        )
+        .await
+        {
+            warn!(
+                invoke_id = %self.trace.invoke_id,
+                error = %err,
+                "failed to persist websocket interrupted turn with observed first token"
+            );
+        }
+        self.first_token_ms = None;
     }
 }
 
@@ -1943,15 +2181,24 @@ pub(crate) fn extract_nonempty_json_string(value: &Value, pointers: &[&str]) -> 
     })
 }
 
+fn ws_response_id_from_text(text: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(text).ok()?;
+    extract_nonempty_json_string(&value, &["/response/id", "/response_id", "/id"])
+}
+
 pub(crate) fn parse_ws_usage_event(text: &str) -> Option<WsUsageEvent> {
     let value = serde_json::from_str::<Value>(text).ok()?;
     let event_type = value.get("type")?.as_str()?.trim().to_string();
     if !ws_event_type_has_billable_usage(event_type.as_str()) {
         return None;
     }
-    let usage_value = value.pointer("/response/usage")?;
-    let usage = parse_usage_value(usage_value);
-    if usage.input_tokens.is_none() || usage.output_tokens.is_none() {
+    let usage = value
+        .pointer("/response/usage")
+        .map(parse_usage_value)
+        .unwrap_or_default();
+    if (usage.input_tokens.is_none() || usage.output_tokens.is_none())
+        && !ws_terminal_event_is_failure_without_usage(text)
+    {
         return None;
     }
     Some(WsUsageEvent {
@@ -2159,7 +2406,6 @@ pub(crate) async fn apply_ws_downstream_payload_guard(
                 .requested_model
                 .clone()
                 .or_else(|| usage_tracker.trace.request_model.clone());
-            usage_tracker.request_started_at = Some(Utc::now().to_rfc3339());
             observe_model_route_seen(
                 &state.pool,
                 usage_tracker.account.account_id,
@@ -2204,6 +2450,10 @@ pub(crate) fn ws_usage_event_is_completed_success(event: &WsUsageEvent) -> bool 
     }
 }
 
+fn ws_usage_event_is_terminal(event: &WsUsageEvent) -> bool {
+    ws_event_type_has_billable_usage(event.event_type.as_str())
+}
+
 pub(crate) async fn persist_ws_usage_event(
     state: &AppState,
     account: &PoolResolvedAccount,
@@ -2215,6 +2465,11 @@ pub(crate) async fn persist_ws_usage_event(
     raw_event: &str,
     attempt_id: Option<i64>,
     request_started_at: Option<&str>,
+    occurred_at_override: Option<&str>,
+    invoke_id_override: Option<&str>,
+    response_id_override: Option<&str>,
+    first_token_ms: Option<f64>,
+    stream_duration_ms: Option<f64>,
 ) -> Result<()> {
     let proxy_settings = state.proxy_model_settings.read().await.clone();
     let model = event.model.as_deref();
@@ -2235,11 +2490,15 @@ pub(crate) async fn persist_ws_usage_event(
         )
         .await;
     let cost = cost_breakdown.map(ProxyCostBreakdown::total);
-    let occurred_at = shanghai_now_string();
-    let response_id = event.response_id.as_deref();
-    let invoke_id = response_id
-        .map(|id| format!("{}-{id}", trace.invoke_id))
-        .unwrap_or_else(|| format!("{}-turn-{ordinal}", trace.invoke_id));
+    let occurred_at = occurred_at_override
+        .map(str::to_string)
+        .unwrap_or_else(shanghai_now_string);
+    let response_id = event.response_id.as_deref().or(response_id_override);
+    let invoke_id = invoke_id_override.map(str::to_string).unwrap_or_else(|| {
+        response_id
+            .map(|id| format!("{}-{id}", trace.invoke_id))
+            .unwrap_or_else(|| format!("{}-turn-{ordinal}", trace.invoke_id))
+    });
     let payload = build_proxy_payload_summary(ProxyPayloadSummary {
         target: ProxyCaptureTarget::Responses,
         status: StatusCode::OK,
@@ -2398,7 +2657,8 @@ pub(crate) async fn persist_ws_usage_event(
                 t_req_parse_ms: 0.0,
                 t_upstream_connect_ms: 0.0,
                 t_upstream_ttfb_ms: 0.0,
-                t_upstream_stream_ms: 0.0,
+                first_token_ms,
+                t_upstream_stream_ms: stream_duration_ms.unwrap_or(0.0),
                 t_resp_parse_ms: 0.0,
                 t_persist_ms: 0.0,
             },
@@ -3429,6 +3689,56 @@ mod websocket_tests {
             inspect_ws_initial_response_create_message(&rejected).unwrap_err(),
             "websocket first frame must be response.create"
         );
+    }
+
+    #[test]
+    fn websocket_ttft_resets_for_each_response_create_turn() {
+        let trace = PoolUpstreamAttemptTraceContext {
+            invoke_id: "pool-ws-ttft".to_string(),
+            occurred_at: shanghai_now_string(),
+            endpoint: "/v1/responses".to_string(),
+            sticky_key: None,
+            requester_ip: None,
+            upstream_base_url_host: None,
+            request_model: Some("gpt-5.6".to_string()),
+        };
+        let mut tracker = WsUsageTracker::new(
+            api_key_account(Url::parse("https://api.example.test").expect("valid base")),
+            trace,
+            None,
+            None,
+            None,
+        );
+
+        assert!(!tracker.observe_first_token_text(
+            r#"{"type":"response.output_text.delta","delta":"ignored before turn"}"#,
+        ));
+        tracker.start_turn_at(
+            Instant::now() - Duration::from_millis(25),
+            Utc::now().to_rfc3339(),
+        );
+        assert!(
+            !tracker
+                .observe_first_token_text(r#"{"type":"response.output_text.delta","delta":""}"#,)
+        );
+        assert!(tracker.observe_first_token_text(
+            r#"{"type":"response.reasoning_summary_text.delta","delta":"thinking"}"#,
+        ));
+        let first_turn_ttft = tracker.first_token_ms.expect("first turn TTFT");
+        assert!(first_turn_ttft >= 25.0);
+        assert!(
+            !tracker.observe_first_token_text(
+                r#"{"type":"response.output_text.delta","delta":"answer"}"#,
+            )
+        );
+        assert_eq!(tracker.first_token_ms, Some(first_turn_ttft));
+
+        tracker.start_turn_at(Instant::now(), Utc::now().to_rfc3339());
+        assert!(tracker.first_token_ms.is_none());
+        assert!(tracker.observe_first_token_text(
+            r#"{"type":"response.function_call_arguments.delta","delta":"{"}"#,
+        ));
+        assert!(tracker.first_token_ms.is_some());
     }
 
     #[test]

@@ -6,8 +6,8 @@ const labels = {
   failure: "失败",
   success: "成功",
   successRate: "成功率",
-  firstResponseByteTotalAvg: "首字总耗时均值",
-  firstResponseByteTotalP95: "首字总耗时 P95",
+  firstTokenAvg: "TTFT均值",
+  firstTokenP95: "TTFT P95",
 };
 
 const numberFormatter = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 });
@@ -24,9 +24,9 @@ describe("SuccessFailureTooltipContent", () => {
           success: 164,
           failure: 55,
           successRate: 164 / (164 + 55),
-          firstResponseByteTotalSampleCount: 164,
-          firstResponseByteTotalAvgMs: 320.4,
-          firstResponseByteTotalP95Ms: 690.8,
+          firstTokenSampleCount: 164,
+          firstTokenAvgMs: 320.4,
+          firstTokenP95Ms: 690.8,
         }}
         labels={labels}
         noValueLabel="—"
@@ -46,9 +46,9 @@ describe("SuccessFailureTooltipContent", () => {
     expect(html).toContain("164");
     expect(html).toContain("成功率");
     expect(html).toContain("74.9%");
-    expect(html).toContain("首字总耗时均值");
+    expect(html).toContain("TTFT均值");
     expect(html).toContain("320.4 ms");
-    expect(html).toContain("首字总耗时 P95");
+    expect(html).toContain("TTFT P95");
     expect(html).toContain("690.8 ms");
   });
 
@@ -61,9 +61,9 @@ describe("SuccessFailureTooltipContent", () => {
           success: 9,
           failure: 1,
           successRate: 0.9,
-          firstResponseByteTotalSampleCount: 10,
-          firstResponseByteTotalAvgMs: 43_890,
-          firstResponseByteTotalP95Ms: 52_340,
+          firstTokenSampleCount: 10,
+          firstTokenAvgMs: 43_890,
+          firstTokenP95Ms: 52_340,
         }}
         labels={labels}
         noValueLabel="—"
@@ -90,9 +90,9 @@ describe("SuccessFailureTooltipContent", () => {
           success: 0,
           failure: 0,
           successRate: null,
-          firstResponseByteTotalSampleCount: 0,
-          firstResponseByteTotalAvgMs: null,
-          firstResponseByteTotalP95Ms: null,
+          firstTokenSampleCount: 0,
+          firstTokenAvgMs: null,
+          firstTokenP95Ms: null,
         }}
         labels={labels}
         noValueLabel="—"
@@ -108,7 +108,7 @@ describe("SuccessFailureTooltipContent", () => {
 
     expect(html).toContain("成功率");
     expect(html).toContain("—");
-    expect(html).toContain("首字总耗时均值");
-    expect(html).toContain("首字总耗时 P95");
+    expect(html).toContain("TTFT均值");
+    expect(html).toContain("TTFT P95");
   });
 });

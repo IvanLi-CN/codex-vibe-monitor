@@ -334,76 +334,78 @@ async fn proxy_openai_v1_chunked_json_without_header_sticky_uses_live_first_atte
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_responses_live_first_failover_restores_full_retry_budget_for_follow_up_accounts()
- {
-    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[
-        ("Bearer upstream-primary", 99),
-        ("Bearer upstream-secondary", 2),
-        ("Bearer upstream-tertiary", 0),
-    ])
-    .await;
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(180),
-        Duration::from_millis(10),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
-    insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-    insert_test_pool_api_key_account(&state, "Tertiary", "upstream-tertiary").await;
+#[test]
+fn proxy_openai_v1_responses_live_first_failover_restores_full_retry_budget_for_follow_up_accounts()
+{
+    run_future_with_large_stack(async move {
+        let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[
+            ("Bearer upstream-primary", 99),
+            ("Bearer upstream-secondary", 2),
+            ("Bearer upstream-tertiary", 0),
+        ])
+        .await;
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            Duration::from_millis(180),
+            Duration::from_millis(10),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+        insert_test_pool_api_key_account(&state, "Tertiary", "upstream-tertiary").await;
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
-    let first_chunk = format!(
-        "{{\"model\":\"gpt-5\",\"input\":\"{}",
-        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
-    );
-    tokio::spawn(async move {
-        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        let _ = tx.send(Ok(Bytes::from_static(b"\"}"))).await;
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+        let first_chunk = format!(
+            "{{\"model\":\"gpt-5\",\"input\":\"{}",
+            "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+        );
+        tokio::spawn(async move {
+            let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            let _ = tx.send(Ok(Bytes::from_static(b"\"}"))).await;
+        });
+
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            5343,
+            &"/v1/responses".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+            runtime_timeouts,
+            None,
+        )
+        .await
+        .expect("live-first responses request should eventually succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read via-pool responses response");
+        let payload: Value = serde_json::from_slice(&body).expect("decode via-pool responses body");
+        assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+        assert_eq!(payload["attempt"], 3);
+
+        let attempts = attempts.lock().expect("lock live-first failover attempts");
+        assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+        assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(3));
+        assert_eq!(attempts.get("Bearer upstream-tertiary").copied(), None);
+
+        upstream_handle.abort();
     });
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
-        .await
-        .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        5343,
-        &"/v1/responses".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect("live-first responses request should eventually succeed");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read via-pool responses response");
-    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool responses body");
-    assert_eq!(payload["authorization"], "Bearer upstream-secondary");
-    assert_eq!(payload["attempt"], 3);
-
-    let attempts = attempts.lock().expect("lock live-first failover attempts");
-    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
-    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(3));
-    assert_eq!(attempts.get("Bearer upstream-tertiary").copied(), None);
-
-    upstream_handle.abort();
 }
 
 #[test]
@@ -594,43 +596,44 @@ fn proxy_openai_v1_live_first_unsupported_model_bad_request_fails_over() {
     });
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_responses_live_first_failover_preserves_prompt_cache_group_binding() {
-    let (upstream_base, attempts, upstream_handle) =
-        spawn_pool_retry_upstream(&[("Bearer upstream-primary", 99)]).await;
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(80),
-        Duration::from_millis(10),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let bound_group = "live-first-bound-group";
-    let other_group = "live-first-other-group";
-    ensure_test_group_binding(&state.pool, bound_group, None).await;
-    ensure_test_group_binding(&state.pool, other_group, None).await;
-    insert_test_pool_api_key_account_with_options(
-        &state,
-        "Primary",
-        "upstream-primary",
-        Some(bound_group),
-        None,
-        None,
-    )
-    .await;
-    insert_test_pool_api_key_account_with_options(
-        &state,
-        "Secondary",
-        "upstream-secondary",
-        Some(other_group),
-        None,
-        None,
-    )
-    .await;
-    let prompt_cache_key = "pck-live-first-bound-group";
-    let now_iso = format_utc_iso(Utc::now());
-    sqlx::query(
-        r#"
+#[test]
+fn proxy_openai_v1_responses_live_first_failover_preserves_prompt_cache_group_binding() {
+    run_future_with_large_stack(async move {
+        let (upstream_base, attempts, upstream_handle) =
+            spawn_pool_retry_upstream(&[("Bearer upstream-primary", 99)]).await;
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(10),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let bound_group = "live-first-bound-group";
+        let other_group = "live-first-other-group";
+        ensure_test_group_binding(&state.pool, bound_group, None).await;
+        ensure_test_group_binding(&state.pool, other_group, None).await;
+        insert_test_pool_api_key_account_with_options(
+            &state,
+            "Primary",
+            "upstream-primary",
+            Some(bound_group),
+            None,
+            None,
+        )
+        .await;
+        insert_test_pool_api_key_account_with_options(
+            &state,
+            "Secondary",
+            "upstream-secondary",
+            Some(other_group),
+            None,
+            None,
+        )
+        .await;
+        let prompt_cache_key = "pck-live-first-bound-group";
+        let now_iso = format_utc_iso(Utc::now());
+        sqlx::query(
+            r#"
         INSERT INTO prompt_cache_conversation_bindings (
             prompt_cache_key,
             binding_kind,
@@ -641,59 +644,60 @@ async fn proxy_openai_v1_responses_live_first_failover_preserves_prompt_cache_gr
         )
         VALUES (?1, 'group', ?2, NULL, ?3, ?3)
         "#,
-    )
-    .bind(prompt_cache_key)
-    .bind(bound_group)
-    .bind(&now_iso)
-    .execute(&state.pool)
-    .await
-    .expect("insert prompt cache group binding");
-
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
-    let first_chunk = format!(
-        "{{\"model\":\"gpt-5\",\"promptCacheKey\":\"{prompt_cache_key}\",\"input\":\"{}",
-        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
-    );
-    tokio::spawn(async move {
-        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        let _ = tx.send(Ok(Bytes::from_static(b"\"}"))).await;
-    });
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        )
+        .bind(prompt_cache_key)
+        .bind(bound_group)
+        .bind(&now_iso)
+        .execute(&state.pool)
         .await
-        .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        5344,
-        &"/v1/responses".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect_err("binding-constrained live-first failover should not use other groups");
+        .expect("insert prompt cache group binding");
 
-    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
-    let attempts = attempts.lock().expect("lock live-first binding attempts");
-    assert!(matches!(
-        attempts.get("Bearer upstream-primary").copied(),
-        Some(count) if count > 0
-    ));
-    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+        let first_chunk = format!(
+            "{{\"model\":\"gpt-5\",\"promptCacheKey\":\"{prompt_cache_key}\",\"input\":\"{}",
+            "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+        );
+        tokio::spawn(async move {
+            let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            let _ = tx.send(Ok(Bytes::from_static(b"\"}"))).await;
+        });
 
-    upstream_handle.abort();
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            5344,
+            &"/v1/responses".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+            runtime_timeouts,
+            None,
+        )
+        .await
+        .expect_err("binding-constrained live-first failover should not use other groups");
+
+        assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+        let attempts = attempts.lock().expect("lock live-first binding attempts");
+        assert!(matches!(
+            attempts.get("Bearer upstream-primary").copied(),
+            Some(count) if count > 0
+        ));
+        assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+
+        upstream_handle.abort();
+    });
 }
 
 #[tokio::test]
@@ -789,269 +793,274 @@ async fn proxy_openai_v1_responses_waits_for_body_before_encrypted_owner_guard()
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_responses_live_first_success_persists_encrypted_owner() {
-    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(80),
-        Duration::from_millis(10),
-    )
-    .await;
-    enable_encrypted_session_owner_routing_for_test(&state).await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let owner_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Live First Encrypted Owner",
-        "upstream-primary",
-        None,
-        None,
-        None,
-    )
-    .await;
-    let prompt_cache_key = "pck-live-first-success-owner";
-
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
-    let first_chunk = format!(
-        "{{\"model\":\"gpt-5\",\"promptCacheKey\":\"{prompt_cache_key}\",\"input\":[{{\"type\":\"encrypted_content\",\"encrypted_content\":\"opaque-owner-bound-content\"}}],\"tail\":\"{}",
-        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
-    );
-    tokio::spawn(async move {
-        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        let _ = tx.send(Ok(Bytes::from_static(b"\"}"))).await;
-    });
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
-        .await
-        .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        5345,
-        &"/v1/responses".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect("live-first encrypted request should succeed");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read live-first encrypted response");
-    let payload: Value =
-        serde_json::from_slice(&body).expect("decode live-first encrypted response");
-    assert_eq!(payload["authorization"], "Bearer upstream-primary");
-
-    let mut persisted_owner_account_id = None;
-    for _ in 0..50 {
-        persisted_owner_account_id = sqlx::query_scalar(
-            r#"
-            SELECT owner_upstream_account_id
-            FROM prompt_cache_encrypted_session_owners
-            WHERE prompt_cache_key = ?1
-            "#,
+#[test]
+fn proxy_openai_v1_responses_live_first_success_persists_encrypted_owner() {
+    run_future_with_large_stack(async move {
+        let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(10),
         )
-        .bind(prompt_cache_key)
-        .fetch_optional(&state.pool)
-        .await
-        .expect("query live-first encrypted owner row");
-        if persisted_owner_account_id.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-
-    assert_eq!(persisted_owner_account_id, Some(owner_account_id));
-
-    let attempts = attempts.lock().expect("lock live-first encrypted attempts");
-    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
-
-    upstream_handle.abort();
-}
-
-#[tokio::test]
-async fn proxy_openai_v1_responses_live_first_response_encryption_persists_encrypted_owner() {
-    async fn response_encryption_live_first_upstream(
-        attempts: Arc<StdMutex<HashMap<String, usize>>>,
-        headers: HeaderMap,
-    ) -> Response {
-        let authorization = headers
-            .get(http_header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
-        {
-            let mut attempts = attempts
-                .lock()
-                .expect("lock live-first response-encryption attempts");
-            let entry = attempts.entry(authorization.clone()).or_insert(0);
-            *entry += 1;
-        }
-        (
-            StatusCode::OK,
-            Json(json!({
-                "authorization": authorization,
-                "output": [
-                    {
-                        "type": "encrypted_content",
-                        "encrypted_content": "opaque-owner-bound-content"
-                    }
-                ]
-            })),
+        .await;
+        enable_encrypted_session_owner_routing_for_test(&state).await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let owner_account_id = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Live First Encrypted Owner",
+            "upstream-primary",
+            None,
+            None,
+            None,
         )
-            .into_response()
-    }
+        .await;
+        let prompt_cache_key = "pck-live-first-success-owner";
 
-    let attempts = Arc::new(StdMutex::new(HashMap::new()));
-    let app = Router::new().route(
-        "/v1/responses",
-        post({
-            let attempts = attempts.clone();
-            move |headers| response_encryption_live_first_upstream(attempts.clone(), headers)
-        }),
-    );
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind live-first response-encryption upstream");
-    let addr = listener
-        .local_addr()
-        .expect("live-first response-encryption upstream addr");
-    let upstream_handle = tokio::spawn(async move {
-        axum::serve(listener, app)
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+        let first_chunk = format!(
+            "{{\"model\":\"gpt-5\",\"promptCacheKey\":\"{prompt_cache_key}\",\"input\":[{{\"type\":\"encrypted_content\",\"encrypted_content\":\"opaque-owner-bound-content\"}}],\"tail\":\"{}",
+            "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+        );
+        tokio::spawn(async move {
+            let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            let _ = tx.send(Ok(Bytes::from_static(b"\"}"))).await;
+        });
+
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
             .await
-            .expect("live-first response-encryption upstream should run");
-    });
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse(&format!("http://{addr}")).expect("valid upstream base url"),
-        Duration::from_millis(80),
-        Duration::from_millis(10),
-    )
-    .await;
-    enable_encrypted_session_owner_routing_for_test(&state).await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let owner_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Live First Response Encrypted Owner",
-        "upstream-primary",
-        None,
-        None,
-        None,
-    )
-    .await;
-    let prompt_cache_key = "pck-live-first-response-encrypted-owner";
-
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
-    let first_chunk = format!(
-        "{{\"model\":\"gpt-5\",\"promptCacheKey\":\"{prompt_cache_key}\",\"input\":\"{}",
-        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
-    );
-    tokio::spawn(async move {
-        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        let _ = tx.send(Ok(Bytes::from_static(b"\"}"))).await;
-    });
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .expect("resolve pool runtime timeouts");
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            5345,
+            &"/v1/responses".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+            runtime_timeouts,
+            None,
+        )
         .await
-        .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        5345,
-        &"/v1/responses".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect("live-first response-encryption request should succeed");
+        .expect("live-first encrypted request should succeed");
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read live-first response-encryption response");
-    let payload: Value =
-        serde_json::from_slice(&body).expect("decode live-first response-encryption response");
-    assert_eq!(payload["authorization"], "Bearer upstream-primary");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read live-first encrypted response");
+        let payload: Value =
+            serde_json::from_slice(&body).expect("decode live-first encrypted response");
+        assert_eq!(payload["authorization"], "Bearer upstream-primary");
 
-    let mut persisted_owner_account_id = None;
-    for _ in 0..50 {
-        persisted_owner_account_id = sqlx::query_scalar(
-            r#"
+        let mut persisted_owner_account_id = None;
+        for _ in 0..50 {
+            persisted_owner_account_id = sqlx::query_scalar(
+                r#"
             SELECT owner_upstream_account_id
             FROM prompt_cache_encrypted_session_owners
             WHERE prompt_cache_key = ?1
             "#,
-        )
-        .bind(prompt_cache_key)
-        .fetch_optional(&state.pool)
-        .await
-        .expect("query live-first response-encryption owner row");
-        if persisted_owner_account_id.is_some() {
-            break;
+            )
+            .bind(prompt_cache_key)
+            .fetch_optional(&state.pool)
+            .await
+            .expect("query live-first encrypted owner row");
+            if persisted_owner_account_id.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
 
-    assert_eq!(persisted_owner_account_id, Some(owner_account_id));
+        assert_eq!(persisted_owner_account_id, Some(owner_account_id));
 
-    let attempts = attempts
-        .lock()
-        .expect("lock live-first response-encryption attempts");
-    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+        let attempts = attempts.lock().expect("lock live-first encrypted attempts");
+        assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
 
-    upstream_handle.abort();
+        upstream_handle.abort();
+    });
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_responses_prebuffered_success_persists_encrypted_owner() {
-    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(80),
-        Duration::from_millis(10),
-    )
-    .await;
-    enable_encrypted_session_owner_routing_for_test(&state).await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let owner_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Prebuffered Encrypted Owner",
-        "upstream-primary",
-        None,
-        None,
-        None,
-    )
-    .await;
-    let prompt_cache_key = "pck-prebuffered-success-owner";
+#[test]
+fn proxy_openai_v1_responses_live_first_response_encryption_persists_encrypted_owner() {
+    run_future_with_large_stack(async move {
+        async fn response_encryption_live_first_upstream(
+            attempts: Arc<StdMutex<HashMap<String, usize>>>,
+            headers: HeaderMap,
+        ) -> Response {
+            let authorization = headers
+                .get(http_header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            {
+                let mut attempts = attempts
+                    .lock()
+                    .expect("lock live-first response-encryption attempts");
+                let entry = attempts.entry(authorization.clone()).or_insert(0);
+                *entry += 1;
+            }
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "authorization": authorization,
+                    "output": [
+                        {
+                            "type": "encrypted_content",
+                            "encrypted_content": "opaque-owner-bound-content"
+                        }
+                    ]
+                })),
+            )
+                .into_response()
+        }
 
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        let attempts = Arc::new(StdMutex::new(HashMap::new()));
+        let app = Router::new().route(
+            "/v1/responses",
+            post({
+                let attempts = attempts.clone();
+                move |headers| response_encryption_live_first_upstream(attempts.clone(), headers)
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind live-first response-encryption upstream");
+        let addr = listener
+            .local_addr()
+            .expect("live-first response-encryption upstream addr");
+        let upstream_handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("live-first response-encryption upstream should run");
+        });
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&format!("http://{addr}")).expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(10),
+        )
+        .await;
+        enable_encrypted_session_owner_routing_for_test(&state).await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let owner_account_id = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Live First Response Encrypted Owner",
+            "upstream-primary",
+            None,
+            None,
+            None,
+        )
+        .await;
+        let prompt_cache_key = "pck-live-first-response-encrypted-owner";
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+        let first_chunk = format!(
+            "{{\"model\":\"gpt-5\",\"promptCacheKey\":\"{prompt_cache_key}\",\"input\":\"{}",
+            "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+        );
+        tokio::spawn(async move {
+            let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            let _ = tx.send(Ok(Bytes::from_static(b"\"}"))).await;
+        });
+
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            5345,
+            &"/v1/responses".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+            runtime_timeouts,
+            None,
+        )
         .await
-        .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
+        .expect("live-first response-encryption request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read live-first response-encryption response");
+        let payload: Value =
+            serde_json::from_slice(&body).expect("decode live-first response-encryption response");
+        assert_eq!(payload["authorization"], "Bearer upstream-primary");
+
+        let mut persisted_owner_account_id = None;
+        for _ in 0..50 {
+            persisted_owner_account_id = sqlx::query_scalar(
+                r#"
+            SELECT owner_upstream_account_id
+            FROM prompt_cache_encrypted_session_owners
+            WHERE prompt_cache_key = ?1
+            "#,
+            )
+            .bind(prompt_cache_key)
+            .fetch_optional(&state.pool)
+            .await
+            .expect("query live-first response-encryption owner row");
+            if persisted_owner_account_id.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        assert_eq!(persisted_owner_account_id, Some(owner_account_id));
+
+        let attempts = attempts
+            .lock()
+            .expect("lock live-first response-encryption attempts");
+        assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+
+        upstream_handle.abort();
+    });
+}
+
+#[test]
+fn proxy_openai_v1_responses_prebuffered_success_persists_encrypted_owner() {
+    run_future_with_large_stack(async move {
+        let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(10),
+        )
+        .await;
+        enable_encrypted_session_owner_routing_for_test(&state).await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let owner_account_id = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Prebuffered Encrypted Owner",
+            "upstream-primary",
+            None,
+            None,
+            None,
+        )
+        .await;
+        let prompt_cache_key = "pck-prebuffered-success-owner";
+
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let response = proxy_openai_v1_via_pool(
         state.clone(),
         5346,
         &"/v1/responses".parse().expect("valid uri"),
@@ -1078,80 +1087,82 @@ async fn proxy_openai_v1_responses_prebuffered_success_persists_encrypted_owner(
     .await
     .expect("prebuffered encrypted request should succeed");
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read prebuffered encrypted response");
-    let payload: Value =
-        serde_json::from_slice(&body).expect("decode prebuffered encrypted response");
-    assert_eq!(payload["authorization"], "Bearer upstream-primary");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read prebuffered encrypted response");
+        let payload: Value =
+            serde_json::from_slice(&body).expect("decode prebuffered encrypted response");
+        assert_eq!(payload["authorization"], "Bearer upstream-primary");
 
-    let mut persisted_owner_account_id = None;
-    for _ in 0..50 {
-        persisted_owner_account_id = sqlx::query_scalar(
-            r#"
+        let mut persisted_owner_account_id = None;
+        for _ in 0..50 {
+            persisted_owner_account_id = sqlx::query_scalar(
+                r#"
             SELECT owner_upstream_account_id
             FROM prompt_cache_encrypted_session_owners
             WHERE prompt_cache_key = ?1
             "#,
-        )
-        .bind(prompt_cache_key)
-        .fetch_optional(&state.pool)
-        .await
-        .expect("query prebuffered encrypted owner row");
-        if persisted_owner_account_id.is_some() {
-            break;
+            )
+            .bind(prompt_cache_key)
+            .fetch_optional(&state.pool)
+            .await
+            .expect("query prebuffered encrypted owner row");
+            if persisted_owner_account_id.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
 
-    assert_eq!(persisted_owner_account_id, Some(owner_account_id));
+        assert_eq!(persisted_owner_account_id, Some(owner_account_id));
 
-    let attempts = attempts
-        .lock()
-        .expect("lock prebuffered encrypted attempts");
-    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+        let attempts = attempts
+            .lock()
+            .expect("lock prebuffered encrypted attempts");
+        assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
 
-    upstream_handle.abort();
+        upstream_handle.abort();
+    });
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_responses_header_prompt_cache_key_preserves_group_binding() {
-    let (upstream_base, attempts, upstream_handle) =
-        spawn_pool_retry_upstream(&[("Bearer upstream-primary", 99)]).await;
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(80),
-        Duration::from_millis(10),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let bound_group = "header-bound-group";
-    let other_group = "header-other-group";
-    ensure_test_group_binding(&state.pool, bound_group, None).await;
-    ensure_test_group_binding(&state.pool, other_group, None).await;
-    insert_test_pool_api_key_account_with_options(
-        &state,
-        "Primary",
-        "upstream-primary",
-        Some(bound_group),
-        None,
-        None,
-    )
-    .await;
-    insert_test_pool_api_key_account_with_options(
-        &state,
-        "Secondary",
-        "upstream-secondary",
-        Some(other_group),
-        None,
-        None,
-    )
-    .await;
-    let prompt_cache_key = "pck-header-bound-group";
-    let now_iso = format_utc_iso(Utc::now());
-    sqlx::query(
-        r#"
+#[test]
+fn proxy_openai_v1_responses_header_prompt_cache_key_preserves_group_binding() {
+    run_future_with_large_stack(async move {
+        let (upstream_base, attempts, upstream_handle) =
+            spawn_pool_retry_upstream(&[("Bearer upstream-primary", 99)]).await;
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(10),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let bound_group = "header-bound-group";
+        let other_group = "header-other-group";
+        ensure_test_group_binding(&state.pool, bound_group, None).await;
+        ensure_test_group_binding(&state.pool, other_group, None).await;
+        insert_test_pool_api_key_account_with_options(
+            &state,
+            "Primary",
+            "upstream-primary",
+            Some(bound_group),
+            None,
+            None,
+        )
+        .await;
+        insert_test_pool_api_key_account_with_options(
+            &state,
+            "Secondary",
+            "upstream-secondary",
+            Some(other_group),
+            None,
+            None,
+        )
+        .await;
+        let prompt_cache_key = "pck-header-bound-group";
+        let now_iso = format_utc_iso(Utc::now());
+        sqlx::query(
+            r#"
         INSERT INTO prompt_cache_conversation_bindings (
             prompt_cache_key,
             binding_kind,
@@ -1162,52 +1173,53 @@ async fn proxy_openai_v1_responses_header_prompt_cache_key_preserves_group_bindi
         )
         VALUES (?1, 'group', ?2, NULL, ?3, ?3)
         "#,
-    )
-    .bind(prompt_cache_key)
-    .bind(bound_group)
-    .bind(&now_iso)
-    .execute(&state.pool)
-    .await
-    .expect("insert header prompt cache group binding");
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        )
+        .bind(prompt_cache_key)
+        .bind(bound_group)
+        .bind(&now_iso)
+        .execute(&state.pool)
         .await
-        .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        5345,
-        &"/v1/responses".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                HeaderName::from_static("x-prompt-cache-key"),
-                HeaderValue::from_static(prompt_cache_key),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from(r#"{"model":"gpt-5","input":"header-only"}"#),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect_err("header binding should not fail over outside its group");
+        .expect("insert header prompt cache group binding");
 
-    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
-    let attempts = attempts.lock().expect("lock header binding attempts");
-    assert!(matches!(
-        attempts.get("Bearer upstream-primary").copied(),
-        Some(count) if count > 0
-    ));
-    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            5345,
+            &"/v1/responses".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    HeaderName::from_static("x-prompt-cache-key"),
+                    HeaderValue::from_static(prompt_cache_key),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(r#"{"model":"gpt-5","input":"header-only"}"#),
+            runtime_timeouts,
+            None,
+        )
+        .await
+        .expect_err("header binding should not fail over outside its group");
 
-    upstream_handle.abort();
+        assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+        let attempts = attempts.lock().expect("lock header binding attempts");
+        assert!(matches!(
+            attempts.get("Bearer upstream-primary").copied(),
+            Some(count) if count > 0
+        ));
+        assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+
+        upstream_handle.abort();
+    });
 }
 
 #[test]
@@ -4316,153 +4328,157 @@ async fn proxy_openai_v1_responses_prebuffer_body_counts_total_timeout_from_requ
     assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_responses_prebuffer_body_wait_counts_total_timeout_from_request_start() {
-    let mut config = test_config();
-    config.openai_upstream_base_url =
-        Url::parse("https://api.openai.com/").expect("valid upstream base url");
-    config.pool_upstream_responses_total_timeout = Duration::from_millis(90);
-    config.openai_proxy_request_read_timeout = Duration::from_millis(500);
-    let state = test_state_from_config_with_pool_no_available_wait(
-        config,
-        true,
-        PoolNoAvailableWaitSettings {
-            timeout: Duration::from_millis(220),
-            poll_interval: Duration::from_millis(10),
-            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
-        },
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+#[test]
+fn proxy_openai_v1_responses_prebuffer_body_wait_counts_total_timeout_from_request_start() {
+    run_future_with_large_stack(async move {
+        let mut config = test_config();
+        config.openai_upstream_base_url =
+            Url::parse("https://api.openai.com/").expect("valid upstream base url");
+        config.pool_upstream_responses_total_timeout = Duration::from_millis(90);
+        config.openai_proxy_request_read_timeout = Duration::from_millis(500);
+        let state = test_state_from_config_with_pool_no_available_wait(
+            config,
+            true,
+            PoolNoAvailableWaitSettings {
+                timeout: Duration::from_millis(220),
+                poll_interval: Duration::from_millis(10),
+                retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+            },
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let blocked_id =
+            insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
+        set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
 
-    let request_body = br#"{"model":"gpt-5","input":"hello"}"#.to_vec();
-    let content_length =
-        HeaderValue::from_str(&request_body.len().to_string()).expect("content length header");
-    let slow_body = stream::unfold(Some(request_body), |state| async move {
-        match state {
-            Some(body) => {
-                tokio::time::sleep(Duration::from_millis(70)).await;
-                Some((Ok::<Bytes, Infallible>(Bytes::from(body)), None))
+        let request_body = br#"{"model":"gpt-5","input":"hello"}"#.to_vec();
+        let content_length =
+            HeaderValue::from_str(&request_body.len().to_string()).expect("content length header");
+        let slow_body = stream::unfold(Some(request_body), |state| async move {
+            match state {
+                Some(body) => {
+                    tokio::time::sleep(Duration::from_millis(70)).await;
+                    Some((Ok::<Bytes, Infallible>(Bytes::from(body)), None))
+                }
+                None => None,
             }
-            None => None,
-        }
+        });
+
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let started = Instant::now();
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            6247,
+            &"/v1/responses".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+                (http_header::CONTENT_LENGTH, content_length),
+            ]),
+            Body::from_stream(slow_body),
+            runtime_timeouts,
+            None,
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        let err = response.expect_err("via-pool request should fail");
+        let status = err.status;
+        let message = err.message;
+        assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+        assert!(
+            elapsed >= Duration::from_millis(70),
+            "request should spend time uploading the buffered body, elapsed={elapsed:?}"
+        );
+        assert_eq!(
+            message,
+            pool_total_timeout_exhausted_message(Duration::from_millis(90)),
+            "unexpected via-pool failure: {message}"
+        );
+        assert!(
+            count_pool_upstream_request_attempts(&state.pool).await <= 1,
+            "timeout may expire before the first upstream attempt is persisted on loaded runners"
+        );
     });
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
-        .await
-        .expect("resolve pool runtime timeouts");
-    let started = Instant::now();
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        6247,
-        &"/v1/responses".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-            (http_header::CONTENT_LENGTH, content_length),
-        ]),
-        Body::from_stream(slow_body),
-        runtime_timeouts,
-        None,
-    )
-    .await;
-    let elapsed = started.elapsed();
-
-    let err = response.expect_err("via-pool request should fail");
-    let status = err.status;
-    let message = err.message;
-    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
-    assert!(
-        elapsed >= Duration::from_millis(70),
-        "request should spend time uploading the buffered body, elapsed={elapsed:?}"
-    );
-    assert_eq!(
-        message,
-        pool_total_timeout_exhausted_message(Duration::from_millis(90)),
-        "unexpected via-pool failure: {message}"
-    );
-    assert!(
-        count_pool_upstream_request_attempts(&state.pool).await <= 1,
-        "timeout may expire before the first upstream attempt is persisted on loaded runners"
-    );
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_responses_streamed_body_counts_total_timeout_from_request_start_without_wait()
- {
-    let mut config = test_config();
-    config.openai_upstream_base_url =
-        Url::parse("https://api.openai.com/").expect("valid upstream base url");
-    config.pool_upstream_responses_total_timeout = Duration::from_millis(90);
-    config.openai_proxy_request_read_timeout = Duration::from_millis(500);
-    let state = test_state_from_config(config, true).await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+#[test]
+fn proxy_openai_v1_responses_streamed_body_counts_total_timeout_from_request_start_without_wait() {
+    run_future_with_large_stack(async move {
+        let mut config = test_config();
+        config.openai_upstream_base_url =
+            Url::parse("https://api.openai.com/").expect("valid upstream base url");
+        config.pool_upstream_responses_total_timeout = Duration::from_millis(90);
+        config.openai_proxy_request_read_timeout = Duration::from_millis(500);
+        let state = test_state_from_config(config, true).await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
-    tokio::spawn(async move {
-        let _ = tx
-            .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
-            .await;
-        tokio::time::sleep(Duration::from_millis(180)).await;
-        let _ = tx
-            .send(Ok(Bytes::from_static(b"\"input\":\"hello\"}")))
-            .await;
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+        tokio::spawn(async move {
+            let _ = tx
+                .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
+                .await;
+            tokio::time::sleep(Duration::from_millis(180)).await;
+            let _ = tx
+                .send(Ok(Bytes::from_static(b"\"input\":\"hello\"}")))
+                .await;
+        });
+
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let started = Instant::now();
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            6245,
+            &"/v1/responses".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+            runtime_timeouts,
+            None,
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        let err = response.expect_err("via-pool request should fail");
+        let status = err.status;
+        let message = err.message;
+        assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+        assert!(
+            elapsed >= Duration::from_millis(70),
+            "responses total timeout should still start at request admission, elapsed={elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(160),
+            "live first attempt should not wait for the entire streamed body before timing out, elapsed={elapsed:?}"
+        );
+        assert_eq!(
+            message,
+            pool_total_timeout_exhausted_message(Duration::from_millis(90)),
+            "unexpected via-pool failure: {message}"
+        );
+        assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
     });
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
-        .await
-        .expect("resolve pool runtime timeouts");
-    let started = Instant::now();
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        6245,
-        &"/v1/responses".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
-        runtime_timeouts,
-        None,
-    )
-    .await;
-    let elapsed = started.elapsed();
-
-    let err = response.expect_err("via-pool request should fail");
-    let status = err.status;
-    let message = err.message;
-    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
-    assert!(
-        elapsed >= Duration::from_millis(70),
-        "responses total timeout should still start at request admission, elapsed={elapsed:?}"
-    );
-    assert!(
-        elapsed < Duration::from_millis(160),
-        "live first attempt should not wait for the entire streamed body before timing out, elapsed={elapsed:?}"
-    );
-    assert_eq!(
-        message,
-        pool_total_timeout_exhausted_message(Duration::from_millis(90)),
-        "unexpected via-pool failure: {message}"
-    );
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
 #[tokio::test]
@@ -5183,102 +5199,104 @@ fn proxy_openai_v1_direct_image_prebuffer_preserves_image_capture_target_without
     });
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_responses_force_add_failure_learns_response_image_tool_unsupported() {
-    async fn image_unsupported_upstream(body: Bytes) -> impl IntoResponse {
-        let request_body: Value = serde_json::from_slice(&body).expect("decode upstream body");
-        assert!(
-            request_body["tools"]
-                .as_array()
-                .expect("tools should be injected")
-                .iter()
-                .any(|tool| tool["type"].as_str() == Some("image_generation")),
-            "force_add should send an image tool upstream: {request_body:?}"
-        );
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": {
-                    "code": "unsupported_tool",
-                    "message": "image_generation is not supported for this account",
-                    "type": "invalid_request_error"
-                }
-            })),
-        )
-            .into_response()
-    }
+#[test]
+fn proxy_openai_v1_responses_force_add_failure_learns_response_image_tool_unsupported() {
+    run_future_with_large_stack(async {
+        async fn image_unsupported_upstream(body: Bytes) -> impl IntoResponse {
+            let request_body: Value = serde_json::from_slice(&body).expect("decode upstream body");
+            assert!(
+                request_body["tools"]
+                    .as_array()
+                    .expect("tools should be injected")
+                    .iter()
+                    .any(|tool| tool["type"].as_str() == Some("image_generation")),
+                "force_add should send an image tool upstream: {request_body:?}"
+            );
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": {
+                        "code": "unsupported_tool",
+                        "message": "image_generation is not supported for this account",
+                        "type": "invalid_request_error"
+                    }
+                })),
+            )
+                .into_response()
+        }
 
-    let app = Router::new().route("/v1/responses", post(image_unsupported_upstream));
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind image unsupported upstream");
-    let upstream_base = format!("http://{}", listener.local_addr().expect("local addr"));
-    let upstream_handle = tokio::spawn(async move {
-        axum::serve(listener, app)
+        let app = Router::new().route("/v1/responses", post(image_unsupported_upstream));
+        let listener = TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("image unsupported upstream server should run");
-    });
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(80),
-        Duration::from_millis(20),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Responses Force Add Unsupported",
-        "upstream-force-add-unsupported",
-        None,
-        None,
-        None,
-    )
-    .await;
-    sqlx::query(
-        "UPDATE pool_upstream_accounts SET policy_image_tool_rewrite_mode = ?2 WHERE id = ?1",
-    )
-    .bind(account_id)
-    .bind("force_add")
-    .execute(&state.pool)
-    .await
-    .expect("mark responses account force_add");
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .expect("bind image unsupported upstream");
+        let upstream_base = format!("http://{}", listener.local_addr().expect("local addr"));
+        let upstream_handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("image unsupported upstream server should run");
+        });
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(20),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let account_id = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Responses Force Add Unsupported",
+            "upstream-force-add-unsupported",
+            None,
+            None,
+            None,
+        )
+        .await;
+        sqlx::query(
+            "UPDATE pool_upstream_accounts SET policy_image_tool_rewrite_mode = ?2 WHERE id = ?1",
+        )
+        .bind(account_id)
+        .bind("force_add")
+        .execute(&state.pool)
         .await
-        .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        6344,
-        &"/v1/responses".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from(r#"{"model":"gpt-5.1-codex","input":"hello"}"#),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect("via-pool responses request should return a route failure");
-    assert!(response.status().is_server_error() || response.status().is_client_error());
+        .expect("mark responses account force_add");
 
-    let capability: String = sqlx::query_scalar(
-        "SELECT response_image_tool_capability FROM pool_upstream_accounts WHERE id = ?",
-    )
-    .bind(account_id)
-    .fetch_one(&state.pool)
-    .await
-    .expect("load response image-tool capability after force_add failure");
-    assert_eq!(capability, "unsupported");
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            6344,
+            &"/v1/responses".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(r#"{"model":"gpt-5.1-codex","input":"hello"}"#),
+            runtime_timeouts,
+            None,
+        )
+        .await
+        .expect("via-pool responses request should return a route failure");
+        assert!(response.status().is_server_error() || response.status().is_client_error());
 
-    upstream_handle.abort();
+        let capability: String = sqlx::query_scalar(
+            "SELECT response_image_tool_capability FROM pool_upstream_accounts WHERE id = ?",
+        )
+        .bind(account_id)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load response image-tool capability after force_add failure");
+        assert_eq!(capability, "unsupported");
+
+        upstream_handle.abort();
+    });
 }
 
 #[test]
@@ -5377,102 +5395,104 @@ fn proxy_openai_v1_image_edits_ignores_response_image_tool_capability_gate() {
     });
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_responses_image_requests_ignore_image_endpoint_capability_gate() {
-    async fn responses_image_echo_upstream(headers: HeaderMap, body: Bytes) -> Response {
-        let authorization = headers
-            .get(http_header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
-        let request_body: Value = serde_json::from_slice(&body).expect("decode upstream body");
-        (
-            StatusCode::OK,
-            Json(json!({
-                "authorization": authorization,
-                "requestBody": request_body,
-            })),
-        )
-            .into_response()
-    }
+#[test]
+fn proxy_openai_v1_responses_image_requests_ignore_image_endpoint_capability_gate() {
+    run_future_with_large_stack(async {
+        async fn responses_image_echo_upstream(headers: HeaderMap, body: Bytes) -> Response {
+            let authorization = headers
+                .get(http_header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            let request_body: Value = serde_json::from_slice(&body).expect("decode upstream body");
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "authorization": authorization,
+                    "requestBody": request_body,
+                })),
+            )
+                .into_response()
+        }
 
-    let app = Router::new().route("/v1/responses", post(responses_image_echo_upstream));
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind responses image upstream");
-    let upstream_base = format!("http://{}", listener.local_addr().expect("local addr"));
-    let upstream_handle = tokio::spawn(async move {
-        axum::serve(listener, app)
+        let app = Router::new().route("/v1/responses", post(responses_image_echo_upstream));
+        let listener = TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("responses image upstream server should run");
-    });
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(80),
-        Duration::from_millis(20),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Responses Image Tool Only",
-        "upstream-responses-image-only",
-        None,
-        None,
-        None,
-    )
-    .await;
-    sqlx::query(
-        r#"
+            .expect("bind responses image upstream");
+        let upstream_base = format!("http://{}", listener.local_addr().expect("local addr"));
+        let upstream_handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("responses image upstream server should run");
+        });
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(20),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let account_id = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Responses Image Tool Only",
+            "upstream-responses-image-only",
+            None,
+            None,
+            None,
+        )
+        .await;
+        sqlx::query(
+            r#"
         UPDATE pool_upstream_accounts
         SET response_endpoint_capability = 'supported',
             image_endpoint_capability = 'unsupported',
             response_image_tool_capability = 'supported'
         WHERE id = ?1
         "#,
-    )
-    .bind(account_id)
-    .execute(&state.pool)
-    .await
-    .expect("seed responses image capability split");
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        )
+        .bind(account_id)
+        .execute(&state.pool)
         .await
-        .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        6346,
-        &"/v1/responses".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from(r#"{"model":"gpt-image-1","input":"draw a cat"}"#),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect("responses image request should not be filtered by image endpoint gate");
+        .expect("seed responses image capability split");
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX)
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            6346,
+            &"/v1/responses".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(r#"{"model":"gpt-image-1","input":"draw a cat"}"#),
+            runtime_timeouts,
+            None,
+        )
         .await
-        .expect("read responses image response");
-    let payload: Value = serde_json::from_slice(&body).expect("decode responses image body");
-    assert_eq!(
-        payload["authorization"],
-        "Bearer upstream-responses-image-only"
-    );
-    assert_eq!(payload["requestBody"]["model"], "gpt-image-1");
+        .expect("responses image request should not be filtered by image endpoint gate");
 
-    upstream_handle.abort();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read responses image response");
+        let payload: Value = serde_json::from_slice(&body).expect("decode responses image body");
+        assert_eq!(
+            payload["authorization"],
+            "Bearer upstream-responses-image-only"
+        );
+        assert_eq!(payload["requestBody"]["model"], "gpt-image-1");
+
+        upstream_handle.abort();
+    });
 }
 
 #[tokio::test]
@@ -5581,47 +5601,52 @@ async fn proxy_openai_v1_chat_and_responses_use_independent_endpoint_capability_
     assert!(runtime_timeouts.request_read_timeout > Duration::from_secs(0));
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_responses_live_first_waits_for_image_intent_before_filtered_resolution() {
-    assert_live_first_waits_for_image_intent_before_filtered_resolution("/v1/responses", 6341)
+#[test]
+fn proxy_openai_v1_responses_live_first_waits_for_image_intent_before_filtered_resolution() {
+    run_future_with_large_stack(async {
+        assert_live_first_waits_for_image_intent_before_filtered_resolution("/v1/responses", 6341)
+            .await;
+    });
+}
+
+#[test]
+fn proxy_openai_v1_responses_compact_live_first_waits_for_image_intent_before_filtered_resolution()
+{
+    run_future_with_large_stack(async {
+        assert_live_first_waits_for_image_intent_before_filtered_resolution(
+            "/v1/responses/compact",
+            6342,
+        )
         .await;
+    });
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_responses_compact_live_first_waits_for_image_intent_before_filtered_resolution()
- {
-    assert_live_first_waits_for_image_intent_before_filtered_resolution(
-        "/v1/responses/compact",
-        6342,
-    )
-    .await;
-}
+#[test]
+fn proxy_openai_v1_responses_pool_runtime_exposes_remote_v2_compaction_request_kind() {
+    run_future_with_large_stack(async move {
+        let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(20),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        insert_test_pool_api_key_account_with_options(
+            &state,
+            "Remote V2 Account",
+            "upstream-remote-v2",
+            None,
+            None,
+            None,
+        )
+        .await;
 
-#[tokio::test]
-async fn proxy_openai_v1_responses_pool_runtime_exposes_remote_v2_compaction_request_kind() {
-    let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(80),
-        Duration::from_millis(20),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    insert_test_pool_api_key_account_with_options(
-        &state,
-        "Remote V2 Account",
-        "upstream-remote-v2",
-        None,
-        None,
-        None,
-    )
-    .await;
-
-    let mut rx = state.broadcaster.subscribe();
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
-        .await
-        .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
+        let mut rx = state.broadcaster.subscribe();
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let response = proxy_openai_v1_via_pool(
         state.clone(),
         6941,
         &"/v1/responses".parse().expect("valid uri"),
@@ -5644,85 +5669,87 @@ async fn proxy_openai_v1_responses_pool_runtime_exposes_remote_v2_compaction_req
     )
     .await
     .expect("via-pool remote v2 request should succeed");
-    assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::OK);
 
-    let running_record = loop {
-        let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        let running_record = loop {
+            let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .expect("timed out waiting for runtime records payload")
+                .expect("broadcast channel should stay open");
+            if let BroadcastPayload::Records { records } = payload
+                && let Some(record) = records.into_iter().find(|record| {
+                    record.endpoint.as_deref() == Some("/v1/responses")
+                        && record.compaction_request_kind.as_deref() == Some("remote_v2")
+                        && record.status.as_deref() == Some("running")
+                })
+            {
+                break record;
+            }
+        };
+        assert_eq!(
+            running_record.compaction_request_kind.as_deref(),
+            Some("remote_v2")
+        );
+        let _ = to_bytes(response.into_body(), usize::MAX)
             .await
-            .expect("timed out waiting for runtime records payload")
-            .expect("broadcast channel should stay open");
-        if let BroadcastPayload::Records { records } = payload
-            && let Some(record) = records.into_iter().find(|record| {
-                record.endpoint.as_deref() == Some("/v1/responses")
-                    && record.compaction_request_kind.as_deref() == Some("remote_v2")
-                    && record.status.as_deref() == Some("running")
-            })
-        {
-            break record;
-        }
-    };
-    assert_eq!(
-        running_record.compaction_request_kind.as_deref(),
-        Some("remote_v2")
-    );
-    let _ = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read remote v2 via-pool response");
-    assert!(
-        state
-            .proxy_runtime_invocations
-            .snapshot()
-            .iter()
-            .all(|record| record.invoke_id != running_record.invoke_id),
-        "completed via-pool synthetic runtime should be removed"
-    );
+            .expect("read remote v2 via-pool response");
+        assert!(
+            state
+                .proxy_runtime_invocations
+                .snapshot()
+                .iter()
+                .all(|record| record.invoke_id != running_record.invoke_id),
+            "completed via-pool synthetic runtime should be removed"
+        );
 
-    upstream_handle.abort();
+        upstream_handle.abort();
+    });
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_responses_pool_runtime_remote_v2_survives_disabled_request_body_logging() {
-    let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(80),
-        Duration::from_millis(20),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    insert_test_pool_api_key_account_with_options(
-        &state,
-        "Remote V2 No Request Raw",
-        "upstream-remote-v2-no-request-raw",
-        None,
-        None,
-        None,
-    )
-    .await;
+#[test]
+fn proxy_openai_v1_responses_pool_runtime_remote_v2_survives_disabled_request_body_logging() {
+    run_future_with_large_stack(async move {
+        let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(20),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        insert_test_pool_api_key_account_with_options(
+            &state,
+            "Remote V2 No Request Raw",
+            "upstream-remote-v2-no-request-raw",
+            None,
+            None,
+            None,
+        )
+        .await;
 
-    let _ = put_proxy_settings(
-        State(state.clone()),
-        HeaderMap::new(),
-        Json(ProxyModelSettingsUpdateRequest {
-            hijack_enabled: true,
-            merge_upstream_enabled: true,
-            fast_mode_rewrite_mode: None,
-            upstream_429_max_retries: None,
-            websocket_enabled: None,
-            upstream_websocket_default_enabled: None,
-            request_body_logging_enabled: Some(false),
-            response_body_logging_enabled: Some(true),
-            encrypted_session_owner_routing_enabled: None,
-            enabled_models: default_enabled_preset_models(),
-        }),
-    )
-    .await
-    .expect("disable request body logging");
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        let _ = put_proxy_settings(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(ProxyModelSettingsUpdateRequest {
+                hijack_enabled: true,
+                merge_upstream_enabled: true,
+                fast_mode_rewrite_mode: None,
+                upstream_429_max_retries: None,
+                websocket_enabled: None,
+                upstream_websocket_default_enabled: None,
+                request_body_logging_enabled: Some(false),
+                response_body_logging_enabled: Some(true),
+                encrypted_session_owner_routing_enabled: None,
+                enabled_models: default_enabled_preset_models(),
+            }),
+        )
         .await
-        .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
+        .expect("disable request body logging");
+
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let response = proxy_openai_v1_via_pool(
         state.clone(),
         6942,
         &"/v1/responses".parse().expect("valid uri"),
@@ -5745,79 +5772,82 @@ async fn proxy_openai_v1_responses_pool_runtime_remote_v2_survives_disabled_requ
     )
     .await
     .expect("via-pool remote v2 request should succeed");
-    assert_eq!(response.status(), StatusCode::OK);
-    let record = state
-        .proxy_runtime_invocations
-        .snapshot()
-        .into_iter()
-        .find(|record| record.invoke_id == "pool-via-6942")
-        .expect("remote v2 runtime invocation should exist while streaming");
-    assert_eq!(record.compaction_request_kind.as_deref(), Some("remote_v2"));
-    assert_eq!(record.request_raw_path, None);
-    let _ = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read remote v2 via-pool response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let record = state
+            .proxy_runtime_invocations
+            .snapshot()
+            .into_iter()
+            .find(|record| record.invoke_id == "pool-via-6942")
+            .expect("remote v2 runtime invocation should exist while streaming");
+        assert_eq!(record.compaction_request_kind.as_deref(), Some("remote_v2"));
+        assert_eq!(record.request_raw_path, None);
+        let _ = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read remote v2 via-pool response");
 
-    upstream_handle.abort();
+        upstream_handle.abort();
+    });
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_responses_pool_runtime_exposes_image_intent_for_image_model_requests() {
-    let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(80),
-        Duration::from_millis(20),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    insert_test_pool_api_key_account_with_options(
-        &state,
-        "Responses Image Intent",
-        "upstream-responses-image-intent",
-        None,
-        None,
-        None,
-    )
-    .await;
+#[test]
+fn proxy_openai_v1_responses_pool_runtime_exposes_image_intent_for_image_model_requests() {
+    run_future_with_large_stack(async move {
+        let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(20),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        insert_test_pool_api_key_account_with_options(
+            &state,
+            "Responses Image Intent",
+            "upstream-responses-image-intent",
+            None,
+            None,
+            None,
+        )
+        .await;
 
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            6943,
+            &"/v1/responses".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(r#"{"model":"gpt-image-1","input":"draw a cat"}"#),
+            runtime_timeouts,
+            None,
+        )
         .await
-        .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        6943,
-        &"/v1/responses".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from(r#"{"model":"gpt-image-1","input":"draw a cat"}"#),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect("via-pool responses image request should succeed");
-    assert_eq!(response.status(), StatusCode::OK);
-    let record = state
-        .proxy_runtime_invocations
-        .snapshot()
-        .into_iter()
-        .find(|record| record.invoke_id == "pool-via-6943")
-        .expect("image-intent runtime invocation should exist while streaming");
-    assert_eq!(record.image_intent.as_deref(), Some("yes"));
-    let _ = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read responses image response");
+        .expect("via-pool responses image request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+        let record = state
+            .proxy_runtime_invocations
+            .snapshot()
+            .into_iter()
+            .find(|record| record.invoke_id == "pool-via-6943")
+            .expect("image-intent runtime invocation should exist while streaming");
+        assert_eq!(record.image_intent.as_deref(), Some("yes"));
+        let _ = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read responses image response");
 
-    upstream_handle.abort();
+        upstream_handle.abort();
+    });
 }
 
 #[test]
@@ -6011,84 +6041,85 @@ fn proxy_openai_v1_direct_image_timeout_returns_504_without_retry() {
     });
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_responses_pool_runtime_image_intent_survives_disabled_request_body_logging()
- {
-    let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(80),
-        Duration::from_millis(20),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    insert_test_pool_api_key_account_with_options(
-        &state,
-        "Responses Image Intent No Request Raw",
-        "upstream-responses-image-no-request-raw",
-        None,
-        None,
-        None,
-    )
-    .await;
+#[test]
+fn proxy_openai_v1_responses_pool_runtime_image_intent_survives_disabled_request_body_logging() {
+    run_future_with_large_stack(async move {
+        let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(20),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        insert_test_pool_api_key_account_with_options(
+            &state,
+            "Responses Image Intent No Request Raw",
+            "upstream-responses-image-no-request-raw",
+            None,
+            None,
+            None,
+        )
+        .await;
 
-    let _ = put_proxy_settings(
-        State(state.clone()),
-        HeaderMap::new(),
-        Json(ProxyModelSettingsUpdateRequest {
-            hijack_enabled: true,
-            merge_upstream_enabled: true,
-            fast_mode_rewrite_mode: None,
-            upstream_429_max_retries: None,
-            websocket_enabled: None,
-            upstream_websocket_default_enabled: None,
-            request_body_logging_enabled: Some(false),
-            response_body_logging_enabled: Some(true),
-            encrypted_session_owner_routing_enabled: None,
-            enabled_models: default_enabled_preset_models(),
-        }),
-    )
-    .await
-    .expect("disable request body logging");
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        let _ = put_proxy_settings(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(ProxyModelSettingsUpdateRequest {
+                hijack_enabled: true,
+                merge_upstream_enabled: true,
+                fast_mode_rewrite_mode: None,
+                upstream_429_max_retries: None,
+                websocket_enabled: None,
+                upstream_websocket_default_enabled: None,
+                request_body_logging_enabled: Some(false),
+                response_body_logging_enabled: Some(true),
+                encrypted_session_owner_routing_enabled: None,
+                enabled_models: default_enabled_preset_models(),
+            }),
+        )
         .await
-        .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        6945,
-        &"/v1/responses".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from(r#"{"model":"gpt-image-1","input":"draw a cat"}"#),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect("via-pool responses image request should succeed");
-    assert_eq!(response.status(), StatusCode::OK);
-    let record = state
-        .proxy_runtime_invocations
-        .snapshot()
-        .into_iter()
-        .find(|record| record.invoke_id == "pool-via-6945")
-        .expect("responses image runtime invocation should exist while streaming");
-    assert_eq!(record.image_intent.as_deref(), Some("yes"));
-    assert_eq!(record.request_raw_path, None);
-    let _ = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read responses image response");
+        .expect("disable request body logging");
 
-    upstream_handle.abort();
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            6945,
+            &"/v1/responses".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(r#"{"model":"gpt-image-1","input":"draw a cat"}"#),
+            runtime_timeouts,
+            None,
+        )
+        .await
+        .expect("via-pool responses image request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+        let record = state
+            .proxy_runtime_invocations
+            .snapshot()
+            .into_iter()
+            .find(|record| record.invoke_id == "pool-via-6945")
+            .expect("responses image runtime invocation should exist while streaming");
+        assert_eq!(record.image_intent.as_deref(), Some("yes"));
+        assert_eq!(record.request_raw_path, None);
+        let _ = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read responses image response");
+
+        upstream_handle.abort();
+    });
 }
 
 async fn assert_live_first_waits_for_image_intent_before_filtered_resolution(

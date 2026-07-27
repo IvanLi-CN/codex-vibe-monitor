@@ -9319,6 +9319,67 @@ async fn timeseries_excludes_zero_ttfb_sentinel_from_first_response_byte_total_s
     assert!(bucket.first_response_byte_total_p95_ms.is_none());
 }
 
+#[tokio::test]
+async fn timeseries_ttft_uses_first_token_samples_without_ttfb_fallback() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(6))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    for (invoke_id, status, ttfb_ms, first_token_ms) in [
+        ("ttft-success", "success", 80.0, Some(800.0)),
+        ("ttft-failed-after-token", "failed", 90.0, Some(1_200.0)),
+        ("ttft-no-token", "failed", 9_999.0, None),
+    ] {
+        insert_timeseries_invocation(&state.pool, invoke_id, &occurred_at, status, Some(ttfb_ms))
+            .await;
+        sqlx::query("UPDATE codex_invocations SET first_token_ms = ?1 WHERE invoke_id = ?2")
+            .bind(first_token_ms)
+            .bind(invoke_id)
+            .execute(&state.pool)
+            .await
+            .expect("update invocation TTFT");
+    }
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("15m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch TTFT timeseries");
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| point.total_count >= 3)
+        .expect("should include populated bucket");
+
+    assert_eq!(bucket.failure_count, 2);
+    assert_eq!(bucket.first_token_sample_count, 2);
+    assert_f64_close(
+        bucket
+            .first_token_avg_ms
+            .expect("TTFT avg should be present"),
+        1_000.0,
+    );
+    assert_f64_close(
+        bucket
+            .first_token_p95_ms
+            .expect("TTFT p95 should be present"),
+        1_180.0,
+    );
+}
+
 #[test]
 fn bucket_aggregate_uses_histogram_for_mixed_rollup_and_exact_p95() {
     let mut bucket = BucketAggregate {
@@ -10447,6 +10508,7 @@ async fn invocation_hourly_rollup_ignores_null_status_for_success_failure_counts
             t_req_parse_ms: None,
             t_upstream_connect_ms: None,
             t_upstream_ttfb_ms: None,
+            first_token_ms: None,
             t_upstream_stream_ms: None,
             t_resp_parse_ms: None,
             t_persist_ms: None,
@@ -10515,6 +10577,7 @@ async fn invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts
                 t_req_parse_ms: None,
                 t_upstream_connect_ms: None,
                 t_upstream_ttfb_ms: None,
+                first_token_ms: None,
                 t_upstream_stream_ms: None,
                 t_resp_parse_ms: None,
                 t_persist_ms: None,
@@ -10550,6 +10613,7 @@ async fn invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts
                 t_req_parse_ms: None,
                 t_upstream_connect_ms: None,
                 t_upstream_ttfb_ms: None,
+                first_token_ms: None,
                 t_upstream_stream_ms: None,
                 t_resp_parse_ms: None,
                 t_persist_ms: None,
@@ -10585,6 +10649,7 @@ async fn invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts
                 t_req_parse_ms: None,
                 t_upstream_connect_ms: None,
                 t_upstream_ttfb_ms: None,
+                first_token_ms: None,
                 t_upstream_stream_ms: None,
                 t_resp_parse_ms: None,
                 t_persist_ms: None,
@@ -10617,6 +10682,7 @@ async fn invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts
                 t_req_parse_ms: None,
                 t_upstream_connect_ms: None,
                 t_upstream_ttfb_ms: None,
+                first_token_ms: None,
                 t_upstream_stream_ms: None,
                 t_resp_parse_ms: None,
                 t_persist_ms: None,
@@ -10686,6 +10752,7 @@ async fn invocation_hourly_rollup_excludes_structured_legacy_http_200_failures_f
                 t_req_parse_ms: None,
                 t_upstream_connect_ms: None,
                 t_upstream_ttfb_ms: Some(120.0),
+                first_token_ms: None,
                 t_upstream_stream_ms: None,
                 t_resp_parse_ms: None,
                 t_persist_ms: None,
@@ -10718,6 +10785,7 @@ async fn invocation_hourly_rollup_excludes_structured_legacy_http_200_failures_f
                 t_req_parse_ms: None,
                 t_upstream_connect_ms: None,
                 t_upstream_ttfb_ms: Some(840.0),
+                first_token_ms: None,
                 t_upstream_stream_ms: None,
                 t_resp_parse_ms: None,
                 t_persist_ms: None,
@@ -11651,6 +11719,7 @@ async fn usage_breakdown_keeps_archived_boundary_partial_hour_during_partial_arc
             t_req_parse_ms: None,
             t_upstream_connect_ms: None,
             t_upstream_ttfb_ms: Some(150.0_f64),
+            first_token_ms: None,
             t_upstream_stream_ms: None,
             t_resp_parse_ms: None,
             t_persist_ms: None,
@@ -11798,6 +11867,7 @@ async fn usage_breakdown_avoids_double_counting_partially_materialized_archive_r
             t_req_parse_ms: None,
             t_upstream_connect_ms: None,
             t_upstream_ttfb_ms: Some(100.0_f64),
+            first_token_ms: None,
             t_upstream_stream_ms: None,
             t_resp_parse_ms: None,
             t_persist_ms: None,
@@ -12051,6 +12121,7 @@ async fn usage_breakdown_prefers_breakdown_specific_archive_progress_over_shared
             t_req_parse_ms: None,
             t_upstream_connect_ms: None,
             t_upstream_ttfb_ms: Some(100.0_f64),
+            first_token_ms: None,
             t_upstream_stream_ms: None,
             t_resp_parse_ms: None,
             t_persist_ms: None,
@@ -13636,6 +13707,7 @@ async fn dashboard_activity_summary_rates_and_in_progress_are_account_sum() {
         t_req_parse_ms: None,
         t_upstream_connect_ms: None,
         t_upstream_ttfb_ms: Some(999.0_f64),
+        first_token_ms: None,
         t_upstream_stream_ms: None,
         t_resp_parse_ms: None,
         t_persist_ms: None,
@@ -14533,6 +14605,7 @@ async fn dashboard_activity_cached_snapshot_overlays_new_live_accounts() {
                 t_req_parse_ms: Some(0.0_f64),
                 t_upstream_connect_ms: Some(0.0_f64),
                 t_upstream_ttfb_ms: Some(80.0_f64),
+                first_token_ms: None,
                 t_upstream_stream_ms: None,
                 t_resp_parse_ms: None,
                 t_persist_ms: None,
@@ -14820,6 +14893,7 @@ async fn dashboard_activity_cached_snapshot_refreshes_terminal_recent_without_li
             t_req_parse_ms: Some(0.0_f64),
             t_upstream_connect_ms: Some(0.0_f64),
             t_upstream_ttfb_ms: Some(0.0_f64),
+            first_token_ms: None,
             t_upstream_stream_ms: None,
             t_resp_parse_ms: None,
             t_persist_ms: None,
@@ -15013,6 +15087,7 @@ async fn dashboard_activity_subscription_live_overlay_updates_cached_snapshot_wi
             t_req_parse_ms: Some(0.0),
             t_upstream_connect_ms: Some(0.0),
             t_upstream_ttfb_ms: Some(0.0),
+            first_token_ms: None,
             t_upstream_stream_ms: None,
             t_resp_parse_ms: None,
             t_persist_ms: None,
@@ -15095,6 +15170,7 @@ async fn dashboard_activity_subscription_live_overlay_updates_cached_snapshot_wi
                 t_req_parse_ms: Some(0.0),
                 t_upstream_connect_ms: Some(0.0),
                 t_upstream_ttfb_ms: Some(80.0),
+                first_token_ms: None,
                 t_upstream_stream_ms: None,
                 t_resp_parse_ms: None,
                 t_persist_ms: None,
@@ -15287,6 +15363,7 @@ async fn dashboard_activity_subscription_terminal_refresh_is_deferred_until_ttl(
                     t_req_parse_ms: Some(0.0),
                     t_upstream_connect_ms: Some(0.0),
                     t_upstream_ttfb_ms: Some(10.0),
+                    first_token_ms: None,
                     t_upstream_stream_ms: None,
                     t_resp_parse_ms: None,
                     t_persist_ms: None,
@@ -17534,6 +17611,7 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
             t_req_parse_ms: None,
             t_upstream_connect_ms: None,
             t_upstream_ttfb_ms: Some(120.0_f64),
+            first_token_ms: None,
             t_upstream_stream_ms: None,
             t_resp_parse_ms: None,
             t_persist_ms: None,
@@ -18302,6 +18380,7 @@ fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error
         t_req_parse_ms: None,
         t_upstream_connect_ms: None,
         t_upstream_ttfb_ms: None,
+        first_token_ms: None,
         t_upstream_stream_ms: None,
         t_resp_parse_ms: None,
         t_persist_ms: None,
@@ -18339,6 +18418,7 @@ fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error
         t_req_parse_ms: None,
         t_upstream_connect_ms: None,
         t_upstream_ttfb_ms: None,
+        first_token_ms: None,
         t_upstream_stream_ms: None,
         t_resp_parse_ms: None,
         t_persist_ms: None,
@@ -18376,6 +18456,7 @@ fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error
         t_req_parse_ms: None,
         t_upstream_connect_ms: None,
         t_upstream_ttfb_ms: None,
+        first_token_ms: None,
         t_upstream_stream_ms: None,
         t_resp_parse_ms: None,
         t_persist_ms: None,
@@ -18383,5 +18464,62 @@ fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error
     assert!(
         !invocation_archive_has_pruned_success_details(&[structured_failure_legacy_http_200]),
         "legacy http_200 rows with structured failure metadata must not be treated as pruned successes",
+    );
+}
+
+#[tokio::test]
+async fn dashboard_activity_response_duration_includes_success_without_cost() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, source, status, total_tokens, output_tokens, cost,
+            t_upstream_stream_ms, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(98_001_i64)
+    .bind("dashboard-activity-unpriced-response")
+    .bind(occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(0_i64)
+    .bind(0_i64)
+    .bind(Option::<f64>::None)
+    .bind(750.0_f64)
+    .bind(
+        json!({
+            "promptCacheKey": "pck-dashboard-activity-unpriced-response",
+            "responseModel": "custom-unpriced-model",
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert unpriced response-duration invocation");
+
+    let activity =
+        load_dashboard_activity_snapshot(state.as_ref(), "today", Shanghai, 1, true, false, None)
+            .await
+            .expect("load dashboard activity with unpriced response duration");
+    let model = activity
+        .summary()
+        .model_performance
+        .models
+        .iter()
+        .find(|model| model.model == "custom-unpriced-model")
+        .expect("unpriced model performance row");
+    assert_f64_close(
+        model
+            .metrics
+            .avg_response_ms
+            .expect("unpriced response duration sample"),
+        750.0,
     );
 }

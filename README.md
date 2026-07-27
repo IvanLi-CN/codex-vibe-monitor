@@ -38,6 +38,14 @@ Codex Vibe Monitor 是一套面向自部署的 **OpenAI 兼容代理观测工作
 
 ## 当前交付的核心能力
 
+### 延迟术语
+
+- `TTFT`（Time To First Token）：流式请求从进入代理的最早稳定时刻开始；WebSocket 从每个下游 `response.create` turn 开始，到首个非空 reasoning、文本或工具参数 delta 到达为止。前导、元数据、keepalive、失败事件和空 delta 不计入。
+- `响应耗时`：记录主视图和网络摘要中的流传输时长，取 `tUpstreamStreamMs`，从上游开始持续输出到该上游流结束；它与 TTFT 并列展示，不包含请求读取、解析、连接或持久化阶段。
+- `TTFB`（Time To First Byte）：发起上游 HTTP 请求后，到收到上游首个响应字节为止。它是网络诊断指标，界面标为 `TTFB / 上游首字节`，不得作为 TTFT fallback。
+- `总响应时间`：从请求进入代理到该 invocation 终态持久化前的完整代理处理时间；它既不是 TTFT，也不是响应耗时或 TTFB，只在阶段耗时诊断中展示。
+- 只有流式、实际观测到首个模型输出 delta 的调用才有 TTFT。首 Token 后失败、中断或客户端断开仍保留样本；非流式、图片、首 Token 前失败和旧历史记录均为 `null`，且不会通过 TTFB、总耗时或原始响应文件回填。
+
 ### 1. OpenAI 兼容代理入口
 
 - 统一承接 `/v1/*` 请求并记录调用证据

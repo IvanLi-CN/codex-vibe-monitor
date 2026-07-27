@@ -15,9 +15,9 @@ import {
   createStoryInvocationRecordDetailsById,
   createStoryInvocationResponseBodiesById,
   createStoryPoolAttemptsByInvokeId,
-  STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS,
   STORYBOOK_INVOCATION_RECORDS,
   STORYBOOK_PROXY_ERROR_CONTRACT_RECORDS,
+  STORYBOOK_TTFT_RESPONSE_DURATION_RECORDS,
 } from "./invocationRecordsStoryFixtures";
 
 type PoolAttemptsByInvokeId = Record<string, ApiPoolUpstreamRequestAttempt[]>;
@@ -69,6 +69,7 @@ const WARNING_SUCCESS_RECORDS: ApiInvocation[] = [
     totalTokens: 167_710,
     cost: 0.0629,
     tUpstreamTtfbMs: 1_131,
+    firstTokenMs: 2_048,
     tUpstreamStreamMs: 15_849,
     tTotalMs: 16_980,
   },
@@ -851,10 +852,10 @@ export const NetworkFocus: Story = {
   },
 };
 
-export const FirstResponseByteSemantics: Story = {
+export const TtftAndResponseDuration: Story = {
   args: {
     focus: "network",
-    records: STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS,
+    records: STORYBOOK_TTFT_RESPONSE_DURATION_RECORDS,
     isLoading: false,
     error: null,
   },
@@ -862,9 +863,15 @@ export const FirstResponseByteSemantics: Story = {
     docs: {
       description: {
         story:
-          "Focused network view for the new first-response-byte-total semantics. The first row deliberately keeps `上游首字节 = 0.0 ms` while the cumulative `首字总耗时` stays near `9.36 s`, matching the user-facing clarification in the monitoring table.",
+          "Focused network view for record latency semantics. The first row displays `TTFT = 9.36 s` and independent `响应耗时 = 10.08 s`, while `上游首字节 = 0.0 ms` remains available only after expanding diagnostics.",
       },
     },
+  },
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getAllByText(/9\.36 s/).length).toBeGreaterThan(0);
+    await expect(canvas.getAllByText(/10\.08 s/).length).toBeGreaterThan(0);
   },
 };
 

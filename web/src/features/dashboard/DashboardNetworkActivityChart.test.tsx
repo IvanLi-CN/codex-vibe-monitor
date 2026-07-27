@@ -161,7 +161,7 @@ describe("DashboardNetworkActivityChart", () => {
         },
       ],
     });
-    const html = renderToStaticMarkup(<>{tooltipNode}</>);
+    const html = renderToStaticMarkup(tooltipNode);
 
     expect(
       host

@@ -15,9 +15,9 @@ const FIRST_RESPONSE_BYTE_TOTAL_POINTS: TimeseriesPoint[] = [
     firstByteSampleCount: 166,
     firstByteAvgMs: 81.7,
     firstByteP95Ms: 110.5,
-    firstResponseByteTotalSampleCount: 166,
-    firstResponseByteTotalAvgMs: 29_840,
-    firstResponseByteTotalP95Ms: 31_200,
+    firstTokenSampleCount: 166,
+    firstTokenAvgMs: 29_840,
+    firstTokenP95Ms: 31_200,
   },
   {
     bucketStart: "2026-03-26T10:15:00.000Z",
@@ -30,9 +30,9 @@ const FIRST_RESPONSE_BYTE_TOTAL_POINTS: TimeseriesPoint[] = [
     firstByteSampleCount: 151,
     firstByteAvgMs: 77.1,
     firstByteP95Ms: 101.3,
-    firstResponseByteTotalSampleCount: 151,
-    firstResponseByteTotalAvgMs: 31_120,
-    firstResponseByteTotalP95Ms: 33_400,
+    firstTokenSampleCount: 151,
+    firstTokenAvgMs: 31_120,
+    firstTokenP95Ms: 33_400,
   },
   {
     bucketStart: "2026-03-26T10:30:00.000Z",
@@ -45,9 +45,9 @@ const FIRST_RESPONSE_BYTE_TOTAL_POINTS: TimeseriesPoint[] = [
     firstByteSampleCount: 79,
     firstByteAvgMs: 74.3,
     firstByteP95Ms: 98.9,
-    firstResponseByteTotalSampleCount: 79,
-    firstResponseByteTotalAvgMs: 35_760,
-    firstResponseByteTotalP95Ms: 38_240,
+    firstTokenSampleCount: 79,
+    firstTokenAvgMs: 35_760,
+    firstTokenP95Ms: 38_240,
   },
   {
     bucketStart: "2026-03-26T10:45:00.000Z",
@@ -60,9 +60,9 @@ const FIRST_RESPONSE_BYTE_TOTAL_POINTS: TimeseriesPoint[] = [
     firstByteSampleCount: 109,
     firstByteAvgMs: 79.2,
     firstByteP95Ms: 103.1,
-    firstResponseByteTotalSampleCount: 109,
-    firstResponseByteTotalAvgMs: 43_890,
-    firstResponseByteTotalP95Ms: 52_340,
+    firstTokenSampleCount: 109,
+    firstTokenAvgMs: 43_890,
+    firstTokenP95Ms: 52_340,
   },
   {
     bucketStart: "2026-03-26T11:00:00.000Z",
@@ -75,9 +75,9 @@ const FIRST_RESPONSE_BYTE_TOTAL_POINTS: TimeseriesPoint[] = [
     firstByteSampleCount: 163,
     firstByteAvgMs: 83.6,
     firstByteP95Ms: 112.7,
-    firstResponseByteTotalSampleCount: 163,
-    firstResponseByteTotalAvgMs: 41_260,
-    firstResponseByteTotalP95Ms: 47_900,
+    firstTokenSampleCount: 163,
+    firstTokenAvgMs: 41_260,
+    firstTokenP95Ms: 47_900,
   },
   {
     bucketStart: "2026-03-26T11:15:00.000Z",
@@ -90,9 +90,9 @@ const FIRST_RESPONSE_BYTE_TOTAL_POINTS: TimeseriesPoint[] = [
     firstByteSampleCount: 145,
     firstByteAvgMs: 76.4,
     firstByteP95Ms: 104.6,
-    firstResponseByteTotalSampleCount: 145,
-    firstResponseByteTotalAvgMs: 34_480,
-    firstResponseByteTotalP95Ms: 39_120,
+    firstTokenSampleCount: 145,
+    firstTokenAvgMs: 34_480,
+    firstTokenP95Ms: 39_120,
   },
 ];
 
@@ -131,7 +131,7 @@ export const FirstResponseByteTotalP95: Story = {
     docs: {
       description: {
         story:
-          "Stable chart evidence for the corrected stats metric. The highlighted latency line now follows `首字总耗时` semantics, so a bucket can surface `43.89 s` average with a `52.34 s` P95 while success/failure bars remain unchanged.",
+          "Stable chart evidence for the corrected stats metric. The highlighted latency line now follows `TTFT` semantics, so a bucket can surface `43.89 s` average with a `52.34 s` P95 while success/failure bars remain unchanged.",
       },
     },
   },

@@ -325,10 +325,11 @@ function createUpstreamAccountActivityResponse(): UpstreamAccountActivityRespons
         tokensPerMinute: 640,
         spendRate: 0.12,
         firstByteAvgMs: 420,
-        firstResponseByteTotalAvgMs: 2_867.5,
+        firstTokenAvgMs: 2_867.5,
         avgTotalMs: 860,
-        currentFirstResponseByteTotalAvgMs: 2_867.5,
+        currentFirstTokenAvgMs: 2_867.5,
         currentAvgTotalMs: 860,
+        currentAvgResponseMs: 860,
         inProgressInvocationCount: 3,
         inProgressPhaseCounts: { queued: 1, requesting: 1, responding: 1 },
         retryInvocationCount: 1,
@@ -1184,7 +1185,22 @@ describe("DashboardWorkingConversationsSection", () => {
   });
 
   it("lazy-loads upstream account activity only after the account tab is opened", () => {
-    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+    const upstreamActivity = createUpstreamAccountActivityResponse();
+    upstreamActivity.accounts[0].modelPerformance = {
+      available: false,
+      total: {
+        tokensPerMinute: 640,
+        streamingResponseRate: 19.8,
+        avgResponseMs: 860,
+        avgFirstTokenMs: 2_867.5,
+        wallClockUsageDurationMs: 42_000,
+        cumulativeUsageDurationMs: 51_000,
+        parallelism: 1.2,
+      },
+      models: [],
+    };
+    upstreamActivity.accounts[0].currentAvgResponseMs = 860;
+    upstreamAccountActivityMock.data = upstreamActivity;
 
     renderSection(
       createResponse([
@@ -1285,7 +1301,7 @@ describe("DashboardWorkingConversationsSection", () => {
       firstRecentRow
         ?.querySelector('[data-testid="dashboard-compact-latency-pills"]')
         ?.getAttribute("aria-label"),
-    ).toMatch(/首字用时|Time to first byte/i);
+    ).toMatch(/TTFT|TTFT/i);
 
     expect(
       host?.querySelector('[data-testid="dashboard-upstream-account-live-call-breakdown"]'),
@@ -1498,7 +1514,21 @@ describe("DashboardWorkingConversationsSection", () => {
   });
 
   it("opens detailed metric tooltips from the whole upstream account metric cards", async () => {
-    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+    const upstreamActivity = createUpstreamAccountActivityResponse();
+    upstreamActivity.accounts[0].modelPerformance = {
+      available: false,
+      total: {
+        tokensPerMinute: 640,
+        streamingResponseRate: 19.8,
+        avgResponseMs: 860,
+        avgFirstTokenMs: 2_867.5,
+        wallClockUsageDurationMs: 42_000,
+        cumulativeUsageDurationMs: 51_000,
+        parallelism: 1.2,
+      },
+      models: [],
+    };
+    upstreamAccountActivityMock.data = upstreamActivity;
 
     renderSection(
       createResponse([
@@ -1606,7 +1636,7 @@ describe("DashboardWorkingConversationsSection", () => {
 
     await waitFor(() => {
       const tooltipText = document.body.textContent ?? "";
-      expect(tooltipText).toContain("首字用时");
+      expect(tooltipText).toContain("TTFT");
       expect(tooltipText).toContain("2.87 s");
       expect(tooltipText).toContain("响应时间");
       expect(tooltipText).toContain("860");
@@ -1782,7 +1812,7 @@ describe("DashboardWorkingConversationsSection", () => {
         tokensPerMinute: 2_027_266,
         streamingResponseRate: 19.8,
         avgResponseMs: 860,
-        avgFirstResponseByteTotalMs: 2_867.5,
+        avgFirstTokenMs: 2_867.5,
         wallClockUsageDurationMs: 42_000,
         cumulativeUsageDurationMs: 51_000,
         parallelism: 1.2,
@@ -1794,7 +1824,7 @@ describe("DashboardWorkingConversationsSection", () => {
           tokensPerMinute: 2_027_266,
           streamingResponseRate: 19.8,
           avgResponseMs: 860,
-          avgFirstResponseByteTotalMs: 2_867.5,
+          avgFirstTokenMs: 2_867.5,
           wallClockUsageDurationMs: 42_000,
           cumulativeUsageDurationMs: 51_000,
           parallelism: 1.2,
@@ -2449,7 +2479,7 @@ describe("DashboardWorkingConversationsSection", () => {
           tokensPerMinute: 640,
           spendRate: 0.12,
           firstByteAvgMs: 420,
-          currentFirstResponseByteTotalAvgMs: 420,
+          currentFirstTokenAvgMs: 420,
           avgTotalMs: 860,
           currentAvgTotalMs: 860,
           inProgressInvocationCount: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.length,
@@ -6137,8 +6167,8 @@ describe("DashboardWorkingConversationsSection", () => {
             tReqParseMs: 36,
             tUpstreamConnectMs: 100,
             tUpstreamTtfbMs: 0,
-            tUpstreamStreamMs: 0,
-            tTotalMs: 8_028_073.3,
+            tUpstreamStreamMs: 8_028_073.3,
+            tTotalMs: 0,
           }),
         ]),
       ]),

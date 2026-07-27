@@ -272,7 +272,7 @@ describe("fetchUpstreamAccountActivity", () => {
                 tokensPerMinute: 499507.6666666667,
                 spendRate: 0.172252,
                 firstByteAvgMs: 0.0050063,
-                firstResponseByteTotalAvgMs: 2867.540251,
+                firstTokenAvgMs: 2867.540251,
                 avgTotalMs: 30581.6567545,
                 inProgressInvocationCount: 2,
                 retryInvocationCount: 0,
@@ -299,7 +299,7 @@ describe("fetchUpstreamAccountActivity", () => {
     });
 
     expect(response.accounts[0]?.firstByteAvgMs).toBe(0.0050063);
-    expect(response.accounts[0]?.firstResponseByteTotalAvgMs).toBe(2867.540251);
+    expect(response.accounts[0]?.firstTokenAvgMs).toBe(2867.540251);
     expect(response.accounts[0]?.avgTotalMs).toBe(30581.6567545);
     expect(response.accounts[0]?.effectiveRoutingRule).toMatchObject({
       priorityTier: "no_new",
@@ -382,7 +382,7 @@ describe("fetchDashboardActivity", () => {
               },
               tokensPerMinute: 1200,
               spendRate: 0.12,
-              currentFirstResponseByteTotalAvgMs: 1500,
+              currentFirstTokenAvgMs: 1500,
               currentAvgTotalMs: 2400,
             },
             accounts: [
@@ -617,9 +617,9 @@ describe("fetchTimeseries", () => {
                 firstByteSampleCount: 10,
                 firstByteAvgMs: 81.7,
                 firstByteP95Ms: 95.2,
-                firstResponseByteTotalSampleCount: 10,
-                firstResponseByteTotalAvgMs: 43890,
-                firstResponseByteTotalP95Ms: 52340,
+                firstTokenSampleCount: 10,
+                firstTokenAvgMs: 43890,
+                firstTokenP95Ms: 52340,
               },
               {
                 bucketStart: "2026-03-26T12:15:00Z",
@@ -633,9 +633,9 @@ describe("fetchTimeseries", () => {
                 firstByteSampleCount: 1,
                 firstByteAvgMs: 81.7,
                 firstByteP95Ms: 95.2,
-                firstResponseByteTotalSampleCount: 1,
-                firstResponseByteTotalAvgMs: 18225.02,
-                firstResponseByteTotalP95Ms: 18225.02,
+                firstTokenSampleCount: 1,
+                firstTokenAvgMs: 18225.02,
+                firstTokenP95Ms: 18225.02,
               },
             ],
           }),
@@ -648,15 +648,15 @@ describe("fetchTimeseries", () => {
     expect(response.bucketSeconds).toBe(900);
     expect(response.points).toHaveLength(2);
     expect(response.points[0].inFlightCount).toBe(2);
-    expect(response.points[0].firstResponseByteTotalSampleCount).toBe(10);
-    expect(response.points[0].firstResponseByteTotalAvgMs).toBe(43890);
-    expect(response.points[0].firstResponseByteTotalP95Ms).toBe(52340);
+    expect(response.points[0].firstTokenSampleCount).toBe(10);
+    expect(response.points[0].firstTokenAvgMs).toBe(43890);
+    expect(response.points[0].firstTokenP95Ms).toBe(52340);
     expect(response.points[1].firstByteSampleCount).toBe(0);
     expect(response.points[1].firstByteAvgMs).toBeNull();
     expect(response.points[1].firstByteP95Ms).toBeNull();
-    expect(response.points[1].firstResponseByteTotalSampleCount).toBe(0);
-    expect(response.points[1].firstResponseByteTotalAvgMs).toBeNull();
-    expect(response.points[1].firstResponseByteTotalP95Ms).toBeNull();
+    expect(response.points[1].firstTokenSampleCount).toBe(0);
+    expect(response.points[1].firstTokenAvgMs).toBeNull();
+    expect(response.points[1].firstTokenP95Ms).toBeNull();
     expect(response.points[1].inFlightCount).toBe(0);
   });
 

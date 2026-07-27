@@ -251,6 +251,7 @@ pub(crate) async fn proxy_openai_v1_inner(
     mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
     admitted_runtime_snapshot: Option<AdmittedProxyRuntimeSnapshot>,
     downstream_request_observer: Option<DownstreamRequestObserver>,
+    proxy_request_started_at: Instant,
 ) -> Result<Response, ProxyErrorResponse> {
     if !pool_route_active {
         // `/v1/*` is pool-only; non-pool traffic must stop here instead of reviving the
@@ -347,6 +348,7 @@ pub(crate) async fn proxy_openai_v1_inner(
             proxy_request_permit.take(),
             admitted_runtime_snapshot,
             downstream_request_observer,
+            proxy_request_started_at,
         )
         .await
         .map_err(|(status, message)| ProxyErrorResponse {
@@ -560,6 +562,7 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
             t_req_parse_ms,
             t_upstream_connect_ms: 0.0,
             t_upstream_ttfb_ms: 0.0,
+            first_token_ms: None,
             t_upstream_stream_ms: 0.0,
             t_resp_parse_ms: 0.0,
             t_persist_ms: 0.0,
@@ -594,6 +597,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
     admitted_runtime_snapshot: Option<AdmittedProxyRuntimeSnapshot>,
     downstream_request_observer: Option<DownstreamRequestObserver>,
+    proxy_request_started_at: Instant,
 ) -> Result<Response, (StatusCode, String)> {
     if !pool_route_active {
         return Err((
@@ -821,6 +825,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     t_req_parse_ms: 0.0,
                     t_upstream_connect_ms: 0.0,
                     t_upstream_ttfb_ms: 0.0,
+                    first_token_ms: None,
                     t_upstream_stream_ms: 0.0,
                     t_resp_parse_ms: 0.0,
                     t_persist_ms: 0.0,
@@ -990,6 +995,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     t_req_parse_ms: 0.0,
                     t_upstream_connect_ms: 0.0,
                     t_upstream_ttfb_ms: 0.0,
+                    first_token_ms: None,
                     t_upstream_stream_ms: 0.0,
                     t_resp_parse_ms: 0.0,
                     t_persist_ms: 0.0,
@@ -1190,6 +1196,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     if body_rewritten {
         upstream_headers.remove(header::CONTENT_LENGTH);
     }
+    // Preserve the client's response-encoding negotiation. TTFT inspection decodes a copy of
+    // the upstream bytes below; forwarded bytes must retain the negotiated representation.
     let pool_attempt_runtime_snapshot =
         pool_route_active.then(|| PoolAttemptRuntimeSnapshotContext {
             capture_target,
@@ -1209,6 +1217,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         pool_account,
         t_upstream_connect_ms,
         prefetched_first_chunk,
+        prefetched_first_chunk_received_at,
+        prefetched_first_stream_chunk_received_at,
         prefetched_stream_timeout,
         prefetched_ttfb_ms,
         oauth_responses_debug,
@@ -1250,6 +1260,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 Some(response.account),
                 response.connect_latency_ms,
                 response.first_chunk,
+                response.first_chunk_received_at,
+                response.first_stream_chunk_received_at,
                 response.stream_timeout,
                 response.first_byte_latency_ms,
                 response.oauth_responses_debug,
@@ -1475,6 +1487,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         t_req_parse_ms,
                         t_upstream_connect_ms: err.connect_latency_ms,
                         t_upstream_ttfb_ms: 0.0,
+                        first_token_ms: None,
                         t_upstream_stream_ms: 0.0,
                         t_resp_parse_ms: 0.0,
                         t_persist_ms: 0.0,
@@ -1519,6 +1532,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 Some(response.selected_proxy),
                 None,
                 response.connect_latency_ms,
+                None,
+                None,
                 None,
                 None,
                 0.0,
@@ -1704,6 +1719,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         t_req_parse_ms,
                         t_upstream_connect_ms: err.connect_latency_ms,
                         t_upstream_ttfb_ms: 0.0,
+                        first_token_ms: None,
                         t_upstream_stream_ms: 0.0,
                         t_resp_parse_ms: 0.0,
                         t_persist_ms: 0.0,
@@ -1923,6 +1939,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     t_req_parse_ms,
                     t_upstream_connect_ms,
                     t_upstream_ttfb_ms: 0.0,
+                    first_token_ms: None,
                     t_upstream_stream_ms: 0.0,
                     t_resp_parse_ms: 0.0,
                     t_persist_ms: 0.0,
@@ -2040,6 +2057,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let live_pool_attempt_activity_lease_for_task = live_pool_attempt_activity_lease;
     let pending_pool_attempt_summary_for_task = pending_pool_attempt_summary.clone();
     let prefetched_first_chunk_for_task = prefetched_first_chunk;
+    let prefetched_first_chunk_received_at_for_task = prefetched_first_chunk_received_at;
+    let mut prefetched_first_stream_chunk_received_at_for_task =
+        prefetched_first_stream_chunk_received_at;
     let prefetched_stream_timeout_for_task = prefetched_stream_timeout;
     let prefetched_ttfb_ms_for_task = prefetched_ttfb_ms;
     let upstream_attempt_started_at_for_task = upstream_attempt_started_at;
@@ -2048,6 +2068,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let request_endpoint_for_task = original_uri.path().to_string();
     let stream_timeout_for_task = stream_timeout;
     let response_is_event_stream_for_task = response_is_event_stream;
+    let proxy_request_started_at_for_task = proxy_request_started_at;
     let proxy_request_permit_for_task = proxy_request_permit;
     let (tx, rx) = mpsc::channel::<Result<DownstreamResponseChunk, io::Error>>(16);
     let (downstream_body_terminal_tx, mut downstream_body_terminal_rx) =
@@ -2099,6 +2120,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             attempt_response_capture_enabled,
         );
         let mut stream_response_parser = StreamResponsePayloadChunkParser::default();
+        let mut stream_response_decoder =
+            IncrementalResponsePayloadDecoder::new(upstream_content_encoding_for_task.as_deref());
+        let mut first_token_ms: Option<f64> = None;
         let mut nonstream_parse_buffer = (!response_is_event_stream_for_task).then(|| {
             BoundedResponseParseBuffer::new(BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES)
         });
@@ -2122,13 +2146,28 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         let mut last_upstream_chunk_gap_ms: Option<u64> = None;
 
         if let Some(chunk) = prefetched_first_chunk_for_task {
-            let chunk_received_at = Instant::now();
+            let chunk_received_at =
+                prefetched_first_chunk_received_at_for_task.unwrap_or_else(Instant::now);
             response_preview.append(&chunk);
             response_raw_writer.append(&chunk);
             attempt_response_raw_writer.append(&chunk);
             let successful_terminal_seen_before_chunk =
                 stream_response_parser.successful_terminal_seen();
-            stream_response_parser.ingest_bytes(&chunk);
+            let decoded_chunk = stream_response_decoder.ingest(&chunk);
+            let token_observed = stream_response_parser.ingest_bytes(&decoded_chunk);
+            if should_capture_ttft(capture_target, &request_info_for_task) && token_observed {
+                let observed_ms = chunk_received_at
+                    .saturating_duration_since(proxy_request_started_at_for_task)
+                    .as_secs_f64()
+                    * 1_000.0;
+                first_token_ms = Some(observed_ms);
+                broadcast_proxy_capture_first_token_runtime_snapshot(
+                    state_for_task.as_ref(),
+                    &invoke_id_for_task,
+                    &occurred_at_for_task,
+                    observed_ms,
+                );
+            }
             let successful_terminal_in_chunk = !successful_terminal_seen_before_chunk
                 && stream_response_parser.successful_terminal_seen();
             if let Some(buffer) = nonstream_parse_buffer.as_mut() {
@@ -2382,7 +2421,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             };
             match next_chunk {
                 Ok(chunk) => {
-                    let chunk_received_at = Instant::now();
+                    let chunk_received_at = prefetched_first_stream_chunk_received_at_for_task
+                        .take()
+                        .unwrap_or_else(Instant::now);
                     let gap_before_send_ms = last_downstream_forwarded_chunk_at
                         .map(|instant| instant.elapsed().as_millis() as u64);
                     if stream_started_at.is_none() {
@@ -2441,7 +2482,19 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     attempt_response_raw_writer.append(&chunk);
                     let successful_terminal_seen_before_chunk =
                         stream_response_parser.successful_terminal_seen();
-                    stream_response_parser.ingest_bytes(&chunk);
+                    let decoded_chunk = stream_response_decoder.ingest(&chunk);
+                    let token_observed = stream_response_parser.ingest_bytes(&decoded_chunk);
+                    if should_capture_ttft(capture_target, &request_info_for_task) && token_observed
+                    {
+                        let observed_ms = elapsed_ms(proxy_request_started_at_for_task);
+                        first_token_ms = Some(observed_ms);
+                        broadcast_proxy_capture_first_token_runtime_snapshot(
+                            state_for_task.as_ref(),
+                            &invoke_id_for_task,
+                            &occurred_at_for_task,
+                            observed_ms,
+                        );
+                    }
                     let successful_terminal_in_chunk = !successful_terminal_seen_before_chunk
                         && stream_response_parser.successful_terminal_seen();
                     if let Some(buffer) = nonstream_parse_buffer.as_mut() {
@@ -2562,6 +2615,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             }
         }
         stream_response_parser.flush_pending_line();
+        stream_response_decoder.finish();
         drop(tx);
         drop(proxy_request_permit_for_task.take());
         let downstream_terminal_grace_deadline =
@@ -2701,6 +2755,18 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     )
                 })
         };
+        if let Some(reason) = stream_response_decoder.failure_reason()
+            && !response_info
+                .usage_missing_reason
+                .as_deref()
+                .is_some_and(|value| value.contains("response_decode_failed:"))
+        {
+            let existing = response_info.usage_missing_reason.take();
+            response_info.usage_missing_reason = Some(match existing {
+                Some(existing) => format!("response_decode_failed:{reason};{existing}"),
+                None => format!("response_decode_failed:{reason}"),
+            });
+        }
         let t_resp_parse_ms = elapsed_ms(resp_parse_started);
 
         if response_info.model.is_none() {
@@ -3289,6 +3355,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 t_req_parse_ms,
                 t_upstream_connect_ms,
                 t_upstream_ttfb_ms,
+                first_token_ms,
                 t_upstream_stream_ms,
                 t_resp_parse_ms,
                 t_persist_ms: 0.0,
@@ -3342,6 +3409,28 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 format!("failed to build proxy response: {err}"),
             )
         })
+}
+
+fn should_capture_ttft(
+    capture_target: ProxyCaptureTarget,
+    request_info: &RequestCaptureInfo,
+) -> bool {
+    if !request_info.is_stream {
+        return false;
+    }
+    if matches!(
+        capture_target,
+        ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits
+    ) {
+        return false;
+    }
+    !matches!(
+        request_info
+            .image_intent
+            .as_deref()
+            .map(ImageIntent::from_str),
+        Some(ImageIntent::Yes | ImageIntent::DirectImage)
+    )
 }
 
 pub(crate) async fn read_request_body_with_limit(

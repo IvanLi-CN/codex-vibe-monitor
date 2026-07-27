@@ -1075,6 +1075,7 @@ pub(crate) struct StreamResponsePayloadParser {
     parse_error_seen: bool,
     pending_event_name: Option<String>,
     saw_stream_fields: bool,
+    first_token_observed: bool,
 }
 
 impl StreamResponsePayloadParser {
@@ -1097,6 +1098,11 @@ impl StreamResponsePayloadParser {
         match serde_json::from_str::<Value>(payload) {
             Ok(value) => {
                 let event_name = self.pending_event_name.take();
+                if !self.first_token_observed
+                    && stream_payload_contains_nonempty_model_delta(event_name.as_deref(), &value)
+                {
+                    self.first_token_observed = true;
+                }
                 if self.model.is_none() {
                     self.model = extract_model_from_payload(&value);
                 }
@@ -1193,6 +1199,221 @@ pub(crate) struct StreamResponsePayloadChunkParser {
     discarded_oversized_line: bool,
 }
 
+enum IncrementalResponsePayloadDecoderKind {
+    Identity,
+    Flate(Decompress),
+    Gzip(WriteGzipDecoder<Vec<u8>>),
+    DeflateProbe,
+    Brotli(Box<DecompressorWriter<Vec<u8>>>),
+    Chain(Vec<IncrementalResponsePayloadDecoder>),
+    Failed,
+}
+
+pub(crate) struct IncrementalResponsePayloadDecoder {
+    kind: IncrementalResponsePayloadDecoderKind,
+    deflate_prefix: Vec<u8>,
+    brotli_decoded_bytes: usize,
+    decode_failure_reason: Option<String>,
+}
+
+impl IncrementalResponsePayloadDecoder {
+    pub(crate) fn new(content_encoding: Option<&str>) -> Self {
+        let encodings = parse_content_encodings(content_encoding);
+        let kind = if encodings.len() > 1 {
+            // Content-Encoding lists transformations in application order. Decode the
+            // right-most transformation first, then pass the result through the remaining
+            // stages so TTFT sees the original event stream incrementally.
+            IncrementalResponsePayloadDecoderKind::Chain(
+                encodings
+                    .iter()
+                    .rev()
+                    .map(|encoding| Self::new(Some(encoding)))
+                    .collect(),
+            )
+        } else {
+            match encodings.as_slice() {
+                [] => IncrementalResponsePayloadDecoderKind::Identity,
+                [encoding] if encoding == "identity" => {
+                    IncrementalResponsePayloadDecoderKind::Identity
+                }
+                [encoding] if encoding == "gzip" || encoding == "x-gzip" => {
+                    IncrementalResponsePayloadDecoderKind::Gzip(WriteGzipDecoder::new(Vec::new()))
+                }
+                [encoding] if encoding == "deflate" => {
+                    IncrementalResponsePayloadDecoderKind::DeflateProbe
+                }
+                [encoding] if encoding == "br" => IncrementalResponsePayloadDecoderKind::Brotli(
+                    Box::new(DecompressorWriter::new(Vec::new(), 4096)),
+                ),
+                _ => IncrementalResponsePayloadDecoderKind::Failed,
+            }
+        };
+        Self {
+            kind,
+            deflate_prefix: Vec::new(),
+            brotli_decoded_bytes: 0,
+            decode_failure_reason: None,
+        }
+    }
+
+    fn record_decode_failure(&mut self, encoding: &str, error: impl std::fmt::Display) {
+        if self.decode_failure_reason.is_none() {
+            self.decode_failure_reason = Some(format!("{encoding}:{error}"));
+        }
+    }
+
+    pub(crate) fn ingest(&mut self, bytes: &[u8]) -> Vec<u8> {
+        if bytes.is_empty() {
+            return Vec::new();
+        }
+        let kind = std::mem::replace(
+            &mut self.kind,
+            IncrementalResponsePayloadDecoderKind::Failed,
+        );
+        match kind {
+            IncrementalResponsePayloadDecoderKind::Identity => {
+                self.kind = IncrementalResponsePayloadDecoderKind::Identity;
+                bytes.to_vec()
+            }
+            IncrementalResponsePayloadDecoderKind::Flate(mut decoder) => {
+                match decode_flate_chunk(&mut decoder, bytes) {
+                    Ok(decoded) => {
+                        self.kind = IncrementalResponsePayloadDecoderKind::Flate(decoder);
+                        decoded
+                    }
+                    Err(_) => {
+                        self.record_decode_failure("deflate", "invalid compressed stream");
+                        Vec::new()
+                    }
+                }
+            }
+            IncrementalResponsePayloadDecoderKind::Gzip(mut decoder) => {
+                let output_before = decoder.get_ref().len();
+                if decoder.write_all(bytes).is_err() {
+                    self.record_decode_failure("gzip", "invalid compressed stream");
+                    return Vec::new();
+                }
+                if decoder.flush().is_err() {
+                    self.record_decode_failure("gzip", "invalid compressed stream");
+                    return Vec::new();
+                }
+                let decoded = decoder.get_ref()[output_before..].to_vec();
+                self.kind = IncrementalResponsePayloadDecoderKind::Gzip(decoder);
+                decoded
+            }
+            IncrementalResponsePayloadDecoderKind::DeflateProbe => {
+                self.deflate_prefix.extend_from_slice(bytes);
+                if self.deflate_prefix.len() < 2 {
+                    self.kind = IncrementalResponsePayloadDecoderKind::DeflateProbe;
+                    return Vec::new();
+                }
+                let prefix = std::mem::take(&mut self.deflate_prefix);
+                let mut decoder = if looks_like_zlib_header(&prefix) {
+                    Decompress::new(true)
+                } else {
+                    Decompress::new(false)
+                };
+                match decode_flate_chunk(&mut decoder, &prefix) {
+                    Ok(decoded) => {
+                        self.kind = IncrementalResponsePayloadDecoderKind::Flate(decoder);
+                        decoded
+                    }
+                    Err(_) => {
+                        self.record_decode_failure("deflate", "invalid compressed stream");
+                        Vec::new()
+                    }
+                }
+            }
+            IncrementalResponsePayloadDecoderKind::Brotli(mut decoder) => {
+                if decoder.write_all(bytes).is_err() {
+                    self.record_decode_failure("br", "invalid compressed stream");
+                    return Vec::new();
+                }
+                let output = decoder.get_ref();
+                let decoded = output[self.brotli_decoded_bytes..].to_vec();
+                self.brotli_decoded_bytes = output.len();
+                self.kind = IncrementalResponsePayloadDecoderKind::Brotli(decoder);
+                decoded
+            }
+            IncrementalResponsePayloadDecoderKind::Chain(mut decoders) => {
+                let mut decoded = bytes.to_vec();
+                for decoder in &mut decoders {
+                    if decoded.is_empty() {
+                        break;
+                    }
+                    decoded = decoder.ingest(&decoded);
+                }
+                self.kind = IncrementalResponsePayloadDecoderKind::Chain(decoders);
+                decoded
+            }
+            IncrementalResponsePayloadDecoderKind::Failed => Vec::new(),
+        }
+    }
+
+    pub(crate) fn finish(&mut self) {
+        let kind = std::mem::replace(
+            &mut self.kind,
+            IncrementalResponsePayloadDecoderKind::Failed,
+        );
+        match kind {
+            IncrementalResponsePayloadDecoderKind::Gzip(mut decoder) => {
+                if decoder.try_finish().is_err() {
+                    self.record_decode_failure("gzip", "invalid compressed stream");
+                }
+                self.kind = IncrementalResponsePayloadDecoderKind::Gzip(decoder);
+            }
+            IncrementalResponsePayloadDecoderKind::Brotli(mut decoder) => {
+                if decoder.close().is_err() {
+                    self.record_decode_failure("br", "invalid compressed stream");
+                }
+                self.kind = IncrementalResponsePayloadDecoderKind::Brotli(decoder);
+            }
+            IncrementalResponsePayloadDecoderKind::Chain(mut decoders) => {
+                for decoder in &mut decoders {
+                    decoder.finish();
+                }
+                self.kind = IncrementalResponsePayloadDecoderKind::Chain(decoders);
+            }
+            other => self.kind = other,
+        }
+    }
+
+    pub(crate) fn failure_reason(&self) -> Option<&str> {
+        self.decode_failure_reason.as_deref().or_else(|| {
+            if let IncrementalResponsePayloadDecoderKind::Chain(decoders) = &self.kind {
+                decoders.iter().find_map(Self::failure_reason)
+            } else {
+                None
+            }
+        })
+    }
+}
+
+fn looks_like_zlib_header(bytes: &[u8]) -> bool {
+    bytes.len() >= 2
+        && bytes[0] & 0x0f == 8
+        && (u16::from(bytes[0]) << 8 | u16::from(bytes[1])) % 31 == 0
+}
+
+fn decode_flate_chunk(decoder: &mut Decompress, input: &[u8]) -> Result<Vec<u8>, ()> {
+    let mut output = Vec::new();
+    let mut input_offset = 0usize;
+    while input_offset < input.len() {
+        let input_before = decoder.total_in();
+        let output_before = output.len();
+        output.reserve(64 * 1024);
+        decoder
+            .decompress_vec(&input[input_offset..], &mut output, FlushDecompress::None)
+            .map_err(|_| ())?;
+        let consumed = decoder.total_in().saturating_sub(input_before) as usize;
+        input_offset = input_offset.saturating_add(consumed);
+        if consumed == 0 && output.len() == output_before {
+            break;
+        }
+    }
+    Ok(output)
+}
+
 impl Default for StreamResponsePayloadChunkParser {
     fn default() -> Self {
         Self::with_line_buffer_limit(STREAM_RESPONSE_LINE_BUFFER_LIMIT)
@@ -1260,9 +1481,10 @@ impl StreamResponsePayloadChunkParser {
         }
     }
 
-    pub(crate) fn ingest_bytes(&mut self, bytes: &[u8]) {
+    pub(crate) fn ingest_bytes(&mut self, bytes: &[u8]) -> bool {
+        let observed_before = self.parser.first_token_observed;
         if bytes.is_empty() {
-            return;
+            return false;
         }
 
         let mut line_start = 0usize;
@@ -1275,6 +1497,7 @@ impl StreamResponsePayloadChunkParser {
         if line_start < bytes.len() {
             self.append_segment(&bytes[line_start..], false);
         }
+        !observed_before && self.parser.first_token_observed
     }
 
     pub(crate) fn successful_terminal_seen(&self) -> bool {
@@ -1321,6 +1544,192 @@ impl StreamResponsePayloadChunkParser {
             response_info: self.parser.finish(),
             saw_stream_fields,
             successful_terminal_seen,
+        }
+    }
+}
+
+pub(crate) fn stream_payload_contains_nonempty_model_delta(
+    event_name: Option<&str>,
+    value: &Value,
+) -> bool {
+    let event_type = value.get("type").and_then(Value::as_str).or(event_name);
+    if event_type.is_some_and(is_responses_model_output_delta_event)
+        && value
+            .get("delta")
+            .is_some_and(json_value_contains_nonempty_output_text)
+    {
+        return true;
+    }
+
+    value
+        .get("choices")
+        .and_then(Value::as_array)
+        .is_some_and(|choices| {
+            choices.iter().any(|choice| {
+                let Some(delta) = choice.get("delta") else {
+                    return false;
+                };
+                ["content", "reasoning", "reasoning_content", "refusal"]
+                    .iter()
+                    .any(|key| {
+                        delta
+                            .get(*key)
+                            .is_some_and(json_value_contains_nonempty_output_text)
+                    })
+                    || delta
+                        .get("tool_calls")
+                        .and_then(Value::as_array)
+                        .is_some_and(|calls| {
+                            calls.iter().any(|call| {
+                                call.pointer("/function/arguments")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|arguments| !arguments.is_empty())
+                            })
+                        })
+                    || delta
+                        .pointer("/function_call/arguments")
+                        .and_then(Value::as_str)
+                        .is_some_and(|arguments| !arguments.is_empty())
+            })
+        })
+}
+
+fn is_responses_model_output_delta_event(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "response.output_text.delta"
+            | "response.reasoning_text.delta"
+            | "response.reasoning_summary_text.delta"
+            | "response.refusal.delta"
+            | "response.function_call_arguments.delta"
+    )
+}
+
+fn json_value_contains_nonempty_output_text(value: &Value) -> bool {
+    match value {
+        Value::String(text) => !text.is_empty(),
+        Value::Array(items) => items.iter().any(json_value_contains_nonempty_output_text),
+        Value::Object(object) => ["text", "content", "arguments"].iter().any(|key| {
+            object
+                .get(*key)
+                .is_some_and(json_value_contains_nonempty_output_text)
+        }),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod ttft_tests {
+    use super::*;
+
+    #[test]
+    fn ttft_ignores_preamble_empty_delta_and_failure() {
+        let mut parser = StreamResponsePayloadChunkParser::default();
+        assert!(!parser.ingest_bytes(
+            b"data: {\"type\":\"response.created\"}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"\"}\n\n"
+        ));
+        assert!(!parser.ingest_bytes(
+            b"data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\"}}\n\n"
+        ));
+    }
+
+    #[test]
+    fn ttft_detects_first_nonempty_delta_across_chunks_once() {
+        let mut parser = StreamResponsePayloadChunkParser::default();
+        assert!(!parser.ingest_bytes(
+            b"event: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"del"
+        ));
+        assert!(parser.ingest_bytes(b"ta\":\"thinking\"}\n\n"));
+        assert!(!parser.ingest_bytes(
+            b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n"
+        ));
+    }
+
+    #[test]
+    fn ttft_decodes_compressed_sse_before_parsing() {
+        let raw = b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n";
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(raw).expect("write gzip SSE payload");
+        let compressed = encoder.finish().expect("finish gzip SSE payload");
+
+        let split = compressed.len() / 2;
+        let mut decoder = IncrementalResponsePayloadDecoder::new(Some("gzip"));
+        let mut parser = StreamResponsePayloadChunkParser::default();
+        assert!(!parser.ingest_bytes(&decoder.ingest(&compressed[..split])));
+        assert!(parser.ingest_bytes(&decoder.ingest(&compressed[split..])));
+    }
+
+    #[test]
+    fn ttft_decodes_stacked_content_encodings_before_parsing() {
+        let raw = b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n";
+        let mut gzip_encoder = GzEncoder::new(Vec::new(), Compression::default());
+        gzip_encoder.write_all(raw).expect("write gzip SSE payload");
+        let gzip_compressed = gzip_encoder.finish().expect("finish gzip SSE payload");
+        let mut stacked = Vec::new();
+        {
+            let mut brotli_encoder = brotli::CompressorWriter::new(&mut stacked, 4096, 5, 22);
+            brotli_encoder
+                .write_all(&gzip_compressed)
+                .expect("write stacked brotli payload");
+            brotli_encoder
+                .flush()
+                .expect("flush stacked brotli payload");
+        }
+
+        let mut decoder = IncrementalResponsePayloadDecoder::new(Some("gzip, br"));
+        let mut parser = StreamResponsePayloadChunkParser::default();
+        assert!(parser.ingest_bytes(&decoder.ingest(&stacked)));
+    }
+
+    #[test]
+    fn ttft_detects_responses_tool_arguments_and_chat_content() {
+        assert!(stream_payload_contains_nonempty_model_delta(
+            None,
+            &serde_json::json!({
+                "type": "response.function_call_arguments.delta",
+                "delta": "{\"city\":"
+            }),
+        ));
+        assert!(stream_payload_contains_nonempty_model_delta(
+            None,
+            &serde_json::json!({
+                "choices": [{"delta": {"content": "hello"}}]
+            }),
+        ));
+        assert!(stream_payload_contains_nonempty_model_delta(
+            None,
+            &serde_json::json!({
+                "choices": [{
+                    "delta": {"function_call": {"arguments": "{\"city\":"}}
+                }]
+            }),
+        ));
+        assert!(!stream_payload_contains_nonempty_model_delta(
+            None,
+            &serde_json::json!({
+                "choices": [{"delta": {"role": "assistant", "content": ""}}]
+            }),
+        ));
+    }
+
+    #[test]
+    fn ttft_accepts_json_delta_type_with_generic_sse_event_name() {
+        let mut parser = StreamResponsePayloadChunkParser::default();
+        assert!(parser.ingest_bytes(
+            b"event: message\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n"
+        ));
+    }
+
+    #[test]
+    fn ttft_ignores_audio_and_unknown_delta_events() {
+        for event_type in ["response.audio.delta", "response.metadata.delta"] {
+            assert!(!stream_payload_contains_nonempty_model_delta(
+                None,
+                &serde_json::json!({
+                    "type": event_type,
+                    "delta": "non-empty"
+                }),
+            ));
         }
     }
 }
@@ -1615,6 +2024,8 @@ pub(crate) enum PoolInitialResponseGateOutcome {
     Forward {
         response: ProxyUpstreamResponseBody,
         prefetched_bytes: Option<Bytes>,
+        prefetched_bytes_received_at: Option<Instant>,
+        replayed_bytes_received_at: Option<Instant>,
     },
     RetrySameAccount {
         message: String,
@@ -1631,6 +2042,23 @@ pub(crate) async fn gate_pool_initial_response_stream(
     total_timeout: Duration,
     started: Instant,
 ) -> Result<PoolInitialResponseGateOutcome, String> {
+    gate_pool_initial_response_stream_with_timestamp(
+        response,
+        prefetched_first_chunk,
+        None,
+        total_timeout,
+        started,
+    )
+    .await
+}
+
+pub(crate) async fn gate_pool_initial_response_stream_with_timestamp(
+    response: ProxyUpstreamResponseBody,
+    prefetched_first_chunk: Option<Bytes>,
+    prefetched_first_chunk_received_at: Option<Instant>,
+    total_timeout: Duration,
+    started: Instant,
+) -> Result<PoolInitialResponseGateOutcome, String> {
     let status = response.status();
     let headers = response.headers().clone();
     let mut stream = response.into_bytes_stream();
@@ -1638,6 +2066,8 @@ pub(crate) async fn gate_pool_initial_response_stream(
     let mut scanned_bytes = 0usize;
     let mut saw_non_metadata_event = false;
     let mut first_forward_event_start = None;
+    let mut first_forward_event_received_at = None;
+    let mut current_chunk_received_at = prefetched_first_chunk_received_at;
     if let Some(chunk) = prefetched_first_chunk {
         buffered.extend_from_slice(&chunk);
     }
@@ -1657,6 +2087,7 @@ pub(crate) async fn gate_pool_initial_response_stream(
                 }
                 PoolInitialResponsesSseEventDecision::Forward => {
                     first_forward_event_start = Some(scanned_bytes);
+                    first_forward_event_received_at = current_chunk_received_at;
                     scanned_bytes = event_end;
                     saw_non_metadata_event = true;
                     break;
@@ -1693,6 +2124,7 @@ pub(crate) async fn gate_pool_initial_response_stream(
         let Some(next_chunk) = next_chunk else {
             break;
         };
+        current_chunk_received_at = Some(Instant::now());
         match next_chunk {
             Ok(chunk) => buffered.extend_from_slice(&chunk),
             Err(err) => {
@@ -1730,6 +2162,8 @@ pub(crate) async fn gate_pool_initial_response_stream(
     Ok(PoolInitialResponseGateOutcome::Forward {
         response: rebuilt_response,
         prefetched_bytes,
+        prefetched_bytes_received_at: first_forward_event_received_at,
+        replayed_bytes_received_at: first_forward_event_received_at,
     })
 }
 

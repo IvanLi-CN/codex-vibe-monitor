@@ -68,7 +68,6 @@ import {
   type InvocationEndpointDisplay,
   type InvocationImageIntentDisplay,
   isImageInvocationEndpointKind,
-  resolveFirstResponseByteTotalMs,
 } from "../../lib/invocation";
 import {
   compactUpstreamPlanLabel,
@@ -497,12 +496,12 @@ function CompactReasoningEffortBadge({ value }: { value: string }) {
 }
 
 function CompactLatencyPills({
-  firstResponseByteTotalValue,
+  firstTokenValue,
   responseTimeValue,
   t,
   className,
 }: {
-  firstResponseByteTotalValue: string;
+  firstTokenValue: string;
   responseTimeValue: string;
   t: ReturnType<typeof useTranslation>["t"];
   className?: string;
@@ -518,15 +517,15 @@ function CompactLatencyPills({
         "inline-flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-2 font-mono text-[11px] font-semibold leading-none text-base-content/86",
         className,
       )}
-      aria-label={`${firstResponseTimeLabel} ${firstResponseByteTotalValue}; ${responseTimeLabel} ${responseTimeValue}`}
-      title={`${firstResponseTimeLabel}: ${firstResponseByteTotalValue} · ${responseTimeLabel}: ${responseTimeValue}`}
+      aria-label={`${firstResponseTimeLabel} ${firstTokenValue}; ${responseTimeLabel} ${responseTimeValue}`}
+      title={`${firstResponseTimeLabel}: ${firstTokenValue} · ${responseTimeLabel}: ${responseTimeValue}`}
     >
       <span
         data-testid="dashboard-compact-latency-first-byte"
         className="inline-flex min-w-0 items-center gap-1 text-secondary"
       >
         <AppIcon name="timer-outline" className="h-3.5 w-3.5 shrink-0" aria-hidden />
-        <span className="truncate whitespace-nowrap">{firstResponseByteTotalValue}</span>
+        <span className="truncate whitespace-nowrap">{firstTokenValue}</span>
       </span>
       <span
         data-testid="dashboard-compact-latency-response-time"
@@ -1831,7 +1830,7 @@ function AccountInlineMetric({
       data-testid={slotTestId}
       className={cn("min-w-0", fillAvailableWidth ? "block w-full" : "inline-block max-w-full")}
     >
-      {modelPerformance && modelPerformanceTitle ? (
+      {modelPerformance?.available && modelPerformanceTitle ? (
         <ModelPerformanceTrigger
           title={modelPerformanceTitle}
           ariaLabel={modelPerformanceAriaLabel}
@@ -2125,14 +2124,11 @@ function AccountRecentInvocationRow({
   const compactLatencyValues = useMemo(() => {
     const normalizedStatus = invocation.displayStatus.trim().toLowerCase();
     return {
-      firstResponseByteTotalValue: formatCompactLatencySecondsValue(
-        resolveFirstResponseByteTotalMs(invocation.record),
-        localeTag,
-      ),
+      firstTokenValue: formatCompactLatencySecondsValue(invocation.record.firstTokenMs, localeTag),
       responseTimeValue:
         normalizedStatus === "running" || normalizedStatus === "pending"
           ? formatCompactElapsedSecondsFromTimestamp(invocation.record.occurredAt, localeTag, nowMs)
-          : formatCompactLatencySecondsValue(invocation.record.tTotalMs, localeTag),
+          : formatCompactLatencySecondsValue(invocation.record.tUpstreamStreamMs, localeTag),
     };
   }, [invocation.displayStatus, invocation.record, localeTag, nowMs]);
   const recentSummaryFields = useMemo(
@@ -2284,7 +2280,7 @@ function AccountRecentInvocationRow({
           />
           {fastIndicator}
           <CompactLatencyPills
-            firstResponseByteTotalValue={compactLatencyValues.firstResponseByteTotalValue}
+            firstTokenValue={compactLatencyValues.firstTokenValue}
             responseTimeValue={compactLatencyValues.responseTimeValue}
             t={t}
           />
@@ -2568,14 +2564,11 @@ function InvocationSlot({
   const compactLatencyValues = useMemo(() => {
     const normalizedStatus = invocation.displayStatus.trim().toLowerCase();
     return {
-      firstResponseByteTotalValue: formatCompactLatencySecondsValue(
-        resolveFirstResponseByteTotalMs(invocation.record),
-        localeTag,
-      ),
+      firstTokenValue: formatCompactLatencySecondsValue(invocation.record.firstTokenMs, localeTag),
       responseTimeValue:
         normalizedStatus === "running" || normalizedStatus === "pending"
           ? formatCompactElapsedSecondsFromTimestamp(invocation.record.occurredAt, localeTag, nowMs)
-          : formatCompactLatencySecondsValue(invocation.record.tTotalMs, localeTag),
+          : formatCompactLatencySecondsValue(invocation.record.tUpstreamStreamMs, localeTag),
     };
   }, [invocation.displayStatus, invocation.record, localeTag, nowMs]);
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${label} · ${displayConversationSequenceId} · ${invocation.record.invokeId}`;
@@ -2682,7 +2675,7 @@ function InvocationSlot({
             </div>
           </div>
           <CompactLatencyPills
-            firstResponseByteTotalValue={compactLatencyValues.firstResponseByteTotalValue}
+            firstTokenValue={compactLatencyValues.firstTokenValue}
             responseTimeValue={compactLatencyValues.responseTimeValue}
             t={t}
             className="shrink-0 flex-nowrap gap-1 text-[11px]"
@@ -3195,18 +3188,18 @@ function DashboardUpstreamAccountActivityCard({
     return segments;
   }, [account.failureCount, account.nonSuccessCount, account.successCount, locale, localeTag]);
   const currentFirstByteDisplayValue = buildAccountDurationDisplayValue(
-    account.currentFirstResponseByteTotalAvgMs,
+    account.currentFirstTokenAvgMs,
     localeTag,
   );
-  const currentAvgTotalDisplayValue = buildAccountDurationDisplayValue(
-    account.currentAvgTotalMs,
+  const currentResponseDurationDisplayValue = buildAccountDurationDisplayValue(
+    account.currentAvgResponseMs,
     localeTag,
   );
-  const rangeFirstByteValue = formatAccountDurationValue(
-    account.firstResponseByteTotalAvgMs ?? account.firstByteAvgMs,
+  const rangeFirstByteValue = formatAccountDurationValue(account.firstTokenAvgMs, localeTag);
+  const rangeResponseDurationValue = formatAccountDurationValue(
+    account.modelPerformance?.total.avgResponseMs,
     localeTag,
   );
-  const rangeAvgTotalValue = formatAccountDurationValue(account.avgTotalMs, localeTag);
   const totalRequestDisplayValue = buildAccountNumberDisplayValue(
     account.requestCount,
     localeTag,
@@ -3219,7 +3212,7 @@ function DashboardUpstreamAccountActivityCard({
   );
   const totalTokenDisplayValue = buildAccountNumberDisplayValue(account.totalTokens, localeTag, 0);
   const currentFirstByteValue = currentFirstByteDisplayValue.fullText;
-  const currentAvgTotalValue = currentAvgTotalDisplayValue.fullText;
+  const currentResponseDurationValue = currentResponseDurationDisplayValue.fullText;
   const totalRequestValue = totalRequestDisplayValue.fullText;
   const totalCostValue = totalCostDisplayValue.fullText;
   const totalTokenValue = totalTokenDisplayValue.fullText;
@@ -3278,10 +3271,10 @@ function DashboardUpstreamAccountActivityCard({
   const formatBreakdownCurrency = (value: number) =>
     formatAccountCurrencyValue(value, localeTag, 4);
   const latencyDetailSections = useMemo<AccountMetricDetailSection[]>(() => {
-    const currentFirstByteMs = finiteNumber(account.currentFirstResponseByteTotalAvgMs);
-    const firstByteMs = finiteNumber(account.firstResponseByteTotalAvgMs ?? account.firstByteAvgMs);
+    const currentFirstByteMs = finiteNumber(account.currentFirstTokenAvgMs);
+    const firstByteMs = finiteNumber(account.firstTokenAvgMs);
     const stageFirstByteMs = finiteNumber(account.firstByteAvgMs);
-    const currentAvgTotalMs = finiteNumber(account.currentAvgTotalMs);
+    const currentResponseDurationMs = finiteNumber(account.currentAvgResponseMs);
     const relatedRows: AccountMetricDetailRow[] = [];
 
     if (
@@ -3297,13 +3290,13 @@ function DashboardUpstreamAccountActivityCard({
     }
     if (
       currentFirstByteMs != null &&
-      currentAvgTotalMs != null &&
-      currentAvgTotalMs > 0 &&
-      currentFirstByteMs <= currentAvgTotalMs
+      currentResponseDurationMs != null &&
+      currentResponseDurationMs > 0 &&
+      currentFirstByteMs <= currentResponseDurationMs
     ) {
       relatedRows.push({
         label: locale === "zh" ? "首字占比" : "First-byte share",
-        value: formatAccountPercentValue(currentFirstByteMs / currentAvgTotalMs, localeTag),
+        value: formatAccountPercentValue(currentFirstByteMs / currentResponseDurationMs, localeTag),
         tone: "secondary",
       });
     }
@@ -3319,8 +3312,8 @@ function DashboardUpstreamAccountActivityCard({
           },
           {
             label: t("dashboard.today.responseTime"),
-            value: currentAvgTotalValue,
-            tone: currentAvgTotalValue === FALLBACK_CELL ? "neutral" : "primary",
+            value: currentResponseDurationValue,
+            tone: currentResponseDurationValue === FALLBACK_CELL ? "neutral" : "primary",
           },
         ],
       },
@@ -3334,8 +3327,8 @@ function DashboardUpstreamAccountActivityCard({
           },
           {
             label: t("dashboard.today.responseTime"),
-            value: rangeAvgTotalValue,
-            tone: rangeAvgTotalValue === FALLBACK_CELL ? "neutral" : "primary",
+            value: rangeResponseDurationValue,
+            tone: rangeResponseDurationValue === FALLBACK_CELL ? "neutral" : "primary",
           },
         ],
       },
@@ -3349,17 +3342,16 @@ function DashboardUpstreamAccountActivityCard({
         : []),
     ];
   }, [
-    account.avgTotalMs,
-    account.currentAvgTotalMs,
-    account.currentFirstResponseByteTotalAvgMs,
+    account.currentFirstTokenAvgMs,
     account.firstByteAvgMs,
-    account.firstResponseByteTotalAvgMs,
-    currentAvgTotalValue,
+    account.firstTokenAvgMs,
     currentFirstByteValue,
+    currentResponseDurationValue,
     locale,
     localeTag,
-    rangeAvgTotalValue,
+    rangeResponseDurationValue,
     rangeFirstByteValue,
+    account.modelPerformance,
     t,
   ]);
   const requestDetailSections = useMemo<AccountMetricDetailSection[]>(() => {
@@ -3728,8 +3720,8 @@ function DashboardUpstreamAccountActivityCard({
               segments={[
                 {
                   label: t("dashboard.today.responseTime"),
-                  value: currentAvgTotalDisplayValue,
-                  tone: currentAvgTotalValue === FALLBACK_CELL ? "neutral" : "primary",
+                  value: currentResponseDurationDisplayValue,
+                  tone: currentResponseDurationValue === FALLBACK_CELL ? "neutral" : "primary",
                 },
               ]}
               testId="dashboard-upstream-account-latency-breakdown"
