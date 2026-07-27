@@ -16,6 +16,7 @@ const { apiMocks } = vi.hoisted(() => ({
   apiMocks: {
     fetchInvocationRecords: vi.fn(),
     fetchInvocationRequestBody: vi.fn(),
+    fetchInvocationAttemptResponseBody: vi.fn(),
     fetchInvocationResponseBody: vi.fn(),
     fetchInvocationWorkflowDetail: vi.fn(),
   },
@@ -27,6 +28,7 @@ vi.mock("../../lib/api", async () => {
     ...actual,
     fetchInvocationRecords: apiMocks.fetchInvocationRecords,
     fetchInvocationRequestBody: apiMocks.fetchInvocationRequestBody,
+    fetchInvocationAttemptResponseBody: apiMocks.fetchInvocationAttemptResponseBody,
     fetchInvocationResponseBody: apiMocks.fetchInvocationResponseBody,
     fetchInvocationWorkflowDetail: apiMocks.fetchInvocationWorkflowDetail,
   };
@@ -57,6 +59,7 @@ beforeAll(() => {
 beforeEach(() => {
   apiMocks.fetchInvocationRecords.mockReset();
   apiMocks.fetchInvocationRequestBody.mockReset();
+  apiMocks.fetchInvocationAttemptResponseBody.mockReset();
   apiMocks.fetchInvocationResponseBody.mockReset();
   apiMocks.fetchInvocationWorkflowDetail.mockReset();
   apiMocks.fetchInvocationRequestBody.mockResolvedValue({
@@ -64,6 +67,7 @@ beforeEach(() => {
     unavailableReason: "request body not loaded in drawer test",
   });
   apiMocks.fetchInvocationResponseBody.mockResolvedValue(createResponseBodyFixture());
+  apiMocks.fetchInvocationAttemptResponseBody.mockResolvedValue(createResponseBodyFixture());
   apiMocks.fetchInvocationWorkflowDetail.mockImplementation(async () =>
     createWorkflowDetailFixture(createRecord()),
   );
@@ -608,7 +612,7 @@ describe("DashboardInvocationDetailDrawer", () => {
     });
     apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([record]));
     apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(createWorkflowDetailFixture(record));
-    apiMocks.fetchInvocationResponseBody.mockResolvedValue({
+    apiMocks.fetchInvocationAttemptResponseBody.mockResolvedValue({
       available: true,
       bodyText: '{"error":"preview","trace":"full"}',
     });
@@ -632,9 +636,9 @@ describe("DashboardInvocationDetailDrawer", () => {
       responseBodyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    await waitFor(() => apiMocks.fetchInvocationResponseBody.mock.calls.length > 0);
+    await waitFor(() => apiMocks.fetchInvocationAttemptResponseBody.mock.calls.length > 0);
     expect(apiMocks.fetchInvocationWorkflowDetail).toHaveBeenCalledWith(501);
-    expect(apiMocks.fetchInvocationResponseBody).toHaveBeenCalledWith(501);
+    expect(apiMocks.fetchInvocationAttemptResponseBody).toHaveBeenCalledWith(501, "attempt-1");
   });
 
   it("does not request DB-backed abnormal details for transient live records", async () => {

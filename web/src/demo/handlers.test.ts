@@ -308,11 +308,13 @@ describe("demo MSW handlers", () => {
   });
 
   it("serves shareable dashboard invocation detail data for unavailable request-body playback", async () => {
-    const [detailResponse, requestBodyResponse, responseBodyResponse] = await Promise.all([
-      fetch("http://demo.invalid/api/invocations/9002/workflow-detail"),
-      fetch("http://demo.invalid/api/invocations/9002/request-body"),
-      fetch("http://demo.invalid/api/invocations/9002/response-body"),
-    ]);
+    const [detailResponse, requestBodyResponse, responseBodyResponse, attemptResponseBodyResponse] =
+      await Promise.all([
+        fetch("http://demo.invalid/api/invocations/9002/workflow-detail"),
+        fetch("http://demo.invalid/api/invocations/9002/request-body"),
+        fetch("http://demo.invalid/api/invocations/9002/response-body"),
+        fetch("http://demo.invalid/api/invocations/9002/attempts/qPvNNAK8/response-body"),
+      ]);
     const detail = (await detailResponse.json()) as {
       hero: { invokeId: string; finalStatus: string };
       timeline: Array<{
@@ -334,10 +336,16 @@ describe("demo MSW handlers", () => {
       available: boolean;
       bodySize?: number | null;
     };
+    const attemptResponseBody = (await attemptResponseBodyResponse.json()) as {
+      available: boolean;
+      captureSource?: string | null;
+      headers?: { upstreamRequestId?: string | null };
+    };
 
     expect(detailResponse.ok).toBe(true);
     expect(requestBodyResponse.ok).toBe(true);
     expect(responseBodyResponse.ok).toBe(true);
+    expect(attemptResponseBodyResponse.ok).toBe(true);
     expect(detail.hero).toMatchObject({
       invokeId: "demo-invocation-9002",
       finalStatus: "completed",
@@ -358,6 +366,11 @@ describe("demo MSW handlers", () => {
     expect(responseBody).toMatchObject({
       available: true,
       bodySize: 138_649,
+    });
+    expect(attemptResponseBody).toMatchObject({
+      available: true,
+      captureSource: "attempt_raw_file",
+      headers: { upstreamRequestId: "req_demo_9002" },
     });
   });
 

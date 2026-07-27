@@ -58,6 +58,7 @@ export {
   fetchForwardProxyBindingNodes,
   fetchForwardProxyLiveStats,
   fetchForwardProxyTimeseries,
+  fetchInvocationAttemptResponseBody,
   fetchInvocationPoolAttempts,
   fetchInvocationRecordDetail,
   fetchInvocationRecordLocation,

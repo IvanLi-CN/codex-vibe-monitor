@@ -14,6 +14,7 @@ import type {
   InvocationCostAuditBreakdown,
 } from "../../lib/api";
 import {
+  fetchInvocationAttemptResponseBody,
   fetchInvocationRequestBody,
   fetchInvocationResponseBody,
   fetchInvocationWorkflowDetail,
@@ -612,6 +613,11 @@ function formatPayloadUnavailableReason(reason: string | null | undefined, isZh:
     return isZh
       ? "该重试不是最终响应，未绑定调用级响应体。"
       : "This retry is not the final response, so invocation-level response body is not attached.";
+  }
+  if (normalized === "attempt_response_body_not_captured") {
+    return isZh
+      ? "该次上游尝试未保留可展示的响应体。"
+      : "No displayable response body was retained for this upstream attempt.";
   }
   return isZh ? "载荷当前不可用。" : "The payload is currently unavailable.";
 }
@@ -1642,6 +1648,7 @@ function AttemptDetail({
   const responseArchiveAtInvocation = readBoolean(
     responseBodyCaptureSource?.availableAtInvocationLevel,
   );
+  const responseArchiveAtAttempt = readBoolean(responseBodyCaptureSource?.availableAtAttemptLevel);
   const responseBodyUnavailableReason =
     responseBodyState.data?.unavailableReason ??
     readString(responseBodyCaptureSource?.unavailableReason);
@@ -2048,8 +2055,11 @@ function AttemptDetail({
   const responseCaptureSummaryItems = [
     {
       label: isZh ? "归档" : "Archive",
-      value:
-        responseArchiveAtInvocation == null || responseArchiveAtInvocation
+      value: responseArchiveAtAttempt
+        ? isZh
+          ? "尝试级"
+          : "Attempt"
+        : responseArchiveAtInvocation == null || responseArchiveAtInvocation
           ? isZh
             ? "调用级"
             : "Invocation"
@@ -2638,7 +2648,6 @@ interface InvocationWorkflowAttemptRecordProps {
   activeSection?: AttemptSection | null;
   onSelectSection?: (section: AttemptSection) => void;
   hideNonShortIds?: boolean;
-  allowTerminalResponseBodyFallback?: boolean;
   className?: string;
   containerRef?: (node: HTMLDivElement | null) => void;
   testId?: string;
@@ -2657,7 +2666,6 @@ export function InvocationWorkflowAttemptRecord({
   activeSection,
   onSelectSection,
   hideNonShortIds = false,
-  allowTerminalResponseBodyFallback = false,
   className,
   containerRef,
   testId,
@@ -2675,10 +2683,7 @@ export function InvocationWorkflowAttemptRecord({
 
   const currentSection = isControlled ? activeSection : internalSection;
   const currentOpen = isControlled ? isOpen : currentSection != null;
-  const responseBodyCapture = readRecord(entry.attempt?.responseSummary?.responseBodyCapture);
-  const responseBodyAvailableAtInvocationLevel = readBoolean(
-    responseBodyCapture?.availableAtInvocationLevel,
-  );
+  const attemptPublicId = entry.attempt?.attemptId?.trim() || null;
 
   useEffect(() => {
     requestBodyFetchSeqRef.current += 1;
@@ -2722,9 +2727,6 @@ export function InvocationWorkflowAttemptRecord({
 
   useEffect(() => {
     if (!(record.id > 0)) return;
-    if (responseBodyAvailableAtInvocationLevel === false && !allowTerminalResponseBodyFallback) {
-      return;
-    }
     if (
       !currentSection ||
       !isResponseSection(currentSection) ||
@@ -2736,7 +2738,10 @@ export function InvocationWorkflowAttemptRecord({
     const requestSeq = responseBodyFetchSeqRef.current + 1;
     responseBodyFetchSeqRef.current = requestSeq;
     setResponseBodyState({ status: "loading", data: null, error: null });
-    void fetchInvocationResponseBody(record.id)
+    const fetchResponseBody = attemptPublicId
+      ? fetchInvocationAttemptResponseBody(record.id, attemptPublicId)
+      : fetchInvocationResponseBody(record.id);
+    void fetchResponseBody
       .then((data) => {
         if (requestSeq !== responseBodyFetchSeqRef.current) return;
         setResponseBodyState({ status: "loaded", data, error: null });
@@ -2749,13 +2754,7 @@ export function InvocationWorkflowAttemptRecord({
           error: error instanceof Error ? error.message : String(error),
         });
       });
-  }, [
-    allowTerminalResponseBodyFallback,
-    currentSection,
-    record.id,
-    responseBodyAvailableAtInvocationLevel,
-    responseBodyState.status,
-  ]);
+  }, [attemptPublicId, currentSection, record.id, responseBodyState.status]);
 
   const handleSelectSection = (section: AttemptSection) => {
     if (isControlled) {
@@ -2938,7 +2937,6 @@ export function InvocationWorkflowDetailPanel({
 
   const hero = detail.hero;
   const timeline = detail.timeline;
-  const terminalAttemptBlockId = [...timeline].reverse().find((entry) => entry.attempt)?.blockId;
   const conversationShortId = buildConversationShortId(hero.promptCacheKey);
   const finalStatusRaw =
     hero.finalStatus ?? resolveInvocationDisplayStatus(record) ?? record.status ?? FALLBACK_CELL;
@@ -3275,7 +3273,6 @@ export function InvocationWorkflowDetailPanel({
                         activeSection={isOpen ? attemptSection : null}
                         onSelectSection={(section) => toggleAttemptSection(entry, section)}
                         hideNonShortIds={hideNonShortIds}
-                        allowTerminalResponseBodyFallback={entry.blockId === terminalAttemptBlockId}
                       />
                     ) : (
                       <>

@@ -25,7 +25,7 @@ Dashboard / Live / Records 三处调用详情曾经以“摘要字段 + 局部�
 ### Non-goals
 
 - 不要求历史数据立刻 100% 回填为完整时间线；旧记录允许通过现有 invocation + attempt 数据进行 best-effort 重建。
-- 不改变原始 request/response body 的保留策略；调用级 raw payload 仍然是唯一必须保留的完整原文来源。
+- 不改变原始 request body 的保留策略；调用级 raw request payload 仍然是唯一必须保留的完整 request 原文来源。
 - 不提供 JSON 编辑、搜索替换、下载或 schema 校验。
 - 不重构账号详情、Prompt Cache 或 Records 的现有 URL 契约。
 
@@ -69,8 +69,9 @@ Dashboard / Live / Records 三处调用详情曾经以“摘要字段 + 局部�
 - 尝试级结构化详情允许通过 `request_summary_json` / `response_summary_json` 保存，必要时可回退为运行时重建。
 - 除尝试外的时间线动作允许以 `timeline_json` 保存在 `codex_invocations` 上；缺失时，工作流详情接口必须基于调用级记录与尝试记录进行 best-effort reconstruction，并显式标记是否为 partial / reconstructed。
 - 当前契约下，请求体完整原文只保证在调用级记录存在；尝试级接口默认暴露结构化摘要，而不是再次复制完整 request body。
-- 响应体完整原文同样只保证在调用级记录存在，且只允许绑定到最终真实尝试或系统最终裁定；非最终尝试必须显示自己的状态、响应头摘要与上游响应体字节指标，响应体回放明确为 unavailable，不得把调用级最终响应体或最终响应头 fallback 到该尝试。
-- 运行时重建尝试响应摘要时，只能使用该尝试的列和明确持久化的 `response_summary_json`；调用级 `response_raw_*`、`responseContentEncoding`、最终 `upstreamRequestId` 与 delivery snapshot 仅可用于最终尝试/系统最终裁定。
+- 每次真实号池 upstream attempt 都独立持久化 `response_raw_*` 元数据、原始响应文件与 `response_content_encoding`；成功、HTTP 失败、SSE `response.failed`、流中断及全链失败都按 `attempt_public_id` 精确绑定，不得从其他 attempt 回退。
+- 响应体回放 API 使用 `invocation id + attempt_public_id` 精确读取当前 attempt；历史缺失 attempt raw 时保持 unavailable，历史最终 attempt 仍可兼容读取调用级 raw body。
+- 运行时重建尝试响应摘要时，attempt 级 raw metadata/encoding 优先；调用级 `response_raw_*` 只允许作为历史最终 attempt 的兼容回退。
 - 本地生成的终态裁定响应必须复用单一共享 envelope，同时驱动实际 HTTP 下游返回与调用级持久化；`systemFinalFailure.responseBody` 必须回放真实下发 body，不得再落 `"{}"`、`missing_body` 等占位假空体，除非历史记录从未持久化真实 body。
 
 ### Payload 识别与渲染
@@ -96,8 +97,10 @@ Dashboard / Live / Records 三处调用详情曾经以“摘要字段 + 局部�
 - 顶部 hero 区优先呈现调用 ID、短对话 ID、总用时、最终结果、尝试次数与最终账号，且原始 `prompt_cache_key` 在次级上下文可见。
 - 新的 pre-dispatch pool 失败时间线只展示 `路由决定 + 系统裁定`，`hero.timelineAttemptCount = 0`。
 - 真实出站调用仍按顺序展示辅助块、尝试块和失败场景下的系统裁定块；同一时刻仅展开一个块，展开区保持紧凑。
+- 每次真实 upstream attempt 都能按自身 `attempt_public_id` 回放响应体；四次 `upstream_response_failed` 的失败链路中，四条响应体互不串位。
+- 全链失败必须写入调用级终态记录；账号请求记录与调用详情都能看到对应 attempt 的状态、编码、字节数与响应体可用性。
 - 点击尝试块后，默认展示概览，并可通过次级操作进入请求 / 响应；点击路由块后，默认展示概览，并可通过次级操作进入 `请求 / 请求头 / 请求体`；点击失败裁定块后，默认展示概览，并可通过次级操作进入 `裁定 / 返回体`。
-- 对包含重试的调用，非最终 Attempt 的响应详情不得显示最终 Attempt 的响应体大小、响应头或 lazy response-body 内容；如果没有尝试级原文，应明确显示 `non_final_attempt_response_body_not_captured` 对应的 unavailable 状态。
+- 对包含重试的调用，每个 Attempt 的响应详情必须显示自身响应体大小、响应头和 lazy response-body 内容；如果历史记录没有该 attempt 原文，应明确显示 `attempt_response_body_not_captured` 的 unavailable 状态。
 - 历史 pseudo-attempt 在纠偏后不得再显示为 Attempt；若旧记录从未持久化真实 body，允许继续显示 unavailable。
 - JSON、NDJSON、SSE JSON data 均显示可折叠、高亮、键盘可操作的结构化视图。
 - 纯文本、解析失败内容和超长无空格文本保持可读并自动换行。
@@ -107,7 +110,7 @@ Dashboard / Live / Records 三处调用详情曾经以“摘要字段 + 局部�
 
 ## Visual Evidence
 
-页面级绑定场景：mock-only Web Demo `#/dashboard/invocations/demo-invocation-9002?demoScene=operational&demoTheme=dark`。
+页面级绑定场景：mock-only Web Demo `#/dashboard/invocations/demo-invocation-9002?demoScene=attention&demoViewport=desktop`。
 
 组件级回归场景：Storybook `Invocations/InvocationWorkflowDetailPanel/BlockedPoolWorkflow`。
 
@@ -124,6 +127,16 @@ Dashboard / Live / Records 三处调用详情曾经以“摘要字段 + 局部�
   - unavailable 回放态：`请求体` lazy fetch 完成后，界面必须从 loading 收口到人类可读提示 `该记录没有保留可展示的载荷。`，而不是无限 loading 或直接暴露内部 `missing_body` reason。
 
 PR: none
+
+视觉证据=存在
+视觉证据目标源=ui_demo
+证据落盘=已落盘：`assets/attempt-response-body-demo.png`
+证据绑定sha=待本地提交绑定
+空白裁剪=无需裁剪（页面边界存在半透明抽屉背景，裁剪器按 ambiguous_border 保持原图）
+聊天回图=已展示
+证据说明：attempt `qPvNNAK8` 展开后显示 `captureSource=attempt_raw_file`、独立大小/编码元数据与实际 JSON 响应体；页面来自 mock-only、免登录 Demo。
+
+![Attempt-scoped response body replay](assets/attempt-response-body-demo.png)
 
 ## References
 

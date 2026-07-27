@@ -1838,6 +1838,7 @@ function buildDemoInvocationWorkflowDetail(
     },
     responseBodyCapture: {
       availableAtInvocationLevel: true,
+      availableAtAttemptLevel: true,
       size: DEMO_INVOCATION_RESPONSE_BODY_SIZE,
       truncated: false,
       detailLevel: "full",
@@ -2399,6 +2400,35 @@ export async function handleDemoRequest(request: Request) {
       bodyTruncated: false,
       detailLevel: "full",
       captureSource: "raw_file",
+    });
+  }
+  const attemptResponseBodyMatch = pathname.match(
+    /^\/api\/invocations\/(\d+)\/attempts\/([^/]+)\/response-body$/,
+  );
+  if (attemptResponseBodyMatch) {
+    const id = Number(attemptResponseBodyMatch[1]);
+    const attemptId = decodeURIComponent(attemptResponseBodyMatch[2] ?? "");
+    const record = invocations().find((item) => item.id === id);
+    const attempt = record
+      ? poolAttempts(record.invokeId).find((item) => item.attemptId === attemptId)
+      : null;
+    if (!record) return json({ error: `Demo attempt ${attemptId} not found.` }, { status: 404 });
+    return json({
+      available: true,
+      bodyText: DEMO_INVOCATION_RESPONSE_BODY_TEXT,
+      headers: {
+        contentEncoding: "identity",
+        upstreamRequestId: attempt?.upstreamRequestId ?? `req_demo_${record.id}`,
+        cvmInvokeId: record.invokeId,
+      },
+      routing: {
+        forwardedChunkCount: 12,
+      },
+      bodySize: DEMO_INVOCATION_RESPONSE_BODY_SIZE,
+      bodyTruncated: false,
+      detailLevel: "full",
+      captureSource: "attempt_raw_file",
+      availableAtAttemptLevel: true,
     });
   }
   if (pathname.endsWith("/response-body")) {

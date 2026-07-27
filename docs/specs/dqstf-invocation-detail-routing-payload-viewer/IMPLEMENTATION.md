@@ -14,6 +14,8 @@
 - `DashboardInvocationDetailDrawer` 在首轮 lookup 只拿到瞬态 `id <= 0` 记录时，会继续按 `invokeId` 轻量重查，直到异步 SQLite 落盘后的持久化记录可见，避免终态 `HTTP 400` / `failed` 调用长期卡在“调用未落盘”。
 - 新增 `GET /api/invocations/:id/workflow-detail` 聚合接口，输出 hero、timeline、partial/reconstructed 状态，以及尝试级 request/response 结构化摘要。
 - `codex_invocations` 新增 `timeline_json` 字段；`pool_upstream_request_attempts` 新增 `request_summary_json` / `response_summary_json` 字段，用于承载工作流时间线和尝试级结构化快照。
+- `pool_upstream_request_attempts` 现在为每个真实 attempt 持久化独立 `response_raw_path`、codec、大小、截断状态、截断原因和 content encoding；成功、HTTP 失败、SSE `response.failed` 与流中断均共享该 attempt identity。
+- 新增 `GET /api/invocations/:id/attempts/:attempt_public_id/response-body`，工作流 lazy loader 按 attempt identity 回放；历史最终 attempt 缺少 attempt raw 时兼容调用级 raw，其他历史缺失稳定返回 unavailable。
 - 工作流详情接口在没有 attempt 行时可合成 synthetic attempt，并在缺失 `timeline_json` 时根据调用级记录和尝试表进行 best-effort reconstruction。
 - 工作流详情聚合层现在会识别历史 pre-dispatch pseudo-attempt 形态，并在不做数据库回写迁移的前提下把它们折叠成 `路由决定 + 系统裁定`；`hero.timelineAttemptCount` 与时间线 Attempt 数都只统计真实出站。
 - `InvocationWorkflowDetailPanel` 作为新的共享详情组件，统一服务于 Dashboard、Records 和 Live 三个入口；顶部 hero 区优先展示调用 ID、短对话 ID、总用时、最终结果、尝试次数和最终账号。
@@ -23,7 +25,8 @@
 - 尝试块进一步改成显式子页面目录：默认展开首个尝试块，并直接展示 `概览 + 7 个尝试子详情页` 的入口矩阵，避免请求 / 响应细节继续藏在两级按钮后面。
 - 路由块详情固定为 `请求 / 请求头 / 请求体` 三个分区；其中 `请求体` 直接复用调用级 request-body 读取路径，不在 attempt 表复制 raw body。
 - 调用详情的 lazy payload loader 现在统一使用 request/response sequence guard：点击 `请求体` / `响应体` 后，异步完成必须以最近一次请求为准收口到 `ready` 或 `error`，不能再因 effect 自清理把已成功返回的结果永久丢成 `loading`。
-- workflow detail 聚合层现在按真实出站 attempt 的最大 `attempt_index` 判定最终尝试；非最终尝试的响应头、错误上下文、延迟 fallback 与响应体 capture 均保持 attempt 级边界，不再回退到调用级最终响应。
+- workflow detail 聚合层现在按真实出站 attempt 的最大 `attempt_index` 判定最终尝试；响应头、错误上下文、延迟 fallback 与响应体 capture 均保持 attempt 级边界，仅历史最终 attempt 允许调用级兼容回退。
+- failover 在所有真实 attempt 都失败并返回最终错误时补写调用级终态，避免账号请求记录只剩 attempt metrics 而缺少调用级记录。
 - mock-only Web Demo 现在为 `demo-invocation-9002` 补齐 `/api/invocations/:id/workflow-detail`、`/request-body` 和 `/response-body` 路由级夹具；Dashboard 可直接从分享路由回放真实 attempt 卡片，并稳定复现“请求体未存档但不再卡 loading”的 owner-facing 证据面。
 - 本地生成的终态错误响应改为复用共享 envelope，同时驱动 HTTP 下游返回与 `ProxyCaptureRecord` 持久化；`systemFinalFailure.responseBody` 对 503/429/同类本地裁定现在回放真实 JSON body，不再落 `"{}"` / `missing_body` 假空体。
 - pre-dispatch pool 失败、budget terminal、websocket pre-upstream owner-guard 等本地终态不再前向写入 `pool_upstream_request_attempts`；真实出站调用的 attempt 主路径保持不变。
@@ -44,8 +47,8 @@
 - `cd web && bun run test src/features/dashboard/DashboardInvocationDetailDrawer.test.tsx`: 1 file passed，9 tests passed。
 - `cd web && bun run demo:build`: passed。
 - `cd web && bun run build-storybook`: passed。
-- `cargo test invocation_cost_audit_tests -- --nocapture`: 5 tests passed，覆盖非最终尝试的响应头/响应体隔离及最终尝试映射。
-- `cd web && bun run test -- src/features/invocations/InvocationWorkflowDetailPanel.test.tsx`: 1 file passed，8 tests passed，覆盖非最终尝试不会 lazy-fetch 调用级响应体。
+- `cargo test invocation_cost_audit_tests -- --nocapture`: attempt-level response summary 回归测试已更新，最终结果以本轮验证记录为准。
+- `cd web && bun run test -- src/features/invocations/InvocationWorkflowDetailPanel.test.tsx`: lazy loader 回归覆盖按 `attempt_public_id` 读取非最终 attempt body。
 - `cd web && bun run build`: passed。
 - Chrome + Storybook `RetriedAttemptResponseBodyUnavailable` 验证：H3HxTB12 显示 `HTTP 502`、`98 B`、`attempt_metrics`，W1scc2SS 显示 `HTTP 200`、`181,382 B`，控制台无 error/warn。
 - Stateful SQLite owner-guard 回归测试改为通过 `spawn_blocking` 等待大栈 worker，避免在 Tokio 测试 runtime 内同步 join 导致 mock upstream 饿死并误报 502；覆盖模块 70 tests 及目标三例的 20 轮循环均通过。

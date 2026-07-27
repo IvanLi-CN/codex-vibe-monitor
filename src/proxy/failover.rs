@@ -401,6 +401,121 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
     failover_progress: PoolFailoverProgress,
     same_account_attempts: u8,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
+    let capture_started = Instant::now();
+    let trace_for_terminal_capture = trace_context.clone();
+    let runtime_context_for_terminal_capture = runtime_snapshot_context.clone();
+    let result = send_pool_request_with_failover_and_binding_constraint_inner(
+        state.clone(),
+        proxy_request_id,
+        method,
+        original_uri,
+        headers,
+        body,
+        handshake_timeout,
+        trace_context,
+        runtime_snapshot_context,
+        sticky_key,
+        binding_constraint,
+        conversation_override,
+        preferred_account,
+        failover_progress,
+        same_account_attempts,
+    )
+    .await;
+    if let Err(error) = &result {
+        persist_pool_failover_terminal_invocation(
+            state.as_ref(),
+            proxy_request_id,
+            capture_started,
+            original_uri,
+            headers,
+            trace_for_terminal_capture.as_ref(),
+            runtime_context_for_terminal_capture.as_ref(),
+            error,
+        )
+        .await;
+    }
+    result
+}
+
+async fn persist_pool_failover_terminal_invocation(
+    state: &AppState,
+    proxy_request_id: u64,
+    capture_started: Instant,
+    original_uri: &Uri,
+    headers: &HeaderMap,
+    trace_context: Option<&PoolUpstreamAttemptTraceContext>,
+    runtime_snapshot_context: Option<&PoolAttemptRuntimeSnapshotContext>,
+    error: &PoolUpstreamError,
+) {
+    let Some(trace) = trace_context else {
+        return;
+    };
+    let request_info = runtime_snapshot_context
+        .map(|context| context.request_info.clone())
+        .unwrap_or_default();
+    let capture_target = runtime_snapshot_context
+        .map(|context| context.capture_target)
+        .or_else(|| capture_target_for_request(original_uri.path(), &Method::POST))
+        .unwrap_or(ProxyCaptureTarget::Responses);
+    let header_prompt_cache_key = extract_prompt_cache_key_from_headers(headers);
+    let prompt_cache_key = runtime_snapshot_context
+        .and_then(|context| context.prompt_cache_key.as_deref())
+        .or(header_prompt_cache_key.as_deref());
+    let requester_ip = extract_requester_ip(headers, None);
+    let request_chain_metadata = request_chain_metadata_from_headers(headers);
+    let client_attribution_context = client_prompt_cache_attribution_context_from_headers(headers);
+    let request_body = error.request_body_for_capture.clone().unwrap_or_default();
+    let response_body_logging_enabled = state
+        .proxy_model_settings
+        .read()
+        .await
+        .response_body_logging_enabled;
+    let _ = persist_pre_attempt_proxy_capture_error(
+        state,
+        proxy_request_id,
+        capture_started,
+        &trace.invoke_id,
+        &trace.occurred_at,
+        capture_target,
+        &request_info,
+        requester_ip.as_deref(),
+        &request_chain_metadata,
+        trace.sticky_key.as_deref(),
+        prompt_cache_key,
+        &client_attribution_context,
+        request_body,
+        response_body_logging_enabled,
+        runtime_snapshot_context
+            .map(|context| context.t_req_read_ms)
+            .unwrap_or_default(),
+        runtime_snapshot_context
+            .map(|context| context.t_req_parse_ms)
+            .unwrap_or_default(),
+        error.status,
+        error.failure_kind,
+        &error.message,
+    )
+    .await;
+}
+
+async fn send_pool_request_with_failover_and_binding_constraint_inner(
+    state: Arc<AppState>,
+    proxy_request_id: u64,
+    method: Method,
+    original_uri: &Uri,
+    headers: &HeaderMap,
+    body: Option<PoolReplayBodySnapshot>,
+    handshake_timeout: Duration,
+    trace_context: Option<PoolUpstreamAttemptTraceContext>,
+    runtime_snapshot_context: Option<PoolAttemptRuntimeSnapshotContext>,
+    sticky_key: Option<&str>,
+    binding_constraint: Option<PromptCacheConversationBindingConstraint>,
+    conversation_override: Option<ConversationRoutingOverride>,
+    preferred_account: Option<PoolResolvedAccount>,
+    failover_progress: PoolFailoverProgress,
+    same_account_attempts: u8,
+) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
     let request_connection_scoped = connection_scoped_header_names(headers);
     let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
     let mut reservation_guard =
@@ -3234,6 +3349,11 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 .get(header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| value.starts_with("text/event-stream"));
+            let response_content_encoding_for_attempt = response
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
             let initial_gate_outcome = if original_uri.path() == "/v1/responses"
                 && status == StatusCode::OK
                 && response_is_event_stream
@@ -3271,8 +3391,38 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     upstream_error_code,
                     upstream_error_message,
                     upstream_request_id,
+                    raw_body,
                 }) => {
                     let finished_at = shanghai_now_string();
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_mut() {
+                        let response_body_logging_enabled = state
+                            .proxy_model_settings
+                            .read()
+                            .await
+                            .response_body_logging_enabled;
+                        let raw_meta = spawn_raw_payload_file_write(
+                            state.as_ref(),
+                            pending_attempt_record
+                                .attempt_public_id
+                                .as_deref()
+                                .unwrap_or(
+                                    trace_context
+                                        .as_ref()
+                                        .map(|trace| trace.invoke_id.as_str())
+                                        .unwrap_or("pool-attempt"),
+                                ),
+                            "response",
+                            raw_body.clone(),
+                            response_body_logging_enabled,
+                        )
+                        .finish()
+                        .await;
+                        set_pending_pool_upstream_request_attempt_response_capture(
+                            pending_attempt_record,
+                            &raw_meta,
+                            response_content_encoding_for_attempt.as_deref(),
+                        );
+                    }
                     if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                         && let Err(record_err) = finalize_pool_upstream_request_attempt(
                             &state.pool,

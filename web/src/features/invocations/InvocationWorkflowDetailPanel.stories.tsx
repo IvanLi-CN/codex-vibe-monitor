@@ -133,6 +133,32 @@ function WorkflowFetchMock({
           },
         );
       }
+      if (
+        url.includes(`/api/invocations/${recordId}/attempts/`) &&
+        url.endsWith("/response-body")
+      ) {
+        return new Response(
+          JSON.stringify({
+            available: true,
+            bodyText: failedWorkflowResponseBodyText,
+            headers: {
+              contentEncoding: "gzip",
+              upstreamRequestId: "req_77",
+              cvmInvokeId: "invoke-workflow-77",
+            },
+            bodySize: failedWorkflowResponseBodySize,
+            detailLevel: "full",
+            captureSource: "attempt_raw_file",
+            ...responseBodyPayload,
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
       return originalFetch(input, init);
     };
     return () => {

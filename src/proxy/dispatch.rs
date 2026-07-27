@@ -2083,6 +2083,21 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             "response",
             proxy_settings.response_body_logging_enabled,
         );
+        let attempt_response_capture_enabled = proxy_settings.response_body_logging_enabled
+            && pending_pool_attempt_record_for_task
+                .as_ref()
+                .and_then(|pending| pending.attempt_public_id.as_deref())
+                .is_some();
+        let attempt_response_capture_key = pending_pool_attempt_record_for_task
+            .as_ref()
+            .and_then(|pending| pending.attempt_public_id.as_deref())
+            .unwrap_or(&invoke_id_for_task);
+        let mut attempt_response_raw_writer = AsyncStreamingRawPayloadWriter::new(
+            state_for_task.as_ref(),
+            attempt_response_capture_key,
+            "response",
+            attempt_response_capture_enabled,
+        );
         let mut stream_response_parser = StreamResponsePayloadChunkParser::default();
         let mut nonstream_parse_buffer = (!response_is_event_stream_for_task).then(|| {
             BoundedResponseParseBuffer::new(BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES)
@@ -2110,6 +2125,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             let chunk_received_at = Instant::now();
             response_preview.append(&chunk);
             response_raw_writer.append(&chunk);
+            attempt_response_raw_writer.append(&chunk);
             let successful_terminal_seen_before_chunk =
                 stream_response_parser.successful_terminal_seen();
             stream_response_parser.ingest_bytes(&chunk);
@@ -2422,6 +2438,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     }
                     response_preview.append(&chunk);
                     response_raw_writer.append(&chunk);
+                    attempt_response_raw_writer.append(&chunk);
                     let successful_terminal_seen_before_chunk =
                         stream_response_parser.successful_terminal_seen();
                     stream_response_parser.ingest_bytes(&chunk);
@@ -2622,6 +2639,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         let req_raw_for_task = req_raw_pending_for_task.finish().await;
         let raw_response_finish_started = Instant::now();
         let resp_raw = response_raw_writer.finish().await;
+        let attempt_resp_raw = attempt_response_raw_writer.finish().await;
         let raw_response_write_elapsed = raw_response_finish_started.elapsed().as_millis() as u64;
         if raw_response_write_log_at_info(raw_response_write_elapsed, resp_raw.size_bytes) {
             info!(
@@ -2906,6 +2924,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         };
         let mut final_attempt_persisted = false;
         if let Some(pending_attempt_record) = pending_pool_attempt_record_for_task.as_mut() {
+            set_pending_pool_upstream_request_attempt_response_capture(
+                pending_attempt_record,
+                &attempt_resp_raw,
+                Some(response_content_encoding.as_str()),
+            );
             update_pending_pool_upstream_request_attempt_http_bytes(
                 pending_attempt_record,
                 pending_attempt_record
