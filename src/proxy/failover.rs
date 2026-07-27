@@ -475,11 +475,16 @@ pub(crate) fn send_pool_request_with_failover_and_binding_constraint<'a>(
     preferred_account: Option<PoolResolvedAccount>,
     failover_progress: PoolFailoverProgress,
     same_account_attempts: u8,
+    persist_terminal_invocation: bool,
 ) -> Pin<Box<dyn Future<Output = Result<PoolUpstreamResponse, PoolUpstreamError>> + Send + 'a>> {
     // Keep this large state machine off the request task stack. The imagegen audit
     // extends its state enough to overflow normal test and Axum worker stacks.
     Box::pin(async move {
-        send_pool_request_with_failover_and_binding_constraint_inner(
+        let capture_started = Instant::now();
+        let state_for_terminal_capture = state.clone();
+        let trace_for_terminal_capture = trace_context.clone();
+        let runtime_context_for_terminal_capture = runtime_snapshot_context.clone();
+        let result = send_pool_request_with_failover_and_binding_constraint_inner(
             state,
             proxy_request_id,
             method,
@@ -496,63 +501,22 @@ pub(crate) fn send_pool_request_with_failover_and_binding_constraint<'a>(
             failover_progress,
             same_account_attempts,
         )
-        .await
-    })
-}
-
-async fn send_pool_request_with_failover_and_binding_constraint_inner(
-    state: Arc<AppState>,
-    proxy_request_id: u64,
-    method: Method,
-    original_uri: &Uri,
-    headers: &HeaderMap,
-    body: Option<PoolReplayBodySnapshot>,
-    handshake_timeout: Duration,
-    trace_context: Option<PoolUpstreamAttemptTraceContext>,
-    runtime_snapshot_context: Option<PoolAttemptRuntimeSnapshotContext>,
-    sticky_key: Option<&str>,
-    binding_constraint: Option<PromptCacheConversationBindingConstraint>,
-    conversation_override: Option<ConversationRoutingOverride>,
-    preferred_account: Option<PoolResolvedAccount>,
-    failover_progress: PoolFailoverProgress,
-    same_account_attempts: u8,
-    persist_terminal_invocation: bool,
-) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
-    let capture_started = Instant::now();
-    let trace_for_terminal_capture = trace_context.clone();
-    let runtime_context_for_terminal_capture = runtime_snapshot_context.clone();
-    let result = send_pool_request_with_failover_and_binding_constraint_inner(
-        state.clone(),
-        proxy_request_id,
-        method,
-        original_uri,
-        headers,
-        body,
-        handshake_timeout,
-        trace_context,
-        runtime_snapshot_context,
-        sticky_key,
-        binding_constraint,
-        conversation_override,
-        preferred_account,
-        failover_progress,
-        same_account_attempts,
-    )
-    .await;
-    if persist_terminal_invocation && let Err(error) = &result {
-        persist_pool_failover_terminal_invocation(
-            state.as_ref(),
-            proxy_request_id,
-            capture_started,
-            original_uri,
-            headers,
-            trace_for_terminal_capture.as_ref(),
-            runtime_context_for_terminal_capture.as_ref(),
-            error,
-        )
         .await;
-    }
-    result
+        if persist_terminal_invocation && let Err(error) = &result {
+            persist_pool_failover_terminal_invocation(
+                state_for_terminal_capture.as_ref(),
+                proxy_request_id,
+                capture_started,
+                original_uri,
+                headers,
+                trace_for_terminal_capture.as_ref(),
+                runtime_context_for_terminal_capture.as_ref(),
+                error,
+            )
+            .await;
+        }
+        result
+    })
 }
 
 pub(crate) async fn persist_pool_failover_terminal_invocation(
