@@ -30,6 +30,7 @@ import {
 import { buildTopicDescriptor, subscribeToTopic } from "../../lib/sse";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
+import { ModelIdentity } from "../shared/ModelIdentity";
 import {
   getReasoningEffortTone,
   REASONING_EFFORT_TONE_CLASSNAMES,
@@ -368,7 +369,14 @@ export function renderInvocationModelBadge(
           />
         </span>
       ) : null}
-      <span className={cn("min-w-0 max-w-full truncate leading-none", textClassName)}>{value}</span>
+      <ModelIdentity
+        model={value}
+        className="min-w-0 max-w-full"
+        textClassName={cn("truncate", textClassName)}
+        iconClassName={iconClassName}
+        title={resolvedTitle}
+        testId={testId ? `${testId}-identity` : undefined}
+      />
     </div>
   );
 }
@@ -412,24 +420,24 @@ export function renderInvocationModelRoutingSummary({
           >
             <AppIcon name="compare-horizontal" className="h-3.5 w-3.5" />
           </span>
-          <span
-            className="min-w-0 truncate font-mono text-sm font-medium leading-6 text-base-content/58 line-through decoration-base-content/30 decoration-1"
+          <ModelIdentity
+            model={requestModelValue}
+            className="min-w-0 max-w-full"
+            textClassName="truncate font-mono text-sm font-medium leading-6 text-base-content/58 line-through decoration-base-content/30 decoration-1"
             title={requestModelValue}
-          >
-            {requestModelValue}
-          </span>
+          />
           <span
             className="inline-flex h-5 w-5 flex-none items-center justify-center rounded-full bg-warning/12 text-warning"
             aria-hidden
           >
             <AppIcon name="arrow-right-bold" className="h-3.5 w-3.5" />
           </span>
-          <span
-            className="min-w-0 truncate font-mono text-sm font-semibold leading-6 text-base-content/95"
+          <ModelIdentity
+            model={responseModelValue}
+            className="min-w-0 max-w-full"
+            textClassName="truncate font-mono text-sm font-semibold leading-6 text-base-content/95"
             title={responseModelValue}
-          >
-            {responseModelValue}
-          </span>
+          />
         </div>
         {adornments ? <div className="flex flex-none items-center gap-1">{adornments}</div> : null}
       </div>
@@ -774,7 +782,13 @@ export function buildInvocationDetailViewModel({
     {
       key: "requestModel",
       label: t("table.details.requestModel"),
-      value: requestModelValue,
+      value: (
+        <ModelIdentity
+          model={requestModelValue}
+          textClassName="font-mono text-xs text-base-content/70"
+          title={requestModelValue}
+        />
+      ),
     },
     {
       key: "responseModel",

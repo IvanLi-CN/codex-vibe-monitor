@@ -101,6 +101,7 @@ import {
   buildAdaptivePercentTextSpec,
   buildAdaptiveTextSpec,
 } from "../shared/adaptiveMetricValueSpec";
+import { ModelIdentity } from "../shared/ModelIdentity";
 import { DashboardNetworkRecentPopover } from "./DashboardNetworkRecentPopover";
 import { DashboardNetworkSpeedCapsule } from "./DashboardNetworkSpeedCapsule";
 import {
@@ -608,9 +609,12 @@ function renderUpstreamAccountRecentModelDisplay(
       className="flex min-w-0 items-center gap-1"
       title={`${requestModelValue} -> ${responseModelValue}`}
     >
-      <span className="truncate font-mono leading-none text-base-content/84">
-        {requestModelValue}
-      </span>
+      <ModelIdentity
+        model={requestModelValue}
+        className="min-w-0 max-w-full"
+        textClassName="truncate font-mono leading-none text-base-content/84"
+        title={requestModelValue}
+      />
       <span
         className="inline-flex h-4 w-4 flex-none items-center justify-center text-base-content/55"
         aria-label={t("table.model.routingMismatchAria")}
@@ -619,9 +623,12 @@ function renderUpstreamAccountRecentModelDisplay(
       >
         <AppIcon name="compare-horizontal" className="h-3 w-3" aria-hidden />
       </span>
-      <span className="truncate font-mono leading-none text-base-content/88">
-        {responseModelValue}
-      </span>
+      <ModelIdentity
+        model={responseModelValue}
+        className="min-w-0 max-w-full"
+        textClassName="truncate font-mono leading-none text-base-content/88"
+        title={responseModelValue}
+      />
     </div>
   );
 }

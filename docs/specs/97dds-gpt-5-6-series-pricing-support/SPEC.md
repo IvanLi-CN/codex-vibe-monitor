@@ -34,6 +34,7 @@ The project needs a compatible upgrade that preserves existing user-defined pric
 - SQLite persistence must preserve existing pricing rows and backfill read pricing from legacy data without overwriting user-defined values.
 - Model resolution must match exact ids first and also map `gpt-5.6-sol|terra|luna-YYYY-MM-DD` to their base model pricing rows.
 - Settings pricing UI must split cached pricing into separate cache read and cache write columns and clearly label the contract as estimation metadata rather than runtime token truth.
+- Structured read-only model fields must render `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` as solar, earth, and lunar icons. Exact and date-suffixed IDs share the base icon; tooltips and accessible names retain the complete ID. Editors, filters, selectors, and raw payload viewers keep the original text.
 - New invocation rows must persist exact cost buckets. Historical rows with a known total cost must contribute that full amount to `unknown` instead of being repriced or invalidating exact realtime buckets; rows without a total cost do not fabricate an unknown amount.
 - `cacheWriteTokens` must be derived as `max(inputTokens - cacheInputTokens, 0)`; `cacheInputTokens` remains the upstream cache-read count.
 - Records-side cost truth remains the persisted `cost`. `/api/invocations` may additionally return a `costAudit` comparison object that recomputes cost from the current pricing catalog, but that local recomputation is advisory only and never rewrites the recorded amount.
@@ -96,6 +97,7 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 - Given a dashboard or upstream-account cost/Token label, when it is hovered, focused, or clicked, then it opens the same titled table with total first and sorted model-plus-effort rows, readable at desktop and 390px without horizontal scrolling.
 - Given a record with both persisted `cost` and a locally recomputed total, when their absolute difference is greater than `0.000001 USD`, then the audit flags `mismatch=true`; if the recorded and local `priceVersion` differ, the reason is `price_version_changed`, otherwise the reason is `total_mismatch`.
 - Given a workflow attempt usage audit where `reasoningTokens` were never recorded, when the response audit object is rendered, then reasoning stays `null` / `—`; given a real recorded zero, when the same response audit object is rendered, then reasoning remains `0`.
+- Given a structured read-only field for any GPT-5.6 base or date-suffixed model, when it renders, then it shows the mapped icon with the complete model ID in its tooltip and accessible name; given a non-GPT-5.6 or unknown model, then the existing text fallback remains visible.
 
 ## Visual Evidence
 
@@ -141,6 +143,38 @@ PR: include
 - story_id_or_title: Dashboard/UsageBreakdownTooltip Mobile 390
 - state: exact bucket costs at narrow width
 - evidence_note: Verifies the same semantic table remains within the 390px canvas without a horizontal scrollbar; model and effort wrap while Token and amount pairs remain aligned, and cache hit rate retains its first-line alignment through its blank second-line slot.
+
+PR: none
+
+![GPT-5.6 model identity icons](./assets/gpt56-model-identity-storybook.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: element
+- requested_viewport: desktop
+- viewport_strategy: storybook-viewport
+- margin_policy: require_margin
+- evidence_surface: component
+- sensitive_exclusion: N/A
+- submission_gate: pending-owner-approval
+- story_id_or_title: Components/ModelIdentity Sol Terra Luna
+- state: GPT-5.6 Sol, Terra, and Luna base model IDs
+- evidence_note: Verifies the shared read-only identity renderer maps the three GPT-5.6 models to solar, earth, and lunar icons while preserving the full model IDs in accessible names and tooltips.
+
+![GPT-5.6 dated alias and fallback](./assets/gpt56-model-identity-dated-fallback-storybook.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: element
+- requested_viewport: desktop
+- viewport_strategy: storybook-viewport
+- margin_policy: require_margin
+- evidence_surface: component
+- sensitive_exclusion: N/A
+- submission_gate: pending-owner-approval
+- story_id_or_title: Components/ModelIdentity Dated Variant And Fallback
+- state: date-suffixed GPT-5.6 alias and unsupported model fallback
+- evidence_note: Verifies a date-suffixed GPT-5.6 model inherits the Sol icon and an unsupported model remains visible as its original text.
 
 ## References
 

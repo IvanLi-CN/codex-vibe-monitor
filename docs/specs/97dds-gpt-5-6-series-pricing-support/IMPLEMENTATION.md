@@ -21,6 +21,7 @@
 - [x] Merge the dashboard and upstream-account cost/Token panels into one `Usage details` table with dual-line Token and amount cells plus a total column.
 - [x] Retire CRS runtime configuration, polling, aggregation, retention, and API reads while keeping old SQLite tables untouched.
 - [x] Extend records-side pricing observability with advisory `costAudit` totals and workflow-success usage audits that compare persisted cost against the current local catalog without rewriting historical truth.
+- [x] Add shared structured read-only model identity icons for the GPT-5.6 Sol/Terra/Luna family, including dated aliases, accessible IDs, invocation surfaces, usage/performance details, routing health, and long-term model summaries.
 - [x] Run Rust and web validation, capture visual evidence, and update this file with the final verification set.
 
 ## Verification
@@ -35,6 +36,7 @@
 - `cd web && bun run test-storybook`
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
+- `cd web && bun run test -- ModelIdentity.test.tsx UsageBreakdownTooltip.test.tsx ModelPerformanceTrigger.test.tsx InvocationTable.test.tsx`
 - `cd web && bun run demo:build`
 - `bun run lint:web`
 - The spec's `assets/` directory contains mock-only Storybook evidence for the shared desktop and 390px `Usage details` table. The 390px state verifies that no horizontal scrollbar is needed.

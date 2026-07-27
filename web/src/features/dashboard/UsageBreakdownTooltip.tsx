@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { UsageBreakdown, UsageBreakdownModel } from "../../lib/api";
+import { ModelIdentity } from "../shared/ModelIdentity";
 
 type UsageCostBreakdown = NonNullable<UsageBreakdown["costs"]>;
 
@@ -81,7 +82,16 @@ function groupLabel(model: UsageBreakdownModel, labels: UsageBreakdownTooltipPro
   const effort = effortLabel(model.reasoningEffort, labels);
   return (
     <span className="flex min-w-0 flex-col gap-0.5">
-      <span className="break-all font-normal text-base-content/80">{modelName}</span>
+      {model.model === "unknown" ? (
+        <span className="break-all font-normal text-base-content/80">{modelName}</span>
+      ) : (
+        <ModelIdentity
+          model={modelName}
+          className="max-w-full justify-start"
+          textClassName="break-all font-normal text-base-content/80"
+          iconClassName="h-4 w-4"
+        />
+      )}
       <span className="break-words text-[8px] font-normal leading-3 text-base-content/58 sm:text-[10px]">
         {labels.reasoningEffort}: {effort}
       </span>
