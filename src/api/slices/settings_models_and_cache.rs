@@ -525,6 +525,9 @@ pub(crate) struct TimeseriesPoint {
     pub(crate) first_response_byte_total_sample_count: i64,
     pub(crate) first_response_byte_total_avg_ms: Option<f64>,
     pub(crate) first_response_byte_total_p95_ms: Option<f64>,
+    pub(crate) first_token_sample_count: i64,
+    pub(crate) first_token_avg_ms: Option<f64>,
+    pub(crate) first_token_p95_ms: Option<f64>,
 }
 
 #[derive(Debug, FromRow)]
@@ -565,6 +568,8 @@ pub(crate) struct UpstreamAccountUsageBreakdownHourlyRollupRecord {
     pub(crate) performance_response_sum_ms: f64,
     pub(crate) performance_first_byte_sample_count: i64,
     pub(crate) performance_first_byte_sum_ms: f64,
+    pub(crate) performance_first_token_sample_count: i64,
+    pub(crate) performance_first_token_sum_ms: f64,
     pub(crate) performance_usage_duration_sample_count: i64,
     pub(crate) performance_usage_duration_sum_ms: f64,
 }
@@ -592,6 +597,10 @@ pub(crate) struct UpstreamAccountStatsRollupRecord {
     pub(crate) first_response_byte_total_sum_ms: f64,
     pub(crate) first_response_byte_total_max_ms: f64,
     pub(crate) first_response_byte_total_histogram: String,
+    pub(crate) first_token_sample_count: i64,
+    pub(crate) first_token_sum_ms: f64,
+    pub(crate) first_token_max_ms: f64,
+    pub(crate) first_token_histogram: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1033,6 +1042,7 @@ pub(crate) struct PromptCacheConversationInvocationPreviewResponse {
     pub(crate) t_req_parse_ms: Option<f64>,
     pub(crate) t_upstream_connect_ms: Option<f64>,
     pub(crate) t_upstream_ttfb_ms: Option<f64>,
+    pub(crate) first_token_ms: Option<f64>,
     pub(crate) t_upstream_stream_ms: Option<f64>,
     pub(crate) t_resp_parse_ms: Option<f64>,
     pub(crate) t_persist_ms: Option<f64>,
@@ -1352,6 +1362,7 @@ pub(crate) struct StageTimings {
     pub(crate) t_req_parse_ms: f64,
     pub(crate) t_upstream_connect_ms: f64,
     pub(crate) t_upstream_ttfb_ms: f64,
+    pub(crate) first_token_ms: Option<f64>,
     pub(crate) t_upstream_stream_ms: f64,
     pub(crate) t_resp_parse_ms: f64,
     pub(crate) t_persist_ms: f64,
@@ -1655,6 +1666,8 @@ pub(crate) struct PromptCacheConversationInvocationPreviewRow {
     pub(crate) t_req_parse_ms: Option<f64>,
     pub(crate) t_upstream_connect_ms: Option<f64>,
     pub(crate) t_upstream_ttfb_ms: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) first_token_ms: Option<f64>,
     pub(crate) t_upstream_stream_ms: Option<f64>,
     pub(crate) t_resp_parse_ms: Option<f64>,
     pub(crate) t_persist_ms: Option<f64>,
@@ -1710,6 +1723,8 @@ pub(crate) struct UpstreamAccountInvocationPreviewRow {
     pub(crate) t_req_parse_ms: Option<f64>,
     pub(crate) t_upstream_connect_ms: Option<f64>,
     pub(crate) t_upstream_ttfb_ms: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) first_token_ms: Option<f64>,
     pub(crate) t_upstream_stream_ms: Option<f64>,
     pub(crate) t_resp_parse_ms: Option<f64>,
     pub(crate) t_persist_ms: Option<f64>,
@@ -1963,6 +1978,8 @@ pub(crate) struct ModelPerformanceMetricsResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) avg_first_response_byte_total_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) avg_first_token_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) wall_clock_usage_duration_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cumulative_usage_duration_ms: Option<f64>,
@@ -1997,7 +2014,11 @@ pub(crate) struct DashboardActivitySummaryResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) current_first_response_byte_total_avg_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) current_first_token_avg_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) current_avg_total_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) current_avg_response_ms: Option<f64>,
     pub(crate) model_performance: ModelPerformanceResponse,
 }
 
@@ -2149,11 +2170,17 @@ pub(crate) struct DashboardActivityAccountResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) first_response_byte_total_avg_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) first_token_avg_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) avg_total_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) current_first_response_byte_total_avg_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) current_first_token_avg_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) current_avg_total_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) current_avg_response_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) in_progress_invocation_count: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2216,11 +2243,17 @@ pub(crate) struct UpstreamAccountActivityAccountResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) first_response_byte_total_avg_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) first_token_avg_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) avg_total_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) current_first_response_byte_total_avg_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) current_first_token_avg_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) current_avg_total_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) current_avg_response_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) in_progress_invocation_count: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]

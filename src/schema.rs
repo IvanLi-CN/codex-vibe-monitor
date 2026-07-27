@@ -60,6 +60,27 @@ async fn ensure_nullable_real_column(
     Ok(())
 }
 
+async fn ensure_column_with_definition(
+    pool: &Pool<Sqlite>,
+    table_name: &str,
+    column_name: &str,
+    definition: &str,
+) -> Result<()> {
+    let pragma = format!("PRAGMA table_info('{table_name}')");
+    let columns = sqlx::query(&pragma)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<HashSet<_>>();
+    if columns.contains(column_name) {
+        return Ok(());
+    }
+    let statement = format!("ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}");
+    sqlx::query(&statement).execute(pool).await?;
+    Ok(())
+}
+
 pub(crate) fn invocation_in_progress_live_prompt_cache_key_expr(subject: &str) -> String {
     format!(
         "CASE WHEN json_valid({subject}.payload) THEN TRIM(CAST(json_extract({subject}.payload, '$.promptCacheKey') AS TEXT)) END"
@@ -1164,6 +1185,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("t_req_parse_ms", "REAL"),
         ("t_upstream_connect_ms", "REAL"),
         ("t_upstream_ttfb_ms", "REAL"),
+        ("first_token_ms", "REAL"),
         ("t_upstream_stream_ms", "REAL"),
         ("t_resp_parse_ms", "REAL"),
         ("t_persist_ms", "REAL"),
@@ -1909,6 +1931,10 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             first_response_byte_total_sum_ms REAL NOT NULL DEFAULT 0,
             first_response_byte_total_max_ms REAL NOT NULL DEFAULT 0,
             first_response_byte_total_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+            first_token_sample_count INTEGER NOT NULL DEFAULT 0,
+            first_token_sum_ms REAL NOT NULL DEFAULT 0,
+            first_token_max_ms REAL NOT NULL DEFAULT 0,
+            first_token_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (bucket_start_epoch, source)
         )
@@ -1940,6 +1966,13 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ),
         (
             "first_response_byte_total_histogram",
+            "TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'",
+        ),
+        ("first_token_sample_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("first_token_sum_ms", "REAL NOT NULL DEFAULT 0"),
+        ("first_token_max_ms", "REAL NOT NULL DEFAULT 0"),
+        (
+            "first_token_histogram",
             "TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'",
         ),
     ] {
@@ -2178,6 +2211,8 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             performance_response_sum_ms REAL NOT NULL DEFAULT 0,
             performance_first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
             performance_first_byte_sum_ms REAL NOT NULL DEFAULT 0,
+            performance_first_token_sample_count INTEGER NOT NULL DEFAULT 0,
+            performance_first_token_sum_ms REAL NOT NULL DEFAULT 0,
             performance_usage_duration_sample_count INTEGER NOT NULL DEFAULT 0,
             performance_usage_duration_sum_ms REAL NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -2194,6 +2229,22 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure upstream_account_usage_breakdown_hourly table existence")?;
+
+    for (column, definition) in [
+        (
+            "performance_first_token_sample_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("performance_first_token_sum_ms", "REAL NOT NULL DEFAULT 0"),
+    ] {
+        ensure_column_with_definition(
+            pool,
+            "upstream_account_usage_breakdown_hourly",
+            column,
+            definition,
+        )
+        .await?;
+    }
 
     sqlx::query(
         r#"
@@ -2231,6 +2282,10 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             first_response_byte_total_sum_ms REAL NOT NULL DEFAULT 0,
             first_response_byte_total_max_ms REAL NOT NULL DEFAULT 0,
             first_response_byte_total_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+            first_token_sample_count INTEGER NOT NULL DEFAULT 0,
+            first_token_sum_ms REAL NOT NULL DEFAULT 0,
+            first_token_max_ms REAL NOT NULL DEFAULT 0,
+            first_token_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
             activity_v2_request_count INTEGER NOT NULL DEFAULT 0,
             activity_v2_success_count INTEGER NOT NULL DEFAULT 0,
             activity_v2_failure_count INTEGER NOT NULL DEFAULT 0,
@@ -2268,6 +2323,13 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
         ("total_latency_sample_count", "INTEGER NOT NULL DEFAULT 0"),
         ("total_latency_sum_ms", "REAL NOT NULL DEFAULT 0"),
+        ("first_token_sample_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("first_token_sum_ms", "REAL NOT NULL DEFAULT 0"),
+        ("first_token_max_ms", "REAL NOT NULL DEFAULT 0"),
+        (
+            "first_token_histogram",
+            "TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'",
+        ),
     ] {
         if !upstream_account_stats_hourly_columns.contains(column) {
             added_upstream_account_stats_columns = true;
@@ -2389,6 +2451,10 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             first_response_byte_total_sum_ms REAL NOT NULL DEFAULT 0,
             first_response_byte_total_max_ms REAL NOT NULL DEFAULT 0,
             first_response_byte_total_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+            first_token_sample_count INTEGER NOT NULL DEFAULT 0,
+            first_token_sum_ms REAL NOT NULL DEFAULT 0,
+            first_token_max_ms REAL NOT NULL DEFAULT 0,
+            first_token_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (bucket_start_epoch, source, upstream_account_id)
         )
@@ -2403,6 +2469,13 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
         ("total_latency_sample_count", "INTEGER NOT NULL DEFAULT 0"),
         ("total_latency_sum_ms", "REAL NOT NULL DEFAULT 0"),
+        ("first_token_sample_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("first_token_sum_ms", "REAL NOT NULL DEFAULT 0"),
+        ("first_token_max_ms", "REAL NOT NULL DEFAULT 0"),
+        (
+            "first_token_histogram",
+            "TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'",
+        ),
     ] {
         if !upstream_account_stats_minute_columns.contains(column) {
             added_upstream_account_stats_columns = true;

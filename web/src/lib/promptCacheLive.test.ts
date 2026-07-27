@@ -140,6 +140,7 @@ describe("mergePromptCacheConversationsResponse", () => {
       failureClass: "client_abort",
       failureKind: "downstream_closed",
       downstreamStatusCode: 200,
+      firstTokenMs: 742,
       downstreamErrorMessage:
         "[downstream_closed] downstream closed while streaming upstream response",
     });
@@ -150,6 +151,8 @@ describe("mergePromptCacheConversationsResponse", () => {
     expect(preview.downstreamStatusCode).toBe(200);
     expect(preview.downstreamErrorMessage).toContain("downstream closed");
     expect(rebuilt.downstreamStatusCode).toBe(200);
+    expect(preview.firstTokenMs).toBe(742);
+    expect(rebuilt.firstTokenMs).toBe(742);
     expect(rebuilt.downstreamErrorMessage).toContain("downstream closed");
   });
 

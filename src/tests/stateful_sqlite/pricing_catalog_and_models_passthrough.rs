@@ -1,6 +1,26 @@
 use super::*;
 use serde_json::json;
 
+fn run_pricing_future_with_large_stack<T, Fut>(future: Fut) -> T
+where
+    T: Send + 'static,
+    Fut: std::future::Future<Output = T> + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name("pricing-models-large-stack".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build large-stack test runtime")
+                .block_on(future)
+        })
+        .expect("spawn large-stack test worker")
+        .join()
+        .expect("join large-stack test worker")
+}
+
 #[tokio::test]
 async fn pricing_settings_api_keeps_empty_catalog_after_reload() {
     let state = test_state_with_openai_base(
@@ -609,36 +629,39 @@ async fn seed_pool_models_route(state: &Arc<AppState>) -> HeaderMap {
     )])
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_models_passthrough_when_hijack_disabled() {
-    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
-    let state =
-        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
-            .await;
-    reset_proxy_capture_hot_path_raw_fallbacks();
-    let headers = seed_pool_models_route(&state).await;
+#[test]
+fn proxy_openai_v1_models_passthrough_when_hijack_disabled() {
+    run_pricing_future_with_large_stack(async move {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+        reset_proxy_capture_hot_path_raw_fallbacks();
+        let headers = seed_pool_models_route(&state).await;
 
-    let response = proxy_openai_v1(
-        State(state),
-        OriginalUri("/v1/models".parse().expect("valid uri")),
-        Method::GET,
-        headers,
-        Body::empty(),
-    )
-    .await;
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/models".parse().expect("valid uri")),
+            Method::GET,
+            headers,
+            Body::empty(),
+        )
+        .await;
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read response body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode upstream payload");
-    let ids = extract_model_ids(&payload);
-    assert_eq!(
-        ids,
-        vec!["upstream-model-a".to_string(), "gpt-5.2-codex".to_string()]
-    );
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode upstream payload");
+        let ids = extract_model_ids(&payload);
+        assert_eq!(
+            ids,
+            vec!["upstream-model-a".to_string(), "gpt-5.2-codex".to_string()]
+        );
 
-    upstream_handle.abort();
+        upstream_handle.abort();
+    });
 }
 
 #[tokio::test]
@@ -825,42 +848,45 @@ async fn proxy_openai_v1_models_applies_hijack_for_pool_route_requests() {
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_models_pool_failures_do_not_return_untracked_cvm_id() {
-    let (upstream_base, attempts, upstream_handle) =
-        spawn_retrying_models_upstream(99, Some("0")).await;
-    let state =
-        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
-            .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+#[test]
+fn proxy_openai_v1_models_pool_failures_do_not_return_untracked_cvm_id() {
+    run_pricing_future_with_large_stack(async move {
+        let (upstream_base, attempts, upstream_handle) =
+            spawn_retrying_models_upstream(99, Some("0")).await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
 
-    let response = proxy_openai_v1(
-        State(state),
-        OriginalUri("/v1/models".parse().expect("valid uri")),
-        Method::GET,
-        HeaderMap::from_iter([(
-            http_header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer pool-live-key"),
-        )]),
-        Body::empty(),
-    )
-    .await;
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/models".parse().expect("valid uri")),
+            Method::GET,
+            HeaderMap::from_iter([(
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            )]),
+            Body::empty(),
+        )
+        .await;
 
-    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert!(response.headers().get(CVM_INVOKE_ID_HEADER).is_none());
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read models failure body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode models failure payload");
-    assert_eq!(
-        payload["error"].as_str(),
-        Some(POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE)
-    );
-    assert!(payload.get("cvmId").is_none());
-    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(response.headers().get(CVM_INVOKE_ID_HEADER).is_none());
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read models failure body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode models failure payload");
+        assert_eq!(
+            payload["error"].as_str(),
+            Some(POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE)
+        );
+        assert!(payload.get("cvmId").is_none());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
 
-    upstream_handle.abort();
+        upstream_handle.abort();
+    });
 }
 
 #[tokio::test]

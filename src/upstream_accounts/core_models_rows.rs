@@ -851,6 +851,7 @@ pub(crate) struct AccountStickyKeyInvocationPreviewRow {
     pub(crate) t_req_parse_ms: Option<f64>,
     pub(crate) t_upstream_connect_ms: Option<f64>,
     pub(crate) t_upstream_ttfb_ms: Option<f64>,
+    pub(crate) first_token_ms: Option<f64>,
     pub(crate) t_upstream_stream_ms: Option<f64>,
     pub(crate) t_resp_parse_ms: Option<f64>,
     pub(crate) t_persist_ms: Option<f64>,

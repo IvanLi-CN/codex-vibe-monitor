@@ -30,17 +30,17 @@ interface ChartDatum {
   success: number;
   failure: number;
   successRate: number | null;
-  firstResponseByteTotalAvgMs: number | null;
-  firstResponseByteTotalP95Ms: number | null;
-  firstResponseByteTotalSampleCount: number;
+  firstTokenAvgMs: number | null;
+  firstTokenP95Ms: number | null;
+  firstTokenSampleCount: number;
 }
 
 interface SuccessFailureTooltipLabels {
   failure: string;
   success: string;
   successRate: string;
-  firstResponseByteTotalAvg: string;
-  firstResponseByteTotalP95: string;
+  firstTokenAvg: string;
+  firstTokenP95: string;
 }
 
 interface SuccessFailureTooltipContentProps {
@@ -112,27 +112,17 @@ export function SuccessFailureTooltipContent({
       value: formatSuccessRate(datum.successRate, percentFormatter, noValueLabel),
     },
     {
-      label: labels.firstResponseByteTotalAvg,
+      label: labels.firstTokenAvg,
       value:
-        datum.firstResponseByteTotalSampleCount > 0
-          ? formatLatencyMs(
-              datum.firstResponseByteTotalAvgMs,
-              latencyMsFormatter,
-              localeTag,
-              noValueLabel,
-            )
+        datum.firstTokenSampleCount > 0
+          ? formatLatencyMs(datum.firstTokenAvgMs, latencyMsFormatter, localeTag, noValueLabel)
           : noValueLabel,
     },
     {
-      label: labels.firstResponseByteTotalP95,
+      label: labels.firstTokenP95,
       value:
-        datum.firstResponseByteTotalSampleCount > 0
-          ? formatLatencyMs(
-              datum.firstResponseByteTotalP95Ms,
-              latencyMsFormatter,
-              localeTag,
-              noValueLabel,
-            )
+        datum.firstTokenSampleCount > 0
+          ? formatLatencyMs(datum.firstTokenP95Ms, latencyMsFormatter, localeTag, noValueLabel)
           : noValueLabel,
     },
   ];
@@ -186,7 +176,7 @@ export function SuccessFailureChart({
     () => ({
       ...chartBaseTokens(themeMode),
       ...chartStatusTokens(themeMode),
-      firstResponseByteTotalAvg: themeMode === "dark" ? "#60a5fa" : "#1d4ed8",
+      firstTokenAvg: themeMode === "dark" ? "#60a5fa" : "#1d4ed8",
     }),
     [themeMode],
   );
@@ -212,9 +202,9 @@ export function SuccessFailureChart({
       success,
       failure,
       successRate: total > 0 ? success / total : null,
-      firstResponseByteTotalAvgMs: point.firstResponseByteTotalAvgMs ?? null,
-      firstResponseByteTotalP95Ms: point.firstResponseByteTotalP95Ms ?? null,
-      firstResponseByteTotalSampleCount: point.firstResponseByteTotalSampleCount ?? 0,
+      firstTokenAvgMs: point.firstTokenAvgMs ?? null,
+      firstTokenP95Ms: point.firstTokenP95Ms ?? null,
+      firstTokenSampleCount: point.firstTokenSampleCount ?? 0,
     };
   });
 
@@ -224,8 +214,8 @@ export function SuccessFailureChart({
     failure: t("stats.cards.failures"),
     success: t("stats.cards.success"),
     successRate: t("stats.successFailure.tooltip.successRate"),
-    firstResponseByteTotalAvg: t("stats.successFailure.tooltip.firstByteAvg"),
-    firstResponseByteTotalP95: t("stats.successFailure.tooltip.firstByteP95"),
+    firstTokenAvg: t("stats.successFailure.tooltip.firstByteAvg"),
+    firstTokenP95: t("stats.successFailure.tooltip.firstByteP95"),
   };
 
   return (
@@ -308,9 +298,9 @@ export function SuccessFailureChart({
           <Line
             yAxisId="latency"
             type="monotone"
-            dataKey="firstResponseByteTotalAvgMs"
+            dataKey="firstTokenAvgMs"
             name={t("stats.successFailure.legend.firstByteAvg")}
-            stroke={chartColors.firstResponseByteTotalAvg}
+            stroke={chartColors.firstTokenAvg}
             strokeWidth={2}
             dot={false}
             connectNulls={false}

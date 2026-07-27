@@ -1,6 +1,26 @@
 use super::*;
 use serde_json::json;
 
+fn run_routing_failover_future_with_large_stack<T, Fut>(future: Fut) -> T
+where
+    T: Send + 'static,
+    Fut: std::future::Future<Output = T> + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name("routing-failover-large-stack".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build large-stack test runtime")
+                .block_on(future)
+        })
+        .expect("spawn large-stack test worker")
+        .join()
+        .expect("join large-stack test worker")
+}
+
 #[tokio::test]
 async fn resolve_pool_account_for_request_applies_tighter_long_only_hard_cap() {
     let state = test_state_with_openai_base(
@@ -1083,44 +1103,46 @@ async fn pool_route_http_4xx_does_not_create_sticky_route() {
 
 #[tokio::test]
 async fn pool_route_live_request_switches_accounts_immediately_after_upstream_429() {
-    let (upstream_base, attempts, upstream_handle) =
-        spawn_pool_rate_limit_echo_upstream(&[("Bearer upstream-primary", 99)]).await;
-    let state = test_state_with_openai_base_body_limit_and_read_timeout(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
-        Duration::from_millis(50),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
-    insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    run_routing_failover_future_with_large_stack(async move {
+        let (upstream_base, attempts, upstream_handle) =
+            spawn_pool_rate_limit_echo_upstream(&[("Bearer upstream-primary", 99)]).await;
+        let state = test_state_with_openai_base_body_limit_and_read_timeout(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+            Duration::from_millis(50),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
 
-    let response = proxy_openai_v1(
-        State(state),
-        OriginalUri("/v1/echo?mode=pool-live-429".parse().expect("valid uri")),
-        Method::POST,
-        HeaderMap::from_iter([(
-            http_header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer pool-live-key"),
-        )]),
-        Body::from("hello-live-429"),
-    )
-    .await;
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/echo?mode=pool-live-429".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::from_iter([(
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            )]),
+            Body::from("hello-live-429"),
+        )
+        .await;
 
-    assert_eq!(response.status(), StatusCode::CREATED);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read proxy response body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode upstream payload");
-    assert_eq!(payload["authorization"], "Bearer upstream-secondary");
-    assert_eq!(payload["attempt"], 1);
-    assert_eq!(payload["body"], "hello-live-429");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read proxy response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode upstream payload");
+        assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+        assert_eq!(payload["attempt"], 1);
+        assert_eq!(payload["body"], "hello-live-429");
 
-    let attempts = attempts.lock().expect("lock attempts");
-    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
-    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+        let attempts = attempts.lock().expect("lock attempts");
+        assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+        assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
 
-    upstream_handle.abort();
+        upstream_handle.abort();
+    });
 }
 
 #[tokio::test]

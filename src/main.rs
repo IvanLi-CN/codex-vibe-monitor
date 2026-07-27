@@ -49,7 +49,7 @@ use axum::{
     routing::{any, delete, get, post, put},
 };
 use base64::Engine;
-use brotli::Decompressor as BrotliDecompressor;
+use brotli::{Decompressor as BrotliDecompressor, DecompressorWriter};
 use chrono::{
     DateTime, Datelike, Duration as ChronoDuration, LocalResult, NaiveDate, NaiveDateTime,
     SecondsFormat, TimeZone, Utc,
@@ -58,7 +58,10 @@ use chrono_tz::{Asia::Shanghai, Tz};
 use clap::{Args, Parser, Subcommand};
 use dotenvy::dotenv;
 use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
-use flate2::{Compression, write::GzEncoder};
+use flate2::{
+    Compression, Decompress, FlushDecompress,
+    write::{GzDecoder as WriteGzipDecoder, GzEncoder},
+};
 use futures_util::{FutureExt, SinkExt, StreamExt, TryStreamExt, future::Shared, stream};
 use once_cell::sync::Lazy;
 use rand::Rng;

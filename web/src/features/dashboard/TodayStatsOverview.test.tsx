@@ -16,9 +16,9 @@ vi.mock("../../i18n", () => ({
         "dashboard.today.tokensPerMinute": "TPM",
         "dashboard.today.spendRate": "Spend rate",
         "dashboard.today.responseTime": "Response time",
-        "dashboard.today.firstResponseTime": "Time to first byte",
+        "dashboard.today.firstResponseTime": "TTFT",
         "dashboard.today.responseTimeDescription":
-          "Time to first byte and response time prefer the latest rolling 60-second success samples, then fall back to the latest valid result in the current range.",
+          "TTFT and response time prefer the latest rolling 60-second success samples, then fall back to the latest valid result in the current range.",
         "dashboard.today.inProgressConversations": "In progress",
         "dashboard.today.queuedInvocations": "Queued",
         "dashboard.today.parallelConversations": "Parallel conversations",
@@ -90,9 +90,9 @@ function buildTimeseriesWithLatency(): TimeseriesResponse {
       totalCost: Number((1.1 + index * 0.08).toFixed(2)),
       avgTotalMs: sampleCount > 0 ? Number((1260 + index * 73.5).toFixed(1)) : null,
       totalLatencySampleCount: sampleCount,
-      firstResponseByteTotalSampleCount: sampleCount,
-      firstResponseByteTotalAvgMs: sampleCount > 0 ? Number((820 + index * 41.5).toFixed(1)) : null,
-      firstResponseByteTotalP95Ms: sampleCount > 0 ? Number((980 + index * 58.5).toFixed(1)) : null,
+      firstTokenSampleCount: sampleCount,
+      firstTokenAvgMs: sampleCount > 0 ? Number((820 + index * 41.5).toFixed(1)) : null,
+      firstTokenP95Ms: sampleCount > 0 ? Number((980 + index * 58.5).toFixed(1)) : null,
     };
   });
 
@@ -253,21 +253,22 @@ describe("TodayStatsOverview", () => {
           spendRate: 0.1,
           windowMinutes: 1,
           available: true,
-          currentFirstResponseByteTotalAvgMs: 2750,
+          currentFirstTokenAvgMs: 2750,
           currentAvgTotalMs: 4900,
+          currentAvgResponseMs: 4900,
         }}
         modelPerformance={{
           available: true,
           total: {
             tokensPerMinute: 1200,
-            avgFirstResponseByteTotalMs: 1500,
+            avgFirstTokenMs: 1500,
           },
           models: [
             {
               model: "gpt-5.6",
               reasoningEffort: null,
               tokensPerMinute: 1200,
-              avgFirstResponseByteTotalMs: 1500,
+              avgFirstTokenMs: 1500,
             },
           ],
         }}
@@ -283,7 +284,7 @@ describe("TodayStatsOverview", () => {
       host?.querySelector('[data-testid="today-stats-value-response-time"]')?.textContent,
     ).toMatch(/2\.75|2,75/);
     expect(
-      host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-total"]')
+      host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-response"]')
         ?.textContent,
     ).toMatch(/4\.9|4,9/);
 
@@ -336,12 +337,12 @@ describe("TodayStatsOverview", () => {
       host?.querySelectorAll('[data-testid="today-stats-metric-tile"]') ?? [],
     ).map((tile) => tile.textContent ?? "");
     expect(tileLabels[2]).toContain("In progress");
-    expect(tileLabels[3]).toContain("Time to first byte");
+    expect(tileLabels[3]).toContain("TTFT");
     expect(tileLabels[4]).toContain("Success");
     expect(host?.textContent).toContain("Today summary");
     expect(host?.textContent).toContain("TPM");
     expect(host?.textContent).toContain("Spend rate");
-    expect(host?.textContent).toContain("Time to first byte");
+    expect(host?.textContent).toContain("TTFT");
     expect(host?.textContent).toContain("In progress");
     expect(host?.textContent).toContain("Today cost");
     expect(host?.textContent).toContain("Today Token");
@@ -392,7 +393,7 @@ describe("TodayStatsOverview", () => {
     expect(grid?.className).not.toContain("xl:grid-cols-7");
     expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(6);
     expect(host?.textContent).not.toContain("In progress");
-    expect(host?.textContent).toContain("Time to first byte");
+    expect(host?.textContent).toContain("TTFT");
     expect(host?.textContent).toContain("Today cost");
     expect(host?.textContent).toContain("Today Token");
   });
@@ -767,8 +768,8 @@ describe("TodayStatsOverview", () => {
               totalCost: 1,
               avgTotalMs: 1200,
               totalLatencySampleCount: 1,
-              firstResponseByteTotalSampleCount: 1,
-              firstResponseByteTotalAvgMs: 800,
+              firstTokenSampleCount: 1,
+              firstTokenAvgMs: 800,
             },
           ],
         }}
@@ -831,8 +832,8 @@ describe("TodayStatsOverview", () => {
               totalCost: 0.5,
               avgTotalMs: 1390,
               totalLatencySampleCount: 2,
-              firstResponseByteTotalSampleCount: 2,
-              firstResponseByteTotalAvgMs: 500,
+              firstTokenSampleCount: 2,
+              firstTokenAvgMs: 500,
             },
           ],
         }}
@@ -868,8 +869,9 @@ describe("TodayStatsOverview", () => {
           spendRate: 0.6,
           windowMinutes: 1,
           available: true,
-          currentFirstResponseByteTotalAvgMs: 820,
+          currentFirstTokenAvgMs: 820,
           currentAvgTotalMs: 1390,
+          currentAvgResponseMs: 1390,
         }}
         loading={false}
         error={null}
@@ -891,7 +893,7 @@ describe("TodayStatsOverview", () => {
       host?.querySelector('[data-testid="today-stats-secondary-in-progress-retry"]')?.textContent,
     ).toContain("2");
     expect(
-      host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-total"]')
+      host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-response"]')
         ?.textContent,
     ).toContain("1.39 s");
     expect(
@@ -918,6 +920,7 @@ describe("TodayStatsOverview", () => {
           windowMinutes: 1,
           available: true,
           currentAvgTotalMs: 400,
+          currentAvgResponseMs: 400,
         }}
         timeseries={{
           rangeStart: "2026-04-10T00:00:00.000Z",
@@ -934,8 +937,8 @@ describe("TodayStatsOverview", () => {
               totalCost: 0.1,
               avgTotalMs: 100,
               totalLatencySampleCount: 1,
-              firstResponseByteTotalSampleCount: 1,
-              firstResponseByteTotalAvgMs: 50,
+              firstTokenSampleCount: 1,
+              firstTokenAvgMs: 50,
             },
             {
               bucketStart: "2026-04-10T00:04:00.000Z",
@@ -947,8 +950,8 @@ describe("TodayStatsOverview", () => {
               totalCost: 0.4,
               avgTotalMs: 200,
               totalLatencySampleCount: 2,
-              firstResponseByteTotalSampleCount: 2,
-              firstResponseByteTotalAvgMs: 90,
+              firstTokenSampleCount: 2,
+              firstTokenAvgMs: 90,
             },
             {
               bucketStart: "2026-04-10T00:05:00.000Z",
@@ -960,8 +963,8 @@ describe("TodayStatsOverview", () => {
               totalCost: 0.7,
               avgTotalMs: 800,
               totalLatencySampleCount: 1,
-              firstResponseByteTotalSampleCount: 1,
-              firstResponseByteTotalAvgMs: 140,
+              firstTokenSampleCount: 1,
+              firstTokenAvgMs: 140,
             },
           ],
         }}
@@ -972,7 +975,7 @@ describe("TodayStatsOverview", () => {
     );
 
     expect(
-      host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-total"]')
+      host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-response"]')
         ?.textContent,
     ).toContain("400 ms");
   });
@@ -993,6 +996,7 @@ describe("TodayStatsOverview", () => {
           windowMinutes: 1,
           available: true,
           currentAvgTotalMs: 340,
+          currentAvgResponseMs: 340,
         }}
         timeseries={{
           rangeStart: "2026-04-10T00:00:00.000Z",
@@ -1009,8 +1013,8 @@ describe("TodayStatsOverview", () => {
               totalCost: 0.5,
               avgTotalMs: 100,
               totalLatencySampleCount: 3,
-              firstResponseByteTotalSampleCount: 3,
-              firstResponseByteTotalAvgMs: 50,
+              firstTokenSampleCount: 3,
+              firstTokenAvgMs: 50,
             },
             {
               bucketStart: "2026-04-10T00:15:00.000Z",
@@ -1022,8 +1026,8 @@ describe("TodayStatsOverview", () => {
               totalCost: 0.7,
               avgTotalMs: 700,
               totalLatencySampleCount: 3,
-              firstResponseByteTotalSampleCount: 3,
-              firstResponseByteTotalAvgMs: 140,
+              firstTokenSampleCount: 3,
+              firstTokenAvgMs: 140,
             },
           ],
         }}
@@ -1034,7 +1038,7 @@ describe("TodayStatsOverview", () => {
     );
 
     expect(
-      host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-total"]')
+      host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-response"]')
         ?.textContent,
     ).toContain("340 ms");
   });
@@ -1548,10 +1552,8 @@ describe("TodayStatsOverview", () => {
           Date.parse("2026-04-09T00:00:00.000Z") + index * 60_000,
         ).toISOString(),
         bucketEnd: new Date(Date.parse("2026-04-09T00:01:00.000Z") + index * 60_000).toISOString(),
-        firstResponseByteTotalAvgMs:
-          point.firstResponseByteTotalAvgMs == null
-            ? null
-            : Number((point.firstResponseByteTotalAvgMs * 0.75).toFixed(1)),
+        firstTokenAvgMs:
+          point.firstTokenAvgMs == null ? null : Number((point.firstTokenAvgMs * 0.75).toFixed(1)),
       })),
     };
 
@@ -1569,8 +1571,9 @@ describe("TodayStatsOverview", () => {
           spendRate: 0.1,
           windowMinutes: 1,
           available: true,
-          currentFirstResponseByteTotalAvgMs: 760,
+          currentFirstTokenAvgMs: 760,
           currentAvgTotalMs: 1180,
+          currentAvgResponseMs: 1180,
         }}
         timeseries={timeseries}
         comparisonTimeseries={comparisonTimeseries}
@@ -1588,7 +1591,7 @@ describe("TodayStatsOverview", () => {
       host?.querySelector('[data-testid="today-stats-secondary-response-time-delta"]')
         ?.textContent ?? "";
     const avgTotal =
-      host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-total"]')
+      host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-response"]')
         ?.textContent ?? "";
     expect(responseTimeValue).toMatch(/ms|s/);
     expect(dayAverage).toMatch(/ms|s/);
@@ -1597,7 +1600,7 @@ describe("TodayStatsOverview", () => {
     expect(
       host?.querySelector('[data-testid="today-stats-secondary-response-time-delta"]')?.className,
     ).toContain("text-error");
-    expect(host?.textContent).toContain("Time to first byte");
+    expect(host?.textContent).toContain("TTFT");
   });
 
   it("uses the complete-range first-byte average when the latest window is idle", () => {
@@ -1629,8 +1632,8 @@ describe("TodayStatsOverview", () => {
               failureCount: 0,
               totalTokens: 1000,
               totalCost: 0.5,
-              firstResponseByteTotalSampleCount: 2,
-              firstResponseByteTotalAvgMs: 500,
+              firstTokenSampleCount: 2,
+              firstTokenAvgMs: 500,
             },
           ],
         }}
@@ -1684,7 +1687,7 @@ describe("TodayStatsOverview", () => {
     );
 
     expect(
-      host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-total"]')
+      host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-response"]')
         ?.textContent,
     ).toContain("—");
   });
@@ -1703,8 +1706,8 @@ describe("TodayStatsOverview", () => {
           failureCount: 0,
           totalTokens: 1000,
           totalCost: 0.5,
-          firstResponseByteTotalSampleCount: 2,
-          firstResponseByteTotalAvgMs: 500,
+          firstTokenSampleCount: 2,
+          firstTokenAvgMs: 500,
         },
       ],
     };

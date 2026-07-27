@@ -19,7 +19,7 @@ import UpstreamAccountsPage, {
 import {
   createStoryForwardProxyBindingNodes,
   formatStoryAttemptId,
-  STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS,
+  STORYBOOK_TTFT_RESPONSE_DURATION_RECORDS,
 } from "../records/invocationRecordsStoryFixtures";
 import { InvocationTable } from "./InvocationTable";
 
@@ -59,6 +59,7 @@ const records: ApiInvocation[] = [
     tReqParseMs: 3.2,
     tUpstreamConnectMs: 26.1,
     tUpstreamTtfbMs: 184.7,
+    firstTokenMs: 742.6,
     tUpstreamStreamMs: 641.9,
     tRespParseMs: 8.6,
     tPersistMs: 2.1,
@@ -1518,6 +1519,7 @@ function buildStreamingInvocation(
     serviceTier: requestedServiceTier === "flex" ? "flex" : "priority",
     proxyWeightDelta: seq % 5 === 0 ? 0 : Number((0.09 + (seq % 4) * 0.11).toFixed(2)),
     tUpstreamTtfbMs: ttfbMs,
+    firstTokenMs: Math.min(totalMs, ttfbMs + 460 + (seq % 4) * 85),
     tTotalMs: totalMs,
   } as ApiInvocation;
 }
@@ -1623,7 +1625,7 @@ const meta = {
     docs: {
       description: {
         component:
-          "Shows recent invocation records with status, account attribution, proxy metadata, elapsed/compression summaries, and expandable request details. The default story includes both pool-routed and reverse-proxy records so you can verify the `账号 / 代理` split, the dedicated `用时` column, and the current-page account drawer trigger. The output summary still shows output tokens on the first line and the reasoning-token breakdown on the second line.\n\nThe `账号 / 代理` column follows a strict semantic split: the first line identifies who sent the request (`号池账号名` / `账号 #<id>` / `反向代理`), while the second line identifies the true forward-proxy node and may only show a real proxy display name or `—`. Upstream hosts such as `claude-relay-service.nsngc.org`, `chatgpt.com`, or `api.openai.com` are never valid proxy-line values.\n\nVisible reasoning effort cases in this component: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, missing (`—`), and unknown raw strings such as `custom-tier`. The component only shows explicitly recorded request values and does not infer model defaults. According to the OpenAI API docs as checked on 2026-03-07, the general API-level values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`, but model support is narrower for some models.\n\nReasoning-effort colors now follow a stable ladder: `none` stays neutral, `minimal/low` use cool informational tones, `medium` moves into the primary tier, `high` warns in amber, `xhigh` escalates to error red, and unknown raw strings use a dashed neutral badge so they cannot be mistaken for a standard level.\n\nUse this component to verify the summary row layout on desktop, the card layout on mobile, the running-to-terminal live update story, and the expanded detail section for request metadata, timing stages, account attribution, and HTTP compression.",
+          "Shows recent invocation records with status, account attribution, proxy metadata, `TTFT / 响应耗时 / HTTP 压缩` summaries, and expandable request details. The default story includes both pool-routed and reverse-proxy records so you can verify the `账号 / 代理` split, TTFT as the primary timing value, response duration as the secondary timing value, and the current-page account drawer trigger. The output summary still shows output tokens on the first line and the reasoning-token breakdown on the second line.\n\nThe `账号 / 代理` column follows a strict semantic split: the first line identifies who sent the request (`号池账号名` / `账号 #<id>` / `反向代理`), while the second line identifies the true forward-proxy node and may only show a real proxy display name or `—`. Upstream hosts such as `claude-relay-service.nsngc.org`, `chatgpt.com`, or `api.openai.com` are never valid proxy-line values.\n\nVisible reasoning effort cases in this component: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, missing (`—`), and unknown raw strings such as `custom-tier`. The component only shows explicitly recorded request values and does not infer model defaults. According to the OpenAI API docs as checked on 2026-03-07, the general API-level values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`, but model support is narrower for some models.\n\nReasoning-effort colors now follow a stable ladder: `none` stays neutral, `minimal/low` use cool informational tones, `medium` moves into the primary tier, `high` warns in amber, `xhigh` escalates to error red, and unknown raw strings use a dashed neutral badge so they cannot be mistaken for a standard level.\n\nUse this component to verify the summary row layout on desktop, the card layout on mobile, the running-to-terminal live update story, and the expanded detail section for request metadata, timing stages, account attribution, and HTTP compression.",
       },
     },
   },
@@ -1912,9 +1914,9 @@ export const ExpandedDetails: Story = {
   },
 };
 
-export const FirstResponseByteSemantics: Story = {
+export const TtftAndResponseDuration: Story = {
   args: {
-    records: STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS,
+    records: STORYBOOK_TTFT_RESPONSE_DURATION_RECORDS,
     isLoading: false,
     error: null,
   },
@@ -1922,18 +1924,15 @@ export const FirstResponseByteSemantics: Story = {
     docs: {
       description: {
         story:
-          "Focused verification state for the renamed latency field. The first row should show a non-zero `首字总耗时` in the summary even though the stage-level `上游首字节` remains `0.0 ms` in expanded details.",
+          "Focused verification state for record latency semantics. The first row shows `TTFT = 9.36 s` and independent `响应耗时 = 10.08 s`; expanded diagnostics retain `上游首字节 = 0.0 ms` without using it as either value.",
       },
     },
   },
+  tags: ["test"],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByText(/9\.36 s/)).toBeInTheDocument();
-    const toggleButtons = await canvas.findAllByRole("button", { name: /展开详情|show details/i });
-    await userEvent.click(toggleButtons[0]);
-    await expect(canvas.getByText(/首字总耗时|first response byte total/i)).toBeInTheDocument();
-    await expect(canvas.getByText(/上游首字节|upstream first byte/i)).toBeInTheDocument();
-    await expect(canvas.getByText(/0\.0 ms/)).toBeInTheDocument();
+    await expect(canvas.getByText(/10\.08 s/)).toBeInTheDocument();
   },
 };
 

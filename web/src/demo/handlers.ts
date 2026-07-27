@@ -190,7 +190,7 @@ const DEMO_MODEL_PERFORMANCE_MODELS = [
     tokensPerMinute: 22_480,
     streamingResponseRate: 71.4,
     avgResponseMs: 3_280,
-    avgFirstResponseByteTotalMs: 820,
+    avgFirstTokenMs: 820,
     wallClockUsageDurationMs: 6_540_000,
     cumulativeUsageDurationMs: 10_482_000,
   },
@@ -200,7 +200,7 @@ const DEMO_MODEL_PERFORMANCE_MODELS = [
     tokensPerMinute: 15_920,
     streamingResponseRate: 64.8,
     avgResponseMs: 2_680,
-    avgFirstResponseByteTotalMs: 694,
+    avgFirstTokenMs: 694,
     wallClockUsageDurationMs: 4_872_000,
     cumulativeUsageDurationMs: 7_246_000,
   },
@@ -210,7 +210,7 @@ const DEMO_MODEL_PERFORMANCE_MODELS = [
     tokensPerMinute: 7_641,
     streamingResponseRate: 46.2,
     avgResponseMs: 4_910,
-    avgFirstResponseByteTotalMs: 1_104,
+    avgFirstTokenMs: 1_104,
     wallClockUsageDurationMs: 3_120_000,
     cumulativeUsageDurationMs: 4_038_000,
   },
@@ -251,7 +251,7 @@ function demoModelPerformanceForModels(modelIndexes: number[]) {
         tokensPerMinute: 0,
         streamingResponseRate: null,
         avgResponseMs: null,
-        avgFirstResponseByteTotalMs: null,
+        avgFirstTokenMs: null,
         wallClockUsageDurationMs: null,
         cumulativeUsageDurationMs: null,
         parallelism: null,
@@ -296,10 +296,9 @@ function demoModelPerformanceForModels(modelIndexes: number[]) {
           (total, model) => total + model.avgResponseMs * model.cumulativeUsageDurationMs,
           0,
         ) / cumulativeUsageDurationMs,
-      avgFirstResponseByteTotalMs:
+      avgFirstTokenMs:
         models.reduce(
-          (total, model) =>
-            total + model.avgFirstResponseByteTotalMs * model.cumulativeUsageDurationMs,
+          (total, model) => total + model.avgFirstTokenMs * model.cumulativeUsageDurationMs,
           0,
         ) / cumulativeUsageDurationMs,
       wallClockUsageDurationMs,
@@ -363,6 +362,10 @@ export function demoSummary() {
     network: {
       avgTtfbMs: empty ? 0 : 214,
       p95TtfbMs: empty ? 0 : 628,
+      avgFirstTokenMs: empty ? null : 788,
+      p95FirstTokenMs: empty ? null : 1_070,
+      avgResponseDurationMs: empty ? null : 1_841,
+      p95ResponseDurationMs: empty ? null : 3_690,
       avgTotalMs: empty ? 0 : 2801,
       p95TotalMs: empty ? 0 : 9010,
     },
@@ -1003,6 +1006,12 @@ function invocations() {
         transport: status === "running" ? "websocket" : "http",
         tUpstreamConnectMs: ttfb == null ? null : Math.max(24, Math.round(ttfb * 0.24)),
         tUpstreamTtfbMs: ttfb,
+        firstTokenMs:
+          ttfb == null ||
+          total == null ||
+          !["/v1/responses", "/v1/chat/completions"].includes(endpoint)
+            ? null
+            : Math.min(total, ttfb + 420 + (id % 5) * 75),
         tUpstreamStreamMs: total == null ? null : Math.max(0, total - (ttfb ?? 0)),
         tTotalMs: total,
         timings:
@@ -1071,9 +1080,9 @@ function demoDashboardActivityAccounts() {
         tokensPerMinute: Math.max(2_100, 37_852 - index * 3_710),
         spendRate: Number(Math.max(1.1, 15.82 - index * 1.43).toFixed(2)),
         firstByteAvgMs: 198 + index * 18,
-        firstResponseByteTotalAvgMs: 198 + index * 18,
+        firstTokenAvgMs: 780 + index * 54,
         avgTotalMs: 2_536 + index * 184,
-        currentFirstResponseByteTotalAvgMs: 198 + index * 18,
+        currentFirstTokenAvgMs: 720 + index * 61,
         currentAvgTotalMs: 2_536 + index * 184,
         inProgressInvocationCount:
           account.id === 101
@@ -2145,7 +2154,7 @@ export async function handleDemoRequest(request: Request) {
         stats: demoSummary(),
         tokensPerMinute: 46_041,
         spendRate: 19.41,
-        currentFirstResponseByteTotalAvgMs: 1280,
+        currentFirstTokenAvgMs: 1280,
         currentAvgTotalMs: 6920,
         modelPerformance: demoModelPerformanceForModels([0, 1, 2]),
       },

@@ -180,13 +180,11 @@ function buildCompactCountChartData(data: DashboardTodayMinuteDatum[], maxBars: 
 
     const visiblePoints = points.filter((point) => point.chartSuccessCount != null);
     const firstByteSampleCount = visiblePoints.reduce(
-      (total, point) => total + point.firstResponseByteTotalSampleCount,
+      (total, point) => total + point.firstTokenSampleCount,
       0,
     );
     const firstByteWeightedTotal = visiblePoints.reduce(
-      (total, point) =>
-        total +
-        (point.chartFirstResponseByteTotalAvgMs ?? 0) * point.firstResponseByteTotalSampleCount,
+      (total, point) => total + (point.chartFirstTokenAvgMs ?? 0) * point.firstTokenSampleCount,
       0,
     );
     const sum = (field: keyof DashboardTodayMinuteDatum) =>
@@ -212,10 +210,10 @@ function buildCompactCountChartData(data: DashboardTodayMinuteDatum[], maxBars: 
       chartQueuedInFlightCount: visiblePoints.length > 0 ? sum("chartQueuedInFlightCount") : null,
       chartRunningInFlightCount: visiblePoints.length > 0 ? sum("chartRunningInFlightCount") : null,
       chartFailureCountNegative: visiblePoints.length > 0 ? sum("chartFailureCountNegative") : null,
-      firstResponseByteTotalSampleCount: firstByteSampleCount,
-      firstResponseByteTotalAvgMs:
+      firstTokenSampleCount: firstByteSampleCount,
+      firstTokenAvgMs:
         firstByteSampleCount > 0 ? firstByteWeightedTotal / firstByteSampleCount : null,
-      chartFirstResponseByteTotalAvgMs:
+      chartFirstTokenAvgMs:
         firstByteSampleCount > 0 ? firstByteWeightedTotal / firstByteSampleCount : null,
     });
   }
@@ -500,7 +498,7 @@ function DashboardTodayActivityChartImpl({
       queued: t("chart.queued"),
       running: t("chart.running"),
       total: t("chart.totalCount"),
-      firstByteTotal: t("chart.firstResponseByteTotal"),
+      firstToken: t("chart.firstToken"),
     }),
     [t],
   );
@@ -837,11 +835,11 @@ function DashboardTodayActivityChartImpl({
             color: chartColors.queued,
           },
           {
-            label: countSeriesNames.firstByteTotal,
+            label: countSeriesNames.firstToken,
             value:
-              point.chartFirstResponseByteTotalAvgMs == null
+              point.chartFirstTokenAvgMs == null
                 ? "-"
-                : `${numberFormatter.format(point.chartFirstResponseByteTotalAvgMs)} ms`,
+                : `${numberFormatter.format(point.chartFirstTokenAvgMs)} ms`,
             color: chartColors.firstByte,
           },
         ];
@@ -1049,8 +1047,8 @@ function DashboardTodayActivityChartImpl({
                   <Line
                     yAxisId="latency"
                     type="monotone"
-                    dataKey="chartFirstResponseByteTotalAvgMs"
-                    name={countSeriesNames.firstByteTotal}
+                    dataKey="chartFirstTokenAvgMs"
+                    name={countSeriesNames.firstToken}
                     stroke={chartColors.firstByte}
                     strokeOpacity={0.72}
                     strokeWidth={1.25}

@@ -1758,6 +1758,7 @@ mod tests {
             t_req_parse_ms: None,
             t_upstream_connect_ms: None,
             t_upstream_ttfb_ms: None,
+            first_token_ms: None,
             t_upstream_stream_ms: None,
             t_resp_parse_ms: None,
             t_persist_ms: None,
@@ -2449,6 +2450,8 @@ pub(crate) struct ApiInvocation {
     pub(crate) t_upstream_connect_ms: Option<f64>,
     #[sqlx(default)]
     pub(crate) t_upstream_ttfb_ms: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) first_token_ms: Option<f64>,
     #[sqlx(default)]
     pub(crate) t_upstream_stream_ms: Option<f64>,
     #[sqlx(default)]

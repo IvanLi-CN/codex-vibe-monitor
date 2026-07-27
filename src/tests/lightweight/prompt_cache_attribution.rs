@@ -324,6 +324,12 @@ async fn prompt_cache_recent_invocations_include_attributed_compact_preview() {
     .await
     .expect("insert attributed compact invocation");
 
+    sqlx::query("UPDATE codex_invocations SET first_token_ms = 321.0 WHERE invoke_id = ?1")
+        .bind("compact-attribution-compact")
+        .execute(&state.pool)
+        .await
+        .expect("set compact invocation TTFT");
+
     let rows = query_prompt_cache_conversation_recent_invocations(
         &state.pool,
         InvocationSourceScope::ProxyOnly,
@@ -342,4 +348,21 @@ async fn prompt_cache_recent_invocations_include_attributed_compact_preview() {
     assert_eq!(compact.compaction_request_kind.as_deref(), Some("compact"));
     assert_eq!(compact.compaction_response_kind.as_deref(), Some("compact"));
     assert_eq!(compact.prompt_cache_key, "prompt-cache-attributed");
+    assert_eq!(compact.first_token_ms, Some(321.0));
+
+    let rollup_rows = load_invocation_hourly_source_rows_after_id(
+        &state.pool,
+        0,
+        InvocationSourceScope::ProxyOnly,
+        20,
+    )
+    .await
+    .expect("load invocation hourly source rows");
+    assert_eq!(
+        rollup_rows
+            .iter()
+            .find(|row| row.occurred_at == "2026-04-27 10:01:00")
+            .and_then(|row| row.first_token_ms),
+        Some(321.0)
+    );
 }

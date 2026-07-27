@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import { InvocationRecordsSummaryCards } from "./InvocationRecordsSummaryCards";
 import { createStoryInvocationRecordsSummary } from "./invocationRecordsStoryFixtures";
@@ -14,6 +15,7 @@ function StorySurface({ children }: { children: React.ReactNode }) {
 const meta = {
   title: "Records/InvocationRecordsSummaryCards",
   component: InvocationRecordsSummaryCards,
+  tags: ["autodocs"],
   decorators: [
     (Story) => (
       <I18nProvider>
@@ -38,12 +40,31 @@ export const TokenFocus: Story = {
   },
 };
 
-export const NetworkFocus: Story = {
+export const TtftAndResponseDuration: Story = {
   args: {
     focus: "network",
     summary: createStoryInvocationRecordsSummary(),
     isLoading: false,
     error: null,
+  },
+  tags: ["test"],
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "The records network summary uses independently aggregated TTFT and upstream response duration. TTFB and total time remain diagnostics, not primary metrics.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+
+    await expect(canvas.getByText(/Avg TTFT|平均 TTFT/)).toBeVisible();
+    await expect(canvas.getByText(/P95 TTFT|P95 TTFT/)).toBeVisible();
+    await expect(canvas.getByText(/Avg response time|平均响应耗时/)).toBeVisible();
+    await expect(canvas.getByText(/P95 response time|P95 响应耗时/)).toBeVisible();
+    await expect(canvas.queryByText(/Avg TTFB|平均 TTFB/)).not.toBeInTheDocument();
+    await expect(canvas.queryByText(/Avg total time|平均总耗时/)).not.toBeInTheDocument();
   },
 };
 

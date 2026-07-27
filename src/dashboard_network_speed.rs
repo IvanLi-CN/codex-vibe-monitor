@@ -64,8 +64,12 @@ pub(crate) struct DashboardActivityCurrentSnapshot {
     pub(crate) total_cost: f64,
     pub(crate) first_response_byte_total_sample_count: i64,
     pub(crate) first_response_byte_total_sum_ms: f64,
+    pub(crate) first_token_sample_count: i64,
+    pub(crate) first_token_sum_ms: f64,
     pub(crate) total_latency_sample_count: i64,
     pub(crate) total_latency_sum_ms: f64,
+    pub(crate) response_duration_sample_count: i64,
+    pub(crate) response_duration_sum_ms: f64,
 }
 
 impl DashboardActivityCurrentSnapshot {
@@ -78,10 +82,18 @@ impl DashboardActivityCurrentSnapshot {
             .first_response_byte_total_sample_count
             .saturating_add(other.first_response_byte_total_sample_count.max(0));
         self.first_response_byte_total_sum_ms += other.first_response_byte_total_sum_ms.max(0.0);
+        self.first_token_sample_count = self
+            .first_token_sample_count
+            .saturating_add(other.first_token_sample_count.max(0));
+        self.first_token_sum_ms += other.first_token_sum_ms.max(0.0);
         self.total_latency_sample_count = self
             .total_latency_sample_count
             .saturating_add(other.total_latency_sample_count.max(0));
         self.total_latency_sum_ms += other.total_latency_sum_ms.max(0.0);
+        self.response_duration_sample_count = self
+            .response_duration_sample_count
+            .saturating_add(other.response_duration_sample_count.max(0));
+        self.response_duration_sum_ms += other.response_duration_sum_ms.max(0.0);
     }
 
     fn subtract_assign(&mut self, other: Self) {
@@ -95,11 +107,21 @@ impl DashboardActivityCurrentSnapshot {
         self.first_response_byte_total_sum_ms = (self.first_response_byte_total_sum_ms
             - other.first_response_byte_total_sum_ms.max(0.0))
         .max(0.0);
+        self.first_token_sample_count = self
+            .first_token_sample_count
+            .saturating_sub(other.first_token_sample_count.max(0));
+        self.first_token_sum_ms =
+            (self.first_token_sum_ms - other.first_token_sum_ms.max(0.0)).max(0.0);
         self.total_latency_sample_count = self
             .total_latency_sample_count
             .saturating_sub(other.total_latency_sample_count.max(0));
         self.total_latency_sum_ms =
             (self.total_latency_sum_ms - other.total_latency_sum_ms.max(0.0)).max(0.0);
+        self.response_duration_sample_count = self
+            .response_duration_sample_count
+            .saturating_sub(other.response_duration_sample_count.max(0));
+        self.response_duration_sum_ms =
+            (self.response_duration_sum_ms - other.response_duration_sum_ms.max(0.0)).max(0.0);
     }
 
     fn is_zero(self) -> bool {
@@ -107,8 +129,12 @@ impl DashboardActivityCurrentSnapshot {
             && self.total_cost <= 0.0
             && self.first_response_byte_total_sample_count <= 0
             && self.first_response_byte_total_sum_ms <= 0.0
+            && self.first_token_sample_count <= 0
+            && self.first_token_sum_ms <= 0.0
             && self.total_latency_sample_count <= 0
             && self.total_latency_sum_ms <= 0.0
+            && self.response_duration_sample_count <= 0
+            && self.response_duration_sum_ms <= 0.0
     }
 
     pub(crate) fn first_response_byte_total_avg_ms(self) -> Option<f64> {
@@ -118,9 +144,19 @@ impl DashboardActivityCurrentSnapshot {
         )
     }
 
+    pub(crate) fn first_token_avg_ms(self) -> Option<f64> {
+        (self.first_token_sample_count > 0)
+            .then_some(self.first_token_sum_ms / self.first_token_sample_count as f64)
+    }
+
     pub(crate) fn avg_total_ms(self) -> Option<f64> {
         (self.total_latency_sample_count > 0)
             .then_some(self.total_latency_sum_ms / self.total_latency_sample_count as f64)
+    }
+
+    pub(crate) fn avg_response_duration_ms(self) -> Option<f64> {
+        (self.response_duration_sample_count > 0)
+            .then_some(self.response_duration_sum_ms / self.response_duration_sample_count as f64)
     }
 }
 
@@ -216,6 +252,8 @@ struct DashboardTrackedInvocationTraffic {
     upstream_base_url_host: Option<String>,
     live_first_response_byte_epoch_second: Option<i64>,
     live_first_response_byte_total_ms: Option<f64>,
+    live_first_token_epoch_second: Option<i64>,
+    live_first_token_ms: Option<f64>,
 }
 
 #[derive(Debug, Default)]
@@ -399,6 +437,9 @@ impl DashboardNetworkSpeedCache {
             record.t_upstream_connect_ms,
             record.t_upstream_ttfb_ms,
         );
+        let live_first_token_ms = record
+            .first_token_ms
+            .filter(|value| value.is_finite() && *value >= 0.0);
         let observed_epoch_second = observed_at.timestamp();
         let mut inner = self
             .inner
@@ -427,6 +468,25 @@ impl DashboardNetworkSpeedCache {
                 tracked.upstream_account_id,
                 epoch_second,
                 first_response_byte_total_ms,
+            );
+        }
+        if previous_upstream_account_id != tracked.upstream_account_id
+            && let (Some(epoch_second), Some(first_token_ms)) = (
+                tracked.live_first_token_epoch_second,
+                tracked.live_first_token_ms,
+            )
+        {
+            remove_first_token_sample_for_scope_locked(
+                &mut inner,
+                previous_upstream_account_id,
+                epoch_second,
+                first_token_ms,
+            );
+            add_first_token_sample_for_scope_locked(
+                &mut inner,
+                tracked.upstream_account_id,
+                epoch_second,
+                first_token_ms,
             );
         }
 
@@ -464,6 +524,18 @@ impl DashboardNetworkSpeedCache {
             }
             _ => {}
         }
+        if tracked.live_first_token_ms.is_none()
+            && let Some(first_token_ms) = live_first_token_ms
+        {
+            tracked.live_first_token_epoch_second = Some(observed_epoch_second);
+            tracked.live_first_token_ms = Some(first_token_ms);
+            add_first_token_sample_for_scope_locked(
+                &mut inner,
+                tracked.upstream_account_id,
+                observed_epoch_second,
+                first_token_ms,
+            );
+        }
         inner.tracked_invocations.insert(key, tracked);
     }
 
@@ -496,6 +568,9 @@ impl DashboardNetworkSpeedCache {
         let terminal_total_ms = record
             .t_total_ms
             .filter(|value| value.is_finite() && *value >= 0.0);
+        let terminal_first_token_ms = record
+            .first_token_ms
+            .filter(|value| value.is_finite() && *value >= 0.0);
         let terminal_qualified_tokens = if is_success && record.cost.is_some() {
             record.total_tokens.unwrap_or_default().max(0)
         } else {
@@ -526,7 +601,6 @@ impl DashboardNetworkSpeedCache {
                 first_response_byte_total_ms,
             );
         }
-
         if is_success {
             if tracked.live_first_response_byte_total_ms.is_none()
                 && let Some(first_response_byte_total_ms) = terminal_first_response_byte_total_ms
@@ -547,6 +621,13 @@ impl DashboardNetworkSpeedCache {
                 terminal_snapshot.total_latency_sample_count = 1;
                 terminal_snapshot.total_latency_sum_ms = total_ms;
             }
+            if let Some(response_duration_ms) = record
+                .t_upstream_stream_ms
+                .filter(|value| value.is_finite() && *value >= 0.0)
+            {
+                terminal_snapshot.response_duration_sample_count = 1;
+                terminal_snapshot.response_duration_sum_ms = response_duration_ms;
+            }
             record_activity_scope_delta_locked(
                 &mut inner,
                 upstream_account_id,
@@ -562,6 +643,16 @@ impl DashboardNetworkSpeedCache {
                     total_cost: terminal_cost,
                     ..DashboardActivityCurrentSnapshot::default()
                 },
+            );
+        }
+        if tracked.live_first_token_ms.is_none()
+            && let Some(first_token_ms) = terminal_first_token_ms
+        {
+            add_first_token_sample_for_scope_locked(
+                &mut inner,
+                upstream_account_id,
+                observed_epoch_second,
+                first_token_ms,
             );
         }
     }
@@ -588,6 +679,17 @@ impl DashboardNetworkSpeedCache {
                 tracked.upstream_account_id,
                 epoch_second,
                 first_response_byte_total_ms,
+            );
+        }
+        if let (Some(epoch_second), Some(first_token_ms)) = (
+            tracked.live_first_token_epoch_second,
+            tracked.live_first_token_ms,
+        ) {
+            remove_first_token_sample_for_scope_locked(
+                &mut inner,
+                tracked.upstream_account_id,
+                epoch_second,
+                first_token_ms,
             );
         }
     }
@@ -1062,6 +1164,48 @@ fn remove_activity_sample_for_scope_locked(
     );
 }
 
+fn add_first_token_sample_for_scope_locked(
+    inner: &mut DashboardNetworkSpeedCacheInner,
+    upstream_account_id: Option<i64>,
+    observed_epoch_second: i64,
+    first_token_ms: f64,
+) {
+    if !first_token_ms.is_finite() || first_token_ms < 0.0 {
+        return;
+    }
+    record_activity_scope_delta_locked(
+        inner,
+        upstream_account_id,
+        observed_epoch_second,
+        DashboardActivityCurrentSnapshot {
+            first_token_sample_count: 1,
+            first_token_sum_ms: first_token_ms,
+            ..DashboardActivityCurrentSnapshot::default()
+        },
+    );
+}
+
+fn remove_first_token_sample_for_scope_locked(
+    inner: &mut DashboardNetworkSpeedCacheInner,
+    upstream_account_id: Option<i64>,
+    observed_epoch_second: i64,
+    first_token_ms: f64,
+) {
+    if !first_token_ms.is_finite() || first_token_ms < 0.0 {
+        return;
+    }
+    remove_activity_scope_delta_locked(
+        inner,
+        upstream_account_id,
+        observed_epoch_second,
+        DashboardActivityCurrentSnapshot {
+            first_token_sample_count: 1,
+            first_token_sum_ms: first_token_ms,
+            ..DashboardActivityCurrentSnapshot::default()
+        },
+    );
+}
+
 fn record_activity_scope_delta_locked(
     inner: &mut DashboardNetworkSpeedCacheInner,
     upstream_account_id: Option<i64>,
@@ -1459,6 +1603,45 @@ mod tests {
         let rates = cache.snapshot_account_rates(fixed_utc(101));
         let account = rates.get(&None).copied().unwrap_or_default();
         assert!((account.upload_bytes_per_second - 390.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn dropping_runtime_invocation_removes_first_token_sample() {
+        let now = Utc::now();
+        let cache = DashboardNetworkSpeedCache::new(now);
+        let invoke_id = "invoke-ttft-drop";
+        let occurred_at = "2026-07-26 12:00:00";
+        {
+            let mut inner = cache
+                .inner
+                .lock()
+                .expect("dashboard network speed cache should not be poisoned");
+            add_first_token_sample_for_scope_locked(&mut inner, Some(7), now.timestamp(), 480.0);
+            inner.tracked_invocations.insert(
+                (invoke_id.to_string(), occurred_at.to_string()),
+                DashboardTrackedInvocationTraffic {
+                    upstream_account_id: Some(7),
+                    live_first_token_epoch_second: Some(now.timestamp()),
+                    live_first_token_ms: Some(480.0),
+                    ..DashboardTrackedInvocationTraffic::default()
+                },
+            );
+        }
+
+        let before = cache.snapshot_dashboard_activity_accounts(now);
+        assert_eq!(
+            before.get(&Some(7)).map(|row| row.first_token_sample_count),
+            Some(1)
+        );
+
+        cache.drop_dashboard_activity_invocation(invoke_id, occurred_at);
+
+        let after = cache.snapshot_dashboard_activity_accounts(now);
+        assert!(
+            after
+                .get(&Some(7))
+                .is_none_or(|row| row.first_token_sample_count == 0)
+        );
     }
 
     #[test]

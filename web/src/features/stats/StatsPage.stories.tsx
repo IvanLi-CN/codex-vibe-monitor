@@ -91,9 +91,9 @@ function buildTimeseriesPoints({
       failureCount,
       totalTokens: totalCount * 4100,
       totalCost: Number((totalCount * 0.021).toFixed(4)),
-      firstResponseByteTotalAvgMs: 520 + (index % 7) * 32,
-      firstResponseByteTotalP95Ms: 710 + (index % 5) * 44,
-      firstResponseByteTotalSampleCount: totalCount,
+      firstTokenAvgMs: 520 + (index % 7) * 32,
+      firstTokenP95Ms: 710 + (index % 5) * 44,
+      firstTokenSampleCount: totalCount,
     } satisfies TimeseriesPoint;
   });
 }

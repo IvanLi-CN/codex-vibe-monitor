@@ -299,6 +299,23 @@ async function waitFor(check: () => boolean, timeoutMs = 500) {
 }
 
 describe("InvocationRecordsTable", () => {
+  it("uses TTFT and response duration instead of total duration in record summaries", () => {
+    render(
+      <InvocationRecordsTable
+        focus="network"
+        isLoading={false}
+        records={[createRecord({ firstTokenMs: 620, tUpstreamStreamMs: 480, tTotalMs: 741 })]}
+      />,
+    );
+
+    const text = host?.textContent ?? "";
+    expect(text).toContain("records.table.network.firstToken");
+    expect(text).toContain("records.table.network.responseDuration");
+    expect(text).toContain("0.62 s");
+    expect(text).toContain("0.48 s");
+    expect(text).not.toContain("0.741 s");
+  });
+
   it("renders the WS transport badge for websocket records", () => {
     render(
       <InvocationRecordsTable

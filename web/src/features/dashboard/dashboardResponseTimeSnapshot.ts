@@ -56,7 +56,7 @@ export function buildDashboardResponseTimeSnapshot(
     const bucketEndMs = bucketEnd.getTime();
     if (bucketStartMs >= anchorMs || bucketEndMs <= startMs) continue;
 
-    const avgMs = point.firstResponseByteTotalAvgMs ?? null;
+    const avgMs = point.firstTokenAvgMs ?? null;
     const pointCallCount = Math.max(
       point.totalCount ?? 0,
       (point.successCount ?? 0) + (point.failureCount ?? 0) + Math.max(point.inFlightCount ?? 0, 0),
@@ -64,7 +64,7 @@ export function buildDashboardResponseTimeSnapshot(
     );
     if (pointCallCount <= 0 || avgMs == null || !Number.isFinite(avgMs)) continue;
 
-    const sampleCount = Math.max(point.firstResponseByteTotalSampleCount ?? 1, 1);
+    const sampleCount = Math.max(point.firstTokenSampleCount ?? 1, 1);
 
     const current = pointMap.get(bucketStartMs) ?? {
       bucketStartMs,

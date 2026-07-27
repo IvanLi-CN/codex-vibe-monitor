@@ -160,7 +160,6 @@ interface InvocationRowViewModel {
   meta: StatusMeta;
   statusLabel: string;
   livePhase: ApiInvocation["livePhase"];
-  isInFlight: boolean;
   occurredTime: string;
   occurredDate: string;
   accountLabel: string;
@@ -189,8 +188,8 @@ interface InvocationRowViewModel {
   imageIntentDisplay: InvocationImageIntentDisplay;
   errorMessage: string;
   collapsedErrorSummary: string;
-  totalLatencyValue: string;
-  firstResponseByteTotalValue: string;
+  responseDurationValue: string;
+  firstTokenValue: string;
   responseContentEncodingValue: string;
   detailNotice: string | null;
   detailPairs: Array<{ key: string; label: string; value: ReactNode }>;
@@ -210,7 +209,6 @@ export function InvocationTable({
   const { t, locale } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const [isXlUp, setIsXlUp] = useState(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
     return window.matchMedia("(min-width: 1280px)").matches;
@@ -396,7 +394,6 @@ export function InvocationTable({
           ? t(meta.labelKey)
           : (meta.label ?? t("table.status.unknown"));
         const recordId = record.id;
-        const isInFlight = normalizedStatus === "running" || normalizedStatus === "pending";
         const occurredValid = !Number.isNaN(occurred.getTime());
         const occurredTime = occurredValid ? timeFormatter.format(occurred) : record.occurredAt;
         const occurredDate = occurredValid ? dateFormatter.format(occurred) : FALLBACK_CELL;
@@ -406,7 +403,6 @@ export function InvocationTable({
           t,
           locale,
           localeTag,
-          nowMs,
           numberFormatter,
           currencyFormatter,
           renderAccountValue,
@@ -419,7 +415,6 @@ export function InvocationTable({
           meta,
           statusLabel,
           livePhase,
-          isInFlight,
           occurredTime,
           occurredDate,
           ...detailView,
@@ -431,7 +426,6 @@ export function InvocationTable({
       dateFormatter,
       locale,
       localeTag,
-      nowMs,
       numberFormatter,
       renderAccountValue,
       t,
@@ -439,7 +433,6 @@ export function InvocationTable({
     ],
   );
 
-  const hasInFlightRows = useMemo(() => rows.some((row) => row.isInFlight), [rows]);
   const estimateRowSize = useCallback(
     (index: number) =>
       expandedId === rows[index]?.rowKey ? (isMdUp ? 320 : 430) : isMdUp ? 74 : 285,
@@ -616,15 +609,6 @@ export function InvocationTable({
     return () => window.cancelAnimationFrame(frame);
   }, [highlightedInvokeId, rows]);
 
-  useEffect(() => {
-    if (!hasInFlightRows) return;
-    setNowMs(Date.now());
-    const id = window.setInterval(() => {
-      setNowMs(Date.now());
-    }, 1000);
-    return () => window.clearInterval(id);
-  }, [hasInFlightRows]);
-
   if (error) {
     return (
       <ListBodyState
@@ -766,11 +750,11 @@ export function InvocationTable({
 
                 <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-mono text-base-content/70">
                   <span
-                    title={row.totalLatencyValue}
-                  >{`${t("table.column.totalLatencyShort")} ${row.totalLatencyValue}`}</span>
+                    title={row.firstTokenValue}
+                  >{`${t("table.column.firstTokenShort")} ${row.firstTokenValue}`}</span>
                   <span
-                    title={row.firstResponseByteTotalValue}
-                  >{`${t("table.column.firstResponseByteTotalShort")} ${row.firstResponseByteTotalValue}`}</span>
+                    title={row.responseDurationValue}
+                  >{`${t("table.column.responseDurationShort")} ${row.responseDurationValue}`}</span>
                   <span
                     title={row.responseContentEncodingValue}
                   >{`${t("table.column.httpCompressionShort")} ${row.responseContentEncodingValue}`}</span>
@@ -911,9 +895,9 @@ export function InvocationTable({
                   )}
                 >
                   <div className="flex flex-col leading-tight">
-                    <span>{t("table.column.latency")}</span>
+                    <span>{t("table.column.firstToken")}</span>
                     <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
-                      {t("table.column.firstResponseByteTotalCompression")}
+                      {t("table.column.responseDurationCompression")}
                     </span>
                   </div>
                 </th>
@@ -1086,15 +1070,15 @@ export function InvocationTable({
                         <div className="flex min-w-0 flex-col justify-center gap-1 leading-tight">
                           <span
                             className="truncate whitespace-nowrap font-mono tabular-nums"
-                            title={row.totalLatencyValue}
+                            title={row.firstTokenValue}
                           >
-                            {row.totalLatencyValue}
+                            {row.firstTokenValue}
                           </span>
                           <span
                             className="truncate whitespace-nowrap text-[11px] text-base-content/70"
-                            title={`${row.firstResponseByteTotalValue} · ${row.responseContentEncodingValue}`}
+                            title={`${row.responseDurationValue} · ${row.responseContentEncodingValue}`}
                           >
-                            {`${row.firstResponseByteTotalValue} · ${row.responseContentEncodingValue}`}
+                            {`${row.responseDurationValue} · ${row.responseContentEncodingValue}`}
                           </span>
                         </div>
                       </td>

@@ -727,8 +727,8 @@ describe("DashboardTodayActivityChart", () => {
             failureCount: 0,
             totalTokens: 1200,
             totalCost: 0.24,
-            firstResponseByteTotalSampleCount: 2,
-            firstResponseByteTotalAvgMs: 450,
+            firstTokenSampleCount: 2,
+            firstTokenAvgMs: 450,
           },
           {
             bucketStart: "2026-04-08 00:09:00",
@@ -738,8 +738,8 @@ describe("DashboardTodayActivityChart", () => {
             failureCount: 0,
             totalTokens: 1800,
             totalCost: 0.36,
-            firstResponseByteTotalSampleCount: 6,
-            firstResponseByteTotalAvgMs: 750,
+            firstTokenSampleCount: 6,
+            firstTokenAvgMs: 750,
           },
           {
             bucketStart: "2026-04-08 00:10:00",
@@ -749,8 +749,8 @@ describe("DashboardTodayActivityChart", () => {
             failureCount: 0,
             totalTokens: 900,
             totalCost: 0.18,
-            firstResponseByteTotalSampleCount: 1,
-            firstResponseByteTotalAvgMs: 300,
+            firstTokenSampleCount: 1,
+            firstTokenAvgMs: 300,
           },
         ],
       },
@@ -763,38 +763,38 @@ describe("DashboardTodayActivityChart", () => {
     expect(data[1]).toMatchObject({
       tokensPerMinute: 1200,
       spendRate: 0.24,
-      firstResponseByteTotalAvgMs: 450,
+      firstTokenAvgMs: 450,
       chartTokensPerMinute: null,
       chartSpendRate: null,
-      chartFirstResponseByteTotalAvgMs: 450,
+      chartFirstTokenAvgMs: 450,
     });
     expect(data[0]).toMatchObject({
       chartTokensPerMinute: 300,
       chartSpendRate: 0.06,
-      chartFirstResponseByteTotalAvgMs: null,
+      chartFirstTokenAvgMs: null,
     });
     expect(data[9]).toMatchObject({
       chartTokensPerMinute: null,
       chartSpendRate: null,
-      chartFirstResponseByteTotalAvgMs: 750,
+      chartFirstTokenAvgMs: 750,
     });
     expect(data[10]).toMatchObject({
       chartTokensPerMinute: 300,
       chartSpendRate: 0.06,
-      chartFirstResponseByteTotalAvgMs: 300,
+      chartFirstTokenAvgMs: 300,
     });
     expect(data[11]).toMatchObject({
       chartTokensPerMinute: null,
       chartSpendRate: null,
-      chartFirstResponseByteTotalAvgMs: null,
+      chartFirstTokenAvgMs: null,
     });
     expect(data.at(-1)).toMatchObject({
       tokensPerMinute: null,
       spendRate: null,
-      firstResponseByteTotalAvgMs: null,
+      firstTokenAvgMs: null,
       chartTokensPerMinute: null,
       chartSpendRate: null,
-      chartFirstResponseByteTotalAvgMs: null,
+      chartFirstTokenAvgMs: null,
     });
   });
 
@@ -813,8 +813,8 @@ describe("DashboardTodayActivityChart", () => {
             failureCount: 0,
             totalTokens: 1200,
             totalCost: 0.24,
-            firstResponseByteTotalSampleCount: 2,
-            firstResponseByteTotalAvgMs: 450,
+            firstTokenSampleCount: 2,
+            firstTokenAvgMs: 450,
           },
         ],
       },
@@ -826,11 +826,11 @@ describe("DashboardTodayActivityChart", () => {
 
     expect(data[0]).toMatchObject({
       totalCount: 0,
-      chartFirstResponseByteTotalAvgMs: null,
+      chartFirstTokenAvgMs: null,
     });
     expect(data[1]).toMatchObject({
       totalCount: 2,
-      chartFirstResponseByteTotalAvgMs: 450,
+      chartFirstTokenAvgMs: 450,
     });
   });
 
@@ -909,8 +909,8 @@ describe("DashboardTodayActivityChart", () => {
               failureCount: 0,
               totalTokens: 120,
               totalCost: 0.5,
-              firstResponseByteTotalSampleCount: 1,
-              firstResponseByteTotalAvgMs: 450,
+              firstTokenSampleCount: 1,
+              firstTokenAvgMs: 450,
             },
           ],
         }}
@@ -923,7 +923,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain("0 unit.calls");
     expect(html).toContain("chart.running");
     expect(html).toContain("chart.queued");
-    expect(html).toContain("chart.firstResponseByteTotal");
+    expect(html).toContain("chart.firstToken");
     expect(html).not.toContain("450 ms");
   });
 
@@ -943,8 +943,8 @@ describe("DashboardTodayActivityChart", () => {
             inFlightCount: 0,
             totalTokens: 0,
             totalCost: 0,
-            firstResponseByteTotalSampleCount: 1,
-            firstResponseByteTotalAvgMs: 18225.02,
+            firstTokenSampleCount: 1,
+            firstTokenAvgMs: 18225.02,
           },
         ],
       },
@@ -953,9 +953,9 @@ describe("DashboardTodayActivityChart", () => {
 
     expect(data[1]).toMatchObject({
       totalCount: 0,
-      firstResponseByteTotalSampleCount: 0,
-      firstResponseByteTotalAvgMs: null,
-      chartFirstResponseByteTotalAvgMs: null,
+      firstTokenSampleCount: 0,
+      firstTokenAvgMs: null,
+      chartFirstTokenAvgMs: null,
     });
   });
 
@@ -967,8 +967,8 @@ describe("DashboardTodayActivityChart", () => {
           points: [
             {
               ...response.points[0],
-              firstResponseByteTotalSampleCount: 1,
-              firstResponseByteTotalAvgMs: 43890,
+              firstTokenSampleCount: 1,
+              firstTokenAvgMs: 43890,
             },
           ],
         }}
@@ -978,8 +978,8 @@ describe("DashboardTodayActivityChart", () => {
       />,
     );
 
-    expect(html).toContain('data-data-key="chartFirstResponseByteTotalAvgMs"');
-    expect(html).toContain('data-name="chart.firstResponseByteTotal"');
+    expect(html).toContain('data-data-key="chartFirstTokenAvgMs"');
+    expect(html).toContain('data-name="chart.firstToken"');
     expect(html).toContain('data-stroke-width="1.25"');
     expect(html).toContain('data-stroke-opacity="0.72"');
     expect(html).toContain('data-dot="visible"');

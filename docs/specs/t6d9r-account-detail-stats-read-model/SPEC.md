@@ -4,7 +4,7 @@
 
 - 账号详情抽屉的统计面长期依赖在线重算：`/api/pool/upstream-accounts/window-usage`、账号维度 `/api/stats/summary`、`/api/stats/timeseries`、概览页账号活动总览都会在读路径上混合 live rows、archive overlap、hourly rollup 与内存聚合。
 - 该读路径在生产数据量下已经退化为秒级到十秒级响应；现网日志已出现单次 20 个账号批量统计约 12 秒，直接导致详情抽屉打开后长时间空白。
-- 现有 `upstream_account_usage_hourly` 只能覆盖部分数量类指标，不足以支撑详情页全部精确字段，尤其无法可靠承接 `firstResponseByteTotalP95Ms`。
+- 现有 `upstream_account_usage_hourly` 只能覆盖部分数量类指标，不足以支撑详情页全部精确字段；`#6qe6u` 进一步要求可靠承接 `firstTokenAvgMs` 与 `firstTokenP95Ms`。
 
 ## 目标 / 非目标
 
@@ -55,8 +55,9 @@
   - `cache_input_tokens`
   - `total_cost`
   - `first_byte_*`
-  - `first_response_byte_total_*`
-- `firstResponseByteTotalP95Ms` 不能退化成均值或最大值；bucket 内必须保留可重建该分位数的样本表示。
+  - `first_response_byte_total_*`（兼容读取，不用于 TTFT）
+  - `first_token_*`
+- `firstTokenP95Ms` 不能退化成均值或最大值；bucket 内必须保留可重建该分位数的样本表示，且只接收持久化的非空 `first_token_ms`。
 
 ### 写入与补齐
 
@@ -107,7 +108,7 @@
 
 - 打开账号详情抽屉后，`actualUsage`、概览页活动总览 summary 与活动趋势都必须在 3 秒内完成准确渲染。
 - `/api/pool/upstream-accounts/window-usage` 不再走按账号批量 live 重算热路径；批量账号统计恢复到现有性能预算内，不再出现 10 秒级响应。
-- 账号维度 summary / timeseries 对 success / failure / in-flight、tokens、cost、`firstResponseByteTotalAvgMs`、`firstResponseByteTotalP95Ms` 的结果，与既有精确口径逐项一致。
+- 账号维度 summary / timeseries 对 success / failure / in-flight、tokens、cost、`firstTokenAvgMs`、`firstTokenP95Ms` 的结果，与 invocation `first_token_ms` 样本逐项一致；旧 `firstResponseByteTotal*` 不得进入 TTFT 聚合。
 - 冷启动或 archive 回放后，read-model 未追平时 readiness 不得通过。
 - 前端必须覆盖：首次懒加载、切换账号取消旧请求、SSE / roster refresh 不重复触发重型统计。
 - 后端必须覆盖：增量维护、历史补齐幂等、boundary + live tail 精确性、cursor 恢复、接口只读 read-model 行为。

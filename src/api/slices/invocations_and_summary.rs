@@ -410,7 +410,7 @@ pub(crate) fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
          request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, \
          response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, \
          detail_level, detail_pruned_at, detail_prune_reason, \
-         t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
+         t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, first_token_ms, \
          t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, \
          created_at \
          FROM codex_invocations WHERE 1 = 1",
@@ -587,6 +587,10 @@ pub(crate) struct InvocationSummaryAggRow {
 pub(crate) struct InvocationNetworkAggRow {
     avg_ttfb_ms: Option<f64>,
     ttfb_count: i64,
+    avg_first_token_ms: Option<f64>,
+    first_token_count: i64,
+    avg_response_duration_ms: Option<f64>,
+    response_duration_count: i64,
     avg_total_ms: Option<f64>,
     total_count: i64,
     max_total_ms: Option<f64>,
@@ -619,6 +623,10 @@ pub(crate) struct InvocationTokenSummary {
 pub(crate) struct InvocationNetworkSummary {
     pub(crate) avg_ttfb_ms: Option<f64>,
     pub(crate) p95_ttfb_ms: Option<f64>,
+    pub(crate) avg_first_token_ms: Option<f64>,
+    pub(crate) p95_first_token_ms: Option<f64>,
+    pub(crate) avg_response_duration_ms: Option<f64>,
+    pub(crate) p95_response_duration_ms: Option<f64>,
     pub(crate) avg_total_ms: Option<f64>,
     pub(crate) p95_total_ms: Option<f64>,
     pub(crate) max_total_ms: Option<f64>,
@@ -2113,6 +2121,10 @@ pub(crate) async fn query_invocation_network_summary(
         "SELECT \
          AVG(CASE WHEN t_upstream_ttfb_ms IS NOT NULL AND t_upstream_ttfb_ms >= 0 THEN t_upstream_ttfb_ms END) AS avg_ttfb_ms, \
          COALESCE(SUM(CASE WHEN t_upstream_ttfb_ms IS NOT NULL AND t_upstream_ttfb_ms >= 0 THEN 1 ELSE 0 END), 0) AS ttfb_count, \
+         AVG(CASE WHEN first_token_ms IS NOT NULL AND first_token_ms >= 0 THEN first_token_ms END) AS avg_first_token_ms, \
+         COALESCE(SUM(CASE WHEN first_token_ms IS NOT NULL AND first_token_ms >= 0 THEN 1 ELSE 0 END), 0) AS first_token_count, \
+         AVG(CASE WHEN t_upstream_stream_ms IS NOT NULL AND t_upstream_stream_ms > 0 THEN t_upstream_stream_ms END) AS avg_response_duration_ms, \
+         COALESCE(SUM(CASE WHEN t_upstream_stream_ms IS NOT NULL AND t_upstream_stream_ms > 0 THEN 1 ELSE 0 END), 0) AS response_duration_count, \
          AVG(CASE WHEN t_total_ms IS NOT NULL AND t_total_ms >= 0 THEN t_total_ms END) AS avg_total_ms, \
          COALESCE(SUM(CASE WHEN t_total_ms IS NOT NULL AND t_total_ms >= 0 THEN 1 ELSE 0 END), 0) AS total_count, \
          MAX(CASE WHEN t_total_ms IS NOT NULL AND t_total_ms >= 0 THEN t_total_ms END) AS max_total_ms \
@@ -2152,7 +2164,11 @@ pub(crate) async fn query_invocation_network_summary(
             .push(column)
             .push(" IS NOT NULL AND ")
             .push(column)
-            .push(" >= 0");
+            .push(if column == "t_upstream_stream_ms" {
+                " > 0"
+            } else {
+                " >= 0"
+            });
         query.push(" ORDER BY ").push(column).push(" ASC");
         query.push(" LIMIT 1 OFFSET ").push_bind(offset.max(0));
 
@@ -2218,6 +2234,26 @@ pub(crate) async fn query_invocation_network_summary(
             snapshot_id,
             "t_upstream_ttfb_ms",
             agg.ttfb_count,
+        )
+        .await?,
+        avg_first_token_ms: agg.avg_first_token_ms,
+        p95_first_token_ms: query_p95(
+            pool,
+            filters,
+            source_scope,
+            snapshot_id,
+            "first_token_ms",
+            agg.first_token_count,
+        )
+        .await?,
+        avg_response_duration_ms: agg.avg_response_duration_ms,
+        p95_response_duration_ms: query_p95(
+            pool,
+            filters,
+            source_scope,
+            snapshot_id,
+            "t_upstream_stream_ms",
+            agg.response_duration_count,
         )
         .await?,
         avg_total_ms: agg.avg_total_ms,
@@ -6842,6 +6878,8 @@ pub(crate) struct UpstreamAccountActivityAccumulator {
     total_cost: f64,
     first_response_byte_total_sample_count: i64,
     first_response_byte_total_sum_ms: f64,
+    first_token_sample_count: i64,
+    first_token_sum_ms: f64,
     total_latency_sample_count: i64,
     total_latency_sum_ms: f64,
     latest_first_response_byte_total_at: Option<String>,
@@ -7101,8 +7139,12 @@ pub(crate) struct DashboardActivityCurrentMinuteAccumulator {
     total_cost: f64,
     first_response_byte_total_sample_count: i64,
     first_response_byte_total_sum_ms: f64,
+    first_token_sample_count: i64,
+    first_token_sum_ms: f64,
     total_latency_sample_count: i64,
     total_latency_sum_ms: f64,
+    response_duration_sample_count: i64,
+    response_duration_sum_ms: f64,
 }
 
 impl DashboardActivityCurrentMinuteAccumulator {
@@ -7126,6 +7168,13 @@ impl DashboardActivityCurrentMinuteAccumulator {
         if is_qualified_tpm {
             self.qualified_tokens += row.total_tokens.max(0);
         }
+        if let Some(first_token_ms) = row
+            .first_token_ms
+            .filter(|value| value.is_finite() && *value >= 0.0)
+        {
+            self.first_token_sample_count += 1;
+            self.first_token_sum_ms += first_token_ms;
+        }
         if !is_success {
             return;
         }
@@ -7148,6 +7197,13 @@ impl DashboardActivityCurrentMinuteAccumulator {
             self.total_latency_sample_count += 1;
             self.total_latency_sum_ms += total_ms;
         }
+        if let Some(response_duration_ms) = row
+            .t_upstream_stream_ms
+            .filter(|value| value.is_finite() && *value >= 0.0)
+        {
+            self.response_duration_sample_count += 1;
+            self.response_duration_sum_ms += response_duration_ms;
+        }
     }
 
     fn merge(&mut self, other: Self) {
@@ -7155,8 +7211,12 @@ impl DashboardActivityCurrentMinuteAccumulator {
         self.total_cost += other.total_cost;
         self.first_response_byte_total_sample_count += other.first_response_byte_total_sample_count;
         self.first_response_byte_total_sum_ms += other.first_response_byte_total_sum_ms;
+        self.first_token_sample_count += other.first_token_sample_count;
+        self.first_token_sum_ms += other.first_token_sum_ms;
         self.total_latency_sample_count += other.total_latency_sample_count;
         self.total_latency_sum_ms += other.total_latency_sum_ms;
+        self.response_duration_sample_count += other.response_duration_sample_count;
+        self.response_duration_sum_ms += other.response_duration_sum_ms;
     }
 
     fn first_response_byte_total_avg_ms(&self) -> Option<f64> {
@@ -7171,14 +7231,28 @@ impl DashboardActivityCurrentMinuteAccumulator {
             .then_some(self.total_latency_sum_ms / self.total_latency_sample_count as f64)
     }
 
+    fn avg_response_duration_ms(&self) -> Option<f64> {
+        (self.response_duration_sample_count > 0)
+            .then_some(self.response_duration_sum_ms / self.response_duration_sample_count as f64)
+    }
+
+    fn first_token_avg_ms(&self) -> Option<f64> {
+        (self.first_token_sample_count > 0)
+            .then_some(self.first_token_sum_ms / self.first_token_sample_count as f64)
+    }
+
     fn into_current_snapshot(self) -> DashboardActivityCurrentSnapshot {
         DashboardActivityCurrentSnapshot {
             qualified_tokens: self.qualified_tokens,
             total_cost: self.total_cost,
             first_response_byte_total_sample_count: self.first_response_byte_total_sample_count,
             first_response_byte_total_sum_ms: self.first_response_byte_total_sum_ms,
+            first_token_sample_count: self.first_token_sample_count,
+            first_token_sum_ms: self.first_token_sum_ms,
             total_latency_sample_count: self.total_latency_sample_count,
             total_latency_sum_ms: self.total_latency_sum_ms,
+            response_duration_sample_count: self.response_duration_sample_count,
+            response_duration_sum_ms: self.response_duration_sum_ms,
         }
     }
 }
@@ -7508,6 +7582,8 @@ pub(crate) struct UpstreamAccountActivityAggregateRow {
     pub(crate) total_cost: f64,
     first_response_byte_total_sample_count: i64,
     first_response_byte_total_sum_ms: f64,
+    first_token_sample_count: i64,
+    first_token_sum_ms: f64,
     total_latency_sample_count: i64,
     total_latency_sum_ms: f64,
     latest_first_response_byte_total_at: Option<String>,
@@ -7542,6 +7618,8 @@ fn merge_upstream_account_activity_aggregate_row(
     entry.total_cost += row.total_cost;
     entry.first_response_byte_total_sample_count += row.first_response_byte_total_sample_count;
     entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
+    entry.first_token_sample_count += row.first_token_sample_count;
+    entry.first_token_sum_ms += row.first_token_sum_ms;
     entry.total_latency_sample_count += row.total_latency_sample_count;
     entry.total_latency_sum_ms += row.total_latency_sum_ms;
     merge_latest_timed_metric(
@@ -7590,6 +7668,8 @@ struct UpstreamAccountUsageBreakdownAggregateRow {
     performance_response_sum_ms: f64,
     performance_first_byte_sample_count: i64,
     performance_first_byte_sum_ms: f64,
+    performance_first_token_sample_count: i64,
+    performance_first_token_sum_ms: f64,
     performance_usage_duration_sample_count: i64,
     performance_usage_duration_sum_ms: f64,
 }
@@ -7635,6 +7715,8 @@ fn merge_usage_breakdown_aggregate_row_map(
                 performance_response_sum_ms: 0.0,
                 performance_first_byte_sample_count: 0,
                 performance_first_byte_sum_ms: 0.0,
+                performance_first_token_sample_count: 0,
+                performance_first_token_sum_ms: 0.0,
                 performance_usage_duration_sample_count: 0,
                 performance_usage_duration_sum_ms: 0.0,
             });
@@ -7658,6 +7740,8 @@ fn merge_usage_breakdown_aggregate_row_map(
     entry.performance_response_sum_ms += row.performance_response_sum_ms;
     entry.performance_first_byte_sample_count += row.performance_first_byte_sample_count;
     entry.performance_first_byte_sum_ms += row.performance_first_byte_sum_ms;
+    entry.performance_first_token_sample_count += row.performance_first_token_sample_count;
+    entry.performance_first_token_sum_ms += row.performance_first_token_sum_ms;
     entry.performance_usage_duration_sample_count += row.performance_usage_duration_sample_count;
     entry.performance_usage_duration_sum_ms += row.performance_usage_duration_sum_ms;
 }
@@ -7695,6 +7779,8 @@ fn merge_usage_breakdown_rollup_record_map(
             performance_response_sum_ms: row.performance_response_sum_ms,
             performance_first_byte_sample_count: row.performance_first_byte_sample_count,
             performance_first_byte_sum_ms: row.performance_first_byte_sum_ms,
+            performance_first_token_sample_count: row.performance_first_token_sample_count,
+            performance_first_token_sum_ms: row.performance_first_token_sum_ms,
             performance_usage_duration_sample_count: row.performance_usage_duration_sample_count,
             performance_usage_duration_sum_ms: row.performance_usage_duration_sum_ms,
         },
@@ -7828,6 +7914,8 @@ struct ModelPerformanceAccumulator {
     response_sum_ms: f64,
     first_byte_sample_count: i64,
     first_byte_sum_ms: f64,
+    first_token_sample_count: i64,
+    first_token_sum_ms: f64,
     cumulative_usage_duration_sample_count: i64,
     cumulative_usage_duration_sum_ms: f64,
     wall_clock_usage_duration_ms: Option<f64>,
@@ -7843,6 +7931,8 @@ impl ModelPerformanceAccumulator {
         self.response_sum_ms += row.performance_response_sum_ms.max(0.0);
         self.first_byte_sample_count += row.performance_first_byte_sample_count.max(0);
         self.first_byte_sum_ms += row.performance_first_byte_sum_ms.max(0.0);
+        self.first_token_sample_count += row.performance_first_token_sample_count.max(0);
+        self.first_token_sum_ms += row.performance_first_token_sum_ms.max(0.0);
         self.cumulative_usage_duration_sample_count +=
             row.performance_usage_duration_sample_count.max(0);
         self.cumulative_usage_duration_sum_ms += row.performance_usage_duration_sum_ms.max(0.0);
@@ -7861,6 +7951,8 @@ impl ModelPerformanceAccumulator {
         entry.response_sum_ms += row.performance_response_sum_ms.max(0.0);
         entry.first_byte_sample_count += row.performance_first_byte_sample_count.max(0);
         entry.first_byte_sum_ms += row.performance_first_byte_sum_ms.max(0.0);
+        entry.first_token_sample_count += row.performance_first_token_sample_count.max(0);
+        entry.first_token_sum_ms += row.performance_first_token_sum_ms.max(0.0);
         entry.cumulative_usage_duration_sample_count +=
             row.performance_usage_duration_sample_count.max(0);
         entry.cumulative_usage_duration_sum_ms += row.performance_usage_duration_sum_ms.max(0.0);
@@ -7882,6 +7974,8 @@ impl ModelPerformanceAccumulator {
                 .then_some(self.response_sum_ms / self.response_sample_count as f64),
             avg_first_response_byte_total_ms: (self.first_byte_sample_count > 0)
                 .then_some(self.first_byte_sum_ms / self.first_byte_sample_count as f64),
+            avg_first_token_ms: (self.first_token_sample_count > 0)
+                .then_some(self.first_token_sum_ms / self.first_token_sample_count as f64),
             wall_clock_usage_duration_ms: self.wall_clock_usage_duration_ms,
             cumulative_usage_duration_ms,
             parallelism: match (
@@ -7906,6 +8000,7 @@ impl ModelPerformanceAccumulator {
                     || entry.stream_duration_ms > 0.0
                     || entry.response_sample_count > 0
                     || entry.first_byte_sample_count > 0
+                    || entry.first_token_sample_count > 0
                     || entry.cumulative_usage_duration_sample_count > 0
                     || entry.wall_clock_usage_duration_ms.is_some())
                 .then_some(ModelPerformanceModelResponse {
@@ -8109,6 +8204,7 @@ async fn query_live_upstream_account_activity_aggregate_rows_with_telemetry(
                 t_req_parse_ms,
                 t_upstream_connect_ms,
                 t_upstream_ttfb_ms,
+                first_token_ms,
                 t_total_ms,
                 {upstream_account_id_sql} AS upstream_account_id,
                 {prompt_cache_key_sql} AS prompt_cache_key
@@ -8198,6 +8294,8 @@ async fn query_live_upstream_account_activity_aggregate_rows_with_telemetry(
             CAST(COALESCE(SUM(COALESCE(cost, 0)), 0) AS REAL) AS total_cost,
             SUM(CASE WHEN {success_sql} AND t_upstream_ttfb_ms > 0 THEN 1 ELSE 0 END) AS first_response_byte_total_sample_count,
             CAST(COALESCE(SUM(CASE WHEN {success_sql} AND t_upstream_ttfb_ms > 0 THEN {first_response_byte_total_sql} ELSE 0 END), 0) AS REAL) AS first_response_byte_total_sum_ms,
+            SUM(CASE WHEN first_token_ms IS NOT NULL AND first_token_ms >= 0 THEN 1 ELSE 0 END) AS first_token_sample_count,
+            CAST(COALESCE(SUM(CASE WHEN first_token_ms IS NOT NULL AND first_token_ms >= 0 THEN first_token_ms ELSE 0 END), 0) AS REAL) AS first_token_sum_ms,
             SUM(CASE WHEN {success_sql} AND t_total_ms >= 0 THEN 1 ELSE 0 END) AS total_latency_sample_count,
             CAST(COALESCE(SUM(CASE WHEN {success_sql} AND t_total_ms >= 0 THEN t_total_ms ELSE 0 END), 0) AS REAL) AS total_latency_sum_ms,
             latest_first_response_byte_total_by_account.latest_first_response_byte_total_at AS latest_first_response_byte_total_at,
@@ -8281,6 +8379,8 @@ fn merge_account_activity_rows(
     target.total_cost += source.total_cost;
     target.first_response_byte_total_sample_count += source.first_response_byte_total_sample_count;
     target.first_response_byte_total_sum_ms += source.first_response_byte_total_sum_ms;
+    target.first_token_sample_count += source.first_token_sample_count;
+    target.first_token_sum_ms += source.first_token_sum_ms;
     target.total_latency_sample_count += source.total_latency_sample_count;
     target.total_latency_sum_ms += source.total_latency_sum_ms;
     merge_latest_timed_metric(
@@ -8325,6 +8425,8 @@ async fn query_account_activity_v2_rollup_rows(
             activity_v2_total_cost AS total_cost,
             activity_v2_first_response_sample_count AS first_response_byte_total_sample_count,
             activity_v2_first_response_sum_ms AS first_response_byte_total_sum_ms,
+            first_token_sample_count,
+            first_token_sum_ms,
             activity_v2_total_latency_sample_count AS total_latency_sample_count,
             activity_v2_total_latency_sum_ms AS total_latency_sum_ms,
             activity_v2_latest_first_response_at AS latest_first_response_byte_total_at,
@@ -8764,12 +8866,14 @@ where
             CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND NOT ({cost_complete_sql}) THEN cost ELSE 0 END), 0) AS REAL) AS cost_unknown,
             SUM(CASE WHEN cost IS NOT NULL THEN 1 ELSE 0 END) AS has_cost,
             COALESCE(SUM(CASE WHEN {success_billed_sql} THEN COALESCE(total_tokens, 0) ELSE 0 END), 0) AS performance_total_tokens,
-            COALESCE(SUM(CASE WHEN {success_billed_sql} AND t_upstream_stream_ms >= 0 THEN COALESCE(output_tokens, 0) ELSE 0 END), 0) AS performance_stream_output_tokens,
-            CAST(COALESCE(SUM(CASE WHEN {success_billed_sql} AND t_upstream_stream_ms >= 0 THEN t_upstream_stream_ms ELSE 0 END), 0) AS REAL) AS performance_stream_duration_ms,
-            SUM(CASE WHEN {success_billed_sql} AND t_upstream_stream_ms >= 0 THEN 1 ELSE 0 END) AS performance_response_sample_count,
-            CAST(COALESCE(SUM(CASE WHEN {success_billed_sql} AND t_upstream_stream_ms >= 0 THEN t_upstream_stream_ms ELSE 0 END), 0) AS REAL) AS performance_response_sum_ms,
+            COALESCE(SUM(CASE WHEN {success_billed_sql} AND t_upstream_stream_ms > 0 THEN COALESCE(output_tokens, 0) ELSE 0 END), 0) AS performance_stream_output_tokens,
+            CAST(COALESCE(SUM(CASE WHEN {success_billed_sql} AND t_upstream_stream_ms > 0 THEN t_upstream_stream_ms ELSE 0 END), 0) AS REAL) AS performance_stream_duration_ms,
+            SUM(CASE WHEN {success_like_sql} AND t_upstream_stream_ms > 0 THEN 1 ELSE 0 END) AS performance_response_sample_count,
+            CAST(COALESCE(SUM(CASE WHEN {success_like_sql} AND t_upstream_stream_ms > 0 THEN t_upstream_stream_ms ELSE 0 END), 0) AS REAL) AS performance_response_sum_ms,
             SUM(CASE WHEN {success_billed_sql} AND t_upstream_ttfb_ms > 0 THEN 1 ELSE 0 END) AS performance_first_byte_sample_count,
             CAST(COALESCE(SUM(CASE WHEN {success_billed_sql} AND t_upstream_ttfb_ms > 0 THEN {first_response_byte_total_sql} ELSE 0 END), 0) AS REAL) AS performance_first_byte_sum_ms,
+            SUM(CASE WHEN first_token_ms IS NOT NULL AND first_token_ms >= 0 THEN 1 ELSE 0 END) AS performance_first_token_sample_count,
+            CAST(COALESCE(SUM(CASE WHEN first_token_ms IS NOT NULL AND first_token_ms >= 0 THEN first_token_ms ELSE 0 END), 0) AS REAL) AS performance_first_token_sum_ms,
             SUM(CASE WHEN {success_billed_sql} AND t_total_ms >= 0 THEN 1 ELSE 0 END) AS performance_usage_duration_sample_count,
             CAST(COALESCE(SUM(CASE WHEN {success_billed_sql} AND t_total_ms >= 0 THEN t_total_ms ELSE 0 END), 0) AS REAL) AS performance_usage_duration_sum_ms
         FROM codex_invocations
@@ -9234,7 +9338,7 @@ fn build_upstream_account_activity_preview_select(
              ",
         )
         .push(INVOCATION_BILLING_SERVICE_TIER_SQL)
-        .push(" AS billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ")
+        .push(" AS billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, first_token_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ")
         .push(INVOCATION_DOWNSTREAM_STATUS_CODE_SQL)
         .push(" AS downstream_status_code, ")
         .push(INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL)
@@ -9664,6 +9768,7 @@ fn runtime_upstream_account_activity_preview_row_with_terminal(
         t_req_parse_ms: record.t_req_parse_ms,
         t_upstream_connect_ms: record.t_upstream_connect_ms,
         t_upstream_ttfb_ms: record.t_upstream_ttfb_ms,
+        first_token_ms: record.first_token_ms,
         t_upstream_stream_ms: record.t_upstream_stream_ms,
         t_resp_parse_ms: record.t_resp_parse_ms,
         t_persist_ms: record.t_persist_ms,
@@ -10645,7 +10750,9 @@ impl DashboardActivitySnapshot {
                 tokens_per_minute: None,
                 spend_rate: None,
                 current_first_response_byte_total_avg_ms: None,
+                current_first_token_avg_ms: None,
                 current_avg_total_ms: None,
+                current_avg_response_ms: None,
                 model_performance: ModelPerformanceResponse {
                     available: false,
                     total: ModelPerformanceMetricsResponse {
@@ -10653,6 +10760,7 @@ impl DashboardActivitySnapshot {
                         streaming_response_rate: None,
                         avg_response_ms: None,
                         avg_first_response_byte_total_ms: None,
+                        avg_first_token_ms: None,
                         wall_clock_usage_duration_ms: None,
                         cumulative_usage_duration_ms: None,
                         parallelism: None,
@@ -10781,6 +10889,62 @@ async fn dashboard_activity_materialized_archive_fallback_totals(
     Ok(fallback_totals)
 }
 
+async fn dashboard_activity_materialized_archive_first_token_fallback_totals(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    skipped_materialized_ranges: &[ExactUtcRange],
+) -> Result<(i64, f64), ApiError> {
+    let mut sample_count = 0_i64;
+    let mut sum_ms = 0.0_f64;
+    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
+    for skipped_range in skipped_materialized_ranges {
+        let range_plan = build_hourly_rollup_exact_range_plan(
+            skipped_range.start,
+            skipped_range.end,
+            retention_cutoff,
+        )?;
+        let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range else {
+            continue;
+        };
+        let full_hour_range = dashboard_activity_full_hour_exact_range(range_plan.full_hour_range)?
+            .expect("non-empty full-hour epoch range should produce an exact range");
+        let rollup_rows = crate::stats::query_invocation_hourly_rollup_range(
+            &state.pool,
+            range_start_epoch,
+            range_end_epoch,
+            source_scope,
+        )
+        .await?;
+        let rollup_count = rollup_rows
+            .iter()
+            .map(|row| row.first_token_sample_count.max(0))
+            .sum::<i64>();
+        let rollup_sum = rollup_rows
+            .iter()
+            .map(|row| row.first_token_sum_ms.max(0.0))
+            .sum::<f64>();
+        let live_rows = query_live_upstream_account_activity_aggregate_rows(
+            &state.pool,
+            source_scope,
+            full_hour_range,
+            true,
+            DashboardActivityExcludedInvocationIdsFilter::None,
+        )
+        .await?;
+        let live_count = live_rows
+            .iter()
+            .map(|row| row.first_token_sample_count.max(0))
+            .sum::<i64>();
+        let live_sum = live_rows
+            .iter()
+            .map(|row| row.first_token_sum_ms.max(0.0))
+            .sum::<f64>();
+        sample_count += rollup_count.saturating_sub(live_count).max(0);
+        sum_ms += (rollup_sum - live_sum).max(0.0);
+    }
+    Ok((sample_count, sum_ms))
+}
+
 fn dashboard_activity_historical_live_gap_ranges(
     range: ExactUtcRange,
     retention_cutoff: DateTime<Utc>,
@@ -10878,6 +11042,8 @@ struct DashboardActivityAccountStatsRollupAggregateRow {
     non_success_cost: f64,
     first_response_byte_total_sample_count: i64,
     first_response_byte_total_sum_ms: f64,
+    first_token_sample_count: i64,
+    first_token_sum_ms: f64,
     total_latency_sample_count: i64,
     total_latency_sum_ms: f64,
 }
@@ -10908,6 +11074,8 @@ struct DashboardActivityAccountFallbackTotals {
     output_tokens: i64,
     first_response_byte_total_sample_count: i64,
     first_response_byte_total_sum_ms: f64,
+    first_token_sample_count: i64,
+    first_token_sum_ms: f64,
     total_latency_sample_count: i64,
     total_latency_sum_ms: f64,
 }
@@ -10965,6 +11133,8 @@ impl DashboardActivityAccountFallbackTotals {
         let live_first_response_count =
             live.map_or(0, |row| row.first_response_byte_total_sample_count);
         let live_first_response_sum = live.map_or(0.0, |row| row.first_response_byte_total_sum_ms);
+        let live_first_token_count = live.map_or(0, |row| row.first_token_sample_count);
+        let live_first_token_sum = live.map_or(0.0, |row| row.first_token_sum_ms);
         let live_total_latency_count = live.map_or(0, |row| row.total_latency_sample_count);
         let live_total_latency_sum = live.map_or(0.0, |row| row.total_latency_sum_ms);
 
@@ -11035,6 +11205,11 @@ impl DashboardActivityAccountFallbackTotals {
             first_response_byte_total_sum_ms: (row.first_response_byte_total_sum_ms
                 - live_first_response_sum)
                 .max(0.0),
+            first_token_sample_count: row
+                .first_token_sample_count
+                .saturating_sub(live_first_token_count)
+                .max(0),
+            first_token_sum_ms: (row.first_token_sum_ms - live_first_token_sum).max(0.0),
             total_latency_sample_count: row
                 .total_latency_sample_count
                 .saturating_sub(live_total_latency_count)
@@ -11061,6 +11236,8 @@ impl DashboardActivityAccountFallbackTotals {
         self.output_tokens += other.output_tokens;
         self.first_response_byte_total_sample_count += other.first_response_byte_total_sample_count;
         self.first_response_byte_total_sum_ms += other.first_response_byte_total_sum_ms;
+        self.first_token_sample_count += other.first_token_sample_count;
+        self.first_token_sum_ms += other.first_token_sum_ms;
         self.total_latency_sample_count += other.total_latency_sample_count;
         self.total_latency_sum_ms += other.total_latency_sum_ms;
     }
@@ -11074,6 +11251,49 @@ impl DashboardActivityAccountFallbackTotals {
             total_tokens: self.total_tokens,
             non_success_cost: self.non_success_cost,
         }
+    }
+}
+
+fn dashboard_activity_residual_first_token_totals(
+    global_sample_count: i64,
+    global_sum_ms: f64,
+    account_totals: &HashMap<Option<i64>, DashboardActivityAccountFallbackTotals>,
+) -> (i64, f64) {
+    let account_sample_count = account_totals
+        .values()
+        .map(|totals| totals.first_token_sample_count)
+        .sum::<i64>();
+    let account_sum_ms = account_totals
+        .values()
+        .map(|totals| totals.first_token_sum_ms)
+        .sum::<f64>();
+    (
+        global_sample_count
+            .saturating_sub(account_sample_count)
+            .max(0),
+        (global_sum_ms - account_sum_ms).max(0.0),
+    )
+}
+
+#[cfg(test)]
+mod dashboard_activity_ttft_fallback_tests {
+    use super::*;
+
+    #[test]
+    fn residual_archive_fallback_keeps_unassigned_ttft_samples() {
+        let account_totals = HashMap::from([(
+            Some(7),
+            DashboardActivityAccountFallbackTotals {
+                first_token_sample_count: 2,
+                first_token_sum_ms: 500.0,
+                ..DashboardActivityAccountFallbackTotals::default()
+            },
+        )]);
+
+        assert_eq!(
+            dashboard_activity_residual_first_token_totals(3, 900.0, &account_totals),
+            (1, 400.0)
+        );
     }
 }
 
@@ -11103,6 +11323,8 @@ async fn query_dashboard_activity_account_stats_rollup_aggregate_rows(
             CAST(COALESCE(SUM(non_success_cost), 0.0) AS REAL) AS non_success_cost,
             COALESCE(SUM(first_response_byte_total_sample_count), 0) AS first_response_byte_total_sample_count,
             CAST(COALESCE(SUM(first_response_byte_total_sum_ms), 0.0) AS REAL) AS first_response_byte_total_sum_ms,
+            COALESCE(SUM(first_token_sample_count), 0) AS first_token_sample_count,
+            CAST(COALESCE(SUM(first_token_sum_ms), 0.0) AS REAL) AS first_token_sum_ms,
             COALESCE(SUM(total_latency_sample_count), 0) AS total_latency_sample_count,
             CAST(COALESCE(SUM(total_latency_sum_ms), 0.0) AS REAL) AS total_latency_sum_ms
         FROM upstream_account_stats_hourly
@@ -11219,6 +11441,8 @@ fn dashboard_activity_merge_account_fallback_totals(
     entry.total_cost += totals.total_cost;
     entry.first_response_byte_total_sample_count += totals.first_response_byte_total_sample_count;
     entry.first_response_byte_total_sum_ms += totals.first_response_byte_total_sum_ms;
+    entry.first_token_sample_count += totals.first_token_sample_count;
+    entry.first_token_sum_ms += totals.first_token_sum_ms;
     entry.total_latency_sample_count += totals.total_latency_sample_count;
     entry.total_latency_sum_ms += totals.total_latency_sum_ms;
     entry.usage_breakdown.add_coarse_rollup_totals(
@@ -11424,10 +11648,13 @@ pub(crate) fn dashboard_activity_account_from_live(
         spend_rate: Some(current_snapshot.total_cost.max(0.0)),
         first_byte_avg_ms: None,
         first_response_byte_total_avg_ms: None,
+        first_token_avg_ms: None,
         avg_total_ms: None,
+        current_first_token_avg_ms: current_snapshot.first_token_avg_ms(),
         current_first_response_byte_total_avg_ms: current_snapshot
             .first_response_byte_total_avg_ms(),
         current_avg_total_ms: current_snapshot.avg_total_ms(),
+        current_avg_response_ms: current_snapshot.avg_response_duration_ms(),
         in_progress_invocation_count: Some(live_account.in_progress_invocation_count),
         in_progress_phase_counts: Some(live_account.in_progress_phase_counts),
         retry_invocation_count: Some(live_account.retry_invocation_count),
@@ -11530,9 +11757,13 @@ async fn overlay_dashboard_activity_live_accounts(
     snapshot.summary.current_first_response_byte_total_avg_ms = current_snapshot_summary
         .first_response_byte_total_avg_ms()
         .or(snapshot.summary.current_first_response_byte_total_avg_ms);
+    snapshot.summary.current_first_token_avg_ms = current_snapshot_summary.first_token_avg_ms();
     snapshot.summary.current_avg_total_ms = current_snapshot_summary
         .avg_total_ms()
         .or(snapshot.summary.current_avg_total_ms);
+    snapshot.summary.current_avg_response_ms = current_snapshot_summary
+        .avg_response_duration_ms()
+        .or(snapshot.summary.current_avg_response_ms);
 
     if !include_accounts {
         return Ok(());
@@ -11591,9 +11822,13 @@ async fn overlay_dashboard_activity_live_accounts(
         account.current_first_response_byte_total_avg_ms = current_snapshot
             .first_response_byte_total_avg_ms()
             .or(account.current_first_response_byte_total_avg_ms);
+        account.current_first_token_avg_ms = current_snapshot.first_token_avg_ms();
         account.current_avg_total_ms = current_snapshot
             .avg_total_ms()
             .or(account.current_avg_total_ms);
+        account.current_avg_response_ms = current_snapshot
+            .avg_response_duration_ms()
+            .or(account.current_avg_response_ms);
         if let Some(refreshed_recent_invocations_by_account) =
             refreshed_recent_invocations_by_account.as_mut()
             && let Some(recent_invocations) =
@@ -12016,9 +12251,11 @@ pub(crate) fn build_dashboard_activity_summary(
         current_first_response_byte_total_avg_ms: current_snapshot
             .first_response_byte_total_avg_ms()
             .or(latest_first_response_byte_total_in_range),
+        current_first_token_avg_ms: current_snapshot.first_token_avg_ms(),
         current_avg_total_ms: current_snapshot
             .avg_total_ms()
             .or(latest_avg_total_in_range),
+        current_avg_response_ms: current_snapshot.avg_response_duration_ms(),
         model_performance,
     }
 }
@@ -12310,8 +12547,10 @@ pub(crate) async fn load_dashboard_activity_summary_only_snapshot(
             stats,
             tokens_per_minute: Some(current_snapshot.qualified_tokens.max(0) as f64),
             spend_rate: Some(current_snapshot.total_cost.max(0.0)),
+            current_first_token_avg_ms: current_snapshot.first_token_avg_ms(),
             current_first_response_byte_total_avg_ms,
             current_avg_total_ms,
+            current_avg_response_ms: current_snapshot.avg_response_duration_ms(),
             model_performance: ModelPerformanceAccumulator::default()
                 .into_response(range, model_performance_available),
         },
@@ -12553,11 +12792,15 @@ fn build_dashboard_activity_account_response(
                 aggregate.first_response_byte_total_sum_ms
                     / aggregate.first_response_byte_total_sample_count as f64,
             ),
+        first_token_avg_ms: (aggregate.first_token_sample_count > 0)
+            .then_some(aggregate.first_token_sum_ms / aggregate.first_token_sample_count as f64),
         avg_total_ms: (aggregate.total_latency_sample_count > 0).then_some(
             aggregate.total_latency_sum_ms / aggregate.total_latency_sample_count as f64,
         ),
         current_first_response_byte_total_avg_ms,
+        current_first_token_avg_ms: current_snapshot.first_token_avg_ms(),
         current_avg_total_ms,
+        current_avg_response_ms: current_snapshot.avg_response_duration_ms(),
         in_progress_invocation_count,
         in_progress_phase_counts,
         retry_invocation_count,
@@ -12705,6 +12948,8 @@ async fn load_dashboard_activity_account_build_result(
             entry.first_response_byte_total_sample_count +=
                 row.first_response_byte_total_sample_count;
             entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
+            entry.first_token_sample_count += row.first_token_sample_count;
+            entry.first_token_sum_ms += row.first_token_sum_ms;
             entry.total_latency_sample_count += row.total_latency_sample_count;
             entry.total_latency_sum_ms += row.total_latency_sum_ms;
             merge_latest_timed_metric(
@@ -12727,7 +12972,16 @@ async fn load_dashboard_activity_account_build_result(
                 skipped_materialized_ranges.clone(),
             )
             .await?;
-            if dashboard_activity_stats_totals_has_values(global_fallback_totals) {
+            let (global_first_token_count, global_first_token_sum_ms) =
+                dashboard_activity_materialized_archive_first_token_fallback_totals(
+                    state,
+                    source_scope,
+                    &skipped_materialized_ranges,
+                )
+                .await?;
+            if dashboard_activity_stats_totals_has_values(global_fallback_totals)
+                || global_first_token_count > 0
+            {
                 if builder_kind == DashboardActivityAccountBuilderKind::DashboardFull {
                     materialized_archive_details_limited = true;
                 }
@@ -12747,12 +13001,24 @@ async fn load_dashboard_activity_account_build_result(
                     global_fallback_totals,
                     account_fallback_sum,
                 );
-                if dashboard_activity_stats_totals_has_values(residual_fallback_totals) {
-                    account_fallback_totals.entry(None).or_default().add_assign(
-                        DashboardActivityAccountFallbackTotals::from_stats_totals(
-                            residual_fallback_totals,
-                        ),
+                let (residual_first_token_count, residual_first_token_sum_ms) =
+                    dashboard_activity_residual_first_token_totals(
+                        global_first_token_count,
+                        global_first_token_sum_ms,
+                        &account_fallback_totals,
                     );
+                if dashboard_activity_stats_totals_has_values(residual_fallback_totals)
+                    || residual_first_token_count > 0
+                {
+                    let mut residual = DashboardActivityAccountFallbackTotals::from_stats_totals(
+                        residual_fallback_totals,
+                    );
+                    residual.first_token_sample_count = residual_first_token_count;
+                    residual.first_token_sum_ms = residual_first_token_sum_ms;
+                    account_fallback_totals
+                        .entry(None)
+                        .or_default()
+                        .add_assign(residual);
                 }
                 for (upstream_account_id, totals) in account_fallback_totals {
                     dashboard_activity_merge_account_fallback_totals(
@@ -13195,9 +13461,12 @@ pub(crate) fn dashboard_account_to_upstream_account(
         spend_rate: account.spend_rate,
         first_byte_avg_ms: account.first_byte_avg_ms,
         first_response_byte_total_avg_ms: account.first_response_byte_total_avg_ms,
+        first_token_avg_ms: account.first_token_avg_ms,
         avg_total_ms: account.avg_total_ms,
+        current_first_token_avg_ms: account.current_first_token_avg_ms,
         current_first_response_byte_total_avg_ms: account.current_first_response_byte_total_avg_ms,
         current_avg_total_ms: account.current_avg_total_ms,
+        current_avg_response_ms: account.current_avg_response_ms,
         in_progress_invocation_count: account.in_progress_invocation_count,
         in_progress_phase_counts: account.in_progress_phase_counts,
         retry_invocation_count: account.retry_invocation_count,
@@ -14536,6 +14805,31 @@ mod model_performance_duration_override_tests {
         }
     }
 
+    #[test]
+    fn model_performance_keeps_ttft_only_model_after_post_token_failure() {
+        let mut accumulator = ModelPerformanceAccumulator::default();
+        accumulator.models.insert(
+            group("gpt-5.6-sol", None),
+            ModelPerformanceAccumulator {
+                first_token_sample_count: 1,
+                first_token_sum_ms: 420.0,
+                ..Default::default()
+            },
+        );
+
+        let response = accumulator.into_response(
+            ExactUtcRange {
+                start: utc_at(2026, 7, 26, 0, 0, 0),
+                end: utc_at(2026, 7, 26, 1, 0, 0),
+            },
+            true,
+        );
+
+        assert_eq!(response.models.len(), 1);
+        assert_eq!(response.models[0].model, "gpt-5.6-sol");
+        assert_eq!(response.models[0].metrics.avg_first_token_ms, Some(420.0));
+    }
+
     fn utc_at(
         year: i32,
         month: u32,
@@ -14958,6 +15252,7 @@ pub(crate) struct InvocationAggregateRecord {
     pub(crate) t_req_parse_ms: Option<f64>,
     pub(crate) t_upstream_connect_ms: Option<f64>,
     pub(crate) t_upstream_ttfb_ms: Option<f64>,
+    pub(crate) first_token_ms: Option<f64>,
     pub(crate) t_upstream_stream_ms: Option<f64>,
     pub(crate) t_resp_parse_ms: Option<f64>,
     pub(crate) t_persist_ms: Option<f64>,
@@ -15094,6 +15389,7 @@ mod invocation_cost_audit_tests {
             t_req_parse_ms: Some(8.0),
             t_upstream_connect_ms: Some(190.0),
             t_upstream_ttfb_ms: Some(330.0),
+            first_token_ms: None,
             t_upstream_stream_ms: Some(2_800.0),
             t_resp_parse_ms: Some(12.0),
             t_persist_ms: Some(6.0),

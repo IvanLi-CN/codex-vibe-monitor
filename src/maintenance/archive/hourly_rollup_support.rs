@@ -33,6 +33,10 @@ pub(crate) struct InvocationHourlyRollupDelta {
     pub(crate) first_response_byte_total_sum_ms: f64,
     pub(crate) first_response_byte_total_max_ms: f64,
     pub(crate) first_response_byte_total_histogram: ApproxHistogramCounts,
+    pub(crate) first_token_sample_count: i64,
+    pub(crate) first_token_sum_ms: f64,
+    pub(crate) first_token_max_ms: f64,
+    pub(crate) first_token_histogram: ApproxHistogramCounts,
 }
 
 #[derive(Debug, Default)]
@@ -91,6 +95,8 @@ pub(crate) struct UpstreamAccountUsageBreakdownHourlyDelta {
     pub(crate) performance_response_sum_ms: f64,
     pub(crate) performance_first_byte_sample_count: i64,
     pub(crate) performance_first_byte_sum_ms: f64,
+    pub(crate) performance_first_token_sample_count: i64,
+    pub(crate) performance_first_token_sum_ms: f64,
     pub(crate) performance_usage_duration_sample_count: i64,
     pub(crate) performance_usage_duration_sum_ms: f64,
 }
@@ -128,6 +134,10 @@ pub(crate) struct UpstreamAccountStatsDelta {
     pub(crate) first_response_byte_total_sum_ms: f64,
     pub(crate) first_response_byte_total_max_ms: f64,
     pub(crate) first_response_byte_total_histogram: ApproxHistogramCounts,
+    pub(crate) first_token_sample_count: i64,
+    pub(crate) first_token_sum_ms: f64,
+    pub(crate) first_token_max_ms: f64,
+    pub(crate) first_token_histogram: ApproxHistogramCounts,
 }
 
 #[derive(Debug, Default)]
@@ -225,6 +235,7 @@ pub(crate) fn accumulate_invocation_hourly_overall_rollups(
             .or_insert_with(|| InvocationHourlyRollupDelta {
                 first_byte_histogram: empty_approx_histogram(),
                 first_response_byte_total_histogram: empty_approx_histogram(),
+                first_token_histogram: empty_approx_histogram(),
                 ..InvocationHourlyRollupDelta::default()
             });
         overall_entry.total_count += 1;
@@ -290,6 +301,15 @@ pub(crate) fn accumulate_invocation_hourly_overall_rollups(
                 &mut overall_entry.first_response_byte_total_histogram,
                 first_response_byte_total_ms,
             );
+        }
+        if let Some(first_token_ms) = row
+            .first_token_ms
+            .filter(|value| value.is_finite() && *value >= 0.0)
+        {
+            overall_entry.first_token_sample_count += 1;
+            overall_entry.first_token_sum_ms += first_token_ms;
+            overall_entry.first_token_max_ms = overall_entry.first_token_max_ms.max(first_token_ms);
+            add_approx_histogram_sample(&mut overall_entry.first_token_histogram, first_token_ms);
         }
     }
 
@@ -380,6 +400,17 @@ pub(crate) fn accumulate_upstream_account_usage_breakdown_rollup(
     }
 
     let success_billed = is_success_like && row.cost.is_some();
+    if let Some(first_token_ms) = normalize_non_negative_timing_value(row.first_token_ms) {
+        entry.performance_first_token_sample_count += 1;
+        entry.performance_first_token_sum_ms += first_token_ms;
+    }
+    if is_success_like
+        && let Some(stream_duration_ms) =
+            normalize_non_negative_timing_value(row.t_upstream_stream_ms)
+    {
+        entry.performance_response_sample_count += 1;
+        entry.performance_response_sum_ms += stream_duration_ms;
+    }
     if success_billed {
         entry.performance_total_tokens += row.total_tokens.unwrap_or_default().max(0);
         if let Some(stream_duration_ms) =
@@ -387,8 +418,6 @@ pub(crate) fn accumulate_upstream_account_usage_breakdown_rollup(
         {
             entry.performance_stream_output_tokens += row.output_tokens.unwrap_or_default().max(0);
             entry.performance_stream_duration_ms += stream_duration_ms;
-            entry.performance_response_sample_count += 1;
-            entry.performance_response_sum_ms += stream_duration_ms;
         }
         if let Some(ttfb_ms) = row
             .t_upstream_ttfb_ms
@@ -564,6 +593,18 @@ fn accumulate_upstream_account_stats_delta_with_mode(
             entry.latest_first_response_byte_total_at = Some(row.occurred_at.clone());
             entry.latest_first_response_byte_total_ms = Some(first_response_byte_total_ms);
         }
+    }
+    if let Some(first_token_ms) = row
+        .first_token_ms
+        .filter(|value| value.is_finite() && *value >= 0.0)
+    {
+        if entry.first_token_histogram.is_empty() {
+            entry.first_token_histogram = empty_approx_histogram();
+        }
+        entry.first_token_sample_count += 1;
+        entry.first_token_sum_ms += first_token_ms;
+        entry.first_token_max_ms = entry.first_token_max_ms.max(first_token_ms);
+        add_approx_histogram_sample(&mut entry.first_token_histogram, first_token_ms);
     }
     if is_success_like
         && let Some(total_ms) = normalize_non_negative_timing_value(row.t_total_ms)

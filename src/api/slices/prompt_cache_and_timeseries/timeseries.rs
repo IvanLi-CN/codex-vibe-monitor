@@ -125,6 +125,7 @@ pub(crate) async fn fetch_timeseries(
             record.t_upstream_connect_ms,
             record.t_upstream_ttfb_ms,
         );
+        entry.record_first_token_sample(record.first_token_ms);
         entry.total_tokens += record.total_tokens.unwrap_or(0);
         entry.cache_input_tokens += record.cache_input_tokens.unwrap_or(0);
         let cost = record.cost.unwrap_or(0.0);
@@ -409,6 +410,18 @@ pub(crate) async fn fetch_timeseries_for_account(
                         )?;
                         merged
                     };
+                entry.first_token_sample_count += row.first_token_sample_count;
+                entry.first_token_sum_ms += row.first_token_sum_ms;
+                entry.first_token_histogram = if entry.first_token_histogram.is_empty() {
+                    decode_approx_histogram(&row.first_token_histogram)
+                } else {
+                    let mut merged = entry.first_token_histogram.clone();
+                    merge_approx_histogram_into(
+                        &mut merged,
+                        &decode_approx_histogram(&row.first_token_histogram),
+                    )?;
+                    merged
+                };
             }
         }
     }
@@ -483,6 +496,18 @@ pub(crate) fn add_rollup_rows_to_timeseries_aggregates(
                     )?;
                     merged
                 };
+            entry.first_token_sample_count += row.first_token_sample_count;
+            entry.first_token_sum_ms += row.first_token_sum_ms;
+            entry.first_token_histogram = if entry.first_token_histogram.is_empty() {
+                decode_approx_histogram(&row.first_token_histogram)
+            } else {
+                let mut merged = entry.first_token_histogram.clone();
+                merge_approx_histogram_into(
+                    &mut merged,
+                    &decode_approx_histogram(&row.first_token_histogram),
+                )?;
+                merged
+            };
         }
     }
     Ok(())
@@ -551,6 +576,7 @@ pub(crate) fn add_exact_record_to_timeseries_aggregate(
         record.t_upstream_connect_ms,
         record.t_upstream_ttfb_ms,
     );
+    entry.record_first_token_sample(record.first_token_ms);
     entry.total_tokens += record.total_tokens.unwrap_or_default();
     entry.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
     let cost = record.cost.unwrap_or_default();
@@ -591,6 +617,7 @@ pub(crate) fn subtract_stale_in_flight_record_from_timeseries_aggregate(
         record.t_upstream_connect_ms,
         record.t_upstream_ttfb_ms,
     );
+    entry.remove_exact_first_token_sample(record.first_token_ms);
 }
 
 pub(crate) fn overlay_runtime_timeseries_in_flight(
@@ -689,6 +716,7 @@ pub(crate) fn overlay_runtime_timeseries_in_flight(
             record.t_upstream_connect_ms,
             record.t_upstream_ttfb_ms,
         );
+        entry.record_first_token_sample(record.first_token_ms);
         entry.total_tokens += record.total_tokens.unwrap_or_default();
         entry.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
         entry.total_cost += record.cost.unwrap_or_default();
@@ -785,6 +813,13 @@ pub(crate) fn timeseries_point_from_aggregate(
         first_response_byte_total_p95_ms: has_calls
             .then(|| agg.first_response_byte_total_p95_ms())
             .flatten(),
+        first_token_sample_count: if has_calls {
+            agg.first_token_sample_count
+        } else {
+            0
+        },
+        first_token_avg_ms: has_calls.then(|| agg.first_token_avg_ms()).flatten(),
+        first_token_p95_ms: has_calls.then(|| agg.first_token_p95_ms()).flatten(),
     }
 }
 
@@ -1245,6 +1280,18 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
                 )?;
                 merged
             };
+        entry.first_token_sample_count += row.first_token_sample_count;
+        entry.first_token_sum_ms += row.first_token_sum_ms;
+        entry.first_token_histogram = if entry.first_token_histogram.is_empty() {
+            decode_approx_histogram(&row.first_token_histogram)
+        } else {
+            let mut merged = entry.first_token_histogram.clone();
+            merge_approx_histogram_into(
+                &mut merged,
+                &decode_approx_histogram(&row.first_token_histogram),
+            )?;
+            merged
+        };
     }
     let db_runtime_records = collect_in_flight_aggregate_records(&exact_records);
     for record in exact_records {
@@ -1291,6 +1338,7 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
                 record.t_upstream_connect_ms,
                 record.t_upstream_ttfb_ms,
             );
+            entry.record_first_token_sample(record.first_token_ms);
             entry.total_tokens += record.total_tokens.unwrap_or_default();
             entry.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
             let cost = record.cost.unwrap_or_default();
@@ -1472,6 +1520,10 @@ mod tests {
                 first_response_byte_total_max_ms: 900.0,
                 first_response_byte_total_histogram: encode_approx_histogram(&[0, 1])
                     .expect("histogram"),
+                first_token_sample_count: 0,
+                first_token_sum_ms: 0.0,
+                first_token_max_ms: 0.0,
+                first_token_histogram: encode_approx_histogram(&[]).expect("histogram"),
             }],
             3_600,
             chrono_tz::Asia::Shanghai,

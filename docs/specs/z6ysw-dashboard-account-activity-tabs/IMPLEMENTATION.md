@@ -33,7 +33,7 @@
 - 已实现：identity chip 的离散槽位改为基于完整稳定 hash 做高低位混合后再映射，修正真实线上数据因低位 `% 8` 偏置导致的短码成片撞色问题。
 - 已实现：上游账号 recent 行不再重复显示账号名；当 `requestModel` / `responseModel` 规范化后仍不一致时，recent 行改为同时展示请求模型、切换图标与响应模型。
 - 已实现：上游账号 recent 行的 endpoint、reasoning effort 与双模型 badge 统一复用 compact 尺寸 recipe，消除同一行内 badge 高度不一致问题。
-- 已实现：上游账号卡片标题区改为账号名 + 文本型实时 `TPM / 消费速率` 指标，删除卡内 `渠道 / 分组` 行和顶部 `调用` 指标；周期统计重排为首字用时、请求数、成本、Token 四组，并沿用滚动数字效果。
+- 已实现：上游账号卡片标题区改为账号名 + 文本型实时 `TPM / 消费速率` 指标，删除卡内 `渠道 / 分组` 行和顶部 `调用` 指标；周期统计重排为 TTFT、请求数、成本、Token 四组，并沿用滚动数字效果。
 - 已实现：上游账号卡片标题区补充文本型实时 `进行中调用` 指标，取账号活动接口的 `inProgressInvocationCount`，并与 `TPM / 消费速率` 保持同一行内读数语言；Dashboard 账号活动接口不再返回 `activeConversationCount`。
 - 已实现：运行中调用统一拆为 `queued / requesting / responding` 三阶段；`StatsResponse`、账号活动接口与 invocation preview 暴露 `inProgressPhaseCounts` / `livePhase`，Dashboard 上游账号卡标题区与 recent bridge 均读取账号级 live 统计，不再从卡内 recent 列表推导运行态数量。
 - 已实现：上游账号卡片四组周期统计改为整张统计卡触发结构化 tooltip；浮层按主值、当前字段、相关数据分层展示字段名和值，并关闭卡内分解段落的逐段 tooltip，避免嵌套触发区域。
@@ -47,10 +47,10 @@
 - 已实现：Dashboard 上游账号卡标题区不再渲染本地 `#<upstreamAccountId>` 编号；标题区保留账号名、异常/注意状态 badge、快捷策略 chip、实时指标与齿轮路由入口，避免把内部主键暴露成主要扫描元素。
 - 已实现：账号活动接口补出 `avgTotalMs`、`totalCost`、严格失败 `failureCost` 与 `failureTokens`；请求组的非成功率由前端按 `nonSuccessCount / requestCount` 计算，成本组的失败成本比率由前端按 `failureCost / totalCost` 计算，`其他` 按 `nonSuccessCount - failureCount` 下限归零。
 - 已实现：Dashboard 活动快照的 summary/account 实时 `tokensPerMinute` / `spendRate` 已统一改为后端 `rolling_60s_live_mean`；后端通过共享 runtime cache 维护最近 60 秒窗口，窗口无合格流量时显式返回 `TPM=0`、`消费速率=0`。
-- 已实现：Dashboard 活动快照的 `currentFirstResponseByteTotalAvgMs` 与 `currentAvgTotalMs` 已改为“rolling 60s 优先，否则当前 range 最近有效结果回退”语义；summary 字段保留原 wire name，账号数组新增同名当前态延迟字段，账号主卡直接消费当前态字段而不再把范围均值冒充实时值。
+- 已实现：Dashboard 活动快照的旧 `currentFirstResponseByteTotalAvgMs` 与 `currentAvgTotalMs` 保留“rolling 60s 优先，否则当前 range 最近有效结果回退”兼容语义；`#6qe6u` 新增的 `currentFirstTokenAvgMs` 严格只反映 rolling 60s 真实首 Token 样本，空窗返回 `null`，账号主卡不再用范围值、TTFB 或累计首字节冒充实时 TTFT。
 - 已实现：账号活动 live rows、账号卡 `inProgressInvocationCount` 与 account-scoped summary 对 pool running 调用使用同 `invokeId` 的 pool attempt 账号作为 fallback，避免已选账号但 payload 尚未写入 `upstreamAccountId` 时形成未归属 running 行。
 - 已实现：账号卡列表按 `totalTokens` 倒序排列，并用最近调用时间与账号 ID 作稳定排序兜底。
-- 已实现：账号卡“首字用时”从阶段级 `t_upstream_ttfb_ms` 纠偏为 owner-facing 的首字总耗时口径；后端聚合现在复用 `resolve_first_response_byte_total_ms(...)`，并额外暴露显式 `firstResponseByteTotalAvgMs` 供前端优先消费，避免真实秒级总耗时被渲染成 `0ms`。
+- 已由 `#6qe6u` 替换：账号卡 TTFT 改读真实 `firstTokenAvgMs` / `currentFirstTokenAvgMs`；旧 `firstResponseByteTotalAvgMs` 仅保留兼容读取并退出 owner-facing TTFT，`t_upstream_ttfb_ms` 只作为 `TTFB / 上游首字节` 网络诊断。
 - 已实现：工作区 `对话` tab 当前 5 分钟 working-set 的 head/count 改读 write-side `prompt_cache_working_set_live`，并为 mixed-source key 保留 `All / ProxyOnly` 两套聚合列，避免换源后 `ProxyOnly` 视角丢 key 或排序漂移。
 - 已实现：工作区 `对话` tab 的 snapshot count/page 也收口到同一份 live working-set truth，不再通过 `WITH recent_terminal` 对 `codex_invocations` 做严格历史重算。公开字段、cursor 形态、recent preview 与主排序语义保持不变，但 snapshot membership 明确接受 `<=5s` bounded freshness。
 - 已实现：Dashboard 工作区 `对话` 当前/最近调用错误摘要与 `上游账号` recent 行错误摘要统一接入共享 `InvocationErrorSummary`；inline 文案固定单行省略并保持 `min-w-0` 布局约束，完整错误只通过现有 UI tooltip 在 hover / focus / long-press 时披露，不再依赖原生 `title`。
