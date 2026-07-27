@@ -8253,19 +8253,35 @@ impl ModelPerformanceAccumulator {
     }
 
     fn add_terminal_record_values(&mut self, record: &ApiInvocation) {
-        self.total_tokens += record.total_tokens.unwrap_or_default().max(0);
-        if let Some(stream_duration_ms) = record
-            .t_upstream_stream_ms
-            .filter(|value| value.is_finite() && *value >= 0.0)
+        let classification = resolve_failure_classification(
+            record.status.as_deref(),
+            record.error_message.as_deref(),
+            record.failure_kind.as_deref(),
+            record.failure_class.as_deref(),
+            record.is_actionable.map(i64::from),
+        );
+        let success_like = runtime_record_is_success_for_summary(record)
+            && classification.failure_class == FailureClass::None;
+        let success_billed = success_like && record.cost.is_some();
+        if success_billed {
+            self.total_tokens += record.total_tokens.unwrap_or_default().max(0);
+        }
+        if let Some(stream_duration_ms) = success_like
+            .then_some(record.t_upstream_stream_ms)
+            .flatten()
+            .filter(|value| value.is_finite() && *value > 0.0)
         {
-            self.stream_output_tokens += record.output_tokens.unwrap_or_default().max(0);
-            self.stream_duration_ms += stream_duration_ms;
+            if success_billed {
+                self.stream_output_tokens += record.output_tokens.unwrap_or_default().max(0);
+                self.stream_duration_ms += stream_duration_ms;
+            }
             self.response_sample_count += 1;
             self.response_sum_ms += stream_duration_ms;
         }
-        if record
-            .t_upstream_ttfb_ms
-            .is_some_and(|value| value.is_finite() && value > 0.0)
+        if success_billed
+            && record
+                .t_upstream_ttfb_ms
+                .is_some_and(|value| value.is_finite() && value > 0.0)
             && let Some(first_response_byte_total_ms) =
                 crate::stats::resolve_first_response_byte_total_ms(
                     record.t_req_read_ms,
@@ -8284,9 +8300,10 @@ impl ModelPerformanceAccumulator {
             self.first_token_sample_count += 1;
             self.first_token_sum_ms += first_token_ms;
         }
-        if let Some(total_ms) = record
-            .t_total_ms
-            .filter(|value| value.is_finite() && *value >= 0.0)
+        if success_billed
+            && let Some(total_ms) = record
+                .t_total_ms
+                .filter(|value| value.is_finite() && *value >= 0.0)
         {
             self.cumulative_usage_duration_sample_count += 1;
             self.cumulative_usage_duration_sum_ms += total_ms;
@@ -10063,20 +10080,20 @@ async fn query_live_upstream_account_activity_existing_invocation_ids(
     Ok(existing_ids)
 }
 
-async fn query_live_dashboard_activity_persisted_terminal_keys(
+async fn query_live_dashboard_activity_persisted_terminal_ids(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     keys: &[(String, String)],
-) -> Result<HashSet<(String, String)>, ApiError> {
+) -> Result<HashMap<(String, String), i64>, ApiError> {
     if keys.is_empty() {
-        return Ok(HashSet::new());
+        return Ok(HashMap::new());
     }
 
     const KEY_CHUNK_SIZE: usize = 250;
-    let mut persisted = HashSet::new();
+    let mut persisted = HashMap::new();
     for chunk in keys.chunks(KEY_CHUNK_SIZE) {
         let mut query = QueryBuilder::<Sqlite>::new(
-            "SELECT invoke_id, occurred_at FROM codex_invocations WHERE (",
+            "SELECT id, invoke_id, occurred_at FROM codex_invocations WHERE (",
         );
         {
             let mut predicates = query.separated(" OR ");
@@ -10096,9 +10113,11 @@ async fn query_live_dashboard_activity_persisted_terminal_keys(
         query.push(" AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')");
         persisted.extend(
             query
-                .build_query_as::<(String, String)>()
+                .build_query_as::<(i64, String, String)>()
                 .fetch_all(pool)
-                .await?,
+                .await?
+                .into_iter()
+                .map(|(id, invoke_id, occurred_at)| ((invoke_id, occurred_at), id)),
         );
     }
     Ok(persisted)
@@ -11379,6 +11398,13 @@ fn dashboard_activity_selection_source_scope(
     }
 }
 
+fn dashboard_activity_entry_includes_terminal(
+    entry: &DashboardActivitySnapshotCacheEntry,
+    record: &ApiInvocation,
+) -> bool {
+    record.id > 0 && record.id <= entry.baseline_snapshot_cursor
+}
+
 fn dashboard_activity_terminal_costs(record: &ApiInvocation) -> Option<UsageCostBreakdownResponse> {
     record.cost.map(|total_cost| {
         if let (Some(input), Some(cache_write), Some(cache_read), Some(output), Some(reasoning)) = (
@@ -11583,7 +11609,6 @@ fn apply_dashboard_activity_terminal_delta(
         FailureClass::ServiceFailure | FailureClass::ClientFailure | FailureClass::ClientAbort
     );
     let non_success = !success;
-    let performance_qualified = success && record.cost.is_some();
     let total_tokens = record.total_tokens.unwrap_or_default().max(0);
     let total_cost = record.cost.unwrap_or_default().max(0.0);
 
@@ -11610,7 +11635,7 @@ fn apply_dashboard_activity_terminal_delta(
         start: snapshot.range_start,
         end: snapshot.range_end,
     };
-    if performance_qualified && snapshot.model_performance_accumulator_ready {
+    if snapshot.model_performance_accumulator_ready {
         snapshot
             .summary_model_performance_accumulator
             .add_terminal_record(record);
@@ -11727,6 +11752,9 @@ pub(crate) async fn apply_dashboard_activity_terminal_record(
             outcome.skipped_out_of_range_count += 1;
             continue;
         }
+        if dashboard_activity_entry_includes_terminal(entry, record) {
+            continue;
+        }
         apply_dashboard_activity_terminal_delta(&mut entry.response, record);
         outcome.applied_selection_count += 1;
     }
@@ -11746,6 +11774,24 @@ pub(crate) async fn apply_dashboard_activity_terminal_record(
         cache.read_model.pending_terminal_overflow_count += 1;
     }
     outcome
+}
+
+/// The write-side delta is registered before an asynchronous SQLite enqueue. If the queue
+/// rejects that enqueue, discard the speculative delta and force future reads to rebuild from
+/// persisted state rather than attempting an unsafe inverse for every aggregate field.
+pub(crate) async fn rollback_dashboard_activity_terminal_record(
+    state: &AppState,
+    record: &ApiInvocation,
+) {
+    let key = (record.invoke_id.clone(), record.occurred_at.clone());
+    let mut cache = state.dashboard_activity_snapshot_cache.lock().await;
+    cache.read_model.applied_terminal_keys.remove(&key);
+    cache
+        .read_model
+        .pending_terminal_records
+        .retain(|pending| (pending.invoke_id.clone(), pending.occurred_at.clone()) != key);
+    cache.entries.clear();
+    cache.invalidation_reasons.clear();
 }
 
 impl Default for DashboardActivityBuildTelemetry {
@@ -14306,6 +14352,8 @@ async fn load_dashboard_activity_snapshot_cached(
     loop {
         let mut wait_on: Option<tokio::sync::watch::Receiver<bool>> = None;
         let mut flight_guard: Option<DashboardActivitySnapshotFlightGuard> = None;
+        let mut terminal_delta_count_before_build = 0_u64;
+        let mut pending_terminal_keys_before_build = Vec::new();
         {
             let mut cache = state.dashboard_activity_snapshot_cache.lock().await;
             saw_expired_entry |= cache
@@ -14320,7 +14368,7 @@ async fn load_dashboard_activity_snapshot_cached(
             let terminal_delta_count = cache.read_model.terminal_delta_count;
             let duplicate_delta_count = cache.read_model.duplicate_delta_count;
             if let Some(entry) = cache.entries.get(&selection)
-                && entry.cached_at.elapsed() <= cache_ttl
+                && entry.last_reconcile_attempted_at.elapsed() <= cache_ttl
             {
                 let cache_entry_age_ms = entry.cached_at.elapsed().as_millis() as u64;
                 return Ok((
@@ -14351,6 +14399,21 @@ async fn load_dashboard_activity_snapshot_cached(
                 max_waiter_count = max_waiter_count.max(in_flight.waiter_count);
                 wait_on = Some(in_flight.signal.subscribe());
             } else {
+                terminal_delta_count_before_build = cache.read_model.terminal_delta_count;
+                pending_terminal_keys_before_build = cache
+                    .read_model
+                    .pending_terminal_records
+                    .iter()
+                    .filter_map(|record| {
+                        let occurred_at = parse_to_utc_datetime(&record.occurred_at)?;
+                        dashboard_activity_selection_includes_terminal(
+                            &selection,
+                            record,
+                            occurred_at,
+                        )
+                        .then_some((record.invoke_id.clone(), record.occurred_at.clone()))
+                    })
+                    .collect();
                 let (signal, _receiver) = tokio::sync::watch::channel(false);
                 cache.in_flight.insert(
                     selection.clone(),
@@ -14374,26 +14437,37 @@ async fn load_dashboard_activity_snapshot_cached(
             continue;
         }
 
-        let snapshot_cursor_before_build =
-            query_live_dashboard_activity_snapshot_cursor(&state.pool).await?;
         let build_started_at = Instant::now();
-        let mut result = load_dashboard_activity_snapshot_for_range(
-            state,
-            range_name,
-            reporting_tz,
-            range,
-            recent_limit,
-            include_accounts,
-            include_recent,
-            in_progress_counts_override.clone(),
-        )
-        .await;
-        let snapshot_cursor_after_build = if result.is_ok() {
-            query_live_dashboard_activity_snapshot_cursor(&state.pool).await?
+        let (snapshot_cursor_before_build, persisted_terminal_ids_before_build, probe_error) =
+            match query_live_dashboard_activity_snapshot_cursor(&state.pool).await {
+                Ok(snapshot_cursor) => match query_live_dashboard_activity_persisted_terminal_ids(
+                    &state.pool,
+                    dashboard_activity_selection_source_scope(&selection),
+                    &pending_terminal_keys_before_build,
+                )
+                .await
+                {
+                    Ok(persisted_terminal_ids) => (snapshot_cursor, persisted_terminal_ids, None),
+                    Err(err) => (snapshot_cursor, HashMap::new(), Some(err)),
+                },
+                Err(err) => (0, HashMap::new(), Some(err)),
+            };
+        let mut result = if let Some(err) = probe_error {
+            Err(err)
         } else {
-            snapshot_cursor_before_build
+            load_dashboard_activity_snapshot_for_range(
+                state,
+                range_name,
+                reporting_tz,
+                range,
+                recent_limit,
+                include_accounts,
+                include_recent,
+                in_progress_counts_override.clone(),
+            )
+            .await
         };
-        let pending_keys_after_build = {
+        let pending_terminal_keys_after_build = {
             let cache = state.dashboard_activity_snapshot_cache.lock().await;
             cache
                 .read_model
@@ -14406,15 +14480,25 @@ async fn load_dashboard_activity_snapshot_cached(
                 })
                 .collect::<HashSet<_>>()
         };
-        let persisted_terminal_keys_after_build = if result.is_ok() {
-            query_live_dashboard_activity_persisted_terminal_keys(
+        let persisted_terminal_ids_after_build = if result.is_ok() {
+            match query_live_dashboard_activity_persisted_terminal_ids(
                 &state.pool,
                 dashboard_activity_selection_source_scope(&selection),
-                &pending_keys_after_build.iter().cloned().collect::<Vec<_>>(),
+                &pending_terminal_keys_after_build
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>(),
             )
-            .await?
+            .await
+            {
+                Ok(persisted_terminal_ids) => persisted_terminal_ids,
+                Err(err) => {
+                    result = Err(err);
+                    HashMap::new()
+                }
+            }
         } else {
-            HashSet::new()
+            HashMap::new()
         };
         let db_build_elapsed_ms = build_started_at.elapsed().as_millis() as u64;
 
@@ -14433,9 +14517,20 @@ async fn load_dashboard_activity_snapshot_cached(
             guard.disarm();
         }
         let coalesced_waiter_count = in_flight.as_ref().map_or(0, |flight| flight.waiter_count);
-        let snapshot_cursor_advanced = snapshot_cursor_before_build != snapshot_cursor_after_build;
-        if snapshot_cursor_advanced {
-            if let Some(entry) = cache.entries.get(&selection) {
+        let pending_terminal_keys_before_build = pending_terminal_keys_before_build
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let relevant_terminal_persisted_during_build =
+            pending_terminal_keys_after_build.iter().any(|key| {
+                !persisted_terminal_ids_before_build.contains_key(key)
+                    && persisted_terminal_ids_after_build.contains_key(key)
+            });
+        if relevant_terminal_persisted_during_build {
+            if let Some(entry) = cache.entries.get_mut(&selection) {
+                // The write-side delta has already been applied to this last-good entry. Renew
+                // its reconciliation budget so sustained terminal traffic does not repeatedly
+                // rebuild the same full range while preserving the current in-memory totals.
+                entry.last_reconcile_attempted_at = Instant::now();
                 let cache_entry_age_ms = entry.cached_at.elapsed().as_millis() as u64;
                 let snapshot = entry.response.clone();
                 if let Some(in_flight) = in_flight {
@@ -14444,22 +14539,27 @@ async fn load_dashboard_activity_snapshot_cached(
                 tracing::debug!(
                     selection_fingerprint,
                     snapshot_cursor_before_build,
-                    snapshot_cursor_after_build,
+                    terminal_delta_count_before_build,
+                    terminal_delta_count_after_build = cache.read_model.terminal_delta_count,
+                    pending_terminal_key_count_before_build =
+                        pending_terminal_keys_before_build.len(),
+                    pending_terminal_key_count_after_build =
+                        pending_terminal_keys_after_build.len(),
                     cache_entry_age_ms,
-                    "dashboard activity reconciliation observed a live-write cursor advance; retained last-good snapshot"
+                    "dashboard activity reconciliation observed a concurrent terminal write; retained last-good snapshot"
                 );
                 return Ok((
                     snapshot,
                     DashboardActivitySnapshotCacheOutcome {
                         cache_hit_or_miss: "last_good_fallback",
-                        cache_bypass_reason: "reconcile_cursor_advanced",
+                        cache_bypass_reason: "reconcile_write_advanced",
                         coalesced_waiter_count,
                         db_build_elapsed_ms,
                         cache_ttl_ms,
                         cache_entry_age_ms,
                         cache_entry_count: cache.entries.len(),
                         in_flight_count: cache.in_flight.len(),
-                        refresh_reason: "reconcile_cursor_advanced",
+                        refresh_reason: "reconcile_write_advanced",
                         selection_fingerprint,
                         terminal_delta_count: cache.read_model.terminal_delta_count,
                         duplicate_delta_count: cache.read_model.duplicate_delta_count,
@@ -14481,7 +14581,7 @@ async fn load_dashboard_activity_snapshot_cached(
                 if dashboard_activity_selection_includes_terminal(&selection, &record, occurred_at)
                 {
                     let key = (record.invoke_id.clone(), record.occurred_at.clone());
-                    if persisted_terminal_keys_after_build.contains(&key) {
+                    if persisted_terminal_ids_before_build.contains_key(&key) {
                         continue;
                     }
                     apply_dashboard_activity_terminal_delta(snapshot, &record);
@@ -14498,6 +14598,8 @@ async fn load_dashboard_activity_snapshot_cached(
                     selection.clone(),
                     DashboardActivitySnapshotCacheEntry {
                         cached_at: Instant::now(),
+                        last_reconcile_attempted_at: Instant::now(),
+                        baseline_snapshot_cursor: snapshot_cursor_before_build,
                         response: snapshot.clone(),
                     },
                 );
@@ -16495,6 +16597,42 @@ mod dashboard_activity_read_model_tests {
             Some(3_450.0)
         );
         assert_eq!(account.model_performance.models.len(), 1);
+    }
+
+    #[test]
+    fn terminal_delta_model_performance_matches_sql_qualification() {
+        let mut accumulator = ModelPerformanceAccumulator::default();
+        let mut record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        record.cost = None;
+        record.first_token_ms = Some(91.0);
+
+        accumulator.add_terminal_record(&record);
+
+        assert_eq!(accumulator.total_tokens, 0);
+        assert_eq!(accumulator.stream_output_tokens, 0);
+        assert_eq!(accumulator.stream_duration_ms, 0.0);
+        assert_eq!(accumulator.response_sample_count, 1);
+        assert_eq!(accumulator.response_sum_ms, 2_800.0);
+        assert_eq!(accumulator.first_byte_sample_count, 0);
+        assert_eq!(accumulator.first_token_sample_count, 1);
+        assert_eq!(accumulator.first_token_sum_ms, 91.0);
+        assert_eq!(accumulator.cumulative_usage_duration_sample_count, 0);
+    }
+
+    #[test]
+    fn persisted_terminal_is_not_applied_again_to_covered_baseline() {
+        let mut record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        record.id = 42;
+        let entry = DashboardActivitySnapshotCacheEntry {
+            cached_at: Instant::now(),
+            last_reconcile_attempted_at: Instant::now(),
+            baseline_snapshot_cursor: 42,
+            response: DashboardActivitySnapshot::test_stub("7d"),
+        };
+
+        assert!(dashboard_activity_entry_includes_terminal(&entry, &record));
+        record.id = 43;
+        assert!(!dashboard_activity_entry_includes_terminal(&entry, &record));
     }
 }
 

@@ -3909,6 +3909,8 @@ mod tests {
                 selection_a.clone(),
                 DashboardActivitySnapshotCacheEntry {
                     cached_at: Instant::now(),
+                    last_reconcile_attempted_at: Instant::now(),
+                    baseline_snapshot_cursor: 0,
                     response: DashboardActivitySnapshot::test_stub("today"),
                 },
             );
@@ -3916,6 +3918,8 @@ mod tests {
                 selection_b.clone(),
                 DashboardActivitySnapshotCacheEntry {
                     cached_at: Instant::now(),
+                    last_reconcile_attempted_at: Instant::now(),
+                    baseline_snapshot_cursor: 0,
                     response: DashboardActivitySnapshot::test_stub("7d"),
                 },
             );

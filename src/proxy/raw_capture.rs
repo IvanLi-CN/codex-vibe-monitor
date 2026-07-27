@@ -906,6 +906,15 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
         );
         return Ok(());
     }
+    let delta = apply_dashboard_activity_terminal_record(state, &inserted_record).await;
+    debug!(
+        invoke_id = %invoke_id,
+        terminal_delta_applied_selection_count = delta.applied_selection_count,
+        terminal_delta_duplicate = delta.duplicate,
+        terminal_delta_skipped_out_of_range_count = delta.skipped_out_of_range_count,
+        response_source = "memory",
+        "registered raw terminal record in dashboard activity read model before sqlite enqueue"
+    );
     let terminal_enqueued =
         state
             .sqlite_batch_writer
@@ -917,6 +926,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
                 },
             ));
     if !terminal_enqueued {
+        rollback_dashboard_activity_terminal_record(state, &inserted_record).await;
         let terminal_tombstone_cleared = state
             .proxy_runtime_invocations
             .clear_terminal_tombstone(&inserted_record.invoke_id, &inserted_record.occurred_at);
@@ -944,17 +954,6 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             .sqlite_batch_writer
             .flush_buffered_for_test(&state.pool)
             .await;
-    }
-    if terminal_enqueued {
-        let delta = apply_dashboard_activity_terminal_record(state, &inserted_record).await;
-        debug!(
-            invoke_id = %invoke_id,
-            terminal_delta_applied_selection_count = delta.applied_selection_count,
-            terminal_delta_duplicate = delta.duplicate,
-            terminal_delta_skipped_out_of_range_count = delta.skipped_out_of_range_count,
-            response_source = "memory",
-            "applied raw terminal record to dashboard activity read model"
-        );
     }
     if state.broadcaster.receiver_count() > 0
         && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {

@@ -1180,6 +1180,12 @@ pub(crate) fn dashboard_activity_selection_fingerprint(
 #[derive(Debug, Clone)]
 pub(crate) struct DashboardActivitySnapshotCacheEntry {
     pub(crate) cached_at: Instant,
+    /// Controls the next reconciliation attempt independently from the DB baseline age.
+    pub(crate) last_reconcile_attempted_at: Instant,
+    /// The live invocation cursor observed immediately before the DB baseline build. The entry
+    /// is accepted only when that cursor stays stable for the build, so persisted terminal
+    /// records at or below it are already represented by the baseline.
+    pub(crate) baseline_snapshot_cursor: i64,
     pub(crate) response: DashboardActivitySnapshot,
 }
 
