@@ -3288,7 +3288,8 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             let final_error = build_pool_total_timeout_exhausted_error(
                                 total_timeout,
                                 Some(PoolUpstreamError {
-                                    codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
+                                    codex_imagegen_rewrite: attempted_codex_imagegen_rewrite
+                                        .clone(),
                                     account: Some(account.clone()),
                                     status: StatusCode::BAD_GATEWAY,
                                     message: message.clone(),
@@ -3554,6 +3555,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             &mut last_error,
                             &mut preserve_sticky_owner_terminal_error,
                             PoolUpstreamError {
+                                codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
                                 account: Some(account.clone()),
                                 status,
                                 message: message.clone(),
@@ -3582,6 +3584,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 request_body_for_capture: attempted_request_body_for_capture
                                     .clone(),
                             },
+                            attempted_codex_imagegen_rewrite.as_ref(),
                         );
                         exhausted_accounts_all_rate_limited = false;
                         overload_required_upstream_route_key = Some(upstream_route_key.clone());
