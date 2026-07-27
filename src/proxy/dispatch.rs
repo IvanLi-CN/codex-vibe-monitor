@@ -440,8 +440,10 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
     terminal_attempt_summary: Option<&PoolAttemptSummary>,
     terminal_account: Option<&PoolResolvedAccount>,
     terminal_connect_latency_ms: Option<f64>,
+    response_envelope_override: Option<ProxyErrorResponseEnvelope>,
 ) -> bool {
-    let response_envelope = build_local_capture_error_envelope(invoke_id, status, error_message);
+    let response_envelope = response_envelope_override
+        .unwrap_or_else(|| build_local_capture_error_envelope(invoke_id, status, error_message));
     let req_raw = spawn_raw_payload_file_write(
         state,
         invoke_id,
@@ -1099,6 +1101,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await;
                 if terminal_invocation_persisted {
@@ -1142,6 +1145,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     status,
                     PROXY_FAILURE_POOL_ROUTING_BLOCKED,
                     &message,
+                    None,
                     None,
                     None,
                     None,

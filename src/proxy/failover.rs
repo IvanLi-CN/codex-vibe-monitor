@@ -468,11 +468,21 @@ async fn persist_pool_failover_terminal_invocation(
     let request_chain_metadata = request_chain_metadata_from_headers(headers);
     let client_attribution_context = client_prompt_cache_attribution_context_from_headers(headers);
     let request_body = error.request_body_for_capture.clone().unwrap_or_default();
-    let response_body_logging_enabled = state
+    let request_body_logging_enabled = state
         .proxy_model_settings
         .read()
         .await
-        .response_body_logging_enabled;
+        .request_body_logging_enabled;
+    let downstream_error = ProxyErrorResponse {
+        status: error.status,
+        message: error.message.clone(),
+        cvm_id: None,
+        retry_after_secs: retry_after_secs_for_proxy_error(error.status, &error.message),
+        code: Some(error.failure_kind.to_string()),
+        blocked_binding: error.blocked_binding.clone(),
+    };
+    let response_envelope =
+        build_proxy_error_response_envelope(&downstream_error, &trace.invoke_id);
     let _ = persist_pre_attempt_proxy_capture_error(
         state,
         proxy_request_id,
@@ -487,7 +497,7 @@ async fn persist_pool_failover_terminal_invocation(
         prompt_cache_key,
         &client_attribution_context,
         request_body,
-        response_body_logging_enabled,
+        request_body_logging_enabled,
         runtime_snapshot_context
             .map(|context| context.t_req_read_ms)
             .unwrap_or_default(),
@@ -500,6 +510,7 @@ async fn persist_pool_failover_terminal_invocation(
         Some(&error.attempt_summary),
         error.account.as_ref(),
         Some(error.connect_latency_ms),
+        Some(response_envelope),
     )
     .await;
 }
