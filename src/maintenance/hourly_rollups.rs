@@ -2083,6 +2083,10 @@ pub(crate) async fn sweep_orphan_proxy_raw_files(
             SELECT response_raw_path AS path
             FROM codex_invocations
             WHERE response_raw_path IS NOT NULL
+            UNION
+            SELECT response_raw_path AS path
+            FROM pool_upstream_request_attempts
+            WHERE response_raw_path IS NOT NULL
         )
         WHERE path IS NOT NULL
         "#,

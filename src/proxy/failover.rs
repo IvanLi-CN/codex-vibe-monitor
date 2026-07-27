@@ -422,7 +422,9 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
         same_account_attempts,
     )
     .await;
-    if let Err(error) = &result {
+    if runtime_context_for_terminal_capture.is_none()
+        && let Err(error) = &result
+    {
         persist_pool_failover_terminal_invocation(
             state.as_ref(),
             proxy_request_id,

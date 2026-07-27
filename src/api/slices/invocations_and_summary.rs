@@ -5243,7 +5243,15 @@ async fn fetch_invocation_attempt_response_body_row(
             inv.id,
             inv.invoke_id,
             inv.payload,
-            inv.raw_response,
+            CASE
+                WHEN attempts.attempt_index = (
+                    SELECT MAX(final_attempt.attempt_index)
+                    FROM pool_upstream_request_attempts AS final_attempt
+                    WHERE final_attempt.invoke_id = attempts.invoke_id
+                      AND final_attempt.occurred_at = attempts.occurred_at
+                ) THEN inv.raw_response
+                ELSE ''
+            END AS raw_response,
             inv.request_raw_path,
             inv.request_raw_size,
             inv.request_raw_truncated,
