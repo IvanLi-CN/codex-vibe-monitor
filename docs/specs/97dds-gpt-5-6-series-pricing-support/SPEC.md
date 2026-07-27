@@ -145,8 +145,6 @@ PR: include
 - state: exact bucket costs at narrow width
 - evidence_note: Verifies the same semantic table remains within the 390px canvas without a horizontal scrollbar; model and effort wrap while Token and amount pairs remain aligned, and cache hit rate retains its first-line alignment through its blank second-line slot.
 
-PR: none
-
 ![GPT-5.6 model identity icons](./assets/gpt56-model-identity-storybook.png)
 
 - source_type: storybook_canvas
@@ -177,6 +175,8 @@ PR: none
 - state: date-suffixed GPT-5.6 alias and unsupported model fallback
 - evidence_note: Verifies a date-suffixed GPT-5.6 model inherits the Sol icon and an unsupported model remains visible as its original text.
 
+PR: include
+
 ![GPT-5.6 invocation context cluster](./assets/gpt56-invocation-context-storybook.png)
 
 - source_type: storybook_canvas
@@ -187,7 +187,7 @@ PR: none
 - margin_policy: require_margin
 - evidence_surface: component
 - sensitive_exclusion: N/A
-- submission_gate: pending-owner-approval
+- submission_gate: approved
 - story_id_or_title: Dashboard/WorkingConversationsSection GPT56ModelContextCluster
 - state: GPT-5.6 Sol invocation with high reasoning effort and effective FAST priority
 - evidence_note: Verifies the invocation card presents the solar model icon, reasoning effort, and FAST indicator as one unified identity signature while keeping the full model ID in accessible semantics.
