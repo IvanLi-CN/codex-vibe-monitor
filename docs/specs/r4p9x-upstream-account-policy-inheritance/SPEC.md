@@ -473,3 +473,19 @@ PR: include
   submission_gate: approved
   image:
   ![Group image-tool policy help](./assets/responses-lite-image-tool-help-group.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `Account Pool/Components/Effective Routing Rule Card / Editable Imagegen Rewrite Policies`
+  state: account Codex imagegen rewrite policy set to force add
+  requested_viewport: 819x1391
+  viewport_strategy: chrome_storybook_iframe
+  margin_policy: trim_only
+  evidence_surface: component
+  evidence_note: verifies the effective-rule card distinguishes hosted image tools from the independently inherited Codex imagegen policy and renders all four Codex rewrite modes.
+  PR: include
+  target_program: mock-only
+  capture_scope: storybook iframe
+  sensitive_exclusion: fixture-only routing policy data
+  submission_gate: approved
+  image:
+  ![Codex imagegen rewrite policies](./assets/codex-imagegen-rewrite-policies.png)
