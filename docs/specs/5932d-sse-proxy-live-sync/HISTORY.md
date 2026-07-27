@@ -1,5 +1,7 @@
 # 主应用常驻订阅纯 SSE 化与统一快照/回放基础设施 - History
 
+- 2026-07-25：Dashboard open-range 终态累计从“5 秒 topic refresh 失效 DB cache 后重建”改为 write-side idempotent delta。`today / 1d / 7d` 的 topic 与 HTTP 共享同一 warm baseline，5 秒窗口仅合并发布，60 秒 cadence 才进行 DB reconcile；reconcile 失败继续发布 last-good totals 与 runtime live overlay。
+
 ## Key Decisions
 
 - 2026-07-24：线上复查确认 Summary topic 的主要残留压力来自 terminal follow-up 对 `all/30m/1h/1d/1mo` 五个 legacy 窗口的无关重建，以及 `today` summary 的 `non_success_tokens` 仍走整窗账号活动聚合。本轮删除生产 Summary follow-up，open-range topic 改为 live overlay + 固定 `500ms` totals coalescer；`non_success_tokens` 复用 hourly v2 rollup 与 boundary scalar tail。Dashboard 保留既有 `5s` TTL，仅改用真实 owner subscriber lease 门控，并以 dirty reconnect 保证失活期间不回放旧连续性。

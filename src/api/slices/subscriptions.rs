@@ -19,8 +19,7 @@ const DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL: Duration = Duration::from_se
 const DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL: Duration = Duration::from_millis(50);
 
 #[cfg(not(test))]
-const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration =
-    Duration::from_secs(DASHBOARD_ACTIVITY_SNAPSHOT_CACHE_TTL_SECS);
+const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const DASHBOARD_ACTIVITY_TOPIC_REFRESH_TTL: Duration = Duration::from_millis(500);
 const SUMMARY_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
@@ -1197,17 +1196,11 @@ impl SubscriptionHub {
                     return;
                 }
                 tracing::debug!(
-                    refresh_reason = "ttl_expired",
-                    invalidation_reason = "deferred_topic_refresh",
+                    refresh_reason = "scheduled_terminal_refresh",
+                    response_source = "memory",
                     selection_fingerprint = dashboard_activity_selection_fingerprint(&selection),
-                    "invalidating dashboard activity base snapshot before topic refresh"
+                    "publishing dashboard activity read model after terminal coalescing"
                 );
-                invalidate_dashboard_activity_snapshot_cache(
-                    state.dashboard_activity_snapshot_cache.as_ref(),
-                    &selection,
-                    "scheduled_terminal_refresh",
-                )
-                .await;
                 match hub
                     .refresh_topic_if_active(state.clone(), topic.clone(), true)
                     .await
@@ -1228,17 +1221,11 @@ impl SubscriptionHub {
         }
 
         tracing::debug!(
-            refresh_reason = "ttl_expired",
-            invalidation_reason = "immediate_topic_refresh",
+            refresh_reason = "scheduled_terminal_refresh",
+            response_source = "memory",
             selection_fingerprint = dashboard_activity_selection_fingerprint(&selection),
-            "invalidating dashboard activity base snapshot before topic refresh"
+            "publishing dashboard activity read model after terminal coalescing"
         );
-        invalidate_dashboard_activity_snapshot_cache(
-            state.dashboard_activity_snapshot_cache.as_ref(),
-            &selection,
-            "scheduled_terminal_refresh",
-        )
-        .await;
         let _ = self.refresh_topic_if_active(state, topic, true).await?;
         Ok(())
     }
@@ -3906,6 +3893,8 @@ mod tests {
                 selection_a.clone(),
                 DashboardActivitySnapshotCacheEntry {
                     cached_at: Instant::now(),
+                    last_reconcile_attempted_at: Instant::now(),
+                    baseline_snapshot_cursor: 0,
                     response: DashboardActivitySnapshot::test_stub("today"),
                 },
             );
@@ -3913,6 +3902,8 @@ mod tests {
                 selection_b.clone(),
                 DashboardActivitySnapshotCacheEntry {
                     cached_at: Instant::now(),
+                    last_reconcile_attempted_at: Instant::now(),
+                    baseline_snapshot_cursor: 0,
                     response: DashboardActivitySnapshot::test_stub("7d"),
                 },
             );
