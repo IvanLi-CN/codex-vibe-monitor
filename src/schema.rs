@@ -1915,6 +1915,19 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS account_activity_v2_bucket_repair_watermarks (
+            bucket_start_epoch INTEGER PRIMARY KEY,
+            cursor_id INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure account_activity_v2_bucket_repair_watermarks table existence")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS invocation_rollup_daily (
             stats_date TEXT NOT NULL,
             source TEXT NOT NULL,
@@ -2333,6 +2346,10 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             activity_v2_total_cost REAL NOT NULL DEFAULT 0,
             activity_v2_first_response_sample_count INTEGER NOT NULL DEFAULT 0,
             activity_v2_first_response_sum_ms REAL NOT NULL DEFAULT 0,
+            activity_v2_first_token_sample_count INTEGER NOT NULL DEFAULT 0,
+            activity_v2_first_token_sum_ms REAL NOT NULL DEFAULT 0,
+            activity_v2_first_token_max_ms REAL NOT NULL DEFAULT 0,
+            activity_v2_first_token_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
             activity_v2_total_latency_sample_count INTEGER NOT NULL DEFAULT 0,
             activity_v2_total_latency_sum_ms REAL NOT NULL DEFAULT 0,
             activity_v2_last_invocation_at TEXT,
@@ -2405,6 +2422,16 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         (
             "activity_v2_first_response_sum_ms",
             "REAL NOT NULL DEFAULT 0",
+        ),
+        (
+            "activity_v2_first_token_sample_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("activity_v2_first_token_sum_ms", "REAL NOT NULL DEFAULT 0"),
+        ("activity_v2_first_token_max_ms", "REAL NOT NULL DEFAULT 0"),
+        (
+            "activity_v2_first_token_histogram",
+            "TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'",
         ),
         (
             "activity_v2_total_latency_sample_count",

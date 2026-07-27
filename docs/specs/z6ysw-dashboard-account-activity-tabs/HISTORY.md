@@ -4,6 +4,7 @@
 
 ## Decision Trace
 
+- 2026-07-27：升级后 Dashboard 归零/漏算定位为账号活动 v2 repair 根据时间跨度批量写 coverage marker，即使游标已追平但 hourly v2 数据仍稀疏也会把默认零值宣告为完整。修复改为 versioned live/archive repair generation：启动时失效旧 marker 与 v2 派生字段，按 repair cursor 验证每个完整小时；covered hour 中晚到的新调用通过 cursor tail 精确合并；整桶重算写 per-bucket invocation watermark 与滞后 repair 去重，但不提前宣告 coverage；读路径使用单一 SQLite snapshot，避免跨事务拼接 baseline 与 cursor。
 - 2026-07-24：线上复查确认 `summary_topic today` 的残留慢读来自 `non_success_tokens` 与 terminal Summary 重算风暴，而不是账号活动 v2 rollup 本身。本轮让 Summary 当前态走 live overlay + 固定 `500ms` terminal coalescer，`non_success_tokens` 复用 hourly v2 rollup；Dashboard 保持 `5s` TTL，仅补真实订阅门控、dirty reconnect 与刷新原因 telemetry。
 - 2026-07-24：proxy terminal follow-up 删除五个无生产消费者的 legacy Summary 窗口构建；quota follow-up 仅在真实 `quota.current` owner subscriber 存在时运行，避免没有订阅者时继续消耗数据库预算。
 - 2026-07-24：线上 `v2.47.1` 复查把 Dashboard full 的主要 CPU 热点收敛到 `live_account_aggregate` 整窗 raw 重算。账号活动因此增加独立 v2 hourly coverage：完整小时只在 marker 已完成时读 rollup，缺口按连续小时 exact fallback，边界小时保持 exact；5 秒 snapshot cache 语义不变，TTL 主动刷新与 selection 抖动改由 reason/fingerprint telemetry 区分。

@@ -88,8 +88,22 @@ describe("demo MSW handlers", () => {
       "http://demo.invalid/api/stats/dashboard-activity?range=today&includeAccounts=true",
     );
     const payload = (await response.json()) as {
+      summary: {
+        stats: {
+          totalCount: number;
+          successCount: number;
+          failureCount: number;
+          totalTokens: number;
+          totalCost: number;
+        };
+      };
       accounts: Array<{
         displayName: string;
+        requestCount: number;
+        successCount: number;
+        failureCount: number;
+        totalTokens: number;
+        totalCost: number;
         usageBreakdown: { models: Array<{ model: string; reasoningEffort: string | null }> };
         modelPerformance: { models: Array<{ model: string; reasoningEffort: string | null }> };
       }>;
@@ -106,6 +120,22 @@ describe("demo MSW handlers", () => {
       expect.objectContaining({ model: "gpt-5.6-sol", reasoningEffort: "high" }),
       expect.objectContaining({ model: "gpt-5.6-sol", reasoningEffort: "medium" }),
     ]);
+    expect(payload.summary.stats.totalCount).toBe(
+      payload.accounts.reduce((total, account) => total + account.requestCount, 0),
+    );
+    expect(payload.summary.stats.successCount).toBe(
+      payload.accounts.reduce((total, account) => total + account.successCount, 0),
+    );
+    expect(payload.summary.stats.failureCount).toBe(
+      payload.accounts.reduce((total, account) => total + account.failureCount, 0),
+    );
+    expect(payload.summary.stats.totalTokens).toBe(
+      payload.accounts.reduce((total, account) => total + account.totalTokens, 0),
+    );
+    expect(payload.summary.stats.totalCost).toBeCloseTo(
+      payload.accounts.reduce((total, account) => total + account.totalCost, 0),
+      2,
+    );
   });
 
   it("serves dashboard account summaries and snapshot-bound recent rows in separate phases", async () => {

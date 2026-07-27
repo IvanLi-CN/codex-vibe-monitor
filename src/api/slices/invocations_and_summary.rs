@@ -6368,7 +6368,7 @@ pub(crate) fn summary_live_augmentation_policy(
 }
 
 async fn query_account_activity_v2_non_success_tokens(
-    pool: &Pool<Sqlite>,
+    tx: &mut SqliteConnection,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
     bucket_epochs: &[i64],
@@ -6395,11 +6395,11 @@ async fn query_account_activity_v2_non_success_tokens(
             .push(" AND upstream_account_id = ")
             .push_bind(upstream_account_id);
     }
-    Ok(query.build_query_scalar::<i64>().fetch_one(pool).await?)
+    Ok(query.build_query_scalar::<i64>().fetch_one(tx).await?)
 }
 
 async fn query_non_success_tokens_exact_tail(
-    pool: &Pool<Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
     range: ExactUtcRange,
@@ -6429,15 +6429,19 @@ async fn query_non_success_tokens_exact_tail(
             .push(" = ")
             .push_bind(upstream_account_id);
     }
-    Ok(query.build_query_scalar::<i64>().fetch_one(pool).await?)
+    Ok(query
+        .build_query_scalar::<i64>()
+        .fetch_one(executor)
+        .await?)
 }
 
 async fn query_non_success_tokens_unreplayed_live_tail(
-    pool: &Pool<Sqlite>,
+    tx: &mut SqliteConnection,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
     covered_hours: &[i64],
     repair_cursor: i64,
+    bucket_watermarks: &BTreeMap<i64, i64>,
 ) -> Result<i64, ApiError> {
     if covered_hours.is_empty() {
         return Ok(0);
@@ -6451,9 +6455,8 @@ async fn query_non_success_tokens_unreplayed_live_tail(
     );
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         "SELECT COALESCE(SUM(CASE WHEN {non_success_sql} THEN COALESCE(total_tokens, 0) ELSE 0 END), 0) \
-         FROM codex_invocations WHERE id > "
+         FROM codex_invocations WHERE ("
     ));
-    query.push_bind(repair_cursor).push(" AND (");
     for (index, bucket_epoch) in covered_hours.iter().enumerate() {
         let start = Utc
             .timestamp_opt(*bucket_epoch, 0)
@@ -6464,7 +6467,16 @@ async fn query_non_success_tokens_unreplayed_live_tail(
             query.push(" OR ");
         }
         query
-            .push("(occurred_at >= ")
+            .push("(id > ")
+            .push_bind(
+                repair_cursor.max(
+                    bucket_watermarks
+                        .get(bucket_epoch)
+                        .copied()
+                        .unwrap_or_default(),
+                ),
+            )
+            .push(" AND occurred_at >= ")
             .push_bind(db_occurred_at_lower_bound(start))
             .push(" AND occurred_at < ")
             .push_bind(db_occurred_at_upper_bound(end))
@@ -6481,7 +6493,7 @@ async fn query_non_success_tokens_unreplayed_live_tail(
             .push(" = ")
             .push_bind(upstream_account_id);
     }
-    Ok(query.build_query_scalar::<i64>().fetch_one(pool).await?)
+    Ok(query.build_query_scalar::<i64>().fetch_one(tx).await?)
 }
 
 fn summary_non_success_tokens_lock_fallback(
@@ -6558,7 +6570,20 @@ pub(crate) async fn load_non_success_tokens_snapshot(
         live_row_scan_mode = "fallback";
     }
     if live_range.start < live_range.end {
-        let plan = match plan_account_activity_range(state, live_range).await {
+        let mut tx = match state.pool.begin().await {
+            Ok(tx) => tx,
+            Err(err) if crate::is_sqlite_lock_error(&anyhow!(err.to_string())) => {
+                return summary_non_success_tokens_lock_fallback(
+                    telemetry,
+                    source_scope,
+                    upstream_account_id,
+                    range,
+                    "live_snapshot",
+                );
+            }
+            Err(err) => return Err(err.into()),
+        };
+        let plan = match plan_account_activity_range_tx(state, tx.as_mut(), live_range).await {
             Ok(plan) => plan,
             Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
                 return summary_non_success_tokens_lock_fallback(
@@ -6575,7 +6600,7 @@ pub(crate) async fn load_non_success_tokens_snapshot(
         fallback_hour_count = plan.uncovered_hours.len();
         boundary_tail_count = plan.boundary_tail_count;
         let rollup_tokens = match query_account_activity_v2_non_success_tokens(
-            &state.pool,
+            tx.as_mut(),
             source_scope,
             upstream_account_id,
             &plan.covered_hours,
@@ -6596,8 +6621,8 @@ pub(crate) async fn load_non_success_tokens_snapshot(
         };
         live_tokens += rollup_tokens;
         live_group_row_count = plan.covered_hours.len();
-        let repair_cursor = match load_hourly_rollup_live_progress(
-            &state.pool,
+        let repair_cursor = match load_hourly_rollup_live_progress_tx(
+            tx.as_mut(),
             INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_CURSOR_DATASET,
         )
         .await
@@ -6616,12 +6641,31 @@ pub(crate) async fn load_non_success_tokens_snapshot(
                 return Err(err.into());
             }
         };
+        let bucket_watermarks = match load_account_activity_v2_bucket_repair_watermarks(
+            tx.as_mut(),
+            &plan.covered_hours,
+        )
+        .await
+        {
+            Ok(watermarks) => watermarks,
+            Err(ApiError::Internal(err)) if crate::is_sqlite_lock_error(&err) => {
+                return summary_non_success_tokens_lock_fallback(
+                    telemetry,
+                    source_scope,
+                    upstream_account_id,
+                    range,
+                    "v2_bucket_watermarks",
+                );
+            }
+            Err(err) => return Err(err),
+        };
         let unreplayed_live_tail = match query_non_success_tokens_unreplayed_live_tail(
-            &state.pool,
+            tx.as_mut(),
             source_scope,
             upstream_account_id,
             &plan.covered_hours,
             repair_cursor,
+            &bucket_watermarks,
         )
         .await
         {
@@ -6650,7 +6694,7 @@ pub(crate) async fn load_non_success_tokens_snapshot(
         }
         for (index, exact_range) in plan.exact_ranges.into_iter().enumerate() {
             let exact_tokens = match query_non_success_tokens_exact_tail(
-                &state.pool,
+                tx.as_mut(),
                 source_scope,
                 upstream_account_id,
                 exact_range,
@@ -6683,6 +6727,7 @@ pub(crate) async fn load_non_success_tokens_snapshot(
                 );
             }
         }
+        tx.commit().await?;
     }
 
     if range.start >= retention_cutoff {
@@ -8164,21 +8209,28 @@ async fn query_live_upstream_account_activity_aggregate_rows(
         range,
         use_attempt_fallback,
         exclude_invocation_ids,
+        None,
+        None,
         "internal",
         "legacy_exact",
     )
     .await
 }
 
-async fn query_live_upstream_account_activity_aggregate_rows_with_telemetry(
-    pool: &Pool<Sqlite>,
+async fn query_live_upstream_account_activity_aggregate_rows_with_telemetry<'e, E>(
+    executor: E,
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
     use_attempt_fallback: bool,
     exclude_invocation_ids: DashboardActivityExcludedInvocationIdsFilter<'_>,
+    min_invocation_id_exclusive: Option<i64>,
+    bucket_min_invocation_ids_exclusive: Option<&BTreeMap<i64, i64>>,
     route: &'static str,
     purpose: &'static str,
-) -> Result<Vec<UpstreamAccountActivityAggregateRow>, ApiError> {
+) -> Result<Vec<UpstreamAccountActivityAggregateRow>, ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let started_at = Instant::now();
     let upstream_account_id_sql = if use_attempt_fallback {
         invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations")
@@ -8239,6 +8291,33 @@ async fn query_live_upstream_account_activity_aggregate_rows_with_telemetry(
         .push_bind(db_occurred_at_upper_bound(range.end));
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(min_invocation_id_exclusive) = min_invocation_id_exclusive {
+        query
+            .push(" AND id > ")
+            .push_bind(min_invocation_id_exclusive);
+    }
+    if let Some(bucket_min_ids) = bucket_min_invocation_ids_exclusive {
+        query.push(" AND (");
+        for (index, (bucket_epoch, min_id)) in bucket_min_ids.iter().enumerate() {
+            let start = Utc
+                .timestamp_opt(*bucket_epoch, 0)
+                .single()
+                .ok_or_else(|| ApiError::from(anyhow!("invalid covered-tail bucket epoch")))?;
+            let end = start + ChronoDuration::hours(1);
+            if index > 0 {
+                query.push(" OR ");
+            }
+            query
+                .push("(id > ")
+                .push_bind(*min_id)
+                .push(" AND occurred_at >= ")
+                .push_bind(db_occurred_at_lower_bound(start))
+                .push(" AND occurred_at < ")
+                .push_bind(db_occurred_at_upper_bound(end))
+                .push(")");
+        }
+        query.push(")");
     }
     push_excluded_invocation_ids_filter(&mut query, exclude_invocation_ids);
     query.push(" AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')");
@@ -8336,7 +8415,7 @@ async fn query_live_upstream_account_activity_aggregate_rows_with_telemetry(
 
     let rows = query
         .build_query_as::<UpstreamAccountActivityAggregateRow>()
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await?;
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
     if elapsed_ms >= 1_000 {
@@ -8419,7 +8498,7 @@ fn merge_account_activity_rows(
 }
 
 async fn query_account_activity_v2_rollup_rows(
-    pool: &Pool<Sqlite>,
+    tx: &mut SqliteConnection,
     source_scope: InvocationSourceScope,
     bucket_epochs: &[i64],
 ) -> Result<Vec<UpstreamAccountActivityAggregateRow>, ApiError> {
@@ -8446,8 +8525,8 @@ async fn query_account_activity_v2_rollup_rows(
             activity_v2_total_cost AS total_cost,
             activity_v2_first_response_sample_count AS first_response_byte_total_sample_count,
             activity_v2_first_response_sum_ms AS first_response_byte_total_sum_ms,
-            first_token_sample_count,
-            first_token_sum_ms,
+            activity_v2_first_token_sample_count AS first_token_sample_count,
+            activity_v2_first_token_sum_ms AS first_token_sum_ms,
             activity_v2_total_latency_sample_count AS total_latency_sample_count,
             activity_v2_total_latency_sum_ms AS total_latency_sum_ms,
             activity_v2_latest_first_response_at AS latest_first_response_byte_total_at,
@@ -8470,7 +8549,7 @@ async fn query_account_activity_v2_rollup_rows(
     }
     Ok(query
         .build_query_as::<UpstreamAccountActivityAggregateRow>()
-        .fetch_all(pool)
+        .fetch_all(&mut *tx)
         .await?)
 }
 
@@ -8481,7 +8560,7 @@ struct AccountActivityConversationRollupRow {
 }
 
 async fn query_account_activity_conversation_rollup_rows(
-    pool: &Pool<Sqlite>,
+    tx: &mut SqliteConnection,
     source_scope: InvocationSourceScope,
     bucket_epochs: &[i64],
 ) -> Result<Vec<AccountActivityConversationRollupRow>, ApiError> {
@@ -8536,12 +8615,12 @@ async fn query_account_activity_conversation_rollup_rows(
     );
     Ok(query
         .build_query_as::<AccountActivityConversationRollupRow>()
-        .fetch_all(pool)
+        .fetch_all(&mut *tx)
         .await?)
 }
 
 async fn load_account_activity_v2_covered_hours(
-    pool: &Pool<Sqlite>,
+    tx: &mut SqliteConnection,
     start_epoch: i64,
     end_epoch: i64,
 ) -> Result<HashSet<i64>, ApiError> {
@@ -8559,10 +8638,35 @@ async fn load_account_activity_v2_covered_hours(
     .bind(HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE)
     .bind(start_epoch)
     .bind(end_epoch)
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?
     .into_iter()
     .collect())
+}
+
+async fn load_account_activity_v2_bucket_repair_watermarks(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    bucket_epochs: &[i64],
+) -> Result<BTreeMap<i64, i64>, ApiError> {
+    if bucket_epochs.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT bucket_start_epoch, cursor_id FROM account_activity_v2_bucket_repair_watermarks WHERE bucket_start_epoch IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for bucket_epoch in bucket_epochs {
+            separated.push_bind(*bucket_epoch);
+        }
+    }
+    query.push(")");
+    Ok(query
+        .build_query_as::<(i64, i64)>()
+        .fetch_all(executor)
+        .await?
+        .into_iter()
+        .collect())
 }
 
 struct AccountActivityRangePlan {
@@ -8574,6 +8678,17 @@ struct AccountActivityRangePlan {
 
 async fn plan_account_activity_range(
     state: &AppState,
+    range: ExactUtcRange,
+) -> Result<AccountActivityRangePlan, ApiError> {
+    let mut tx = state.pool.begin().await?;
+    let plan = plan_account_activity_range_tx(state, tx.as_mut(), range).await?;
+    tx.commit().await?;
+    Ok(plan)
+}
+
+async fn plan_account_activity_range_tx(
+    state: &AppState,
+    tx: &mut SqliteConnection,
     range: ExactUtcRange,
 ) -> Result<AccountActivityRangePlan, ApiError> {
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
@@ -8590,8 +8705,7 @@ async fn plan_account_activity_range(
     let full_start_epoch = ceil_hour_epoch(live_start.timestamp());
     let full_end_epoch = align_bucket_epoch(range.end.timestamp(), 3_600, 0);
     let covered =
-        load_account_activity_v2_covered_hours(&state.pool, full_start_epoch, full_end_epoch)
-            .await?;
+        load_account_activity_v2_covered_hours(tx, full_start_epoch, full_end_epoch).await?;
     let all_full_hours = (full_start_epoch..full_end_epoch)
         .step_by(3_600)
         .collect::<Vec<_>>();
@@ -8658,7 +8772,8 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
     route: &'static str,
 ) -> Result<AccountActivityRangeBuild, ApiError> {
     let started_at = Instant::now();
-    let plan = plan_account_activity_range(state, range).await?;
+    let mut tx = state.pool.begin().await?;
+    let plan = plan_account_activity_range_tx(state, tx.as_mut(), range).await?;
     if plan.covered_hours.is_empty()
         && plan.uncovered_hours.is_empty()
         && plan.exact_ranges.is_empty()
@@ -8670,7 +8785,7 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
     }
 
     let rollup_rows =
-        query_account_activity_v2_rollup_rows(&state.pool, source_scope, &plan.covered_hours)
+        query_account_activity_v2_rollup_rows(tx.as_mut(), source_scope, &plan.covered_hours)
             .await?;
     let rollup_row_count = rollup_rows.len();
     let raw_fallback_range_count = plan.exact_ranges.len();
@@ -8686,7 +8801,7 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
         }
     }
     for conversation in query_account_activity_conversation_rollup_rows(
-        &state.pool,
+        tx.as_mut(),
         source_scope,
         &plan.covered_hours,
     )
@@ -8699,6 +8814,65 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
             );
         }
     }
+    let repair_cursor = load_hourly_rollup_live_progress_tx(
+        tx.as_mut(),
+        INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_CURSOR_DATASET,
+    )
+    .await?;
+    let bucket_watermarks =
+        load_account_activity_v2_bucket_repair_watermarks(tx.as_mut(), &plan.covered_hours).await?;
+    let covered_tail_min_ids = plan
+        .covered_hours
+        .iter()
+        .map(|bucket_epoch| {
+            (
+                *bucket_epoch,
+                repair_cursor.max(
+                    bucket_watermarks
+                        .get(bucket_epoch)
+                        .copied()
+                        .unwrap_or_default(),
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    if let (Some(first_bucket), Some(last_bucket)) =
+        (plan.covered_hours.first(), plan.covered_hours.last())
+    {
+        let covered_start = Utc
+            .timestamp_opt(*first_bucket, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid covered live tail start")))?;
+        let covered_end = Utc
+            .timestamp_opt(*last_bucket + 3_600, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid covered live tail end")))?;
+        for row in query_live_upstream_account_activity_aggregate_rows_with_telemetry(
+            tx.as_mut(),
+            source_scope,
+            ExactUtcRange {
+                start: covered_start,
+                end: covered_end,
+            },
+            true,
+            DashboardActivityExcludedInvocationIdsFilter::None,
+            None,
+            Some(&covered_tail_min_ids),
+            route,
+            "covered_live_tail",
+        )
+        .await?
+        {
+            match merged.entry(row.upstream_account_id) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(row);
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    merge_account_activity_rows(entry.get_mut(), row);
+                }
+            }
+        }
+    }
     for (index, exact_range) in plan.exact_ranges.into_iter().enumerate() {
         let purpose = if index < plan.boundary_tail_count {
             "boundary_tail"
@@ -8706,11 +8880,13 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
             "coverage_hole"
         };
         for row in query_live_upstream_account_activity_aggregate_rows_with_telemetry(
-            &state.pool,
+            tx.as_mut(),
             source_scope,
             exact_range,
             true,
             DashboardActivityExcludedInvocationIdsFilter::None,
+            None,
+            None,
             route,
             purpose,
         )
@@ -8734,6 +8910,7 @@ pub(crate) async fn load_upstream_account_activity_range_rows(
         rollup_row_count,
         raw_fallback_range_count,
     };
+    tx.commit().await?;
     tracing::info!(
         route,
         builder = "account_activity_hourly_v2",

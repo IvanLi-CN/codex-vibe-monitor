@@ -1046,9 +1046,12 @@ function demoDashboardActivityAccounts() {
       const failureCount = accountRecords.filter(
         (record) => record.failureClass && record.failureClass !== "none",
       ).length;
-      const requestCount = 10_130 - index * 790;
-      const totalTokens = 1_135_000_000 - index * 96_000_000;
-      const totalCost = Math.max(18.4, 499.1 - index * 47.25);
+      const isLastAccount = index === 11;
+      const requestCount = 1_620 - index * 100 + (isLastAccount ? 6 : 0);
+      const aggregateFailureCount =
+        failureCount * 39 + (attention && account.id === 102 ? 410 : 18);
+      const totalTokens = 180_000_000 - index * 12_000_000 + (isLastAccount ? 13_240_000 : 0);
+      const totalCost = 75 - index * 5 + (isLastAccount ? 12.34 : 0);
       const modelIndexes = account.planType === "api" ? [2] : index % 2 === 0 ? [0, 1] : [1];
       return {
         accountKey: `upstream:${account.id}`,
@@ -1064,10 +1067,9 @@ function demoDashboardActivityAccounts() {
         syncState: account.syncState,
         lastError: account.lastError,
         requestCount,
-        successCount:
-          requestCount - failureCount * 39 - (attention && account.id === 102 ? 410 : 0),
-        failureCount: failureCount * 39 + (attention && account.id === 102 ? 410 : 18),
-        nonSuccessCount: failureCount * 39 + (attention && account.id === 102 ? 410 : 18),
+        successCount: requestCount - aggregateFailureCount,
+        failureCount: aggregateFailureCount,
+        nonSuccessCount: aggregateFailureCount,
         totalTokens,
         successTokens: Math.round(totalTokens * 0.976),
         nonSuccessTokens: Math.round(totalTokens * 0.024),
@@ -1102,6 +1104,43 @@ function demoDashboardActivityAccounts() {
         recentInvocations: accountRecords,
       };
     });
+}
+
+function demoDashboardActivitySummary(accounts: ReturnType<typeof demoDashboardActivityAccounts>) {
+  const base = demoSummary();
+  const sum = (read: (account: (typeof accounts)[number]) => number) =>
+    accounts.reduce((total, account) => total + read(account), 0);
+  const totalCount = sum((account) => account.requestCount);
+  const successCount = sum((account) => account.successCount);
+  const failureCount = sum((account) => account.failureCount);
+  const totalTokens = sum((account) => account.totalTokens);
+  const totalCost = Number(sum((account) => account.totalCost).toFixed(2));
+  const cacheInputTokens = Math.round(sum((account) => account.totalTokens * account.cacheHitRate));
+  return {
+    ...base,
+    totalCount,
+    successCount,
+    failureCount,
+    totalTokens,
+    totalCost,
+    inProgressConversationCount: sum((account) => account.inProgressInvocationCount),
+    token: {
+      ...base.token,
+      requestCount: totalCount,
+      totalTokens,
+      avgTokensPerRequest: totalCount === 0 ? 0 : Math.round(totalTokens / totalCount),
+      cacheInputTokens,
+      totalCost,
+    },
+    exception: {
+      ...base.exception,
+      failureCount,
+      serviceFailureCount: failureCount,
+      clientFailureCount: 0,
+      clientAbortCount: 0,
+      actionableFailureCount: failureCount,
+    },
+  };
 }
 
 function timeseries() {
@@ -2139,6 +2178,7 @@ export async function handleDemoRequest(request: Request) {
     const accounts = demoDashboardActivityAccounts().map((account) =>
       includeRecent ? account : { ...account, recentInvocations: [] },
     );
+    const accountSummary = demoDashboardActivitySummary(accounts);
     return json({
       range: url.searchParams.get("range") ?? "today",
       snapshotId: 901,
@@ -2151,9 +2191,13 @@ export async function handleDemoRequest(request: Request) {
         mode: "rolling_60s_live_mean",
       },
       summary: {
-        stats: demoSummary(),
-        tokensPerMinute: 46_041,
-        spendRate: 19.41,
+        stats: accountSummary,
+        tokensPerMinute: includeAccounts
+          ? accounts.reduce((total, account) => total + account.tokensPerMinute, 0)
+          : 46_041,
+        spendRate: includeAccounts
+          ? Number(accounts.reduce((total, account) => total + account.spendRate, 0).toFixed(2))
+          : 19.41,
         currentFirstTokenAvgMs: 1280,
         currentAvgTotalMs: 6920,
         modelPerformance: demoModelPerformanceForModels([0, 1, 2]),

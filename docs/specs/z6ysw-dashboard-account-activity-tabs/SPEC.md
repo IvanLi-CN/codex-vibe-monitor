@@ -274,6 +274,14 @@
 
 PR: include
 
+- source_type: ui_demo
+  story_id_or_title: `dashboard?demoScene=operational&demoTheme=dark`
+  scenario: `dashboard summary and upstream-account cards share one exact snapshot`
+  evidence_note: 验证 mock-only Dashboard 顶部 KPI 与账号卡片由同一份账号活动快照汇总；顶部成功、失败、成本与 Token 均可由同屏账号项精确解释，覆盖升级重建期间 exact fallback 与回填后 rollup 的共同 owner-facing 口径。
+  image:
+  PR: include
+  ![Dashboard 账号活动汇总一致性证据](./assets/dashboard-account-activity-rollup-consistency.png)
+
 ![Dashboard workspace sorting controls](./assets/dashboard-workspace-controls-focused.png)
 
 - source_type: demo_runtime

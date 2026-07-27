@@ -338,6 +338,9 @@ pub(crate) const INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_CURSOR_DATASET: &str =
     "invocation_account_activity_v2_repair_live_cursor";
 pub(crate) const INVOCATION_ACCOUNT_ACTIVITY_V2_ARCHIVE_PROGRESS_DATASET: &str =
     "codex_invocations_account_activity_v2_archive_progress";
+pub(crate) const INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_GENERATION_DATASET: &str =
+    "invocation_account_activity_v2_repair_generation";
+const INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_GENERATION: i64 = 1;
 const INVOCATION_USAGE_BREAKDOWN_ROLLUP_REPAIR_MARKER_DONE: i64 = 1;
 
 pub(crate) fn pool_upstream_node_health_archive_identity_for_batch_id(
@@ -2070,7 +2073,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
     if upsert_upstream_account_activity_v2 {
         #[derive(sqlx::FromRow)]
         struct ActivityV2StatsHistogramRow {
-            first_token_histogram: String,
+            activity_v2_first_token_histogram: String,
         }
 
         for ((bucket_start_epoch, source, upstream_account_id), delta) in
@@ -2078,7 +2081,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
         {
             let current_histogram = sqlx::query_as::<_, ActivityV2StatsHistogramRow>(
                 r#"
-                SELECT first_token_histogram
+                SELECT activity_v2_first_token_histogram
                 FROM upstream_account_stats_hourly
                 WHERE bucket_start_epoch = ?1 AND source = ?2 AND upstream_account_id = ?3
                 "#,
@@ -2090,7 +2093,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             .await?;
             let mut merged_first_token_histogram = current_histogram
                 .as_ref()
-                .map(|row| decode_approx_histogram(&row.first_token_histogram))
+                .map(|row| decode_approx_histogram(&row.activity_v2_first_token_histogram))
                 .unwrap_or_else(empty_approx_histogram);
             merge_approx_histogram_into(
                 &mut merged_first_token_histogram,
@@ -2124,10 +2127,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     activity_v2_latest_first_response_ms,
                     activity_v2_latest_total_latency_at,
                     activity_v2_latest_total_latency_ms,
-                    first_token_sample_count,
-                    first_token_sum_ms,
-                    first_token_max_ms,
-                    first_token_histogram,
+                    activity_v2_first_token_sample_count,
+                    activity_v2_first_token_sum_ms,
+                    activity_v2_first_token_max_ms,
+                    activity_v2_first_token_histogram,
                     updated_at
                 )
                 VALUES (
@@ -2188,10 +2191,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                         THEN excluded.activity_v2_latest_total_latency_at
                         ELSE upstream_account_stats_hourly.activity_v2_latest_total_latency_at
                     END,
-                    first_token_sample_count = upstream_account_stats_hourly.first_token_sample_count + excluded.first_token_sample_count,
-                    first_token_sum_ms = upstream_account_stats_hourly.first_token_sum_ms + excluded.first_token_sum_ms,
-                    first_token_max_ms = MAX(upstream_account_stats_hourly.first_token_max_ms, excluded.first_token_max_ms),
-                    first_token_histogram = excluded.first_token_histogram,
+                    activity_v2_first_token_sample_count = upstream_account_stats_hourly.activity_v2_first_token_sample_count + excluded.activity_v2_first_token_sample_count,
+                    activity_v2_first_token_sum_ms = upstream_account_stats_hourly.activity_v2_first_token_sum_ms + excluded.activity_v2_first_token_sum_ms,
+                    activity_v2_first_token_max_ms = MAX(upstream_account_stats_hourly.activity_v2_first_token_max_ms, excluded.activity_v2_first_token_max_ms),
+                    activity_v2_first_token_histogram = excluded.activity_v2_first_token_histogram,
                     updated_at = datetime('now')
                 "#,
             )
@@ -2693,6 +2696,17 @@ pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_tx(
 
     let rows = load_live_invocation_hourly_rows_for_bucket_epochs_tx(tx, &bucket_epochs).await?;
     upsert_invocation_hourly_rollups_tx(tx, &rows, &INVOCATION_HOURLY_ROLLUP_TARGETS).await?;
+    let mut bucket_watermarks = BTreeMap::<i64, i64>::new();
+    for row in &rows {
+        let bucket_epoch = invocation_bucket_start_epoch(&row.occurred_at)?;
+        bucket_watermarks
+            .entry(bucket_epoch)
+            .and_modify(|cursor_id| *cursor_id = (*cursor_id).max(row.id))
+            .or_insert(row.id);
+    }
+    for (bucket_epoch, cursor_id) in bucket_watermarks {
+        save_account_activity_v2_bucket_repair_watermark_tx(tx, bucket_epoch, cursor_id).await?;
+    }
     Ok(())
 }
 
@@ -2876,6 +2890,7 @@ pub(crate) async fn repair_live_invocation_account_activity_v2_once(
     pool: &Pool<Sqlite>,
 ) -> Result<u64> {
     let mut tx = pool.begin().await?;
+    ensure_account_activity_v2_repair_generation_tx(tx.as_mut()).await?;
     let shared_live_cursor =
         load_hourly_rollup_live_progress_tx(tx.as_mut(), HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
     let repair_cursor = load_hourly_rollup_live_progress_tx(
@@ -2885,7 +2900,6 @@ pub(crate) async fn repair_live_invocation_account_activity_v2_once(
     .await?;
 
     if repair_cursor >= shared_live_cursor {
-        mark_live_account_activity_v2_coverage_tx(tx.as_mut()).await?;
         tx.commit().await?;
         return Ok(0);
     }
@@ -2925,15 +2939,31 @@ pub(crate) async fn repair_live_invocation_account_activity_v2_once(
             shared_live_cursor,
         )
         .await?;
-        mark_live_account_activity_v2_coverage_tx(tx.as_mut()).await?;
         tx.commit().await?;
         return Ok(0);
     }
 
     let last_id = rows.last().map(|row| row.id).unwrap_or(repair_cursor);
+    let bucket_watermarks =
+        load_account_activity_v2_bucket_repair_watermarks_for_rows_tx(tx.as_mut(), &rows).await?;
+    let rows_to_replay = rows
+        .iter()
+        .filter(|row| {
+            invocation_bucket_start_epoch(&row.occurred_at)
+                .map(|bucket_epoch| {
+                    row.id
+                        > bucket_watermarks
+                            .get(&bucket_epoch)
+                            .copied()
+                            .unwrap_or_default()
+                })
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     upsert_invocation_hourly_rollups_tx(
         tx.as_mut(),
-        &rows,
+        &rows_to_replay,
         &[HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2],
     )
     .await?;
@@ -2943,9 +2973,7 @@ pub(crate) async fn repair_live_invocation_account_activity_v2_once(
         last_id,
     )
     .await?;
-    if last_id >= shared_live_cursor {
-        mark_live_account_activity_v2_coverage_tx(tx.as_mut()).await?;
-    }
+    mark_live_account_activity_v2_coverage_tx(tx.as_mut(), last_id, &rows).await?;
     tx.commit().await?;
     tracing::debug!(
         archive_replay_target = HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2,
@@ -2959,17 +2987,192 @@ pub(crate) async fn repair_live_invocation_account_activity_v2_once(
     Ok(rows.len() as u64)
 }
 
-async fn mark_live_account_activity_v2_coverage_tx(tx: &mut SqliteConnection) -> Result<()> {
-    let min_occurred_at =
-        sqlx::query_scalar::<_, Option<String>>("SELECT MIN(occurred_at) FROM codex_invocations")
-            .fetch_one(&mut *tx)
-            .await?;
-    let Some(min_occurred_at) = min_occurred_at else {
+async fn save_account_activity_v2_bucket_repair_watermark_tx(
+    tx: &mut SqliteConnection,
+    bucket_start_epoch: i64,
+    cursor_id: i64,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO account_activity_v2_bucket_repair_watermarks (
+            bucket_start_epoch, cursor_id, updated_at
+        )
+        VALUES (?1, ?2, datetime('now'))
+        ON CONFLICT(bucket_start_epoch) DO UPDATE SET
+            cursor_id = MAX(account_activity_v2_bucket_repair_watermarks.cursor_id, excluded.cursor_id),
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(cursor_id.max(0))
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+async fn load_account_activity_v2_bucket_repair_watermarks_for_rows_tx(
+    tx: &mut SqliteConnection,
+    rows: &[InvocationHourlySourceRecord],
+) -> Result<BTreeMap<i64, i64>> {
+    let mut bucket_epochs = rows
+        .iter()
+        .map(|row| invocation_bucket_start_epoch(&row.occurred_at))
+        .collect::<Result<Vec<_>>>()?;
+    bucket_epochs.sort_unstable();
+    bucket_epochs.dedup();
+    if bucket_epochs.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT bucket_start_epoch, cursor_id FROM account_activity_v2_bucket_repair_watermarks WHERE bucket_start_epoch IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for bucket_epoch in bucket_epochs {
+            separated.push_bind(bucket_epoch);
+        }
+    }
+    query.push(")");
+    Ok(query
+        .build_query_as::<(i64, i64)>()
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect::<BTreeMap<_, _>>())
+}
+
+async fn ensure_account_activity_v2_repair_generation_tx(tx: &mut SqliteConnection) -> Result<()> {
+    let generation = load_hourly_rollup_live_progress_tx(
+        tx,
+        INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_GENERATION_DATASET,
+    )
+    .await?;
+    if generation >= INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_GENERATION {
         return Ok(());
-    };
-    let first_bucket = invocation_bucket_start_epoch(&min_occurred_at)?;
+    }
+
+    sqlx::query(
+        r#"
+        DELETE FROM hourly_rollup_materialized_buckets
+        WHERE target = ?1 AND source = ?2
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2)
+    .bind(HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM account_activity_v2_bucket_repair_watermarks")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        r#"
+        UPDATE upstream_account_stats_hourly
+        SET activity_v2_request_count = 0,
+            activity_v2_success_count = 0,
+            activity_v2_failure_count = 0,
+            activity_v2_non_success_count = 0,
+            activity_v2_total_tokens = 0,
+            activity_v2_success_tokens = 0,
+            activity_v2_non_success_tokens = 0,
+            activity_v2_failure_tokens = 0,
+            activity_v2_failure_cost = 0,
+            activity_v2_non_success_cost = 0,
+            activity_v2_cache_input_tokens = 0,
+            activity_v2_total_cost = 0,
+            activity_v2_first_response_sample_count = 0,
+            activity_v2_first_response_sum_ms = 0,
+            activity_v2_first_token_sample_count = 0,
+            activity_v2_first_token_sum_ms = 0,
+            activity_v2_first_token_max_ms = 0,
+            activity_v2_first_token_histogram = '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+            activity_v2_total_latency_sample_count = 0,
+            activity_v2_total_latency_sum_ms = 0,
+            activity_v2_last_invocation_at = NULL,
+            activity_v2_latest_unkeyed_conversation_at = NULL,
+            activity_v2_latest_first_response_at = NULL,
+            activity_v2_latest_first_response_ms = NULL,
+            activity_v2_latest_total_latency_at = NULL,
+            activity_v2_latest_total_latency_ms = NULL,
+            updated_at = datetime('now')
+        "#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset = ?1")
+        .bind(INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_CURSOR_DATASET)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM hourly_rollup_archive_progress WHERE dataset = ?1")
+        .bind(INVOCATION_ACCOUNT_ACTIVITY_V2_ARCHIVE_PROGRESS_DATASET)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2")
+        .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2)
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET historical_rollups_materialized_at = NULL
+        WHERE dataset = ?1
+          AND status = 'completed'
+          AND historical_rollups_materialized_at IS NOT NULL
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .execute(&mut *tx)
+    .await?;
+    save_hourly_rollup_live_progress_tx(
+        tx,
+        INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_GENERATION_DATASET,
+        INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_GENERATION,
+    )
+    .await?;
+    tracing::info!(
+        repair_generation = INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_GENERATION,
+        "initialized account activity v2 repair generation"
+    );
+    Ok(())
+}
+
+async fn mark_live_account_activity_v2_coverage_tx(
+    tx: &mut SqliteConnection,
+    repair_cursor: i64,
+    rows: &[InvocationHourlySourceRecord],
+) -> Result<()> {
     let current_bucket = align_bucket_epoch(Utc::now().timestamp(), 3_600, 0);
-    for bucket_start_epoch in (first_bucket..current_bucket).step_by(3_600) {
+    let mut bucket_epochs = rows
+        .iter()
+        .map(|row| invocation_bucket_start_epoch(&row.occurred_at))
+        .collect::<Result<Vec<_>>>()?;
+    bucket_epochs.sort_unstable();
+    bucket_epochs.dedup();
+    for bucket_start_epoch in bucket_epochs {
+        if bucket_start_epoch >= current_bucket {
+            continue;
+        }
+        let bucket_start = Utc
+            .timestamp_opt(bucket_start_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid account activity coverage bucket start"))?;
+        let bucket_end = bucket_start + ChronoDuration::hours(1);
+        let bucket_max_id = sqlx::query_scalar::<_, Option<i64>>(
+            r#"
+            SELECT MAX(id)
+            FROM codex_invocations
+            WHERE occurred_at >= ?1 AND occurred_at < ?2
+            "#,
+        )
+        .bind(db_occurred_at_lower_bound(bucket_start))
+        .bind(db_occurred_at_upper_bound(bucket_end))
+        .fetch_one(&mut *tx)
+        .await?
+        .unwrap_or_default();
+        if bucket_max_id > repair_cursor {
+            continue;
+        }
         mark_hourly_rollup_bucket_materialized_tx(
             tx,
             HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2,
@@ -4086,7 +4289,7 @@ mod upstream_host_network_minute_tests {
         .expect("create upstream_account_usage_breakdown_hourly table");
         sqlx::query(
             r#"
-            CREATE TABLE hourly_rollup_live_progress (
+            CREATE TABLE IF NOT EXISTS hourly_rollup_live_progress (
                 dataset TEXT PRIMARY KEY,
                 cursor_id INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -4578,7 +4781,7 @@ mod retention_breakdown_materialization_tests {
         .expect("create codex_invocations table");
         sqlx::query(
             r#"
-            CREATE TABLE hourly_rollup_materialized_buckets (
+            CREATE TABLE IF NOT EXISTS hourly_rollup_materialized_buckets (
                 target TEXT NOT NULL,
                 bucket_start_epoch INTEGER NOT NULL,
                 source TEXT NOT NULL,
@@ -4684,6 +4887,130 @@ mod retention_breakdown_materialization_tests {
         .await
         .expect("create hourly_rollup_archive_progress table");
         pool
+    }
+
+    #[tokio::test]
+    async fn account_activity_v2_generation_requeues_materialized_invocation_archives() {
+        let pool = test_pool().await;
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS hourly_rollup_live_progress (
+                dataset TEXT PRIMARY KEY,
+                cursor_id INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create live progress table");
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS hourly_rollup_materialized_buckets (
+                target TEXT NOT NULL,
+                source TEXT NOT NULL,
+                bucket_start_epoch INTEGER NOT NULL,
+                materialized_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (target, source, bucket_start_epoch)
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create materialized bucket table");
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS account_activity_v2_bucket_repair_watermarks (
+                bucket_start_epoch INTEGER PRIMARY KEY,
+                cursor_id INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create v2 watermark table");
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS upstream_account_stats_hourly (
+                activity_v2_request_count INTEGER NOT NULL DEFAULT 0,
+                activity_v2_success_count INTEGER NOT NULL DEFAULT 0,
+                activity_v2_failure_count INTEGER NOT NULL DEFAULT 0,
+                activity_v2_non_success_count INTEGER NOT NULL DEFAULT 0,
+                activity_v2_total_tokens INTEGER NOT NULL DEFAULT 0,
+                activity_v2_success_tokens INTEGER NOT NULL DEFAULT 0,
+                activity_v2_non_success_tokens INTEGER NOT NULL DEFAULT 0,
+                activity_v2_failure_tokens INTEGER NOT NULL DEFAULT 0,
+                activity_v2_failure_cost REAL NOT NULL DEFAULT 0,
+                activity_v2_non_success_cost REAL NOT NULL DEFAULT 0,
+                activity_v2_cache_input_tokens INTEGER NOT NULL DEFAULT 0,
+                activity_v2_total_cost REAL NOT NULL DEFAULT 0,
+                activity_v2_first_response_sample_count INTEGER NOT NULL DEFAULT 0,
+                activity_v2_first_response_sum_ms REAL NOT NULL DEFAULT 0,
+                activity_v2_first_token_sample_count INTEGER NOT NULL DEFAULT 0,
+                activity_v2_first_token_sum_ms REAL NOT NULL DEFAULT 0,
+                activity_v2_first_token_max_ms REAL NOT NULL DEFAULT 0,
+                activity_v2_first_token_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+                activity_v2_total_latency_sample_count INTEGER NOT NULL DEFAULT 0,
+                activity_v2_total_latency_sum_ms REAL NOT NULL DEFAULT 0,
+                activity_v2_last_invocation_at TEXT,
+                activity_v2_latest_unkeyed_conversation_at TEXT,
+                activity_v2_latest_first_response_at TEXT,
+                activity_v2_latest_first_response_ms REAL,
+                activity_v2_latest_total_latency_at TEXT,
+                activity_v2_latest_total_latency_ms REAL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create v2 account stats table");
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                dataset, month_key, file_path, status, historical_rollups_materialized_at
+            )
+            VALUES ('codex_invocations', '2026-07', '/tmp/v2-generation-replay.sqlite.gz',
+                    'completed', datetime('now'))
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert materialized invocation archive");
+        sqlx::query(
+            r#"
+            INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path)
+            VALUES (?1, 'codex_invocations', '/tmp/v2-generation-replay.sqlite.gz')
+            "#,
+        )
+        .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2)
+        .execute(&pool)
+        .await
+        .expect("insert stale v2 replay marker");
+
+        let mut tx = pool.begin().await.expect("begin generation repair");
+        ensure_account_activity_v2_repair_generation_tx(tx.as_mut())
+            .await
+            .expect("initialize repair generation");
+        tx.commit().await.expect("commit generation repair");
+
+        let materialized_at: Option<String> = sqlx::query_scalar(
+            "SELECT historical_rollups_materialized_at FROM archive_batches WHERE file_path = '/tmp/v2-generation-replay.sqlite.gz'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load archive materialization state");
+        let replay_marker_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = 'codex_invocations'",
+        )
+        .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2)
+        .fetch_one(&pool)
+        .await
+        .expect("load v2 replay markers");
+
+        assert!(materialized_at.is_none());
+        assert_eq!(replay_marker_count, 0);
     }
 
     #[tokio::test]
