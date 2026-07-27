@@ -1456,6 +1456,12 @@ export async function fetchInvocationResponseBody(id: number) {
   );
 }
 
+export async function fetchInvocationAttemptResponseBody(id: number, attemptPublicId: string) {
+  return fetchJson<ApiInvocationResponseBodyResponse>(
+    `/api/invocations/${encodeURIComponent(String(id))}/attempts/${encodeURIComponent(attemptPublicId)}/response-body`,
+  );
+}
+
 export async function fetchInvocationRequestBody(id: number) {
   return fetchJson<ApiInvocationRequestBodyResponse>(
     `/api/invocations/${encodeURIComponent(String(id))}/request-body`,

@@ -35,6 +35,7 @@ const apiMocks = vi.hoisted(() => ({
   fetchUpstreamAccountDetail: vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
   fetchInvocationWorkflowDetail: vi.fn(),
   fetchInvocationRequestBody: vi.fn(),
+  fetchInvocationAttemptResponseBody: vi.fn(),
   fetchInvocationResponseBody: vi.fn(),
 }));
 
@@ -45,6 +46,7 @@ vi.mock("../../lib/api", async () => {
     fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
     fetchInvocationWorkflowDetail: apiMocks.fetchInvocationWorkflowDetail,
     fetchInvocationRequestBody: apiMocks.fetchInvocationRequestBody,
+    fetchInvocationAttemptResponseBody: apiMocks.fetchInvocationAttemptResponseBody,
     fetchInvocationResponseBody: apiMocks.fetchInvocationResponseBody,
   };
 });
@@ -84,6 +86,7 @@ beforeEach(() => {
   apiMocks.fetchUpstreamAccountDetail.mockReset();
   apiMocks.fetchInvocationWorkflowDetail.mockReset();
   apiMocks.fetchInvocationRequestBody.mockReset();
+  apiMocks.fetchInvocationAttemptResponseBody.mockReset();
   apiMocks.fetchInvocationResponseBody.mockReset();
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -93,6 +96,7 @@ beforeEach(() => {
   );
   apiMocks.fetchInvocationRequestBody.mockResolvedValue(createRequestBodyFixture());
   apiMocks.fetchInvocationResponseBody.mockResolvedValue(createResponseBodyFixture());
+  apiMocks.fetchInvocationAttemptResponseBody.mockResolvedValue(createResponseBodyFixture());
 });
 
 afterEach(async () => {
@@ -1482,7 +1486,7 @@ describe("InvocationTable", () => {
         bodyText: JSON.stringify({ marker: "request-body-visible" }),
       }),
     );
-    apiMocks.fetchInvocationResponseBody.mockResolvedValueOnce(
+    apiMocks.fetchInvocationAttemptResponseBody.mockResolvedValueOnce(
       createResponseBodyFixture({
         bodyText: JSON.stringify({ marker: "response-body-visible" }),
       }),
@@ -1531,11 +1535,13 @@ describe("InvocationTable", () => {
       await Promise.resolve();
     });
 
-    await waitForCondition(() => apiMocks.fetchInvocationResponseBody.mock.calls.length === 1);
+    await waitForCondition(
+      () => apiMocks.fetchInvocationAttemptResponseBody.mock.calls.length === 1,
+    );
     await waitForCondition(
       () => document.body.textContent?.includes("response-body-visible") === true,
     );
-    expect(apiMocks.fetchInvocationResponseBody).toHaveBeenCalledWith(40);
+    expect(apiMocks.fetchInvocationAttemptResponseBody).toHaveBeenCalledWith(40, "attempt-40");
   });
 
   it("shows forward-proxy workflow routing in expanded details without the legacy pool-empty copy", async () => {

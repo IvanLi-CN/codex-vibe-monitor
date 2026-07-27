@@ -1190,6 +1190,7 @@ pub(crate) fn store_pool_failover_error(
 #[derive(Debug, Clone)]
 pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) attempt_id: Option<i64>,
+    pub(crate) attempt_public_id: Option<String>,
     pub(crate) invoke_id: String,
     pub(crate) occurred_at: String,
     pub(crate) endpoint: String,
@@ -1217,6 +1218,12 @@ pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) upstream_request_header_bytes_approx: Option<i64>,
     pub(crate) upstream_response_body_bytes: Option<i64>,
     pub(crate) upstream_response_header_bytes_approx: Option<i64>,
+    pub(crate) response_raw_path: Option<String>,
+    pub(crate) response_raw_codec: Option<String>,
+    pub(crate) response_raw_size: Option<i64>,
+    pub(crate) response_raw_truncated: bool,
+    pub(crate) response_raw_truncated_reason: Option<String>,
+    pub(crate) response_content_encoding: Option<String>,
 }
 
 #[derive(Debug, Default)]

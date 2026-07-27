@@ -437,8 +437,14 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
     status: StatusCode,
     failure_kind: &'static str,
     error_message: &str,
+    terminal_attempt_summary: Option<&PoolAttemptSummary>,
+    terminal_account: Option<&PoolResolvedAccount>,
+    terminal_connect_latency_ms: Option<f64>,
+    terminal_error: Option<&PoolUpstreamError>,
+    response_envelope_override: Option<ProxyErrorResponseEnvelope>,
 ) -> bool {
-    let response_envelope = build_local_capture_error_envelope(invoke_id, status, error_message);
+    let response_envelope = response_envelope_override
+        .unwrap_or_else(|| build_local_capture_error_envelope(invoke_id, status, error_message));
     let req_raw = spawn_raw_payload_file_write(
         state,
         invoke_id,
@@ -510,10 +516,11 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
             client_fingerprint: client_attribution_context.fingerprint.as_deref(),
             client_header_fingerprints: Some(&client_attribution_context.header_fingerprints)
                 .filter(|fingerprints| !fingerprints.is_empty()),
-            upstream_account_id: None,
-            upstream_account_name: None,
-            upstream_account_kind: None,
-            upstream_base_url_host: None,
+            upstream_account_id: terminal_account.map(|account| account.account_id),
+            upstream_account_name: terminal_account.map(|account| account.display_name.as_str()),
+            upstream_account_kind: terminal_account.map(|account| account.kind.as_str()),
+            upstream_base_url_host: terminal_account
+                .and_then(|account| account.upstream_base_url.host_str()),
             oauth_account_header_attached: None,
             oauth_account_id_shape: None,
             oauth_forwarded_header_count: None,
@@ -528,11 +535,14 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
             oauth_responses_rewrite: None,
             service_tier: None,
             stream_terminal_event: None,
-            upstream_error_code: None,
-            upstream_error_message: None,
+            upstream_error_code: terminal_error
+                .and_then(|error| error.upstream_error_code.as_deref()),
+            upstream_error_message: terminal_error
+                .and_then(|error| error.upstream_error_message.as_deref()),
             downstream_status_code: Some(status),
             downstream_error_message: Some(error_message),
-            upstream_request_id: None,
+            upstream_request_id: terminal_error
+                .and_then(|error| error.upstream_request_id.as_deref()),
             response_content_encoding: None,
             stream_failure_origin: None,
             upstream_read_error_kind: None,
@@ -547,20 +557,23 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
             upstream_approx_download_bytes: None,
             proxy_display_name: None,
             proxy_weight_delta: None,
-            pool_attempt_count: Some(0),
-            pool_distinct_account_count: Some(0),
-            pool_attempt_terminal_reason: Some(failure_kind),
-            blocked_binding: None,
+            pool_attempt_count: terminal_attempt_summary.map(|summary| summary.pool_attempt_count),
+            pool_distinct_account_count: terminal_attempt_summary
+                .map(|summary| summary.pool_distinct_account_count),
+            pool_attempt_terminal_reason: terminal_attempt_summary
+                .and_then(|summary| summary.pool_attempt_terminal_reason.as_deref())
+                .or(Some(failure_kind)),
+            blocked_binding: terminal_error.and_then(|error| error.blocked_binding.as_ref()),
         })),
         raw_response: response_envelope.body_text.clone(),
         response_body_preview_enabled: true,
         req_raw,
         resp_raw: build_local_capture_error_resp_raw(&response_envelope),
         timings: StageTimings {
-            t_total_ms: 0.0,
+            t_total_ms: capture_started.elapsed().as_secs_f64() * 1_000.0,
             t_req_read_ms,
             t_req_parse_ms,
-            t_upstream_connect_ms: 0.0,
+            t_upstream_connect_ms: terminal_connect_latency_ms.unwrap_or_default(),
             t_upstream_ttfb_ms: 0.0,
             first_token_ms: None,
             t_upstream_stream_ms: 0.0,
@@ -1089,6 +1102,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     status,
                     PROXY_FAILURE_POOL_ROUTING_BLOCKED,
                     &message,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
                 )
                 .await;
                 if terminal_invocation_persisted {
@@ -1132,6 +1150,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     status,
                     PROXY_FAILURE_POOL_ROUTING_BLOCKED,
                     &message,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
                 )
                 .await;
                 if terminal_invocation_persisted {
@@ -1253,6 +1276,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             None,
             PoolFailoverProgress::default(),
             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
+            false,
         )
         .await
         {
@@ -2117,6 +2141,18 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             "response",
             proxy_settings.response_body_logging_enabled,
         );
+        let attempt_response_capture_enabled = proxy_settings.response_body_logging_enabled
+            && pending_pool_attempt_record_for_task.is_some();
+        let attempt_response_capture_key = pending_pool_attempt_record_for_task
+            .as_ref()
+            .map(pool_attempt_response_capture_key)
+            .unwrap_or_else(|| invoke_id_for_task.clone());
+        let mut attempt_response_raw_writer = AsyncStreamingRawPayloadWriter::new(
+            state_for_task.as_ref(),
+            &attempt_response_capture_key,
+            "response",
+            attempt_response_capture_enabled,
+        );
         let mut stream_response_parser = StreamResponsePayloadChunkParser::default();
         let mut stream_response_decoder =
             IncrementalResponsePayloadDecoder::new(upstream_content_encoding_for_task.as_deref());
@@ -2148,6 +2184,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 prefetched_first_chunk_received_at_for_task.unwrap_or_else(Instant::now);
             response_preview.append(&chunk);
             response_raw_writer.append(&chunk);
+            attempt_response_raw_writer.append(&chunk);
             let successful_terminal_seen_before_chunk =
                 stream_response_parser.successful_terminal_seen();
             let decoded_chunk = stream_response_decoder.ingest(&chunk);
@@ -2476,6 +2513,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     }
                     response_preview.append(&chunk);
                     response_raw_writer.append(&chunk);
+                    attempt_response_raw_writer.append(&chunk);
                     let successful_terminal_seen_before_chunk =
                         stream_response_parser.successful_terminal_seen();
                     let decoded_chunk = stream_response_decoder.ingest(&chunk);
@@ -2689,6 +2727,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         let req_raw_for_task = req_raw_pending_for_task.finish().await;
         let raw_response_finish_started = Instant::now();
         let resp_raw = response_raw_writer.finish().await;
+        let attempt_resp_raw = attempt_response_raw_writer.finish().await;
         let raw_response_write_elapsed = raw_response_finish_started.elapsed().as_millis() as u64;
         if raw_response_write_log_at_info(raw_response_write_elapsed, resp_raw.size_bytes) {
             info!(
@@ -2985,6 +3024,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         };
         let mut final_attempt_persisted = false;
         if let Some(pending_attempt_record) = pending_pool_attempt_record_for_task.as_mut() {
+            set_pending_pool_upstream_request_attempt_response_capture(
+                pending_attempt_record,
+                &attempt_resp_raw,
+                Some(response_content_encoding.as_str()),
+            );
             update_pending_pool_upstream_request_attempt_http_bytes(
                 pending_attempt_record,
                 pending_attempt_record

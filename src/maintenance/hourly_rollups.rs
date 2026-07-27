@@ -2083,6 +2083,10 @@ pub(crate) async fn sweep_orphan_proxy_raw_files(
             SELECT response_raw_path AS path
             FROM codex_invocations
             WHERE response_raw_path IS NOT NULL
+            UNION
+            SELECT response_raw_path AS path
+            FROM pool_upstream_request_attempts
+            WHERE response_raw_path IS NOT NULL
         )
         WHERE path IS NOT NULL
         "#,
@@ -2209,6 +2213,10 @@ pub(crate) fn build_invocation_routes(router: Router<Arc<AppState>>) -> Router<A
         .route(
             "/api/invocations/:id/response-body",
             get(fetch_invocation_response_body),
+        )
+        .route(
+            "/api/invocations/:id/attempts/:attempt_public_id/response-body",
+            get(fetch_invocation_attempt_response_body),
         )
         .route(
             "/api/invocations/:id/request-body",
@@ -2770,6 +2778,12 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema(
         ("routing_source", "TEXT"),
         ("request_summary_json", "TEXT"),
         ("response_summary_json", "TEXT"),
+        ("response_raw_path", "TEXT"),
+        ("response_raw_codec", "TEXT NOT NULL DEFAULT 'identity'"),
+        ("response_raw_size", "INTEGER"),
+        ("response_raw_truncated", "INTEGER NOT NULL DEFAULT 0"),
+        ("response_raw_truncated_reason", "TEXT"),
+        ("response_content_encoding", "TEXT"),
     ] {
         if !archive_columns.contains(column) {
             let statement = format!(
@@ -2825,6 +2839,12 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_in_plac
         ("request_model", "TEXT"),
         ("request_summary_json", "TEXT"),
         ("response_summary_json", "TEXT"),
+        ("response_raw_path", "TEXT"),
+        ("response_raw_codec", "TEXT NOT NULL DEFAULT 'identity'"),
+        ("response_raw_size", "INTEGER"),
+        ("response_raw_truncated", "INTEGER NOT NULL DEFAULT 0"),
+        ("response_raw_truncated_reason", "TEXT"),
+        ("response_content_encoding", "TEXT"),
     ] {
         if !archive_columns.contains(column) {
             let statement =

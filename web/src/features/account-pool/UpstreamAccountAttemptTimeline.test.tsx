@@ -7,6 +7,7 @@ import { I18nProvider } from "../../i18n";
 import {
   type ApiPoolUpstreamRequestAttempt,
   fetchForwardProxyBindingNodes,
+  fetchInvocationAttemptResponseBody,
   fetchInvocationRequestBody,
   fetchInvocationResponseBody,
   fetchUpstreamAccountAttempts,
@@ -19,6 +20,7 @@ vi.mock("../../lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/api")>()),
   fetchForwardProxyBindingNodes: vi.fn(),
   fetchInvocationRequestBody: vi.fn(),
+  fetchInvocationAttemptResponseBody: vi.fn(),
   fetchInvocationResponseBody: vi.fn(),
   fetchUpstreamAccountAttempts: vi.fn(),
   locateUpstreamAccountAttempt: vi.fn(),
@@ -27,6 +29,7 @@ vi.mock("../../lib/api", async (importOriginal) => ({
 const fetchAttemptsMock = vi.mocked(fetchUpstreamAccountAttempts);
 const fetchBindingNodesMock = vi.mocked(fetchForwardProxyBindingNodes);
 const fetchRequestBodyMock = vi.mocked(fetchInvocationRequestBody);
+const fetchAttemptResponseBodyMock = vi.mocked(fetchInvocationAttemptResponseBody);
 const fetchResponseBodyMock = vi.mocked(fetchInvocationResponseBody);
 const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
 
@@ -174,6 +177,11 @@ describe("UpstreamAccountAttemptTimeline", () => {
         pageSize: 50,
       }),
     );
+    fetchAttemptResponseBodyMock.mockResolvedValue({
+      available: false,
+      unavailableReason: "attempt_response_body_not_captured",
+      detailLevel: "attempt_metrics",
+    });
     fetchBindingNodesMock.mockResolvedValue([
       {
         key: "jp-edge-01",
@@ -331,6 +339,17 @@ describe("UpstreamAccountAttemptTimeline", () => {
       bodySize: 79_224,
       detailLevel: "full",
       captureSource: "raw_file",
+    });
+    fetchAttemptResponseBodyMock.mockResolvedValue({
+      available: true,
+      bodyText: '{"status":"success","output":"large response"}',
+      headers: {
+        contentEncoding: "identity",
+        upstreamRequestId: "req_upstream_account_workflow",
+      },
+      bodySize: 79_224,
+      detailLevel: "full",
+      captureSource: "attempt_raw_file",
     });
     fetchAttemptsMock.mockResolvedValue(
       attemptListResponse({
@@ -560,7 +579,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
       responseBodyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushAsync();
-    expect(fetchResponseBodyMock).toHaveBeenCalledWith(77);
+    expect(fetchAttemptResponseBodyMock).toHaveBeenCalledWith(77, "ASUCC002");
     expect(card?.textContent).toContain("large response");
   });
 
@@ -671,8 +690,9 @@ describe("UpstreamAccountAttemptTimeline", () => {
     });
     await flushAsync();
 
+    expect(fetchAttemptResponseBodyMock).toHaveBeenCalledWith(77, "AFAIL001");
     expect(fetchResponseBodyMock).not.toHaveBeenCalled();
-    expect(card?.textContent).toContain("未绑定调用级响应体");
+    expect(card?.textContent).toContain("该次上游尝试未保留可展示的响应体");
   });
 
   it("shows the pending attempt phase without adding another permanent column", async () => {

@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiInvocation, ApiInvocationWorkflowDetailResponse } from "../../lib/api";
 import {
   formatDashboardWorkingConversationSequenceId,
@@ -19,6 +19,7 @@ import {
 
 const { apiMocks } = vi.hoisted(() => ({
   apiMocks: {
+    fetchInvocationAttemptResponseBody: vi.fn(),
     fetchInvocationRequestBody: vi.fn(),
     fetchInvocationResponseBody: vi.fn(),
     fetchInvocationWorkflowDetail: vi.fn(),
@@ -30,6 +31,7 @@ vi.mock("../../lib/api", async () => {
   return {
     ...actual,
     fetchInvocationRequestBody: apiMocks.fetchInvocationRequestBody,
+    fetchInvocationAttemptResponseBody: apiMocks.fetchInvocationAttemptResponseBody,
     fetchInvocationResponseBody: apiMocks.fetchInvocationResponseBody,
     fetchInvocationWorkflowDetail: apiMocks.fetchInvocationWorkflowDetail,
   };
@@ -53,6 +55,14 @@ beforeAll(() => {
   });
 });
 
+beforeEach(() => {
+  apiMocks.fetchInvocationAttemptResponseBody.mockResolvedValue({
+    available: false,
+    unavailableReason: "attempt_response_body_not_captured",
+    detailLevel: "attempt_metrics",
+  });
+});
+
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -61,6 +71,7 @@ afterEach(() => {
   host = null;
   root = null;
   apiMocks.fetchInvocationRequestBody.mockReset();
+  apiMocks.fetchInvocationAttemptResponseBody.mockReset();
   apiMocks.fetchInvocationResponseBody.mockReset();
   apiMocks.fetchInvocationWorkflowDetail.mockReset();
 });
@@ -675,6 +686,13 @@ describe("InvocationWorkflowDetailPanel", () => {
       detailLevel: "full",
       captureSource: "raw_file",
     });
+    apiMocks.fetchInvocationAttemptResponseBody.mockResolvedValue({
+      available: true,
+      bodyText: failedWorkflowResponseBodyText,
+      bodySize: failedWorkflowResponseBodySize,
+      detailLevel: "full",
+      captureSource: "attempt_raw_file",
+    });
     const record = createRecord();
     const requestBodySizeLabel = `${failedWorkflowRequestBodySize.toLocaleString("zh")} B`;
     const responseBodySizeLabel = `${failedWorkflowResponseBodySize.toLocaleString("zh")} B`;
@@ -795,15 +813,15 @@ describe("InvocationWorkflowDetailPanel", () => {
       responseBodyButton?.click();
     });
     await flushAsyncWork();
-    await waitFor(() => apiMocks.fetchInvocationResponseBody.mock.calls.length > 0);
+    await waitFor(() => apiMocks.fetchInvocationAttemptResponseBody.mock.calls.length > 0);
 
-    expect(apiMocks.fetchInvocationResponseBody).toHaveBeenCalledWith(77);
+    expect(apiMocks.fetchInvocationAttemptResponseBody).toHaveBeenCalledWith(77, "attempt-1");
     expect(host?.textContent ?? "").toContain("归档");
     expect(host?.textContent ?? "").toContain("调用级");
     expect(host?.textContent ?? "").not.toContain("最终响应体：调用级存档。");
   });
 
-  it("does not lazy-fetch invocation response body for a non-final attempt", async () => {
+  it("lazy-fetches the selected non-final attempt response body by attempt identity", async () => {
     const response = createWorkflowDetailResponse();
     const firstAttemptEntry = response.timeline.find((entry) => entry.kind === "attempt");
     if (!firstAttemptEntry?.attempt) {
@@ -823,10 +841,10 @@ describe("InvocationWorkflowDetailPanel", () => {
           upstreamRequestId: "H3HxTB12",
         },
         responseBodyCapture: {
+          availableAtAttemptLevel: true,
           availableAtInvocationLevel: false,
           size: 98,
-          detailLevel: "attempt_metrics",
-          unavailableReason: "non_final_attempt_response_body_not_captured",
+          detailLevel: "full",
         },
       },
     };
@@ -884,6 +902,13 @@ describe("InvocationWorkflowDetailPanel", () => {
     response.timeline.splice(firstAttemptIndex + 1, 0, finalAttemptEntry);
 
     apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(response);
+    apiMocks.fetchInvocationAttemptResponseBody.mockResolvedValue({
+      available: true,
+      bodyText: "first-attempt-body",
+      bodySize: 98,
+      detailLevel: "full",
+      captureSource: "attempt_raw_file",
+    });
     render(<InvocationWorkflowDetailPanel record={createRecord()} />);
 
     await waitFor(() => (host?.textContent ?? "").includes("H3HxTB12"));
@@ -901,9 +926,9 @@ describe("InvocationWorkflowDetailPanel", () => {
     });
     await flushAsyncWork();
 
-    expect(apiMocks.fetchInvocationResponseBody).not.toHaveBeenCalled();
-    expect(host?.textContent ?? "").toContain("响应体不可用");
-    expect(host?.textContent ?? "").not.toContain("加载响应体…");
+    expect(apiMocks.fetchInvocationAttemptResponseBody).toHaveBeenCalledWith(77, "H3HxTB12");
+    await waitFor(() => (host?.textContent ?? "").includes("first-attempt-body"));
+    expect(host?.textContent ?? "").not.toContain("响应体不可用");
     expect(nonFinalResponseBodyButton?.textContent ?? "").not.toContain("181,382 B");
   });
 
@@ -1007,6 +1032,19 @@ describe("InvocationWorkflowDetailPanel", () => {
       detailLevel: "full",
       captureSource: "preview",
     });
+    apiMocks.fetchInvocationAttemptResponseBody.mockResolvedValue({
+      available: true,
+      bodyText:
+        '{"cvmId":"invoke-workflow-77","error":"pool upstream responded with 503: Service temporarily unavailable"}',
+      headers: {
+        contentEncoding: null,
+        upstreamRequestId: "ba5d4a00-808f-493f-9309-fe74f5662337",
+      },
+      bodySize: 98,
+      bodyTruncated: false,
+      detailLevel: "full",
+      captureSource: "attempt_raw_file",
+    });
 
     render(
       <InvocationWorkflowDetailPanel
@@ -1041,9 +1079,12 @@ describe("InvocationWorkflowDetailPanel", () => {
     act(() => {
       responseBodyButton?.click();
     });
-    await waitFor(() => apiMocks.fetchInvocationResponseBody.mock.calls.length > 0);
+    await waitFor(() => apiMocks.fetchInvocationAttemptResponseBody.mock.calls.length > 0);
 
-    expect(apiMocks.fetchInvocationResponseBody).toHaveBeenCalledWith(77);
+    expect(apiMocks.fetchInvocationAttemptResponseBody).toHaveBeenCalledWith(
+      77,
+      "attempt-terminal-preview",
+    );
     await waitFor(() => (host?.textContent ?? "").includes("Service temporarily unavailable"));
     expect(host?.textContent ?? "").toContain("preview");
     expect(host?.textContent ?? "").not.toContain("响应体不可用");
@@ -1148,9 +1189,9 @@ describe("InvocationWorkflowDetailPanel", () => {
 
   it("replaces attempt response-body loading state after an async unavailable payload result", async () => {
     const deferred =
-      createDeferred<Awaited<ReturnType<typeof apiMocks.fetchInvocationResponseBody>>>();
+      createDeferred<Awaited<ReturnType<typeof apiMocks.fetchInvocationAttemptResponseBody>>>();
     apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(createWorkflowDetailResponse());
-    apiMocks.fetchInvocationResponseBody.mockReturnValue(deferred.promise);
+    apiMocks.fetchInvocationAttemptResponseBody.mockReturnValue(deferred.promise);
 
     render(<InvocationWorkflowDetailPanel record={createRecord()} />);
 
@@ -1168,22 +1209,22 @@ describe("InvocationWorkflowDetailPanel", () => {
     act(() => {
       responseBodyButton?.click();
     });
-    await waitFor(() => apiMocks.fetchInvocationResponseBody.mock.calls.length > 0);
+    await waitFor(() => apiMocks.fetchInvocationAttemptResponseBody.mock.calls.length > 0);
     expect(host?.textContent ?? "").toContain("加载响应体…");
 
     await act(async () => {
       deferred.resolve({
         available: false,
-        unavailableReason: "missing_body",
-        detailLevel: "full",
-        captureSource: "raw_file",
+        unavailableReason: "attempt_response_body_not_captured",
+        detailLevel: "attempt_metrics",
+        captureSource: "attempt_metrics",
       });
       await deferred.promise;
     });
 
-    await waitFor(() => (host?.textContent ?? "").includes("该记录没有保留可展示的载荷。"));
+    await waitFor(() => (host?.textContent ?? "").includes("响应体不可用："));
 
     expect(host?.textContent ?? "").not.toContain("加载响应体…");
-    expect(host?.textContent ?? "").not.toContain("missing_body");
+    expect(host?.textContent ?? "").not.toContain("attempt_response_body_not_captured");
   });
 });

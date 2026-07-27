@@ -2182,6 +2182,7 @@ async fn finalize_pool_upstream_request_attempt_fallback_preserves_scope_snapsho
         insert_test_pool_api_key_account(&state, "Scoped fallback", "upstream-fallback").await;
     let pending = PendingPoolAttemptRecord {
         attempt_id: None,
+        attempt_public_id: None,
         invoke_id: "pending-attempt-scope-fallback".to_string(),
         occurred_at: "2026-03-23 21:00:00".to_string(),
         endpoint: "/v1/responses".to_string(),
@@ -2209,6 +2210,12 @@ async fn finalize_pool_upstream_request_attempt_fallback_preserves_scope_snapsho
         upstream_response_header_bytes_approx: None,
         compact_support_status: None,
         compact_support_reason: None,
+        response_raw_path: None,
+        response_raw_codec: Some("identity".to_string()),
+        response_raw_size: None,
+        response_raw_truncated: false,
+        response_raw_truncated_reason: None,
+        response_content_encoding: None,
     };
 
     finalize_pool_upstream_request_attempt(
@@ -3305,6 +3312,7 @@ async fn recover_guard_dropped_pool_early_phase_orphan_without_persisted_attempt
 
     let pending = PendingPoolAttemptRecord {
         attempt_id: None,
+        attempt_public_id: None,
         invoke_id: invoke_id.to_string(),
         occurred_at: occurred_at.to_string(),
         endpoint: "/v1/responses".to_string(),
@@ -3332,6 +3340,12 @@ async fn recover_guard_dropped_pool_early_phase_orphan_without_persisted_attempt
         upstream_response_header_bytes_approx: None,
         compact_support_status: None,
         compact_support_reason: None,
+        response_raw_path: None,
+        response_raw_codec: Some("identity".to_string()),
+        response_raw_size: None,
+        response_raw_truncated: false,
+        response_raw_truncated_reason: None,
+        response_content_encoding: None,
     };
 
     recover_guard_dropped_pool_early_phase_orphan(state.as_ref(), pending, false, false)
@@ -4541,6 +4555,7 @@ async fn pool_early_phase_orphan_cleanup_guard_disarm_keeps_invocation_running_w
 
     let pending = PendingPoolAttemptRecord {
         attempt_id: None,
+        attempt_public_id: None,
         invoke_id: invoke_id.to_string(),
         occurred_at: occurred_at.to_string(),
         endpoint: "/v1/responses".to_string(),
@@ -4568,6 +4583,12 @@ async fn pool_early_phase_orphan_cleanup_guard_disarm_keeps_invocation_running_w
         upstream_response_header_bytes_approx: None,
         compact_support_status: None,
         compact_support_reason: None,
+        response_raw_path: None,
+        response_raw_codec: Some("identity".to_string()),
+        response_raw_size: None,
+        response_raw_truncated: false,
+        response_raw_truncated_reason: None,
+        response_content_encoding: None,
     };
 
     {
@@ -4605,6 +4626,7 @@ async fn finalize_deferred_pool_early_phase_cleanup_guard_after_terminal_invocat
     .await;
     let pending = PendingPoolAttemptRecord {
         attempt_id: Some(43),
+        attempt_public_id: None,
         invoke_id: "guard-complete-terminal-after-invocation".to_string(),
         occurred_at: "2026-03-23 21:10:10".to_string(),
         endpoint: "/v1/responses".to_string(),
@@ -4632,6 +4654,12 @@ async fn finalize_deferred_pool_early_phase_cleanup_guard_after_terminal_invocat
         upstream_response_header_bytes_approx: None,
         compact_support_status: None,
         compact_support_reason: None,
+        response_raw_path: None,
+        response_raw_codec: Some("identity".to_string()),
+        response_raw_size: None,
+        response_raw_truncated: false,
+        response_raw_truncated_reason: None,
+        response_content_encoding: None,
     };
 
     let mut guard = Some(PoolEarlyPhaseOrphanCleanupGuard::new(state, pending));
@@ -4669,6 +4697,7 @@ async fn complete_deferred_pool_early_phase_cleanup_guard_marks_terminal_and_dis
         .expect("store ordinary invocation runtime snapshot");
     let pending = PendingPoolAttemptRecord {
         attempt_id: Some(42),
+        attempt_public_id: None,
         invoke_id: invoke_id.to_string(),
         occurred_at: occurred_at.to_string(),
         endpoint: "/v1/responses".to_string(),
@@ -4696,6 +4725,12 @@ async fn complete_deferred_pool_early_phase_cleanup_guard_marks_terminal_and_dis
         upstream_response_header_bytes_approx: None,
         compact_support_status: None,
         compact_support_reason: None,
+        response_raw_path: None,
+        response_raw_codec: Some("identity".to_string()),
+        response_raw_size: None,
+        response_raw_truncated: false,
+        response_raw_truncated_reason: None,
+        response_content_encoding: None,
     };
 
     let mut guard = Some(PoolEarlyPhaseOrphanCleanupGuard::new(
@@ -4756,6 +4791,7 @@ async fn attempt_completion_preserves_synthetic_runtime_until_request_cleanup() 
         .expect("store ordinary runtime snapshot");
     let pending = PendingPoolAttemptRecord {
         attempt_id: Some(44),
+        attempt_public_id: None,
         invoke_id: invoke_id.to_string(),
         occurred_at: occurred_at.to_string(),
         endpoint: "/v1/responses".to_string(),
@@ -4783,6 +4819,12 @@ async fn attempt_completion_preserves_synthetic_runtime_until_request_cleanup() 
         upstream_response_header_bytes_approx: None,
         compact_support_status: None,
         compact_support_reason: None,
+        response_raw_path: None,
+        response_raw_codec: Some("identity".to_string()),
+        response_raw_size: None,
+        response_raw_truncated: false,
+        response_raw_truncated_reason: None,
+        response_content_encoding: None,
     };
     let mut attempt_guard = Some(PoolEarlyPhaseOrphanCleanupGuard::new(
         state.clone(),

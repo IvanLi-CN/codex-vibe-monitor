@@ -581,8 +581,31 @@ pub(crate) async fn begin_pool_upstream_request_attempt_with_scope_and_routing_s
         }
     };
 
+    let attempt_public_id = if let Some(attempt_id) = attempt_id {
+        match sqlx::query_scalar::<_, Option<String>>(
+            "SELECT attempt_public_id FROM pool_upstream_request_attempts WHERE id = ?1",
+        )
+        .bind(attempt_id)
+        .fetch_optional(pool)
+        .await
+        {
+            Ok(value) => value.flatten(),
+            Err(err) => {
+                warn!(
+                    attempt_id,
+                    error = %err,
+                    "failed to load pool attempt public id after insert"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     PendingPoolAttemptRecord {
         attempt_id,
+        attempt_public_id,
         invoke_id: trace.invoke_id.clone(),
         occurred_at: trace.occurred_at.clone(),
         endpoint: trace.endpoint.clone(),
@@ -610,7 +633,97 @@ pub(crate) async fn begin_pool_upstream_request_attempt_with_scope_and_routing_s
         upstream_request_header_bytes_approx: None,
         upstream_response_body_bytes: None,
         upstream_response_header_bytes_approx: None,
+        response_raw_path: None,
+        response_raw_codec: None,
+        response_raw_size: None,
+        response_raw_truncated: false,
+        response_raw_truncated_reason: None,
+        response_content_encoding: None,
     }
+}
+
+pub(crate) fn set_pending_pool_upstream_request_attempt_response_capture(
+    pending: &mut PendingPoolAttemptRecord,
+    meta: &RawPayloadMeta,
+    content_encoding: Option<&str>,
+) {
+    pending.response_raw_path = meta.path.clone();
+    pending.response_raw_codec = Some(raw_payload_meta_codec(meta).to_string());
+    pending.response_raw_size = Some(meta.size_bytes);
+    pending.response_raw_truncated = meta.truncated;
+    pending.response_raw_truncated_reason = meta.truncated_reason.clone();
+    pending.response_content_encoding = content_encoding
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+}
+
+pub(crate) fn pool_attempt_response_capture_key(pending: &PendingPoolAttemptRecord) -> String {
+    pending.attempt_public_id.clone().unwrap_or_else(|| {
+        format!(
+            "{}-attempt-{}-{}-{}",
+            pending.invoke_id,
+            pending.attempt_index,
+            pending.distinct_account_index,
+            pending.same_account_retry_index,
+        )
+    })
+}
+
+pub(crate) async fn persist_pool_upstream_request_attempt_response_capture(
+    pool: &Pool<Sqlite>,
+    pending: &PendingPoolAttemptRecord,
+) -> Result<()> {
+    let attempt_id = match pending.attempt_id {
+        Some(attempt_id) => Some(attempt_id),
+        None => sqlx::query_scalar::<_, Option<i64>>(
+            r#"
+            SELECT id
+            FROM pool_upstream_request_attempts
+            WHERE invoke_id = ?1
+              AND occurred_at = ?2
+              AND attempt_index = ?3
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(&pending.invoke_id)
+        .bind(&pending.occurred_at)
+        .bind(pending.attempt_index)
+        .fetch_optional(pool)
+        .await?
+        .flatten(),
+    };
+    let Some(attempt_id) = attempt_id else {
+        return Ok(());
+    };
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_request_attempts
+        SET
+            response_raw_path = ?2,
+            response_raw_codec = COALESCE(?3, response_raw_codec),
+            response_raw_size = ?4,
+            response_raw_truncated = ?5,
+            response_raw_truncated_reason = ?6,
+            response_content_encoding = ?7
+        WHERE id = ?1
+        "#,
+    )
+    .bind(attempt_id)
+    .bind(pending.response_raw_path.as_deref())
+    .bind(pending.response_raw_codec.as_deref())
+    .bind(pending.response_raw_size)
+    .bind(if pending.response_raw_truncated {
+        1_i64
+    } else {
+        0_i64
+    })
+    .bind(pending.response_raw_truncated_reason.as_deref())
+    .bind(pending.response_content_encoding.as_deref())
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 pub(crate) fn update_pending_pool_upstream_request_attempt_http_bytes(
@@ -1908,6 +2021,11 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
     let upstream_request_header_bytes_approx = pending.upstream_request_header_bytes_approx;
     let upstream_response_body_bytes = pending.upstream_response_body_bytes;
     let upstream_response_header_bytes_approx = pending.upstream_response_header_bytes_approx;
+    let response_raw_capture_present = pending.response_raw_path.is_some()
+        || pending.response_raw_size.is_some()
+        || pending.response_raw_truncated
+        || pending.response_raw_truncated_reason.is_some()
+        || pending.response_content_encoding.is_some();
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: pending.invoke_id.clone(),
         occurred_at: pending.occurred_at.clone(),
@@ -1943,7 +2061,13 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
                 upstream_request_header_bytes_approx = COALESCE(?20, upstream_request_header_bytes_approx),
                 upstream_response_body_bytes = COALESCE(?21, upstream_response_body_bytes),
                 upstream_response_header_bytes_approx = COALESCE(?22, upstream_response_header_bytes_approx),
-                upstream_base_url_host = COALESCE(?23, upstream_base_url_host)
+                upstream_base_url_host = COALESCE(?23, upstream_base_url_host),
+                response_raw_path = COALESCE(?24, response_raw_path),
+                response_raw_codec = COALESCE(?25, response_raw_codec),
+                response_raw_size = COALESCE(?26, response_raw_size),
+                response_raw_truncated = COALESCE(?27, response_raw_truncated),
+                response_raw_truncated_reason = COALESCE(?28, response_raw_truncated_reason),
+                response_content_encoding = COALESCE(?29, response_content_encoding)
             WHERE id = ?1
             "#,
         )
@@ -1970,6 +2094,16 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
         .bind(upstream_response_body_bytes)
         .bind(upstream_response_header_bytes_approx)
         .bind(pending.upstream_base_url_host.as_deref())
+        .bind(pending.response_raw_path.as_deref())
+        .bind(pending.response_raw_codec.as_deref())
+        .bind(pending.response_raw_size)
+        .bind(response_raw_capture_present.then_some(if pending.response_raw_truncated {
+            1_i64
+        } else {
+            0_i64
+        }))
+        .bind(pending.response_raw_truncated_reason.as_deref())
+        .bind(pending.response_content_encoding.as_deref())
         .execute(pool)
         .await?;
 
@@ -1978,7 +2112,7 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
         }
     }
 
-    insert_pool_upstream_request_attempt_with_scope(
+    let inserted_attempt_id = insert_pool_upstream_request_attempt_with_scope(
         pool,
         &trace,
         pending.group_name_snapshot.as_deref(),
@@ -2012,8 +2146,34 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
         compact_support_status,
         compact_support_reason,
     )
-    .await
-    .map(|_| ())
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_request_attempts
+        SET
+            response_raw_path = ?2,
+            response_raw_codec = COALESCE(?3, response_raw_codec),
+            response_raw_size = ?4,
+            response_raw_truncated = ?5,
+            response_raw_truncated_reason = ?6,
+            response_content_encoding = ?7
+        WHERE id = ?1
+        "#,
+    )
+    .bind(inserted_attempt_id)
+    .bind(pending.response_raw_path.as_deref())
+    .bind(pending.response_raw_codec.as_deref())
+    .bind(pending.response_raw_size)
+    .bind(if pending.response_raw_truncated {
+        1_i64
+    } else {
+        0_i64
+    })
+    .bind(pending.response_raw_truncated_reason.as_deref())
+    .bind(pending.response_content_encoding.as_deref())
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 pub(crate) async fn insert_pool_upstream_terminal_attempt(
