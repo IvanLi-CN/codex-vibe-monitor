@@ -47,6 +47,7 @@ Responses Lite protocol detection and upstream error retry classification are se
 - Do not implement an image executor, response-stream conversion, or historical hosted-result backfill in CVM.
 - Keep the snapshot immutable until the referenced Codex commit is deliberately refreshed; do not synthesize a schema at runtime.
 - Run the same contract for compressed and file-backed replay bodies when a Codex rewrite is active; `keep_original` continues to preserve its original snapshot.
+- Learn namespace capability only from an actual `injected` or `replaced` attempt: the exact injected `502` signature records unsupported, while a successful injected attempt records supported. An operator override is therefore a bounded retest mechanism, not a permanent routing bypass.
 
 ## References
 

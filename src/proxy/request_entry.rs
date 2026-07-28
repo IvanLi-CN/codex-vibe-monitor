@@ -3766,14 +3766,18 @@ pub(crate) fn codex_imagegen_upstream_incompatibility(
     if status != StatusCode::BAD_GATEWAY {
         return false;
     }
-    let was_injected = audit
-        .and_then(|value| value.get("outcome"))
-        .and_then(Value::as_str)
-        .is_some_and(|outcome| matches!(outcome, "injected" | "replaced"));
+    let was_injected = codex_imagegen_audit_was_injected(audit);
     was_injected
         && message
             .to_ascii_lowercase()
             .contains("upstream request failed")
+}
+
+pub(crate) fn codex_imagegen_audit_was_injected(audit: Option<&Value>) -> bool {
+    audit
+        .and_then(|value| value.get("outcome"))
+        .and_then(Value::as_str)
+        .is_some_and(|outcome| matches!(outcome, "injected" | "replaced"))
 }
 
 fn rewrite_codex_imagegen_tools(

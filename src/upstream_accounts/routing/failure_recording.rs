@@ -266,6 +266,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     invoke_id: Option<&str>,
     endpoint: &str,
     image_intent: ImageIntent,
+    codex_imagegen_rewrite: Option<&Value>,
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
 ) -> Result<()> {
@@ -280,8 +281,14 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         sticky_affinity_generation,
     )
     .await?;
-    record_pool_route_success_capability_observations(pool, account_id, endpoint, image_intent)
-        .await
+    record_pool_route_success_capability_observations(
+        pool,
+        account_id,
+        endpoint,
+        image_intent,
+        codex_imagegen_rewrite,
+    )
+    .await
 }
 
 pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
@@ -305,8 +312,14 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_for
         None,
     )
     .await?;
-    record_pool_route_success_capability_observations(pool, account_id, endpoint, image_intent)
-        .await
+    record_pool_route_success_capability_observations(
+        pool,
+        account_id,
+        endpoint,
+        image_intent,
+        None,
+    )
+    .await
 }
 
 async fn record_pool_route_success_capability_observations(
@@ -314,6 +327,7 @@ async fn record_pool_route_success_capability_observations(
     account_id: i64,
     endpoint: &str,
     image_intent: ImageIntent,
+    codex_imagegen_rewrite: Option<&Value>,
 ) -> Result<()> {
     let requirements =
         RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
@@ -354,6 +368,16 @@ async fn record_pool_route_success_capability_observations(
             UpstreamCapabilityAxis::ResponseImageTool,
             CapabilitySupport::Supported,
             Some(UpstreamCapabilityAxis::ResponseImageTool.success_reason()),
+        )
+        .await?;
+    }
+    if crate::codex_imagegen_audit_was_injected(codex_imagegen_rewrite) {
+        record_capability_observation(
+            pool,
+            account_id,
+            UpstreamCapabilityAxis::CodexImagegen,
+            CapabilitySupport::Supported,
+            Some(UpstreamCapabilityAxis::CodexImagegen.success_reason()),
         )
         .await?;
     }

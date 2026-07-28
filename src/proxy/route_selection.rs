@@ -3391,6 +3391,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 let account = upstream.account;
                                 let upstream_attempt_started_at_utc =
                                     upstream.attempt_started_at_utc;
+                                let codex_imagegen_rewrite = upstream.codex_imagegen_rewrite;
                                 let pending_pool_attempt_record = upstream.pending_attempt_record;
                                 let upstream_invoke_id = pending_pool_attempt_record
                                     .as_ref()
@@ -3510,6 +3511,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                 upstream_invoke_id.as_deref(),
                                                 original_uri.path(),
                                                 request_image_intent,
+                                                codex_imagegen_rewrite.as_ref(),
                                                 pending_pool_attempt_record
                                                     .as_ref()
                                                     .and_then(|pending| pending.attempt_id),
@@ -3578,6 +3580,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 let upstream_content_encoding_for_task =
                                     upstream_content_encoding.clone();
                                 let request_path_for_record = original_uri.path().to_string();
+                                let codex_imagegen_rewrite_for_record =
+                                    codex_imagegen_rewrite.clone();
                                 let proxy_request_permit_for_task = proxy_request_permit;
                                 let runtime_snapshot_cleanup_guard_for_task =
                                     runtime_snapshot_cleanup_guard.take();
@@ -3747,6 +3751,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                 invoke_id_for_record.as_deref(),
                                                 request_path_for_record.as_str(),
                                                 request_image_intent,
+                                                codex_imagegen_rewrite_for_record.as_ref(),
                                                 pending_pool_attempt_record_for_task
                                                     .as_ref()
                                                     .and_then(|pending| pending.attempt_id),
@@ -4121,6 +4126,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
 
         let account = upstream.account;
         let upstream_attempt_started_at_utc = upstream.attempt_started_at_utc;
+        let codex_imagegen_rewrite = upstream.codex_imagegen_rewrite;
         let pending_pool_attempt_record = upstream.pending_attempt_record;
         let upstream_invoke_id = pending_pool_attempt_record
             .as_ref()
@@ -4224,6 +4230,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         upstream_invoke_id.as_deref(),
                         original_uri.path(),
                         request_image_intent,
+                        codex_imagegen_rewrite.as_ref(),
                         pending_pool_attempt_record
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
@@ -4322,6 +4329,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
         let request_contains_encrypted_content_for_task = request_contains_encrypted_content;
         let upstream_content_encoding_for_task = upstream_content_encoding.clone();
         let request_path_for_record = original_uri.path().to_string();
+        let codex_imagegen_rewrite_for_record = codex_imagegen_rewrite.clone();
         let proxy_request_permit_for_task = proxy_request_permit;
         let runtime_snapshot_cleanup_guard_for_task = runtime_snapshot_cleanup_guard.take();
         tokio::spawn(async move {
@@ -4466,6 +4474,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         invoke_id_for_record.as_deref(),
                         request_path_for_record.as_str(),
                         request_image_intent,
+                        codex_imagegen_rewrite_for_record.as_ref(),
                         pending_pool_attempt_record_for_task
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
