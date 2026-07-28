@@ -2,6 +2,7 @@ use super::*;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use tokio::sync::watch;
 
@@ -1179,7 +1180,27 @@ pub(crate) fn dashboard_activity_selection_fingerprint(
 #[derive(Debug, Clone)]
 pub(crate) struct DashboardActivitySnapshotCacheEntry {
     pub(crate) cached_at: Instant,
+    /// Controls the next reconciliation attempt independently from the DB baseline age.
+    pub(crate) last_reconcile_attempted_at: Instant,
+    /// The live invocation cursor observed immediately before the DB baseline build. The entry
+    /// is accepted only when that cursor stays stable for the build, so persisted terminal
+    /// records at or below it are already represented by the baseline.
+    pub(crate) baseline_snapshot_cursor: i64,
     pub(crate) response: DashboardActivitySnapshot,
+}
+
+/// Write-side state layered over the last DB-backed Dashboard snapshot.
+///
+/// Terminal records are accepted by the write controller before SQLite flushes. Keeping their
+/// identities here lets the read side publish those deltas immediately without rebuilding the
+/// full range for every terminal event.
+#[derive(Debug, Default)]
+pub(crate) struct DashboardActivityReadModel {
+    pub(crate) applied_terminal_keys: HashMap<(String, String), Instant>,
+    pub(crate) pending_terminal_records: VecDeque<ApiInvocation>,
+    pub(crate) terminal_delta_count: u64,
+    pub(crate) duplicate_delta_count: u64,
+    pub(crate) pending_terminal_overflow_count: u64,
 }
 
 #[derive(Debug)]
@@ -1195,6 +1216,7 @@ pub(crate) struct DashboardActivitySnapshotCacheState {
     pub(crate) in_flight:
         HashMap<DashboardActivitySnapshotSelection, DashboardActivitySnapshotInFlight>,
     pub(crate) invalidation_reasons: HashMap<DashboardActivitySnapshotSelection, &'static str>,
+    pub(crate) read_model: DashboardActivityReadModel,
 }
 
 #[derive(Debug)]

@@ -1466,6 +1466,19 @@ pub(crate) async fn broadcast_recovered_proxy_invocations(
         return Ok(());
     }
 
+    invalidate_dashboard_activity_baselines_for_recovery(state).await;
+
+    for record in &records {
+        let delta = apply_dashboard_activity_terminal_record(state, record).await;
+        debug!(
+            invoke_id = %record.invoke_id,
+            terminal_delta_applied_selection_count = delta.applied_selection_count,
+            terminal_delta_duplicate = delta.duplicate,
+            response_source = "memory",
+            "applied recovered terminal record to dashboard activity read model"
+        );
+    }
+
     if records.iter().any(|record| {
         record
             .prompt_cache_key
@@ -3321,6 +3334,7 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_by_key(
         reason,
         terminal_removed_runtime_snapshot = true,
         terminal_already_tombstoned = remove_outcome.already_terminal,
+        terminal_delta_skipped_runtime_only = true,
         "non-terminal proxy runtime snapshot terminalized by key"
     );
     if state.broadcaster.receiver_count() > 0
@@ -3399,6 +3413,7 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_with_error(
         terminal_overlay_emitted = true,
         terminal_removed_runtime_snapshot = true,
         terminal_already_tombstoned = remove_outcome.already_terminal,
+        terminal_delta_skipped_runtime_only = true,
         "non-terminal proxy runtime snapshot terminalized with error overlay"
     );
     if state.broadcaster.receiver_count() > 0
@@ -3439,6 +3454,15 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
         );
         return Ok(());
     }
+    let delta = apply_dashboard_activity_terminal_record(state, &persisted_record).await;
+    debug!(
+        invoke_id = %invoke_id,
+        terminal_delta_applied_selection_count = delta.applied_selection_count,
+        terminal_delta_duplicate = delta.duplicate,
+        terminal_delta_skipped_out_of_range_count = delta.skipped_out_of_range_count,
+        response_source = "memory",
+        "registered terminal record in dashboard activity read model before sqlite enqueue"
+    );
     let terminal_enqueued =
         state
             .sqlite_batch_writer
@@ -3450,6 +3474,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                 },
             ));
     if !terminal_enqueued {
+        rollback_dashboard_activity_terminal_record(state, &persisted_record).await;
         let terminal_tombstone_cleared = state
             .proxy_runtime_invocations
             .clear_terminal_tombstone(&persisted_record.invoke_id, &persisted_record.occurred_at);
@@ -3478,7 +3503,8 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
             .flush_buffered_for_test(&state.pool)
             .await;
     }
-    if state.broadcaster.receiver_count() > 0
+    if terminal_enqueued
+        && state.broadcaster.receiver_count() > 0
         && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
             records: vec![persisted_record],
         })
@@ -3489,8 +3515,8 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
             "failed to broadcast terminal proxy capture record"
         );
     }
-    schedule_dashboard_activity_live_snapshot(state);
     if terminal_enqueued {
+        schedule_dashboard_activity_live_snapshot(state);
         schedule_proxy_capture_follow_up_after_terminal_enqueue(
             state,
             &invoke_id,

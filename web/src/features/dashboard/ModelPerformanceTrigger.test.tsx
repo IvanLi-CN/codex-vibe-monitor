@@ -19,8 +19,8 @@ const modelPerformance: ModelPerformance = {
   },
   models: [
     {
-      model: "gpt-5.6",
-      reasoningEffort: null,
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
       tokensPerMinute: 1200,
       streamingResponseRate: null,
       avgResponseMs: null,
@@ -28,6 +28,17 @@ const modelPerformance: ModelPerformance = {
       wallClockUsageDurationMs: 90000,
       cumulativeUsageDurationMs: 288000,
       parallelism: 3.2,
+    },
+    {
+      model: "gpt-5.6-terra-experimental-routing-variant-with-a-very-long-name",
+      reasoningEffort: "adaptive-experimental",
+      tokensPerMinute: 480,
+      streamingResponseRate: 72,
+      avgResponseMs: 4100,
+      avgFirstTokenMs: 830,
+      wallClockUsageDurationMs: 64000,
+      cumulativeUsageDurationMs: 72000,
+      parallelism: 1.13,
     },
   ],
 };
@@ -87,7 +98,7 @@ async function renderTrigger(performance = modelPerformance) {
 }
 
 describe("ModelPerformanceTrigger", () => {
-  it("opens the accessible desktop tooltip with total and unspecified effort rows", async () => {
+  it("opens the accessible desktop tooltip with single-line model identity badges", async () => {
     await renderTrigger();
     const trigger = host?.querySelector('[aria-label="Open model performance details"]');
     expect(trigger).toBeInstanceOf(HTMLElement);
@@ -101,7 +112,21 @@ describe("ModelPerformanceTrigger", () => {
     const tooltip = document.body.querySelector('[role="tooltip"]');
     expect(tooltip?.textContent).toContain("Model performance");
     expect(tooltip?.textContent).toMatch(/Total|总计/);
-    expect(tooltip?.textContent).toMatch(/Unspecified|未指定/);
+    const modelContexts = tooltip?.querySelectorAll(
+      '[data-testid="model-performance-table-model-context"]',
+    );
+    expect(modelContexts).toHaveLength(2);
+    expect(modelContexts?.[0]?.getAttribute("data-model-context-display")).toBe("model-badge");
+    expect(modelContexts?.[0]?.getAttribute("title")).toContain("gpt-5.6-sol");
+    expect(modelContexts?.[0]?.querySelector('[data-testid$="-name"]')).toBeNull();
+    expect(modelContexts?.[0]?.querySelector('[data-reasoning-effort-tone="high"]')).not.toBeNull();
+    expect(modelContexts?.[1]?.getAttribute("data-model-context-display")).toBe("name-and-effort");
+    expect(modelContexts?.[1]?.querySelector('[data-testid$="-name"]')?.getAttribute("title")).toBe(
+      "gpt-5.6-terra-experimental-routing-variant-with-a-very-long-name",
+    );
+    expect(
+      modelContexts?.[1]?.querySelector('[data-reasoning-effort-tone="unknown"]'),
+    ).not.toBeNull();
     expect(tooltip?.textContent).toMatch(/Wall clock|墙钟时长/);
     expect(tooltip?.textContent).toMatch(/Cumulative|累计时长/);
     expect(tooltip?.textContent).toMatch(/Parallelism|并行数/);
@@ -127,6 +152,9 @@ describe("ModelPerformanceTrigger", () => {
     ).not.toBeNull();
     expect(dialog?.textContent).toMatch(/Wall clock|墙钟时长/);
     expect(dialog?.textContent).toContain("x3.20");
+    expect(
+      dialog?.querySelector('[data-testid="model-performance-drawer-model-context"]'),
+    ).not.toBeNull();
   });
 
   it("normalizes rounded wall-clock durations and fixed parallelism formatting", async () => {

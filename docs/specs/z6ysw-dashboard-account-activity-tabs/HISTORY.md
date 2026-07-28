@@ -1,5 +1,7 @@
 # Dashboard 工作区卡片双视图与上游账号活动聚合 演进历史（#z6ysw）
 
+- 2026-07-25：针对持续 terminal 流量下每 5 秒 `dashboard_full` 重建的线上压力，Dashboard/account open-range 读侧改为共享内存累计 baseline。终态 write-side fan-out 不依赖可能滞后的 subscription mutation listener；缓存最长 60 秒后 reconcile，失败保留 last-good 快照。
+
 > 这里记录会影响 Agent 理解“为什么一步步变成现在这样”的关键演进；单次任务流水账不放这里，规范正文仍以 `./SPEC.md` 为准。
 
 ## Decision Trace
