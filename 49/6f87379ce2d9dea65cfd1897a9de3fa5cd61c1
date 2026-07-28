@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.50.8",
+  "base_stable_version": "2.50.7",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-28T04:15:19Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.50.8",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8f9c32ec518c9534e4f14cb653bf3ac77b1a0f7d",
+  "pr_number": 708,
+  "pr_title": "fix(invocations): qualify attempt response body query",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.50.8",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.50.8",
+  "target_sha": "496f87379ce2d9dea65cfd1897a9de3fa5cd61c1",
+  "type_label": "type:patch"
+}
