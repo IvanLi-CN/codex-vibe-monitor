@@ -5737,6 +5737,64 @@ fn proxy_openai_v1_successful_codex_imagegen_retest_restores_observed_capability
 }
 
 #[test]
+fn codex_imagegen_supported_retest_claim_is_atomic() {
+    run_future_with_large_stack(async {
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse("http://127.0.0.1:1").expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(20),
+        )
+        .await;
+        let account_id = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Codex Imagegen Atomic Retest",
+            "upstream-codex-imagegen-atomic-retest",
+            None,
+            None,
+            None,
+        )
+        .await;
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET codex_imagegen_capability = 'unsupported',
+                policy_codex_imagegen_capability_override = 'supported'
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .execute(&state.pool)
+        .await
+        .expect("permit one explicit Codex imagegen retest");
+
+        let first_pool = state.pool.clone();
+        let second_pool = state.pool.clone();
+        let (first, second) = tokio::join!(
+            claim_codex_imagegen_supported_retest_override(&first_pool, account_id),
+            claim_codex_imagegen_supported_retest_override(&second_pool, account_id),
+        );
+        let claims = [
+            first.expect("first retest claim should succeed"),
+            second.expect("second retest claim should succeed"),
+        ];
+        assert_eq!(
+            claims
+                .iter()
+                .filter(|claim| **claim == CodexImagegenRetestClaim::Claimed)
+                .count(),
+            1
+        );
+        assert_eq!(
+            claims
+                .iter()
+                .filter(|claim| **claim == CodexImagegenRetestClaim::AlreadyClaimed)
+                .count(),
+            1
+        );
+    });
+}
+
+#[test]
 fn proxy_openai_v1_image_edits_ignores_response_image_tool_capability_gate() {
     run_future_with_large_stack(async move {
         async fn direct_image_echo_upstream(headers: HeaderMap, body: Bytes) -> Response {

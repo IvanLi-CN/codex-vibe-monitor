@@ -1658,62 +1658,59 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 prepared_request_body.request_body_for_capture.clone();
             let attempted_codex_imagegen_rewrite =
                 prepared_request_body.codex_imagegen_rewrite.clone();
+            let (forward_proxy_scope, selected_proxy, _client) =
+                match select_pool_account_forward_proxy_client(state.as_ref(), &account).await {
+                    Ok(selection) => selection,
+                    Err(message) => {
+                        if let Err(route_err) = record_pool_route_transport_failure(
+                            &state.pool,
+                            account.account_id,
+                            sticky_key,
+                            &message,
+                            trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                        )
+                        .await
+                        {
+                            warn!(account_id = account.account_id, error = %route_err, "failed to record pool forward proxy selection failure");
+                        }
+                        store_pool_failover_error(
+                            &mut last_error,
+                            &mut preserve_sticky_owner_terminal_error,
+                            PoolUpstreamError {
+                                codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
+                                account: Some(account.clone()),
+                                status: StatusCode::BAD_GATEWAY,
+                                message,
+                                canonical_error_message: None,
+                                failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                                blocked_binding: None,
+                                connect_latency_ms: 0.0,
+                                upstream_error_code: None,
+                                upstream_error_message: None,
+                                downstream_error_message: None,
+                                upstream_request_id: None,
+                                proxy_binding_key_snapshot: None,
+                                oauth_responses_debug: None,
+                                attempt_summary: PoolAttemptSummary::default(),
+                                requested_service_tier: attempted_requested_service_tier.clone(),
+                                request_body_for_capture: attempted_request_body_for_capture
+                                    .clone(),
+                            },
+                            attempted_codex_imagegen_rewrite.as_ref(),
+                        );
+                        release_pool_routing_reservation(state.as_ref(), &reservation_key);
+                        exhausted_accounts_all_rate_limited = false;
+                        continue 'account_loop;
+                    }
+                };
             let (
                 response,
                 oauth_responses_debug,
                 forward_proxy_selection,
                 transport_bytes_live_counted,
+                codex_imagegen_retest_claimed,
             ) = match &account.auth {
                 PoolResolvedAuth::ApiKey { authorization } => {
-                    let (forward_proxy_scope, selected_proxy, _client) =
-                        match select_pool_account_forward_proxy_client(state.as_ref(), &account)
-                            .await
-                        {
-                            Ok(selection) => selection,
-                            Err(message) => {
-                                if let Err(route_err) = record_pool_route_transport_failure(
-                                    &state.pool,
-                                    account.account_id,
-                                    sticky_key,
-                                    &message,
-                                    trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                                )
-                                .await
-                                {
-                                    warn!(account_id = account.account_id, error = %route_err, "failed to record pool forward proxy selection failure");
-                                }
-                                store_pool_failover_error(
-                                    &mut last_error,
-                                    &mut preserve_sticky_owner_terminal_error,
-                                    PoolUpstreamError {
-                                        codex_imagegen_rewrite: attempted_codex_imagegen_rewrite
-                                            .clone(),
-                                        account: Some(account.clone()),
-                                        status: StatusCode::BAD_GATEWAY,
-                                        message: message.clone(),
-                                        canonical_error_message: None,
-                                        failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                                        blocked_binding: None,
-                                        connect_latency_ms: 0.0,
-                                        upstream_error_code: None,
-                                        upstream_error_message: None,
-                                        downstream_error_message: None,
-                                        upstream_request_id: None,
-                                        proxy_binding_key_snapshot: None,
-                                        oauth_responses_debug: None,
-                                        attempt_summary: PoolAttemptSummary::default(),
-                                        requested_service_tier: attempted_requested_service_tier
-                                            .clone(),
-                                        request_body_for_capture:
-                                            attempted_request_body_for_capture.clone(),
-                                    },
-                                    attempted_codex_imagegen_rewrite.as_ref(),
-                                );
-                                release_pool_routing_reservation(state.as_ref(), &reservation_key);
-                                exhausted_accounts_all_rate_limited = false;
-                                continue 'account_loop;
-                            }
-                        };
                     attempt_count += 1;
                     attempt_index = attempt_count as i64;
                     attempt_started_at =
@@ -1749,6 +1746,41 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             request_body_for_capture: attempted_request_body_for_capture.clone(),
                         }
                     })?;
+                    let codex_imagegen_retest_claimed =
+                        if codex_imagegen_audit_has_canonical_namespace(
+                            attempted_codex_imagegen_rewrite.as_ref(),
+                        ) {
+                            match claim_codex_imagegen_supported_retest_override(
+                                &state.pool,
+                                account.account_id,
+                            )
+                            .await
+                            {
+                                Ok(CodexImagegenRetestClaim::Claimed) => true,
+                                Ok(CodexImagegenRetestClaim::NotNeeded) => false,
+                                Ok(CodexImagegenRetestClaim::AlreadyClaimed) => {
+                                    release_pool_routing_reservation(
+                                        state.as_ref(),
+                                        &reservation_key,
+                                    );
+                                    continue 'account_loop;
+                                }
+                                Err(claim_err) => {
+                                    warn!(
+                                        account_id = account.account_id,
+                                        error = %claim_err,
+                                        "failed to atomically claim Codex imagegen supported retest override"
+                                    );
+                                    release_pool_routing_reservation(
+                                        state.as_ref(),
+                                        &reservation_key,
+                                    );
+                                    continue 'account_loop;
+                                }
+                            }
+                        } else {
+                            false
+                        };
                     let forwarded_content_length = headers
                         .get(header::CONTENT_LENGTH)
                         .and_then(|value| value.to_str().ok())
@@ -1974,6 +2006,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 None,
                                 Some((forward_proxy_scope, selected_proxy)),
                                 true,
+                                codex_imagegen_retest_claimed,
                             )
                         }
                         Ok(Err(err)) => {
@@ -2089,33 +2122,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     "failed to broadcast pool transport attempt snapshot"
                                 );
                             }
-                            let codex_imagegen_retest_override_consumed =
-                                if codex_imagegen_audit_was_injected(
-                                    attempted_codex_imagegen_rewrite.as_ref(),
-                                ) {
-                                    match consume_codex_imagegen_supported_retest_override(
-                                        &state.pool,
-                                        account.account_id,
-                                    )
-                                    .await
-                                    {
-                                        Ok(consumed) => consumed,
-                                        Err(override_err) => {
-                                            warn!(
-                                                account_id = account.account_id,
-                                                error = %override_err,
-                                                "failed to consume Codex imagegen supported retest override"
-                                            );
-                                            false
-                                        }
-                                    }
-                                } else {
-                                    false
-                                };
                             let has_retry_budget = same_account_attempt + 1
                                 < same_account_attempt_budget
                                 && !direct_image_handshake_timeout
-                                && !codex_imagegen_retest_override_consumed;
+                                && !codex_imagegen_retest_claimed;
                             if has_retry_budget && !should_timeout_route_failover {
                                 let retry_delay = fallback_proxy_429_retry_delay(
                                     u32::from(same_account_attempt) + 1,
@@ -2301,29 +2311,6 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     "failed to broadcast pool handshake timeout snapshot"
                                 );
                             }
-                            let codex_imagegen_retest_override_consumed =
-                                if codex_imagegen_audit_was_injected(
-                                    attempted_codex_imagegen_rewrite.as_ref(),
-                                ) {
-                                    match consume_codex_imagegen_supported_retest_override(
-                                        &state.pool,
-                                        account.account_id,
-                                    )
-                                    .await
-                                    {
-                                        Ok(consumed) => consumed,
-                                        Err(override_err) => {
-                                            warn!(
-                                                account_id = account.account_id,
-                                                error = %override_err,
-                                                "failed to consume Codex imagegen supported retest override"
-                                            );
-                                            false
-                                        }
-                                    }
-                                } else {
-                                    false
-                                };
                             if let (Some(total_timeout), Some(started_at)) =
                                 (responses_total_timeout, attempt_total_timeout_started_at)
                                 && pool_total_timeout_exhausted(total_timeout, started_at)
@@ -2381,7 +2368,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             let has_retry_budget = same_account_attempt + 1
                                 < same_account_attempt_budget
                                 && !direct_image_request
-                                && !codex_imagegen_retest_override_consumed;
+                                && !codex_imagegen_retest_claimed;
                             if has_retry_budget && !should_timeout_route_failover {
                                 let retry_delay = fallback_proxy_429_retry_delay(
                                     u32::from(same_account_attempt) + 1,
@@ -2478,55 +2465,6 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     access_token,
                     chatgpt_account_id,
                 } => {
-                    let (forward_proxy_scope, selected_proxy, _client) =
-                        match select_pool_account_forward_proxy_client(state.as_ref(), &account)
-                            .await
-                        {
-                            Ok(selection) => selection,
-                            Err(message) => {
-                                if let Err(route_err) = record_pool_route_transport_failure(
-                                    &state.pool,
-                                    account.account_id,
-                                    sticky_key,
-                                    &message,
-                                    trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                                )
-                                .await
-                                {
-                                    warn!(account_id = account.account_id, error = %route_err, "failed to record pool oauth forward proxy selection failure");
-                                }
-                                store_pool_failover_error(
-                                    &mut last_error,
-                                    &mut preserve_sticky_owner_terminal_error,
-                                    PoolUpstreamError {
-                                        codex_imagegen_rewrite: attempted_codex_imagegen_rewrite
-                                            .clone(),
-                                        account: Some(account.clone()),
-                                        status: StatusCode::BAD_GATEWAY,
-                                        message: message.clone(),
-                                        canonical_error_message: None,
-                                        failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                                        blocked_binding: None,
-                                        connect_latency_ms: 0.0,
-                                        upstream_error_code: None,
-                                        upstream_error_message: None,
-                                        downstream_error_message: None,
-                                        upstream_request_id: None,
-                                        proxy_binding_key_snapshot: None,
-                                        oauth_responses_debug: None,
-                                        attempt_summary: PoolAttemptSummary::default(),
-                                        requested_service_tier: attempted_requested_service_tier
-                                            .clone(),
-                                        request_body_for_capture:
-                                            attempted_request_body_for_capture.clone(),
-                                    },
-                                    attempted_codex_imagegen_rewrite.as_ref(),
-                                );
-                                release_pool_routing_reservation(state.as_ref(), &reservation_key);
-                                exhausted_accounts_all_rate_limited = false;
-                                continue 'account_loop;
-                            }
-                        };
                     let proxy_binding_key_snapshot = canonical_pool_attempt_proxy_binding_key(
                         state.as_ref(),
                         selected_proxy.key.as_str(),
@@ -2659,6 +2597,41 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             body: snapshot.to_http_body(),
                         },
                     };
+                    let codex_imagegen_retest_claimed =
+                        if codex_imagegen_audit_has_canonical_namespace(
+                            attempted_codex_imagegen_rewrite.as_ref(),
+                        ) {
+                            match claim_codex_imagegen_supported_retest_override(
+                                &state.pool,
+                                account.account_id,
+                            )
+                            .await
+                            {
+                                Ok(CodexImagegenRetestClaim::Claimed) => true,
+                                Ok(CodexImagegenRetestClaim::NotNeeded) => false,
+                                Ok(CodexImagegenRetestClaim::AlreadyClaimed) => {
+                                    release_pool_routing_reservation(
+                                        state.as_ref(),
+                                        &reservation_key,
+                                    );
+                                    continue 'account_loop;
+                                }
+                                Err(claim_err) => {
+                                    warn!(
+                                        account_id = account.account_id,
+                                        error = %claim_err,
+                                        "failed to atomically claim Codex imagegen supported retest override"
+                                    );
+                                    release_pool_routing_reservation(
+                                        state.as_ref(),
+                                        &reservation_key,
+                                    );
+                                    continue 'account_loop;
+                                }
+                            }
+                        } else {
+                            false
+                        };
                     attempt_count += 1;
                     attempt_index = attempt_count as i64;
                     attempt_started_at =
@@ -2786,6 +2759,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             oauth_response.request_debug,
                             Some((forward_proxy_scope, selected_proxy)),
                             true,
+                            codex_imagegen_retest_claimed,
                         )
                     }
                 }
@@ -3098,19 +3072,6 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         )
                         .await;
                     }
-                    if codex_imagegen_audit_was_injected(attempted_codex_imagegen_rewrite.as_ref())
-                        && let Err(override_err) = consume_codex_imagegen_supported_retest_override(
-                            &state.pool,
-                            account.account_id,
-                        )
-                        .await
-                    {
-                        warn!(
-                            account_id = account.account_id,
-                            error = %override_err,
-                            "failed to consume Codex imagegen supported retest override"
-                        );
-                    }
                     reservation_guard.disarm();
                     return Ok(PoolUpstreamResponse {
                         account: account.clone(),
@@ -3178,34 +3139,12 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     &route_error_message,
                     attempted_codex_imagegen_rewrite.as_ref(),
                 );
-                let codex_imagegen_retest_override_consumed =
-                    if codex_imagegen_audit_was_injected(attempted_codex_imagegen_rewrite.as_ref())
-                    {
-                        match consume_codex_imagegen_supported_retest_override(
-                            &state.pool,
-                            account.account_id,
-                        )
-                        .await
-                        {
-                            Ok(consumed) => consumed,
-                            Err(override_err) => {
-                                warn!(
-                                    account_id = account.account_id,
-                                    error = %override_err,
-                                    "failed to consume Codex imagegen supported retest override"
-                                );
-                                false
-                            }
-                        }
-                    } else {
-                        false
-                    };
                 let should_schedule_retry = has_retry_budget
                     && !compact_support_is_unsupported
                     && !should_timeout_route_failover
                     && !direct_image_handshake_timeout
                     && !codex_imagegen_upstream_incompatible
-                    && !codex_imagegen_retest_override_consumed
+                    && !codex_imagegen_retest_claimed
                     && status.is_server_error()
                     && status != StatusCode::TOO_MANY_REQUESTS;
                 let retry_delay = should_schedule_retry.then(|| {
@@ -3295,7 +3234,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         "failed to broadcast pool http failure snapshot"
                     );
                 }
-                if has_group_upstream_429_retry_budget && !codex_imagegen_retest_override_consumed {
+                if has_group_upstream_429_retry_budget && !codex_imagegen_retest_claimed {
                     let retry_delay = pool_group_upstream_429_retry_delay(state.as_ref());
                     let group_retry_index = group_upstream_429_retry_count + 1;
                     info!(
@@ -3313,7 +3252,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     sleep(retry_delay).await;
                     continue;
                 }
-                if has_upstream_413_retry_budget && !codex_imagegen_retest_override_consumed {
+                if has_upstream_413_retry_budget && !codex_imagegen_retest_claimed {
                     let retry_delay =
                         fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1);
                     info!(
@@ -3330,7 +3269,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     continue;
                 }
                 if let Some(retry_delay) = retry_delay
-                    && !codex_imagegen_retest_override_consumed
+                    && !codex_imagegen_retest_claimed
                 {
                     info!(
                         account_id = account.account_id,

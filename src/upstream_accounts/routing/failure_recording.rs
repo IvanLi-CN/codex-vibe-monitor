@@ -371,7 +371,7 @@ async fn record_pool_route_success_capability_observations(
         )
         .await?;
     }
-    if crate::codex_imagegen_audit_was_injected(codex_imagegen_rewrite) {
+    if crate::codex_imagegen_audit_has_canonical_namespace(codex_imagegen_rewrite) {
         record_capability_observation(
             pool,
             account_id,
@@ -380,15 +380,21 @@ async fn record_pool_route_success_capability_observations(
             Some(UpstreamCapabilityAxis::CodexImagegen.success_reason()),
         )
         .await?;
-        consume_codex_imagegen_supported_retest_override(pool, account_id).await?;
     }
     Ok(())
 }
 
-pub(crate) async fn consume_codex_imagegen_supported_retest_override(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CodexImagegenRetestClaim {
+    NotNeeded,
+    Claimed,
+    AlreadyClaimed,
+}
+
+pub(crate) async fn claim_codex_imagegen_supported_retest_override(
     pool: &Pool<Sqlite>,
     account_id: i64,
-) -> Result<bool> {
+) -> Result<CodexImagegenRetestClaim> {
     let result = sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
@@ -402,7 +408,21 @@ pub(crate) async fn consume_codex_imagegen_supported_retest_override(
     .bind(format_utc_iso(Utc::now()))
     .execute(pool)
     .await?;
-    Ok(result.rows_affected() == 1)
+    if result.rows_affected() == 1 {
+        return Ok(CodexImagegenRetestClaim::Claimed);
+    }
+
+    let capability: Option<String> = sqlx::query_scalar(
+        "SELECT codex_imagegen_capability FROM pool_upstream_accounts WHERE id = ?",
+    )
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(if capability.as_deref() == Some("unsupported") {
+        CodexImagegenRetestClaim::AlreadyClaimed
+    } else {
+        CodexImagegenRetestClaim::NotNeeded
+    })
 }
 
 pub(crate) async fn record_capability_observation(
