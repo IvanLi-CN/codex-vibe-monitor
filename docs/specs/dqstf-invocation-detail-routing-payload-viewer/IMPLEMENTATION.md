@@ -18,7 +18,7 @@
 - 新增 `GET /api/invocations/:id/attempts/:attempt_public_id/response-body`，工作流 lazy loader 按 attempt identity 回放；历史最终 attempt 缺少 attempt raw 时兼容调用级 raw，其他历史缺失稳定返回 unavailable。
 - 尝试级响应体查询对调用级失败分类使用 `inv` 限定列，避免与 attempt 行的同名 `status` 产生 SQLite 歧义；HTTP 5xx attempt 因而可继续回放已捕获的响应体。
 - 验证覆盖 invocation 与 attempt 同时存在 `status` 的 SQLite seam：尝试级响应体查询返回 71 B 原文及 `service_failure`，不再产生列歧义。
-- 尝试详情指标 rail 的首尾 action 使用匹配 rail 的圆角，键盘焦点改为内嵌 primary ring，避免右侧响应体 action 的 outline 被 rail 裁切。
+- 尝试详情指标 rail 由外层容器统一裁切圆角，避免多行响应式 grid 的 DOM 首尾 action 在行内产生错误圆角；按钮键盘焦点使用内嵌 primary ring。
 - 工作流详情接口在没有 attempt 行时可合成 synthetic attempt，并在缺失 `timeline_json` 时根据调用级记录和尝试表进行 best-effort reconstruction。
 - 工作流详情聚合层现在会识别历史 pre-dispatch pseudo-attempt 形态，并在不做数据库回写迁移的前提下把它们折叠成 `路由决定 + 系统裁定`；`hero.timelineAttemptCount` 与时间线 Attempt 数都只统计真实出站。
 - `InvocationWorkflowDetailPanel` 作为新的共享详情组件，统一服务于 Dashboard、Records 和 Live 三个入口；顶部 hero 区优先展示调用 ID、短对话 ID、总用时、最终结果、尝试次数和最终账号。
