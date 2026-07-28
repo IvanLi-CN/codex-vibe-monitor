@@ -71,6 +71,7 @@ Dashboard / Live / Records 三处调用详情曾经以“摘要字段 + 局部�
 - 当前契约下，请求体完整原文只保证在调用级记录存在；尝试级接口默认暴露结构化摘要，而不是再次复制完整 request body。
 - 每次真实号池 upstream attempt 都独立持久化 `response_raw_*` 元数据、原始响应文件与 `response_content_encoding`；成功、HTTP 失败、SSE `response.failed`、流中断及全链失败都按 `attempt_public_id` 精确绑定，不得从其他 attempt 回退。
 - 响应体回放 API 使用 `invocation id + attempt_public_id` 精确读取当前 attempt；历史缺失 attempt raw 时保持 unavailable，历史最终 attempt 仍可兼容读取调用级 raw body。
+- 尝试级响应体查询同时读取 invocation 与 attempt 时，调用级失败分类必须显式绑定 `codex_invocations`，不得因两表同名 `status` 字段而将可回放响应体降级为数据库错误。
 - 运行时重建尝试响应摘要时，attempt 级 raw metadata/encoding 优先；调用级 `response_raw_*` 只允许作为历史最终 attempt 的兼容回退。
 - 本地生成的终态裁定响应必须复用单一共享 envelope，同时驱动实际 HTTP 下游返回与调用级持久化；`systemFinalFailure.responseBody` 必须回放真实下发 body，不得再落 `"{}"`、`missing_body` 等占位假空体，除非历史记录从未持久化真实 body。
 
@@ -98,6 +99,7 @@ Dashboard / Live / Records 三处调用详情曾经以“摘要字段 + 局部�
 - 新的 pre-dispatch pool 失败时间线只展示 `路由决定 + 系统裁定`，`hero.timelineAttemptCount = 0`。
 - 真实出站调用仍按顺序展示辅助块、尝试块和失败场景下的系统裁定块；同一时刻仅展开一个块，展开区保持紧凑。
 - 每次真实 upstream attempt 都能按自身 `attempt_public_id` 回放响应体；四次 `upstream_response_failed` 的失败链路中，四条响应体互不串位。
+- 当 invocation 与 attempt 同时存在 `status` 时，尝试级 `response-body` API 仍返回对应的 HTTP 5xx 响应体与 `service_failure` 分类，不得返回 SQLite 列歧义错误。
 - 全链失败必须写入调用级终态记录；账号请求记录与调用详情都能看到对应 attempt 的状态、编码、字节数与响应体可用性。
 - 点击尝试块后，默认展示概览，并可通过次级操作进入请求 / 响应；点击路由块后，默认展示概览，并可通过次级操作进入 `请求 / 请求头 / 请求体`；点击失败裁定块后，默认展示概览，并可通过次级操作进入 `裁定 / 返回体`。
 - 对包含重试的调用，每个 Attempt 的响应详情必须显示自身响应体大小、响应头和 lazy response-body 内容；如果历史记录没有该 attempt 原文，应明确显示 `attempt_response_body_not_captured` 的 unavailable 状态。
@@ -121,24 +123,24 @@ Dashboard / Live / Records 三处调用详情曾经以“摘要字段 + 局部�
 - Web Demo 路由级证据必须覆盖真实 Dashboard 抽屉，而不是独立组件画布。
 - Story id: `invocations-invocationworkflowdetailpanel--blocked-pool-workflow`
 - Story id: `invocations-invocationworkflowdetailpanel--blocked-pool-workflow-missing-archived-request-body`
-- 视觉证据覆盖四种状态：
+- 视觉证据覆盖五种状态：
   - Dashboard 路由 unavailable 态：`demo-invocation-9002` 的 attempt 卡片展开 `请求体` 后，必须同时看到 `qPvNNAK8` attempt 标识、请求/响应指标条、HTTP 请求压缩、`归档 未存档`，以及 `请求体不可用：该记录没有保留可展示的载荷。`
   - 概览态：时间线只包含 `路由决定 + 系统裁定`，证明 pre-dispatch 失败不再渲染假 Attempt。
   - 路由详情态：路由块展开后可切换 `请求 / 请求头 / 请求体` 三个分区，证明 request summary、header snapshot 与调用级 request body 回放都可直接查看。
   - 裁定返回体态：系统裁定块展开后切换到 `返回体`，证明详情页显示的是实际下发给调用方的 JSON body，而非 `missing_body` 或空占位。
   - unavailable 回放态：`请求体` lazy fetch 完成后，界面必须从 loading 收口到人类可读提示 `该记录没有保留可展示的载荷。`，而不是无限 loading 或直接暴露内部 `missing_body` reason。
+  - 失败 attempt 响应体态：`HTTP 502 / service_failure` 的 attempt 展开 `响应体` 后，必须显示 `attempt_raw_file`、完整大小与可读 JSON body。
 
-PR: none
+PR: include
 
 视觉证据=存在
 视觉证据目标源=ui_demo
-证据落盘=已落盘：`assets/attempt-response-body-demo.png`
-证据绑定sha=40bd5127
+证据落盘=已落盘：`assets/attempt-response-body-focus-ring-2026-07-28.png`
 空白裁剪=无需裁剪（固定 1440x900 页面边界存在半透明抽屉背景，裁剪器按 ambiguous_border 保持原图）
 聊天回图=已展示
-证据说明：attempt `qPvNNAK8` 展开后显示 `captureSource=attempt_raw_file`、独立大小/编码元数据与实际 JSON 响应体；页面来自 mock-only、免登录 Demo。
+证据说明：失败 attempt `qPvNNAK8` 展开后显示 `HTTP 502 / service_failure`、`attempt_raw_file`、独立大小/编码元数据与实际 JSON 响应体；响应体 action 的内嵌 focus ring 在 rail 右端完整闭合；页面来自 mock-only、免登录 Demo。
 
-![Attempt-scoped response body replay](assets/attempt-response-body-demo.png)
+![Attempt-scoped response body replay](./assets/attempt-response-body-focus-ring-2026-07-28.png)
 
 ## References
 

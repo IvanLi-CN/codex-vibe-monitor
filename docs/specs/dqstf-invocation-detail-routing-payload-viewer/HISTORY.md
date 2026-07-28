@@ -29,3 +29,8 @@
 - 2026-07-25: 本修复的视觉证据仅用于聊天中的 Storybook 验收；preferred evidence section 使用 `PR: none`，避免在没有截图提交授权时向 PR 发布图片链接。
 - 2026-07-27: 响应回放契约扩展为每次真实号池 attempt 独立保存 raw body metadata、编码和文件；新增 attempt-scoped response-body API，历史最终 attempt 保留调用级兼容回退，其他缺失体稳定 unavailable。
 - 2026-07-27: failover 全链失败补写调用级终态，并在 `response.failed` 重试门控消费的首段响应上绑定当前 attempt，避免请求记录退化为无响应体的 `attempt_metrics`。
+- 2026-07-28: 尝试级响应体回放查询在关联 invocation 与 attempt 后，失败分类的调用级列必须使用 `inv` 限定，防止同名 `status` 让已捕获的 HTTP 5xx body 返回数据库错误。
+- 2026-07-28: 尝试详情指标 rail 的右端响应体 action 改用首尾圆角与内嵌 focus ring，避免焦点 outline 被外层裁切。
+- 2026-07-28: PR 合并门禁将最新 `main` 基线同步提交纳入当前实现范围；同步刷新本 topic 的实现状态与演进记录，确保 merge head 的实现变更仍有 spec 覆盖。
+- 2026-07-28: 响应体指标 action 不再按 DOM 首尾强制圆角；多行响应式 grid 统一由外层 rail 裁切边界，按钮只保留内嵌键盘 focus ring。
+- 2026-07-28: 合并最新 `main@d77b1b63` 后，重新记录实现与 spec 的关联，确保 `a00a5105` merge head 的冲突解析仍受本 topic 覆盖。
