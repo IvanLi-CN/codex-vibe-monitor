@@ -1151,7 +1151,6 @@ export const FailedPoolWorkflow: Story = {
     responseBodyButton.focus();
     await expect(responseBodyButton).toHaveFocus();
     await expect(responseBodyButton).toHaveClass("focus-visible:ring-inset");
-    await expect(responseBodyButton).toHaveClass("last:rounded-r-[0.95rem]");
   },
 };
 

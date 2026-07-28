@@ -1484,7 +1484,7 @@ function TimelineMetricButton({
     <button
       type="button"
       className={cn(
-        "h-full min-w-0 bg-base-100/84 px-3 py-2.5 text-left transition-[background-color,color] duration-150 first:rounded-l-[0.95rem] last:rounded-r-[0.95rem] focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary",
+        "h-full min-w-0 bg-base-100/84 px-3 py-2.5 text-left transition-[background-color,color] duration-150 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary",
         active ? "bg-primary/8 text-primary" : "text-base-content hover:bg-base-100",
       )}
       onClick={onClick}
