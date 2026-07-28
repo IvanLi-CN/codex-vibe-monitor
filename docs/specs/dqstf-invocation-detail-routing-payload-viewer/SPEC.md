@@ -140,7 +140,7 @@ PR: include
 聊天回图=已展示
 证据说明：失败 attempt `qPvNNAK8` 展开后显示 `HTTP 502 / service_failure`、`attempt_raw_file`、独立大小/编码元数据与实际 JSON 响应体；响应体 action 的内嵌 focus ring 在 rail 右端完整闭合；页面来自 mock-only、免登录 Demo。
 
-![Attempt-scoped response body replay](assets/attempt-response-body-focus-ring-2026-07-28.png)
+![Attempt-scoped response body replay](./assets/attempt-response-body-focus-ring-2026-07-28.png)
 
 ## References
 
