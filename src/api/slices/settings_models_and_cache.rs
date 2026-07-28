@@ -2,7 +2,7 @@ use super::*;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use tokio::sync::watch;
 
@@ -1182,11 +1182,59 @@ pub(crate) struct DashboardActivitySnapshotCacheEntry {
     pub(crate) cached_at: Instant,
     /// Controls the next reconciliation attempt independently from the DB baseline age.
     pub(crate) last_reconcile_attempted_at: Instant,
-    /// The live invocation cursor observed immediately before the DB baseline build. The entry
-    /// is accepted only when that cursor stays stable for the build, so persisted terminal
-    /// records at or below it are already represented by the baseline.
+    /// Only failed reconciliations may throttle an expiry-horizon rebuild. A healthy entry whose
+    /// rolling coverage is exhausted must reconcile immediately.
+    pub(crate) last_reconcile_failed: bool,
+    /// The live invocation cursor observed immediately before the DB baseline build. Pending
+    /// terminal deltas beyond this cursor are replayed before the entry is published.
     pub(crate) baseline_snapshot_cursor: i64,
+    /// Rolling ranges may only reuse the baseline while their moving lower bound remains within
+    /// the terminal rows captured for expiry subtraction. Calendar ranges do not need this gate.
+    pub(crate) expiry_covered_until: Option<DateTime<Utc>>,
+    pub(crate) expiry_terminal_deltas: VecDeque<DashboardActivityTerminalDelta>,
+    pub(crate) expiry_delta_estimated_bytes: usize,
     pub(crate) response: DashboardActivitySnapshot,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DashboardActivityTerminalDelta {
+    pub(crate) terminal_sequence: u64,
+    pub(crate) invoke_id: String,
+    pub(crate) occurred_at: String,
+    pub(crate) source: String,
+    pub(crate) model: String,
+    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) upstream_account_name: Option<String>,
+    pub(crate) success: bool,
+    pub(crate) failure: bool,
+    pub(crate) total_tokens: i64,
+    pub(crate) cache_write_tokens: i64,
+    pub(crate) cache_read_tokens: i64,
+    pub(crate) output_tokens: i64,
+    pub(crate) has_cost: bool,
+    pub(crate) total_cost: f64,
+    pub(crate) cost_input: f64,
+    pub(crate) cost_cache_write: f64,
+    pub(crate) cost_cache_read: f64,
+    pub(crate) cost_output: f64,
+    pub(crate) cost_reasoning: f64,
+    pub(crate) cost_unknown: f64,
+    pub(crate) t_total_ms: Option<f64>,
+    pub(crate) t_req_read_ms: Option<f64>,
+    pub(crate) t_req_parse_ms: Option<f64>,
+    pub(crate) t_upstream_connect_ms: Option<f64>,
+    pub(crate) t_upstream_ttfb_ms: Option<f64>,
+    pub(crate) first_token_ms: Option<f64>,
+    pub(crate) t_upstream_stream_ms: Option<f64>,
+    pub(crate) persisted_row_id: Option<i64>,
+    pub(crate) estimated_bytes: usize,
+}
+
+impl DashboardActivityTerminalDelta {
+    pub(crate) fn key(&self) -> (String, String) {
+        (self.invoke_id.clone(), self.occurred_at.clone())
+    }
 }
 
 /// Write-side state layered over the last DB-backed Dashboard snapshot.
@@ -1197,7 +1245,17 @@ pub(crate) struct DashboardActivitySnapshotCacheEntry {
 #[derive(Debug, Default)]
 pub(crate) struct DashboardActivityReadModel {
     pub(crate) applied_terminal_keys: HashMap<(String, String), Instant>,
-    pub(crate) pending_terminal_records: VecDeque<ApiInvocation>,
+    pub(crate) applied_terminal_key_order: VecDeque<((String, String), Instant)>,
+    pub(crate) pending_terminal_deltas: VecDeque<DashboardActivityTerminalDelta>,
+    pub(crate) pending_delta_estimated_bytes: usize,
+    pub(crate) persisted_ack_pending_count: usize,
+    pub(crate) delta_pruned_count: u64,
+    pub(crate) hard_limit_reason: Option<&'static str>,
+    pub(crate) hard_limit_sequence: Option<u64>,
+    pub(crate) next_terminal_sequence: u64,
+    pub(crate) settled_terminal_sequence: u64,
+    pub(crate) settled_terminal_sequences: BTreeSet<u64>,
+    pub(crate) sequence_gap_count: u64,
     pub(crate) terminal_delta_count: u64,
     pub(crate) duplicate_delta_count: u64,
     pub(crate) pending_terminal_overflow_count: u64,
@@ -1207,6 +1265,7 @@ pub(crate) struct DashboardActivityReadModel {
 pub(crate) struct DashboardActivitySnapshotInFlight {
     pub(crate) signal: watch::Sender<bool>,
     pub(crate) waiter_count: usize,
+    pub(crate) baseline_cursor: Option<i64>,
 }
 
 #[derive(Debug, Default)]
@@ -1217,6 +1276,10 @@ pub(crate) struct DashboardActivitySnapshotCacheState {
         HashMap<DashboardActivitySnapshotSelection, DashboardActivitySnapshotInFlight>,
     pub(crate) invalidation_reasons: HashMap<DashboardActivitySnapshotSelection, &'static str>,
     pub(crate) read_model: DashboardActivityReadModel,
+    /// Serializes DB-backed baseline builds across distinct selections. Per-selection
+    /// singleflight only coalesces identical requests and cannot prevent competing SQLite
+    /// consistency transactions for different ranges.
+    pub(crate) baseline_build_gate: Arc<Mutex<()>>,
 }
 
 #[derive(Debug)]

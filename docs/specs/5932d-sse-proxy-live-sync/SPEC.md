@@ -61,6 +61,9 @@
 - 覆盖范围内页面首屏不得先发 HTTP bootstrap；可见数据 hydration 必须等待 topic `snapshot` 或可恢复的 `replay` 完成。
 - `stats.summary.current` 只服务 open-range owner-facing 当前态；`yesterday`、`previous7d` 等闭区间 summary 在当前应用里不得建立 pure SSE 订阅，必须继续走 HTTP exact path。
 - Summary open-range topic 的当前态由 live overlay 直接更新，terminal Records 只按固定 `500ms` deadline 合并累计 totals 刷新；刷新失败保留 last-good snapshot，并按有界退避重试。
+- Dashboard open-range terminal 事件必须投影为紧凑 delta，并受 `64 MiB / 10,000` 双硬限保护；持久化 ACK 只能在所有 warm selection 与 in-flight baseline cursor 安全越过对应 row id 后触发回收。触限、ACK 序列缺口或持久化状态不确定时必须进入 `dirty_last_good`，不得静默丢弃累计态。
+- `dashboard.activity.current` 的 5 秒 terminal cadence 只能渲染和发布内存快照；`today / 1d / 7d` 的 SQLite baseline reconcile 每 selection 最多每 60 秒一次，且 baseline cursor、聚合读取与 pending 判定必须位于同一 read transaction。并发写入通过 cursor 后增量重放吸收，不得丢弃已完成构建并立即重试。
+- rolling `1d / 7d` 必须以紧凑 expiry delta 保持半开窗口精确，`today` 在本地午夜 rollover 后重建 baseline；closed-range 继续使用 exact DB 路径。
 - topic 刷新是否运行必须依据连接级 owner subscriber 引用计数；没有 owner subscriber 时只标记缓存 dirty，重新订阅时生成 fresh snapshot，不回放失去连续权威性的旧 ring。
 - 健康连接状态下，覆盖范围内页面不得触发后台 HTTP reconcile、`subscribeToSseOpen` resync fetch、定时拉取校准或页面私有 fallback。
 - 恢复规则只允许二选一：

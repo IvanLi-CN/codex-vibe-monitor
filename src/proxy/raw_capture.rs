@@ -923,10 +923,16 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
                     record,
                     capture_started: Some(capture_started),
                     raw_capture: true,
+                    dashboard_terminal_sequence: delta.terminal_sequence,
                 },
             ));
     if !terminal_enqueued {
-        rollback_dashboard_activity_terminal_record(state, &inserted_record).await;
+        rollback_dashboard_activity_terminal_record(
+            state,
+            &inserted_record,
+            delta.terminal_sequence,
+        )
+        .await;
         let terminal_tombstone_cleared = state
             .proxy_runtime_invocations
             .clear_terminal_tombstone(&inserted_record.invoke_id, &inserted_record.occurred_at);

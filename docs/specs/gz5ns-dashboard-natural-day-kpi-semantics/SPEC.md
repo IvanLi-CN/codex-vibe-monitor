@@ -86,6 +86,7 @@
 - `今日成本` 左下展示前 7 个完整自然日均值，右上展示与昨日同进度 delta，右下展示失败/中断成本。
 - `今日 Tokens` 左下展示缓存命中率，右上展示与昨日同进度 delta，右下展示失败/中断 tokens。
 - Dashboard 自然日 comparison summary 中，`previous7d` 属于 closed-range exact window；owner-facing 当前应用不得为它建立 `stats.summary.current` 订阅，只能在首屏、范围切换、作用域切换与本地下一个午夜 rollover 时走 `fetchSummary("previous7d")`。
+- Dashboard `today` 累计态在本地午夜 rollover 后必须重建 baseline；rolling `1d / 7d` 必须通过 compact expiry delta 对离开半开窗口的事件执行反向更新。不得仅改写响应边界后复用包含窗口外记录的旧 totals。
 - `今日` / `昨日` 自然日顶部金额图在切到 `金额` metric 时，展示随时间推进的累计堆叠面积：底层为 `Success`，上层为 `Non-success`，两层和始终等于累计总金额。
 - 账号详情页复用同一自然日金额图实现，不引入“主 Dashboard 用堆叠、账号详情保留单面积”的作用域分叉。
 

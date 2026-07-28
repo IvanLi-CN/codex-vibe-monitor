@@ -65,6 +65,10 @@ related_specs:
 - 如果某个 topic 仍需要短 TTL 的服务端 DB 基础快照缓存，cache key 只能包含稳定请求参数与明确允许的自然日锚点等低抖动维度；移动中的 exact `rangeStart/rangeEnd`、live runtime 状态、最新持久化行 ID 这类高抖动因子必须留在响应阶段 overlay，否则 singleflight 会被打散，订阅与 HTTP 都会继续重复重算同一份基底。对应的 invalidate 粒度也必须与同一 selection 对齐；单个 terminal 事件只能清掉匹配 selection，不能把整张 dashboard snapshot cache 一起 flush。
 - 对 `dashboard.activity.current` 这类 open-range topic，`live` 广播不应该再反向触发完整 DB snapshot builder。终态在 accepted/enqueued 后应同步以幂等 delta 写入共享内存累计 baseline；固定 5 秒 deadline 只负责合并发布内存 snapshot。DB baseline 以更长、明确的 reconcile cadence（例如 60 秒）刷新，reconcile 失败保留 last-good totals 与 live overlay，而不是重新把 terminal burst 变成 cache invalidation 风暴。
 - rolling duration 窗口若没有完整的到期反向 delta，不能只重写响应的 `rangeStart/rangeEnd` 后复用较旧 baseline；这会把窗口外记录伪装成当前 totals。此时必须把该窗口的缓存上限收紧到其允许的可见时效预算，或先实现可验证的 expiry delta，再延长 DB reconcile cadence。
+- expiry delta 本身也是内存队列：baseline boundary load、in-flight replay 和后续 live terminal 必须共用排序与容量约束。expiry horizon 应在 boundary query 前解析并随 entry 保存，命中不得越过已捕获上界；live-only expiry 无法覆盖 archive 前缀时应明确 fallback，不能缓存不完整的反向增量。
+- Dashboard open-range 的 5 秒 publish 与 60 秒 reconcile 必须由两个独立 deadline 驱动。terminal burst 只能合并内存发布；成功、并发写入后重放、last-good 和失败都要推进 reconcile attempt deadline，避免错误路径绕过节流。
+- coverage repair 应优先 owner 正在使用的闭合小时，并受 bucket 数与 elapsed 双预算约束；历史全量 backlog 连续无进展时应指数退避，永久 payload-required blocked target 不得被计入 actionable backlog 或触发高频 hourly refresh。
+- `response_source=memory` 只能描述实际请求没有执行 DB build 的结果。若本次先构建 DB baseline 再返回 last-good，必须同时记录 `build_attempted=true`、`build_source` 与 reconcile outcome，不能用最终 payload 来源掩盖本次数据库成本。
 - topic 刷新必须使用连接级 owner subscriber 引用计数，而不是内部 broadcast receiver 数量；没有 owner subscriber 时只标记 dirty。重新订阅时应清除旧 replay 连续性并构建 fresh snapshot，避免把失活期间积累的旧 ring 当作权威连续状态回放。
 - Summary open-range 的 terminal refresh 应使用固定 `500ms` deadline；同一 deadline 内后续事件只累计 `coalesced_event_count`，不延长窗口。刷新失败保留 last-good totals，并记录 `refresh_outcome`、`last_good_age_ms` 与有界 retry backoff。
 - proxy terminal follow-up 如果没有真实 quota owner subscriber，应直接跳过 quota refresh；不要用 broadcaster receiver 数量作为 owner-facing 订阅判断，也不要继续构建无生产消费者的 legacy Summary 窗口。

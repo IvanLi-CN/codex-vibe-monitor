@@ -57,6 +57,9 @@
 - `上游账号` 视图仅支持 `today / yesterday / 1d / 7d`；当共享 range 为 `usage` 时，该 tab 必须 disabled，且若当前停留在账号 tab，必须自动回退到 `对话`。
 - 账号活动接口必须一次返回每个账号的 `upstreamAccountId`、`displayName`、`groupName`、`planType`、`enabled`、`displayStatus`、`enableStatus`、`workStatus`、`healthStatus`、`syncState`、`lastError`、`lastActionReasonMessage`、`requestCount`、`successCount`、`failureCount`、`nonSuccessCount`、`totalTokens`、`successTokens`、`nonSuccessTokens`、`failureTokens`、`cacheHitRate`、`tokensPerMinute`、`spendRate`、`totalCost`、`failureCost`、`firstByteAvgMs`、`avgTotalMs`、`inProgressInvocationCount`、`inProgressPhaseCounts`、`retryInvocationCount`、`effectiveRoutingRule` 与 `recentInvocations[4]`。
 - `today / 1d / 7d` 的账号累计活动必须按小时做精确 partial merge：只有存在 `upstream_account_activity_hourly_v2` coverage marker 的完整小时可读 `upstream_account_stats_hourly` v2 字段；边界小时与 marker 缺口必须使用半开区间 exact fallback，禁止把默认零值视为有效覆盖或静默漏计。
+- 活跃 `today / 1d / 7d` 窗口缺失的闭合小时 coverage 必须优先后台修复，每轮最多 `2` 个 bucket、最多 `2s`，并在同一事务内完成 exact 聚合、幂等 upsert、watermark 与 marker；owner 请求路径只读取 coverage 状态，不得触发 repair。
+- 活跃 coverage priority repair 只允许改写仍由 live 表覆盖的小时；archive-derived 小时必须交给 archive replay，禁止 live-only 空结果清零其 v2 rollup 后写入 coverage marker。
+- 历史 coverage backlog 无进展时必须按 `15s -> 1m -> 5m -> 15m` 退避；真实更新、新 repair generation 或活跃窗口 priority work 必须恢复 15 秒节奏，永久 blocked payload-required target 不计入 actionable backlog。
 - v2 rollup 必须保留未分配账号、non-success/failure token 与 cost、累计 latency，以及 timestamp/value 成对选择的 latest latency；`recentInvocations` 与当前运行态仍分别来自 bounded recent 和 runtime overlay，不得混入 hourly totals。
 - Future-only status note: 仅对未来新写入的 `pure_downstream_closed`，账号活动聚合必须把 `warning_success` 计入 `successCount/successTokens/totalCost/totalTokens/latency`，并排除出 `failureCount/nonSuccessCount/failureTokens/failureCost`；`recentInvocations` 仍要明确显示独立状态“警告成功”，普通 `success` 筛选不混入该状态。
 - `warning_success` 的紧凑状态位在 Dashboard 对话卡片与上游账号 recent 行中可以继续只显示 warning 图标，但 hover / focus / long-press 后必须通过共享 UI tooltip 披露完整状态文案与诊断；不得退回浏览器原生 `title` 黑框提示。
@@ -110,7 +113,8 @@
 - `dashboard-activity.accounts[]` 与 `upstream-account-activity.accounts[]` 必须携带最小账号状态快照字段：`enabled/displayStatus/enableStatus/workStatus/healthStatus/syncState/lastError/lastActionReasonMessage`；这些字段只服务 Dashboard 状态 badge 与健康入口，不改变账号活动聚合口径。
 - `includeAccounts=false` 必须支持顶部轻量使用，只返回同源 `summary` 与快照元数据；该路径不得先构建、排序完整账号 preview/archive 明细再丢弃，只能读取 summary/read-model、live overlay 与短尾速率窗口所需数据；账号 tab 首次打开后升级为 `includeAccounts=true`，并用该 full snapshot 同步刷新顶部和账号卡片。
 - Dashboard full 与 upstream-account 的 open-range 账号聚合必须按“covered full hours rollup + uncovered contiguous hours exact fallback + boundary exact tail”合并；健康路径不得整窗调用账号活动 raw aggregate。缺口与边界必须通过结构化 telemetry 标明，禁止静默漏计。
-- Dashboard 的 terminal refresh 继续使用既有 `5s` TTL；判责字段必须区分 `initial_build`、`ttl_expired` 与 `scheduled_terminal_refresh`，并记录真实 owner subscriber 数量、selection fingerprint 与 base snapshot age。
+- Dashboard 的 terminal 变化必须在固定 `5s` deadline 内从内存累计态发布；open-range SQLite baseline reconcile 每 selection 最多每 `60s` 一次。判责字段必须区分 `memory_publish`、`initial_build`、`scheduled_reconcile`、`last_good` 与 coverage fallback，并记录真实 owner subscriber 数量、selection fingerprint、baseline cursor、pending delta 规模和 base snapshot age。
+- rolling expiry delta 必须覆盖实际 cache reuse 截止点，baseline 与后续 terminal replay 均需按时间写入；每个 selection 的 expiry 队列同样受 `64 MiB / 10,000` 双硬限，触限时进入 last-good/reconcile，不得无界读取或继续宣称 healthy。窗口跨入 archive 前缀但缺少等价 archive expiry 时必须明确走 exact fallback。
 - `DashboardActivityOverview` 与 `TodayStatsOverview` 不得再用 `buildDashboardTodayRateSnapshot`、timeseries recent snapshot 或 `modelPerformance.total.*` 驱动顶部当前 KPI；顶部实时卡与账号标题当前值只允许读取 `dashboard-activity.summary` / `accounts[]` 的同源后端字段。
 
 ### SHOULD

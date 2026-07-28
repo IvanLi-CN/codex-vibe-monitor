@@ -1,5 +1,6 @@
 # 主应用常驻订阅纯 SSE 化与统一快照/回放基础设施 - History
 
+- 2026-07-28：线上复查发现原 write-side Dashboard 读模型仍无界保留完整 terminal records，且 reconcile 在并发写入后丢弃完整构建并立即重试。合同因此收紧为 compact delta 双硬限、持久化 ACK/cursor 安全回收、同事务 baseline cursor 与 60 秒 reconcile；5 秒 cadence 只允许内存发布，rolling 窗口由 expiry delta 保持精确。
 - 2026-07-25：Dashboard open-range 终态累计从“5 秒 topic refresh 失效 DB cache 后重建”改为 write-side idempotent delta。`today / 1d / 7d` 的 topic 与 HTTP 共享同一 warm baseline，5 秒窗口仅合并发布，60 秒 cadence 才进行 DB reconcile；reconcile 失败继续发布 last-good totals 与 runtime live overlay。
 
 ## Key Decisions

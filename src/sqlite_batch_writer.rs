@@ -74,6 +74,7 @@ pub(crate) struct BatchedTerminalInvocationWrite {
     pub(crate) record: ProxyCaptureRecord,
     pub(crate) capture_started: Option<Instant>,
     pub(crate) raw_capture: bool,
+    pub(crate) dashboard_terminal_sequence: Option<u64>,
 }
 
 impl BatchedTerminalInvocationWrite {
@@ -164,12 +165,20 @@ impl PendingBatch {
         self.enqueued_rows += 1;
         match write {
             SqliteBatchWrite::TerminalInvocation(terminal) => {
-                if self
-                    .terminal_invocations
-                    .insert(terminal.key(), terminal)
-                    .is_some()
-                {
-                    self.coalesced_rows += 1;
+                let key = terminal.key();
+                match self.terminal_invocations.entry(key) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(terminal);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        let preserved_sequence = terminal
+                            .dashboard_terminal_sequence
+                            .or(entry.get().dashboard_terminal_sequence);
+                        let mut terminal = terminal;
+                        terminal.dashboard_terminal_sequence = preserved_sequence;
+                        entry.insert(terminal);
+                        self.coalesced_rows += 1;
+                    }
                 }
             }
             SqliteBatchWrite::AttemptProgress(progress) => {
@@ -265,6 +274,9 @@ pub(crate) struct SqliteBatchWriter {
     pending_depth: Arc<AtomicUsize>,
     dropped_writes: Arc<AtomicU64>,
     terminal_runtime_store: Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
+    dashboard_activity_snapshot_cache:
+        Arc<std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>>,
+    dashboard_reconcile_gate: Arc<Mutex<()>>,
     #[cfg(test)]
     prompt_cache_conversation_cache: Option<Arc<Mutex<PromptCacheConversationsCacheState>>>,
     handle: Mutex<Option<JoinHandle<()>>>,
@@ -285,6 +297,8 @@ impl SqliteBatchWriter {
         let pending_depth = Arc::new(AtomicUsize::new(0));
         let dropped_writes = Arc::new(AtomicU64::new(0));
         let terminal_runtime_store = Arc::new(std::sync::Mutex::new(None));
+        let dashboard_activity_snapshot_cache = Arc::new(std::sync::Mutex::new(None));
+        let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
         let cache_for_task = prompt_cache_conversation_cache.clone();
         let handle = tokio::spawn(run_sqlite_batch_writer(
             pool,
@@ -293,6 +307,8 @@ impl SqliteBatchWriter {
             pending_depth.clone(),
             Some(cache_for_task),
             terminal_runtime_store.clone(),
+            dashboard_activity_snapshot_cache.clone(),
+            dashboard_reconcile_gate.clone(),
         ));
         Arc::new(Self {
             write_sender,
@@ -300,6 +316,8 @@ impl SqliteBatchWriter {
             pending_depth,
             dropped_writes,
             terminal_runtime_store,
+            dashboard_activity_snapshot_cache,
+            dashboard_reconcile_gate,
             #[cfg(test)]
             prompt_cache_conversation_cache: Some(prompt_cache_conversation_cache),
             handle: Mutex::new(Some(handle)),
@@ -329,6 +347,8 @@ impl SqliteBatchWriter {
             pending_depth: Arc::new(AtomicUsize::new(0)),
             dropped_writes: Arc::new(AtomicU64::new(0)),
             terminal_runtime_store: Arc::new(std::sync::Mutex::new(None)),
+            dashboard_activity_snapshot_cache: Arc::new(std::sync::Mutex::new(None)),
+            dashboard_reconcile_gate: Arc::new(Mutex::new(())),
             prompt_cache_conversation_cache: Some(prompt_cache_conversation_cache),
             handle: Mutex::new(None),
             buffered_writes: Some(Arc::new(std::sync::Mutex::new(Vec::new()))),
@@ -354,6 +374,19 @@ impl SqliteBatchWriter {
         if let Ok(mut guard) = self.terminal_runtime_store.lock() {
             *guard = Some(runtime_store);
         }
+    }
+
+    pub(crate) fn set_dashboard_activity_snapshot_cache(
+        &self,
+        cache: Arc<Mutex<DashboardActivitySnapshotCacheState>>,
+    ) {
+        if let Ok(mut guard) = self.dashboard_activity_snapshot_cache.lock() {
+            *guard = Some(cache);
+        }
+    }
+
+    pub(crate) fn dashboard_reconcile_gate(&self) -> Arc<Mutex<()>> {
+        self.dashboard_reconcile_gate.clone()
     }
 
     pub(crate) fn enqueue(&self, write: SqliteBatchWrite) -> bool {
@@ -483,13 +516,29 @@ impl SqliteBatchWriter {
             batch.push(write);
         }
         let terminal_runtime_store = Arc::new(std::sync::Mutex::new(None));
-        let deferred = flush_pending_batch_inner(pool, &batch, None, &terminal_runtime_store)
-            .await
-            .expect("flush pending sqlite batch writes");
+        let dashboard_activity_snapshot_cache = Arc::new(std::sync::Mutex::new(None));
+        let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
+        let deferred = flush_pending_batch_inner(
+            pool,
+            &batch,
+            None,
+            &terminal_runtime_store,
+            &dashboard_activity_snapshot_cache,
+            &dashboard_reconcile_gate,
+        )
+        .await
+        .expect("flush pending sqlite batch writes");
         if !deferred.is_empty() {
-            flush_pending_batch_inner(pool, &deferred, None, &terminal_runtime_store)
-                .await
-                .expect("flush deferred pending sqlite batch writes");
+            flush_pending_batch_inner(
+                pool,
+                &deferred,
+                None,
+                &terminal_runtime_store,
+                &dashboard_activity_snapshot_cache,
+                &dashboard_reconcile_gate,
+            )
+            .await
+            .expect("flush deferred pending sqlite batch writes");
         }
     }
 
@@ -518,6 +567,8 @@ impl SqliteBatchWriter {
                 &batch,
                 self.prompt_cache_conversation_cache.as_ref(),
                 &self.terminal_runtime_store,
+                &self.dashboard_activity_snapshot_cache,
+                &self.dashboard_reconcile_gate,
             )
             .await
             .expect("flush buffered sqlite batch writes for test");
@@ -536,6 +587,7 @@ impl SqliteBatchWriter {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_sqlite_batch_writer(
     pool: Pool<Sqlite>,
     mut write_receiver: mpsc::Receiver<SqliteBatchWrite>,
@@ -543,6 +595,10 @@ pub(crate) async fn run_sqlite_batch_writer(
     pending_depth: Arc<AtomicUsize>,
     prompt_cache_conversation_cache: Option<Arc<Mutex<PromptCacheConversationsCacheState>>>,
     terminal_runtime_store: Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
+    dashboard_activity_snapshot_cache: Arc<
+        std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
+    >,
+    dashboard_reconcile_gate: Arc<Mutex<()>>,
 ) {
     let mut ticker = interval(SQLITE_BATCH_FLUSH_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -571,6 +627,8 @@ pub(crate) async fn run_sqlite_batch_writer(
                             FlushReason::Barrier,
                             prompt_cache_conversation_cache.as_ref(),
                             &terminal_runtime_store,
+                            &dashboard_activity_snapshot_cache,
+                            &dashboard_reconcile_gate,
                         )
                         .await
                         {
@@ -609,6 +667,8 @@ pub(crate) async fn run_sqlite_batch_writer(
                                 FlushReason::Shutdown,
                                 prompt_cache_conversation_cache.as_ref(),
                                 &terminal_runtime_store,
+                                &dashboard_activity_snapshot_cache,
+                                &dashboard_reconcile_gate,
                             )
                             .await
                             {
@@ -646,6 +706,8 @@ pub(crate) async fn run_sqlite_batch_writer(
                             FlushReason::Shutdown,
                             prompt_cache_conversation_cache.as_ref(),
                             &terminal_runtime_store,
+                            &dashboard_activity_snapshot_cache,
+                            &dashboard_reconcile_gate,
                         )
                         .await;
                     }
@@ -661,6 +723,8 @@ pub(crate) async fn run_sqlite_batch_writer(
                             FlushReason::RowLimit,
                             prompt_cache_conversation_cache.as_ref(),
                             &terminal_runtime_store,
+                            &dashboard_activity_snapshot_cache,
+                            &dashboard_reconcile_gate,
                         )
                         .await
                     {
@@ -700,6 +764,8 @@ pub(crate) async fn run_sqlite_batch_writer(
                             flush_reason,
                             prompt_cache_conversation_cache.as_ref(),
                             &terminal_runtime_store,
+                            &dashboard_activity_snapshot_cache,
+                            &dashboard_reconcile_gate,
                         )
                         .await
                     {
@@ -736,6 +802,10 @@ pub(crate) async fn flush_pending_batch(
     reason: FlushReason,
     prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
     terminal_runtime_store: &Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
+    dashboard_activity_snapshot_cache: &Arc<
+        std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
+    >,
+    dashboard_reconcile_gate: &Arc<Mutex<()>>,
 ) -> Option<RetainedBatch> {
     if batch.is_empty() {
         return None;
@@ -787,6 +857,8 @@ pub(crate) async fn flush_pending_batch(
         &batch,
         prompt_cache_conversation_cache,
         terminal_runtime_store,
+        dashboard_activity_snapshot_cache,
+        dashboard_reconcile_gate,
     )
     .await
     {
@@ -887,9 +959,14 @@ pub(crate) async fn flush_pending_batch_inner(
     batch: &PendingBatch,
     prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
     terminal_runtime_store: &Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
+    dashboard_activity_snapshot_cache: &Arc<
+        std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
+    >,
+    dashboard_reconcile_gate: &Arc<Mutex<()>>,
 ) -> Result<PendingBatch> {
     let mut deferred_batch = PendingBatch::default();
     let mut should_invalidate_prompt_cache_conversations = false;
+    let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
     for terminal in batch.terminal_invocations.values() {
         let persisted = if terminal.raw_capture {
             let capture_started = terminal.capture_started.unwrap_or_else(Instant::now);
@@ -926,6 +1003,20 @@ pub(crate) async fn flush_pending_batch_inner(
         let Some((invocation_id, occurred_at)) = derived_identity else {
             continue;
         };
+        let dashboard_cache = dashboard_activity_snapshot_cache
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone());
+        if let Some(cache) = dashboard_cache {
+            acknowledge_dashboard_activity_terminal_record(
+                &cache,
+                &terminal.record.invoke_id,
+                &terminal.record.occurred_at,
+                invocation_id,
+                terminal.dashboard_terminal_sequence,
+            )
+            .await;
+        }
         if prompt_cache_key_from_payload(terminal.record.payload.as_deref())
             .as_deref()
             .is_some_and(|key| !key.trim().is_empty())
@@ -1168,6 +1259,60 @@ mod tests {
             "pending attempt should be inserted synchronously"
         );
         pending
+    }
+
+    fn terminal_write_for_coalescing(
+        invoke_id: &str,
+        dashboard_terminal_sequence: Option<u64>,
+    ) -> BatchedTerminalInvocationWrite {
+        let request_info = RequestCaptureInfo::default();
+        BatchedTerminalInvocationWrite {
+            record: build_running_proxy_capture_record(
+                invoke_id,
+                "2026-07-01 10:00:00",
+                ProxyCaptureTarget::Responses,
+                &request_info,
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ),
+            capture_started: None,
+            raw_capture: false,
+            dashboard_terminal_sequence,
+        }
+    }
+
+    #[test]
+    fn terminal_batch_coalescing_preserves_the_persistence_ack_sequence() {
+        let mut batch = PendingBatch::default();
+        batch.push(SqliteBatchWrite::TerminalInvocation(
+            terminal_write_for_coalescing("coalesced-terminal", Some(7)),
+        ));
+        batch.push(SqliteBatchWrite::TerminalInvocation(
+            terminal_write_for_coalescing("coalesced-terminal", None),
+        ));
+
+        let terminal = batch
+            .terminal_invocations
+            .values()
+            .next()
+            .expect("coalesced terminal");
+        assert_eq!(terminal.dashboard_terminal_sequence, Some(7));
+        assert_eq!(batch.coalesced_rows, 1);
     }
 
     #[tokio::test]
@@ -1575,6 +1720,7 @@ mod tests {
                 BatchedTerminalInvocationWrite {
                     capture_started: None,
                     raw_capture: false,
+                    dashboard_terminal_sequence: None,
                     record,
                 },
             )],
@@ -1676,6 +1822,7 @@ mod tests {
             BatchedTerminalInvocationWrite {
                 capture_started: None,
                 raw_capture: false,
+                dashboard_terminal_sequence: None,
                 record,
             },
         )));
@@ -1768,6 +1915,7 @@ mod tests {
             BatchedTerminalInvocationWrite {
                 capture_started: None,
                 raw_capture: false,
+                dashboard_terminal_sequence: None,
                 record,
             },
         )));

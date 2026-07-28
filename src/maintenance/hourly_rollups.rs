@@ -43,6 +43,7 @@ pub(crate) async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) ->
 }
 
 async fn sync_hourly_rollups_from_live_tables_once(pool: &Pool<Sqlite>) -> Result<()> {
+    repair_active_account_activity_v2_coverage(pool).await?;
     loop {
         let updated = replay_live_invocation_hourly_rollups(pool).await?;
         if updated == 0 {
@@ -2037,6 +2038,36 @@ pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
             error = %err,
             reason,
             "background hourly rollup refresh failed; keeping existing rollups for read surfaces"
+        );
+    }
+}
+
+pub(crate) async fn repair_active_account_activity_v2_coverage_best_effort(
+    pool: &Pool<Sqlite>,
+    hourly_rollup_sync_lock: &Mutex<()>,
+    reason: &'static str,
+) {
+    let gate = crate::db_pressure::global_db_pressure_gate();
+    let _permit = match gate.try_begin_background("account_activity_v2_priority_repair") {
+        Ok(permit) => permit,
+        Err(deny_reason) => {
+            debug!(
+                reason,
+                deny_reason = %deny_reason,
+                wake_reason = "active_window_coverage_check",
+                "active Dashboard coverage repair deferred by database pressure gate"
+            );
+            return;
+        }
+    };
+    let _guard = hourly_rollup_sync_lock.lock().await;
+    if let Err(err) = repair_active_account_activity_v2_coverage(pool).await {
+        gate.record_error("account_activity_v2_priority_repair", &err);
+        warn!(
+            error = %err,
+            reason,
+            wake_reason = "active_window_coverage_check",
+            "active Dashboard coverage repair failed"
         );
     }
 }

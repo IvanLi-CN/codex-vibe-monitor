@@ -1,5 +1,6 @@
 # Dashboard 自然日七卡 KPI 语义与布局重构 演进历史（#gz5ns）
 
+- 2026-07-28：开放窗口累计态进一步冻结为“5 秒内存发布 + 60 秒 DB 对账”。`today` 以本地午夜 rollover 重建，rolling `1d / 7d` 以 compact expiry delta 精确移除离窗事件，禁止用陈旧 baseline 仅替换响应边界。
 - 2026-07-25：自然日与 rolling KPI 的开放窗口读侧改用共享内存累计 baseline，保持现有字段和 5 秒可见时效；closed-range comparison 仍为 HTTP exact，未混入实时累计态。
 
 > 这里记录会影响 Agent 理解“为什么一步步变成现在这样”的关键演进；单次任务流水账不放这里，规范正文仍以 `./SPEC.md` 为准。

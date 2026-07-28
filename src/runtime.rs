@@ -121,12 +121,16 @@ pub(crate) async fn run() -> Result<()> {
     let proxy_runtime_invocations = Arc::new(ProxyRuntimeInvocationStore::default());
     let dashboard_network_speed_cache =
         Arc::new(DashboardNetworkSpeedCache::new(process_started_at_utc));
+    let dashboard_activity_snapshot_cache =
+        Arc::new(Mutex::new(DashboardActivitySnapshotCacheState::default()));
     let sqlite_batch_writer = SqliteBatchWriter::spawn(
         pool.clone(),
         shutdown.clone(),
         prompt_cache_conversation_cache.clone(),
     );
     sqlite_batch_writer.set_terminal_runtime_store(proxy_runtime_invocations.clone());
+    sqlite_batch_writer
+        .set_dashboard_activity_snapshot_cache(dashboard_activity_snapshot_cache.clone());
     let pool_account_selection_runtime = Arc::new(PoolAccountSelectionRuntime::default());
     let subscription_hub = Arc::new(SubscriptionHub::new());
 
@@ -166,9 +170,7 @@ pub(crate) async fn run() -> Result<()> {
         pricing_settings_update_lock: Arc::new(Mutex::new(())),
         pricing_catalog,
         prompt_cache_conversation_cache,
-        dashboard_activity_snapshot_cache: Arc::new(Mutex::new(
-            DashboardActivitySnapshotCacheState::default(),
-        )),
+        dashboard_activity_snapshot_cache,
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),

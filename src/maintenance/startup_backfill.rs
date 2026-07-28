@@ -167,7 +167,16 @@ pub(crate) fn startup_backfill_next_delay(
 ) -> Duration {
     if run.force_idle {
         Duration::from_secs(STARTUP_BACKFILL_IDLE_INTERVAL_SECS)
-    } else if run.hit_scan_limit || run.updated > 0 {
+    } else if run.updated > 0 {
+        Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS)
+    } else if run.hit_scan_limit && run.scanned > 0 {
+        Duration::from_secs(match zero_update_streak {
+            0 | 1 => 15,
+            2 => 60,
+            3 => 5 * 60,
+            _ => 15 * 60,
+        })
+    } else if run.hit_scan_limit {
         Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS)
     } else if run.scanned == 0 || zero_update_streak > 0 {
         Duration::from_secs(STARTUP_BACKFILL_IDLE_INTERVAL_SECS)
@@ -413,6 +422,7 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
     .await
     .ok();
     let mut had_failure = false;
+    let mut ran_actionable_task = false;
     for task in StartupBackfillTask::ordered_tasks() {
         if cancel.is_cancelled() {
             info!(
@@ -429,19 +439,32 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
             );
             continue;
         }
-        if let Err(err) = run_startup_backfill_task_if_due(&state, *task).await {
-            had_failure = true;
-            crate::db_pressure::global_db_pressure_gate().record_error("startup_backfill", &err);
-            warn!(task = task.log_label(), error = %err, "startup backfill supervisor pass failed");
+        match run_startup_backfill_task_if_due(&state, *task).await {
+            Ok(ran) => ran_actionable_task |= ran,
+            Err(err) => {
+                had_failure = true;
+                crate::db_pressure::global_db_pressure_gate()
+                    .record_error("startup_backfill", &err);
+                warn!(task = task.log_label(), error = %err, "startup backfill supervisor pass failed");
+            }
         }
     }
 
-    refresh_hourly_rollups_for_read_surfaces_best_effort(
-        &state.pool,
-        state.hourly_rollup_sync_lock.as_ref(),
-        "startup backfill maintenance pass",
-    )
-    .await;
+    if ran_actionable_task {
+        refresh_hourly_rollups_for_read_surfaces_best_effort(
+            &state.pool,
+            state.hourly_rollup_sync_lock.as_ref(),
+            "startup backfill maintenance pass",
+        )
+        .await;
+    } else {
+        repair_active_account_activity_v2_coverage_best_effort(
+            &state.pool,
+            state.hourly_rollup_sync_lock.as_ref(),
+            "startup backfill active coverage check",
+        )
+        .await;
+    }
 
     let backfill_updated_rows = sqlx::query_scalar::<_, i64>(
         r#"
@@ -503,7 +526,7 @@ pub(crate) fn startup_backfill_task_enabled(state: &AppState, task: StartupBackf
 pub(crate) async fn run_startup_backfill_task_if_due(
     state: &Arc<AppState>,
     task: StartupBackfillTask,
-) -> Result<()> {
+) -> Result<bool> {
     run_startup_backfill_task_if_due_with_gate(
         state,
         task,
@@ -516,13 +539,13 @@ pub(crate) async fn run_startup_backfill_task_if_due_with_gate(
     state: &Arc<AppState>,
     task: StartupBackfillTask,
     gate: &crate::db_pressure::DbPressureGate,
-) -> Result<()> {
+) -> Result<bool> {
     if !startup_backfill_task_enabled(state.as_ref(), task) {
         debug!(
             task = task.log_label(),
             "startup backfill task is disabled by config"
         );
-        return Ok(());
+        return Ok(false);
     }
 
     let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
@@ -540,7 +563,7 @@ pub(crate) async fn run_startup_backfill_task_if_due_with_gate(
             last_updated = progress.last_updated,
             "startup backfill task is not due"
         );
-        return Ok(());
+        return Ok(false);
     }
 
     let _permit = match gate.try_begin_background("startup_backfill") {
@@ -551,15 +574,20 @@ pub(crate) async fn run_startup_backfill_task_if_due_with_gate(
                 reason = %reason,
                 "startup backfill task skipped because database pressure gate is closed"
             );
-            return Ok(());
+            return Ok(false);
         }
     };
 
     mark_startup_backfill_running(&state.pool, &task_name, progress.cursor_id).await?;
 
     let started_at = Instant::now();
-    match run_startup_backfill_task(state, task, progress.cursor_id, progress.zero_update_streak)
-        .await
+    let actionable = match run_startup_backfill_task(
+        state,
+        task,
+        progress.cursor_id,
+        progress.zero_update_streak,
+    )
+    .await
     {
         Ok((run, detail)) => {
             let zero_update_streak = if run.updated == 0 {
@@ -592,10 +620,21 @@ pub(crate) async fn run_startup_backfill_task_if_due_with_gate(
                 zero_update_streak,
                 elapsed_ms = started_at.elapsed().as_millis() as u64,
                 next_run_after = %next_run_after,
+                actionable_backlog_count = u64::from(run.hit_scan_limit),
+                blocked_backlog_count = u64::from(run.force_idle && run.scanned > 0),
+                backoff_stage = match startup_backfill_next_delay(&run, zero_update_streak).as_secs() {
+                    0..=15 => "15s",
+                    16..=60 => "1m",
+                    61..=300 => "5m",
+                    301..=900 => "15m",
+                    _ => "idle",
+                },
+                wake_reason = if run.updated > 0 { "progress" } else if run.hit_scan_limit { "actionable_backlog" } else { "scheduled" },
                 detail = %detail,
                 samples = %startup_backfill_samples_text(&run.samples),
                 "startup backfill pass finished"
             );
+            startup_backfill_run_is_actionable(&run)
         }
         Err(err) => {
             let retry_after = format_utc_iso(
@@ -623,10 +662,15 @@ pub(crate) async fn run_startup_backfill_task_if_due_with_gate(
                 error = %err,
                 "startup backfill pass failed"
             );
+            false
         }
-    }
+    };
 
-    Ok(())
+    Ok(actionable)
+}
+
+fn startup_backfill_run_is_actionable(run: &StartupBackfillRunState) -> bool {
+    run.updated > 0 || (run.hit_scan_limit && !run.force_idle)
 }
 
 pub(crate) async fn run_startup_backfill_task(
@@ -1156,6 +1200,62 @@ pub(crate) fn spawn_startup_backfill_maintenance(
 #[cfg(test)]
 mod startup_backfill_tests {
     use super::*;
+
+    #[test]
+    fn actionable_no_progress_backoff_caps_at_fifteen_minutes() {
+        let run = StartupBackfillRunState {
+            scanned: 2,
+            updated: 0,
+            hit_scan_limit: true,
+            ..StartupBackfillRunState::default()
+        };
+        assert_eq!(
+            startup_backfill_next_delay(&run, 1),
+            Duration::from_secs(15)
+        );
+        assert_eq!(
+            startup_backfill_next_delay(&run, 2),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            startup_backfill_next_delay(&run, 3),
+            Duration::from_secs(5 * 60)
+        );
+        assert_eq!(
+            startup_backfill_next_delay(&run, 4),
+            Duration::from_secs(15 * 60)
+        );
+        assert_eq!(
+            startup_backfill_next_delay(&run, 99),
+            Duration::from_secs(15 * 60)
+        );
+    }
+
+    #[test]
+    fn only_progress_or_non_idle_backlog_triggers_rollup_refresh() {
+        assert!(startup_backfill_run_is_actionable(
+            &StartupBackfillRunState {
+                updated: 1,
+                ..StartupBackfillRunState::default()
+            }
+        ));
+        assert!(startup_backfill_run_is_actionable(
+            &StartupBackfillRunState {
+                hit_scan_limit: true,
+                ..StartupBackfillRunState::default()
+            }
+        ));
+        assert!(!startup_backfill_run_is_actionable(
+            &StartupBackfillRunState {
+                scanned: 1,
+                force_idle: true,
+                ..StartupBackfillRunState::default()
+            }
+        ));
+        assert!(!startup_backfill_run_is_actionable(
+            &StartupBackfillRunState::default()
+        ));
+    }
 
     #[test]
     fn historical_rollup_backfill_run_state_backs_off_when_only_blocked_archives_remain() {
