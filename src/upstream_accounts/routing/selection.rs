@@ -964,7 +964,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                 .as_deref(),
                         ),
                     ),
-                    decode_capability_support(row.codex_imagegen_capability.as_deref()),
+                    effective_capability_support(
+                        decode_capability_support(row.codex_imagegen_capability.as_deref()),
+                        decode_capability_override(
+                            row.policy_codex_imagegen_capability_override.as_deref(),
+                        ),
+                    ),
                 ) {
                     sticky_route_still_reusable = true;
                     let mut sticky_route_was_excluded = false;
@@ -1302,7 +1307,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                         .as_deref(),
                 ),
             ),
-            decode_capability_support(row.codex_imagegen_capability.as_deref()),
+            effective_capability_support(
+                decode_capability_support(row.codex_imagegen_capability.as_deref()),
+                decode_capability_override(
+                    row.policy_codex_imagegen_capability_override.as_deref(),
+                ),
+            ),
         ) {
             saw_other_non_rate_limited_routing_candidate = true;
             continue;
@@ -1552,6 +1562,17 @@ mod tests {
             CapabilitySupport::Supported,
             CapabilitySupport::Supported,
             CapabilitySupport::Unsupported,
+        ));
+        assert!(account_accepts_request_capabilities(
+            force_add,
+            CapabilitySupport::Supported,
+            CapabilitySupport::Supported,
+            CapabilitySupport::Supported,
+            CapabilitySupport::Supported,
+            effective_capability_support(
+                CapabilitySupport::Unsupported,
+                Some(CapabilitySupport::Supported),
+            ),
         ));
 
         let image_model = request_capability_requirements_after_codex_imagegen_rewrite(

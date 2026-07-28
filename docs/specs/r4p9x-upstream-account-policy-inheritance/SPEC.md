@@ -79,6 +79,7 @@ Accounts also track read-only system signals alongside editable policy:
 - observed Chat Completions endpoint capability
 - observed direct image endpoint capability
 - observed Responses image-tool capability
+- observed Codex `image_gen` namespace capability
 - transport capability badges such as `unsupported_transport:websocket`
 
 ## Resolution
@@ -180,7 +181,7 @@ The image-tool layer remains separate from the system-tag signal model:
 
 - `imageToolRewriteMode` exists on group and account routing rules only
 - `codexImagegenRewriteMode` is an independent root -> group -> account -> conversation policy with `keep_original | fill_missing | force_add | force_remove`; root defaults to `keep_original`
-- Codex namespace compatibility is learned per upstream account. A `502` containing `Upstream request failed` after an actual `image_gen` injection marks only that account as unsupported, skips same-account retries, and makes later active Codex rewrites select another compatible account. This signal does not alter ordinary response, hosted image-tool, or account-health capability axes.
+- Codex namespace compatibility is learned per upstream account. A `502` containing `Upstream request failed` after an actual `image_gen` injection marks only that account as unsupported, skips same-account retries, and makes later active Codex rewrites select another compatible account. This signal does not alter ordinary response, hosted image-tool, or account-health capability axes. Its observed state, reason, and explicit supported/unsupported override are available in account detail so an operator can deliberately retest an upstream after it is repaired.
 - account records persist a read-only `imageToolCapability`
 - `image intent` classification is runtime four-state: `yes`, `direct_image`, `no`, or `unknown`
 - `yes` routes only to image-compatible accounts
@@ -369,7 +370,10 @@ Visual evidence is captured from stable Storybook scenarios for:
 - system settings page showing the global request compression defaults and request-path timeouts with `zstd` + `best` persisted after save
 - group routing policy dialog showing the API-key-only request compression override row with mixed-group helper copy and `follow`
 - effective routing rule card showing the resolved request compression row and account-owned source badge
-- upstream account detail Overview showing four independent capability cards where Responses only contains `/v1/responses` + `/v1/responses/compact`, Chat Completions is isolated to `/v1/chat/completions`, and Response image-tool excludes the chat endpoint
+- upstream account detail Overview showing independent endpoint/image cards plus the Codex `image_gen` namespace capability, whose observed failure reason and operator override remain distinct from hosted image-tool support
+
+PR: none
+![Codex imagegen capability override](./assets/codex-imagegen-capability-override-final.png)
 
 PR: include
 ![Account pool layout without tags nav](./assets/account-pool-layout-no-tags-nav.png)

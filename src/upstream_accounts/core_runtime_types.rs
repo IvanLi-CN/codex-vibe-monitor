@@ -1744,6 +1744,7 @@ pub(crate) struct UpstreamAccountSummary {
     pub(crate) chat_completions_capability: UpstreamCapabilityState,
     pub(crate) image_endpoint_capability: UpstreamCapabilityState,
     pub(crate) response_image_tool_capability: UpstreamCapabilityState,
+    pub(crate) codex_imagegen_capability: UpstreamCapabilityState,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2709,6 +2710,8 @@ pub(crate) struct UpdateUpstreamAccountRequest {
     pub(crate) image_endpoint_capability_override: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     pub(crate) response_image_tool_capability_override: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(crate) codex_imagegen_capability_override: OptionalField<String>,
     pub(crate) routing_rule: Option<UpdateGroupAccountRoutingRuleRequest>,
 }
 

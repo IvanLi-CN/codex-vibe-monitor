@@ -507,6 +507,13 @@ function createAccounts(scene: DemoScene = "operational") {
           observedAt: recentAt(26),
           reason: tagName === "image" ? "response image tool request succeeded" : null,
         },
+        codexImagegenCapability: {
+          observed: tagName === "image" ? "supported" : "unknown",
+          override: null,
+          effective: tagName === "image" ? "supported" : "unknown",
+          observedAt: recentAt(24),
+          reason: tagName === "image" ? "Codex imagegen namespace request succeeded" : null,
+        },
         duplicateInfo:
           id === 103 ? { peerAccountIds: [101], reasons: ["sharedChatgptUserId"] } : null,
         effectiveRoutingRule: {

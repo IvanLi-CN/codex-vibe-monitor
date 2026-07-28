@@ -65,6 +65,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             codex_imagegen_capability TEXT NOT NULL DEFAULT 'unknown',
             codex_imagegen_capability_observed_at TEXT,
             codex_imagegen_capability_reason TEXT,
+            policy_codex_imagegen_capability_override TEXT,
             local_primary_limit REAL,
             local_secondary_limit REAL,
             local_limit_unit TEXT,
@@ -297,6 +298,13 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_upstream_accounts.codex_imagegen_capability_reason")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "policy_codex_imagegen_capability_override",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.policy_codex_imagegen_capability_override")?;
     ensure_integer_column_with_default(pool, "pool_upstream_accounts", "is_mother", "0")
         .await
         .context("failed to ensure pool_upstream_accounts.is_mother")?;

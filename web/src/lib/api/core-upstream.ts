@@ -288,6 +288,7 @@ export interface UpstreamAccountSummary {
   chatCompletionsCapability?: UpstreamCapabilityState | null;
   imageEndpointCapability?: UpstreamCapabilityState | null;
   responseImageToolCapability?: UpstreamCapabilityState | null;
+  codexImagegenCapability?: UpstreamCapabilityState | null;
   tags: AccountTagSummary[];
   effectiveRoutingRule: EffectiveRoutingRule;
 }
@@ -699,6 +700,7 @@ export interface UpdateUpstreamAccountPayload {
   chatCompletionsCapabilityOverride?: CapabilityOverride | null;
   imageEndpointCapabilityOverride?: CapabilityOverride | null;
   responseImageToolCapabilityOverride?: CapabilityOverride | null;
+  codexImagegenCapabilityOverride?: CapabilityOverride | null;
   routingRule?: UpdateGroupAccountRoutingRulePayload;
 }
 
@@ -1316,6 +1318,7 @@ function normalizeUpstreamAccountSummary(raw: unknown): UpstreamAccountSummary |
     responseImageToolCapability: normalizeUpstreamCapabilityState(
       payload.responseImageToolCapability,
     ),
+    codexImagegenCapability: normalizeUpstreamCapabilityState(payload.codexImagegenCapability),
     tags: Array.isArray(payload.tags)
       ? payload.tags
           .map(normalizeAccountTagSummary)

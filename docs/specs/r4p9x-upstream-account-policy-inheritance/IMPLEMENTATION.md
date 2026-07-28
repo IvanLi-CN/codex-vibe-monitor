@@ -71,11 +71,12 @@ Endpoint capability routing is now endpoint-aware instead of response-family wid
 - `/v1/chat/completions` no longer participates in `response_endpoint_capability` or `response_image_tool_capability`
 - startup schema maintenance performs a one-time cutover that clears legacy mixed Responses observed state and overrides, seeds the new Chat axis as `unknown`, and records completion in `pool_routing_settings.capability_axis_split_migrated`
 
-The account detail Overview now renders four independent capability cards.
+The account detail Overview now renders five independent capability cards.
 
 - Responses card: `/v1/responses`, `/v1/responses/compact`
 - Chat Completions card: `/v1/chat/completions`
 - Image card: `/v1/images/generations`, `/v1/images/edits`
+- Codex imagegen card: `image_gen` namespace compatibility, including observed reason and an explicit supported/unsupported override for a deliberate post-repair retest
 - Response image-tool card: Responses-family image-tool eligibility only
 
 ## API and Resolution
@@ -181,4 +182,4 @@ Validation covers:
 
 Codex imagegen now resolves through the same root -> group -> account policy chain as other routing fields. The stored concrete root default is `keep_original`; lower layers retain nullable override semantics. Request preparation recognizes Codex Full/Lite explicitly, removes conflicting hosted image tools for active Codex policies, and records bounded schema-conflict audit data.
 
-Upstream routing now persists an independent Codex `image_gen` capability. A known `502 Upstream request failed` is treated as namespace incompatibility only when the attempt audit proves that CVM injected or replaced the namespace. The account is excluded from subsequent active Codex rewrites without a same-account retry, while ordinary account health and hosted image-tool capability remain unchanged.
+Upstream routing now persists an independent Codex `image_gen` capability. A known `502 Upstream request failed` is treated as namespace incompatibility only when the attempt audit proves that CVM injected or replaced the namespace. The account is excluded from subsequent active Codex rewrites without a same-account retry, while ordinary account health and hosted image-tool capability remain unchanged. Operators can inspect the observed reason and intentionally override the namespace capability after an upstream repair; ordinary non-injected successes never erase the evidence.

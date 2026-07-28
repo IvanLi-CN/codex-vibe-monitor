@@ -401,8 +401,9 @@ pub(crate) fn build_pool_resolved_account(
                     .as_deref(),
             ),
         ),
-        codex_imagegen_capability: decode_capability_support(
-            row.codex_imagegen_capability.as_deref(),
+        codex_imagegen_capability: effective_capability_support(
+            decode_capability_support(row.codex_imagegen_capability.as_deref()),
+            decode_capability_override(row.policy_codex_imagegen_capability_override.as_deref()),
         ),
         upstream_base_url,
         routing_source,
