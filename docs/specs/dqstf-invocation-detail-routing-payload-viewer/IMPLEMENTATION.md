@@ -5,7 +5,7 @@
 - Canonical spec: `docs/specs/dqstf-invocation-detail-routing-payload-viewer/SPEC.md`
 - Implementation summary: 调用详情继续使用统一工作流视图；当前真相已收紧为 `attempt = 真实开始向上游 dispatch`，pre-dispatch pool 终态统一表现为 `路由决定 + 系统裁定`，本地裁定返回体回放真实下游 body。
 - Branch: `th/fix-attempt-response-body-query`
-- Base: `origin/main@0239b3d0`
+- Base: `origin/main@d77b1b63`
 
 ## Implemented Coverage
 
