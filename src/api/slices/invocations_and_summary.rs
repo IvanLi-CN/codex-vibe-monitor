@@ -10095,16 +10095,16 @@ async fn query_live_dashboard_activity_persisted_terminal_ids(
         let mut query = QueryBuilder::<Sqlite>::new(
             "SELECT id, invoke_id, occurred_at FROM codex_invocations WHERE (",
         );
-        {
-            let mut predicates = query.separated(" OR ");
-            for (invoke_id, occurred_at) in chunk {
-                predicates
-                    .push_unseparated("(invoke_id = ")
-                    .push_bind(invoke_id)
-                    .push_unseparated(" AND occurred_at = ")
-                    .push_bind(occurred_at)
-                    .push_unseparated(")");
+        for (index, (invoke_id, occurred_at)) in chunk.iter().enumerate() {
+            if index > 0 {
+                query.push(" OR ");
             }
+            query
+                .push("(invoke_id = ")
+                .push_bind(invoke_id)
+                .push(" AND occurred_at = ")
+                .push_bind(occurred_at)
+                .push(")");
         }
         query.push(")");
         if source_scope == InvocationSourceScope::ProxyOnly {
@@ -16668,6 +16668,65 @@ pub(crate) fn push_exact_range(
 #[cfg(test)]
 mod dashboard_activity_read_model_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn dashboard_activity_persisted_terminal_lookup_accepts_multiple_keys() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite pool");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (\
+                id INTEGER PRIMARY KEY, \
+                invoke_id TEXT NOT NULL, \
+                occurred_at TEXT NOT NULL, \
+                status TEXT NOT NULL, \
+                source TEXT NOT NULL\
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create invocations table");
+        for (id, invoke_id, occurred_at) in [
+            (1_i64, "terminal-a", "2026-07-28 10:00:00"),
+            (2_i64, "terminal-b", "2026-07-28 10:01:00"),
+        ] {
+            sqlx::query(
+                "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, source) \
+                 VALUES (?1, ?2, ?3, 'success', 'proxy')",
+            )
+            .bind(id)
+            .bind(invoke_id)
+            .bind(occurred_at)
+            .execute(&pool)
+            .await
+            .expect("insert terminal invocation");
+        }
+
+        let persisted = query_live_dashboard_activity_persisted_terminal_ids(
+            &pool,
+            InvocationSourceScope::All,
+            &[
+                ("terminal-a".to_string(), "2026-07-28 10:00:00".to_string()),
+                ("terminal-b".to_string(), "2026-07-28 10:01:00".to_string()),
+            ],
+        )
+        .await
+        .expect("look up multiple persisted terminal records");
+
+        assert_eq!(persisted.len(), 2);
+        assert_eq!(
+            persisted.get(&("terminal-a".to_string(), "2026-07-28 10:00:00".to_string())),
+            Some(&1)
+        );
+        assert_eq!(
+            persisted.get(&("terminal-b".to_string(), "2026-07-28 10:01:00".to_string())),
+            Some(&2)
+        );
+    }
 
     #[test]
     fn rolling_snapshots_refresh_before_the_reported_window_drifts() {
