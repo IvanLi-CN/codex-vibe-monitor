@@ -1,6 +1,8 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Area,
+  AreaChart,
   CartesianGrid,
   type DefaultLegendContentProps,
   Legend,
@@ -26,6 +28,7 @@ import type {
 } from "../../lib/api";
 import { chartBaseTokens, piePalette } from "../../lib/chartTheme";
 import { useTheme } from "../../theme";
+import { ModelPerformanceModelIdentity } from "../dashboard/ModelPerformanceModelIdentity";
 import { ModelIdentity } from "../shared/ModelIdentity";
 
 type MetricKey =
@@ -92,17 +95,46 @@ function metricSortValue(item: LongTermSeriesSummary, metric: MetricKey): number
   return metricValue(item, metric) ?? Number.NEGATIVE_INFINITY;
 }
 
-function mergeSeriesPoints(series: LongTermSeries[], metric: MetricKey) {
-  const byDate = new Map<string, Record<string, string | number | null>>();
+type ChartDatum = Record<string, string | number | null> & { date: string };
+
+export function mergeSeriesPoints(
+  series: LongTermSeries[],
+  metric: MetricKey,
+  stackedArea = false,
+): ChartDatum[] {
+  const byDate = new Map<string, ChartDatum>();
+  const pointsBySeries = new Map(
+    series.map((item) => [
+      item.seriesKey,
+      new Map(item.points.map((point) => [point.date, point])),
+    ]),
+  );
+  const dates = new Set<string>();
   for (const item of series) {
     for (const point of item.points) {
-      const existing = byDate.get(point.date) ?? { date: point.date };
-      existing[item.seriesKey] = metricValue(point, metric);
-      byDate.set(point.date, existing);
+      dates.add(point.date);
     }
   }
-  return [...byDate.values()].sort((left, right) =>
-    String(left.date).localeCompare(String(right.date)),
+  for (const date of dates) {
+    const datum: ChartDatum = { date };
+    for (const item of series) {
+      const point = pointsBySeries.get(item.seriesKey)?.get(date);
+      datum[item.seriesKey] = point ? metricValue(point, metric) : stackedArea ? 0 : null;
+    }
+    byDate.set(date, datum);
+  }
+  return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function orderSeriesBySummary(
+  series: LongTermSeries[],
+  entries: LongTermSeriesSummary[],
+): LongTermSeries[] {
+  const order = new Map(entries.map((entry, index) => [entry.seriesKey, index]));
+  return [...series].sort(
+    (left, right) =>
+      (order.get(left.seriesKey) ?? Number.MAX_SAFE_INTEGER) -
+      (order.get(right.seriesKey) ?? Number.MAX_SAFE_INTEGER),
   );
 }
 
@@ -180,16 +212,19 @@ function LongTermChart({
   metric,
   emptyLabel,
   modelSeries = false,
+  stackedArea = false,
 }: {
   series: LongTermSeries[];
   metric: MetricKey;
   emptyLabel: string;
   modelSeries?: boolean;
+  stackedArea?: boolean;
 }) {
+  const { t } = useTranslation();
   const { themeMode } = useTheme();
   const colors = chartBaseTokens(themeMode);
   const seriesColors = piePalette(themeMode);
-  const chartData = mergeSeriesPoints(series, metric);
+  const chartData = mergeSeriesPoints(series, metric, stackedArea);
   if (series.length === 0 || chartData.length === 0) {
     return (
       <div className="flex h-64 items-center justify-center rounded-lg border border-dashed border-base-300 text-sm opacity-70">
@@ -198,42 +233,156 @@ function LongTermChart({
     );
   }
   return (
-    <div className="h-64 w-full min-w-0" data-chart-kind="long-term-series">
+    <div
+      className="h-64 w-full min-w-0"
+      data-chart-kind={stackedArea ? "long-term-stacked-area" : "long-term-series"}
+      data-chart-mode={stackedArea ? "stacked-area" : "line"}
+    >
       <ResponsiveContainer>
-        <LineChart data={chartData} margin={{ top: 8, right: 12, left: 4, bottom: 4 }}>
-          <CartesianGrid stroke={colors.gridLine} strokeDasharray="3 3" />
-          <XAxis dataKey="date" tick={{ fill: colors.axisText, fontSize: 11 }} minTickGap={24} />
-          <YAxis
-            tick={{ fill: colors.axisText, fontSize: 11 }}
-            tickFormatter={(value) => formatMetric(Number(value), metric)}
-            width={76}
-          />
-          <Tooltip
-            contentStyle={{
-              backgroundColor: colors.tooltipBg,
-              borderColor: colors.tooltipBorder,
-              borderRadius: 8,
-            }}
-            formatter={(value, key) => [
-              formatMetric(value == null ? null : Number(value), metric),
-              String(key),
-            ]}
-          />
-          <Legend content={<LongTermChartLegend modelSeries={modelSeries} />} />
-          {series.map((item, index) => (
-            <Line
-              key={item.seriesKey}
-              type="monotone"
-              dataKey={item.seriesKey}
-              name={item.displayName}
-              stroke={seriesColors[index % seriesColors.length] ?? metricColors[metric]}
-              strokeWidth={2}
-              dot={false}
-              connectNulls
+        {stackedArea ? (
+          <AreaChart data={chartData} margin={{ top: 8, right: 12, left: 4, bottom: 4 }}>
+            <CartesianGrid stroke={colors.gridLine} strokeDasharray="3 3" />
+            <XAxis dataKey="date" tick={{ fill: colors.axisText, fontSize: 11 }} minTickGap={24} />
+            <YAxis
+              tick={{ fill: colors.axisText, fontSize: 11 }}
+              tickFormatter={(value) => formatMetric(Number(value), metric)}
+              width={76}
             />
-          ))}
-        </LineChart>
+            <Tooltip
+              content={
+                <StackedAreaTooltip
+                  metric={metric}
+                  series={series}
+                  colors={colors}
+                  seriesColors={seriesColors}
+                  totalLabel={t("stats.longTerm.total")}
+                />
+              }
+            />
+            <Legend content={<LongTermChartLegend modelSeries={modelSeries} />} />
+            {series.map((item, index) => {
+              const color = seriesColors[index % seriesColors.length] ?? metricColors[metric];
+              return (
+                <Area
+                  key={item.seriesKey}
+                  type="monotone"
+                  dataKey={item.seriesKey}
+                  name={item.displayName}
+                  stackId="long-term-usage"
+                  stroke={color}
+                  fill={color}
+                  fillOpacity={0.42}
+                  strokeWidth={2}
+                  connectNulls={false}
+                />
+              );
+            })}
+          </AreaChart>
+        ) : (
+          <LineChart data={chartData} margin={{ top: 8, right: 12, left: 4, bottom: 4 }}>
+            <CartesianGrid stroke={colors.gridLine} strokeDasharray="3 3" />
+            <XAxis dataKey="date" tick={{ fill: colors.axisText, fontSize: 11 }} minTickGap={24} />
+            <YAxis
+              tick={{ fill: colors.axisText, fontSize: 11 }}
+              tickFormatter={(value) => formatMetric(Number(value), metric)}
+              width={76}
+            />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: colors.tooltipBg,
+                borderColor: colors.tooltipBorder,
+                borderRadius: 8,
+              }}
+              formatter={(value, key) => [
+                formatMetric(value == null ? null : Number(value), metric),
+                String(key),
+              ]}
+            />
+            <Legend content={<LongTermChartLegend modelSeries={modelSeries} />} />
+            {series.map((item, index) => (
+              <Line
+                key={item.seriesKey}
+                type="monotone"
+                dataKey={item.seriesKey}
+                name={item.displayName}
+                stroke={seriesColors[index % seriesColors.length] ?? metricColors[metric]}
+                strokeWidth={2}
+                dot={false}
+                connectNulls
+              />
+            ))}
+          </LineChart>
+        )}
       </ResponsiveContainer>
+    </div>
+  );
+}
+
+function StackedAreaTooltip({
+  active,
+  payload,
+  label,
+  metric,
+  series,
+  colors,
+  seriesColors,
+  totalLabel,
+}: {
+  active?: boolean;
+  label?: string | number;
+  payload?: Array<{ dataKey?: string | number; color?: string; payload?: ChartDatum }>;
+  metric: MetricKey;
+  series: LongTermSeries[];
+  colors: ReturnType<typeof chartBaseTokens>;
+  seriesColors: string[];
+  totalLabel: string;
+}) {
+  if (!active || !payload?.length) return null;
+  const datum = payload.find((entry) => entry.payload)?.payload;
+  if (!datum) return null;
+  const total = series.reduce((sum, item) => {
+    const value = datum[item.seriesKey];
+    return typeof value === "number" && Number.isFinite(value) ? sum + value : sum;
+  }, 0);
+  return (
+    <div
+      className="rounded-lg border px-3 py-2 text-xs shadow-lg"
+      style={{
+        backgroundColor: colors.tooltipBg,
+        borderColor: colors.tooltipBorder,
+        color: colors.axisText,
+      }}
+    >
+      <div className="mb-1 font-semibold">{String(label ?? datum.date)}</div>
+      <div className="space-y-0.5">
+        {series.map((item, index) => {
+          const entry = payload.find((candidate) => candidate.dataKey === item.seriesKey);
+          const value = datum[item.seriesKey];
+          return (
+            <div key={item.seriesKey} className="flex items-center justify-between gap-4">
+              <span className="inline-flex min-w-0 items-center gap-1.5">
+                <span
+                  className="h-2 w-2 flex-none rounded-full"
+                  style={{
+                    backgroundColor: entry?.color ?? seriesColors[index % seriesColors.length],
+                  }}
+                  aria-hidden
+                />
+                <span className="max-w-[14rem] truncate" title={item.displayName}>
+                  {item.displayName}
+                </span>
+              </span>
+              <span className="tabular-nums">
+                {formatMetric(typeof value === "number" ? value : null, metric)}
+              </span>
+            </div>
+          );
+        })}
+        <div className="mt-1 flex items-center justify-between gap-4 border-t border-current/15 pt-1 font-semibold">
+          <span>{totalLabel}</span>
+          <span className="tabular-nums">{formatMetric(total, metric)}</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -275,6 +424,7 @@ function LongTermChartLegend({
 function SeriesTable({
   title,
   entries,
+  totalMetrics,
   selectedKeys,
   onToggle,
   sortMetric,
@@ -285,6 +435,7 @@ function SeriesTable({
 }: {
   title: string;
   entries: LongTermSeriesSummary[];
+  totalMetrics?: LongTermMetrics;
   selectedKeys: string[];
   onToggle: (key: string) => void;
   sortMetric: MetricKey;
@@ -317,10 +468,11 @@ function SeriesTable({
     "firstByteMs",
     "responseMs",
   ];
+  const rowHeight = modelEntries ? 40 : 48;
   const rowVirtualizer = useVirtualizer({
     count: filtered.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 48,
+    estimateSize: () => rowHeight,
     overscan: 8,
   });
   const columnVirtualizer = useVirtualizer({
@@ -333,6 +485,36 @@ function SeriesTable({
   const stickyColumnsWidth = 18 * 16;
   const gridWidth = stickyColumnsWidth + columnVirtualizer.getTotalSize();
   const virtualColumns = columnVirtualizer.getVirtualItems();
+  const renderMetricCells = (metrics: LongTermMetrics, button = true) => (
+    <div
+      className="absolute left-[18rem] top-0 h-full"
+      style={{ width: columnVirtualizer.getTotalSize() }}
+    >
+      {virtualColumns.map((virtualColumn) => {
+        const metric = columns[virtualColumn.index];
+        const content = formatMetric(metricValue(metrics, metric), metric);
+        return button ? (
+          <button
+            type="button"
+            key={metric}
+            className="absolute top-0 h-full truncate px-1 text-left tabular-nums hover:text-primary"
+            style={{ left: virtualColumn.start, width: virtualColumn.size }}
+            onClick={() => onSort(metric)}
+          >
+            {content}
+          </button>
+        ) : (
+          <span
+            key={metric}
+            className="absolute top-0 inline-flex h-full items-center truncate px-1 text-left tabular-nums font-semibold"
+            style={{ left: virtualColumn.start, width: virtualColumn.size }}
+          >
+            {content}
+          </span>
+        );
+      })}
+    </div>
+  );
   return (
     <section className="space-y-3" data-testid={`long-term-table-${title}`}>
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -356,7 +538,7 @@ function SeriesTable({
           >
             <span className="sticky left-0 z-20 inline-flex h-full w-12 items-center bg-base-200/95 px-3" />
             <span className="sticky left-12 z-20 inline-flex h-full w-60 items-center bg-base-200/95 px-3">
-              {t("stats.longTerm.name")}
+              {modelEntries ? t("stats.longTerm.modelAndReasoning") : t("stats.longTerm.name")}
             </span>
             <div
               className="absolute left-[18rem] top-0 h-full"
@@ -379,6 +561,19 @@ function SeriesTable({
               })}
             </div>
           </div>
+          {modelEntries && totalMetrics ? (
+            <div
+              className="sticky top-10 z-[9] h-10 border-b border-base-300 bg-base-100 text-sm font-semibold"
+              style={{ width: gridWidth }}
+              data-testid="long-term-model-total-row"
+            >
+              <span className="sticky left-0 z-10 inline-flex h-full w-12 items-center bg-base-100 px-3" />
+              <span className="sticky left-12 z-10 inline-flex h-full w-60 items-center bg-base-100 px-3">
+                {t("stats.longTerm.total")}
+              </span>
+              {renderMetricCells(totalMetrics, false)}
+            </div>
+          ) : null}
           <div
             className="relative"
             style={{ height: rowVirtualizer.getTotalSize(), width: gridWidth }}
@@ -405,43 +600,22 @@ function SeriesTable({
                       disabled={!selected && selectedKeys.length >= 8}
                     />
                   </span>
-                  <span className="sticky left-12 z-10 inline-flex h-full w-60 min-w-0 flex-col justify-center bg-base-100 px-3 pr-3">
+                  <span className="sticky left-12 z-10 inline-flex h-full w-60 min-w-0 items-center bg-base-100 px-3 pr-3">
                     {modelEntries ? (
-                      <ModelIdentity
+                      <ModelPerformanceModelIdentity
                         model={entry.displayName}
-                        className="max-w-full justify-start"
-                        textClassName="block truncate font-medium"
+                        effort={entry.reasoningEffort ?? t("stats.longTerm.unspecified")}
+                        effortValue={entry.reasoningEffort}
+                        className="max-w-full"
+                        testId={`long-term-model-identity-${entry.seriesKey}`}
                       />
                     ) : (
                       <span className="block truncate font-medium" title={entry.displayName}>
                         {entry.displayName}
                       </span>
                     )}
-                    {entry.reasoningEffort ? (
-                      <span className="block truncate text-xs opacity-60">
-                        {entry.reasoningEffort}
-                      </span>
-                    ) : null}
                   </span>
-                  <div
-                    className="absolute left-[18rem] top-0 h-full"
-                    style={{ width: columnVirtualizer.getTotalSize() }}
-                  >
-                    {virtualColumns.map((virtualColumn) => {
-                      const metric = columns[virtualColumn.index];
-                      return (
-                        <button
-                          type="button"
-                          key={metric}
-                          className="absolute top-0 h-full truncate px-1 text-left tabular-nums hover:text-primary"
-                          style={{ left: virtualColumn.start, width: virtualColumn.size }}
-                          onClick={() => onSort(metric)}
-                        >
-                          {formatMetric(metricValue(entry, metric), metric)}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  {renderMetricCells(entry)}
                 </div>
               );
             })}
@@ -456,12 +630,14 @@ export interface LongTermStatsSectionProps {
   initialRange?: LongTermStatsRange;
   overviewOverride?: LongTermStatsOverviewResponse;
   seriesOverride?: LongTermSeries[];
+  upstreamSeriesOverride?: LongTermSeries[];
 }
 
 export function LongTermStatsSection({
   initialRange = "7d",
   overviewOverride,
   seriesOverride,
+  upstreamSeriesOverride,
 }: LongTermStatsSectionProps) {
   const { t } = useTranslation();
   const [range, setRange] = useState<LongTermStatsRange>(initialRange);
@@ -488,14 +664,25 @@ export function LongTermStatsSection({
     seriesError,
   } = useLongTermStats(range, dimension, modelSelection, !overviewOverride);
   const overview = overviewOverride ?? fetchedOverview;
-  const modelSeries = seriesOverride ?? fetchedSeries?.series ?? [];
+  const modelSeries = useMemo(
+    () =>
+      orderSeriesBySummary(seriesOverride ?? fetchedSeries?.series ?? [], overview?.models ?? []),
+    [fetchedSeries?.series, overview?.models, seriesOverride],
+  );
   const upstreamKeys = useMemo(() => upstreamSelection.slice(0, 8), [upstreamSelection]);
   const {
     series: fetchedUpstreamSeries,
     isSeriesLoading: isUpstreamSeriesLoading,
     seriesError: upstreamSeriesError,
   } = useLongTermStats(range, "upstream", upstreamKeys, !overviewOverride, overview);
-  const upstreamSeries = seriesOverride ? [] : (fetchedUpstreamSeries?.series ?? []);
+  const upstreamSeries = useMemo(
+    () =>
+      orderSeriesBySummary(
+        upstreamSeriesOverride ?? (overviewOverride ? [] : (fetchedUpstreamSeries?.series ?? [])),
+        overview?.upstreams ?? [],
+      ),
+    [fetchedUpstreamSeries?.series, overview?.upstreams, overviewOverride, upstreamSeriesOverride],
+  );
 
   useEffect(() => {
     if (!overview || overview.range !== range || overview.status !== "ready") return;
@@ -570,7 +757,7 @@ export function LongTermStatsSection({
                 <div className="metric-value">{formatMetric(overview.global.calls, "calls")}</div>
               </div>
             </div>
-            <div className="space-y-3">
+            <div className="space-y-3" data-testid="long-term-chart-global-trend">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h3 className="section-title text-base">{t("stats.longTerm.globalTrend")}</h3>
                 <MetricToggle
@@ -586,7 +773,7 @@ export function LongTermStatsSection({
               />
             </div>
             <div className="grid gap-6 xl:grid-cols-2">
-              <div className="space-y-3">
+              <div className="space-y-3" data-testid="long-term-chart-model-time">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <h3 className="section-title text-base">{t("stats.longTerm.modelTime")}</h3>
                   <MetricToggle
@@ -602,7 +789,7 @@ export function LongTermStatsSection({
                   modelSeries
                 />
               </div>
-              <div className="space-y-3">
+              <div className="space-y-3" data-testid="long-term-chart-model-performance">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <h3 className="section-title text-base">
                     {t("stats.longTerm.modelPerformance")}
@@ -621,7 +808,7 @@ export function LongTermStatsSection({
                 />
               </div>
             </div>
-            <div className="space-y-3">
+            <div className="space-y-3" data-testid="long-term-chart-model-usage">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h3 className="section-title text-base">{t("stats.longTerm.modelUsage")}</h3>
                 <MetricToggle
@@ -635,11 +822,13 @@ export function LongTermStatsSection({
                 metric={usageMetric}
                 emptyLabel={t("stats.longTerm.emptyChart")}
                 modelSeries
+                stackedArea
               />
             </div>
             <SeriesTable
               title={t("stats.longTerm.models")}
               entries={modelTable}
+              totalMetrics={overview.global}
               modelEntries
               selectedKeys={modelSelection}
               onToggle={(key) =>
@@ -656,7 +845,7 @@ export function LongTermStatsSection({
               search={modelSearch}
               onSearch={setModelSearch}
             />
-            <div className="space-y-3">
+            <div className="space-y-3" data-testid="long-term-chart-upstream-usage">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h3 className="section-title text-base">{t("stats.longTerm.upstreamUsage")}</h3>
                 <MetricToggle
@@ -673,6 +862,7 @@ export function LongTermStatsSection({
                     ? t("stats.longTerm.loading")
                     : t("stats.longTerm.emptyChart")
                 }
+                stackedArea
               />
             </div>
             {seriesError || upstreamSeriesError ? (

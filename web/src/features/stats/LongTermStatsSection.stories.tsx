@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
-import type { LongTermMetrics, LongTermStatsOverviewResponse } from "../../lib/api";
+import type { LongTermMetrics, LongTermSeries, LongTermStatsOverviewResponse } from "../../lib/api";
 import { LongTermStatsSection } from "./LongTermStatsSection";
 
 const metrics = (tokens: number, cost: number, calls: number): LongTermMetrics => ({
@@ -28,8 +28,8 @@ const dates = Array.from({ length: 7 }, (_, index) => {
 });
 
 const modelEntries = [
-  ["model:gpt-5|reasoning:high", "gpt-5 · high", 128_400],
-  ["model:gpt-5-mini|reasoning:low", "gpt-5-mini · low", 86_200],
+  ["model:gpt-5|reasoning:high", "gpt-5", 128_400],
+  ["model:gpt-5-mini|reasoning:low", "gpt-5-mini", 86_200],
   [
     "model:very-long-model-name-for-table-truncation|reasoning:medium",
     "very-long-model-name-for-table-truncation",
@@ -77,6 +77,19 @@ const modelSeries = modelEntries.map(([seriesKey, displayName]) => ({
   })),
 }));
 
+const upstreamSeries: LongTermSeries[] = [
+  ["account:11", "Production key · west", 151_000] as const,
+  ["account:12", "Research key · east", 71_000] as const,
+  ["other", "其他", 15_300] as const,
+].map(([seriesKey, displayName, tokens]) => ({
+  seriesKey,
+  displayName,
+  points: dates.map((date, index) => ({
+    date,
+    ...metrics(Number(tokens) / 7 + index * 300, 1.2 + index / 10, 16 + index),
+  })),
+}));
+
 const meta = {
   title: "Stats/LongTermStatsSection",
   component: LongTermStatsSection,
@@ -94,13 +107,32 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Ready: Story = {
-  args: { overviewOverride: buildOverview(), seriesOverride: modelSeries },
+  args: {
+    overviewOverride: buildOverview(),
+    seriesOverride: modelSeries,
+    upstreamSeriesOverride: upstreamSeries,
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     expect(canvas.getByTestId("long-term-stats-section")).toBeInTheDocument();
     await userEvent.click(canvas.getAllByRole("button", { name: "Cost" })[0]);
+    const modelUsageChart = within(canvas.getByTestId("long-term-chart-model-usage"));
+    const upstreamUsageChart = within(canvas.getByTestId("long-term-chart-upstream-usage"));
+    await userEvent.click(modelUsageChart.getByRole("button", { name: "Calls" }));
+    await userEvent.click(upstreamUsageChart.getByRole("button", { name: "Cost" }));
+    expect(
+      canvas
+        .getByTestId("long-term-chart-model-usage")
+        .querySelector('[data-chart-mode="stacked-area"]'),
+    ).toBeTruthy();
+    expect(
+      canvas
+        .getByTestId("long-term-chart-upstream-usage")
+        .querySelector('[data-chart-mode="stacked-area"]'),
+    ).toBeTruthy();
     await userEvent.type(canvas.getByPlaceholderText("Search names"), "gpt-5");
-    expect(canvas.getByText("gpt-5 · high")).toBeInTheDocument();
+    expect(canvas.getAllByText("gpt-5").length).toBeGreaterThan(0);
+    expect(canvas.getByTestId("long-term-model-total-row")).toBeInTheDocument();
   },
 };
 

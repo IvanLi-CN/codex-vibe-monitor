@@ -2087,15 +2087,13 @@ function demoLongTermOverview(range: string) {
   const models = empty
     ? []
     : [
-        ["model:gpt-5.6-sol|reasoning:high", "gpt-5.6-sol · high", 128_000, 211, 9.8],
-        ["model:gpt-5.6-sol|reasoning:medium", "gpt-5.6-sol · medium", 86_000, 142, 6.4],
+        ["model:gpt-5.6-sol|reasoning:high", "gpt-5.6-sol", 128_000, 211, 9.8],
+        ["model:gpt-5.6-sol|reasoning:medium", "gpt-5.6-sol", 86_000, 142, 6.4],
         ["model:gpt-5.6-terra|reasoning:未指定", "gpt-5.6-terra", 23_000, 59, 2.5],
       ].map(([seriesKey, displayName, tokens, calls, cost]) => ({
         seriesKey,
         displayName,
-        reasoningEffort: String(displayName).includes("·")
-          ? String(displayName).split("·")[1].trim()
-          : null,
+        reasoningEffort: String(seriesKey).split("|reasoning:")[1] ?? null,
         ...demoLongTermMetrics(Number(tokens), Number(calls), Number(cost)),
       }));
   const upstreams = empty
