@@ -3179,6 +3179,19 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         "failed to record Codex imagegen capability observation"
                     );
                 }
+                if codex_imagegen_upstream_incompatible
+                    && let Err(override_err) = consume_codex_imagegen_supported_retest_override(
+                        &state.pool,
+                        account.account_id,
+                    )
+                    .await
+                {
+                    warn!(
+                        account_id = account.account_id,
+                        error = %override_err,
+                        "failed to consume Codex imagegen supported retest override"
+                    );
+                }
                 if let Some(response_body) = error_body_bytes.as_ref()
                     && let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                 {

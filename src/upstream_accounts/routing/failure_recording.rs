@@ -380,7 +380,28 @@ async fn record_pool_route_success_capability_observations(
             Some(UpstreamCapabilityAxis::CodexImagegen.success_reason()),
         )
         .await?;
+        consume_codex_imagegen_supported_retest_override(pool, account_id).await?;
     }
+    Ok(())
+}
+
+pub(crate) async fn consume_codex_imagegen_supported_retest_override(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET policy_codex_imagegen_capability_override = NULL,
+            updated_at = ?2
+        WHERE id = ?1
+          AND policy_codex_imagegen_capability_override = 'supported'
+        "#,
+    )
+    .bind(account_id)
+    .bind(format_utc_iso(Utc::now()))
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

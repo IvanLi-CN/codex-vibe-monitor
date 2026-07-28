@@ -5499,7 +5499,12 @@ fn proxy_openai_v1_codex_imagegen_502_learns_namespace_incompatibility_without_r
         )
         .await;
         sqlx::query(
-            "UPDATE pool_upstream_accounts SET policy_codex_imagegen_rewrite_mode = ?2 WHERE id = ?1",
+            r#"
+            UPDATE pool_upstream_accounts
+            SET policy_codex_imagegen_rewrite_mode = ?2,
+                policy_codex_imagegen_capability_override = 'supported'
+            WHERE id = ?1
+            "#,
         )
         .bind(account_id)
         .bind("force_add")
@@ -5539,8 +5544,8 @@ fn proxy_openai_v1_codex_imagegen_502_learns_namespace_incompatibility_without_r
         assert_eq!(error.code.as_deref(), Some("upstream_http_5xx"));
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
 
-        let (capability, route_failures): (String, i64) = sqlx::query_as(
-            "SELECT codex_imagegen_capability, consecutive_route_failures FROM pool_upstream_accounts WHERE id = ?",
+        let (capability, route_failures, override_value): (String, i64, Option<String>) = sqlx::query_as(
+            "SELECT codex_imagegen_capability, consecutive_route_failures, policy_codex_imagegen_capability_override FROM pool_upstream_accounts WHERE id = ?",
         )
         .bind(account_id)
         .fetch_one(&state.pool)
@@ -5548,6 +5553,7 @@ fn proxy_openai_v1_codex_imagegen_502_learns_namespace_incompatibility_without_r
         .expect("load Codex imagegen capability after 502");
         assert_eq!(capability, "unsupported");
         assert_eq!(route_failures, 0);
+        assert_eq!(override_value, None);
 
         upstream_handle.abort();
     });
@@ -5656,8 +5662,8 @@ fn proxy_openai_v1_successful_codex_imagegen_retest_restores_observed_capability
             "successful retest attempt should retain its injected namespace audit: {attempt_summary:?}"
         );
 
-        let (capability, reason): (String, Option<String>) = sqlx::query_as(
-            "SELECT codex_imagegen_capability, codex_imagegen_capability_reason FROM pool_upstream_accounts WHERE id = ?",
+        let (capability, reason, override_value): (String, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT codex_imagegen_capability, codex_imagegen_capability_reason, policy_codex_imagegen_capability_override FROM pool_upstream_accounts WHERE id = ?",
         )
         .bind(account_id)
         .fetch_one(&state.pool)
@@ -5668,6 +5674,7 @@ fn proxy_openai_v1_successful_codex_imagegen_retest_restores_observed_capability
             reason.as_deref(),
             Some("Codex imagegen namespace request succeeded")
         );
+        assert_eq!(override_value, None);
 
         upstream_handle.abort();
     });
