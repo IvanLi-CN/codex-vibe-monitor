@@ -31,3 +31,4 @@
 - 2026-07-27: failover 全链失败补写调用级终态，并在 `response.failed` 重试门控消费的首段响应上绑定当前 attempt，避免请求记录退化为无响应体的 `attempt_metrics`。
 - 2026-07-28: 尝试级响应体回放查询在关联 invocation 与 attempt 后，失败分类的调用级列必须使用 `inv` 限定，防止同名 `status` 让已捕获的 HTTP 5xx body 返回数据库错误。
 - 2026-07-28: 尝试详情指标 rail 的右端响应体 action 改用首尾圆角与内嵌 focus ring，避免焦点 outline 被外层裁切。
+- 2026-07-28: PR 合并门禁将最新 `main` 基线同步提交纳入当前实现范围；同步刷新本 topic 的实现状态与演进记录，确保 merge head 的实现变更仍有 spec 覆盖。
