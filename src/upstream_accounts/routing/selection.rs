@@ -1453,7 +1453,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     Ok(PoolAccountResolution::NoCandidate)
 }
 
-fn request_capability_requirements_after_codex_imagegen_rewrite(
+pub(crate) fn request_capability_requirements_after_codex_imagegen_rewrite(
     endpoint: &str,
     image_intent: crate::ImageIntent,
     requested_model: Option<&str>,

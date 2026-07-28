@@ -624,20 +624,14 @@ pub(crate) async fn header_sticky_account_matches_request_requirements(
                 format!("failed to load effective routing rule for sticky account: {err}"),
             )
         })?;
-    let hosted_image_intent = if codex_imagegen_request
-        && effective_rule.codex_imagegen_rewrite_mode
-            != crate::CodexImagegenRewriteMode::KeepOriginal
-        && image_intent == crate::ImageIntent::Yes
-        && !requested_model.is_some_and(crate::is_openai_image_generation_model)
-    {
-        crate::ImageIntent::No
-    } else {
-        image_intent
-    };
-    let capability_requirements = RequestCapabilityRequirements::from_endpoint_and_image_intent(
-        endpoint,
-        hosted_image_intent,
-    );
+    let capability_requirements =
+        crate::upstream_accounts::request_capability_requirements_after_codex_imagegen_rewrite(
+            endpoint,
+            image_intent,
+            requested_model,
+            codex_imagegen_request,
+            &effective_rule,
+        );
     let model_matches = requested_model
         .map(str::trim)
         .filter(|value| !value.is_empty())

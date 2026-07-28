@@ -5134,6 +5134,118 @@ fn proxy_openai_v1_header_sticky_rechecks_image_intent_before_reusing_header_res
 }
 
 #[test]
+fn proxy_openai_v1_header_sticky_rechecks_codex_imagegen_capability_before_reuse() {
+    run_future_with_large_stack(async move {
+        let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(20),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let sticky_account_id = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Header Sticky Codex Imagegen Incompatible",
+            "upstream-sticky-codex-imagegen-incompatible",
+            None,
+            None,
+            None,
+        )
+        .await;
+        insert_test_pool_api_key_account_with_options(
+            &state,
+            "Fallback Codex Imagegen Compatible",
+            "upstream-codex-imagegen-fallback",
+            None,
+            None,
+            None,
+        )
+        .await;
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET policy_codex_imagegen_rewrite_mode = 'force_add',
+                codex_imagegen_capability = 'unsupported'
+            WHERE id = ?1
+            "#,
+        )
+        .bind(sticky_account_id)
+        .execute(&state.pool)
+        .await
+        .expect("mark sticky account as Codex imagegen incompatible");
+
+        let sticky_seen_at = format_utc_iso(Utc::now());
+        upsert_test_sticky_route_at(
+            &state.pool,
+            "header-codex-imagegen-sensitive-sticky",
+            sticky_account_id,
+            &sticky_seen_at,
+        )
+        .await;
+
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let response = proxy_openai_v1_via_pool(
+            state.clone(),
+            6249,
+            &"/v1/responses".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    HeaderName::from_static("x-sticky-key"),
+                    HeaderValue::from_static("header-codex-imagegen-sensitive-sticky"),
+                ),
+                (
+                    HeaderName::from_static("originator"),
+                    HeaderValue::from_static("Codex Desktop"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(r#"{"model":"gpt-5.1-codex","input":"draw a cat"}"#),
+            runtime_timeouts,
+            None,
+        )
+        .await
+        .expect("via-pool Codex request should succeed");
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read via-pool response");
+        let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+        assert_eq!(
+            payload["authorization"],
+            "Bearer upstream-codex-imagegen-fallback"
+        );
+        wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+
+        let attempts = attempts.lock().expect("lock attempts");
+        assert_eq!(
+            attempts
+                .get("Bearer upstream-sticky-codex-imagegen-incompatible")
+                .copied(),
+            None
+        );
+        assert_eq!(
+            attempts
+                .get("Bearer upstream-codex-imagegen-fallback")
+                .copied(),
+            Some(1)
+        );
+
+        upstream_handle.abort();
+    });
+}
+
+#[test]
 fn proxy_openai_v1_direct_image_prebuffer_preserves_image_capture_target_without_rewrite() {
     run_future_with_large_stack(async move {
         async fn direct_image_echo_upstream(headers: HeaderMap, body: Bytes) -> Response {
