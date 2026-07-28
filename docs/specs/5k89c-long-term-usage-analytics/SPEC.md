@@ -66,7 +66,7 @@
 
 - Storybook 覆盖=通过（`bun run test-storybook`：11 files / 20 tests passed）。
 - 视觉证据目标源=`ui_demo`；视觉证据=存在；空白裁剪=无需裁剪（页面边缘背景不满足安全裁剪阈值）；聊天回图=待本次收口回传；证据落盘=已落盘。
-- 证据绑定=当前工作树（待提交 SHA）；来源为 mock-only `demo:dev`，覆盖桌面与 `390px` 移动端。
+- 证据绑定 SHA=`b5648597`；来源为 mock-only `demo:dev`，覆盖桌面与 `390px` 移动端。
 - PR: include
 - 桌面长期统计图（全局折线、模型用量与上游账号堆叠面积）：
   ![桌面长期统计堆叠面积](./assets/long-term-stats-desktop-stacked-area.png)
