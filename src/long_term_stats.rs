@@ -11,6 +11,13 @@ const LONG_TERM_STATUS_ERROR: &str = "error";
 const LONG_TERM_OTHER_KEY: &str = "other";
 const LONG_TERM_OTHER_NAME: &str = "其他";
 const LONG_TERM_HOUR_MS: i64 = 60 * 60 * 1000;
+const LONG_TERM_INTEGRITY_AUDIT_INTERVAL_SECS: i64 = 60 * 60;
+const LONG_TERM_REPAIR_BACKOFF_SECS: [i64; 4] = [60, 5 * 60, 15 * 60, 60 * 60];
+const LONG_TERM_REFRESH_LOCK_RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_millis(250),
+    Duration::from_secs(1),
+    Duration::from_secs(3),
+];
 pub(crate) const LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET: &str = "long_term_usage_stats";
 
 static LONG_TERM_REFRESH_LOCK: once_cell::sync::Lazy<Mutex<()>> =
@@ -162,6 +169,36 @@ struct LongTermStateRow {
     processed_rows: i64,
     total_rows: i64,
     last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct LongTermIntegrityTotals {
+    calls: i64,
+    token_total: i64,
+    cost_total: f64,
+}
+
+#[derive(Debug, Clone)]
+struct LongTermIntegrityOracle {
+    date: NaiveDate,
+    daily: LongTermIntegrityTotals,
+    hourly: HashMap<i64, LongTermIntegrityTotals>,
+}
+
+#[derive(Debug, Clone)]
+struct LongTermIntegrityMismatch {
+    date: NaiveDate,
+    expected: LongTermIntegrityTotals,
+    observed: LongTermIntegrityTotals,
+    reason: String,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct LongTermIntegrityHourRow {
+    bucket_start_epoch: i64,
+    calls: i64,
+    token_total: i64,
+    cost_total: f64,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -555,7 +592,7 @@ impl LongTermMetrics {
 }
 
 pub(crate) fn ensure_long_term_stats_schema_sql() -> &'static str {
-    "long_term_usage_hourly, long_term_usage_daily and long_term_stats_state"
+    "long_term_usage_hourly, long_term_usage_daily, long_term_stats_state and long_term_stats_repair_queue"
 }
 
 pub(crate) async fn ensure_long_term_stats_schema(pool: &Pool<Sqlite>) -> Result<()> {
@@ -645,6 +682,40 @@ pub(crate) async fn ensure_long_term_stats_schema(pool: &Pool<Sqlite>) -> Result
         .execute(pool)
         .await
         .context("failed to seed long term stats state")?;
+    let state_columns = load_sqlite_table_columns(pool, "long_term_stats_state").await?;
+    if !state_columns.contains("last_integrity_audit_at") {
+        sqlx::query("ALTER TABLE long_term_stats_state ADD COLUMN last_integrity_audit_at TEXT")
+            .execute(pool)
+            .await
+            .context("failed to add long term integrity audit timestamp")?;
+    }
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS long_term_stats_repair_queue (
+            stats_date TEXT PRIMARY KEY,
+            expected_calls INTEGER NOT NULL,
+            expected_token_total INTEGER NOT NULL,
+            expected_cost_total REAL NOT NULL,
+            observed_calls INTEGER NOT NULL,
+            observed_token_total INTEGER NOT NULL,
+            observed_cost_total REAL NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            next_retry_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_error TEXT NOT NULL,
+            detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure long term integrity repair queue")?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_long_term_stats_repair_queue_due ON long_term_stats_repair_queue (next_retry_at, stats_date)",
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure long term integrity repair queue index")?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_long_term_usage_daily_dimension_date ON long_term_usage_daily (dimension, stats_date)",
     )
@@ -682,20 +753,537 @@ pub(crate) async fn ensure_long_term_stats_schema(pool: &Pool<Sqlite>) -> Result
     Ok(())
 }
 
+fn long_term_day_epoch_bounds(date: NaiveDate) -> Option<(i64, i64)> {
+    let start = date
+        .and_hms_opt(0, 0, 0)
+        .and_then(|value| Shanghai.from_local_datetime(&value).single())?
+        .timestamp();
+    let end = date
+        .succ_opt()?
+        .and_hms_opt(0, 0, 0)
+        .and_then(|value| Shanghai.from_local_datetime(&value).single())?
+        .timestamp();
+    Some((start, end))
+}
+
+fn long_term_bucket_date(bucket_start_epoch: i64) -> Option<NaiveDate> {
+    Shanghai
+        .timestamp_opt(bucket_start_epoch, 0)
+        .single()
+        .map(|value| value.date_naive())
+}
+
+fn long_term_integrity_totals_match(
+    expected: LongTermIntegrityTotals,
+    observed: LongTermIntegrityTotals,
+) -> bool {
+    expected.calls == observed.calls
+        && expected.token_total == observed.token_total
+        && (expected.cost_total - observed.cost_total).abs()
+            <= 1e-6_f64.max(expected.cost_total.abs() * 1e-9)
+}
+
+fn long_term_integrity_totals_are_empty(totals: LongTermIntegrityTotals) -> bool {
+    totals.calls == 0 && totals.token_total == 0 && totals.cost_total.abs() <= 1e-12
+}
+
+fn long_term_integrity_mismatch(
+    date: NaiveDate,
+    expected_daily: LongTermIntegrityTotals,
+    expected_hourly: &HashMap<i64, LongTermIntegrityTotals>,
+    observed_daily: LongTermIntegrityTotals,
+    observed_hourly: &HashMap<i64, LongTermIntegrityTotals>,
+) -> Option<LongTermIntegrityMismatch> {
+    if !long_term_integrity_totals_match(expected_daily, observed_daily) {
+        return Some(LongTermIntegrityMismatch {
+            date,
+            expected: expected_daily,
+            observed: observed_daily,
+            reason: format!(
+                "daily overall differs: expected calls={}, tokens={}, cost={:.9}; observed calls={}, tokens={}, cost={:.9}",
+                expected_daily.calls,
+                expected_daily.token_total,
+                expected_daily.cost_total,
+                observed_daily.calls,
+                observed_daily.token_total,
+                observed_daily.cost_total,
+            ),
+        });
+    }
+    for (bucket_start_epoch, expected) in expected_hourly {
+        let observed = observed_hourly
+            .get(bucket_start_epoch)
+            .copied()
+            .unwrap_or_default();
+        if !long_term_integrity_totals_match(*expected, observed) {
+            return Some(LongTermIntegrityMismatch {
+                date,
+                expected: *expected,
+                observed,
+                reason: format!(
+                    "hourly overall differs at {}: expected calls={}, tokens={}, cost={:.9}; observed calls={}, tokens={}, cost={:.9}",
+                    bucket_start_epoch,
+                    expected.calls,
+                    expected.token_total,
+                    expected.cost_total,
+                    observed.calls,
+                    observed.token_total,
+                    observed.cost_total,
+                ),
+            });
+        }
+    }
+    for (bucket_start_epoch, observed) in observed_hourly {
+        if !expected_hourly.contains_key(bucket_start_epoch)
+            && !long_term_integrity_totals_are_empty(*observed)
+        {
+            return Some(LongTermIntegrityMismatch {
+                date,
+                expected: LongTermIntegrityTotals::default(),
+                observed: *observed,
+                reason: format!(
+                    "hourly overall has an unexpected non-empty bucket at {bucket_start_epoch}"
+                ),
+            });
+        }
+    }
+    None
+}
+
+async fn long_term_integrity_oracle_available(pool: &Pool<Sqlite>) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'invocation_rollup_hourly')",
+    )
+    .fetch_one(pool)
+    .await?
+        != 0)
+}
+
+async fn load_long_term_integrity_oracle(
+    pool: &Pool<Sqlite>,
+    date: NaiveDate,
+) -> Result<Option<LongTermIntegrityOracle>> {
+    if !long_term_integrity_oracle_available(pool).await? {
+        return Ok(None);
+    }
+    let Some((start_epoch, end_epoch)) = long_term_day_epoch_bounds(date) else {
+        return Ok(None);
+    };
+    let rows = sqlx::query_as::<_, LongTermIntegrityHourRow>(
+        r#"
+        SELECT bucket_start_epoch,
+               COALESCE(SUM(total_count), 0) AS calls,
+               COALESCE(SUM(total_tokens), 0) AS token_total,
+               COALESCE(SUM(total_cost), 0) AS cost_total
+        FROM invocation_rollup_hourly
+        WHERE bucket_start_epoch >= ?1 AND bucket_start_epoch < ?2
+        GROUP BY bucket_start_epoch
+        "#,
+    )
+    .bind(start_epoch)
+    .bind(end_epoch)
+    .fetch_all(pool)
+    .await?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    let mut daily = LongTermIntegrityTotals::default();
+    let mut hourly = HashMap::new();
+    for row in rows {
+        let totals = LongTermIntegrityTotals {
+            calls: row.calls,
+            token_total: row.token_total,
+            cost_total: row.cost_total,
+        };
+        daily.calls += totals.calls;
+        daily.token_total += totals.token_total;
+        daily.cost_total += totals.cost_total;
+        hourly.insert(row.bucket_start_epoch, totals);
+    }
+    Ok(Some(LongTermIntegrityOracle {
+        date,
+        daily,
+        hourly,
+    }))
+}
+
+fn long_term_candidate_integrity(
+    date: NaiveDate,
+    hourly: &HashMap<(i64, String, String), LongTermBucket>,
+    daily: &HashMap<(String, String, String), LongTermBucket>,
+) -> (
+    LongTermIntegrityTotals,
+    HashMap<i64, LongTermIntegrityTotals>,
+) {
+    let date_string = date.to_string();
+    let daily_totals = daily
+        .iter()
+        .filter(|((bucket_date, dimension, _), _)| {
+            bucket_date == &date_string && dimension == "overall"
+        })
+        .fold(
+            LongTermIntegrityTotals::default(),
+            |mut totals, (_, bucket)| {
+                totals.calls += bucket.accumulator.calls;
+                totals.token_total += bucket.accumulator.token_total;
+                totals.cost_total += bucket.accumulator.cost_total;
+                totals
+            },
+        );
+    let mut hourly_totals = HashMap::new();
+    for ((bucket_start_epoch, dimension, _), bucket) in hourly {
+        if dimension != "overall" || long_term_bucket_date(*bucket_start_epoch) != Some(date) {
+            continue;
+        }
+        let totals = hourly_totals
+            .entry(*bucket_start_epoch)
+            .or_insert_with(LongTermIntegrityTotals::default);
+        totals.calls += bucket.accumulator.calls;
+        totals.token_total += bucket.accumulator.token_total;
+        totals.cost_total += bucket.accumulator.cost_total;
+    }
+    (daily_totals, hourly_totals)
+}
+
+fn remove_long_term_candidate_dates(
+    hourly: &mut HashMap<(i64, String, String), LongTermBucket>,
+    daily: &mut HashMap<(String, String, String), LongTermBucket>,
+    dates: &HashSet<NaiveDate>,
+) {
+    if dates.is_empty() {
+        return;
+    }
+    hourly.retain(|(bucket_start, _, _), _| {
+        Shanghai
+            .timestamp_opt(*bucket_start, 0)
+            .single()
+            .map(|value| !dates.contains(&value.date_naive()))
+            .unwrap_or(true)
+    });
+    daily.retain(|(date, _, _), _| {
+        NaiveDate::parse_from_str(date, "%Y-%m-%d")
+            .map(|value| !dates.contains(&value))
+            .unwrap_or(true)
+    });
+}
+
+async fn enqueue_long_term_integrity_mismatch(
+    pool: &Pool<Sqlite>,
+    mismatch: &LongTermIntegrityMismatch,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO long_term_stats_repair_queue (
+            stats_date,
+            expected_calls,
+            expected_token_total,
+            expected_cost_total,
+            observed_calls,
+            observed_token_total,
+            observed_cost_total,
+            last_error
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        ON CONFLICT(stats_date) DO UPDATE SET
+            expected_calls = excluded.expected_calls,
+            expected_token_total = excluded.expected_token_total,
+            expected_cost_total = excluded.expected_cost_total,
+            observed_calls = excluded.observed_calls,
+            observed_token_total = excluded.observed_token_total,
+            observed_cost_total = excluded.observed_cost_total,
+            last_error = excluded.last_error,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(mismatch.date.to_string())
+    .bind(mismatch.expected.calls)
+    .bind(mismatch.expected.token_total)
+    .bind(mismatch.expected.cost_total)
+    .bind(mismatch.observed.calls)
+    .bind(mismatch.observed.token_total)
+    .bind(mismatch.observed.cost_total)
+    .bind(&mismatch.reason)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn next_due_long_term_repair_date(pool: &Pool<Sqlite>) -> Result<Option<NaiveDate>> {
+    let date = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT stats_date
+        FROM long_term_stats_repair_queue
+        WHERE datetime(next_retry_at) <= datetime('now')
+        ORDER BY datetime(next_retry_at) ASC, stats_date ASC
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(date.and_then(|value| NaiveDate::parse_from_str(&value, "%Y-%m-%d").ok()))
+}
+
+async fn long_term_integrity_audit_due(pool: &Pool<Sqlite>) -> Result<bool> {
+    let due = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT CASE
+            WHEN last_integrity_audit_at IS NULL THEN 1
+            WHEN datetime(last_integrity_audit_at) <= datetime('now', ?1) THEN 1
+            ELSE 0
+        END
+        FROM long_term_stats_state
+        WHERE id = ?2
+        "#,
+    )
+    .bind(format!(
+        "-{} seconds",
+        LONG_TERM_INTEGRITY_AUDIT_INTERVAL_SECS
+    ))
+    .bind(LONG_TERM_STATE_ID)
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or(1);
+    Ok(due != 0)
+}
+
+async fn mark_long_term_integrity_audit(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "UPDATE long_term_stats_state SET last_integrity_audit_at = datetime('now') WHERE id = ?1",
+    )
+    .bind(LONG_TERM_STATE_ID)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn audit_long_term_integrity(
+    pool: &Pool<Sqlite>,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+) -> Result<Vec<LongTermIntegrityMismatch>> {
+    if start_date > end_date || !long_term_integrity_oracle_available(pool).await? {
+        return Ok(Vec::new());
+    }
+    let Some((start_epoch, _)) = long_term_day_epoch_bounds(start_date) else {
+        return Ok(Vec::new());
+    };
+    let Some((_, end_epoch)) = long_term_day_epoch_bounds(end_date) else {
+        return Ok(Vec::new());
+    };
+    let expected_rows = sqlx::query_as::<_, LongTermIntegrityHourRow>(
+        r#"
+        SELECT bucket_start_epoch,
+               COALESCE(SUM(total_count), 0) AS calls,
+               COALESCE(SUM(total_tokens), 0) AS token_total,
+               COALESCE(SUM(total_cost), 0) AS cost_total
+        FROM invocation_rollup_hourly
+        WHERE bucket_start_epoch >= ?1 AND bucket_start_epoch < ?2
+        GROUP BY bucket_start_epoch
+        "#,
+    )
+    .bind(start_epoch)
+    .bind(end_epoch)
+    .fetch_all(pool)
+    .await?;
+    let actual_hourly_rows = sqlx::query_as::<_, LongTermIntegrityHourRow>(
+        r#"
+        SELECT bucket_start_epoch,
+               COALESCE(SUM(calls), 0) AS calls,
+               COALESCE(SUM(token_total), 0) AS token_total,
+               COALESCE(SUM(cost_total), 0) AS cost_total
+        FROM long_term_usage_hourly
+        WHERE dimension = 'overall'
+          AND bucket_start_epoch >= ?1
+          AND bucket_start_epoch < ?2
+        GROUP BY bucket_start_epoch
+        "#,
+    )
+    .bind(start_epoch)
+    .bind(end_epoch)
+    .fetch_all(pool)
+    .await?;
+    let actual_daily_rows = sqlx::query_as::<_, (String, i64, i64, f64)>(
+        r#"
+        SELECT stats_date,
+               COALESCE(SUM(calls), 0),
+               COALESCE(SUM(token_total), 0),
+               COALESCE(SUM(cost_total), 0)
+        FROM long_term_usage_daily
+        WHERE dimension = 'overall' AND stats_date >= ?1 AND stats_date <= ?2
+        GROUP BY stats_date
+        "#,
+    )
+    .bind(start_date.to_string())
+    .bind(end_date.to_string())
+    .fetch_all(pool)
+    .await?;
+
+    let mut expected_by_date: HashMap<NaiveDate, HashMap<i64, LongTermIntegrityTotals>> =
+        HashMap::new();
+    for row in expected_rows {
+        let Some(date) = long_term_bucket_date(row.bucket_start_epoch) else {
+            continue;
+        };
+        expected_by_date.entry(date).or_default().insert(
+            row.bucket_start_epoch,
+            LongTermIntegrityTotals {
+                calls: row.calls,
+                token_total: row.token_total,
+                cost_total: row.cost_total,
+            },
+        );
+    }
+    let mut actual_hourly_by_date: HashMap<NaiveDate, HashMap<i64, LongTermIntegrityTotals>> =
+        HashMap::new();
+    for row in actual_hourly_rows {
+        let Some(date) = long_term_bucket_date(row.bucket_start_epoch) else {
+            continue;
+        };
+        actual_hourly_by_date.entry(date).or_default().insert(
+            row.bucket_start_epoch,
+            LongTermIntegrityTotals {
+                calls: row.calls,
+                token_total: row.token_total,
+                cost_total: row.cost_total,
+            },
+        );
+    }
+    let actual_daily_by_date = actual_daily_rows
+        .into_iter()
+        .filter_map(|(date, calls, token_total, cost_total)| {
+            NaiveDate::parse_from_str(&date, "%Y-%m-%d")
+                .ok()
+                .map(|date| {
+                    (
+                        date,
+                        LongTermIntegrityTotals {
+                            calls,
+                            token_total,
+                            cost_total,
+                        },
+                    )
+                })
+        })
+        .collect::<HashMap<_, _>>();
+
+    // Audit both sides of the comparison. A non-empty materialized day with no canonical
+    // hourly rows is also corrupt and must be repaired to zero rather than silently retained.
+    let mut audit_dates = expected_by_date
+        .keys()
+        .chain(actual_hourly_by_date.keys())
+        .chain(actual_daily_by_date.keys())
+        .copied()
+        .collect::<Vec<_>>();
+    audit_dates.sort_unstable();
+    audit_dates.dedup();
+    let empty_hourly = HashMap::new();
+    let mut mismatches = Vec::new();
+    for date in audit_dates {
+        let expected_hourly = expected_by_date.get(&date).unwrap_or(&empty_hourly);
+        let expected_daily = expected_hourly.values().fold(
+            LongTermIntegrityTotals::default(),
+            |mut totals, value| {
+                totals.calls += value.calls;
+                totals.token_total += value.token_total;
+                totals.cost_total += value.cost_total;
+                totals
+            },
+        );
+        if let Some(mismatch) = long_term_integrity_mismatch(
+            date,
+            expected_daily,
+            expected_hourly,
+            actual_daily_by_date.get(&date).copied().unwrap_or_default(),
+            actual_hourly_by_date.get(&date).unwrap_or(&empty_hourly),
+        ) {
+            mismatches.push(mismatch);
+        }
+    }
+    Ok(mismatches)
+}
+
+fn long_term_repair_backoff_secs(attempts: i64) -> i64 {
+    let index = attempts.saturating_sub(1) as usize;
+    LONG_TERM_REPAIR_BACKOFF_SECS[index.min(LONG_TERM_REPAIR_BACKOFF_SECS.len() - 1)]
+}
+
+async fn schedule_long_term_repair_retry(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    mismatch: &LongTermIntegrityMismatch,
+) -> Result<()> {
+    let attempts = sqlx::query_scalar::<_, i64>(
+        "SELECT attempts FROM long_term_stats_repair_queue WHERE stats_date = ?1",
+    )
+    .bind(mismatch.date.to_string())
+    .fetch_optional(&mut **tx)
+    .await?
+    .unwrap_or(0)
+        + 1;
+    let retry_modifier = format!("+{} seconds", long_term_repair_backoff_secs(attempts));
+    sqlx::query(
+        r#"
+        INSERT INTO long_term_stats_repair_queue (
+            stats_date,
+            expected_calls,
+            expected_token_total,
+            expected_cost_total,
+            observed_calls,
+            observed_token_total,
+            observed_cost_total,
+            attempts,
+            next_retry_at,
+            last_error
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now', ?9), ?10)
+        ON CONFLICT(stats_date) DO UPDATE SET
+            expected_calls = excluded.expected_calls,
+            expected_token_total = excluded.expected_token_total,
+            expected_cost_total = excluded.expected_cost_total,
+            observed_calls = excluded.observed_calls,
+            observed_token_total = excluded.observed_token_total,
+            observed_cost_total = excluded.observed_cost_total,
+            attempts = excluded.attempts,
+            next_retry_at = excluded.next_retry_at,
+            last_error = excluded.last_error,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(mismatch.date.to_string())
+    .bind(mismatch.expected.calls)
+    .bind(mismatch.expected.token_total)
+    .bind(mismatch.expected.cost_total)
+    .bind(mismatch.observed.calls)
+    .bind(mismatch.observed.token_total)
+    .bind(mismatch.observed.cost_total)
+    .bind(attempts)
+    .bind(retry_modifier)
+    .bind(&mismatch.reason)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn mark_long_term_stats_backfill_preparing(pool: &Pool<Sqlite>) -> Result<()> {
+    // Preserve error across restart so a persisted integrity queue keeps the next refresh on the
+    // verified incremental path. Error without durable rows still transitions to running inside
+    // refresh_long_term_stats_once.
+    sqlx::query(
+        "UPDATE long_term_stats_state SET status = ?1, updated_at = datetime('now') WHERE id = ?2 AND status NOT IN (?3, ?4)",
+    )
+    .bind(LONG_TERM_STATUS_PREPARING)
+    .bind(LONG_TERM_STATE_ID)
+    .bind(LONG_TERM_STATUS_READY)
+    .bind(LONG_TERM_STATUS_ERROR)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub(crate) fn spawn_long_term_stats_backfill(
     pool: Pool<Sqlite>,
     retention_days: u64,
     shutdown: CancellationToken,
 ) {
     tokio::spawn(async move {
-        let _ = sqlx::query(
-            "UPDATE long_term_stats_state SET status = ?1, updated_at = datetime('now') WHERE id = ?2 AND status <> ?3",
-        )
-        .bind(LONG_TERM_STATUS_PREPARING)
-        .bind(LONG_TERM_STATE_ID)
-        .bind(LONG_TERM_STATUS_READY)
-        .execute(&pool)
-        .await;
+        let _ = mark_long_term_stats_backfill_preparing(&pool).await;
         let mut ticker = interval(Duration::from_secs(60));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
@@ -718,6 +1306,59 @@ pub(crate) async fn refresh_long_term_stats(
     retention_days: u64,
 ) -> Result<()> {
     let _guard = LONG_TERM_REFRESH_LOCK.lock().await;
+    run_long_term_refresh_with_retry(|| refresh_long_term_stats_once(pool, retention_days)).await
+}
+
+async fn run_long_term_refresh_with_retry<T, Operation, OperationFuture>(
+    operation: Operation,
+) -> Result<T>
+where
+    Operation: FnMut() -> OperationFuture,
+    OperationFuture: Future<Output = Result<T>>,
+{
+    run_long_term_refresh_with_retry_delays(operation, &LONG_TERM_REFRESH_LOCK_RETRY_DELAYS).await
+}
+
+async fn run_long_term_refresh_with_retry_delays<T, Operation, OperationFuture>(
+    mut operation: Operation,
+    retry_delays: &[Duration],
+) -> Result<T>
+where
+    Operation: FnMut() -> OperationFuture,
+    OperationFuture: Future<Output = Result<T>>,
+{
+    for (attempt, delay) in retry_delays.iter().enumerate() {
+        match operation().await {
+            Ok(value) => return Ok(value),
+            Err(error) if crate::is_sqlite_lock_error(&error) => {
+                warn!(
+                    attempt = attempt + 1,
+                    retry_after_ms = delay.as_millis(),
+                    error = %error,
+                    "long-term stats refresh hit a SQLite lock; retrying"
+                );
+                sleep(*delay).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    operation().await
+}
+
+fn long_term_refresh_start_state(
+    was_ready: bool,
+    has_pending_integrity_repairs: bool,
+) -> (&'static str, bool) {
+    if has_pending_integrity_repairs {
+        (LONG_TERM_STATUS_ERROR, false)
+    } else if !was_ready {
+        (LONG_TERM_STATUS_RUNNING, true)
+    } else {
+        (LONG_TERM_STATUS_READY, true)
+    }
+}
+
+async fn refresh_long_term_stats_once(pool: &Pool<Sqlite>, retention_days: u64) -> Result<()> {
     let refresh_started_at = format_utc_iso(Utc::now());
     let state_snapshot = sqlx::query_as::<_, (Option<String>, Option<String>)>(
         "SELECT status, statistics_start_date FROM long_term_stats_state WHERE id = ?1",
@@ -725,24 +1366,51 @@ pub(crate) async fn refresh_long_term_stats(
     .bind(LONG_TERM_STATE_ID)
     .fetch_optional(pool)
     .await?;
-    let was_ready = state_snapshot.as_ref().is_some_and(|(status, _)| {
-        status
-            .as_deref()
-            .is_some_and(|status| matches!(status, LONG_TERM_STATUS_READY | LONG_TERM_STATUS_EMPTY))
+    let status_allows_incremental_refresh = state_snapshot.as_ref().is_some_and(|(status, _)| {
+        status.as_deref().is_some_and(|status| {
+            matches!(
+                status,
+                LONG_TERM_STATUS_READY | LONG_TERM_STATUS_EMPTY | LONG_TERM_STATUS_ERROR
+            )
+        })
     });
-    if !was_ready {
+    let has_persisted_daily_rows = if status_allows_incremental_refresh {
+        sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM long_term_usage_daily LIMIT 1)")
+            .fetch_one(pool)
+            .await?
+            != 0
+    } else {
+        false
+    };
+    let was_ready = state_snapshot.as_ref().is_some_and(|(status, _)| {
+        status.as_deref().is_some_and(|status| {
+            matches!(status, LONG_TERM_STATUS_READY | LONG_TERM_STATUS_EMPTY)
+                || (status == LONG_TERM_STATUS_ERROR && has_persisted_daily_rows)
+        })
+    });
+    let has_pending_integrity_repairs = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM long_term_stats_repair_queue LIMIT 1)",
+    )
+    .fetch_one(pool)
+    .await?
+        != 0;
+    let (starting_status, clear_last_error) =
+        long_term_refresh_start_state(was_ready, has_pending_integrity_repairs);
+    if clear_last_error {
         sqlx::query(
             "UPDATE long_term_stats_state SET status = ?1, last_error = NULL, updated_at = datetime('now') WHERE id = ?2",
         )
-        .bind(LONG_TERM_STATUS_RUNNING)
+        .bind(starting_status)
         .bind(LONG_TERM_STATE_ID)
         .execute(pool)
         .await?;
     } else {
+        // Keep known-bad materialized data hidden throughout a repair attempt. The final
+        // replacement transaction is the only path that clears the queue and restores ready.
         sqlx::query(
-            "UPDATE long_term_stats_state SET status = ?1, last_error = NULL, updated_at = datetime('now') WHERE id = ?2",
+            "UPDATE long_term_stats_state SET status = ?1, updated_at = datetime('now') WHERE id = ?2",
         )
-        .bind(LONG_TERM_STATUS_READY)
+        .bind(starting_status)
         .bind(LONG_TERM_STATE_ID)
         .execute(pool)
         .await?;
@@ -754,7 +1422,7 @@ pub(crate) async fn refresh_long_term_stats(
         let _ = sqlx::query(
             "UPDATE long_term_stats_state SET status = ?1, last_error = ?2, updated_at = datetime('now') WHERE id = ?3 AND NOT (status = ?4 AND datetime(updated_at) > datetime(?5))",
         )
-        .bind(if was_ready {
+        .bind(if was_ready && !has_pending_integrity_repairs {
             LONG_TERM_STATUS_READY
         } else {
             LONG_TERM_STATUS_ERROR
@@ -1184,6 +1852,24 @@ async fn refresh_long_term_stats_inner(
         }
     }
 
+    // A completed day is audited against the canonical hourly rollup once per hour. The queue
+    // makes historical repairs durable and limits each refresh to one targeted rebuild.
+    if ready_state
+        && long_term_integrity_audit_due(pool).await?
+        && let Some(audit_end) = today.pred_opt()
+    {
+        for mismatch in audit_long_term_integrity(pool, retention_start, audit_end).await? {
+            warn!(
+                stats_date = %mismatch.date,
+                reason = %mismatch.reason,
+                "long-term stats integrity mismatch detected"
+            );
+            enqueue_long_term_integrity_mismatch(pool, &mismatch).await?;
+        }
+        mark_long_term_integrity_audit(pool).await?;
+    }
+    let scheduled_repair_date = next_due_long_term_repair_date(pool).await?;
+
     // A day may be split across live rows and archive parts. Rebuild every date touched by the
     // current live tail from all overlapping source parts before replacing durable buckets.
     let mut recomputed_dates = affected_archive_dates.clone();
@@ -1191,6 +1877,44 @@ async fn refresh_long_term_stats_inner(
         if let Ok(date) = NaiveDate::parse_from_str(date, "%Y-%m-%d") {
             recomputed_dates.insert(date);
         }
+    }
+    if let Some(date) = scheduled_repair_date {
+        recomputed_dates.insert(date);
+    }
+    let mut integrity_repair_failures = Vec::new();
+    let mut completed_integrity_repairs = HashSet::new();
+    if !ready_state && !recomputed_dates.is_empty() {
+        // Initial/full rebuilds have no retained row lower bound, but completed dates still need
+        // the same canonical proof before their candidate can be materialized. This also lets a
+        // queued repair recover after an earlier failure left the long-term tables empty.
+        let mut blocked_recomputed_dates = HashSet::new();
+        for date in &recomputed_dates {
+            if *date < today
+                && let Some(oracle) = load_long_term_integrity_oracle(pool, *date).await?
+            {
+                let (candidate_daily, candidate_hourly) =
+                    long_term_candidate_integrity(*date, &hourly, &daily);
+                if let Some(mismatch) = long_term_integrity_mismatch(
+                    oracle.date,
+                    oracle.daily,
+                    &oracle.hourly,
+                    candidate_daily,
+                    &candidate_hourly,
+                ) {
+                    warn!(
+                        stats_date = %mismatch.date,
+                        reason = %mismatch.reason,
+                        "long-term stats full rebuild cannot prove complete"
+                    );
+                    blocked_recomputed_dates.insert(*date);
+                    integrity_repair_failures.push(mismatch);
+                } else if scheduled_repair_date == Some(*date) {
+                    completed_integrity_repairs.insert(*date);
+                }
+            }
+        }
+        remove_long_term_candidate_dates(&mut hourly, &mut daily, &blocked_recomputed_dates);
+        recomputed_dates.retain(|date| !blocked_recomputed_dates.contains(date));
     }
     if ready_state && !recomputed_dates.is_empty() {
         if let Some(previous_date) = recomputed_dates
@@ -1324,8 +2048,9 @@ async fn refresh_long_term_stats_inner(
         }
         // A retained daily row is durable evidence that older source parts contributed to this
         // date. If the current archive inventory can only reproduce fewer calls, keep the
-        // existing date intact instead of replacing it with a partial reconstruction.
-        let mut incomplete_recomputed_dates = HashSet::new();
+        // existing date intact instead of replacing it with a partial reconstruction. For
+        // completed days, the canonical hourly rollup is the stricter completeness witness.
+        let mut blocked_recomputed_dates = HashSet::new();
         for date in &recomputed_dates {
             let date_string = date.to_string();
             let rebuilt_calls = rebuilt_daily
@@ -1342,23 +2067,43 @@ async fn refresh_long_term_stats_inner(
             .fetch_one(pool)
             .await?;
             if persisted_calls > rebuilt_calls {
-                incomplete_recomputed_dates.insert(*date);
+                blocked_recomputed_dates.insert(*date);
+                continue;
+            }
+            if *date < today
+                && let Some(oracle) = load_long_term_integrity_oracle(pool, *date).await?
+            {
+                let (candidate_daily, candidate_hourly) =
+                    long_term_candidate_integrity(*date, &rebuilt_hourly, &rebuilt_daily);
+                if let Some(mismatch) = long_term_integrity_mismatch(
+                    oracle.date,
+                    oracle.daily,
+                    &oracle.hourly,
+                    candidate_daily,
+                    &candidate_hourly,
+                ) {
+                    warn!(
+                        stats_date = %mismatch.date,
+                        reason = %mismatch.reason,
+                        "long-term stats rebuild cannot prove complete"
+                    );
+                    blocked_recomputed_dates.insert(*date);
+                    integrity_repair_failures.push(mismatch);
+                } else if scheduled_repair_date == Some(*date) {
+                    completed_integrity_repairs.insert(*date);
+                }
             }
         }
-        if !incomplete_recomputed_dates.is_empty() {
-            rebuilt_hourly.retain(|(bucket_start, _, _), _| {
-                Shanghai
-                    .timestamp_opt(*bucket_start, 0)
-                    .single()
-                    .map(|value| !incomplete_recomputed_dates.contains(&value.date_naive()))
-                    .unwrap_or(true)
-            });
-            rebuilt_daily.retain(|(date, _, _), _| {
-                NaiveDate::parse_from_str(date, "%Y-%m-%d")
-                    .map(|value| !incomplete_recomputed_dates.contains(&value))
-                    .unwrap_or(true)
-            });
-            recomputed_dates.retain(|date| !incomplete_recomputed_dates.contains(date));
+        if !blocked_recomputed_dates.is_empty() {
+            remove_long_term_candidate_dates(
+                &mut rebuilt_hourly,
+                &mut rebuilt_daily,
+                &blocked_recomputed_dates,
+            );
+            // The partial live candidate was built before the full-date reconstruction. Drop it
+            // as well, otherwise its UPSERT would still overwrite the durable rollup.
+            remove_long_term_candidate_dates(&mut hourly, &mut daily, &blocked_recomputed_dates);
+            recomputed_dates.retain(|date| !blocked_recomputed_dates.contains(date));
         }
         hourly.retain(|(bucket_start, _, _), _| {
             Shanghai
@@ -1475,6 +2220,20 @@ async fn refresh_long_term_stats_inner(
     for bucket in daily.values() {
         insert_long_term_daily(&mut tx, bucket).await?;
     }
+    for mismatch in &integrity_repair_failures {
+        schedule_long_term_repair_retry(&mut tx, mismatch).await?;
+    }
+    for date in &completed_integrity_repairs {
+        sqlx::query("DELETE FROM long_term_stats_repair_queue WHERE stats_date = ?1")
+            .bind(date.to_string())
+            .execute(&mut *tx)
+            .await?;
+        info!(stats_date = %date, "long-term stats integrity repair completed");
+    }
+    let pending_integrity_repairs =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_stats_repair_queue")
+            .fetch_one(&mut *tx)
+            .await?;
     let mut statistics_start_date =
         statistics_start_date.and_then(|date| NaiveDate::parse_from_str(&date, "%Y-%m-%d").ok());
     if let Some(unavailable_after_date) = unavailable_after_date {
@@ -1490,7 +2249,9 @@ async fn refresh_long_term_stats_inner(
     // A damaged archive only makes the older portion unavailable. Keep the materialized
     // suffix readable from the safe start date and leave the archive unmarked so the next
     // refresh can retry it. Without coverage metadata there is no safe truncation point.
-    let status = if archive_read_failed && unavailable_after_date.is_none() {
+    let status = if pending_integrity_repairs > 0
+        || (archive_read_failed && unavailable_after_date.is_none())
+    {
         LONG_TERM_STATUS_ERROR
     } else if rows.is_empty() && daily.is_empty() && !has_persisted_daily_rows {
         if archive_read_failed {
@@ -1501,13 +2262,21 @@ async fn refresh_long_term_stats_inner(
     } else {
         LONG_TERM_STATUS_READY
     };
+    let last_error = if pending_integrity_repairs > 0 {
+        Some(format!(
+            "long-term integrity repair pending for {pending_integrity_repairs} date(s)"
+        ))
+    } else {
+        archive_read_failed
+            .then_some("one or more invocation archives could not be materialized".to_string())
+    };
     sqlx::query(
         "UPDATE long_term_stats_state SET status = ?1, statistics_start_date = ?2, processed_rows = ?3, total_rows = ?3, last_error = ?4, updated_at = datetime('now') WHERE id = ?5 AND NOT (status = ?6 AND datetime(updated_at) > datetime(?7))",
     )
     .bind(status)
     .bind(statistics_start_date.map(|date| date.to_string()))
     .bind(if ready_state { rows.len() as i64 } else { processed_rows_count })
-    .bind(archive_read_failed.then_some("one or more invocation archives could not be materialized"))
+    .bind(last_error)
     .bind(LONG_TERM_STATE_ID)
     .bind(LONG_TERM_STATUS_PREPARING)
     .bind(refresh_started_at)
@@ -2452,6 +3221,152 @@ fn internal_error_tuple(error: anyhow::Error) -> (StatusCode, String) {
 mod tests {
     use super::*;
 
+    async fn create_long_term_test_invocations(pool: &Pool<Sqlite>) {
+        sqlx::query(
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY,
+                invoke_id TEXT,
+                occurred_at TEXT NOT NULL,
+                status TEXT,
+                model TEXT,
+                payload TEXT,
+                total_tokens INTEGER,
+                output_tokens INTEGER,
+                cost REAL,
+                t_total_ms REAL,
+                t_req_read_ms REAL,
+                t_req_parse_ms REAL,
+                t_upstream_connect_ms REAL,
+                t_upstream_ttfb_ms REAL,
+                t_upstream_stream_ms REAL,
+                error_message TEXT
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("invocation schema");
+    }
+
+    async fn create_long_term_integrity_oracle(pool: &Pool<Sqlite>) {
+        sqlx::query(
+            r#"
+            CREATE TABLE invocation_rollup_hourly (
+                bucket_start_epoch INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                total_count INTEGER NOT NULL,
+                total_tokens INTEGER NOT NULL,
+                total_cost REAL NOT NULL,
+                PRIMARY KEY (bucket_start_epoch, source)
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("hourly integrity oracle schema");
+    }
+
+    async fn long_term_file_backed_pool(prefix: &str) -> (Pool<Sqlite>, String, PathBuf) {
+        let db_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-{prefix}-{}-{}.sqlite",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        ));
+        fs::File::create(&db_path).expect("create sqlite test database");
+        let db_url = format!("sqlite://{}", db_path.to_string_lossy());
+        let options = db_url
+            .parse::<SqliteConnectOptions>()
+            .expect("parse sqlite test url")
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_millis(50));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect_with(options)
+            .await
+            .expect("connect sqlite test pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        (pool, db_url, db_path)
+    }
+
+    async fn cleanup_long_term_file_backed_pool(pool: Pool<Sqlite>, db_path: PathBuf) {
+        pool.close().await;
+        for suffix in ["", "-shm", "-wal"] {
+            let path = PathBuf::from(format!("{}{}", db_path.display(), suffix));
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    async fn insert_long_term_test_invocation(pool: &Pool<Sqlite>, id: i64, occurred_at: String) {
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, model, payload, total_tokens, output_tokens, cost) VALUES (?1, ?2, ?3, 'success', 'gpt-5', '{}', 100, 40, 0.1)",
+        )
+        .bind(id)
+        .bind(format!("invoke-{id}"))
+        .bind(occurred_at)
+        .execute(pool)
+        .await
+        .expect("source invocation");
+    }
+
+    async fn seed_long_term_integrity_case(
+        pool: &Pool<Sqlite>,
+        date: NaiveDate,
+        source_rows: i64,
+    ) -> (i64, i64) {
+        let (day_start_epoch, _) = long_term_day_epoch_bounds(date).expect("Shanghai day bounds");
+        for offset in 0..source_rows {
+            let hour = 10 + offset;
+            sqlx::query(
+                "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, model, payload, total_tokens, output_tokens, cost) VALUES (?1, ?2, ?3, 'success', 'gpt-5', '{\"reasoningEffort\":\"high\"}', 100, 40, 0.1)",
+            )
+            .bind(offset + 1)
+            .bind(format!("invoke-{}", offset + 1))
+            .bind(format!("{date}T{:02}:00:00+08:00", hour))
+            .execute(pool)
+            .await
+            .expect("source invocation");
+        }
+        for offset in 0..2_i64 {
+            let hour_epoch = day_start_epoch + (10 + offset) * 60 * 60;
+            sqlx::query(
+                "INSERT INTO invocation_rollup_hourly (bucket_start_epoch, source, total_count, total_tokens, total_cost) VALUES (?1, ?2, 1, 100, 0.1)",
+            )
+            .bind(hour_epoch)
+            .bind(format!("canonical-{}", offset + 1))
+            .execute(pool)
+            .await
+            .expect("canonical hourly rollup");
+        }
+        sqlx::query(
+            "INSERT INTO long_term_usage_daily (stats_date, dimension, series_key, display_name, calls, token_total, token_samples, cost_total, cost_samples) VALUES (?1, 'overall', 'overall', '全部调用', 1, 100, 1, 0.1, 1)",
+        )
+        .bind(date.to_string())
+        .execute(pool)
+        .await
+        .expect("corrupt daily rollup");
+        sqlx::query(
+            "INSERT INTO long_term_usage_hourly (bucket_start_epoch, dimension, series_key, display_name, calls, token_total, token_samples, cost_total, cost_samples) VALUES (?1, 'overall', 'overall', '全部调用', 1, 100, 1, 0.1, 1)",
+        )
+        .bind(day_start_epoch + 10 * 60 * 60)
+        .execute(pool)
+        .await
+        .expect("corrupt hourly rollup");
+        sqlx::query("UPDATE long_term_stats_state SET status = ?1 WHERE id = ?2")
+            .bind(LONG_TERM_STATUS_READY)
+            .bind(LONG_TERM_STATE_ID)
+            .execute(pool)
+            .await
+            .expect("ready state");
+        (
+            day_start_epoch + 10 * 60 * 60,
+            day_start_epoch + 11 * 60 * 60,
+        )
+    }
+
     #[test]
     fn range_defaults_to_seven_days_and_rejects_unknown_values() {
         assert_eq!(LongTermRange::parse(None), Some(LongTermRange::Seven));
@@ -2460,6 +3375,69 @@ mod tests {
             Some(LongTermRange::ThreeSixtyFive)
         );
         assert_eq!(LongTermRange::parse(Some("1d")), None);
+    }
+
+    #[test]
+    fn refresh_keeps_error_visible_while_an_integrity_repair_is_pending() {
+        assert_eq!(
+            long_term_refresh_start_state(true, true),
+            (LONG_TERM_STATUS_ERROR, false)
+        );
+        assert_eq!(
+            long_term_refresh_start_state(true, false),
+            (LONG_TERM_STATUS_READY, true)
+        );
+        assert_eq!(
+            long_term_refresh_start_state(false, false),
+            (LONG_TERM_STATUS_RUNNING, true)
+        );
+        assert_eq!(
+            long_term_refresh_start_state(false, true),
+            (LONG_TERM_STATUS_ERROR, false)
+        );
+    }
+
+    #[tokio::test]
+    async fn backfill_start_preserves_error_for_a_pending_integrity_repair() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        sqlx::query(
+            "INSERT INTO long_term_usage_daily (stats_date, dimension, series_key, display_name, calls, token_total, token_samples, cost_total, cost_samples) VALUES ('2026-07-23', 'overall', 'overall', '全部调用', 1, 100, 1, 0.1, 1)",
+        )
+        .execute(&pool)
+        .await
+        .expect("durable daily rollup");
+        sqlx::query(
+            "INSERT INTO long_term_stats_repair_queue (stats_date, expected_calls, expected_token_total, expected_cost_total, observed_calls, observed_token_total, observed_cost_total, last_error) VALUES ('2026-07-23', 2, 200, 0.2, 1, 100, 0.1, 'integrity mismatch')",
+        )
+        .execute(&pool)
+        .await
+        .expect("pending repair queue");
+        sqlx::query("UPDATE long_term_stats_state SET status = ?1 WHERE id = ?2")
+            .bind(LONG_TERM_STATUS_ERROR)
+            .bind(LONG_TERM_STATE_ID)
+            .execute(&pool)
+            .await
+            .expect("integrity error state");
+
+        mark_long_term_stats_backfill_preparing(&pool)
+            .await
+            .expect("preserve error state");
+
+        let status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("long-term state");
+        assert_eq!(status, LONG_TERM_STATUS_ERROR);
     }
 
     #[test]
@@ -2488,6 +3466,84 @@ mod tests {
             union_interval_duration(&[(0, 3_600_000), (0, 3_600_000)]),
             3_600_000
         );
+    }
+
+    #[tokio::test]
+    async fn integrity_oracle_uses_shanghai_day_boundaries() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        create_long_term_integrity_oracle(&pool).await;
+        let date = NaiveDate::from_ymd_opt(2026, 7, 23).expect("fixed date");
+        let (start_epoch, end_epoch) = long_term_day_epoch_bounds(date).expect("day bounds");
+        for (offset, source) in [
+            (-1_i64, "previous-day"),
+            (0_i64, "day-start"),
+            (23_i64, "day-end"),
+            (24_i64, "next-day"),
+        ] {
+            sqlx::query(
+                "INSERT INTO invocation_rollup_hourly (bucket_start_epoch, source, total_count, total_tokens, total_cost) VALUES (?1, ?2, 1, 100, 0.1)",
+            )
+            .bind(start_epoch + offset * 60 * 60)
+            .bind(source)
+            .execute(&pool)
+            .await
+            .expect("canonical hourly rollup");
+        }
+
+        let oracle = load_long_term_integrity_oracle(&pool, date)
+            .await
+            .expect("load integrity oracle")
+            .expect("oracle rows for requested date");
+        assert_eq!(oracle.daily.calls, 2);
+        assert_eq!(oracle.daily.token_total, 200);
+        assert_eq!(oracle.hourly.len(), 2);
+        assert!(oracle.hourly.contains_key(&start_epoch));
+        assert!(oracle.hourly.contains_key(&(end_epoch - 60 * 60)));
+        assert_eq!(long_term_bucket_date(start_epoch - 1), date.pred_opt());
+        assert_eq!(long_term_bucket_date(start_epoch), Some(date));
+        assert_eq!(long_term_bucket_date(end_epoch - 1), Some(date));
+        assert_eq!(long_term_bucket_date(end_epoch), date.succ_opt());
+    }
+
+    #[tokio::test]
+    async fn integrity_audit_detects_nonzero_rollups_without_canonical_hourly_rows() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        create_long_term_integrity_oracle(&pool).await;
+        let date = NaiveDate::from_ymd_opt(2026, 7, 23).expect("fixed date");
+        let (start_epoch, _) = long_term_day_epoch_bounds(date).expect("Shanghai day bounds");
+        sqlx::query(
+            "INSERT INTO long_term_usage_daily (stats_date, dimension, series_key, display_name, calls, token_total, token_samples, cost_total, cost_samples) VALUES (?1, 'overall', 'overall', '全部调用', 1, 100, 1, 0.1, 1)",
+        )
+        .bind(date.to_string())
+        .execute(&pool)
+        .await
+        .expect("stale daily rollup");
+        sqlx::query(
+            "INSERT INTO long_term_usage_hourly (bucket_start_epoch, dimension, series_key, display_name, calls, token_total, token_samples, cost_total, cost_samples) VALUES (?1, 'overall', 'overall', '全部调用', 1, 100, 1, 0.1, 1)",
+        )
+        .bind(start_epoch + 10 * 60 * 60)
+        .execute(&pool)
+        .await
+        .expect("stale hourly rollup");
+
+        let mismatches = audit_long_term_integrity(&pool, date, date)
+            .await
+            .expect("audit stale rollups");
+        assert_eq!(mismatches.len(), 1);
+        assert_eq!(mismatches[0].date, date);
+        assert_eq!(mismatches[0].expected.calls, 0);
+        assert_eq!(mismatches[0].observed.calls, 1);
     }
 
     #[test]
@@ -2672,5 +3728,520 @@ mod tests {
         .await
         .expect("state");
         assert_eq!(status, LONG_TERM_STATUS_READY);
+    }
+
+    #[tokio::test]
+    async fn refresh_does_not_overwrite_complete_rollups_with_partial_rebuilds() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        sqlx::query(
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY,
+                invoke_id TEXT,
+                occurred_at TEXT NOT NULL,
+                status TEXT,
+                model TEXT,
+                payload TEXT,
+                total_tokens INTEGER,
+                output_tokens INTEGER,
+                cost REAL,
+                t_total_ms REAL,
+                t_req_read_ms REAL,
+                t_req_parse_ms REAL,
+                t_upstream_connect_ms REAL,
+                t_upstream_ttfb_ms REAL,
+                t_upstream_stream_ms REAL,
+                error_message TEXT
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("invocation schema");
+        let today = Utc::now().with_timezone(&Shanghai).date_naive();
+        let occurred_at = format!("{today}T12:00:00+08:00");
+        let day_start_epoch = today
+            .and_hms_opt(0, 0, 0)
+            .and_then(|value| Shanghai.from_local_datetime(&value).single())
+            .expect("Shanghai start")
+            .timestamp();
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, model, payload, total_tokens, output_tokens, cost) VALUES (1, 'partial', ?1, 'success', 'gpt-5', '{}', 7, 2, 0.07)",
+        )
+        .bind(occurred_at)
+        .execute(&pool)
+        .await
+        .expect("partial source row");
+        sqlx::query(
+            "INSERT INTO long_term_usage_daily (stats_date, dimension, series_key, display_name, calls, token_total, token_samples, cost_total, cost_samples) VALUES (?1, 'overall', 'overall', '全部调用', 10, 100, 10, 1.0, 10)",
+        )
+        .bind(today.to_string())
+        .execute(&pool)
+        .await
+        .expect("complete daily rollup");
+        sqlx::query(
+            "INSERT INTO long_term_usage_hourly (bucket_start_epoch, dimension, series_key, display_name, calls, token_total, token_samples, cost_total, cost_samples) VALUES (?1, 'overall', 'overall', '全部调用', 10, 100, 10, 1.0, 10)",
+        )
+        .bind(day_start_epoch + 12 * 60 * 60)
+        .execute(&pool)
+        .await
+        .expect("complete hourly rollup");
+        sqlx::query("UPDATE long_term_stats_state SET status = ?1 WHERE id = ?2")
+            .bind(LONG_TERM_STATUS_READY)
+            .bind(LONG_TERM_STATE_ID)
+            .execute(&pool)
+            .await
+            .expect("ready state");
+
+        refresh_long_term_stats(&pool, 400)
+            .await
+            .expect("refresh protects complete rollups");
+
+        let daily_calls = sqlx::query_scalar::<_, i64>(
+            "SELECT calls FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",
+        )
+        .bind(today.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("retained daily calls");
+        let hourly_calls = sqlx::query_scalar::<_, i64>(
+            "SELECT calls FROM long_term_usage_hourly WHERE bucket_start_epoch = ?1 AND dimension = 'overall'",
+        )
+        .bind(day_start_epoch + 12 * 60 * 60)
+        .fetch_one(&pool)
+        .await
+        .expect("retained hourly calls");
+        assert_eq!(daily_calls, 10);
+        assert_eq!(hourly_calls, 10);
+    }
+
+    #[tokio::test]
+    async fn refresh_audits_and_repairs_historical_long_term_rollups_idempotently() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        create_long_term_test_invocations(&pool).await;
+        create_long_term_integrity_oracle(&pool).await;
+        let date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(3);
+        let (first_hour, second_hour) = seed_long_term_integrity_case(&pool, date, 2).await;
+
+        refresh_long_term_stats(&pool, 400)
+            .await
+            .expect("historical integrity repair");
+
+        let daily = sqlx::query_as::<_, (i64, i64, f64)>(
+            "SELECT calls, token_total, cost_total FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",
+        )
+        .bind(date.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("repaired daily rollup");
+        assert_eq!(daily.0, 2);
+        assert_eq!(daily.1, 200);
+        assert!((daily.2 - 0.2).abs() < 1e-9);
+        let hourly = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT bucket_start_epoch, calls FROM long_term_usage_hourly WHERE dimension = 'overall' AND bucket_start_epoch IN (?1, ?2) ORDER BY bucket_start_epoch",
+        )
+        .bind(first_hour)
+        .bind(second_hour)
+        .fetch_all(&pool)
+        .await
+        .expect("repaired hourly rollups");
+        assert_eq!(hourly, vec![(first_hour, 1), (second_hour, 1)]);
+        let model_calls = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(SUM(calls), 0) FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'model'",
+        )
+        .bind(date.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("model dimension");
+        let upstream_calls = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(SUM(calls), 0) FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'upstream'",
+        )
+        .bind(date.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("upstream dimension");
+        assert_eq!(model_calls, 2);
+        assert_eq!(upstream_calls, 2);
+        let queue_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_stats_repair_queue")
+                .fetch_one(&pool)
+                .await
+                .expect("repair queue count");
+        let status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("repair status");
+        assert_eq!(queue_count, 0);
+        assert_eq!(status, LONG_TERM_STATUS_READY);
+
+        refresh_long_term_stats(&pool, 400)
+            .await
+            .expect("repeat historical integrity repair");
+        let repeated_daily = sqlx::query_as::<_, (i64, i64, f64)>(
+            "SELECT calls, token_total, cost_total FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",
+        )
+        .bind(date.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("idempotent daily rollup");
+        let repeated_hourly = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT bucket_start_epoch, calls FROM long_term_usage_hourly WHERE dimension = 'overall' AND bucket_start_epoch IN (?1, ?2) ORDER BY bucket_start_epoch",
+        )
+        .bind(first_hour)
+        .bind(second_hour)
+        .fetch_all(&pool)
+        .await
+        .expect("idempotent hourly rollups");
+        assert_eq!(repeated_daily, daily);
+        assert_eq!(repeated_hourly, hourly);
+    }
+
+    #[tokio::test]
+    async fn refresh_preserves_bad_rollups_until_a_complete_repair_is_available() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        create_long_term_test_invocations(&pool).await;
+        create_long_term_integrity_oracle(&pool).await;
+        let date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(3);
+        seed_long_term_integrity_case(&pool, date, 1).await;
+
+        refresh_long_term_stats(&pool, 400)
+            .await
+            .expect("incomplete repair is safely deferred");
+
+        let calls_after_failed_repair = sqlx::query_scalar::<_, i64>(
+            "SELECT calls FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",
+        )
+        .bind(date.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("preserved daily rollup");
+        let queue = sqlx::query_as::<_, (i64, i64, f64, i64, i64, f64, i64, String)>(
+            "SELECT expected_calls, expected_token_total, expected_cost_total, observed_calls, observed_token_total, observed_cost_total, attempts, next_retry_at FROM long_term_stats_repair_queue WHERE stats_date = ?1",
+        )
+        .bind(date.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("deferred repair queue entry");
+        let status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("error state");
+        assert_eq!(calls_after_failed_repair, 1);
+        assert_eq!(queue.0, 2);
+        assert_eq!(queue.1, 200);
+        assert!((queue.2 - 0.2).abs() < 1e-9);
+        assert_eq!(queue.3, 1);
+        assert_eq!(queue.4, 100);
+        assert!((queue.5 - 0.1).abs() < 1e-9);
+        assert_eq!(queue.6, 1);
+        assert!(!queue.7.is_empty());
+        assert_eq!(status, LONG_TERM_STATUS_ERROR);
+
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, model, payload, total_tokens, output_tokens, cost) VALUES (2, 'invoke-2', ?1, 'success', 'gpt-5', '{\"reasoningEffort\":\"high\"}', 100, 40, 0.1)",
+        )
+        .bind(format!("{date}T11:00:00+08:00"))
+        .execute(&pool)
+        .await
+        .expect("missing source invocation");
+        sqlx::query(
+            "UPDATE long_term_stats_repair_queue SET next_retry_at = datetime('now', '-1 second') WHERE stats_date = ?1",
+        )
+        .bind(date.to_string())
+        .execute(&pool)
+        .await
+        .expect("make repair eligible");
+
+        refresh_long_term_stats(&pool, 400)
+            .await
+            .expect("recovery repair");
+
+        let repaired_calls = sqlx::query_scalar::<_, i64>(
+            "SELECT calls FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",
+        )
+        .bind(date.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("repaired daily rollup");
+        let queue_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_stats_repair_queue")
+                .fetch_one(&pool)
+                .await
+                .expect("cleared repair queue");
+        let recovered_status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("recovered status");
+        assert_eq!(repaired_calls, 2);
+        assert_eq!(queue_count, 0);
+        assert_eq!(recovered_status, LONG_TERM_STATUS_READY);
+    }
+
+    #[tokio::test]
+    async fn refresh_recovers_a_queued_repair_when_no_durable_rollups_exist() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        create_long_term_test_invocations(&pool).await;
+        create_long_term_integrity_oracle(&pool).await;
+        let date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(3);
+        let (day_start_epoch, _) = long_term_day_epoch_bounds(date).expect("Shanghai day bounds");
+        sqlx::query(
+            "INSERT INTO invocation_rollup_hourly (bucket_start_epoch, source, total_count, total_tokens, total_cost) VALUES (?1, 'canonical', 1, 100, 0.1)",
+        )
+        .bind(day_start_epoch + 10 * 60 * 60)
+        .execute(&pool)
+        .await
+        .expect("canonical hourly rollup");
+        sqlx::query(
+            "INSERT INTO long_term_stats_repair_queue (stats_date, expected_calls, expected_token_total, expected_cost_total, observed_calls, observed_token_total, observed_cost_total, last_error) VALUES (?1, 1, 100, 0.1, 0, 0, 0, 'source data unavailable')",
+        )
+        .bind(date.to_string())
+        .execute(&pool)
+        .await
+        .expect("queued repair");
+        sqlx::query("UPDATE long_term_stats_state SET status = ?1 WHERE id = ?2")
+            .bind(LONG_TERM_STATUS_ERROR)
+            .bind(LONG_TERM_STATE_ID)
+            .execute(&pool)
+            .await
+            .expect("error state");
+
+        refresh_long_term_stats(&pool, 400)
+            .await
+            .expect("unavailable repair is deferred");
+
+        let first_status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("pending error state");
+        let attempts = sqlx::query_scalar::<_, i64>(
+            "SELECT attempts FROM long_term_stats_repair_queue WHERE stats_date = ?1",
+        )
+        .bind(date.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("queued retry attempts");
+        assert_eq!(first_status, LONG_TERM_STATUS_ERROR);
+        assert_eq!(attempts, 1);
+
+        insert_long_term_test_invocation(&pool, 1, format!("{date}T10:00:00+08:00")).await;
+        sqlx::query(
+            "UPDATE long_term_stats_repair_queue SET next_retry_at = datetime('now', '-1 second') WHERE stats_date = ?1",
+        )
+        .bind(date.to_string())
+        .execute(&pool)
+        .await
+        .expect("make repair eligible");
+
+        refresh_long_term_stats(&pool, 400)
+            .await
+            .expect("queued repair recovers after source arrives");
+
+        let repaired_calls = sqlx::query_scalar::<_, i64>(
+            "SELECT calls FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",
+        )
+        .bind(date.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("repaired daily rollup");
+        let queue_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_stats_repair_queue")
+                .fetch_one(&pool)
+                .await
+                .expect("cleared repair queue");
+        let final_status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("recovered ready state");
+        assert_eq!(repaired_calls, 1);
+        assert_eq!(queue_count, 0);
+        assert_eq!(final_status, LONG_TERM_STATUS_READY);
+    }
+
+    #[tokio::test]
+    async fn refresh_recovers_after_a_real_sqlite_lock_releases() {
+        let (pool, db_url, db_path) = long_term_file_backed_pool("long-term-lock-release").await;
+        create_long_term_test_invocations(&pool).await;
+        let today = Utc::now().with_timezone(&Shanghai).date_naive();
+        insert_long_term_test_invocation(&pool, 1, format!("{today}T12:00:00+08:00")).await;
+
+        let mut lock_connection = SqliteConnection::connect(&db_url)
+            .await
+            .expect("connect lock holder");
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut lock_connection)
+            .await
+            .expect("acquire sqlite write lock");
+        let refresh_pool = pool.clone();
+        let refresh_task =
+            tokio::spawn(async move { refresh_long_term_stats(&refresh_pool, 400).await });
+
+        sleep(Duration::from_millis(125)).await;
+        sqlx::query("COMMIT")
+            .execute(&mut lock_connection)
+            .await
+            .expect("release sqlite write lock");
+        refresh_task
+            .await
+            .expect("join refresh task")
+            .expect("refresh should retry after lock release");
+
+        let calls = sqlx::query_scalar::<_, i64>(
+            "SELECT calls FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",
+        )
+        .bind(today.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("published daily rollup");
+        assert_eq!(calls, 1);
+
+        lock_connection.close().await.expect("close lock holder");
+        cleanup_long_term_file_backed_pool(pool, db_path).await;
+    }
+
+    #[tokio::test]
+    async fn refresh_exhausts_real_sqlite_locks_without_partial_publication() {
+        let (pool, db_url, db_path) = long_term_file_backed_pool("long-term-lock-exhaustion").await;
+        create_long_term_test_invocations(&pool).await;
+        let today = Utc::now().with_timezone(&Shanghai).date_naive();
+        insert_long_term_test_invocation(&pool, 1, format!("{today}T12:00:00+08:00")).await;
+        sqlx::query(
+            "INSERT INTO long_term_usage_daily (stats_date, dimension, series_key, display_name, calls, token_total, token_samples, cost_total, cost_samples) VALUES (?1, 'overall', 'overall', '全部调用', 10, 1000, 10, 1.0, 10)",
+        )
+        .bind(today.to_string())
+        .execute(&pool)
+        .await
+        .expect("durable daily rollup");
+
+        let mut lock_connection = SqliteConnection::connect(&db_url)
+            .await
+            .expect("connect lock holder");
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut lock_connection)
+            .await
+            .expect("acquire sqlite write lock");
+        let error = refresh_long_term_stats(&pool, 400)
+            .await
+            .expect_err("persistent sqlite lock should exhaust retry budget");
+        assert!(crate::is_sqlite_lock_error(&error));
+
+        sqlx::query("ROLLBACK")
+            .execute(&mut lock_connection)
+            .await
+            .expect("release sqlite write lock");
+        let calls = sqlx::query_scalar::<_, i64>(
+            "SELECT calls FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",
+        )
+        .bind(today.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("preserved daily rollup");
+        let hourly_rows = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM long_term_usage_hourly WHERE bucket_start_epoch >= ?1 AND bucket_start_epoch < ?2",
+        )
+        .bind(
+            long_term_day_epoch_bounds(today)
+                .expect("Shanghai day bounds")
+                .0,
+        )
+        .bind(
+            long_term_day_epoch_bounds(today)
+                .expect("Shanghai day bounds")
+                .1,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("no partial hourly rollup");
+        assert_eq!(calls, 10);
+        assert_eq!(hourly_rows, 0);
+
+        lock_connection.close().await.expect("close lock holder");
+        cleanup_long_term_file_backed_pool(pool, db_path).await;
+    }
+
+    #[tokio::test]
+    async fn long_term_refresh_retries_a_sqlite_lock_until_the_write_is_available() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let operation_attempts = Arc::clone(&attempts);
+        let outcome = run_long_term_refresh_with_retry_delays(
+            move || {
+                let operation_attempts = Arc::clone(&operation_attempts);
+                async move {
+                    let attempt = operation_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                    if attempt < 3 {
+                        Err(anyhow::anyhow!("database is locked"))
+                    } else {
+                        Ok(attempt)
+                    }
+                }
+            },
+            &[Duration::ZERO, Duration::ZERO, Duration::ZERO],
+        )
+        .await
+        .expect("lock should clear before retry budget is exhausted");
+        assert_eq!(outcome, 3);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn long_term_refresh_stops_after_its_bounded_sqlite_lock_retry_budget() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let operation_attempts = Arc::clone(&attempts);
+        let error = run_long_term_refresh_with_retry_delays(
+            move || {
+                let operation_attempts = Arc::clone(&operation_attempts);
+                async move {
+                    operation_attempts.fetch_add(1, Ordering::SeqCst);
+                    Err::<(), _>(anyhow::anyhow!("database is locked"))
+                }
+            },
+            &[Duration::ZERO, Duration::ZERO, Duration::ZERO],
+        )
+        .await
+        .expect_err("persistent locks must exhaust the bounded retry budget");
+        assert!(crate::is_sqlite_lock_error(&error));
+        assert_eq!(attempts.load(Ordering::SeqCst), 4);
     }
 }
