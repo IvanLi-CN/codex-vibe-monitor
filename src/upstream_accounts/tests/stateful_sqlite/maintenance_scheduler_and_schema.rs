@@ -348,6 +348,7 @@ fn request_capabilities_route_by_three_independent_axes() {
         CapabilitySupport::Unsupported,
         CapabilitySupport::Supported,
         CapabilitySupport::Supported,
+        CapabilitySupport::Unknown,
     ));
     assert!(!account_accepts_request_capabilities(
         RequestCapabilityRequirements::from_endpoint_and_image_intent(
@@ -358,6 +359,7 @@ fn request_capabilities_route_by_three_independent_axes() {
         CapabilitySupport::Supported,
         CapabilitySupport::Supported,
         CapabilitySupport::Unsupported,
+        CapabilitySupport::Unknown,
     ));
     assert!(account_accepts_request_capabilities(
         RequestCapabilityRequirements::from_endpoint_and_image_intent(
@@ -368,6 +370,7 @@ fn request_capabilities_route_by_three_independent_axes() {
         CapabilitySupport::Supported,
         CapabilitySupport::Supported,
         CapabilitySupport::Unsupported,
+        CapabilitySupport::Unknown,
     ));
     assert!(!account_accepts_request_capabilities(
         RequestCapabilityRequirements::from_endpoint_and_image_intent(
@@ -378,6 +381,7 @@ fn request_capabilities_route_by_three_independent_axes() {
         CapabilitySupport::Unsupported,
         CapabilitySupport::Unsupported,
         CapabilitySupport::Supported,
+        CapabilitySupport::Unknown,
     ));
     assert!(account_accepts_request_capabilities(
         RequestCapabilityRequirements::from_endpoint_and_image_intent(
@@ -388,6 +392,7 @@ fn request_capabilities_route_by_three_independent_axes() {
         CapabilitySupport::Supported,
         CapabilitySupport::Unsupported,
         CapabilitySupport::Unsupported,
+        CapabilitySupport::Unknown,
     ));
     assert!(!account_accepts_request_capabilities(
         RequestCapabilityRequirements::from_endpoint_and_image_intent(
@@ -398,6 +403,7 @@ fn request_capabilities_route_by_three_independent_axes() {
         CapabilitySupport::Unsupported,
         CapabilitySupport::Unsupported,
         CapabilitySupport::Supported,
+        CapabilitySupport::Unknown,
     ));
 }
 

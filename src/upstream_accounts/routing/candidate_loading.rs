@@ -73,6 +73,7 @@ pub(crate) fn account_accepts_request_capabilities(
     chat_completions_capability: CapabilitySupport,
     image_endpoint_capability: CapabilitySupport,
     response_image_tool_capability: CapabilitySupport,
+    codex_imagegen_capability: CapabilitySupport,
 ) -> bool {
     (!requirements.response_endpoint
         || !matches!(response_endpoint_capability, CapabilitySupport::Unsupported))
@@ -85,6 +86,8 @@ pub(crate) fn account_accepts_request_capabilities(
                 response_image_tool_capability,
                 CapabilitySupport::Unsupported
             ))
+        && (!requirements.codex_imagegen
+            || !matches!(codex_imagegen_capability, CapabilitySupport::Unsupported))
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -397,6 +400,9 @@ pub(crate) fn build_pool_resolved_account(
                 row.policy_response_image_tool_capability_override
                     .as_deref(),
             ),
+        ),
+        codex_imagegen_capability: decode_capability_support(
+            row.codex_imagegen_capability.as_deref(),
         ),
         upstream_base_url,
         routing_source,

@@ -3112,10 +3112,16 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     uses_timeout_route_failover && timeout_shaped_failure;
                 let direct_image_handshake_timeout = direct_image_request
                     && failure_kind == PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT;
+                let codex_imagegen_upstream_incompatible = codex_imagegen_upstream_incompatibility(
+                    status,
+                    &route_error_message,
+                    attempted_codex_imagegen_rewrite.as_ref(),
+                );
                 let should_schedule_retry = has_retry_budget
                     && !compact_support_is_unsupported
                     && !should_timeout_route_failover
                     && !direct_image_handshake_timeout
+                    && !codex_imagegen_upstream_incompatible
                     && status.is_server_error()
                     && status != StatusCode::TOO_MANY_REQUESTS;
                 let retry_delay = should_schedule_retry.then(|| {
@@ -3155,6 +3161,22 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         invoke_id = pending_attempt_record.invoke_id,
                         error = %record_err,
                         "failed to persist pool http failure attempt"
+                    );
+                }
+                if codex_imagegen_upstream_incompatible
+                    && let Err(observation_err) = record_capability_observation(
+                        &state.pool,
+                        account.account_id,
+                        UpstreamCapabilityAxis::CodexImagegen,
+                        CapabilitySupport::Unsupported,
+                        Some(route_error_message.as_str()),
+                    )
+                    .await
+                {
+                    warn!(
+                        account_id = account.account_id,
+                        error = %observation_err,
+                        "failed to record Codex imagegen capability observation"
                     );
                 }
                 if let Some(response_body) = error_body_bytes.as_ref()
@@ -3236,7 +3258,9 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     sleep(retry_delay).await;
                     continue;
                 }
-                let route_failure_result = if oauth_transport_failure_kind.is_some() {
+                let route_failure_result = if codex_imagegen_upstream_incompatible {
+                    Ok(())
+                } else if oauth_transport_failure_kind.is_some() {
                     record_pool_route_transport_failure_for_attempt(
                         &state.pool,
                         account.account_id,

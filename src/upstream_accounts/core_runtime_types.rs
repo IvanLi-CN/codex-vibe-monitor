@@ -1311,6 +1311,7 @@ pub(crate) struct RequestCapabilityRequirements {
     pub(crate) chat_completions_endpoint: bool,
     pub(crate) image_endpoint: bool,
     pub(crate) response_image_tool: bool,
+    pub(crate) codex_imagegen: bool,
 }
 
 impl RequestCapabilityRequirements {
@@ -1332,6 +1333,7 @@ impl RequestCapabilityRequirements {
             chat_completions_endpoint: false,
             image_endpoint: true,
             response_image_tool: false,
+            codex_imagegen: false,
         }
     }
 
@@ -1341,6 +1343,7 @@ impl RequestCapabilityRequirements {
             chat_completions_endpoint: true,
             image_endpoint: false,
             response_image_tool: false,
+            codex_imagegen: false,
         }
     }
 
@@ -1350,6 +1353,7 @@ impl RequestCapabilityRequirements {
             chat_completions_endpoint: false,
             image_endpoint: false,
             response_image_tool: matches!(image_intent, ImageIntent::Yes),
+            codex_imagegen: false,
         }
     }
 }

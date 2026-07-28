@@ -7,6 +7,7 @@ pub(crate) enum UpstreamCapabilityAxis {
     ChatCompletionsEndpoint,
     ImageEndpoint,
     ResponseImageTool,
+    CodexImagegen,
 }
 
 impl UpstreamCapabilityAxis {
@@ -16,6 +17,7 @@ impl UpstreamCapabilityAxis {
             Self::ChatCompletionsEndpoint => "chat_completions_capability",
             Self::ImageEndpoint => "image_endpoint_capability",
             Self::ResponseImageTool => "response_image_tool_capability",
+            Self::CodexImagegen => "codex_imagegen_capability",
         }
     }
 
@@ -25,6 +27,7 @@ impl UpstreamCapabilityAxis {
             Self::ChatCompletionsEndpoint => "chat_completions_capability_observed_at",
             Self::ImageEndpoint => "image_endpoint_capability_observed_at",
             Self::ResponseImageTool => "response_image_tool_capability_observed_at",
+            Self::CodexImagegen => "codex_imagegen_capability_observed_at",
         }
     }
 
@@ -34,6 +37,7 @@ impl UpstreamCapabilityAxis {
             Self::ChatCompletionsEndpoint => "chat_completions_capability_reason",
             Self::ImageEndpoint => "image_endpoint_capability_reason",
             Self::ResponseImageTool => "response_image_tool_capability_reason",
+            Self::CodexImagegen => "codex_imagegen_capability_reason",
         }
     }
 
@@ -43,6 +47,7 @@ impl UpstreamCapabilityAxis {
             Self::ChatCompletionsEndpoint => "chat completions endpoint request succeeded",
             Self::ImageEndpoint => "image endpoint request succeeded",
             Self::ResponseImageTool => "response image tool request succeeded",
+            Self::CodexImagegen => "Codex imagegen namespace request succeeded",
         }
     }
 }

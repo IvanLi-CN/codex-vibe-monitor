@@ -1938,6 +1938,7 @@ async fn websocket_payload_owner_guard_blocks_mismatched_payload_owner() {
         chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
+        codex_imagegen_capability: CapabilitySupport::Unknown,
         upstream_base_url: Url::parse("https://api.example.test").expect("valid base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,
@@ -2066,6 +2067,7 @@ async fn websocket_payload_owner_guard_disabled_does_not_block_mismatched_payloa
         chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
+        codex_imagegen_capability: CapabilitySupport::Unknown,
         upstream_base_url: Url::parse("https://api.example.test").expect("valid base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,
@@ -5326,6 +5328,120 @@ fn proxy_openai_v1_responses_force_add_failure_learns_response_image_tool_unsupp
 }
 
 #[test]
+fn proxy_openai_v1_codex_imagegen_502_learns_namespace_incompatibility_without_retry() {
+    run_future_with_large_stack(async {
+        async fn incompatible_upstream(
+            State(attempts): State<Arc<AtomicUsize>>,
+            body: Bytes,
+        ) -> impl IntoResponse {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            let request_body: Value = serde_json::from_slice(&body).expect("decode upstream body");
+            assert!(
+                request_body["tools"]
+                    .as_array()
+                    .expect("tools should be injected")
+                    .iter()
+                    .any(|tool| tool["type"].as_str() == Some("namespace")
+                        && tool["name"].as_str() == Some("image_gen")),
+                "Codex imagegen namespace should be injected: {request_body:?}"
+            );
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": {
+                        "message": "Upstream request failed",
+                        "type": "upstream_error"
+                    }
+                })),
+            )
+                .into_response()
+        }
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route("/v1/responses", post(incompatible_upstream))
+            .with_state(attempts.clone());
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind incompatible upstream");
+        let upstream_base = format!("http://{}", listener.local_addr().expect("local addr"));
+        let upstream_handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("incompatible upstream server should run");
+        });
+        let state = test_state_with_openai_base_and_pool_no_available_wait(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            Duration::from_millis(80),
+            Duration::from_millis(20),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let account_id = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Codex Imagegen Incompatible",
+            "upstream-codex-imagegen-incompatible",
+            None,
+            None,
+            None,
+        )
+        .await;
+        sqlx::query(
+            "UPDATE pool_upstream_accounts SET policy_codex_imagegen_rewrite_mode = ?2 WHERE id = ?1",
+        )
+        .bind(account_id)
+        .bind("force_add")
+        .execute(&state.pool)
+        .await
+        .expect("mark account for Codex imagegen injection");
+
+        let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        let error = proxy_openai_v1_via_pool(
+            state.clone(),
+            6345,
+            &"/v1/responses".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+                (
+                    HeaderName::from_static("originator"),
+                    HeaderValue::from_static("Codex Desktop"),
+                ),
+            ]),
+            Body::from(r#"{"model":"gpt-5.1-codex","input":"draw a cat"}"#),
+            runtime_timeouts,
+            None,
+        )
+        .await
+        .expect_err("via-pool request should preserve the upstream 502");
+        assert_eq!(error.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(error.code.as_deref(), Some("upstream_http_5xx"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+
+        let (capability, route_failures): (String, i64) = sqlx::query_as(
+            "SELECT codex_imagegen_capability, consecutive_route_failures FROM pool_upstream_accounts WHERE id = ?",
+        )
+        .bind(account_id)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load Codex imagegen capability after 502");
+        assert_eq!(capability, "unsupported");
+        assert_eq!(route_failures, 0);
+
+        upstream_handle.abort();
+    });
+}
+
+#[test]
 fn proxy_openai_v1_image_edits_ignores_response_image_tool_capability_gate() {
     run_future_with_large_stack(async move {
         async fn direct_image_echo_upstream(headers: HeaderMap, body: Bytes) -> Response {
@@ -7035,6 +7151,7 @@ fn test_live_first_pool_account(
         chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
+        codex_imagegen_capability: CapabilitySupport::Unknown,
         upstream_base_url: Url::parse("https://api.openai.com/").expect("valid upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,

@@ -35,3 +35,5 @@ Account-pool routing policy moved from isolated group/tag behavior to a layered 
 2026-07-24: Locked image-tool rewrite to Full Responses. Codex Responses Lite owns client-side `input.additional_tools`, so every CVM mode is skipped, auditably persisted, and no Lite top-level-tool validation error can learn account capability.
 
 2026-07-26: Superseded the Lite skip-only boundary with the independent `codexImagegenRewriteMode`. Explicit Codex Full now receives the fixed `image_gen.imagegen` namespace in top-level tools; explicit Lite receives it through developer `additional_tools` plus the required execution contract. Hosted `image_generation` remains a separate policy and is removed for active Codex rewrites.
+
+2026-07-28: Added per-account Codex `image_gen` compatibility learning for the observed injected-request `502 Upstream request failed` signature. The failure bypasses same-account retry and generic account-health mutation, then allows failover to another namespace-compatible upstream.

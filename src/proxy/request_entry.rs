@@ -3754,8 +3754,26 @@ pub(crate) fn codex_imagegen_keep_original_audit(protocol: CodexImagegenProtocol
         "no_change",
         None,
         false,
-        Some("already_current"),
+        Some("policy_keep_original"),
     )
+}
+
+pub(crate) fn codex_imagegen_upstream_incompatibility(
+    status: StatusCode,
+    message: &str,
+    audit: Option<&Value>,
+) -> bool {
+    if status != StatusCode::BAD_GATEWAY {
+        return false;
+    }
+    let was_injected = audit
+        .and_then(|value| value.get("outcome"))
+        .and_then(Value::as_str)
+        .is_some_and(|outcome| matches!(outcome, "injected" | "replaced"));
+    was_injected
+        && message
+            .to_ascii_lowercase()
+            .contains("upstream request failed")
 }
 
 fn rewrite_codex_imagegen_tools(
@@ -5093,6 +5111,32 @@ mod tests {
         assert!(fill_missing.get("tool_choice").is_none());
     }
 
+    #[test]
+    fn codex_imagegen_upstream_incompatibility_requires_actual_injection_and_known_502() {
+        let injected = serde_json::json!({"outcome": "injected"});
+
+        assert!(codex_imagegen_upstream_incompatibility(
+            StatusCode::BAD_GATEWAY,
+            "Upstream request failed",
+            Some(&injected),
+        ));
+        assert!(!codex_imagegen_upstream_incompatibility(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Upstream request failed",
+            Some(&injected),
+        ));
+        assert!(!codex_imagegen_upstream_incompatibility(
+            StatusCode::BAD_GATEWAY,
+            "Upstream request failed",
+            Some(&serde_json::json!({"outcome": "no_change"})),
+        ));
+        assert!(!codex_imagegen_upstream_incompatibility(
+            StatusCode::BAD_GATEWAY,
+            "temporary upstream timeout",
+            Some(&injected),
+        ));
+    }
+
     #[tokio::test]
     async fn codex_imagegen_keep_original_records_audit_without_rewriting_snapshot() {
         let request = serde_json::json!({"input": "summarize this"});
@@ -5129,7 +5173,7 @@ mod tests {
                 .as_ref()
                 .and_then(|audit| audit.get("reason"))
                 .and_then(Value::as_str),
-            Some("already_current")
+            Some("policy_keep_original")
         );
         assert_eq!(
             prepared

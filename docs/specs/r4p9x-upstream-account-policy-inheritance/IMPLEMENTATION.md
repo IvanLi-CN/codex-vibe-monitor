@@ -180,3 +180,5 @@ Validation covers:
 - `cd web && npm run build`
 
 Codex imagegen now resolves through the same root -> group -> account policy chain as other routing fields. The stored concrete root default is `keep_original`; lower layers retain nullable override semantics. Request preparation recognizes Codex Full/Lite explicitly, removes conflicting hosted image tools for active Codex policies, and records bounded schema-conflict audit data.
+
+Upstream routing now persists an independent Codex `image_gen` capability. A known `502 Upstream request failed` is treated as namespace incompatibility only when the attempt audit proves that CVM injected or replaced the namespace. The account is excluded from subsequent active Codex rewrites without a same-account retry, while ordinary account health and hosted image-tool capability remain unchanged.

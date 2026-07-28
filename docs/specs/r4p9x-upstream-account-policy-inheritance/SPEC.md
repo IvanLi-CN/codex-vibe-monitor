@@ -180,6 +180,7 @@ The image-tool layer remains separate from the system-tag signal model:
 
 - `imageToolRewriteMode` exists on group and account routing rules only
 - `codexImagegenRewriteMode` is an independent root -> group -> account -> conversation policy with `keep_original | fill_missing | force_add | force_remove`; root defaults to `keep_original`
+- Codex namespace compatibility is learned per upstream account. A `502` containing `Upstream request failed` after an actual `image_gen` injection marks only that account as unsupported, skips same-account retries, and makes later active Codex rewrites select another compatible account. This signal does not alter ordinary response, hosted image-tool, or account-health capability axes.
 - account records persist a read-only `imageToolCapability`
 - `image intent` classification is runtime four-state: `yes`, `direct_image`, `no`, or `unknown`
 - `yes` routes only to image-compatible accounts
