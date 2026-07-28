@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.50.9",
+  "base_stable_version": "2.50.8",
+  "channel_label": "channel:stable",
+  "created_at": "2026-07-28T09:20:57Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.50.9",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "3f062a3600b9fd4f45125990b0cf5b8a0514508d",
+  "pr_number": 710,
+  "pr_title": "fix(proxy): learn Codex imagegen upstream incompatibility",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.50.9",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.50.9",
+  "target_sha": "ac1f8e0475bf3cd797b1108d4cb0a2ca3b5dc1cf",
+  "type_label": "type:patch"
+}
