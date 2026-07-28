@@ -131,7 +131,7 @@ Dashboard / Live / Records 三处调用详情曾经以“摘要字段 + 局部�
   - unavailable 回放态：`请求体` lazy fetch 完成后，界面必须从 loading 收口到人类可读提示 `该记录没有保留可展示的载荷。`，而不是无限 loading 或直接暴露内部 `missing_body` reason。
   - 失败 attempt 响应体态：`HTTP 502 / service_failure` 的 attempt 展开 `响应体` 后，必须显示 `attempt_raw_file`、完整大小与可读 JSON body。
 
-PR: none
+PR: include
 
 视觉证据=存在
 视觉证据目标源=ui_demo
