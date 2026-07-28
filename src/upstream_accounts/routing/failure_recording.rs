@@ -388,8 +388,8 @@ async fn record_pool_route_success_capability_observations(
 pub(crate) async fn consume_codex_imagegen_supported_retest_override(
     pool: &Pool<Sqlite>,
     account_id: i64,
-) -> Result<()> {
-    sqlx::query(
+) -> Result<bool> {
+    let result = sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
         SET policy_codex_imagegen_capability_override = NULL,
@@ -402,7 +402,7 @@ pub(crate) async fn consume_codex_imagegen_supported_retest_override(
     .bind(format_utc_iso(Utc::now()))
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(result.rows_affected() == 1)
 }
 
 pub(crate) async fn record_capability_observation(

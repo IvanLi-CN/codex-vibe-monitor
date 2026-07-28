@@ -4,7 +4,7 @@
 
 Account-pool routing policy moved from isolated group/tag behavior to a layered effective policy model. The resolver now computes one effective policy per account and downstream routing code reads that policy instead of separate group or tag fragments.
 
-2026-07-28: Header-sticky reuse now derives its capability requirement from the same final Codex imagegen rewrite-aware resolver as automatic and sticky candidate selection, so an account learned as namespace-incompatible cannot bypass the gate. A successful actual namespace injection now restores the observed capability to supported. The `supported` operator override is consumed after its next injected attempt, whether that retest succeeds or records the exact namespace-incompatible signature.
+2026-07-28: Header-sticky reuse now derives its capability requirement from the same final Codex imagegen rewrite-aware resolver as automatic and sticky candidate selection, so an account learned as namespace-incompatible cannot bypass the gate. A successful actual namespace injection now restores the observed capability to supported. The `supported` operator override is consumed after its next injected attempt reaches any terminal outcome, preventing the retest from becoming a persistent routing bypass.
 
 2026-07-24: Replaced the group routing dialog's desktop priority, FAST mode, image-tool rewrite, and request-compression dropdowns with the shared inline radio-group treatment used by upstream 429 retry. At widths of `768px` and below the same fields retain Select controls so their longer labels remain readable and touch-friendly.
 

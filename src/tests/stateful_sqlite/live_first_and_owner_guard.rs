@@ -5446,7 +5446,7 @@ fn proxy_openai_v1_codex_imagegen_502_learns_namespace_incompatibility_without_r
             State(attempts): State<Arc<AtomicUsize>>,
             body: Bytes,
         ) -> impl IntoResponse {
-            attempts.fetch_add(1, Ordering::SeqCst);
+            let attempt_index = attempts.fetch_add(1, Ordering::SeqCst);
             let request_body: Value = serde_json::from_slice(&body).expect("decode upstream body");
             assert!(
                 request_body["tools"]
@@ -5457,16 +5457,29 @@ fn proxy_openai_v1_codex_imagegen_502_learns_namespace_incompatibility_without_r
                         && tool["name"].as_str() == Some("image_gen")),
                 "Codex imagegen namespace should be injected: {request_body:?}"
             );
-            (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({
-                    "error": {
-                        "message": "Upstream request failed",
-                        "type": "upstream_error"
-                    }
-                })),
-            )
-                .into_response()
+            if attempt_index == 0 {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({
+                        "error": {
+                            "message": "Upstream request failed",
+                            "type": "upstream_error"
+                        }
+                    })),
+                )
+                    .into_response()
+            } else {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "error": {
+                            "message": "temporary upstream overload",
+                            "type": "upstream_error"
+                        }
+                    })),
+                )
+                    .into_response()
+            }
         }
 
         let attempts = Arc::new(AtomicUsize::new(0));
@@ -5553,6 +5566,49 @@ fn proxy_openai_v1_codex_imagegen_502_learns_namespace_incompatibility_without_r
         .expect("load Codex imagegen capability after 502");
         assert_eq!(capability, "unsupported");
         assert_eq!(route_failures, 0);
+        assert_eq!(override_value, None);
+
+        sqlx::query(
+            "UPDATE pool_upstream_accounts SET policy_codex_imagegen_capability_override = 'supported' WHERE id = ?",
+        )
+        .bind(account_id)
+        .execute(&state.pool)
+        .await
+        .expect("permit one explicit non-502 Codex imagegen retest");
+        let error = proxy_openai_v1_via_pool(
+            state.clone(),
+            6347,
+            &"/v1/responses".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+                (
+                    HeaderName::from_static("originator"),
+                    HeaderValue::from_static("Codex Desktop"),
+                ),
+            ]),
+            Body::from(r#"{"model":"gpt-5.1-codex","input":"draw a cat"}"#),
+            runtime_timeouts,
+            None,
+        )
+        .await
+        .expect_err("non-502 injected retest should fail through the pool");
+        assert_eq!(error.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        let override_value: Option<String> = sqlx::query_scalar(
+            "SELECT policy_codex_imagegen_capability_override FROM pool_upstream_accounts WHERE id = ?",
+        )
+        .bind(account_id)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load Codex imagegen override after non-502 retest");
         assert_eq!(override_value, None);
 
         upstream_handle.abort();

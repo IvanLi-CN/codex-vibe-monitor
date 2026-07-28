@@ -2089,9 +2089,33 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     "failed to broadcast pool transport attempt snapshot"
                                 );
                             }
+                            let codex_imagegen_retest_override_consumed =
+                                if codex_imagegen_audit_was_injected(
+                                    attempted_codex_imagegen_rewrite.as_ref(),
+                                ) {
+                                    match consume_codex_imagegen_supported_retest_override(
+                                        &state.pool,
+                                        account.account_id,
+                                    )
+                                    .await
+                                    {
+                                        Ok(consumed) => consumed,
+                                        Err(override_err) => {
+                                            warn!(
+                                                account_id = account.account_id,
+                                                error = %override_err,
+                                                "failed to consume Codex imagegen supported retest override"
+                                            );
+                                            false
+                                        }
+                                    }
+                                } else {
+                                    false
+                                };
                             let has_retry_budget = same_account_attempt + 1
                                 < same_account_attempt_budget
-                                && !direct_image_handshake_timeout;
+                                && !direct_image_handshake_timeout
+                                && !codex_imagegen_retest_override_consumed;
                             if has_retry_budget && !should_timeout_route_failover {
                                 let retry_delay = fallback_proxy_429_retry_delay(
                                     u32::from(same_account_attempt) + 1,
@@ -2277,6 +2301,29 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     "failed to broadcast pool handshake timeout snapshot"
                                 );
                             }
+                            let codex_imagegen_retest_override_consumed =
+                                if codex_imagegen_audit_was_injected(
+                                    attempted_codex_imagegen_rewrite.as_ref(),
+                                ) {
+                                    match consume_codex_imagegen_supported_retest_override(
+                                        &state.pool,
+                                        account.account_id,
+                                    )
+                                    .await
+                                    {
+                                        Ok(consumed) => consumed,
+                                        Err(override_err) => {
+                                            warn!(
+                                                account_id = account.account_id,
+                                                error = %override_err,
+                                                "failed to consume Codex imagegen supported retest override"
+                                            );
+                                            false
+                                        }
+                                    }
+                                } else {
+                                    false
+                                };
                             if let (Some(total_timeout), Some(started_at)) =
                                 (responses_total_timeout, attempt_total_timeout_started_at)
                                 && pool_total_timeout_exhausted(total_timeout, started_at)
@@ -2333,7 +2380,8 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             }
                             let has_retry_budget = same_account_attempt + 1
                                 < same_account_attempt_budget
-                                && !direct_image_request;
+                                && !direct_image_request
+                                && !codex_imagegen_retest_override_consumed;
                             if has_retry_budget && !should_timeout_route_failover {
                                 let retry_delay = fallback_proxy_429_retry_delay(
                                     u32::from(same_account_attempt) + 1,
@@ -3050,6 +3098,19 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         )
                         .await;
                     }
+                    if codex_imagegen_audit_was_injected(attempted_codex_imagegen_rewrite.as_ref())
+                        && let Err(override_err) = consume_codex_imagegen_supported_retest_override(
+                            &state.pool,
+                            account.account_id,
+                        )
+                        .await
+                    {
+                        warn!(
+                            account_id = account.account_id,
+                            error = %override_err,
+                            "failed to consume Codex imagegen supported retest override"
+                        );
+                    }
                     reservation_guard.disarm();
                     return Ok(PoolUpstreamResponse {
                         account: account.clone(),
@@ -3117,11 +3178,34 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     &route_error_message,
                     attempted_codex_imagegen_rewrite.as_ref(),
                 );
+                let codex_imagegen_retest_override_consumed =
+                    if codex_imagegen_audit_was_injected(attempted_codex_imagegen_rewrite.as_ref())
+                    {
+                        match consume_codex_imagegen_supported_retest_override(
+                            &state.pool,
+                            account.account_id,
+                        )
+                        .await
+                        {
+                            Ok(consumed) => consumed,
+                            Err(override_err) => {
+                                warn!(
+                                    account_id = account.account_id,
+                                    error = %override_err,
+                                    "failed to consume Codex imagegen supported retest override"
+                                );
+                                false
+                            }
+                        }
+                    } else {
+                        false
+                    };
                 let should_schedule_retry = has_retry_budget
                     && !compact_support_is_unsupported
                     && !should_timeout_route_failover
                     && !direct_image_handshake_timeout
                     && !codex_imagegen_upstream_incompatible
+                    && !codex_imagegen_retest_override_consumed
                     && status.is_server_error()
                     && status != StatusCode::TOO_MANY_REQUESTS;
                 let retry_delay = should_schedule_retry.then(|| {
@@ -3179,19 +3263,6 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         "failed to record Codex imagegen capability observation"
                     );
                 }
-                if codex_imagegen_upstream_incompatible
-                    && let Err(override_err) = consume_codex_imagegen_supported_retest_override(
-                        &state.pool,
-                        account.account_id,
-                    )
-                    .await
-                {
-                    warn!(
-                        account_id = account.account_id,
-                        error = %override_err,
-                        "failed to consume Codex imagegen supported retest override"
-                    );
-                }
                 if let Some(response_body) = error_body_bytes.as_ref()
                     && let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                 {
@@ -3224,7 +3295,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         "failed to broadcast pool http failure snapshot"
                     );
                 }
-                if has_group_upstream_429_retry_budget {
+                if has_group_upstream_429_retry_budget && !codex_imagegen_retest_override_consumed {
                     let retry_delay = pool_group_upstream_429_retry_delay(state.as_ref());
                     let group_retry_index = group_upstream_429_retry_count + 1;
                     info!(
@@ -3242,7 +3313,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     sleep(retry_delay).await;
                     continue;
                 }
-                if has_upstream_413_retry_budget {
+                if has_upstream_413_retry_budget && !codex_imagegen_retest_override_consumed {
                     let retry_delay =
                         fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1);
                     info!(
@@ -3258,7 +3329,9 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     sleep(retry_delay).await;
                     continue;
                 }
-                if let Some(retry_delay) = retry_delay {
+                if let Some(retry_delay) = retry_delay
+                    && !codex_imagegen_retest_override_consumed
+                {
                     info!(
                         account_id = account.account_id,
                         status = status.as_u16(),
