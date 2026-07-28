@@ -69,6 +69,13 @@ describe("UpstreamAccountsPage api key details", () => {
           observedAt: "2026-07-17T08:10:00Z",
           reason: "manual override for responses image tools",
         },
+        codexImagegenCapability: {
+          observed: "unsupported",
+          override: null,
+          effective: "unsupported",
+          observedAt: "2026-07-17T08:12:00Z",
+          reason: "upstream request failed after Codex imagegen injection",
+        },
         maskedApiKey: "sk-gate••••",
         history: [],
         note: null,

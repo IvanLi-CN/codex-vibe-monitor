@@ -30,6 +30,7 @@ The legacy hosted rewrite policy was applied before Codex protocol handling. It 
 4. When the Codex policy is not `keep_original`, remove hosted `image_generation` and its matching `tool_choice` before applying the Codex policy. Preserve unrelated namespaces and tools.
 5. Use the OpenAI Codex commit `61a44880a85d2fd0d8770908dea5733495e571c8` schema snapshot. `fill_missing` preserves an existing same-name tool; `force_add` replaces it and records fingerprints plus differing JSON paths.
 6. Persist `codexImagegenRewrite` on the originating workflow attempt as well as the invocation summary, so failover rows never inherit the final account's audit. It contains protocol, client match, effective mode, outcome, hosted removal, snapshot fingerprint, and conflict-only fingerprints/diff paths. It never contains prompts, image bytes, or full requests.
+7. Treat the namespace as its own upstream capability. If an actual injection receives the known `502 Upstream request failed` response, mark that account unsupported and fail over without retrying it; do not downgrade the request by silently removing the namespace or record the shape mismatch as generic account health failure. Preserve the observed reason and expose an explicit operator override for deliberate recovery after the upstream is fixed; do not infer recovery from a request that did not inject the namespace.
 
 ## Error and Retry Boundary
 
@@ -46,6 +47,7 @@ Responses Lite protocol detection and upstream error retry classification are se
 - Do not implement an image executor, response-stream conversion, or historical hosted-result backfill in CVM.
 - Keep the snapshot immutable until the referenced Codex commit is deliberately refreshed; do not synthesize a schema at runtime.
 - Run the same contract for compressed and file-backed replay bodies when a Codex rewrite is active; `keep_original` continues to preserve its original snapshot.
+- Learn namespace capability only from an actual canonical namespace attempt: an injected, replaced, or retained canonical `image_gen` namespace with the exact `502` signature records unsupported, while a successful canonical namespace request records supported. A `supported` operator override is atomically claimed before that one upstream attempt; `unsupported` remains an explicit operator exclusion. This keeps the override a bounded retest mechanism rather than a concurrent routing bypass.
 
 ## References
 

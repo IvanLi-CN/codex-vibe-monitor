@@ -25,6 +25,8 @@ pub(crate) const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
     image_endpoint_capability_reason, policy_image_endpoint_capability_override,
     response_image_tool_capability, response_image_tool_capability_observed_at,
     response_image_tool_capability_reason, policy_response_image_tool_capability_override,
+    codex_imagegen_capability, codex_imagegen_capability_observed_at,
+    codex_imagegen_capability_reason, policy_codex_imagegen_capability_override,
     local_primary_limit, local_secondary_limit, local_limit_unit,
     policy_allow_cut_out, policy_allow_cut_in, policy_priority_tier,
     policy_fast_mode_rewrite_mode, policy_image_tool_rewrite_mode,
@@ -3629,6 +3631,12 @@ pub(crate) fn build_summary_from_row(
             row.response_image_tool_capability_reason.as_ref(),
             row.policy_response_image_tool_capability_override
                 .as_deref(),
+        ),
+        codex_imagegen_capability: build_capability_state(
+            row.codex_imagegen_capability.as_deref(),
+            row.codex_imagegen_capability_observed_at.as_ref(),
+            row.codex_imagegen_capability_reason.as_ref(),
+            row.policy_codex_imagegen_capability_override.as_deref(),
         ),
     }
 }

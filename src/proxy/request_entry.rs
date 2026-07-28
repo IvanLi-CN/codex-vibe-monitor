@@ -3754,8 +3754,48 @@ pub(crate) fn codex_imagegen_keep_original_audit(protocol: CodexImagegenProtocol
         "no_change",
         None,
         false,
-        Some("already_current"),
+        Some("policy_keep_original"),
     )
+}
+
+pub(crate) fn codex_imagegen_upstream_incompatibility(
+    status: StatusCode,
+    message: &str,
+    audit: Option<&Value>,
+) -> bool {
+    if status != StatusCode::BAD_GATEWAY {
+        return false;
+    }
+    codex_imagegen_audit_has_canonical_namespace(audit)
+        && message
+            .to_ascii_lowercase()
+            .contains("upstream request failed")
+}
+
+pub(crate) fn codex_imagegen_audit_was_injected(audit: Option<&Value>) -> bool {
+    audit
+        .and_then(|value| value.get("outcome"))
+        .and_then(Value::as_str)
+        .is_some_and(|outcome| matches!(outcome, "injected" | "replaced"))
+}
+
+pub(crate) fn codex_imagegen_audit_has_canonical_namespace(audit: Option<&Value>) -> bool {
+    if codex_imagegen_audit_was_injected(audit) {
+        return true;
+    }
+    let Some(audit) = audit else {
+        return false;
+    };
+    audit.get("outcome").and_then(Value::as_str) == Some("no_change")
+        && matches!(
+            audit.get("mode").and_then(Value::as_str),
+            Some("force_add" | "fill_missing")
+        )
+        && audit.get("reason").and_then(Value::as_str) == Some("already_current")
+        && audit
+            .get("schemaDiffPaths")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
 }
 
 fn rewrite_codex_imagegen_tools(
@@ -5093,6 +5133,43 @@ mod tests {
         assert!(fill_missing.get("tool_choice").is_none());
     }
 
+    #[test]
+    fn codex_imagegen_upstream_incompatibility_requires_a_canonical_namespace_and_known_502() {
+        let injected = serde_json::json!({"outcome": "injected"});
+
+        assert!(codex_imagegen_upstream_incompatibility(
+            StatusCode::BAD_GATEWAY,
+            "Upstream request failed",
+            Some(&injected),
+        ));
+        assert!(!codex_imagegen_upstream_incompatibility(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Upstream request failed",
+            Some(&injected),
+        ));
+        assert!(!codex_imagegen_upstream_incompatibility(
+            StatusCode::BAD_GATEWAY,
+            "Upstream request failed",
+            Some(&serde_json::json!({"outcome": "no_change"})),
+        ));
+        let canonical_namespace_was_retained = serde_json::json!({
+            "mode": "force_add",
+            "outcome": "no_change",
+            "reason": "already_current",
+            "schemaDiffPaths": [],
+        });
+        assert!(codex_imagegen_upstream_incompatibility(
+            StatusCode::BAD_GATEWAY,
+            "Upstream request failed",
+            Some(&canonical_namespace_was_retained),
+        ));
+        assert!(!codex_imagegen_upstream_incompatibility(
+            StatusCode::BAD_GATEWAY,
+            "temporary upstream timeout",
+            Some(&injected),
+        ));
+    }
+
     #[tokio::test]
     async fn codex_imagegen_keep_original_records_audit_without_rewriting_snapshot() {
         let request = serde_json::json!({"input": "summarize this"});
@@ -5129,7 +5206,7 @@ mod tests {
                 .as_ref()
                 .and_then(|audit| audit.get("reason"))
                 .and_then(Value::as_str),
-            Some("already_current")
+            Some("policy_keep_original")
         );
         assert_eq!(
             prepared

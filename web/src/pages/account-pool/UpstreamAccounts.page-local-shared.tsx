@@ -589,12 +589,14 @@ type CapabilityOverrideField =
   | "responseEndpointCapabilityOverride"
   | "chatCompletionsCapabilityOverride"
   | "imageEndpointCapabilityOverride"
-  | "responseImageToolCapabilityOverride";
+  | "responseImageToolCapabilityOverride"
+  | "codexImagegenCapabilityOverride";
 
 const RESPONSES_CAPABILITY_ENDPOINTS = ["/v1/responses", "/v1/responses/compact"] as const;
 const CHAT_COMPLETIONS_CAPABILITY_ENDPOINTS = ["/v1/chat/completions"] as const;
 
 const DIRECT_IMAGE_CAPABILITY_ENDPOINTS = ["/v1/images/generations", "/v1/images/edits"] as const;
+const CODEX_IMAGEGEN_CAPABILITY_NAMESPACE = ["image_gen"] as const;
 
 function capabilityBadgeVariant(
   value: UpstreamCapabilityState["effective"] | CapabilityOverride | null,
@@ -2849,7 +2851,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                       />
                     </div>
                   </div>
-                  <div className="grid gap-4 lg:grid-cols-4">
+                  <div className="grid gap-4 lg:grid-cols-5">
                     <AccountCapabilityCard
                       title={t("accountPool.upstreamAccounts.capability.responseEndpoint.title")}
                       description={t(
@@ -2932,6 +2934,28 @@ function SharedUpstreamAccountDetailDrawerInner({
                         }
                       }
                       overrideField="responseImageToolCapabilityOverride"
+                      writesEnabled={writesEnabled}
+                      busy={hasBusyAccountAction(busyAction, selectedDetail.id)}
+                      onOverrideChange={(field, value) =>
+                        void handleSaveCapabilityOverride(selectedDetail, field, value)
+                      }
+                    />
+                    <AccountCapabilityCard
+                      title={t("accountPool.upstreamAccounts.capability.codexImagegen.title")}
+                      description={t(
+                        "accountPool.upstreamAccounts.capability.codexImagegen.description",
+                      )}
+                      endpoints={CODEX_IMAGEGEN_CAPABILITY_NAMESPACE}
+                      state={
+                        selectedDetail.codexImagegenCapability ?? {
+                          observed: "unknown",
+                          override: null,
+                          effective: "unknown",
+                          observedAt: null,
+                          reason: null,
+                        }
+                      }
+                      overrideField="codexImagegenCapabilityOverride"
                       writesEnabled={writesEnabled}
                       busy={hasBusyAccountAction(busyAction, selectedDetail.id)}
                       onOverrideChange={(field, value) =>

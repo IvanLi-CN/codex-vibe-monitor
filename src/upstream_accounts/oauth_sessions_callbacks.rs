@@ -1731,6 +1731,14 @@ pub(crate) async fn update_upstream_account_inner(
                 value,
             )?),
         };
+    let codex_imagegen_capability_override = match &payload.codex_imagegen_capability_override {
+        OptionalField::Missing => row.policy_codex_imagegen_capability_override.clone(),
+        OptionalField::Null => None,
+        OptionalField::Value(value) => Some(normalize_capability_override(
+            "codexImagegenCapabilityOverride",
+            value,
+        )?),
+    };
     let status_change_upstream_http_401 = match payload.routing_rule.as_ref() {
         Some(rule) => match rule
             .status_change_reason_field(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401)
@@ -1939,8 +1947,9 @@ pub(crate) async fn update_upstream_account_inner(
             policy_chat_completions_capability_override = ?42,
             policy_image_endpoint_capability_override = ?43,
             policy_response_image_tool_capability_override = ?44,
-            updated_at = ?45,
-            policy_codex_imagegen_rewrite_mode = ?46
+            policy_codex_imagegen_capability_override = ?45,
+            updated_at = ?46,
+            policy_codex_imagegen_rewrite_mode = ?47
         WHERE id = ?1
         "#,
     )
@@ -2129,6 +2138,7 @@ pub(crate) async fn update_upstream_account_inner(
     .bind(chat_completions_capability_override)
     .bind(image_endpoint_capability_override)
     .bind(response_image_tool_capability_override)
+    .bind(codex_imagegen_capability_override)
     .bind(&now_iso)
     .bind(match payload.routing_rule.as_ref() {
         Some(rule) => match rule.codex_imagegen_rewrite_mode {

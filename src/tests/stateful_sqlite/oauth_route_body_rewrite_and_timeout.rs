@@ -511,6 +511,7 @@ async fn pool_route_large_oauth_responses_file_backed_body_rewrites_and_replaces
         chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
+        codex_imagegen_capability: CapabilitySupport::Unknown,
     };
 
     let upstream = send_pool_request_with_failover(
@@ -990,6 +991,7 @@ async fn pool_route_oauth_responses_file_backed_body_above_rewrite_limit_stays_p
         chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
+        codex_imagegen_capability: CapabilitySupport::Unknown,
     };
 
     let upstream = send_pool_request_with_failover(
@@ -1130,6 +1132,7 @@ async fn pool_route_oauth_responses_compressed_file_backed_body_stays_passthroug
         chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
+        codex_imagegen_capability: CapabilitySupport::Unknown,
     };
 
     let upstream = send_pool_request_with_failover(
@@ -1453,6 +1456,7 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
         chat_completions_capability: CapabilitySupport::Unknown,
         image_endpoint_capability: CapabilitySupport::Unknown,
         response_image_tool_capability: CapabilitySupport::Unknown,
+        codex_imagegen_capability: CapabilitySupport::Unknown,
     };
 
     assert_eq!(

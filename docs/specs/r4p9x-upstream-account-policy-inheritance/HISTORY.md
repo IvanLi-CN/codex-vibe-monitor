@@ -4,6 +4,8 @@
 
 Account-pool routing policy moved from isolated group/tag behavior to a layered effective policy model. The resolver now computes one effective policy per account and downstream routing code reads that policy instead of separate group or tag fragments.
 
+2026-07-28: Header-sticky reuse now derives its capability requirement from the same final Codex imagegen rewrite-aware resolver as automatic and sticky candidate selection, so an account learned as namespace-incompatible cannot bypass the gate. A successful request carrying the canonical namespace now restores the observed capability to supported. The `supported` operator override is atomically claimed before its one canonical-namespace upstream attempt, preventing concurrent requests or already-present namespace payloads from turning the retest into a persistent routing bypass.
+
 2026-07-24: Replaced the group routing dialog's desktop priority, FAST mode, image-tool rewrite, and request-compression dropdowns with the shared inline radio-group treatment used by upstream 429 retry. At widths of `768px` and below the same fields retain Select controls so their longer labels remain readable and touch-friendly.
 
 2026-07-18: Split the old mixed `responseEndpointCapability` axis into independent Responses and Chat Completions endpoint capabilities. `/v1/chat/completions` no longer appears under the Responses or Response image-tool cards, startup schema maintenance performs a one-time reset of legacy mixed Responses observed state/overrides, and the account detail Overview now shows four capability cards: Responses, Chat Completions, Image, and Response image-tool.
@@ -35,3 +37,5 @@ Account-pool routing policy moved from isolated group/tag behavior to a layered 
 2026-07-24: Locked image-tool rewrite to Full Responses. Codex Responses Lite owns client-side `input.additional_tools`, so every CVM mode is skipped, auditably persisted, and no Lite top-level-tool validation error can learn account capability.
 
 2026-07-26: Superseded the Lite skip-only boundary with the independent `codexImagegenRewriteMode`. Explicit Codex Full now receives the fixed `image_gen.imagegen` namespace in top-level tools; explicit Lite receives it through developer `additional_tools` plus the required execution contract. Hosted `image_generation` remains a separate policy and is removed for active Codex rewrites.
+
+2026-07-28: Added per-account Codex `image_gen` compatibility learning for the observed injected-request `502 Upstream request failed` signature. The failure bypasses same-account retry and generic account-health mutation, then allows failover to another namespace-compatible upstream. Account detail shows the learned reason and provides an explicit supported/unsupported override for a deliberate retry after the upstream is repaired.

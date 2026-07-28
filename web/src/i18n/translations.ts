@@ -1274,6 +1274,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.capability.responseImageTool.title": "Response image-tool",
     "accountPool.upstreamAccounts.capability.responseImageTool.description":
       "Controls image tools or image models on these Responses-family endpoints only.",
+    "accountPool.upstreamAccounts.capability.codexImagegen.title": "Codex image_gen",
+    "accountPool.upstreamAccounts.capability.codexImagegen.description":
+      "Controls whether this account can receive Codex requests after image_gen namespace injection.",
     "accountPool.upstreamAccounts.capability.rewriteNoticeTitle":
       "Rewrite policy is not capability routing",
     "accountPool.upstreamAccounts.capability.rewriteNoticeBody":
@@ -4021,6 +4024,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.capability.responseImageTool.title": "Response 图片工具",
     "accountPool.upstreamAccounts.capability.responseImageTool.description":
       "只控制以下 Responses-family 端点上的图片工具或图片模型，不影响直连 image 端点。",
+    "accountPool.upstreamAccounts.capability.codexImagegen.title": "Codex image_gen",
+    "accountPool.upstreamAccounts.capability.codexImagegen.description":
+      "控制该账号能否接收已注入 image_gen 命名空间的 Codex 请求。",
     "accountPool.upstreamAccounts.capability.rewriteNoticeTitle":
       "rewrite 策略不等于 capability 路由",
     "accountPool.upstreamAccounts.capability.rewriteNoticeBody":

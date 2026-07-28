@@ -153,6 +153,7 @@ export const DetailDrawerOverview: Story = {
     await expect(
       within(dialog).getByText(/Response 图片工具|response image-tool/i),
     ).toBeInTheDocument();
+    await expect(within(dialog).getByText(/Codex image_gen/i)).toBeInTheDocument();
     await expect(
       within(dialog).getByText(/账号活动总览|account activity overview/i),
     ).toBeInTheDocument();

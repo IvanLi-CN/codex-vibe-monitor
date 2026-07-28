@@ -996,6 +996,7 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) chat_completions_capability: CapabilitySupport,
     pub(crate) image_endpoint_capability: CapabilitySupport,
     pub(crate) response_image_tool_capability: CapabilitySupport,
+    pub(crate) codex_imagegen_capability: CapabilitySupport,
     pub(crate) upstream_base_url: Url,
     pub(crate) routing_source: PoolRoutingSelectionSource,
     pub(crate) sticky_affinity_generation: Option<i64>,

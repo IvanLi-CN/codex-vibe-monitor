@@ -7,6 +7,7 @@ pub(crate) enum UpstreamCapabilityAxis {
     ChatCompletionsEndpoint,
     ImageEndpoint,
     ResponseImageTool,
+    CodexImagegen,
 }
 
 impl UpstreamCapabilityAxis {
@@ -16,6 +17,7 @@ impl UpstreamCapabilityAxis {
             Self::ChatCompletionsEndpoint => "chat_completions_capability",
             Self::ImageEndpoint => "image_endpoint_capability",
             Self::ResponseImageTool => "response_image_tool_capability",
+            Self::CodexImagegen => "codex_imagegen_capability",
         }
     }
 
@@ -25,6 +27,7 @@ impl UpstreamCapabilityAxis {
             Self::ChatCompletionsEndpoint => "chat_completions_capability_observed_at",
             Self::ImageEndpoint => "image_endpoint_capability_observed_at",
             Self::ResponseImageTool => "response_image_tool_capability_observed_at",
+            Self::CodexImagegen => "codex_imagegen_capability_observed_at",
         }
     }
 
@@ -34,6 +37,7 @@ impl UpstreamCapabilityAxis {
             Self::ChatCompletionsEndpoint => "chat_completions_capability_reason",
             Self::ImageEndpoint => "image_endpoint_capability_reason",
             Self::ResponseImageTool => "response_image_tool_capability_reason",
+            Self::CodexImagegen => "codex_imagegen_capability_reason",
         }
     }
 
@@ -43,6 +47,7 @@ impl UpstreamCapabilityAxis {
             Self::ChatCompletionsEndpoint => "chat completions endpoint request succeeded",
             Self::ImageEndpoint => "image endpoint request succeeded",
             Self::ResponseImageTool => "response image tool request succeeded",
+            Self::CodexImagegen => "Codex imagegen namespace request succeeded",
         }
     }
 }
@@ -261,6 +266,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     invoke_id: Option<&str>,
     endpoint: &str,
     image_intent: ImageIntent,
+    codex_imagegen_rewrite: Option<&Value>,
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
 ) -> Result<()> {
@@ -275,8 +281,14 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         sticky_affinity_generation,
     )
     .await?;
-    record_pool_route_success_capability_observations(pool, account_id, endpoint, image_intent)
-        .await
+    record_pool_route_success_capability_observations(
+        pool,
+        account_id,
+        endpoint,
+        image_intent,
+        codex_imagegen_rewrite,
+    )
+    .await
 }
 
 pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
@@ -300,8 +312,14 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_for
         None,
     )
     .await?;
-    record_pool_route_success_capability_observations(pool, account_id, endpoint, image_intent)
-        .await
+    record_pool_route_success_capability_observations(
+        pool,
+        account_id,
+        endpoint,
+        image_intent,
+        None,
+    )
+    .await
 }
 
 async fn record_pool_route_success_capability_observations(
@@ -309,6 +327,7 @@ async fn record_pool_route_success_capability_observations(
     account_id: i64,
     endpoint: &str,
     image_intent: ImageIntent,
+    codex_imagegen_rewrite: Option<&Value>,
 ) -> Result<()> {
     let requirements =
         RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
@@ -352,7 +371,58 @@ async fn record_pool_route_success_capability_observations(
         )
         .await?;
     }
+    if crate::codex_imagegen_audit_has_canonical_namespace(codex_imagegen_rewrite) {
+        record_capability_observation(
+            pool,
+            account_id,
+            UpstreamCapabilityAxis::CodexImagegen,
+            CapabilitySupport::Supported,
+            Some(UpstreamCapabilityAxis::CodexImagegen.success_reason()),
+        )
+        .await?;
+    }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CodexImagegenRetestClaim {
+    NotNeeded,
+    Claimed,
+    AlreadyClaimed,
+}
+
+pub(crate) async fn claim_codex_imagegen_supported_retest_override(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> Result<CodexImagegenRetestClaim> {
+    let result = sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET policy_codex_imagegen_capability_override = NULL,
+            updated_at = ?2
+        WHERE id = ?1
+          AND policy_codex_imagegen_capability_override = 'supported'
+        "#,
+    )
+    .bind(account_id)
+    .bind(format_utc_iso(Utc::now()))
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 1 {
+        return Ok(CodexImagegenRetestClaim::Claimed);
+    }
+
+    let capability: Option<String> = sqlx::query_scalar(
+        "SELECT codex_imagegen_capability FROM pool_upstream_accounts WHERE id = ?",
+    )
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(if capability.as_deref() == Some("unsupported") {
+        CodexImagegenRetestClaim::AlreadyClaimed
+    } else {
+        CodexImagegenRetestClaim::NotNeeded
+    })
 }
 
 pub(crate) async fn record_capability_observation(

@@ -78,6 +78,14 @@ pub(crate) struct UpstreamAccountRow {
     pub(crate) response_image_tool_capability_reason: Option<String>,
     #[sqlx(default)]
     pub(crate) policy_response_image_tool_capability_override: Option<String>,
+    #[sqlx(default)]
+    pub(crate) codex_imagegen_capability: Option<String>,
+    #[sqlx(default)]
+    pub(crate) codex_imagegen_capability_observed_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) codex_imagegen_capability_reason: Option<String>,
+    #[sqlx(default)]
+    pub(crate) policy_codex_imagegen_capability_override: Option<String>,
     pub(crate) local_primary_limit: Option<f64>,
     pub(crate) local_secondary_limit: Option<f64>,
     pub(crate) local_limit_unit: Option<String>,

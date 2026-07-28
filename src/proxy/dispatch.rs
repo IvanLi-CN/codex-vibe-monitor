@@ -2941,6 +2941,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         None,
                         request_endpoint_for_task.as_str(),
                         request_image_intent,
+                        final_codex_imagegen_rewrite.as_ref(),
                         pending_pool_attempt_record_for_task
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),

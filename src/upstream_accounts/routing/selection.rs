@@ -964,6 +964,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                 .as_deref(),
                         ),
                     ),
+                    effective_capability_support(
+                        decode_capability_support(row.codex_imagegen_capability.as_deref()),
+                        decode_capability_override(
+                            row.policy_codex_imagegen_capability_override.as_deref(),
+                        ),
+                    ),
                 ) {
                     sticky_route_still_reusable = true;
                     let mut sticky_route_was_excluded = false;
@@ -1301,6 +1307,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                         .as_deref(),
                 ),
             ),
+            effective_capability_support(
+                decode_capability_support(row.codex_imagegen_capability.as_deref()),
+                decode_capability_override(
+                    row.policy_codex_imagegen_capability_override.as_deref(),
+                ),
+            ),
         ) {
             saw_other_non_rate_limited_routing_candidate = true;
             continue;
@@ -1441,7 +1453,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     Ok(PoolAccountResolution::NoCandidate)
 }
 
-fn request_capability_requirements_after_codex_imagegen_rewrite(
+pub(crate) fn request_capability_requirements_after_codex_imagegen_rewrite(
     endpoint: &str,
     image_intent: crate::ImageIntent,
     requested_model: Option<&str>,
@@ -1457,7 +1469,20 @@ fn request_capability_requirements_after_codex_imagegen_rewrite(
     } else {
         image_intent
     };
-    RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, hosted_image_intent)
+    let mut requirements = RequestCapabilityRequirements::from_endpoint_and_image_intent(
+        endpoint,
+        hosted_image_intent,
+    );
+    let codex_imagegen_rewrite_applies = match rule.codex_imagegen_rewrite_mode {
+        crate::CodexImagegenRewriteMode::ForceAdd => true,
+        crate::CodexImagegenRewriteMode::FillMissing => image_intent == crate::ImageIntent::Yes,
+        crate::CodexImagegenRewriteMode::KeepOriginal
+        | crate::CodexImagegenRewriteMode::ForceRemove => false,
+    };
+    requirements.codex_imagegen = codex_imagegen_request
+        && codex_imagegen_rewrite_applies
+        && matches!(endpoint, "/v1/responses" | "/v1/responses/compact");
+    requirements
 }
 
 #[cfg(test)]
@@ -1528,7 +1553,27 @@ mod tests {
 
         assert!(keep_original.response_image_tool);
         assert!(!force_add.response_image_tool);
+        assert!(force_add.codex_imagegen);
         assert!(force_add.response_endpoint);
+        assert!(!account_accepts_request_capabilities(
+            force_add,
+            CapabilitySupport::Supported,
+            CapabilitySupport::Supported,
+            CapabilitySupport::Supported,
+            CapabilitySupport::Supported,
+            CapabilitySupport::Unsupported,
+        ));
+        assert!(account_accepts_request_capabilities(
+            force_add,
+            CapabilitySupport::Supported,
+            CapabilitySupport::Supported,
+            CapabilitySupport::Supported,
+            CapabilitySupport::Supported,
+            effective_capability_support(
+                CapabilitySupport::Unsupported,
+                Some(CapabilitySupport::Supported),
+            ),
+        ));
 
         let image_model = request_capability_requirements_after_codex_imagegen_rewrite(
             "/v1/responses",
@@ -1538,5 +1583,25 @@ mod tests {
             &effective_rule(crate::CodexImagegenRewriteMode::ForceAdd),
         );
         assert!(image_model.response_image_tool);
+        assert!(image_model.codex_imagegen);
+
+        let force_remove = request_capability_requirements_after_codex_imagegen_rewrite(
+            "/v1/responses",
+            crate::ImageIntent::Yes,
+            Some("gpt-5.6-codex"),
+            true,
+            &effective_rule(crate::CodexImagegenRewriteMode::ForceRemove),
+        );
+        assert!(!force_remove.codex_imagegen);
+
+        let fill_missing_without_image_intent =
+            request_capability_requirements_after_codex_imagegen_rewrite(
+                "/v1/responses",
+                crate::ImageIntent::Unknown,
+                Some("gpt-5.6-codex"),
+                true,
+                &effective_rule(crate::CodexImagegenRewriteMode::FillMissing),
+            );
+        assert!(!fill_missing_without_image_intent.codex_imagegen);
     }
 }
