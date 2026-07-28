@@ -1140,6 +1140,19 @@ export const FailedPoolWorkflow: Story = {
       </>
     ),
   ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const responseBodyButton = (await canvas.findAllByRole("button", { name: /响应体/i })).find(
+      (button) => button.textContent?.includes(failedWorkflowResponseBodySize.toLocaleString("zh")),
+    );
+    if (!responseBodyButton) {
+      throw new Error("failed attempt response body action not found");
+    }
+    responseBodyButton.focus();
+    await expect(responseBodyButton).toHaveFocus();
+    await expect(responseBodyButton).toHaveClass("focus-visible:ring-inset");
+    await expect(responseBodyButton).toHaveClass("last:rounded-r-[0.95rem]");
+  },
 };
 
 export const RetriedAttemptResponseBodyUnavailable: Story = {

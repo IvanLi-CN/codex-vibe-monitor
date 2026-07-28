@@ -16,6 +16,9 @@
 - `codex_invocations` 新增 `timeline_json` 字段；`pool_upstream_request_attempts` 新增 `request_summary_json` / `response_summary_json` 字段，用于承载工作流时间线和尝试级结构化快照。
 - `pool_upstream_request_attempts` 现在为每个真实 attempt 持久化独立 `response_raw_path`、codec、大小、截断状态、截断原因和 content encoding；成功、HTTP 失败、SSE `response.failed` 与流中断均共享该 attempt identity。
 - 新增 `GET /api/invocations/:id/attempts/:attempt_public_id/response-body`，工作流 lazy loader 按 attempt identity 回放；历史最终 attempt 缺少 attempt raw 时兼容调用级 raw，其他历史缺失稳定返回 unavailable。
+- 尝试级响应体查询对调用级失败分类使用 `inv` 限定列，避免与 attempt 行的同名 `status` 产生 SQLite 歧义；HTTP 5xx attempt 因而可继续回放已捕获的响应体。
+- 验证覆盖 invocation 与 attempt 同时存在 `status` 的 SQLite seam：尝试级响应体查询返回 71 B 原文及 `service_failure`，不再产生列歧义。
+- 尝试详情指标 rail 的首尾 action 使用匹配 rail 的圆角，键盘焦点改为内嵌 primary ring，避免右侧响应体 action 的 outline 被 rail 裁切。
 - 工作流详情接口在没有 attempt 行时可合成 synthetic attempt，并在缺失 `timeline_json` 时根据调用级记录和尝试表进行 best-effort reconstruction。
 - 工作流详情聚合层现在会识别历史 pre-dispatch pseudo-attempt 形态，并在不做数据库回写迁移的前提下把它们折叠成 `路由决定 + 系统裁定`；`hero.timelineAttemptCount` 与时间线 Attempt 数都只统计真实出站。
 - `InvocationWorkflowDetailPanel` 作为新的共享详情组件，统一服务于 Dashboard、Records 和 Live 三个入口；顶部 hero 区优先展示调用 ID、短对话 ID、总用时、最终结果、尝试次数和最终账号。
