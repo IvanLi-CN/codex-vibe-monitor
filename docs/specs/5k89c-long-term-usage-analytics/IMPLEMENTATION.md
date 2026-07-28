@@ -5,6 +5,7 @@
 - 后端持久化、回填、soft-delete、overview/series API 与前端长期统计区均以 `5k89c/SPEC.md` 为契约。
 - 现有 Stats 查询、筛选、bucket、SSE 与图表路径保持不变；长期区使用独立 endpoint、hooks 和组件状态。
 - 新增 schema 必须兼容旧 SQLite：启动迁移可重复执行，回填状态可恢复，archive purge 只有在长期汇总 target materialized 后才可继续。
+- 完整性审计和修复只在长期统计链路运行：初始全量和增量候选日/小时都要先对照 `invocation_rollup_hourly` 的 overall 证明，再在单个事务内替换所有维度；修复队列持久化检测、重试时间和失败原因。
 
 ## 计划落点
 
@@ -27,5 +28,6 @@
 - 已落地 `src/long_term_stats.rs` 的三维小时/日汇总、可恢复 live/archive 回填、准备状态进度、overview/series API 与墙时区间并集。
 - 已落地 `pool_upstream_accounts.deleted_at` 迁移、API Key 凭据/会话/路由运行状态清理，以及账号池/路由候选隐藏。
 - 已落地独立 `LongTermStatsSection`、60 秒可见刷新 hook、mock demo handler、Storybook ready/preparing/empty/error 状态与关键 play。
+- 已落地长期统计完整性修复：不完整重建会同时从 partial/rebuilt 候选移除，历史小时审计会排入单日期修复队列，无法证明时保留既有行，并在队列清空前使 API 持续返回现有 `error` 状态；SQLite 锁仅在该后台链路按 `250ms/1s/3s` 有界重试。
 - 已通过：前端 `bun run test`（1310 passed / 6 skipped）、目标组件 Vitest、`bun run build` 与 5 个变更文件 Biome 检查；根级 `lint:web` 仍有既有无关文件错误，未扩大范围修复。
 - Storybook interaction/a11y、mock-only `ui_demo` 桌面/移动视觉证据及最终截图 SHA 在本次收口阶段补录到 `SPEC.md` 的 `## Visual Evidence`。
