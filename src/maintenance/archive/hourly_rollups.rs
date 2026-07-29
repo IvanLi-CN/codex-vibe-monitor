@@ -662,54 +662,73 @@ pub(crate) fn legacy_compatible_archive_select_expr(
 pub(crate) fn build_legacy_compatible_invocation_archive_query(
     archive_columns: &HashSet<String>,
 ) -> String {
-    let model = legacy_compatible_archive_select_expr(archive_columns, "model");
-    let input_tokens = legacy_compatible_archive_select_expr(archive_columns, "input_tokens");
-    let output_tokens = legacy_compatible_archive_select_expr(archive_columns, "output_tokens");
-    let cache_input_tokens =
-        legacy_compatible_archive_select_expr(archive_columns, "cache_input_tokens");
-    let upstream_account_id =
-        legacy_compatible_archive_select_expr(archive_columns, "upstream_account_id");
-    let cost_input = legacy_compatible_archive_select_expr(archive_columns, "cost_input");
-    let cost_cache_write =
-        legacy_compatible_archive_select_expr(archive_columns, "cost_cache_write");
-    let cost_cache_read = legacy_compatible_archive_select_expr(archive_columns, "cost_cache_read");
-    let cost_output = legacy_compatible_archive_select_expr(archive_columns, "cost_output");
-    let cost_reasoning = legacy_compatible_archive_select_expr(archive_columns, "cost_reasoning");
-    let first_token_ms = legacy_compatible_archive_select_expr(archive_columns, "first_token_ms");
+    let select = |column_name| legacy_compatible_archive_select_expr(archive_columns, column_name);
+    let detail_level = if archive_columns.contains("detail_level") {
+        "detail_level".to_string()
+    } else {
+        "'full' AS detail_level".to_string()
+    };
+    let status = select("status");
+    let model = select("model");
+    let input_tokens = select("input_tokens");
+    let output_tokens = select("output_tokens");
+    let cache_input_tokens = select("cache_input_tokens");
+    let total_tokens = select("total_tokens");
+    let cost = select("cost");
+    let upstream_account_id = select("upstream_account_id");
+    let cost_input = select("cost_input");
+    let cost_cache_write = select("cost_cache_write");
+    let cost_cache_read = select("cost_cache_read");
+    let cost_output = select("cost_output");
+    let cost_reasoning = select("cost_reasoning");
+    let error_message = select("error_message");
+    let failure_kind = select("failure_kind");
+    let failure_class = select("failure_class");
+    let is_actionable = select("is_actionable");
+    let payload = select("payload");
+    let t_total_ms = select("t_total_ms");
+    let t_req_read_ms = select("t_req_read_ms");
+    let t_req_parse_ms = select("t_req_parse_ms");
+    let t_upstream_connect_ms = select("t_upstream_connect_ms");
+    let t_upstream_ttfb_ms = select("t_upstream_ttfb_ms");
+    let first_token_ms = select("first_token_ms");
+    let t_upstream_stream_ms = select("t_upstream_stream_ms");
+    let t_resp_parse_ms = select("t_resp_parse_ms");
+    let t_persist_ms = select("t_persist_ms");
     format!(
         r#"
         SELECT
             id,
             occurred_at,
             source,
-            status,
-            detail_level,
+            {status},
+            {detail_level},
             {model},
             {input_tokens},
             {output_tokens},
             {cache_input_tokens},
-            total_tokens,
-            cost,
+            {total_tokens},
+            {cost},
             {upstream_account_id},
             {cost_input},
             {cost_cache_write},
             {cost_cache_read},
             {cost_output},
             {cost_reasoning},
-            error_message,
-            failure_kind,
-            failure_class,
-            is_actionable,
-            payload,
-            t_total_ms,
-            t_req_read_ms,
-            t_req_parse_ms,
-            t_upstream_connect_ms,
-            t_upstream_ttfb_ms,
+            {error_message},
+            {failure_kind},
+            {failure_class},
+            {is_actionable},
+            {payload},
+            {t_total_ms},
+            {t_req_read_ms},
+            {t_req_parse_ms},
+            {t_upstream_connect_ms},
+            {t_upstream_ttfb_ms},
             {first_token_ms},
-            t_upstream_stream_ms,
-            t_resp_parse_ms,
-            t_persist_ms
+            {t_upstream_stream_ms},
+            {t_resp_parse_ms},
+            {t_persist_ms}
         FROM codex_invocations
         WHERE id > ?1
         ORDER BY id ASC
@@ -4022,9 +4041,16 @@ pub(crate) async fn replay_live_upstream_host_network_minute_rollups_from_pool_a
     Ok(rows.len() as u64)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InvocationHourlyRollupReconciliation {
     pub(crate) applied_rollups: usize,
+    /// A complete source scan contradicted or omitted a previously trusted canonical bucket.
+    /// The caller uses these buckets to keep dependent long-term materializations in repair
+    /// state until a later source scan can certify them again.
+    pub(crate) invalidated_bucket_start_epochs: Vec<i64>,
+    /// Completed invocation archives that could not participate in the source scan. Consumers
+    /// must invalidate their own replay markers so a restored file is read again.
+    pub(crate) unavailable_archive_file_paths: Vec<String>,
     pub(crate) source_complete: bool,
 }
 
@@ -4051,6 +4077,7 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
     let mut overall: BTreeMap<(i64, String), InvocationHourlyRollupDelta> = BTreeMap::new();
     let mut seen_ids = HashSet::new();
     let mut source_incomplete = false;
+    let mut unavailable_archive_file_paths = Vec::new();
 
     for archive_file in archive_files {
         let archive_path = PathBuf::from(&archive_file.file_path);
@@ -4061,7 +4088,8 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
                 "skipping missing archive batch during invocation hourly rollup backfill"
             );
             source_incomplete = true;
-            break;
+            unavailable_archive_file_paths.push(archive_file.file_path.clone());
+            continue;
         }
 
         let temp_path = PathBuf::from(format!(
@@ -4121,7 +4149,8 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
                 error = %error,
                 "could not read archive batch during invocation hourly rollup proof reconciliation"
             );
-            break;
+            unavailable_archive_file_paths.push(archive_file.file_path.clone());
+            continue;
         }
     }
 
@@ -4138,6 +4167,8 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
         );
         return Ok(InvocationHourlyRollupReconciliation {
             applied_rollups: 0,
+            invalidated_bucket_start_epochs: Vec::new(),
+            unavailable_archive_file_paths,
             source_complete: false,
         });
     }
@@ -4201,6 +4232,7 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
     let mut tx = pool.begin().await?;
     let mut applied_rollups = 0usize;
     let mut incomplete_rollups = 0usize;
+    let mut invalidated_bucket_start_epochs = BTreeSet::new();
     let trusted_rollup_keys = sqlx::query_as::<_, (i64, String)>(
         r#"
         SELECT bucket_start_epoch, source
@@ -4226,6 +4258,7 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
         .execute(&mut *tx)
         .await?;
         incomplete_rollups += 1;
+        invalidated_bucket_start_epochs.insert(bucket_start_epoch);
     }
     for ((bucket_start_epoch, source), delta) in &overall {
         let existing = sqlx::query_as::<_, (i64, i64, f64)>(
@@ -4257,6 +4290,7 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
             .execute(&mut *tx)
             .await?;
             incomplete_rollups += 1;
+            invalidated_bucket_start_epochs.insert(*bucket_start_epoch);
             continue;
         }
         sqlx::query(
@@ -4363,7 +4397,12 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(
     }
     Ok(InvocationHourlyRollupReconciliation {
         applied_rollups,
-        source_complete: true,
+        invalidated_bucket_start_epochs: invalidated_bucket_start_epochs.into_iter().collect(),
+        unavailable_archive_file_paths: Vec::new(),
+        // The source inventory was readable, but it cannot certify a canonical proof after a
+        // contradiction. Treat that exactly like incomplete source availability so dependent
+        // materializations cannot publish stale rows as ready.
+        source_complete: incomplete_rollups == 0,
     })
 }
 
@@ -4686,6 +4725,56 @@ mod upstream_host_network_minute_tests {
         .await
         .expect("create hourly_rollup_live_progress table");
         pool
+    }
+
+    #[tokio::test]
+    async fn legacy_compatible_archive_query_reads_archives_without_optional_columns() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory legacy archive pool");
+        sqlx::query(
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY,
+                occurred_at TEXT NOT NULL,
+                source TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create minimal legacy invocation archive schema");
+        sqlx::query("INSERT INTO codex_invocations (id, occurred_at, source) VALUES (1, ?1, ?2)")
+            .bind("2026-07-23 10:00:00")
+            .bind(SOURCE_PROXY)
+            .execute(&pool)
+            .await
+            .expect("insert minimal legacy invocation archive row");
+
+        let columns = load_archive_table_columns(&pool, "codex_invocations")
+            .await
+            .expect("inspect minimal legacy archive schema");
+        let query = build_legacy_compatible_invocation_archive_query(&columns);
+        let row = sqlx::query_as::<_, InvocationHourlySourceRecord>(&query)
+            .bind(0_i64)
+            .bind(10_i64)
+            .fetch_one(&pool)
+            .await
+            .expect("read minimal legacy invocation archive row");
+
+        assert_eq!(row.id, 1);
+        assert_eq!(row.detail_level, DETAIL_LEVEL_FULL);
+        assert!(row.t_total_ms.is_none());
+        assert!(row.t_req_read_ms.is_none());
+        assert!(row.t_req_parse_ms.is_none());
+        assert!(row.t_upstream_connect_ms.is_none());
+        assert!(row.t_upstream_ttfb_ms.is_none());
+        assert!(row.first_token_ms.is_none());
+        assert!(row.t_upstream_stream_ms.is_none());
+        assert!(row.t_resp_parse_ms.is_none());
+        assert!(row.t_persist_ms.is_none());
     }
 
     async fn save_progress(pool: &Pool<Sqlite>, dataset: &str, cursor_id: i64) {
